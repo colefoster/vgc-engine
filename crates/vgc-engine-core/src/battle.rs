@@ -249,6 +249,7 @@ impl Battle {
             }
             // Tailwind / future side-condition timers.
             side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
+            side.conditions.reflect_turns = side.conditions.reflect_turns.saturating_sub(1);
         }
         // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
@@ -446,11 +447,16 @@ impl Battle {
                 boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
             }
+            let defender_has_reflect = self.side(tside).conditions.reflect_turns > 0;
+            let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
             let mut dmg = calculate_damage(
                 &boosted_attacker,
                 &boosted_defender,
                 move_id,
-                DamageContext { crit, roll, is_spread, weather: self.weather },
+                DamageContext {
+                    crit, roll, is_spread, weather: self.weather,
+                    defender_has_reflect, is_doubles,
+                },
             );
             // Apply attacker item multiplier (Life Orb).
             if item_mul_n != item_mul_d && dmg > 0 {
@@ -717,6 +723,15 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.tailwind_turns == 0 {
                     s.conditions.tailwind_turns = 4;
+                }
+            }
+            "reflect" => {
+                // Side condition: 5-turn timer. Fails if already up.
+                // PS data/conditions.ts:reflect has duration 5 (8 with
+                // Light Clay; Light Clay deferred to its own PR).
+                let s = self.side_mut(actor_side);
+                if s.conditions.reflect_turns == 0 {
+                    s.conditions.reflect_turns = 5;
                 }
             }
             // Status-inflicting status moves. PS data/moves.ts marks each
@@ -1890,11 +1905,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, is_doubles: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -2089,6 +2104,141 @@ mod tests {
     }
 
     #[test]
+    fn reflect_halves_physical_damage_singles() {
+        // Garchomp Earthquakes a Blissey. Blissey's bulk lets us measure
+        // raw damage uncapped by Focus Sash. Reflect halves it.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["reflect","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        // No item on Garchomp so neither side gets leftovers-style residuals
+        // skewing the post-hit HP comparison. Jolly with no atk EVs to keep
+        // raw EQ well below Blissey's max HP.
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        // Baseline: no Reflect — Blissey just Protects (no-effect filler so
+        // step() resolves cleanly) then takes EQ on turn 2.
+        let mut no_reflect = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1a, p2a);
+        // Turn 1: both Pass; baseline so any leftover-style state matches with_reflect.
+        no_reflect.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp = no_reflect.p1.team[0].current_hp;
+        no_reflect.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_reflect_dmg = start_hp - no_reflect.p1.team[0].current_hp;
+
+        // With Reflect: Blissey Reflects on turn 1 (Garchomp passes), then
+        // takes EQ on turn 2 against the active screen.
+        let mut with_reflect = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        with_reflect.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(with_reflect.p1.conditions.reflect_turns, 4, "5 → 4 after end of turn 1");
+        let start_hp_b = with_reflect.p1.team[0].current_hp;
+        with_reflect.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let reflect_dmg = start_hp_b - with_reflect.p1.team[0].current_hp;
+        // Singles: ×0.5. Integer rounding + leftovers can shift by a point
+        // or two — allow ±10% slack around 50%.
+        let pct = reflect_dmg as i32 * 100 / no_reflect_dmg as i32;
+        assert!(
+            (40..=60).contains(&pct),
+            "Reflect should halve damage; got {reflect_dmg}/{no_reflect_dmg} ({pct}%)",
+        );
+    }
+
+    #[test]
+    fn reflect_does_not_affect_special_damage() {
+        // Reflect is physical-only. Special hits should be unchanged.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["reflect","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut no_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1a, p2a);
+        let start_hp = no_screen.p1.team[0].current_hp;
+        no_screen.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_screen_dmg = start_hp - no_screen.p1.team[0].current_hp;
+
+        let mut with_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1b, p2b);
+        let start_hp_b = with_screen.p1.team[0].current_hp;
+        with_screen.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let with_screen_dmg = start_hp_b - with_screen.p1.team[0].current_hp;
+        assert_eq!(with_screen_dmg, no_screen_dmg, "Reflect must not reduce special damage");
+    }
+
+    #[test]
+    fn reflect_expires_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["reflect","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.reflect_turns, 4, "5 → 4 after first end-of-turn");
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.conditions.reflect_turns, expected);
+        }
+    }
+
+    #[test]
+    fn reflect_fails_when_already_active() {
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["reflect","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.reflect_turns, 4);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Re-casting must NOT refresh the timer — counter ticks 4 → 3.
+        assert_eq!(b.p1.conditions.reflect_turns, 3);
+    }
+
+    #[test]
     fn rock_slide_hits_both_opposing_actives() {
         let p1_json = r#"[
             {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
@@ -2130,11 +2280,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
