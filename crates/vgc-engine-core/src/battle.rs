@@ -50,6 +50,9 @@ pub struct Battle {
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
+    pub weather: crate::weather::Weather,
+    /// Remaining-turn counter for weather. 0 when `weather == None`.
+    pub weather_turns: u8,
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -60,7 +63,10 @@ impl Battle {
         let p1 = Side::new(p1_team, config.format);
         let p2 = Side::new(p2_team, config.format);
         let rng = Rng::new(config.seed);
-        let mut b = Self { config, p1, p2, rng, turn: 0, ended: None };
+        let mut b = Self {
+            config, p1, p2, rng, turn: 0, ended: None,
+            weather: crate::weather::Weather::None, weather_turns: 0,
+        };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
         // ordering matches turn-order but at battle start it's by side
@@ -216,6 +222,14 @@ impl Battle {
             // Tailwind / future side-condition timers.
             side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
         }
+        // Weather decrement (battle-wide). Sand/Hail residual damage and
+        // Snow def boost land in the end-of-turn-residuals PR.
+        if self.weather_turns > 0 {
+            self.weather_turns -= 1;
+            if self.weather_turns == 0 {
+                self.weather = crate::weather::Weather::None;
+            }
+        }
 
         self.turn = self.turn.saturating_add(1);
         let p1_dead = self.p1.is_defeated();
@@ -352,7 +366,7 @@ impl Battle {
                 &attacker,
                 &defender,
                 move_id,
-                DamageContext { crit, roll, is_spread },
+                DamageContext { crit, roll, is_spread, weather: self.weather },
             );
 
             // Apply.
@@ -837,6 +851,70 @@ mod tests {
     }
 
     #[test]
+    fn drizzle_sets_rain_at_battle_start() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Rain);
+        assert_eq!(b.weather_turns, 5);
+    }
+
+    #[test]
+    fn weather_decays_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..5 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.weather, crate::weather::Weather::None);
+        assert_eq!(b.weather_turns, 0);
+    }
+
+    #[test]
+    fn rain_boosts_water_damage() {
+        use crate::damage::{calculate_damage, DamageContext};
+        // Use Pelipper Hurricane vs Pikachu — but Hurricane is Flying, not Water.
+        // Use Weather Ball (changes type with weather) — too complex.
+        // Use Surf instead: build Pelipper that knows Surf.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["surf","weatherball","tailwind","airslash"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
+        let no_rain = calculate_damage(
+            &p1[0], &p2[0], surf_id,
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None },
+        );
+        let in_rain = calculate_damage(
+            &p1[0], &p2[0], surf_id,
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain },
+        );
+        assert!(in_rain > no_rain, "Surf in Rain should hit harder");
+        // Should be ~1.5×; integer truncation may push it slightly under.
+        assert!(in_rain * 100 / no_rain >= 145, "expected ~1.5×; got {}/{}", in_rain, no_rain);
+    }
+
+    #[test]
     fn intimidate_drops_opposing_atk_at_battle_start() {
         // Incineroar has Intimidate. On battle start, opposing mons'
         // atk is -1. Pikachu has Static (no immunity), Garchomp has
@@ -1001,11 +1079,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);

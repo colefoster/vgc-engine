@@ -18,6 +18,7 @@ pub mod battle;
 pub mod damage;
 pub mod order;
 pub mod rng;
+pub mod weather;
 
 pub use battle::{Battle, BattleConfig, StepResult};
 pub use choice::{Choice, MoveSlot, Target};
@@ -28,3 +29,4 @@ pub use pokemon::{Nature, Pokemon, Stat, Status};
 pub use rng::Rng;
 pub use side::{Side, SideRef};
 pub use team::{TeamBuilder, TeamLoadError, TeamMember};
+pub use weather::Weather;

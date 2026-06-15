@@ -57,6 +57,25 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         None => return,
     };
     let slug = ability_slug(ability_id);
+
+    // Weather-setting abilities. Gen 9: 5-turn duration (no item
+    // extensions yet — items PR adds Damp/Heat/Smooth/Icy Rock).
+    let new_weather = match slug {
+        "drizzle" => Some(crate::weather::Weather::Rain),
+        "drought" | "orichalcumpulse" => Some(crate::weather::Weather::Sun),
+        "sandstream" | "sandspit" => Some(crate::weather::Weather::Sand),
+        "snowwarning" => Some(crate::weather::Weather::Snow),
+        _ => None,
+    };
+    if let Some(w) = new_weather {
+        // Replace the current weather. Strong-weather override rules
+        // (Primal Rain etc.) don't apply in this format.
+        if battle.weather != w {
+            battle.weather = w;
+            battle.weather_turns = 5;
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop.
