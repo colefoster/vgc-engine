@@ -188,6 +188,7 @@ impl Battle {
         // 3. End-of-turn cleanup.
         // 3a. Any mon that did NOT use a stall move resets its counter.
         // 3b. Every currently-active mon's turns_active increments by 1.
+        // 3c. Side-condition timers tick down.
         for s in [SideRef::P1, SideRef::P2] {
             let side = self.side_mut(s);
             for m in side.team.iter_mut() {
@@ -201,6 +202,8 @@ impl Battle {
                     mon.turns_active = mon.turns_active.saturating_add(1);
                 }
             }
+            // Tailwind / future side-condition timers.
+            side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
         }
 
         self.turn = self.turn.saturating_add(1);
@@ -391,9 +394,17 @@ impl Battle {
                     actor.stall_counter = 0;
                 }
             }
+            "tailwind" => {
+                // Side condition: 4-turn timer. Fails if already up.
+                // PS data/conditions.ts:tailwind has duration 4.
+                let s = self.side_mut(actor_side);
+                if s.conditions.tailwind_turns == 0 {
+                    s.conditions.tailwind_turns = 4;
+                }
+            }
             _ => {
                 // Unimplemented status move — no effect. Subsequent PRs
-                // will add Tailwind, Trick Room, Encore, etc.
+                // will add Trick Room, Encore, screens, etc.
             }
         }
     }
@@ -806,6 +817,70 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn tailwind_doubles_speed_for_four_turns() {
+        // Pelipper (slower than Garchomp jolly 252) uses Tailwind; after
+        // it lands, Pelipper-side speed doubles. Run 5 turns and check
+        // that conditions tick correctly.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["tailwind","weatherball","hurricane","airslash"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Turn 1: Pelipper uses Tailwind.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.conditions.tailwind_turns, 3, "tick from 4 → 3 at end of turn 1");
+        // Pelipper-side speed should be doubled while active. Use the
+        // order module to verify.
+        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true);
+        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false);
+        assert_eq!(pel_spe_with_tw, pel_spe_no_tw * 2);
+        // Steps 2–4: tick down.
+        for _ in 0..3 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            );
+        }
+        assert_eq!(b.p1.conditions.tailwind_turns, 0, "expires after 4 total turns");
+    }
+
+    #[test]
+    fn tailwind_fails_when_already_active() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["tailwind","weatherball","hurricane","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.tailwind_turns, 3);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Second Tailwind should fail; counter still ticks down → 2.
+        assert_eq!(b.p1.conditions.tailwind_turns, 2);
     }
 
     #[test]

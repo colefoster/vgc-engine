@@ -20,7 +20,8 @@ impl SideRef {
     }
 }
 
-/// Team (up to 6) + which slots are currently active.
+/// Team (up to 6) + which slots are currently active + side-wide
+/// conditions (Tailwind, screens, etc.).
 ///
 /// `active[i] == 255` means "this active slot is empty" (every active mon
 /// fainted with no replacement available — battle ends).
@@ -30,6 +31,20 @@ pub struct Side {
     /// Indices into `team`. Length = `format.active_count()`.
     pub active: [u8; 2],
     pub format: Format,
+    pub conditions: SideConditions,
+}
+
+/// Side-wide conditions with their remaining-turn counters.
+///
+/// Each field is `0` when the condition is not active; otherwise the
+/// number of turns remaining (decremented at end of step). Future PRs
+/// add reflect/lightscreen/auroraveil/spikes/stickyweb here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SideConditions {
+    /// Tailwind: doubles speed of all mons on this side. PS duration 4
+    /// (counted at end of step — so Tailwind used on turn N is active
+    /// for turns N, N+1, N+2, N+3, gone end of N+3).
+    pub tailwind_turns: u8,
 }
 
 impl Side {
@@ -39,7 +54,7 @@ impl Side {
         for (i, slot) in active.iter_mut().take(n).enumerate() {
             *slot = i as u8;
         }
-        Self { team, active, format }
+        Self { team, active, format, conditions: SideConditions::default() }
     }
 
     pub fn active_mon(&self, slot: usize) -> Option<&Pokemon> {

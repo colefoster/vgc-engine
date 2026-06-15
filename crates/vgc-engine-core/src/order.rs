@@ -37,16 +37,18 @@ pub struct ScheduledAction {
     pub choice: Choice,
 }
 
-/// Speed of `mon` after stage boosts and paralysis. ×1 for everything
-/// else (items/abilities/Tailwind/Trick-Room handled in later PRs).
-pub fn effective_speed(mon: &Pokemon) -> u16 {
+/// Speed of `mon` after stage boosts, paralysis, and side conditions
+/// (Tailwind). Items / Choice Scarf / Swift Swim / Trick Room handled in
+/// later PRs.
+pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
     let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
     let after_para = if matches!(mon.status, Status::Paralysis) {
         boosted / 2
     } else {
         boosted
     };
-    after_para.min(u16::MAX as u32) as u16
+    let after_tailwind = if tailwind_active { after_para * 2 } else { after_para };
+    after_tailwind.min(u16::MAX as u32) as u16
 }
 
 /// Resolve one turn's action order.
@@ -71,6 +73,7 @@ pub fn action_order(
                     switches.push(ScheduledAction { side, actor_slot, choice: *c });
                 }
                 Choice::Move { actor_slot, move_slot, .. } => {
+                    let tailwind = battle.side(side).conditions.tailwind_turns > 0;
                     let mon = battle.side(side).active_mon(actor_slot as usize);
                     let (priority, speed) = match mon {
                         Some(m) => {
@@ -80,7 +83,7 @@ pub fn action_order(
                             } else {
                                 data::MOVES[mid as usize].priority as i32
                             };
-                            (pri, effective_speed(m) as i64)
+                            (pri, effective_speed(m, tailwind) as i64)
                         }
                         None => (0, 0),
                     };
@@ -213,9 +216,17 @@ mod tests {
         let b = make_battle();
         let mut mon = b.p1.team[0].clone();
         mon.status = Status::Paralysis;
-        let before = effective_speed(&b.p1.team[0]);
-        let after = effective_speed(&mon);
+        let before = effective_speed(&b.p1.team[0], false);
+        let after = effective_speed(&mon, false);
         assert_eq!(after, before / 2);
+    }
+
+    #[test]
+    fn tailwind_doubles_speed_for_order() {
+        let b = make_battle();
+        let base = effective_speed(&b.p1.team[0], false);
+        let with_tw = effective_speed(&b.p1.team[0], true);
+        assert_eq!(with_tw, base * 2);
     }
 
     #[test]
