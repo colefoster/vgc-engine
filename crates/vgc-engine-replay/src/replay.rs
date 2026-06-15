@@ -19,6 +19,16 @@ pub struct TeamPreviewPoke {
     pub details: String,
 }
 
+/// A borrowed slice of events belonging to a single turn. Turn 0 is a
+/// synthetic bucket holding everything before the first `|turn|1` marker
+/// (battle init: `start`, lead switches, weather kick-off from ability
+/// triggers).
+#[derive(Debug, Clone, Copy)]
+pub struct TurnView<'a> {
+    pub number: u32,
+    pub events: &'a [Event],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Replay {
     pub id: String,
@@ -128,5 +138,112 @@ impl Replay {
             events,
             winner,
         })
+    }
+
+    /// Group `events` into per-turn slices. Each `|turn|N` marker starts
+    /// a new bucket; everything before `|turn|1` is bucketed as turn 0
+    /// (battle init: lead switches, weather kick-off from on-switch-in
+    /// abilities). The trailing slice after the last `Turn` includes the
+    /// `|win|` / `|tie|` events.
+    ///
+    /// The `Turn` event itself is dropped from each slice — slices are
+    /// "events that happened during turn N," not "events including the
+    /// turn marker."
+    pub fn turns(&self) -> Vec<TurnView<'_>> {
+        let mut out = Vec::new();
+        let mut current_number: u32 = 0;
+        let mut current_start: usize = 0;
+        for (i, ev) in self.events.iter().enumerate() {
+            if let Event::Turn(n) = ev {
+                out.push(TurnView {
+                    number: current_number,
+                    events: &self.events[current_start..i],
+                });
+                current_number = *n;
+                current_start = i + 1;
+            }
+        }
+        out.push(TurnView {
+            number: current_number,
+            events: &self.events[current_start..],
+        });
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::PokeSlot;
+
+    fn replay_with(events: Vec<Event>) -> Replay {
+        Replay {
+            id: String::new(),
+            format: String::new(),
+            gametype: None,
+            players: Vec::new(),
+            team_preview: Vec::new(),
+            events,
+            winner: None,
+        }
+    }
+
+    fn fake_slot() -> PokeSlot {
+        PokeSlot { player: 1, slot: 'a', nickname: "Foo".into() }
+    }
+
+    #[test]
+    fn turns_bucket_pre_turn_events_as_zero() {
+        let r = replay_with(vec![
+            Event::Start,
+            Event::Switch { slot: fake_slot(), details: "Foo, L50".into(), hp: "100/100".into() },
+            Event::Turn(1),
+            Event::Move {
+                user: fake_slot(),
+                move_name: "Tackle".into(),
+                target: None,
+            },
+        ]);
+        let turns = r.turns();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].number, 0);
+        assert_eq!(turns[0].events.len(), 2); // Start + Switch
+        assert_eq!(turns[1].number, 1);
+        assert_eq!(turns[1].events.len(), 1); // Move
+    }
+
+    #[test]
+    fn turns_drop_the_marker_itself() {
+        let r = replay_with(vec![
+            Event::Turn(1),
+            Event::Upkeep,
+            Event::Turn(2),
+            Event::Upkeep,
+        ]);
+        let turns = r.turns();
+        assert_eq!(turns.len(), 3);
+        // turn 0 (empty preamble before any |turn| marker)
+        assert_eq!(turns[0].number, 0);
+        assert!(turns[0].events.is_empty());
+        // turn 1 contains Upkeep, NOT the Turn(1) marker
+        assert_eq!(turns[1].number, 1);
+        assert_eq!(turns[1].events.len(), 1);
+        assert!(matches!(turns[1].events[0], Event::Upkeep));
+        // turn 2 contains the trailing Upkeep
+        assert_eq!(turns[2].number, 2);
+        assert!(matches!(turns[2].events[0], Event::Upkeep));
+    }
+
+    #[test]
+    fn turns_trailing_win_goes_in_last_bucket() {
+        let r = replay_with(vec![
+            Event::Turn(1),
+            Event::Faint(fake_slot()),
+            Event::Win("p1".into()),
+        ]);
+        let turns = r.turns();
+        assert_eq!(turns.last().unwrap().number, 1);
+        assert_eq!(turns.last().unwrap().events.len(), 2);
+        assert!(matches!(turns.last().unwrap().events[1], Event::Win(_)));
     }
 }

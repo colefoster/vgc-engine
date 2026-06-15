@@ -20,5 +20,5 @@ pub use recon::{
     input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,
     ReconError, ReconInput, TeamRecon,
 };
-pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke};
+pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
