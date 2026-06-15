@@ -140,6 +140,19 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Terrain-setting abilities (gen 7+). Same 5-turn default duration;
+    // Terrain Extender holds → 8 deferred.
+    let new_terrain = match slug {
+        "electricsurge" | "hadronengine" => Some(crate::terrain::Terrain::Electric),
+        _ => None,
+    };
+    if let Some(t) = new_terrain {
+        if battle.terrain != t {
+            battle.terrain = t;
+            battle.terrain_turns = 5;
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop.

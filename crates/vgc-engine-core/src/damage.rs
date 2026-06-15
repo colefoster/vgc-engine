@@ -34,6 +34,11 @@ pub struct DamageContext {
     pub is_spread: bool,
     /// Battle-wide weather state (PS step 3). `Weather::None` is a no-op.
     pub weather: crate::weather::Weather,
+    /// Battle-wide terrain. ×1.3 to the matching type on a grounded
+    /// defender — gen 8+. PS data/conditions.ts:electricterrain et al.
+    /// Caller is responsible for clearing this to `Terrain::None` when
+    /// the defender is NOT grounded.
+    pub terrain: crate::terrain::Terrain,
     /// Defender's side has Reflect active. Halves physical damage in
     /// Singles (×0.5) and reduces by 1/3 in Doubles (×2/3), unless the
     /// hit is a crit. PS data/conditions.ts:reflect onAnyModifyDamage.
@@ -137,11 +142,21 @@ pub fn calculate_damage(
     ctx: DamageContext,
 ) -> u16 {
     let m = &data::MOVES[move_id as usize];
-    let bp = m.base_power as u32;
+    let mut bp = m.base_power as u32;
     // 2 = Status (no damage). bp == 0 for status / weird moves; treat as 0
     // until variable-BP / OHKO mechanics land.
     if m.category == 2 || bp == 0 {
         return 0;
+    }
+    // Terrain BP modifier — PS data/conditions.ts:electricterrain et al.
+    // implement this via `onBasePower` (chainModify [5325, 4096] ≈ 1.3).
+    // We apply it here for the same effective order. Caller is
+    // responsible for passing Terrain::None when the defender isn't
+    // grounded (or, for gen 9 Misty/Psychic terrain that gates on
+    // the USER being grounded, see those terrain arms when shipped).
+    let (tn, td) = ctx.terrain.damage_mult(m.type_);
+    if tn != td {
+        bp = bp * tn / td;
     }
 
     let physical = m.category == 0;
@@ -186,6 +201,7 @@ pub fn calculate_damage(
     if wn != wd {
         dmg = dmg * wn / wd;
     }
+
 
     // Crit (gen 6+): ×1.5
     if ctx.crit {
@@ -243,13 +259,13 @@ pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u1
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
     );
     let max = calculate_damage(
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
     );
     (min, max)
 }
@@ -345,7 +361,7 @@ mod tests {
             &attacker,
             &defender,
             move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
         );
         assert_eq!(dmg, 444);
     }
@@ -372,7 +388,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let pelipper = make_mon("pelipper", 50, "modest", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &pelipper, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         assert_eq!(dmg, 0);
     }
 
@@ -381,9 +397,9 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         assert!(crit > no_crit);
         // 148 * 3/2 = 222; × roll 100/100 = 222; × STAB 3/2 = 333; × type 2 = 666
         assert_eq!(crit, 666);
@@ -395,7 +411,7 @@ mod tests {
         attacker.status = Status::Burn;
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let burned = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         // 444 / 2 = 222
         assert_eq!(burned, 222);
     }
@@ -406,9 +422,9 @@ mod tests {
         attacker.boosts[0] = -2; // -50% atk pre-crit
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         // With -2 atk boost ignored on crit, crit damage > no-crit (with -2 applied).
         assert!(crit > no_crit * 2, "crit should ignore -2 atk boost");
     }
@@ -419,7 +435,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("tackle"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
         // × 100/100 × 1.0 STAB × 1.0 type = 60.
         assert_eq!(dmg, 60);
@@ -430,7 +446,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread::ZERO);
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("protect"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         assert_eq!(dmg, 0);
     }
 
@@ -444,7 +460,7 @@ mod tests {
         let d = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         // With atk = 300 and the same setup as the Garchomp test, damage scales linearly.
         let dmg = calculate_damage(&m, &d, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None });
         // base = 22 * 100 * 300 / 60 / 50 + 2 = 22 * 100 * 300 / 3000 + 2 = 220 + 2 = 222
         // × STAB 3/2 = 333, × type 2 = 666.
         assert_eq!(dmg, 666);
