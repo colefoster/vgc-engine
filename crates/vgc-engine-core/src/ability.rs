@@ -100,8 +100,10 @@ pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
 /// Currently handles `protosynthesis` (trigger: Sun weather). Quark
 /// Drive (Electric Terrain) lands once terrain state is in.
 pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
-    let (slug, currently_active) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.boosted_stat != 255),
+    let (slug, currently_active, locked) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => {
+            (ability_slug(m.ability_id), m.boosted_stat != 255, m.booster_locked)
+        }
         _ => return,
     };
     let trigger = match slug {
@@ -117,10 +119,58 @@ pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.boosted_stat = new_idx;
         }
-    } else if !trigger && currently_active {
+    } else if !trigger && currently_active && !locked {
+        // PS: a Booster-Energy-activated volatile persists when the
+        // natural trigger leaves; weather/terrain-activated volatiles
+        // deactivate. See `data/conditions.ts:protosynthesis onEnd`
+        // gating on the volatile's `fromBooster` source.
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.boosted_stat = 255;
         }
+    }
+}
+
+/// Try to activate the paradox booster via Booster Energy. Called from
+/// `on_switch_in` AFTER `refresh_paradox_booster` has run — if the natural
+/// trigger already activated the volatile, the item is preserved.
+///
+/// PS: `data/items.ts:622-642`. `onUpdate` fires when the holder is paradox
+/// AND the natural trigger isn't present AND `pokemon.useItem()` succeeds;
+/// the volatile added this way is locked-on. `onTakeItem` returns false
+/// for Paradox holders — only the holder itself can consume Booster
+/// Energy, so Knock Off / Trick / Bug Bite can't strip it (deferred until
+/// those land).
+fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
+    let (ability_slug_, item_slug_, already_active, is_alive) =
+        match battle.side(side).active_mon(slot as usize) {
+            Some(m) => (
+                ability_slug(m.ability_id),
+                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug },
+                m.boosted_stat != 255,
+                m.is_alive(),
+            ),
+            None => return,
+        };
+    if !is_alive || already_active || item_slug_ != "boosterenergy" {
+        return;
+    }
+    let trigger_active = match ability_slug_ {
+        "protosynthesis" => matches!(battle.weather, crate::weather::Weather::Sun),
+        "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
+        _ => return,
+    };
+    if trigger_active {
+        // PS gates on `!isWeather('sunnyday')` / `!isTerrain('electricterrain')`.
+        return;
+    }
+    let new_idx = match battle.side(side).active_mon(slot as usize) {
+        Some(m) => best_stat_index(m),
+        None => return,
+    };
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.boosted_stat = new_idx;
+        m.booster_locked = true;
+        m.item_id = u16::MAX; // useItem() — consumed.
     }
 }
 
@@ -192,8 +242,15 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // resolve — Drought + Protosynthesis on the same switch-in must
     // activate, not miss the weather-change edge.
     refresh_paradox_booster(battle, side, slot);
+    // Booster Energy fires AFTER the natural trigger check, mirroring PS's
+    // `onSwitchInPriority: -2` ordering. If Sun/E-Terrain already activated
+    // the volatile above, the item is preserved.
+    try_activate_booster_energy(battle, side, slot);
     // Also re-check the OPPOSING side's actives: if this switch-in
     // brought up Sun, an opposing Protosynthesis user can flip on.
+    // (Opposing-side Booster Energy is unaffected by our weather change
+    // because Booster Energy only consumes when the trigger is ABSENT —
+    // a fresh Sun would simply leave their item alone.)
     let n = battle.format().active_count() as u8;
     let opp = side.opposing();
     for s in 0..n {

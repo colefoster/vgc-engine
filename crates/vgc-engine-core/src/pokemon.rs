@@ -211,9 +211,16 @@ pub struct Pokemon {
     /// activates via its trigger (Sun / Electric Terrain / Booster
     /// Energy); identifies which stat receives the ×1.3 (×1.5 for spe)
     /// multiplier. Cleared on switch-out or when the trigger expires
-    /// (unless the volatile was Booster-Energy-locked — that flavor
-    /// lands when Booster Energy ships).
+    /// (unless `booster_locked` is set — Booster-Energy-activated
+    /// volatiles persist for as long as the mon stays in).
     pub boosted_stat: u8,
+    /// `true` if the paradox booster volatile was activated via Booster
+    /// Energy rather than weather/terrain. While set, `refresh_paradox_booster`
+    /// will NOT deactivate the volatile when the natural trigger leaves —
+    /// PS's `protosynthesis` / `quarkdrive` volatile, once added by the
+    /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
+    /// until switch-out. Reset to false on switch-out.
+    pub booster_locked: bool,
 }
 
 impl Pokemon {
