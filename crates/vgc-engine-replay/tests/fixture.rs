@@ -1,4 +1,6 @@
-use vgc_engine_replay::{observe_events, CanonicalDefault, Event, Replay, TeamRecon};
+use vgc_engine_replay::{
+    observe_events, CanonicalDefault, Event, Replay, RunnerInit, TeamRecon,
+};
 
 const SAMPLE: &str = include_str!("fixtures/sample.json");
 
@@ -83,6 +85,38 @@ fn canonical_default_consumes_observed_input() {
     // Modest specialist per the heuristic.
     assert_eq!(pelipper.nature, "modest");
     assert_eq!(pelipper.evs.spa, 252);
+}
+
+#[test]
+fn runner_builds_battle_from_fixture() {
+    let r = Replay::from_json(SAMPLE).unwrap();
+    let init = RunnerInit::from_replay(&r, &CanonicalDefault).expect("runner init");
+
+    // Both leads detected: p1 led Sneasler/Archaludon (from the fixture),
+    // p2 led Garchomp/Talonflame.
+    assert_eq!(init.p1_team[0].species, "sneasler");
+    assert_eq!(init.p1_team[1].species, "archaludon");
+    assert_eq!(init.p2_team[0].species, "garchomp");
+    assert_eq!(init.p2_team[1].species, "talonflame");
+
+    let battle = init.into_battle(0xC0FFEE).expect("battle init");
+
+    // Leads landed in active slots 0 and 1 on both sides.
+    let p1a = battle.p1.active_mon(0).expect("p1a active");
+    let p1b = battle.p1.active_mon(1).expect("p1b active");
+    assert_eq!(p1a.species().slug, "sneasler");
+    assert_eq!(p1b.species().slug, "archaludon");
+
+    let p2a = battle.p2.active_mon(0).expect("p2a active");
+    let p2b = battle.p2.active_mon(1).expect("p2b active");
+    assert_eq!(p2a.species().slug, "garchomp");
+    assert_eq!(p2b.species().slug, "talonflame");
+
+    // PR-36 reconstructs every team-preview entry (6 per side here);
+    // the "brought-4 of 6" filtering surfaced by `|teampreview|4` will
+    // land in a follow-up PR once the runner learns to drop unused mons.
+    assert_eq!(battle.p1.team.len(), 6);
+    assert_eq!(battle.p2.team.len(), 6);
 }
 
 #[test]
