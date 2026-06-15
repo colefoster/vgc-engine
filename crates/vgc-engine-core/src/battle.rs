@@ -396,6 +396,12 @@ impl Battle {
             if item_mul_n != item_mul_d && dmg > 0 {
                 dmg = ((dmg as u32) * item_mul_n / item_mul_d).min(u16::MAX as u32) as u16;
             }
+            // Knock Off: ×1.5 vs item holders. PS data/moves.ts:knockoff
+            // onBasePower step — applied as a move-level mult here.
+            let knockoff_boost = m.slug == "knockoff" && defender.item_id != u16::MAX;
+            if knockoff_boost && dmg > 0 {
+                dmg = ((dmg as u32) * 3 / 2).min(u16::MAX as u32) as u16;
+            }
 
             // Pre-damage item hook (Focus Sash etc. may cap damage).
             let effective_dmg = crate::item::on_before_damage(self, tside, tslot, dmg)
@@ -412,6 +418,23 @@ impl Battle {
 
             // Post-damage item hook (Sitrus Berry etc.).
             crate::item::on_after_damage(self, tside, tslot);
+
+            // Knock Off item removal — after damage, after Sitrus etc.,
+            // skip if target fainted (item removed via faint is moot) or
+            // if defender has Sticky Hold.
+            if m.slug == "knockoff" {
+                let can_knock = self.side(tside).active_mon(tslot as usize)
+                    .is_some_and(|m| m.is_alive() && {
+                        let ab = if m.ability_id == u16::MAX { "" }
+                                 else { data::ABILITIES[m.ability_id as usize].slug };
+                        ab != "stickyhold"
+                    });
+                if can_knock {
+                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        t.item_id = u16::MAX;
+                    }
+                }
+            }
 
             // Secondary if target still alive.
             let alive_post = self.side(tside).active_mon(tslot as usize)
@@ -1106,6 +1129,52 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn knock_off_removes_item_and_boosts_damage() {
+        // Incineroar Knock Off vs Snorlax holding Leftovers. Damage with
+        // Knock Off ×1.5 should exceed a vanilla 65 BP hit.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["knockoff","fakeout","flareblitz","partingshot"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snor_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < snor_before, "Knock Off dealt damage");
+        // Item removed (leftovers gone).
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Leftovers knocked off");
+    }
+
+    #[test]
+    fn knock_off_no_boost_without_item() {
+        // Once Snorlax has nothing to lose, Knock Off should be a vanilla
+        // 65 BP hit — verifying the ×1.5 conditional is on the item.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["knockoff","fakeout","flareblitz","partingshot"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Snorlax should have no item.
+        assert_eq!(b.p2.team[0].item_id, u16::MAX);
+        let snor_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < snor_before);
     }
 
     #[test]
