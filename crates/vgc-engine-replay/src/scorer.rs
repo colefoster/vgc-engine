@@ -22,7 +22,9 @@
 //!   by `Battle::new`, no choices to extract.
 
 use vgc_engine_core::battle::StepResult;
-use vgc_engine_core::{Choice, Format};
+use vgc_engine_core::{Choice, Format, Status};
+
+use crate::event::Event;
 
 use crate::choices::ChoiceExtractor;
 use crate::recon::TeamRecon;
@@ -50,6 +52,10 @@ pub struct TurnScore {
     pub compared_slots: u8,
     /// Step ended the battle this turn.
     pub ended: bool,
+    /// True when at least one slot's persistent status (slp/brn/par/
+    /// psn/tox/frz/None) diverged between engine and replay at end of
+    /// turn.
+    pub status_diverged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -89,8 +95,11 @@ pub fn score_replay(
     let mut agreed_count: u32 = 0;
     let mut turns_run: u32 = 0;
     let mut ended_flag = false;
+    let mut replay_status: [[Status; 2]; 2] = [[Status::None; 2]; 2];
 
     for tv in &turns {
+        update_replay_status(&mut replay_status, tv.events);
+
         if tv.number == 0 {
             // Pre-turn-1 init: walk the extractor so its active state
             // stays in sync with the replay, but don't step the engine.
@@ -108,7 +117,7 @@ pub fn score_replay(
             turns_run += 1;
         }
 
-        let score = score_turn(&b, tv, tolerance);
+        let score = score_turn(&b, tv, tolerance, &replay_status);
         if score.agreed {
             agreed_count += 1;
         }
@@ -140,13 +149,19 @@ fn pad_with_pass(v: &mut Vec<Choice>, n: usize) {
     v.sort_by_key(|c| c.actor_slot());
 }
 
-fn score_turn(b: &vgc_engine_core::Battle, tv: &crate::replay::TurnView<'_>, tol: f32) -> TurnScore {
+fn score_turn(
+    b: &vgc_engine_core::Battle,
+    tv: &crate::replay::TurnView<'_>,
+    tol: f32,
+    replay_status: &[[Status; 2]; 2],
+) -> TurnScore {
     use vgc_engine_core::SideRef;
 
     let trace = hp_trace(tv.events);
     let mut hp_l1: f32 = 0.0;
     let mut compared: u8 = 0;
     let mut faint_diverged = false;
+    let mut status_diverged = false;
 
     for (side_idx, side_ref) in [SideRef::P1, SideRef::P2].iter().enumerate() {
         let side = match side_ref {
@@ -175,6 +190,14 @@ fn score_turn(b: &vgc_engine_core::Battle, tv: &crate::replay::TurnView<'_>, tol
             if replay_hp.fainted == mon.is_alive() {
                 faint_diverged = true;
             }
+            // Status comparison: only when the mon is alive on both sides
+            // (a fainted mon's `status` is meaningless).
+            if !replay_hp.fainted
+                && mon.is_alive()
+                && replay_status[side_idx][slot as usize] != mon.status
+            {
+                status_diverged = true;
+            }
         }
     }
 
@@ -183,7 +206,7 @@ fn score_turn(b: &vgc_engine_core::Battle, tv: &crate::replay::TurnView<'_>, tol
     } else {
         hp_l1 / compared as f32
     };
-    let agreed = compared > 0 && !faint_diverged && per_slot_l1 <= tol;
+    let agreed = compared > 0 && !faint_diverged && !status_diverged && per_slot_l1 <= tol;
 
     TurnScore {
         turn: tv.number,
@@ -191,7 +214,57 @@ fn score_turn(b: &vgc_engine_core::Battle, tv: &crate::replay::TurnView<'_>, tol
         agreed,
         compared_slots: compared,
         ended: false,
+        status_diverged,
     }
+}
+
+/// Walk events and update the per-(side,slot) persistent status state.
+/// Status set by `|-status|`, cleared by `|-curestatus|` / `|faint|`.
+/// `|switch|` / `|drag|` reset the slot's status because a different
+/// mon is now there (its actual status will be re-asserted by a
+/// subsequent `|-status|` if non-clean).
+fn update_replay_status(state: &mut [[Status; 2]; 2], events: &[Event]) {
+    for ev in events {
+        let (slot, new_status, set) = match ev {
+            Event::Status { slot, status } => (slot, parse_status(status), true),
+            Event::CureStatus { slot, .. } => (slot, Some(Status::None), true),
+            Event::Faint(slot) => (slot, Some(Status::None), true),
+            Event::Switch { slot, .. } | Event::Drag { slot, .. } => {
+                (slot, Some(Status::None), true)
+            }
+            _ => continue,
+        };
+        if !set {
+            continue;
+        }
+        let Some(side_idx) = (match slot.player {
+            1 => Some(0usize),
+            2 => Some(1usize),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let slot_idx = match slot.slot {
+            'a' => 0usize,
+            'b' => 1usize,
+            _ => continue,
+        };
+        if let Some(s) = new_status {
+            state[side_idx][slot_idx] = s;
+        }
+    }
+}
+
+fn parse_status(code: &str) -> Option<Status> {
+    Some(match code {
+        "slp" => Status::Sleep,
+        "frz" => Status::Freeze,
+        "par" => Status::Paralysis,
+        "brn" => Status::Burn,
+        "psn" => Status::Poison,
+        "tox" => Status::Toxic,
+        _ => return None,
+    })
 }
 
 fn slot_letter_idx(c: char) -> Option<u8> {
