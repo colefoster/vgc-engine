@@ -167,6 +167,11 @@ pub struct Pokemon {
     /// move; checked at the start of resolve_move to skip the mon's
     /// action. Cleared at end of step.
     pub flinched_this_turn: bool,
+    /// Toxic damage counter (1-based). 1 on the turn Toxic is applied;
+    /// increments by 1 each end of turn (gen 5+ formula). Damage per
+    /// turn = max_hp * counter / 16. Reset to 0 when status clears or
+    /// on switch-out.
+    pub toxic_counter: u8,
 }
 
 impl Pokemon {

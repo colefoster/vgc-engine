@@ -22,7 +22,7 @@ use crate::choice::{Choice, Target};
 use crate::damage::{calculate_damage, DamageContext};
 use crate::format::Format;
 use crate::order::{action_order, ScheduledAction};
-use crate::pokemon::Pokemon;
+use crate::pokemon::{Pokemon, Status};
 use crate::rng::Rng;
 use crate::side::{Side, SideRef};
 use vgc_engine_data as data;
@@ -390,18 +390,93 @@ impl Battle {
         }
     }
 
+    fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
+        if m.accuracy == 255 {
+            return true;
+        }
+        let roll = self.rng.percent_1_100() as u32;
+        roll <= m.accuracy as u32
+    }
+
+    /// Apply a status to the first alive opposing active mon, respecting
+    /// type-based immunities. Helper for single-target status moves.
+    fn apply_status_to_opposing(&mut self, actor_side: SideRef, status: Status) {
+        let opp = actor_side.opposing();
+        let n = self.format().active_count() as u8;
+        for slot in 0..n {
+            if self.side(opp).active_mon(slot as usize).is_some_and(|m| m.is_alive()) {
+                self.try_set_status(opp, slot, status);
+                return;
+            }
+        }
+    }
+
+    /// Attempt to apply a status to a specific mon. No-op if the mon
+    /// already has a non-None status, or if it's type-immune to this status.
+    pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
+        let immune = match self.side(side).active_mon(slot as usize) {
+            Some(m) if m.is_alive() => {
+                if !matches!(m.status, Status::None) {
+                    return;
+                }
+                is_type_immune_to_status(m.species(), status)
+            }
+            _ => return,
+        };
+        if immune {
+            return;
+        }
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.status = status;
+            if matches!(status, Status::Toxic) {
+                m.toxic_counter = 1;
+            }
+        }
+    }
+
     /// End-of-turn residuals: damage / heal sources that fire each turn
-    /// after move resolution. Currently: Sand weather damage. Subsequent
-    /// PRs add Leftovers, burn/poison/toxic damage, Speed Boost, etc.
+    /// after move resolution. Currently: item residuals (Leftovers),
+    /// status DOT (burn/poison/toxic), sand weather damage. Subsequent
+    /// PRs add Speed Boost, Life Orb recoil, etc.
     fn resolve_end_of_turn(&mut self) {
         // Item residuals (Leftovers etc.) fire before weather damage in
         // gen 5+ — PS order: ability residuals → item residuals → weather.
-        // We don't have ability residuals yet, so item-then-weather here
-        // matches the relevant subset.
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
             for slot in 0..n {
                 crate::item::on_residual(self, side, slot);
+            }
+        }
+
+        // Status DOT: burn (1/16), poison (1/8), toxic (counter/16
+        // increasing). Gen 7+ burn rate; PS data/conditions.ts.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let dmg = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive() => match m.status {
+                        Status::Burn => (m.stats.hp / 16).max(1),
+                        Status::Poison => (m.stats.hp / 8).max(1),
+                        Status::Toxic => {
+                            let c = m.toxic_counter.max(1) as u32;
+                            ((m.stats.hp as u32 * c / 16) as u16).max(1)
+                        }
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                if dmg == 0 {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.current_hp = m.current_hp.saturating_sub(dmg);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                    if matches!(m.status, Status::Toxic) {
+                        m.toxic_counter = m.toxic_counter.saturating_add(1).min(15);
+                    }
+                }
             }
         }
 
@@ -482,6 +557,30 @@ impl Battle {
                 if s.conditions.tailwind_turns == 0 {
                     s.conditions.tailwind_turns = 4;
                 }
+            }
+            // Status-inflicting status moves. PS data/moves.ts marks each
+            // with `status: 'xxx'`. Accuracy is rolled at the standard
+            // move-resolution point; here we just apply the status to the
+            // chosen target (or the actor for self-target moves).
+            "thunderwave" => {
+                // 90% accuracy in gen 7+; the move's accuracy field
+                // already encodes this, but resolve_status_move is called
+                // AFTER the category check and BEFORE the accuracy roll.
+                // Roll accuracy here so failures behave correctly.
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_status_to_opposing(actor_side, Status::Paralysis);
+            }
+            "willowisp" => {
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_status_to_opposing(actor_side, Status::Burn);
+            }
+            "toxic" => {
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_status_to_opposing(actor_side, Status::Toxic);
+            }
+            "poisonpowder" => {
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_status_to_opposing(actor_side, Status::Poison);
             }
             _ => {
                 // Unimplemented status move — no effect. Subsequent PRs
@@ -569,6 +668,32 @@ fn enumerate_targets(
     }
 }
 
+/// Per-slug status-secondary table: (status, chance_percent).
+/// Subset of PS data/moves.ts. Subsequent PRs grow this; sleep/freeze
+/// secondaries also deferred (need volatile duration handling).
+fn status_secondary(slug: &str) -> Option<(Status, u8)> {
+    Some(match slug {
+        // Burn 10% (mostly Fire-type physical / mixed):
+        "flamethrower" | "fireblast" | "firepunch" | "ember" | "flareblitz"
+        | "blueflare" | "heatwave" | "blazekick" | "firefang" | "searingshot" => (Status::Burn, 10),
+        // Burn 30%:
+        "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchaprep" => (Status::Burn, 30),
+        // Paralysis 10%:
+        "thunderbolt" | "thunder" | "thundershock" | "spark" | "thunderpunch"
+        | "thunderfang" | "zingzap" | "lightningbird" => (Status::Paralysis, 10),
+        // Paralysis 30%:
+        "discharge" | "bodyslam" | "force" | "thunderouskick"
+        | "nuzzle" | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
+        // Poison 30%:
+        "sludgebomb" | "sludgewave" | "sludge" | "gunkshot" | "poisonjab"
+        | "smog" => (Status::Poison, 30),
+        // Poison 10%:
+        "poisontail" | "crosspoison" | "poisonsting" => (Status::Poison, 10),
+        // Toxic 100% on hit: tox spikes etc. — special, handled elsewhere.
+        _ => return None,
+    })
+}
+
 /// Per-slug flinch chance for moves whose secondary is a flinch.
 ///
 /// All values cross-checked against PS data/moves.ts. Moves with other
@@ -599,6 +724,9 @@ fn apply_secondary_effect(
     move_slug: &str,
     rng: &mut Rng,
 ) {
+    // PS rolls each secondary independently — a move can in principle
+    // have multiple (none currently in our table, but the structure
+    // tolerates it).
     if let Some(chance) = flinch_chance(move_slug) {
         if rng.percent_1_100() <= chance {
             if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
@@ -606,9 +734,37 @@ fn apply_secondary_effect(
             }
         }
     }
+    if let Some((status, chance)) = status_secondary(move_slug) {
+        if rng.percent_1_100() <= chance {
+            battle.try_set_status(target_side, target_slot, status);
+        }
+    }
 }
 
 
+
+/// Type-based status immunities (gen 6+):
+///   Fire     immune to Burn
+///   Ice      immune to Freeze
+///   Electric immune to Paralysis (gen 6+)
+///   Ground   immune to Paralysis (only from Thunder Wave — refined later)
+///   Poison/Steel immune to Poison/Toxic
+/// Grass immunity to powder moves (Spore, Sleep Powder) is per-move,
+/// not per-status — handled at move resolution when sleep lands.
+fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool {
+    let has = |code: u8| {
+        (0..species.num_types as usize).any(|i| species.types[i] == code)
+    };
+    // Type codes per data::TYPE_NAMES:
+    // Fire=1 Electric=3 Ice=5 Poison=7 Ground=8 Steel=16.
+    match status {
+        Status::Burn => has(1),
+        Status::Freeze => has(5),
+        Status::Paralysis => has(3),
+        Status::Poison | Status::Toxic => has(7) || has(16),
+        Status::Sleep | Status::None => false,
+    }
+}
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
 /// self, and side-targeted moves are not blocked by Protect.
@@ -898,6 +1054,122 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn thunder_wave_paralyzes_target() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["thunderwave","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Paralysis);
+    }
+
+    #[test]
+    fn thunder_wave_fails_vs_electric() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["thunderwave","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::None, "Electric immune to paralysis");
+    }
+
+    #[test]
+    fn burn_dot_ticks_each_turn() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["willowisp","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Will-O-Wisp burns Snorlax.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Burn);
+        let max = b.p2.team[0].stats.hp;
+        let tick = (max / 16).max(1);
+        // PS residual order: items (Leftovers heals — capped at max) then
+        // status DOT (burn deals max/16). At full HP Leftovers is a no-op,
+        // so net = -tick.
+        assert_eq!(b.p2.team[0].current_hp, max - tick);
+        // Next turn: Leftovers heals tick (we're now max-tick → max), then
+        // burn deducts tick again → max - tick. Net unchanged.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, max - tick);
+    }
+
+    #[test]
+    fn toxic_dot_increases_each_turn() {
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"focussash","nature":"timid","moves":["toxic","shadowball","sludgebomb","substitute"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Toxic);
+        let max = b.p2.team[0].stats.hp;
+        // After turn 1: damage = max * 1 / 16. Counter now 2.
+        let hp_after_1 = b.p2.team[0].current_hp;
+        assert_eq!(hp_after_1, max - (max / 16).max(1));
+        // After turn 2: damage = max * 2 / 16 (counter was 2).
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let expected_tick2 = ((max as u32 * 2) / 16) as u16;
+        assert_eq!(b.p2.team[0].current_hp, hp_after_1 - expected_tick2.max(1));
+    }
+
+    #[test]
+    fn poison_steel_immune_to_toxic() {
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"focussash","nature":"timid","moves":["toxic","shadowball","sludgebomb","substitute"]}
+        ]"#;
+        // Metagross is Steel/Psychic.
+        let p2_json = r#"[
+            {"species":"metagross","level":50,"ability":"clearbody","item":"weaknesspolicy","nature":"adamant","moves":["meteormash","bulletpunch","earthquake","icepunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::None, "Steel immune to Toxic");
     }
 
     #[test]
