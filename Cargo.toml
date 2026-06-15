@@ -6,6 +6,14 @@ members = [
     "crates/vgc-engine-py",
     "crates/vgc-engine-cli",
 ]
+# vgc-engine-py is built via maturin; excluded from default `cargo build` /
+# `cargo test --workspace` because the pyo3 `extension-module` feature
+# can't be linked standalone.
+default-members = [
+    "crates/vgc-engine-core",
+    "crates/vgc-engine-data",
+    "crates/vgc-engine-cli",
+]
 
 [workspace.package]
 version = "0.0.1"
