@@ -1,0 +1,17 @@
+//! PS replay-protocol parser.
+//!
+//! Parses Pokémon Showdown sim-protocol log strings (from replay JSON dumps)
+//! into a typed [`Event`] stream plus header metadata ([`Replay`]).
+//!
+//! Reference: <https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md>
+//!
+//! This crate is allowed to allocate; it runs offline against the replay
+//! corpus and never inside the engine's `step()` hot loop.
+
+mod event;
+mod parser;
+mod replay;
+
+pub use event::{Event, PokeSlot};
+pub use parser::parse_line;
+pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke};
