@@ -81,12 +81,12 @@ pub fn nature_by_slug(slug: &str) -> Option<&'static Nature> {
 /// for explicit construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct StatSpread {
-    pub hp: u8,
-    pub atk: u8,
-    pub def: u8,
-    pub spa: u8,
-    pub spd: u8,
-    pub spe: u8,
+    #[serde(default)] pub hp: u8,
+    #[serde(default)] pub atk: u8,
+    #[serde(default)] pub def: u8,
+    #[serde(default)] pub spa: u8,
+    #[serde(default)] pub spd: u8,
+    #[serde(default)] pub spe: u8,
 }
 
 impl StatSpread {
