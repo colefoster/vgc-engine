@@ -8,6 +8,7 @@
 //! This crate is allowed to allocate; it runs offline against the replay
 //! corpus and never inside the engine's `step()` hot loop.
 
+mod choices;
 mod event;
 mod parser;
 mod recon;
@@ -15,6 +16,7 @@ mod replay;
 mod runner;
 mod trace;
 
+pub use choices::ChoiceExtractor;
 pub use event::{Event, PokeSlot};
 pub use parser::parse_line;
 pub use recon::{

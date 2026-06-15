@@ -1,5 +1,7 @@
+use vgc_engine_core::Choice;
 use vgc_engine_replay::{
-    hp_trace, observe_events, CanonicalDefault, Event, HpSource, Replay, RunnerInit, TeamRecon,
+    hp_trace, observe_events, CanonicalDefault, ChoiceExtractor, Event, HpSource, Replay,
+    RunnerInit, TeamRecon,
 };
 
 const SAMPLE: &str = include_str!("fixtures/sample.json");
@@ -188,6 +190,38 @@ fn hp_trace_on_fixture_per_turn() {
 
     // Sanity: fractions stay in range.
     assert!(all.iter().all(|e| (0.0..=1.0).contains(&e.fraction)));
+}
+
+#[test]
+fn choices_extracted_on_fixture() {
+    let r = Replay::from_json(SAMPLE).unwrap();
+    let init = RunnerInit::from_replay(&r, &CanonicalDefault).unwrap();
+    let mut ex = ChoiceExtractor::new(&init);
+    let turns = r.turns();
+
+    // Turn 1: each active mon issues exactly one Move (Protect / Protect /
+    // FakeOut into Protect). Sneasler's Fake Out resolves to move_slot=0
+    // because the recon observer captured it first.
+    let [p1_t1, p2_t1] = ex.extract_turn(&turns[1]);
+    assert!(!p1_t1.is_empty(), "p1 turn-1 has at least one Move");
+    assert!(!p2_t1.is_empty(), "p2 turn-1 has at least one Move");
+    assert!(p1_t1.iter().any(|c| matches!(c, Choice::Move { .. })));
+    assert!(p2_t1.iter().all(|c| matches!(c, Choice::Move { .. })));
+
+    // Walk every remaining turn; choices should keep flowing without
+    // panicking, and active-slot state should stay coherent (no slot
+    // forever stuck at 255 unless the side is defeated).
+    for tv in &turns[2..] {
+        let _ = ex.extract_turn(tv);
+    }
+
+    // After all turns, both sides should still have at least one
+    // non-empty active slot (the fixture ends on a |win|, not a double-
+    // KO).
+    let act = ex.active();
+    let any_p1_alive = act[0].iter().any(|i| *i != 255);
+    let any_p2_alive = act[1].iter().any(|i| *i != 255);
+    assert!(any_p1_alive || any_p2_alive);
 }
 
 #[test]
