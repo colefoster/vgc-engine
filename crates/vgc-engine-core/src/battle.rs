@@ -446,6 +446,21 @@ impl Battle {
             }
         }
 
+        // Self stat drops (PS `self.boosts` on the move def). Applies
+        // once after the move resolves, regardless of how many targets
+        // were hit. Per PS these fire even if the move missed or was
+        // Protect-blocked — modeled as: any move resolution that got
+        // this far (passed the flinch/Fake-Out/category checks) triggers
+        // the drop. Phase-3 refinement for the Protect-blocks-self
+        // edge case.
+        if let Some(drops) = self_stat_drops(m.slug) {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                for &(idx, delta) in drops {
+                    a.boosts[idx as usize] = (a.boosts[idx as usize] + delta).clamp(-6, 6);
+                }
+            }
+        }
+
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move
         // dealt damage to at least one target (PS: per-move, not per-hit).
         if attacker_item_slug == "lifeorb" && any_damage_dealt > 0 {
@@ -743,6 +758,27 @@ fn enumerate_targets(
         // Targets we don't damage-resolve here (allies / side / team / all / scripted).
         _ => vec![],
     }
+}
+
+/// Per-slug self-stat drops, applied after the move resolves.
+/// Returns a list of (boost-array-index, delta) pairs.
+/// Indices: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
+fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
+    Some(match slug {
+        // Close-combat family: -1 def, -1 spd.
+        "closecombat" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
+        // -2 spa specials.
+        "dracometeor" | "overheat" | "leafstorm" | "psychoboost"
+        | "fleurcannon" | "makeitrain" => &[(2, -2)],
+        // -1 atk -1 def.
+        "superpower" => &[(0, -1), (1, -1)],
+        // -1 def -1 spd -1 spe (V-Create).
+        "vcreate" => &[(1, -1), (3, -1), (4, -1)],
+        // -1 spe.
+        "hammerarm" | "iceham" | "raindance_unused" => &[(4, -1)],
+        // -1 atk (Power Whip family — no actually that's not a self drop).
+        _ => return None,
+    })
 }
 
 /// Per-slug status-secondary table: (status, chance_percent).
@@ -1129,6 +1165,45 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn close_combat_drops_user_def_and_spd() {
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"focussash","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosts[1], 0);
+        assert_eq!(b.p1.team[0].boosts[3], 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[1], -1, "def -1");
+        assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
+    }
+
+    #[test]
+    fn draco_meteor_drops_user_spa_by_two() {
+        let p1_json = r#"[
+            {"species":"latios","level":50,"ability":"levitate","item":"choicespecs","nature":"timid","moves":["dracometeor","psyshock","flamethrower","helpinghand"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[2], -2, "spa -2");
     }
 
     #[test]
