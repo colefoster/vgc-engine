@@ -244,6 +244,7 @@ impl Battle {
                 if (active_idx as usize) < side.team.len() {
                     let mon = &mut side.team[active_idx as usize];
                     mon.turns_active = mon.turns_active.saturating_add(1);
+                    mon.switched_in_this_turn = false;
                 }
             }
             // Tailwind / future side-condition timers.
@@ -293,6 +294,7 @@ impl Battle {
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
                     incoming.locked_move_slot = 255; // Choice lock clears on switch.
+                    incoming.switched_in_this_turn = true;
                     switched_slots.push(actor_slot);
                 }
             }
@@ -651,6 +653,15 @@ impl Battle {
                         }
                     }
                 }
+            }
+        }
+
+        // Ability residuals (Speed Boost etc.). PS onResidualOrder for
+        // speedboost is 28 — after items/status/weather above.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                crate::ability::on_residual(self, side, slot);
             }
         }
     }
@@ -1947,6 +1958,70 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate fires on mid-battle switch-in");
+    }
+
+    #[test]
+    fn speed_boost_grants_plus_one_each_end_of_turn_after_switchin() {
+        // Sharpedo has Speed Boost. On the switch-in turn the residual
+        // must NOT fire (PS: `if (pokemon.activeTurns)`). On every
+        // subsequent end-of-turn it adds +1 Spe stage, clamped at +6.
+        let p1_json = r#"[
+            {"species":"sharpedo","level":50,"ability":"speedboost","item":"focussash","nature":"adamant","moves":["crunch","waterfall","protect","aquajet"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // No boost yet — battle just started, no end-of-turn ran.
+        assert_eq!(b.p1.team[0].boosts[4], 0);
+        // Initial sendouts are NOT "switched in this turn" — PS increments
+        // their activeTurns at turn-start. So end of turn 1 boosts to +1.
+        for expected in 1..=6 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.team[0].boosts[4], expected);
+        }
+        // Turn 7: would be +7 but clamps to +6.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], 6, "clamped at +6");
+    }
+
+    #[test]
+    fn speed_boost_resets_and_skips_on_mid_battle_switchin() {
+        // Switch Sharpedo in mid-battle: turns_active resets to 0, so the
+        // first end-of-turn after the switch must NOT boost. The next
+        // end-of-turn boosts to +1.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"sharpedo","level":50,"ability":"speedboost","item":"focussash","nature":"adamant","moves":["crunch","waterfall","protect","aquajet"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Switch in Sharpedo on turn 1.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // turns_active was reset to 0 on the switch; end-of-turn residual
+        // skipped — stage still 0.
+        assert_eq!(b.p1.team[1].boosts[4], 0, "no boost on the switch-in turn");
+        // Next end-of-turn: +1.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[4], 1);
     }
 
     #[test]
