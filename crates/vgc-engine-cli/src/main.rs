@@ -5,6 +5,7 @@ use std::fs;
 use std::process::ExitCode;
 
 use vgc_engine_core as core;
+use vgc_engine_replay as replay;
 
 fn print_usage() {
     eprintln!(
@@ -13,6 +14,7 @@ fn print_usage() {
          commands:\n\
            info                      Print data-table sizes.\n\
            load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
+           replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
            help                      This message.\n"
     );
 }
@@ -73,6 +75,56 @@ fn cmd_load(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_replay_init(args: &[String]) -> ExitCode {
+    let [path] = match args {
+        [a] => [a],
+        _ => {
+            eprintln!("replay-init: expected exactly 1 path argument");
+            return ExitCode::from(2);
+        }
+    };
+    let json = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("read {path}: {e}"); return ExitCode::from(1); }
+    };
+    let r = match replay::Replay::from_json(&json) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("parse: {e}"); return ExitCode::from(1); }
+    };
+    let init = match replay::RunnerInit::from_replay(&r, &replay::CanonicalDefault) {
+        Ok(i) => i,
+        Err(e) => { eprintln!("recon: {e}"); return ExitCode::from(1); }
+    };
+    println!("replay  : {}", r.id);
+    println!("format  : {} ({:?})", r.format, init.format);
+    println!("winner  : {}", r.winner.as_deref().unwrap_or("(none)"));
+    print_recon_team("p1", &init.p1_team);
+    print_recon_team("p2", &init.p2_team);
+    ExitCode::SUCCESS
+}
+
+fn print_recon_team(label: &str, team: &[core::TeamMember]) {
+    println!("{label} team ({} mons brought):", team.len());
+    for (i, m) in team.iter().enumerate() {
+        let marker = if i < 2 { "*" } else { " " };
+        let moves = if m.moves.is_empty() {
+            "(no moves observed)".to_string()
+        } else {
+            m.moves.join(",")
+        };
+        println!(
+            "  {marker}{}. {} L{} nat={} ability={} item={} moves={}",
+            i,
+            m.species,
+            m.level,
+            m.nature,
+            m.ability.as_deref().unwrap_or("?"),
+            m.item.as_deref().unwrap_or("?"),
+            moves,
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
@@ -82,6 +134,7 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "info" => cmd_info(),
         "load" => cmd_load(&args[1..]),
+        "replay-init" => cmd_replay_init(&args[1..]),
         "help" | "--help" | "-h" => { print_usage(); ExitCode::SUCCESS }
         other => {
             eprintln!("unknown command: {other}");

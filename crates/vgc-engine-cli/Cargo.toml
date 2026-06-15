@@ -13,3 +13,4 @@ path = "src/main.rs"
 
 [dependencies]
 vgc-engine-core = { workspace = true }
+vgc-engine-replay = { workspace = true }
