@@ -568,6 +568,17 @@ impl Battle {
             boosted_attacker.stats.spa =
                 ((boosted_attacker.stats.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
         }
+        // Orichalcum Pulse: Koraidon's signature — Atk ×5461/4096 (≈1.333)
+        // on physical moves while Sun is up. Symmetric counterpart to
+        // Hadron Engine. PS gates on `isWeather(['sunnyday','desolateland'])`;
+        // we only carry standard Sun (no Primal Sun yet).
+        if attacker_ability_slug == "orichalcumpulse"
+            && physical_move
+            && matches!(self.weather, crate::weather::Weather::Sun)
+        {
+            boosted_attacker.stats.atk =
+                ((boosted_attacker.stats.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+        }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
@@ -3267,6 +3278,54 @@ mod tests {
             dmg_with_he as u32 * 100 > dmg_without_he as u32 * 125,
             "Hadron Engine boost not visible: {} vs {}",
             dmg_with_he, dmg_without_he
+        );
+    }
+
+    #[test]
+    fn orichalcum_pulse_sets_sun_and_boosts_atk() {
+        // Koraidon (Orichalcum Pulse) sets Sun on switch-in and gets
+        // a ×5461/4096 Atk boost on physical moves while Sun is up.
+        let p1_json = r#"[
+            {"species":"koraidon","level":50,"ability":"orichalcumpulse","item":"focussash","nature":"adamant","moves":["collisioncourse","flamecharge","wildcharge","closecombat"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sun);
+        // Use Wild Charge (Electric, physical) so Sun's move-power boost
+        // for Fire/Water doesn't muddy the comparison.
+        let snor_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_with_op = snor_hp_before - b.p2.team[0].current_hp;
+        assert!(dmg_with_op > 0, "Wild Charge hit");
+        // Counterfactual: same Koraidon but with no Atk-boosting ability
+        // and no sun. Pick a benign no-op ability the dex knows about.
+        let p1b = TeamBuilder::from_json(r#"[
+            {"species":"koraidon","level":50,"ability":"intimidate","item":"focussash","nature":"adamant","moves":["collisioncourse","flamecharge","wildcharge","closecombat"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        assert_eq!(b2.weather, crate::weather::Weather::None);
+        let snor_hp_before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_baseline = snor_hp_before2 - b2.p2.team[0].current_hp;
+        // Intimidate dropped Snorlax's atk, not its def — Snorlax's
+        // defensive stats are identical between the two scenarios, so
+        // the dmg delta isolates Orichalcum's Atk modifier. Allow some
+        // slack for integer rounding around the 1.333× target.
+        assert!(
+            dmg_with_op as u32 * 100 > dmg_baseline as u32 * 125,
+            "Orichalcum boost not visible: {} vs {}",
+            dmg_with_op, dmg_baseline
         );
     }
 
