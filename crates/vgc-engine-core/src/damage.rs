@@ -259,6 +259,7 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             flinched_this_turn: false,
+            toxic_counter: 0,
         }
     }
 
