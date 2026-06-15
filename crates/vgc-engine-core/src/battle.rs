@@ -149,6 +149,14 @@ impl Battle {
             {
                 continue;
             }
+            // Encore lock: while encored, only the encored slot is
+            // selectable. PS data/conditions.ts:encore onDisableMove.
+            if active.encore_turns > 0
+                && active.encored_move_slot != 255
+                && active.encored_move_slot as usize != i
+            {
+                continue;
+            }
             let m = &data::MOVES[move_id as usize];
             // Assault Vest: status moves disallowed.
             if is_assault_vest && m.category == 2 {
@@ -245,6 +253,18 @@ impl Battle {
                     let mon = &mut side.team[active_idx as usize];
                     mon.turns_active = mon.turns_active.saturating_add(1);
                     mon.switched_in_this_turn = false;
+                    // Encore tick. PS: duration counts down each end of
+                    // turn; the volatile ends at 0. Also clears early
+                    // if the locked move has no PP left.
+                    if mon.encore_turns > 0 {
+                        let locked = mon.encored_move_slot as usize;
+                        let no_pp = mon.pp.get(locked).copied().unwrap_or(0) == 0;
+                        mon.encore_turns -= 1;
+                        if mon.encore_turns == 0 || no_pp {
+                            mon.encore_turns = 0;
+                            mon.encored_move_slot = 255;
+                        }
+                    }
                 }
             }
             // Tailwind / future side-condition timers.
@@ -301,6 +321,9 @@ impl Battle {
                     incoming.locked_move_slot = 255; // Choice lock clears on switch.
                     incoming.switched_in_this_turn = true;
                     incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
+                    incoming.last_used_move_slot = 255;
+                    incoming.encore_turns = 0;
+                    incoming.encored_move_slot = 255;
                     switched_slots.push(actor_slot);
                 }
             }
@@ -405,6 +428,10 @@ impl Battle {
             if is_choice && mon.locked_move_slot == 255 {
                 mon.locked_move_slot = move_slot;
             }
+            // Track the most recent move used — Encore reads this when
+            // it lands on a target. PS sim/pokemon.ts updates lastMove
+            // after PP deduction, regardless of accuracy outcome.
+            mon.last_used_move_slot = move_slot;
         }
 
         // 4. Status-move dispatch.
@@ -900,6 +927,51 @@ impl Battle {
             // with `status: 'xxx'`. Accuracy is rolled at the standard
             // move-resolution point; here we just apply the status to the
             // chosen target (or the actor for self-target moves).
+            "encore" => {
+                // Locks the first alive opposing target into its last-
+                // used move for 3 turns. PS data/conditions.ts:encore
+                // duration 3; fails if target has no last move, used an
+                // exception move (Encore, Struggle, Sketch, Transform,
+                // Mimic, Mirror Move, Assist, Copycat, Me First, Nature
+                // Power, Metronome), or already encored.
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                for slot in 0..n {
+                    let (last, ok) = match self.side(opp).active_mon(slot as usize) {
+                        Some(t) if t.is_alive() => {
+                            if t.encore_turns > 0 {
+                                continue;
+                            }
+                            let last = t.last_used_move_slot;
+                            if last == 255 {
+                                continue;
+                            }
+                            let mid = t.moves.get(last as usize).copied().unwrap_or(u16::MAX);
+                            if mid == u16::MAX {
+                                continue;
+                            }
+                            let slug = data::MOVES[mid as usize].slug;
+                            let exempt = matches!(
+                                slug,
+                                "encore" | "struggle" | "sketch" | "transform"
+                                | "mimic" | "mirrormove" | "assist" | "copycat"
+                                | "mefirst" | "naturepower" | "metronome"
+                            );
+                            let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
+                            (last, !exempt && !no_pp)
+                        }
+                        _ => continue,
+                    };
+                    if !ok {
+                        continue;
+                    }
+                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                        t.encored_move_slot = last;
+                        t.encore_turns = 3;
+                    }
+                    return;
+                }
+            }
             "spore" => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
@@ -2465,6 +2537,135 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn encore_locks_target_to_last_used_move() {
+        // Slower Whimsicott Encores a faster Garchomp after Garchomp's
+        // EQ. Next turn Garchomp must use EQ regardless of its choice
+        // (legal_choices reflects the lock; resolve still calls EQ
+        // because that's the only option).
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Whimsicott passes, Garchomp uses EQ — sets last_used.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Turn 2: Whimsicott Encores (faster than Garchomp, so it goes
+        // first and reads Garchomp's last move from turn 1 = EQ).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].encored_move_slot, 0, "encored to EQ slot");
+        assert_eq!(b.p2.team[0].encore_turns, 2, "duration 3 → 2 after end-of-turn tick");
+        let legal = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            legal.iter().all(|c| matches!(c, Choice::Move { move_slot: 0, .. } | Choice::Switch { .. })),
+            "Encore restricts move choices to slot 0",
+        );
+    }
+
+    #[test]
+    fn encore_fails_if_target_has_no_last_move() {
+        // Initial sendout: target has used no move yet → Encore fails.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Whimsicott is slower, but Garchomp passes — Garchomp never
+        // moves on turn 1, so its last_used_move_slot stays 255.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].encored_move_slot, 255, "no encore — target has no last move");
+    }
+
+    #[test]
+    fn encore_expires_after_three_turns() {
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Whimsicott passes, Garchomp EQs.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Turn 2: Encore lands. counter 3 → 2 after end of turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].encore_turns, 2);
+        // Turn 3: still locked, ticks to 1.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].encore_turns, 1);
+        // Turn 4: tick to 0 — encore clears at end of turn.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].encore_turns, 0);
+        assert_eq!(b.p2.team[0].encored_move_slot, 255);
+    }
+
+    #[test]
+    fn encore_clears_on_switch_out() {
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: get Garchomp's last_used set.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Turn 2: Encore.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].encore_turns > 0);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        // Switch Garchomp back in.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+        );
+        assert_eq!(b.p2.team[0].encore_turns, 0, "Encore cleared on switch-out");
+        assert_eq!(b.p2.team[0].encored_move_slot, 255);
     }
 
     #[test]
