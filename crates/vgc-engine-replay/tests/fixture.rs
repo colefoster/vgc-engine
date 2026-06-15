@@ -1,5 +1,5 @@
 use vgc_engine_replay::{
-    observe_events, CanonicalDefault, Event, Replay, RunnerInit, TeamRecon,
+    hp_trace, observe_events, CanonicalDefault, Event, HpSource, Replay, RunnerInit, TeamRecon,
 };
 
 const SAMPLE: &str = include_str!("fixtures/sample.json");
@@ -160,6 +160,34 @@ fn turn_bucketing_matches_fixture() {
         .events
         .iter()
         .any(|e| matches!(e, Event::Win(_))));
+}
+
+#[test]
+fn hp_trace_on_fixture_per_turn() {
+    let r = Replay::from_json(SAMPLE).unwrap();
+    let turns = r.turns();
+
+    // Turn 0 (init): 4 lead switches at 100/100. No damage/heal yet.
+    let t0 = hp_trace(turns[0].events);
+    let switch_ins = t0.iter().filter(|e| e.source == HpSource::SwitchIn).count();
+    assert!(switch_ins >= 4, "turn 0 has at least 4 switch-ins; got {switch_ins}");
+    assert!(t0.iter().all(|e| !e.fainted));
+
+    // Turn 1 in the fixture is only Protect/Protect/FakeOut-into-Protect
+    // ⇒ no damage events expected. Turn 2 has Acrobatics + Rock Slide
+    // spread + Stone Edge + Sitrus Berry heal.
+    let t1 = hp_trace(turns[1].events);
+    assert!(t1.iter().all(|e| !e.fainted));
+    let t2 = hp_trace(turns[2].events);
+    assert!(t2.iter().any(|e| e.source == HpSource::Damage));
+    assert!(t2.iter().any(|e| e.source == HpSource::Heal));
+
+    // Over the whole battle, at least one Faint should appear.
+    let all: Vec<_> = turns.iter().flat_map(|t| hp_trace(t.events)).collect();
+    assert!(all.iter().any(|e| e.fainted && e.source == HpSource::Faint));
+
+    // Sanity: fractions stay in range.
+    assert!(all.iter().all(|e| (0.0..=1.0).contains(&e.fraction)));
 }
 
 #[test]
