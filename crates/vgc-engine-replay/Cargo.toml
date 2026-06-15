@@ -10,3 +10,5 @@ description = "PS replay-protocol parser for vgc-engine (alloc-OK; runs outside 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+vgc-engine-core = { workspace = true }
+vgc-engine-data = { workspace = true }
