@@ -239,6 +239,8 @@ mod tests {
             is_protected_this_turn: false,
             stall_counter: 0,
             used_stall_this_turn: false,
+            turns_active: 0,
+            flinched_this_turn: false,
         }
     }
 

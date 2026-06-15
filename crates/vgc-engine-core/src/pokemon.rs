@@ -159,6 +159,14 @@ pub struct Pokemon {
     /// this turn (regardless of success). Read & cleared at end of turn
     /// to drive stall_counter resets.
     pub used_stall_this_turn: bool,
+    /// Number of turns this Pokémon has been on the field (0 on the turn
+    /// it switched in / was sent out at battle start). Used by Fake Out,
+    /// First Impression, Mat Block, etc. Incremented at end of step.
+    pub turns_active: u8,
+    /// Single-turn 'flinch' volatile. Set when struck by a flinching
+    /// move; checked at the start of resolve_move to skip the mon's
+    /// action. Cleared at end of step.
+    pub flinched_this_turn: bool,
 }
 
 impl Pokemon {
