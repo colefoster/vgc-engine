@@ -53,6 +53,10 @@ pub struct Battle {
     pub weather: crate::weather::Weather,
     /// Remaining-turn counter for weather. 0 when `weather == None`.
     pub weather_turns: u8,
+    /// Trick Room remaining turns (0 = inactive). Battle-wide field
+    /// condition reversing the speed-sort order within each priority
+    /// bracket.
+    pub trick_room_turns: u8,
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -66,6 +70,7 @@ impl Battle {
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
             weather: crate::weather::Weather::None, weather_turns: 0,
+            trick_room_turns: 0,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -225,12 +230,15 @@ impl Battle {
             // Tailwind / future side-condition timers.
             side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
         }
-        // 5. Weather timer decrement (battle-wide).
+        // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
                 self.weather = crate::weather::Weather::None;
             }
+        }
+        if self.trick_room_turns > 0 {
+            self.trick_room_turns -= 1;
         }
 
         self.turn = self.turn.saturating_add(1);
@@ -555,6 +563,14 @@ impl Battle {
                     actor.stall_counter = actor.stall_counter.saturating_add(1).min(6);
                 } else {
                     actor.stall_counter = 0;
+                }
+            }
+            "trickroom" => {
+                // Toggle: if active, cancel; else set to 5.
+                if self.trick_room_turns > 0 {
+                    self.trick_room_turns = 0;
+                } else {
+                    self.trick_room_turns = 5;
                 }
             }
             "tailwind" => {
@@ -1061,6 +1077,73 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn trick_room_reverses_speed_order() {
+        // Cresselia (slow, knows Trick Room) + a fast partner. After TR,
+        // slow-priority-0 moves go first.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"mentalherb","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"brave","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Turn 1: Cresselia sets Trick Room (priority -7, goes last).
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.trick_room_turns, 4, "TR ticked from 5 → 4");
+        // In TR, Snorlax (slow) should outpace Flutter Mane (fast) at
+        // priority 0. Easiest to verify via action_order directly.
+        use crate::rng::Rng;
+        let mut rng = Rng::new(0);
+        let p1c = [
+            Choice::Pass { actor_slot: 0 },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let order = crate::order::action_order(&b, &p1c, &p2c, &mut rng);
+        // First mover under TR with both at priority 0 should be the
+        // slower one = Snorlax.
+        assert_eq!(order[0].side, SideRef::P1);
+        assert_eq!(order[0].actor_slot, 1, "Snorlax (slow) first under TR");
+    }
+
+    #[test]
+    fn trick_room_toggle_cancels() {
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"mentalherb","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.trick_room_turns, 4);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Toggle clears immediately; end-of-turn saturating_sub keeps 0.
+        assert_eq!(b.trick_room_turns, 0, "second TR cancels");
     }
 
     #[test]

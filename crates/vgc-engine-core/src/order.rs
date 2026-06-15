@@ -62,8 +62,9 @@ pub fn action_order(
     rng: &mut Rng,
 ) -> Vec<ScheduledAction> {
     let mut switches: Vec<ScheduledAction> = Vec::with_capacity(4);
-    // (negative priority, negative speed, nonce, action) — ascending sort.
+    // (negative priority, signed speed key, nonce, action) — ascending.
     let mut moves: Vec<(i32, i64, u64, ScheduledAction)> = Vec::with_capacity(4);
+    let trick_room = battle.trick_room_turns > 0;
 
     for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
         for c in choices {
@@ -87,9 +88,12 @@ pub fn action_order(
                         }
                         None => (0, 0),
                     };
+                    // Trick Room reverses speed sort within a priority
+                    // bracket (priority itself is NOT reversed).
+                    let speed_key = if trick_room { speed } else { -speed };
                     moves.push((
                         -priority,
-                        -speed,
+                        speed_key,
                         rng.next_u64(),
                         ScheduledAction { side, actor_slot, choice: *c },
                     ));
