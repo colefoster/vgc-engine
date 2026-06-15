@@ -2653,6 +2653,31 @@ mod tests {
     }
 
     #[test]
+    fn protosynthesis_best_stat_considers_stat_stages() {
+        // PS Pokemon.getBestStat(false, true): stages ARE applied. If
+        // Flutter Mane has a Spe drop in play at the moment Sun goes
+        // up, its effective Spe falls below SpA and the booster picks
+        // SpA instead. We test best_stat_index directly because the
+        // switch-in path resets boosts before refresh runs (which is
+        // also correct cartridge behavior).
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Default stages (no boosts) — best stat is Spe.
+        assert_eq!(crate::ability::best_stat_index(&b.p1.team[0]), 4);
+        // With a Spe drop of -2, Spe falls to half — SpA now wins.
+        let mut dropped = b.p1.team[0].clone();
+        dropped.boosts[4] = -2;
+        assert_eq!(crate::ability::best_stat_index(&dropped), 2);
+    }
+
+    #[test]
     fn protosynthesis_does_not_activate_outside_sun() {
         let p1_json = r#"[
             {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}

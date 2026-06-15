@@ -47,26 +47,31 @@ fn drop_atk(mon: &mut crate::pokemon::Pokemon) {
     mon.boosts[0] = (mon.boosts[0] - 1).clamp(-6, 6);
 }
 
-/// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest base
-/// computed stat. PS tie-breaker order (data/abilities.ts:protosynthesis
-/// onStart -> getActiveBoost):
-///   atk > def > spa > spd > spe.
-/// Stat *stages* are NOT considered (PS uses base stat). HP excluded.
-fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
+/// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
+/// boosted stat. PS `Pokemon.getBestStat(false, true)` from
+/// sim/pokemon.ts: stat stages ARE applied (unboosted=false), but
+/// Modify* events (Choice Band, Paralysis, Assault Vest, etc.) are
+/// skipped (unmodified=true). HP excluded.
+///
+/// Tie-break: PS visits stats in order atk, def, spa, spd, spe and
+/// uses strict `>`, so the EARLIER stat wins a tie.
+pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
     let s = &mon.stats;
+    // Apply the stat-stage multiplier per PS apply_boost equivalent.
+    // crate::damage::apply_boost matches the gen-5+ stage table.
+    let bs = |raw: u16, stage: i8| -> u32 {
+        crate::damage::apply_boost(raw as u32, stage)
+    };
     let candidates = [
-        (0u8, s.atk as u32),
-        (1u8, s.def as u32),
-        (2u8, s.spa as u32),
-        (3u8, s.spd as u32),
-        (4u8, s.spe as u32),
+        (0u8, bs(s.atk, mon.boosts[0])),
+        (1u8, bs(s.def, mon.boosts[1])),
+        (2u8, bs(s.spa, mon.boosts[2])),
+        (3u8, bs(s.spd, mon.boosts[3])),
+        (4u8, bs(s.spe, mon.boosts[4])),
     ];
     let mut best_idx = 0u8;
     let mut best_val = candidates[0].1;
     for &(i, v) in &candidates[1..] {
-        // PS order is atk > def > spa > spd > spe; the loop already
-        // visits in that order, so use strict `>` to preserve the
-        // earlier-index winner on tie.
         if v > best_val {
             best_idx = i;
             best_val = v;
