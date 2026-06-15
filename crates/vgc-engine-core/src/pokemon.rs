@@ -188,6 +188,12 @@ pub struct Pokemon {
     /// Cleared on switch-out. Set to `max_hp / 4` when Substitute is
     /// successfully used (the user pays the same amount up front).
     pub substitute_hp: u16,
+    /// Remaining sleep turns. Set to a random 1..=3 (gen 5+) when Sleep
+    /// is applied; decremented at the start of each move attempt; the
+    /// mon wakes up (Status -> None) at the decrement that hits 0. PS:
+    /// `data/conditions.ts:slp onBeforeMove`. Persists across switches
+    /// (the timer pauses while the mon is on the bench).
+    pub sleep_turns: u8,
 }
 
 impl Pokemon {

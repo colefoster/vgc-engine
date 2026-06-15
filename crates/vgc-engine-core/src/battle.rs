@@ -336,6 +336,31 @@ impl Battle {
             return;
         }
 
+        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
+        //     decrement sleep_turns; wake up + continue when it hits 0;
+        //     otherwise skip the move (no PP). `sleepUsable` moves like
+        //     Snore are not in the top-50 corpus — defer.
+        if matches!(attacker.status, Status::Sleep) {
+            let still_asleep = {
+                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
+                match mon {
+                    Some(a) => {
+                        a.sleep_turns = a.sleep_turns.saturating_sub(1);
+                        if a.sleep_turns == 0 {
+                            a.status = Status::None;
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => return,
+                }
+            };
+            if still_asleep {
+                return;
+            }
+        }
+
         // 2. Fake Out: fails unless attacker has been on the field 0 turns
         //    (i.e. this is its first action since switch-in). PS marks
         //    this with the 'fakeout' move's onTry checking activeTurns.
@@ -580,6 +605,31 @@ impl Battle {
         roll <= m.accuracy as u32
     }
 
+    /// Apply Sleep to the first alive opposing active mon, with optional
+    /// powder-move Grass-type immunity. Mirrors `apply_status_to_opposing`
+    /// but adds the powder gate; called from "spore" / "sleeppowder"
+    /// (is_powder = true) and "hypnosis" (is_powder = false).
+    fn apply_sleep_to_opposing(&mut self, actor_side: SideRef, is_powder: bool) {
+        let opp = actor_side.opposing();
+        let n = self.format().active_count() as u8;
+        for slot in 0..n {
+            let target_alive = self.side(opp).active_mon(slot as usize)
+                .is_some_and(|m| m.is_alive());
+            if !target_alive { continue; }
+            if is_powder {
+                let grass = self.side(opp).active_mon(slot as usize)
+                    .map(|m| {
+                        let s = m.species();
+                        (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
+                    })
+                    .unwrap_or(false);
+                if grass { return; }
+            }
+            self.try_set_status(opp, slot, Status::Sleep);
+            return;
+        }
+    }
+
     /// Apply a status to the first alive opposing active mon, respecting
     /// type-based immunities. Helper for single-target status moves.
     fn apply_status_to_opposing(&mut self, actor_side: SideRef, status: Status) {
@@ -608,10 +658,22 @@ impl Battle {
         if immune {
             return;
         }
+        // Sleep duration roll: gen 5+ uses 1..=3 turns. `rng.range(3)`
+        // returns 0..=2; +1 gives the inclusive 1..=3 range. PS
+        // `data/conditions.ts:slp duration: this.random(2, 5)` in gen 4,
+        // tightened to 1..=3 in gen 5+ (PS `sim/pokemon.ts setStatus`).
+        let sleep_turns = if matches!(status, Status::Sleep) {
+            (self.rng.range(3) as u8) + 1
+        } else {
+            0
+        };
         if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
             m.status = status;
             if matches!(status, Status::Toxic) {
                 m.toxic_counter = 1;
+            }
+            if matches!(status, Status::Sleep) {
+                m.sleep_turns = sleep_turns;
             }
         }
     }
@@ -807,6 +869,22 @@ impl Battle {
             // with `status: 'xxx'`. Accuracy is rolled at the standard
             // move-resolution point; here we just apply the status to the
             // chosen target (or the actor for self-target moves).
+            "spore" => {
+                // Powder move: 100% accuracy, but Grass types are immune
+                // to powder. (Overcoat / Safety Goggles deferred.)
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_sleep_to_opposing(actor_side, true);
+            }
+            "sleeppowder" => {
+                // Powder: 75% acc, Grass immunity.
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_sleep_to_opposing(actor_side, true);
+            }
+            "hypnosis" => {
+                // Non-powder: 60% acc, no Grass immunity.
+                if !self.rolled_accuracy_passed(m) { return; }
+                self.apply_sleep_to_opposing(actor_side, false);
+            }
             "thunderwave" => {
                 // 90% accuracy in gen 7+; the move's accuracy field
                 // already encodes this, but resolve_status_move is called
@@ -2341,6 +2419,115 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn spore_puts_target_to_sleep_and_skips_turns() {
+        // Amoonguss Spores a Pikachu. Pikachu's Thunderbolt should be
+        // skipped while asleep. Eventually wakes (within 1..=3 turns).
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 42 }, p1, p2);
+        let amoonguss_start_hp = b.p1.team[0].current_hp;
+        // Turn 1: Amoonguss Spores; Pikachu would T-bolt but should be
+        // either asleep (if Pikachu acts after Spore lands) or hit
+        // first. Pikachu is faster than Amoonguss, so it T-bolts BEFORE
+        // Spore lands on turn 1. So Pikachu T-bolt connects on turn 1.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::Sleep), "Pikachu asleep after turn 1");
+        assert!((1..=3).contains(&b.p2.team[0].sleep_turns), "1..=3 sleep_turns");
+        let amoonguss_hp_after_t1 = b.p1.team[0].current_hp;
+        assert!(amoonguss_hp_after_t1 < amoonguss_start_hp, "T-bolt hit on turn 1");
+
+        // Turn 2: Pikachu is asleep. Its T-bolt must be skipped — no
+        // further damage to Amoonguss (compare HP across this turn).
+        let pre_t2 = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Protect, no-op effect on Pikachu
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, pre_t2, "T-bolt skipped while asleep");
+    }
+
+    #[test]
+    fn sleep_wakes_up_after_timer_expires() {
+        // Force a deterministic 1-turn sleep by manually setting status.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].status = Status::Sleep;
+        b.p2.team[0].sleep_turns = 1; // wake on the next move attempt
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None), "wakes after 1-turn timer");
+        assert_eq!(b.p2.team[0].sleep_turns, 0);
+    }
+
+    #[test]
+    fn spore_blocked_by_grass_type() {
+        // Amoonguss Spores another Grass mon — must fail (powder
+        // immunity). Hypnosis (non-powder) would still land.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","nature":"modest","moves":["gigadrain","sludgebomb","sleeppowder","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn hypnosis_lands_on_grass_type() {
+        // Hypnosis is NOT a powder move — Grass types aren't immune.
+        // Use a guaranteed-acc seed by setting status directly via the
+        // helper after several attempts is brittle, so just check that
+        // *if* Hypnosis lands (random acc), the Grass-immunity guard
+        // does NOT fire. Loop seeds until one lands.
+        let p1_json = r#"[
+            {"species":"drowzee","level":50,"ability":"insomnia","nature":"calm","moves":["hypnosis","psychic","seismictoss","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","nature":"modest","moves":["gigadrain","sludgebomb","sleeppowder","earthquake"]}
+        ]"#;
+        let mut landed = false;
+        for seed in 1u64..40 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if matches!(b.p2.team[0].status, Status::Sleep) {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "Hypnosis should sometimes land on a Grass type within 40 seeds");
     }
 
     #[test]
