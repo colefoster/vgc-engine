@@ -293,6 +293,7 @@ mod tests {
             locked_move_slot: 255,
             switched_in_this_turn: false,
             substitute_hp: 0,
+            sleep_turns: 0,
         }
     }
 
