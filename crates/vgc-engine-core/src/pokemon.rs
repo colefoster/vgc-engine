@@ -145,6 +145,20 @@ pub struct Pokemon {
     /// Stat boost stages in -6..=6 for [atk, def, spa, spd, spe, acc, eva].
     pub boosts: [i8; 7],
     pub fainted: bool,
+    /// Single-turn 'protect' volatile (PS data/conditions.ts). Set when
+    /// the mon successfully used Protect this turn; cleared at end of
+    /// turn. Causes targeting moves against this mon to fail.
+    pub is_protected_this_turn: bool,
+    /// 'stall' volatile counter — number of consecutive turns the mon has
+    /// successfully used a stall move (Protect family). Probability of
+    /// the next use succeeding is `1 / 3^stall_counter`. Reset to 0 when
+    /// the mon does not issue a stall move that turn, or when the stall
+    /// move fails.
+    pub stall_counter: u8,
+    /// Flag set during resolve_move whenever this mon issues a stall move
+    /// this turn (regardless of success). Read & cleared at end of turn
+    /// to drive stall_counter resets.
+    pub used_stall_this_turn: bool,
 }
 
 impl Pokemon {

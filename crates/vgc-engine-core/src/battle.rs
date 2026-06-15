@@ -151,6 +151,15 @@ impl Battle {
             return StepResult::Ended { winner: w };
         }
 
+        // 0. Per-turn volatile reset on every mon: clear single-turn
+        //    protect flag and the stall-attempt tracking flag.
+        for s in [SideRef::P1, SideRef::P2] {
+            for m in self.side_mut(s).team.iter_mut() {
+                m.is_protected_this_turn = false;
+                m.used_stall_this_turn = false;
+            }
+        }
+
         // 1. Switches first (PS priority +6).
         self.apply_switches(SideRef::P1, p1_choices);
         self.apply_switches(SideRef::P2, p2_choices);
@@ -176,7 +185,16 @@ impl Battle {
             self.resolve_move(action);
         }
 
-        // 3. End-of-turn: check loss.
+        // 3. End-of-turn cleanup: any mon that did NOT use a stall move
+        //    this turn resets its stall_counter.
+        for s in [SideRef::P1, SideRef::P2] {
+            for m in self.side_mut(s).team.iter_mut() {
+                if !m.used_stall_this_turn {
+                    m.stall_counter = 0;
+                }
+            }
+        }
+
         self.turn = self.turn.saturating_add(1);
         let p1_dead = self.p1.is_defeated();
         let p2_dead = self.p2.is_defeated();
@@ -235,7 +253,13 @@ impl Battle {
             }
         }
 
-        // 2. Accuracy check (255 = always-hit; e.g. Aerial Ace, Swift).
+        // 2. Status-move dispatch by slug. Currently: Protect only.
+        if m.category == 2 {
+            self.resolve_status_move(actor_side, actor_slot, m);
+            return;
+        }
+
+        // 3. Accuracy check (255 = always-hit; e.g. Aerial Ace, Swift).
         if m.accuracy != 255 {
             let acc = m.accuracy as u32;
             let roll = self.rng.percent_1_100() as u32;
@@ -244,19 +268,28 @@ impl Battle {
             }
         }
 
-        // 3. Resolve target. If the chosen target fainted, PS redirects in
-        //    some cases. Phase 2 fallback: drop the action.
+        // 4. Resolve target.
         let defender = match self.side(target_side).active_mon(target_slot as usize).cloned() {
             Some(d) if d.is_alive() => d,
             _ => return,
         };
 
-        // 4. Status move stub — no effect yet (handled per-move in later PRs).
-        if m.category == 2 || m.base_power == 0 {
+        // 5. Protect: targeting move against a protected defender fails.
+        //    "Targeting" here = move.target ∈ {normal, adjacentFoe,
+        //    adjacentAlly, adjacentAllyOrSelf, any}. Spread / self / side
+        //    moves are handled by their own resolution and won't reach
+        //    here at all for self/ally-side targets.
+        if defender.is_protected_this_turn && is_targeting_move(m.target) {
             return;
         }
 
-        // 5. Crit roll. Gen 6+ base rate is 1/24. High-crit-ratio moves
+        // 6. Status / 0-BP non-status edge case (shouldn't reach here
+        //    given category check above, but guard anyway).
+        if m.base_power == 0 {
+            return;
+        }
+
+        // 7. Crit roll. Gen 6+ base rate is 1/24. High-crit-ratio moves
         //    (Slash, Stone Edge, Storm Throw) deferred to their PRs.
         let crit = self.rng.range(24) == 0;
         let roll = self.rng.damage_roll();
@@ -267,7 +300,7 @@ impl Battle {
             DamageContext { crit, roll },
         );
 
-        // 6. Apply damage.
+        // 8. Apply damage.
         if let Some(t) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             t.current_hp = t.current_hp.saturating_sub(dmg);
             if t.current_hp == 0 {
@@ -275,6 +308,60 @@ impl Battle {
             }
         }
     }
+
+    /// Status-move dispatch. Phase 2 PR-5 implements: Protect.
+    ///
+    /// Other status moves currently no-op (will be enabled per-move in
+    /// subsequent PRs).
+    fn resolve_status_move(&mut self, actor_side: SideRef, actor_slot: u8, m: &data::MoveDef) {
+        match m.slug {
+            "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
+            | "obstruct" | "burningbulwark" | "silktrap" => {
+                // Mark the issuer as having attempted a stall move.
+                let stall_counter = {
+                    let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        Some(a) => a,
+                        None => return,
+                    };
+                    actor.used_stall_this_turn = true;
+                    actor.stall_counter
+                };
+
+                // Success probability: 1 / 3^stall_counter.
+                // counter=0 → always; counter=1 → 1/3; counter=2 → 1/9; ...
+                let denom: u32 = match stall_counter {
+                    0 => 1,
+                    n => 3u32.saturating_pow(n.min(6) as u32),
+                };
+                let success = self.rng.range(denom) == 0;
+
+                let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    Some(a) => a,
+                    None => return,
+                };
+                if success {
+                    actor.is_protected_this_turn = true;
+                    actor.stall_counter = actor.stall_counter.saturating_add(1).min(6);
+                } else {
+                    actor.stall_counter = 0;
+                }
+            }
+            _ => {
+                // Unimplemented status move — no effect. Subsequent PRs
+                // will add Tailwind, Trick Room, Encore, etc.
+            }
+        }
+    }
+}
+
+/// PS targets that aim at a specific opposing/adjacent slot. Spread,
+/// self, and side-targeted moves are not blocked by Protect.
+fn is_targeting_move(target_code: u8) -> bool {
+    matches!(target_code, 0 | 2 | 3 | 4 | 10)
+    // 0 normal, 2 adjacentAlly, 3 adjacentAllyOrSelf, 4 adjacentFoe, 10 any.
+    // 5 allAdjacent and 6 allAdjacentFoes are spread — they still hit but
+    // Protect intercepts each individual target. We can refine in the
+    // spread-move PR; for now treat spread as bypassing.
 }
 
 #[cfg(test)]
@@ -379,6 +466,87 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
         );
         assert_eq!(b.p1.team[0].pp[0], before - 1);
+    }
+
+    #[test]
+    fn protect_first_use_always_succeeds() {
+        // Build a minimal scenario where one mon knows Protect.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"blacksludge","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pex_hp = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, pex_hp, "first Protect always succeeds; Toxapex takes no damage");
+        assert_eq!(b.p1.team[0].stall_counter, 1);
+    }
+
+    #[test]
+    fn consecutive_protect_eventually_fails() {
+        // After several consecutive Protects the 1/3^n roll WILL fail.
+        // Use a tiny denom and many turns to ensure we observe a failure.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"blacksludge","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 99 }, p1, p2);
+        let mut saw_fail = false;
+        for _ in 0..30 {
+            let hp_before = b.p1.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p1.team[0].current_hp < hp_before {
+                saw_fail = true;
+                break;
+            }
+        }
+        assert!(saw_fail, "after enough consecutive Protects one must fail");
+    }
+
+    #[test]
+    fn non_consecutive_protect_resets_counter() {
+        // Use Protect, then attack, then Protect — counter should be back to 1.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"blacksludge","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Protect
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].stall_counter, 1);
+        // Turn 2: Scald (not a stall move) → counter resets at end of turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].stall_counter, 0);
+        // Turn 3: Protect again — succeeds (counter was 0).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].stall_counter, 1, "fresh streak — counter back to 1");
     }
 
     #[test]
