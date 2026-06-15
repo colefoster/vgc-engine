@@ -734,12 +734,20 @@ impl Battle {
 
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move
         // dealt damage to at least one target (PS: per-move, not per-hit).
+        // Magic Guard blocks Life Orb recoil: PS's `onDamage` returns false
+        // for any non-Move effect, and Life Orb's recoil is an item-side
+        // residual, not the move itself. PS: `data/items.ts:lifeorb` recoil
+        // routes through the standard onDamage event.
         if attacker_item_slug == "lifeorb" && any_damage_dealt > 0 {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                let recoil = (a.stats.hp / 10).max(1);
-                a.current_hp = a.current_hp.saturating_sub(recoil);
-                if a.current_hp == 0 {
-                    a.fainted = true;
+            let skip_recoil = self.side(actor_side).active_mon(actor_slot as usize)
+                .is_some_and(crate::ability::has_magic_guard);
+            if !skip_recoil {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let recoil = (a.stats.hp / 10).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
                 }
             }
         }
@@ -847,29 +855,37 @@ impl Battle {
         }
 
         // Status DOT: burn (1/16), poison (1/8), toxic (counter/16
-        // increasing). Gen 7+ burn rate; PS data/conditions.ts.
+        // increasing). Gen 7+ burn rate; PS data/conditions.ts. Magic Guard
+        // blocks the HP loss but the toxic counter still ticks — PS's
+        // `onDamage` short-circuits the damage but `onResidual` for `tox`
+        // increments the badly-poisoned counter unconditionally.
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
             for slot in 0..n {
-                let dmg = match self.side(side).active_mon(slot as usize) {
-                    Some(m) if m.is_alive() => match m.status {
-                        Status::Burn => (m.stats.hp / 16).max(1),
-                        Status::Poison => (m.stats.hp / 8).max(1),
-                        Status::Toxic => {
-                            let c = m.toxic_counter.max(1) as u32;
-                            ((m.stats.hp as u32 * c / 16) as u16).max(1)
-                        }
-                        _ => 0,
-                    },
-                    _ => 0,
+                let (dmg, mg) = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive() => {
+                        let d = match m.status {
+                            Status::Burn => (m.stats.hp / 16).max(1),
+                            Status::Poison => (m.stats.hp / 8).max(1),
+                            Status::Toxic => {
+                                let c = m.toxic_counter.max(1) as u32;
+                                ((m.stats.hp as u32 * c / 16) as u16).max(1)
+                            }
+                            _ => 0,
+                        };
+                        (d, crate::ability::has_magic_guard(m))
+                    }
+                    _ => (0, false),
                 };
                 if dmg == 0 {
                     continue;
                 }
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                    m.current_hp = m.current_hp.saturating_sub(dmg);
-                    if m.current_hp == 0 {
-                        m.fainted = true;
+                    if !mg {
+                        m.current_hp = m.current_hp.saturating_sub(dmg);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
                     }
                     if matches!(m.status, Status::Toxic) {
                         m.toxic_counter = m.toxic_counter.saturating_add(1).min(15);
@@ -879,20 +895,25 @@ impl Battle {
         }
 
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
-        // Ability / item immunities (Sand Veil ignored — that's evasion
-        // not damage immunity; Magic Guard / Overcoat / Safety Goggles
-        // are real damage immunities) land in their own PRs.
+        // Ability / item immunities: Magic Guard blocks the damage (PS
+        // routes weather damage through `onDamage`). Sand Veil is evasion-
+        // only (not damage immunity). Overcoat / Safety Goggles land in
+        // their own PRs.
         if self.weather == crate::weather::Weather::Sand {
             for side in [SideRef::P1, SideRef::P2] {
                 let n = self.format().active_count();
                 for slot in 0..n {
                     let immune = match self.side(side).active_mon(slot) {
                         Some(m) if m.is_alive() => {
-                            let species = m.species();
-                            (0..species.num_types as usize).any(|i| {
-                                // Type codes: 12 Rock, 8 Ground, 16 Steel.
-                                matches!(species.types[i], 12 | 8 | 16)
-                            })
+                            if crate::ability::has_magic_guard(m) {
+                                true
+                            } else {
+                                let species = m.species();
+                                (0..species.num_types as usize).any(|i| {
+                                    // Type codes: 12 Rock, 8 Ground, 16 Steel.
+                                    matches!(species.types[i], 12 | 8 | 16)
+                                })
+                            }
                         }
                         _ => true, // missing/fainted → skip
                     };
@@ -2226,6 +2247,121 @@ mod tests {
         // Exact: 1/16 of max HP.
         let expected = b.p2.team[0].stats.hp / 16;
         assert_eq!(pika_hp - b.p2.team[0].current_hp, expected);
+    }
+
+    #[test]
+    fn magic_guard_blocks_life_orb_recoil() {
+        // Alakazam with Magic Guard + Life Orb fires a damaging move.
+        // PS skips the Life Orb recoil event for Magic Guard holders.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"lifeorb","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let zam_before = b.p1.team[0].current_hp;
+        let snor_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Hit landed (still gets the Life Orb damage boost).
+        assert!(b.p2.team[0].current_hp < snor_before, "Psychic hit landed");
+        // But Magic Guard cancels the 1/10 recoil.
+        assert_eq!(b.p1.team[0].current_hp, zam_before,
+                   "Magic Guard blocks Life Orb recoil");
+    }
+
+    #[test]
+    fn magic_guard_blocks_burn_dot() {
+        // Burned Alakazam with Magic Guard takes no end-of-turn burn damage.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["willowisp","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Burn, "Will-O-Wisp burned Alakazam");
+        let zam_after_burn = b.p2.team[0].current_hp;
+        let zam_max = b.p2.team[0].stats.hp;
+        // End-of-turn already resolved (turn 1). Burn deals 0 to MG holder.
+        assert_eq!(zam_after_burn, zam_max, "no burn tick on turn it landed");
+        // A second idle turn confirms the residual stays at 0.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, zam_max, "Magic Guard blocks burn DOT");
+    }
+
+    #[test]
+    fn magic_guard_blocks_toxic_dot_but_counter_ticks() {
+        // Magic Guard zeroes the damage but PS still increments the toxic
+        // counter — so a mon that later loses Magic Guard would take the
+        // accumulated counter's worth. We can't model ability swap yet, but
+        // we can assert the counter advanced.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"focussash","nature":"timid","moves":["toxic","shadowball","sludgebomb","substitute"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Toxic, "Toxic landed");
+        let zam_max = b.p2.team[0].stats.hp;
+        assert_eq!(b.p2.team[0].current_hp, zam_max, "Magic Guard blocks toxic DOT");
+        let counter_after_t1 = b.p2.team[0].toxic_counter;
+        // PS: tox counter starts at 1 on apply and is incremented in the
+        // residual even when MG blocked the damage. After t1's residual it's 2.
+        assert_eq!(counter_after_t1, 2, "toxic counter advanced past MG block");
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, zam_max);
+        assert_eq!(b.p2.team[0].toxic_counter, 3);
+    }
+
+    #[test]
+    fn magic_guard_immune_to_sand() {
+        // Alakazam (Psychic) with Magic Guard would normally take sand
+        // damage; MG blocks it. Pikachu (Electric) on the same side does take it.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"smoothrock","nature":"adamant","moves":["rockslide","crunch","earthquake","stealthrock"]},
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"focussash","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        let zam_hp = b.p1.team[1].current_hp;
+        let pika_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].current_hp, zam_hp, "Magic Guard ignores sand");
+        assert!(b.p2.team[0].current_hp < pika_hp, "non-MG Pikachu takes sand");
     }
 
     #[test]

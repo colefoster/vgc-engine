@@ -21,6 +21,18 @@ fn ability_slug(id: u16) -> &'static str {
         .unwrap_or("")
 }
 
+/// Returns true if the mon has Magic Guard. Magic Guard's PS handler is
+/// an `onDamage` that returns `false` for any `effect.effectType !== 'Move'`
+/// — so it blocks every indirect-damage source: status DOT (brn/psn/tox),
+/// weather damage (sand/hail), held-item recoil (Life Orb), entry hazards
+/// (when those land), Leech Seed drain, Curse, Nightmare, etc. Move-dealt
+/// damage (including recoil categorised as a Move effect like Brave Bird)
+/// still goes through. PS: `data/abilities.ts:2420-2430`.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Guard_(Ability)>.
+pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
+    ability_slug(mon.ability_id) == "magicguard"
+}
+
 /// Returns true if the target's ability blocks Intimidate.
 ///
 /// PS data/abilities.ts: each blocker has an onTryBoost / onTryHit hook
