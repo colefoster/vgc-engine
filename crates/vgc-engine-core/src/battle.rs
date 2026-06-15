@@ -353,6 +353,7 @@ impl Battle {
                     incoming.encore_turns = 0;
                     incoming.encored_move_slot = 255;
                     incoming.boosted_stat = 255;
+                    incoming.booster_locked = false; // Booster lock only persists while on field.
                     switched_slots.push(actor_slot);
                 }
             }
@@ -3103,6 +3104,115 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         assert_eq!(b.p1.team[0].boosted_stat, 255);
+    }
+
+    #[test]
+    fn booster_energy_activates_protosynthesis_outside_sun() {
+        // Flutter Mane with Booster Energy and no Sun on the field —
+        // PS consumes the item on switch-in and locks Protosynthesis on.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"boosterenergy","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::None);
+        assert_eq!(b.p1.team[0].boosted_stat, 4, "Protosynthesis activated on Spe");
+        assert!(b.p1.team[0].booster_locked, "volatile is Booster-Energy-locked");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Booster Energy consumed");
+    }
+
+    #[test]
+    fn booster_energy_quark_drive_outside_e_terrain() {
+        // Iron Hands (Quark Drive) with Booster Energy, no E-Terrain.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"boosterenergy","nature":"adamant","moves":["drainpunch","wildcharge","fakeout","heavyslam"],"evs":{"hp":252,"atk":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::None);
+        // Iron Hands adamant 252 Atk — Atk should win best-stat.
+        assert_eq!(b.p1.team[0].boosted_stat, 0, "Quark Drive picked Atk");
+        assert!(b.p1.team[0].booster_locked);
+        assert_eq!(b.p1.team[0].item_id, u16::MAX);
+    }
+
+    #[test]
+    fn booster_energy_not_consumed_when_natural_trigger_present() {
+        // Torkoal (Drought) + Flutter Mane (Protosynthesis + Booster Energy).
+        // Sun is already up from Torkoal, so the booster volatile is Sun-
+        // activated and Booster Energy is preserved for later.
+        let p1_json = r#"[
+            {"species":"torkoal","level":50,"ability":"drought","item":"focussash","nature":"quiet","moves":["eruption","heatwave","earthpower","protect"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"boosterenergy","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sun);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[1].boosted_stat, 4, "Sun-triggered Protosynthesis");
+        assert!(!b.p1.team[1].booster_locked, "natural trigger — not locked");
+        assert_ne!(b.p1.team[1].item_id, u16::MAX, "Booster Energy preserved");
+    }
+
+    #[test]
+    fn booster_energy_persists_when_sun_expires() {
+        // Booster Energy-activated Protosynthesis stays on after the
+        // natural trigger would have left.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"boosterenergy","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"focussash","nature":"adamant","moves":["rockslide","crunch","earthquake","stealthrock"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Tyranitar's Sand Stream set Sand. Protosynthesis Booster-locked
+        // is on (Spe).
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        assert_eq!(b.p1.team[0].boosted_stat, 4);
+        assert!(b.p1.team[0].booster_locked);
+        // Even after several turns, the volatile stays — its trigger is
+        // Sun, never present in this battle.
+        for _ in 0..3 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.p1.team[0].boosted_stat, 4, "Booster-locked volatile persists");
+    }
+
+    #[test]
+    fn booster_energy_not_consumed_by_non_paradox_ability() {
+        // Pikachu (Static) with Booster Energy — nothing should happen.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"boosterenergy","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosted_stat, 255);
+        assert!(!b.p1.team[0].booster_locked);
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Booster Energy preserved");
     }
 
     #[test]

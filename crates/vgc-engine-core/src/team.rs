@@ -180,6 +180,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         encore_turns: 0,
         encored_move_slot: 255,
         boosted_stat: 255,
+        booster_locked: false,
     })
 }
 
