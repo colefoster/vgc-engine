@@ -206,6 +206,14 @@ pub struct Pokemon {
     /// Slot index the Encore volatile is locking the user into.
     /// 255 = no encore.
     pub encored_move_slot: u8,
+    /// Paradox booster stat index (0=atk, 1=def, 2=spa, 3=spd, 4=spe;
+    /// 255 = no boost active). Set when Protosynthesis or Quark Drive
+    /// activates via its trigger (Sun / Electric Terrain / Booster
+    /// Energy); identifies which stat receives the ×1.3 (×1.5 for spe)
+    /// multiplier. Cleared on switch-out or when the trigger expires
+    /// (unless the volatile was Booster-Energy-locked — that flavor
+    /// lands when Booster Energy ships).
+    pub boosted_stat: u8,
 }
 
 impl Pokemon {

@@ -280,6 +280,14 @@ impl Battle {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
                 self.weather = crate::weather::Weather::None;
+                // Weather just expired — refresh paradox boosters on
+                // both sides so Protosynthesis users drop their volatile.
+                let n = self.format().active_count() as u8;
+                for s in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n {
+                        crate::ability::refresh_paradox_booster(self, s, slot);
+                    }
+                }
             }
         }
         if self.trick_room_turns > 0 {
@@ -324,6 +332,7 @@ impl Battle {
                     incoming.last_used_move_slot = 255;
                     incoming.encore_turns = 0;
                     incoming.encored_move_slot = 255;
+                    incoming.boosted_stat = 255;
                     switched_slots.push(actor_slot);
                 }
             }
@@ -505,8 +514,20 @@ impl Battle {
             boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
-        // Assault Vest: ×1.5 to spd (defender-side, applied when target
-        // is hit by a special move). Applied below per-target.
+        // Paradox booster (Protosynthesis / Quark Drive): attacker's
+        // boosted_stat (if 0=atk or 2=spa) gets ×1.3 to the offensive
+        // stat used by this move. PS chainModify [5325, 4096] ≈ ×1.3007;
+        // 13/10 is the standard integer approximation. Defender-side
+        // boost (1=def, 3=spd) applied per-target below.
+        let scale_off_13 = |v: u16| -> u16 {
+            ((v as u32 * 13 / 10).min(u16::MAX as u32)) as u16
+        };
+        if boosted_attacker.boosted_stat == 0 && physical_move {
+            boosted_attacker.stats.atk = scale_off_13(boosted_attacker.stats.atk);
+        }
+        if boosted_attacker.boosted_stat == 2 && special_move {
+            boosted_attacker.stats.spa = scale_off_13(boosted_attacker.stats.spa);
+        }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
@@ -551,6 +572,14 @@ impl Battle {
             if def_item_slug == "assaultvest" && m.category == 1 {
                 boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
+            }
+            // Paradox booster on defender: 1=def boosts def vs physical,
+            // 3=spd boosts spd vs special. ×1.3.
+            if boosted_defender.boosted_stat == 1 && m.category == 0 {
+                boosted_defender.stats.def = scale_off_13(boosted_defender.stats.def);
+            }
+            if boosted_defender.boosted_stat == 3 && m.category == 1 {
+                boosted_defender.stats.spd = scale_off_13(boosted_defender.stats.spd);
             }
             let def_conds = self.side(tside).conditions;
             let defender_has_reflect = def_conds.reflect_turns > 0;
@@ -2568,6 +2597,96 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn protosynthesis_activates_under_sun() {
+        // Flutter Mane (Protosynthesis) switches in alongside a Sun
+        // setter. Best stat is SpA — volatile should set boosted_stat = 2.
+        let p1_json = r#"[
+            {"species":"torkoal","level":50,"ability":"drought","item":"focussash","nature":"quiet","moves":["eruption","heatwave","earthpower","protect"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Torkoal switched in with Drought → Sun active. Now switch in
+        // Flutter Mane.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Flutter Mane's best stat (timid nature, 252 Spe EVs, base
+        // 135 Spe vs 135 SpA): Spe wins by the +Spe nature bump = index 4.
+        assert_eq!(b.p1.team[1].boosted_stat, 4, "Protosynthesis picked Spe");
+    }
+
+    #[test]
+    fn protosynthesis_deactivates_when_sun_expires() {
+        let p1_json = r#"[
+            {"species":"torkoal","level":50,"ability":"drought","item":"focussash","nature":"quiet","moves":["eruption","heatwave","earthpower","protect"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[1].boosted_stat, 4);
+        // Sun lasts 5 turns. Run until it expires.
+        for _ in 0..5 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.weather, crate::weather::Weather::None, "sun expired");
+        assert_eq!(b.p1.team[1].boosted_stat, 255, "Protosynthesis deactivated");
+    }
+
+    #[test]
+    fn protosynthesis_does_not_activate_outside_sun() {
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosted_stat, 255);
+    }
+
+    #[test]
+    fn protosynthesis_boost_increases_speed_in_order_resolution() {
+        // Compare effective_speed of a Protosynthesis-active Flutter
+        // Mane vs an inactive one — should be ×1.5.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"focussash","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let no_boost = crate::order::effective_speed(&b.p1.team[0], false);
+        // Force Spe as the boosted stat (Flutter Mane's best stat is
+        // SpA, but the order math only cares about boosted_stat == 4).
+        b.p1.team[0].boosted_stat = 4;
+        let with_boost = crate::order::effective_speed(&b.p1.team[0], false);
+        // ×1.5 with rounding tolerance.
+        let pct = with_boost as i32 * 100 / no_boost as i32;
+        assert!((148..=152).contains(&pct), "expected ~150%; got {pct}%");
     }
 
     #[test]

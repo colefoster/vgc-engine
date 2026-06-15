@@ -297,6 +297,7 @@ mod tests {
             last_used_move_slot: 255,
             encore_turns: 0,
             encored_move_slot: 255,
+            boosted_stat: 255,
         }
     }
 

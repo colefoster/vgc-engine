@@ -59,7 +59,14 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
     } else {
         after_tailwind
     };
-    after_item.min(u16::MAX as u32) as u16
+    // Paradox booster on Spe (index 4): ×1.5 to speed. PS chainModify(1.5)
+    // for protosynthesisspe / quarkdrivespe volatile flavors.
+    let after_paradox = if mon.boosted_stat == 4 {
+        after_item * 3 / 2
+    } else {
+        after_item
+    };
+    after_paradox.min(u16::MAX as u32) as u16
 }
 
 /// Resolve one turn's action order.
