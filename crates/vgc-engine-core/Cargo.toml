@@ -1,0 +1,11 @@
+[package]
+name = "vgc-engine-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vgc-engine simulation core (data-oriented, zero-alloc step loop)"
+
+[dependencies]
+vgc-engine-data = { workspace = true }

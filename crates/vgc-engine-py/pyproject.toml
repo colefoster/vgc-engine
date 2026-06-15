@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "vgc-engine"
+version = "0.0.1"
+description = "Rust Pokémon battle simulator (Phase 1 stub) — pyo3 bindings"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.maturin]
+module-name = "vgc_engine"
+features = ["pyo3/extension-module"]
+manifest-path = "Cargo.toml"

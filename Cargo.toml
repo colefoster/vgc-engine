@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vgc-engine-core",
+    "crates/vgc-engine-data",
+    "crates/vgc-engine-py",
+    "crates/vgc-engine-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/colefoster/vgc-engine"
+
+[workspace.dependencies]
+vgc-engine-core = { path = "crates/vgc-engine-core" }
+vgc-engine-data = { path = "crates/vgc-engine-data" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
