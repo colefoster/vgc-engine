@@ -674,8 +674,16 @@ impl Battle {
             // Sitrus) and Knock Off item removal still see no damage —
             // PS: `if (target.volatiles['substitute']) damage = target.volatiles['substitute'].hp ...`
             // followed by an early-out before on_damage / item hooks.
+            //
+            // Sound moves bypass Substitute (gen 6+): PS
+            // `data/conditions.ts:substitute onTryPrimaryHit` early-returns
+            // when `move.flags['sound']`. The hit then proceeds as if no
+            // sub existed — full damage to the mon, secondaries fire,
+            // sub HP is unchanged. Same exemption applies to moves with
+            // the `authentic` flag (Hyperspace Hole etc.) and to
+            // Infiltrator users; both deferred to their own PRs.
             let sub_hp_pre = defender.substitute_hp;
-            let hit_sub = sub_hp_pre > 0;
+            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug);
             let effective_dmg = if hit_sub {
                 let absorbed = dmg.min(sub_hp_pre);
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -737,8 +745,9 @@ impl Battle {
 
             // Secondary if target still alive — and the sub didn't take
             // the hit. PS: Substitute blocks all secondaries that target
-            // the user-of-the-sub (flinch, stat drops, status). Sound-move
-            // bypass is deferred to its own PR.
+            // the user-of-the-sub (flinch, stat drops, status). Sound
+            // moves never set `hit_sub = true` (see is_sound_move check
+            // above), so their secondaries fire normally.
             let alive_post = self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive());
             if alive_post && !hit_sub {
@@ -1383,6 +1392,52 @@ fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool 
 /// Scorching Sands. Plus every Fire-type damaging move thaws the
 /// defender (cartridge rule); we approximate with this slug list plus
 /// the "any Fire-type damaging hit thaws" check at the use site.
+/// PS sound moves (gen 9, `flags: { sound: 1 }` in data/moves.ts).
+/// Generated via:
+///   awk '/^\t[a-z]+: \{$/{name=$1;sub(/:/,"",name)} /sound: 1/{print name}' \
+///       /tmp/pokemon-showdown-research/data/moves.ts | sort -u
+///
+/// Used for the gen-6+ "sound bypasses Substitute" rule and (when
+/// implemented) the Soundproof / Throat Spray / Punk Rock hooks.
+fn is_sound_move(slug: &str) -> bool {
+    matches!(
+        slug,
+        "alluringvoice"
+            | "boomburst"
+            | "bugbuzz"
+            | "chatter"
+            | "clangingscales"
+            | "clangoroussoul"
+            | "clangoroussoulblaze"
+            | "confide"
+            | "disarmingvoice"
+            | "echoedvoice"
+            | "eeriespell"
+            | "grasswhistle"
+            | "growl"
+            | "healbell"
+            | "howl"
+            | "hypervoice"
+            | "metalsound"
+            | "nobleroar"
+            | "overdrive"
+            | "partingshot"
+            | "perishsong"
+            | "psychicnoise"
+            | "relicsong"
+            | "roar"
+            | "round"
+            | "screech"
+            | "sing"
+            | "snarl"
+            | "snore"
+            | "sparklingaria"
+            | "supersonic"
+            | "torchsong"
+            | "uproar"
+    )
+}
+
 fn move_is_defrost(slug: &str) -> bool {
     matches!(
         slug,
@@ -3954,6 +4009,78 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert_eq!(b.p1.team[0].item_id, leftovers_id, "Knock Off cannot remove item behind sub");
+    }
+
+    #[test]
+    fn sound_move_bypasses_substitute() {
+        // Sylveon Hyper Voice into Blissey behind Substitute. PS: sound
+        // moves skip the sub and damage the mon directly; sub HP is
+        // unchanged.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"],"evs":{"spa":252,"spd":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Blissey subs while Sylveon passes — sub up at start of T2.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let bliss_max = b.p1.team[0].stats.hp;
+        let expected_sub_hp = bliss_max / 4;
+        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp, "sub set at full");
+        let bliss_hp_at_t2 = b.p1.team[0].current_hp;
+        // Turn 2: Sylveon fires Hyper Voice (sound) at Blissey behind sub.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Sound bypass: sub HP untouched, Blissey took the damage directly.
+        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp,
+                   "sound move did not chip the sub");
+        assert!(b.p1.team[0].current_hp < bliss_hp_at_t2,
+                "Blissey took Hyper Voice damage through the sub: {} -> {}",
+                bliss_hp_at_t2, b.p1.team[0].current_hp);
+    }
+
+    #[test]
+    fn non_sound_move_still_hits_substitute() {
+        // Counter-check: a non-sound special move into the same sub HITS
+        // the sub. Sylveon Shadow Ball (not sound) eats sub HP and leaves
+        // Blissey's HP alone.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"],"evs":{"spa":252,"spd":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let bliss_max = b.p1.team[0].stats.hp;
+        let expected_sub_hp = bliss_max / 4;
+        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp);
+        let bliss_hp_at_t2 = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Mystical Fire (Fire, non-sound) chips the sub; Blissey HP didn't
+        // take damage (it can only go UP from Leftovers).
+        assert!(b.p1.team[0].substitute_hp < expected_sub_hp,
+                "Mystical Fire chipped the sub: sub={}",
+                b.p1.team[0].substitute_hp);
+        assert!(b.p1.team[0].current_hp >= bliss_hp_at_t2,
+                "Blissey HP not reduced behind the sub: {} -> {}",
+                bliss_hp_at_t2, b.p1.team[0].current_hp);
     }
 
     #[test]
