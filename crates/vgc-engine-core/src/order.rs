@@ -37,9 +37,9 @@ pub struct ScheduledAction {
     pub choice: Choice,
 }
 
-/// Speed of `mon` after stage boosts, paralysis, and side conditions
-/// (Tailwind). Items / Choice Scarf / Swift Swim / Trick Room handled in
-/// later PRs.
+/// Speed of `mon` after stage boosts, paralysis, side conditions
+/// (Tailwind), and held item (Choice Scarf). Swift Swim / weather speed
+/// abilities and Trick Room are handled elsewhere.
 pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
     let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
     let after_para = if matches!(mon.status, Status::Paralysis) {
@@ -48,7 +48,18 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
         boosted
     };
     let after_tailwind = if tailwind_active { after_para * 2 } else { after_para };
-    after_tailwind.min(u16::MAX as u32) as u16
+    // Choice Scarf: ×1.5 to final speed.
+    let item_slug = if mon.item_id == u16::MAX {
+        ""
+    } else {
+        data::ITEMS[mon.item_id as usize].slug
+    };
+    let after_item = if item_slug == "choicescarf" {
+        after_tailwind * 3 / 2
+    } else {
+        after_tailwind
+    };
+    after_item.min(u16::MAX as u32) as u16
 }
 
 /// Resolve one turn's action order.

@@ -343,8 +343,8 @@ impl Battle {
         let damaging = m.base_power > 0;
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
-        // future PRs add Choice Band/Specs 1.5×, Expert Belt 1.2× on SE
-        // hits, Type Plates 1.2× type-matched, etc.
+        // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
+        // type-matched, etc.
         let attacker_item_slug = if attacker.item_id == u16::MAX {
             ""
         } else {
@@ -354,6 +354,23 @@ impl Battle {
             "lifeorb" => (13u32, 10u32),
             _ => (1, 1),
         };
+        // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
+        // by cloning the attacker snapshot and scaling the stat in
+        // place before passing to calculate_damage.
+        let mut boosted_attacker = attacker.clone();
+        let physical_move = m.category == 0;
+        let special_move = m.category == 1;
+        if attacker_item_slug == "choiceband" && physical_move {
+            boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
+        if attacker_item_slug == "choicespecs" && special_move {
+            boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
+        // Assault Vest: ×1.5 to spd (defender-side, applied when target
+        // is hit by a special move). Applied below per-target.
+        let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
@@ -386,9 +403,21 @@ impl Battle {
             // Crit + damage roll.
             let crit = self.rng.range(24) == 0;
             let roll = self.rng.damage_roll();
+            // Apply Assault Vest spd boost to the defender if the attack
+            // is special (×1.5 spd; physical untouched).
+            let mut boosted_defender = defender.clone();
+            let def_item_slug = if boosted_defender.item_id == u16::MAX {
+                ""
+            } else {
+                data::ITEMS[boosted_defender.item_id as usize].slug
+            };
+            if def_item_slug == "assaultvest" && m.category == 1 {
+                boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
+                    .min(u16::MAX as u32)) as u16;
+            }
             let mut dmg = calculate_damage(
-                &attacker,
-                &defender,
+                &boosted_attacker,
+                &boosted_defender,
                 move_id,
                 DamageContext { crit, roll, is_spread, weather: self.weather },
             );
@@ -1165,6 +1194,71 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn choice_specs_boosts_special_damage() {
+        use crate::damage::{calculate_damage, DamageContext};
+        // Two Flutter Manes: one with Choice Specs, one bare. Compare
+        // Moonblast damage against the same defender.
+        let specs = TeamBuilder::from_json(r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#).unwrap();
+        let bare = TeamBuilder::from_json(r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#).unwrap();
+        let defender = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#).unwrap();
+        // Compute base spa values: specs version after boost should be
+        // 1.5× the bare. We test the in-battle damage difference.
+        let p1 = specs.clone();
+        let p2 = defender.clone();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let with_specs = before - b.p2.team[0].current_hp;
+
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, bare, defender);
+        let before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let no_specs = before2 - b2.p2.team[0].current_hp;
+        // Specs ≈ 1.5× vanilla — give some integer-truncation slack.
+        assert!(with_specs > no_specs);
+        assert!(with_specs * 100 / no_specs >= 145, "{with_specs} vs {no_specs}");
+        let _ = (calculate_damage, DamageContext::default());
+    }
+
+    #[test]
+    fn choice_scarf_boosts_speed_order() {
+        // Slow mon with Scarf outpaces fast Garchomp without.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"choicescarf","nature":"adamant","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Snorlax base 30 spe, adamant 252 ev L50 → 81. ×1.5 = 121.
+        // Garchomp jolly 252 ev L50 base 102 → 169. Garchomp still
+        // outpaces — switch to a moderately fast mon.
+        // Actually just check the order math directly.
+        let scarfed = crate::order::effective_speed(&b.p1.team[0], false);
+        let bare    = {
+            let mut m = b.p1.team[0].clone();
+            m.item_id = u16::MAX;
+            crate::order::effective_speed(&m, false)
+        };
+        assert!(scarfed > bare);
+        assert_eq!(scarfed, bare * 3 / 2);
     }
 
     #[test]
