@@ -300,6 +300,7 @@ impl Battle {
                     incoming.stall_counter = 0;
                     incoming.locked_move_slot = 255; // Choice lock clears on switch.
                     incoming.switched_in_this_turn = true;
+                    incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
                     switched_slots.push(actor_slot);
                 }
             }
@@ -477,26 +478,46 @@ impl Battle {
                 dmg = ((dmg as u32) * 3 / 2).min(u16::MAX as u32) as u16;
             }
 
-            // Pre-damage item hook (Focus Sash etc. may cap damage).
-            let effective_dmg = crate::item::on_before_damage(self, tside, tslot, dmg)
-                .unwrap_or(dmg);
-
-            // Apply.
-            if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                t.current_hp = t.current_hp.saturating_sub(effective_dmg);
-                if t.current_hp == 0 {
-                    t.fainted = true;
+            // Substitute interception. If the defender has a sub up, the
+            // sub absorbs the hit (capped at remaining sub HP) and the
+            // damage doesn't reach the mon's HP. Item hooks (Focus Sash,
+            // Sitrus) and Knock Off item removal still see no damage —
+            // PS: `if (target.volatiles['substitute']) damage = target.volatiles['substitute'].hp ...`
+            // followed by an early-out before on_damage / item hooks.
+            let sub_hp_pre = defender.substitute_hp;
+            let hit_sub = sub_hp_pre > 0;
+            let effective_dmg = if hit_sub {
+                let absorbed = dmg.min(sub_hp_pre);
+                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    t.substitute_hp = t.substitute_hp.saturating_sub(absorbed);
                 }
-            }
-            any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
+                any_damage_dealt = any_damage_dealt.saturating_add(absorbed);
+                0u16
+            } else {
+                // Pre-damage item hook (Focus Sash etc. may cap damage).
+                crate::item::on_before_damage(self, tside, tslot, dmg).unwrap_or(dmg)
+            };
 
-            // Post-damage item hook (Sitrus Berry etc.).
-            crate::item::on_after_damage(self, tside, tslot);
+            // Apply (only when the sub didn't intercept).
+            if !hit_sub {
+                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    t.current_hp = t.current_hp.saturating_sub(effective_dmg);
+                    if t.current_hp == 0 {
+                        t.fainted = true;
+                    }
+                }
+                any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
+
+                // Post-damage item hook (Sitrus Berry etc.).
+                crate::item::on_after_damage(self, tside, tslot);
+            }
 
             // Knock Off item removal — after damage, after Sitrus etc.,
-            // skip if target fainted (item removed via faint is moot) or
-            // if defender has Sticky Hold.
-            if m.slug == "knockoff" {
+            // skip if target fainted (item removed via faint is moot),
+            // if defender has Sticky Hold, or if the hit was absorbed by
+            // a Substitute (PS: knock-off effect requires the hit to
+            // reach the holder).
+            if m.slug == "knockoff" && !hit_sub {
                 let can_knock = self.side(tside).active_mon(tslot as usize)
                     .is_some_and(|m| m.is_alive() && {
                         let ab = if m.ability_id == u16::MAX { "" }
@@ -510,10 +531,13 @@ impl Battle {
                 }
             }
 
-            // Secondary if target still alive.
+            // Secondary if target still alive — and the sub didn't take
+            // the hit. PS: Substitute blocks all secondaries that target
+            // the user-of-the-sub (flinch, stat drops, status). Sound-move
+            // bypass is deferred to its own PR.
             let alive_post = self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive());
-            if alive_post {
+            if alive_post && !hit_sub {
                 let mut rng = self.rng;
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
@@ -748,6 +772,24 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.light_screen_turns == 0 {
                     s.conditions.light_screen_turns = 5;
+                }
+            }
+            "substitute" => {
+                // Pays max_hp/4 (rounded down). Fails if current_hp <=
+                // max_hp/4 OR sub already up. PS data/moves.ts:substitute
+                // onTryHit: `if (pokemon.volatiles['substitute']) return false;
+                //            if (pokemon.hp <= pokemon.maxhp/4 || pokemon.maxhp == 1)
+                //                this.add('-fail'); return null;`
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.substitute_hp > 0 {
+                        return;
+                    }
+                    let cost = (a.stats.hp / 4).max(1);
+                    if a.current_hp <= cost {
+                        return;
+                    }
+                    a.current_hp -= cost;
+                    a.substitute_hp = cost;
                 }
             }
             "auroraveil" => {
@@ -2299,6 +2341,148 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn substitute_absorbs_damage_and_blocks_hp_loss() {
+        // Blissey Subs (pays 1/4 max HP up front), then Garchomp EQ hits
+        // the sub. Blissey's HP doesn't drop further after sub is up.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let max_hp = b.p1.team[0].stats.hp;
+        let sub_cost = max_hp / 4;
+        // Turn 1: Blissey Subs, Garchomp Passes.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].substitute_hp, sub_cost, "sub HP = max/4");
+        assert_eq!(b.p1.team[0].current_hp, max_hp - sub_cost, "user pays max/4");
+        let hp_after_sub = b.p1.team[0].current_hp;
+        // Turn 2: Garchomp Earthquakes; damage hits the sub, not Blissey.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Blissey's HP unchanged; sub absorbed something (or broke).
+        assert_eq!(b.p1.team[0].current_hp, hp_after_sub, "Blissey HP unchanged behind sub");
+        assert!(b.p1.team[0].substitute_hp < sub_cost, "sub took damage");
+    }
+
+    #[test]
+    fn substitute_fails_when_hp_too_low() {
+        // Mon below max/4 HP cannot use Substitute. PS: hp <= maxhp/4
+        // fails the move.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["substitute","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Manually injure Pikachu below the threshold.
+        let cost = b.p1.team[0].stats.hp / 4;
+        b.p1.team[0].current_hp = cost; // exactly max/4 — at threshold, must fail.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].substitute_hp, 0, "Sub must fail at hp == max/4");
+        assert_eq!(b.p1.team[0].current_hp, cost, "No HP deducted on failure");
+    }
+
+    #[test]
+    fn substitute_clears_on_switch_out() {
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.team[0].substitute_hp > 0);
+        // Switch Blissey out, then back in. Sub must be gone.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].substitute_hp, 0, "Sub does not persist across switches");
+    }
+
+    #[test]
+    fn substitute_blocks_status_secondary() {
+        // Thunderbolt has a 10% para chance. Behind sub, the secondary
+        // must never fire. Use a high-seed sweep to ensure no false pass.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        for seed in 1u64..30 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p1.team[0].substitute_hp > 0);
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert!(
+                matches!(b.p1.team[0].status, Status::None),
+                "Sub must block T-bolt para secondary (seed {seed})",
+            );
+        }
+    }
+
+    #[test]
+    fn substitute_blocks_knock_off_item_removal() {
+        // Knock Off behind a sub does NOT remove the item.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"bold","moves":["substitute","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["knockoff","flareblitz","fakeout","partingshot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let leftovers_id = b.p1.team[0].item_id;
+        assert_ne!(leftovers_id, u16::MAX);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.team[0].substitute_hp > 0);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].item_id, leftovers_id, "Knock Off cannot remove item behind sub");
     }
 
     #[test]
