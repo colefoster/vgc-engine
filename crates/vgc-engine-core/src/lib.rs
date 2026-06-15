@@ -13,6 +13,7 @@ mod pokemon;
 mod side;
 mod team;
 
+pub mod ability;
 pub mod battle;
 pub mod damage;
 pub mod order;

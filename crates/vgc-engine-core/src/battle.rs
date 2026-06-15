@@ -60,7 +60,18 @@ impl Battle {
         let p1 = Side::new(p1_team, config.format);
         let p2 = Side::new(p2_team, config.format);
         let rng = Rng::new(config.seed);
-        Self { config, p1, p2, rng, turn: 0, ended: None }
+        let mut b = Self { config, p1, p2, rng, turn: 0, ended: None };
+        // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
+        // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
+        // ordering matches turn-order but at battle start it's by side
+        // and slot; refinement deferred).
+        let n = b.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                crate::ability::on_switch_in(&mut b, side, slot);
+            }
+        }
+        b
     }
 
     pub fn turn(&self) -> u32 {
@@ -82,7 +93,7 @@ impl Battle {
         }
     }
 
-    fn side_mut(&mut self, side: SideRef) -> &mut Side {
+    pub(crate) fn side_mut(&mut self, side: SideRef) -> &mut Side {
         match side {
             SideRef::P1 => &mut self.p1,
             SideRef::P2 => &mut self.p2,
@@ -223,6 +234,7 @@ impl Battle {
     }
 
     fn apply_switches(&mut self, side: SideRef, choices: &[Choice]) {
+        let mut switched_slots: Vec<u8> = Vec::new();
         for c in choices {
             if let Choice::Switch { actor_slot, team_index } = *c {
                 let s = self.side_mut(side);
@@ -237,8 +249,13 @@ impl Battle {
                     incoming.flinched_this_turn = false;
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
+                    switched_slots.push(actor_slot);
                 }
             }
+        }
+        // Run on-switch-in ability hooks for each newly-active mon.
+        for slot in switched_slots {
+            crate::ability::on_switch_in(self, side, slot);
         }
     }
 
@@ -817,6 +834,65 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn intimidate_drops_opposing_atk_at_battle_start() {
+        // Incineroar has Intimidate. On battle start, opposing mons'
+        // atk is -1. Pikachu has Static (no immunity), Garchomp has
+        // Rough Skin (no immunity) — both should be intimidated.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], -1, "pikachu atk -1 from Intimidate");
+        assert_eq!(b.p2.team[1].boosts[0], -1, "garchomp atk -1 from Intimidate");
+        // No friendly fire — Pelipper's atk unaffected.
+        assert_eq!(b.p1.team[1].boosts[0], 0);
+    }
+
+    #[test]
+    fn clear_body_blocks_intimidate() {
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        // Metagross has Clear Body.
+        let p2_json = r#"[
+            {"species":"metagross","level":50,"ability":"clearbody","item":"weaknesspolicy","nature":"adamant","moves":["meteormash","bulletpunch","earthquake","icepunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], 0, "Clear Body blocks Intimidate");
+    }
+
+    #[test]
+    fn intimidate_triggers_on_mid_battle_switch_in() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // No Intimidate at battle start — Pelipper is in.
+        assert_eq!(b.p2.team[0].boosts[0], 0);
+        // Switch in Incineroar.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate fires on mid-battle switch-in");
     }
 
     #[test]
