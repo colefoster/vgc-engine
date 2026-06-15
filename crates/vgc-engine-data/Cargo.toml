@@ -1,0 +1,15 @@
+[package]
+name = "vgc-engine-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Build-time data tables generated from @pkmn/dex JSON"
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

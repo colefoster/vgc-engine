@@ -1,0 +1,371 @@
+//! Build-time data generation.
+//!
+//! Reads `@pkmn/dex` JSON dumps from `$VGC_DEX_DIR` (default
+//! `~/Dev/localdex/data`) and emits Rust source for the gen-9 species, move,
+//! item, ability, and type-chart tables. The output is `include!`d by
+//! `src/lib.rs` at compile time.
+//!
+//! Sources cited in commits:
+//!   @pkmn/dex JSON dump (see ~/Dev/localdex)
+//!   Type chart cross-checked against PS `data/typechart.ts`.
+
+use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+const TYPE_NAMES: &[&str] = &[
+    "Normal", "Fire", "Water", "Electric", "Grass", "Ice", "Fighting", "Poison",
+    "Ground", "Flying", "Psychic", "Bug", "Rock", "Ghost", "Dragon", "Dark",
+    "Steel", "Fairy",
+];
+
+fn type_index(name: &str) -> Option<usize> {
+    TYPE_NAMES.iter().position(|t| t.eq_ignore_ascii_case(name))
+}
+
+fn dex_dir() -> PathBuf {
+    if let Ok(p) = env::var("VGC_DEX_DIR") {
+        return PathBuf::from(p);
+    }
+    let home = env::var("HOME").expect("HOME unset");
+    PathBuf::from(home).join("Dev/localdex/data")
+}
+
+fn slugify(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| {
+            if c.is_ascii_alphanumeric() {
+                Some(c.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn rust_str_lit(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[derive(Deserialize)]
+struct MoveJson {
+    num: i32,
+    name: String,
+    #[serde(rename = "type")]
+    type_: String,
+    category: String,
+    #[serde(rename = "basePower")]
+    base_power: u32,
+    accuracy: serde_json::Value,
+    pp: u32,
+    #[serde(default)]
+    priority: i32,
+    target: String,
+    #[serde(default, rename = "gen")]
+    gen_: u32,
+    #[serde(rename = "isNonstandard", default)]
+    is_nonstandard: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AbilityJson {
+    num: i32,
+    name: String,
+    #[serde(default, rename = "gen")]
+    gen_: u32,
+    #[serde(rename = "isNonstandard", default)]
+    is_nonstandard: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ItemJson {
+    num: i32,
+    name: String,
+    #[serde(default, rename = "gen")]
+    gen_: u32,
+    #[serde(rename = "isNonstandard", default)]
+    is_nonstandard: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BaseStats {
+    hp: u32,
+    atk: u32,
+    def: u32,
+    spa: u32,
+    spd: u32,
+    spe: u32,
+}
+
+#[derive(Deserialize)]
+struct SpeciesJson {
+    num: i32,
+    name: String,
+    types: Vec<String>,
+    #[serde(rename = "baseStats")]
+    base_stats: BaseStats,
+    #[serde(default, rename = "gen")]
+    gen_: u32,
+    #[serde(rename = "isNonstandard", default)]
+    is_nonstandard: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TypeEntry {
+    #[serde(rename = "damageTaken")]
+    damage_taken: BTreeMap<String, i32>,
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> BTreeMap<String, T> {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e))
+}
+
+fn category_code(s: &str) -> u8 {
+    match s {
+        "Physical" => 0,
+        "Special" => 1,
+        "Status" => 2,
+        other => panic!("unknown move category: {other}"),
+    }
+}
+
+/// Map PS target strings to a stable u8.
+/// Per PS `sim/dex-moves.ts` MoveTarget union.
+fn target_code(s: &str) -> u8 {
+    match s {
+        "normal" => 0,
+        "self" => 1,
+        "adjacentAlly" => 2,
+        "adjacentAllyOrSelf" => 3,
+        "adjacentFoe" => 4,
+        "allAdjacent" => 5,
+        "allAdjacentFoes" => 6,
+        "allies" => 7,
+        "allySide" => 8,
+        "allyTeam" => 9,
+        "any" => 10,
+        "foeSide" => 11,
+        "all" => 12,
+        "randomNormal" => 13,
+        "scripted" => 14,
+        // Unknown → 255 (will surface in tests when implemented).
+        _ => 255,
+    }
+}
+
+/// Accuracy: PS uses `true` for "cannot miss"; encode as 255. Otherwise 0..=100.
+fn accuracy_code(v: &serde_json::Value) -> u8 {
+    match v {
+        serde_json::Value::Bool(true) => 255,
+        serde_json::Value::Number(n) => n.as_u64().map(|x| x.min(100) as u8).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn keep_gen9<'a, T>(
+    map: &'a BTreeMap<String, T>,
+    get_gen: impl Fn(&T) -> u32,
+    get_ns: impl Fn(&T) -> Option<&str>,
+) -> Vec<(&'a String, &'a T)> {
+    let mut out: Vec<(&'a String, &'a T)> = map
+        .iter()
+        .filter(|(_, v)| get_gen(v) <= 9)
+        .filter(|(_, v)| {
+            // Drop CAP/Pokestar/Custom; keep "Past"/"Unobtainable" so the table mirrors
+            // @pkmn/dex coverage. Phase-2 format filtering will narrow further.
+            !matches!(get_ns(v), Some("CAP") | Some("Pokestar") | Some("Custom"))
+        })
+        .collect();
+    out.sort_by_key(|(k, _)| k.as_str().to_owned());
+    out
+}
+
+fn main() {
+    let dex = dex_dir();
+    println!("cargo:rerun-if-env-changed=VGC_DEX_DIR");
+    for f in ["moves.json", "abilities.json", "items.json", "pokedex.json", "typechart.json"] {
+        let p = dex.join(f);
+        println!("cargo:rerun-if-changed={}", p.display());
+    }
+
+    let moves: BTreeMap<String, MoveJson> = read_json(&dex.join("moves.json"));
+    let abilities: BTreeMap<String, AbilityJson> = read_json(&dex.join("abilities.json"));
+    let items: BTreeMap<String, ItemJson> = read_json(&dex.join("items.json"));
+    let species: BTreeMap<String, SpeciesJson> = read_json(&dex.join("pokedex.json"));
+    let typechart: BTreeMap<String, TypeEntry> = read_json(&dex.join("typechart.json"));
+
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR unset");
+    let out_path = Path::new(&out_dir).join("data_tables.rs");
+    let mut f = fs::File::create(&out_path).expect("create data_tables.rs");
+
+    writeln!(f, "// @generated by build.rs from @pkmn/dex JSON. Do not edit.").unwrap();
+    writeln!(f).unwrap();
+
+    // --- Type chart: 18x18 matrix of damage multipliers, packed.
+    // PS damageTaken codes: 0=normal(1x), 1=weak(2x), 2=resist(0.5x), 3=immune(0x).
+    writeln!(f, "pub const TYPE_NAMES: [&str; 18] = [").unwrap();
+    for n in TYPE_NAMES {
+        writeln!(f, "    {},", rust_str_lit(n)).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "/// damage_taken[defender][attacker] using PS codes:").unwrap();
+    writeln!(f, "/// 0 = 1x, 1 = 2x (weak), 2 = 0.5x (resist), 3 = 0x (immune).").unwrap();
+    writeln!(f, "pub const TYPE_CHART: [[u8; 18]; 18] = [").unwrap();
+    for def in TYPE_NAMES {
+        let entry = typechart
+            .get(*def)
+            .unwrap_or_else(|| panic!("typechart missing defender type: {def}"));
+        write!(f, "    [").unwrap();
+        for atk in TYPE_NAMES {
+            let code = entry.damage_taken.get(*atk).copied().unwrap_or(0);
+            write!(f, "{}, ", code).unwrap();
+        }
+        writeln!(f, "],").unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+
+    // --- Moves
+    let moves_keep = keep_gen9(&moves, |m| m.gen_, |m| m.is_nonstandard.as_deref());
+    writeln!(f, "pub struct MoveDef {{").unwrap();
+    writeln!(f, "    pub num: u16,").unwrap();
+    writeln!(f, "    pub name: &'static str,").unwrap();
+    writeln!(f, "    pub slug: &'static str,").unwrap();
+    writeln!(f, "    pub type_: u8,").unwrap();
+    writeln!(f, "    pub category: u8,").unwrap();
+    writeln!(f, "    pub base_power: u16,").unwrap();
+    writeln!(f, "    pub accuracy: u8,").unwrap();
+    writeln!(f, "    pub pp: u8,").unwrap();
+    writeln!(f, "    pub priority: i8,").unwrap();
+    writeln!(f, "    pub target: u8,").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
+    for (slug, m) in &moves_keep {
+        // Skip moves whose type isn't in the 18-type set (e.g. "???" placeholder).
+        let Some(ty) = type_index(&m.type_) else { continue; };
+        writeln!(
+            f,
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {} }},",
+            m.num.max(0) as u16,
+            rust_str_lit(&m.name),
+            rust_str_lit(slug),
+            ty,
+            category_code(&m.category),
+            m.base_power.min(u16::MAX as u32) as u16,
+            accuracy_code(&m.accuracy),
+            m.pp.min(u8::MAX as u32) as u8,
+            m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
+            target_code(&m.target),
+        ).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+
+    // --- Abilities
+    let abilities_keep = keep_gen9(&abilities, |a| a.gen_, |a| a.is_nonstandard.as_deref());
+    writeln!(f, "pub struct AbilityDef {{").unwrap();
+    writeln!(f, "    pub num: u16,").unwrap();
+    writeln!(f, "    pub name: &'static str,").unwrap();
+    writeln!(f, "    pub slug: &'static str,").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "pub const ABILITIES: &[AbilityDef] = &[").unwrap();
+    for (slug, a) in &abilities_keep {
+        writeln!(
+            f,
+            "    AbilityDef {{ num: {}, name: {}, slug: {} }},",
+            a.num.max(0) as u16,
+            rust_str_lit(&a.name),
+            rust_str_lit(slug),
+        ).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+
+    // --- Items
+    let items_keep = keep_gen9(&items, |i| i.gen_, |i| i.is_nonstandard.as_deref());
+    writeln!(f, "pub struct ItemDef {{").unwrap();
+    writeln!(f, "    pub num: u16,").unwrap();
+    writeln!(f, "    pub name: &'static str,").unwrap();
+    writeln!(f, "    pub slug: &'static str,").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "pub const ITEMS: &[ItemDef] = &[").unwrap();
+    for (slug, i) in &items_keep {
+        writeln!(
+            f,
+            "    ItemDef {{ num: {}, name: {}, slug: {} }},",
+            i.num.max(0) as u16,
+            rust_str_lit(&i.name),
+            rust_str_lit(slug),
+        ).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+
+    // --- Species
+    let species_keep = keep_gen9(&species, |s| s.gen_, |s| s.is_nonstandard.as_deref());
+    writeln!(f, "pub struct SpeciesDef {{").unwrap();
+    writeln!(f, "    pub num: u16,").unwrap();
+    writeln!(f, "    pub name: &'static str,").unwrap();
+    writeln!(f, "    pub slug: &'static str,").unwrap();
+    writeln!(f, "    pub types: [u8; 2],").unwrap();
+    writeln!(f, "    pub num_types: u8,").unwrap();
+    writeln!(f, "    pub base_stats: [u8; 6], // hp, atk, def, spa, spd, spe").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
+    for (slug, s) in &species_keep {
+        let mut t = [0u8; 2];
+        let nt = s.types.len().min(2) as u8;
+        let mut bad_type = false;
+        for (i, tn) in s.types.iter().take(2).enumerate() {
+            match type_index(tn) {
+                Some(idx) => t[i] = idx as u8,
+                None => { bad_type = true; break; }
+            }
+        }
+        if bad_type { continue; }
+        let bs = &s.base_stats;
+        let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
+        writeln!(
+            f,
+            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}] }},",
+            s.num.max(0) as u16,
+            rust_str_lit(&s.name),
+            rust_str_lit(slug),
+            t[0], t[1], nt,
+            clamp(bs.hp), clamp(bs.atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
+        ).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+
+    // Quick slug lookup helpers — linear scan. Phase 4 may swap to perfect hash.
+    writeln!(f).unwrap();
+    writeln!(f, "pub fn move_by_slug(s: &str) -> Option<&'static MoveDef> {{ MOVES.iter().find(|m| m.slug == s) }}").unwrap();
+    writeln!(f, "pub fn ability_by_slug(s: &str) -> Option<&'static AbilityDef> {{ ABILITIES.iter().find(|a| a.slug == s) }}").unwrap();
+    writeln!(f, "pub fn item_by_slug(s: &str) -> Option<&'static ItemDef> {{ ITEMS.iter().find(|i| i.slug == s) }}").unwrap();
+    writeln!(f, "pub fn species_by_slug(s: &str) -> Option<&'static SpeciesDef> {{ SPECIES.iter().find(|s2| s2.slug == s) }}").unwrap();
+
+    // Suppress unused-warning for slugify in tests:
+    let _ = slugify("x");
+}

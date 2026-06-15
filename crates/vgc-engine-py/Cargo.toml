@@ -1,0 +1,16 @@
+[package]
+name = "vgc-engine-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Python (pyo3) bindings for vgc-engine"
+
+[lib]
+name = "vgc_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+vgc-engine-core = { workspace = true }
+pyo3 = { workspace = true }
