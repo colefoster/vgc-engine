@@ -1,0 +1,390 @@
+//! Gen 5+ damage formula. **Pure function** — takes attacker/defender/move
+//! snapshots and a context, returns HP damage. Does not read or mutate
+//! battle state.
+//!
+//! Order of operations matches PS `sim/battle-actions.ts::modifyDamage`,
+//! cross-checked with Bulbapedia "Damage" article:
+//!
+//!   1. base = floor( floor( floor(2L/5 + 2) * BP * A / D ) / 50 ) + 2
+//!   2. spread modifier (skipped — doubles spread is its own PR)
+//!   3. weather modifier (skipped — weather is its own PR)
+//!   4. crit × 1.5
+//!   5. random × (85 + roll) / 100, roll ∈ 0..=15
+//!   6. STAB × 1.5
+//!   7. type effectiveness × 0/0.25/0.5/1/2/4
+//!   8. burn ÷ 2 if attacker burned & physical (Guts gating — later PR)
+//!   9. other modifiers (items / abilities / screens — later PRs)
+//!
+//! Boost-stage handling on crit follows PS: ignore attacker's *negative*
+//! offensive stages and defender's *positive* defensive stages.
+
+use crate::pokemon::{Pokemon, Status};
+use vgc_engine_data as data;
+
+#[derive(Debug, Clone, Copy)]
+pub struct DamageContext {
+    /// Caller decides whether this hit is a crit; we just apply the multiplier.
+    pub crit: bool,
+    /// 0..=15. PS damage roll bucket — multiplier is `(85 + roll) / 100`.
+    pub roll: u8,
+}
+
+impl DamageContext {
+    pub const MAX_ROLL: u8 = 15;
+    pub const MIN_ROLL: u8 = 0;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeEff {
+    Immune,
+    QuarterX,
+    HalfX,
+    Neutral,
+    DoubleX,
+    QuadrupleX,
+}
+
+impl TypeEff {
+    /// Apply this multiplier to a damage value via integer math.
+    pub fn apply(self, dmg: u32) -> u32 {
+        match self {
+            TypeEff::Immune => 0,
+            TypeEff::QuarterX => dmg / 4,
+            TypeEff::HalfX => dmg / 2,
+            TypeEff::Neutral => dmg,
+            TypeEff::DoubleX => dmg * 2,
+            TypeEff::QuadrupleX => dmg * 4,
+        }
+    }
+
+    pub fn is_immune(self) -> bool {
+        matches!(self, TypeEff::Immune)
+    }
+}
+
+/// Stat-boost stage multiplier per PS:
+///   +s → (2+s)/2 for s ≥ 0
+///   −s → 2/(2+s) for s > 0
+pub fn apply_boost(stat: u32, stage: i8) -> u32 {
+    if stage >= 0 {
+        let s = (stage.min(6)) as u32;
+        stat * (2 + s) / 2
+    } else {
+        let s = ((-stage).min(6)) as u32;
+        stat * 2 / (2 + s)
+    }
+}
+
+/// Type effectiveness of `move_type` vs `defender`. Considers all of the
+/// defender's types (1 or 2).
+pub fn type_effectiveness(move_type: u8, defender: &data::SpeciesDef) -> TypeEff {
+    let mut weak = 0i32;
+    let mut resist = 0i32;
+    let mut immune = false;
+    for i in 0..defender.num_types as usize {
+        let def_type = defender.types[i] as usize;
+        // TYPE_CHART[defender][attacker] codes: 0=1x, 1=2x, 2=0.5x, 3=0x.
+        match data::TYPE_CHART[def_type][move_type as usize] {
+            0 => {}
+            1 => weak += 1,
+            2 => resist += 1,
+            3 => immune = true,
+            other => unreachable!("bad type-chart code {other}"),
+        }
+    }
+    if immune {
+        return TypeEff::Immune;
+    }
+    match weak - resist {
+        -2 => TypeEff::QuarterX,
+        -1 => TypeEff::HalfX,
+        0 => TypeEff::Neutral,
+        1 => TypeEff::DoubleX,
+        2 => TypeEff::QuadrupleX,
+        _ => unreachable!(),
+    }
+}
+
+/// Calculate damage in HP for a single hit.
+///
+/// Returns 0 for status moves, base-power-0 moves, or type-immune hits.
+pub fn calculate_damage(
+    attacker: &Pokemon,
+    defender: &Pokemon,
+    move_id: u16,
+    ctx: DamageContext,
+) -> u16 {
+    let m = &data::MOVES[move_id as usize];
+    let bp = m.base_power as u32;
+    // 2 = Status (no damage). bp == 0 for status / weird moves; treat as 0
+    // until variable-BP / OHKO mechanics land.
+    if m.category == 2 || bp == 0 {
+        return 0;
+    }
+
+    let physical = m.category == 0;
+
+    // Boost-stage indices into `Pokemon::boosts`:
+    //   0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva
+    let (atk_stage, def_stage, atk_stat, def_stat) = if physical {
+        (
+            attacker.boosts[0],
+            defender.boosts[1],
+            attacker.stats.atk as u32,
+            defender.stats.def as u32,
+        )
+    } else {
+        (
+            attacker.boosts[2],
+            defender.boosts[3],
+            attacker.stats.spa as u32,
+            defender.stats.spd as u32,
+        )
+    };
+
+    // Crit ignores attacker's negative offensive boosts and defender's
+    // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
+    let eff_atk_stage = if ctx.crit && atk_stage < 0 { 0 } else { atk_stage };
+    let eff_def_stage = if ctx.crit && def_stage > 0 { 0 } else { def_stage };
+    let a = apply_boost(atk_stat, eff_atk_stage).max(1);
+    let d = apply_boost(def_stat, eff_def_stage).max(1);
+
+    let level = attacker.level as u32;
+    // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2
+    let level_factor = (2 * level / 5) + 2;
+    let mut dmg: u32 = level_factor * bp * a / d / 50 + 2;
+
+    // Crit (gen 6+): ×1.5
+    if ctx.crit {
+        dmg = dmg * 3 / 2;
+    }
+
+    // Random
+    let roll = (ctx.roll.min(DamageContext::MAX_ROLL)) as u32;
+    dmg = dmg * (85 + roll) / 100;
+
+    // STAB
+    let species = attacker.species();
+    let is_stab = (0..species.num_types as usize)
+        .any(|i| species.types[i] == m.type_);
+    if is_stab {
+        dmg = dmg * 3 / 2;
+    }
+
+    // Type effectiveness
+    let eff = type_effectiveness(m.type_, defender.species());
+    if eff.is_immune() {
+        return 0;
+    }
+    dmg = eff.apply(dmg);
+
+    // Burn: physical attackers with burn deal halved damage. Guts/Facade
+    // gating lands in their respective PRs.
+    if physical && attacker.status == Status::Burn {
+        dmg /= 2;
+    }
+
+    // Minimum 1 damage on non-immune hits (PS sim/battle-actions.ts).
+    dmg.max(1).min(u16::MAX as u32) as u16
+}
+
+/// Min/max damage across all 16 random rolls (no crit). Useful for tests
+/// and for the eventual MCTS damage frontier.
+pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u16, u16) {
+    let min = calculate_damage(
+        attacker,
+        defender,
+        move_id,
+        DamageContext { crit: false, roll: DamageContext::MIN_ROLL },
+    );
+    let max = calculate_damage(
+        attacker,
+        defender,
+        move_id,
+        DamageContext { crit: false, roll: DamageContext::MAX_ROLL },
+    );
+    (min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pokemon::{compute_stats, nature_by_slug, FinalStats, Pokemon, StatSpread, Status};
+
+    fn make_mon(
+        species_slug: &str,
+        level: u8,
+        nature: &str,
+        evs: StatSpread,
+    ) -> Pokemon {
+        let species_id = data::SPECIES
+            .iter()
+            .position(|s| s.slug == species_slug)
+            .expect("species") as u16;
+        let species = &data::SPECIES[species_id as usize];
+        let nature = nature_by_slug(nature).expect("nature");
+        let stats = compute_stats(species, level, &StatSpread::MAX_IV, &evs, nature);
+        Pokemon {
+            species_id,
+            level,
+            moves: [u16::MAX; 4],
+            pp: [0; 4],
+            ability_id: u16::MAX,
+            item_id: u16::MAX,
+            current_hp: stats.hp,
+            stats,
+            status: Status::None,
+            boosts: [0; 7],
+            fainted: false,
+        }
+    }
+
+    fn move_id(slug: &str) -> u16 {
+        data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn type_chart_basics() {
+        let pikachu = data::species_by_slug("pikachu").unwrap();
+        let groundsville = data::species_by_slug("groudon").unwrap();
+        // Ground (atk type 8) vs Electric defender → 2x.
+        assert_eq!(type_effectiveness(8, pikachu), TypeEff::DoubleX);
+        // Electric (3) vs Ground defender → 0x.
+        assert_eq!(type_effectiveness(3, groundsville), TypeEff::Immune);
+    }
+
+    #[test]
+    fn boost_stages_match_ps() {
+        assert_eq!(apply_boost(100, 0), 100);
+        assert_eq!(apply_boost(100, 1), 150);     // 100 * 3/2
+        assert_eq!(apply_boost(100, 2), 200);
+        assert_eq!(apply_boost(100, 6), 400);     // 100 * 8/2
+        assert_eq!(apply_boost(100, -1), 66);     // 100 * 2/3 truncated
+        assert_eq!(apply_boost(100, -6), 25);     // 100 * 2/8
+    }
+
+    #[test]
+    fn garchomp_earthquake_vs_pikachu_max_roll() {
+        // Adamant 252+ Garchomp Earthquake vs 0/0 neutral Pikachu, max roll.
+        //   atk = 200 (proved in pokemon::tests)
+        //   pikachu def = floor((2*40+31)*50/100) + 5 = 60
+        //   base = (2*50/5+2)*100*200/60/50 + 2 = 22*100*200/60/50 + 2
+        //        = 440000/60/50 + 2 = 7333/50 + 2 = 146 + 2 = 148
+        //   ×1.0 (max roll), ×1.5 (STAB Ground), ×2 (Ground vs Electric)
+        //   = 148 * 1 * 3/2 * 2 = 444
+        let attacker = make_mon(
+            "garchomp",
+            50,
+            "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let dmg = calculate_damage(
+            &attacker,
+            &defender,
+            move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 },
+        );
+        assert_eq!(dmg, 444);
+    }
+
+    #[test]
+    fn min_roll_lower_than_max() {
+        let attacker = make_mon(
+            "garchomp",
+            50,
+            "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let (lo, hi) = damage_range(&attacker, &defender, move_id("earthquake"));
+        assert!(lo < hi);
+        assert_eq!(hi, 444);
+        // 148 * 85/100 = 125 (trunc); ×3/2 STAB = 187 (trunc); ×2 type = 374.
+        assert_eq!(lo, 374);
+    }
+
+    #[test]
+    fn immune_returns_zero() {
+        // Earthquake (Ground) vs Flying-type Pelipper → 0x.
+        let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let pelipper = make_mon("pelipper", 50, "modest", StatSpread::ZERO);
+        let dmg = calculate_damage(&attacker, &pelipper, move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 });
+        assert_eq!(dmg, 0);
+    }
+
+    #[test]
+    fn crit_increases_damage() {
+        let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 });
+        let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
+            DamageContext { crit: true, roll: 15 });
+        assert!(crit > no_crit);
+        // 148 * 3/2 = 222; × roll 100/100 = 222; × STAB 3/2 = 333; × type 2 = 666
+        assert_eq!(crit, 666);
+    }
+
+    #[test]
+    fn burn_halves_physical_only() {
+        let mut attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        attacker.status = Status::Burn;
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let burned = calculate_damage(&attacker, &defender, move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 });
+        // 444 / 2 = 222
+        assert_eq!(burned, 222);
+    }
+
+    #[test]
+    fn crit_ignores_negative_atk_boost() {
+        let mut attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        attacker.boosts[0] = -2; // -50% atk pre-crit
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 });
+        let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
+            DamageContext { crit: true, roll: 15 });
+        // With -2 atk boost ignored on crit, crit damage > no-crit (with -2 applied).
+        assert!(crit > no_crit * 2, "crit should ignore -2 atk boost");
+    }
+
+    #[test]
+    fn no_stab_when_offtype() {
+        // Garchomp (Dragon/Ground) using Tackle (Normal) — no STAB.
+        let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let dmg = calculate_damage(&attacker, &defender, move_id("tackle"),
+            DamageContext { crit: false, roll: 15 });
+        // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
+        // × 100/100 × 1.0 STAB × 1.0 type = 60.
+        assert_eq!(dmg, 60);
+    }
+
+    #[test]
+    fn status_move_returns_zero() {
+        let attacker = make_mon("garchomp", 50, "adamant", StatSpread::ZERO);
+        let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let dmg = calculate_damage(&attacker, &defender, move_id("protect"),
+            DamageContext { crit: false, roll: 15 });
+        assert_eq!(dmg, 0);
+    }
+
+    #[test]
+    fn manual_stats_override() {
+        // Sanity that FinalStats path is what's read. Construct a mon with
+        // hand-set stats and verify the formula uses them.
+        let mut m = make_mon("garchomp", 50, "hardy", StatSpread::ZERO);
+        m.stats = FinalStats { hp: 100, atk: 300, def: 100, spa: 50, spd: 50, spe: 100 };
+        m.current_hp = 100;
+        let d = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        // With atk = 300 and the same setup as the Garchomp test, damage scales linearly.
+        let dmg = calculate_damage(&m, &d, move_id("earthquake"),
+            DamageContext { crit: false, roll: 15 });
+        // base = 22 * 100 * 300 / 60 / 50 + 2 = 22 * 100 * 300 / 3000 + 2 = 220 + 2 = 222
+        // × STAB 3/2 = 333, × type 2 = 666.
+        assert_eq!(dmg, 666);
+    }
+}
