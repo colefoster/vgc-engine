@@ -9,3 +9,5 @@ description = "vgc-engine simulation core (data-oriented, zero-alloc step loop)"
 
 [dependencies]
 vgc-engine-data = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

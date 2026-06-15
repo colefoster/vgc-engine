@@ -1,59 +1,20 @@
-//! `vgc-engine-cli` — Phase 1 debug harness.
-//!
-//! Minimal: lets you construct a Battle and step it from the shell.
-//!
-//!   vgc-engine-cli step           # one step
-//!   vgc-engine-cli step --turns 5 # five steps
-//!   vgc-engine-cli info           # data-table sizes
+//! `vgc-engine-cli` — debug harness.
 
 use std::env;
+use std::fs;
 use std::process::ExitCode;
 
 use vgc_engine_core as core;
 
 fn print_usage() {
     eprintln!(
-        "usage: vgc-engine-cli <command>\n\
+        "usage: vgc-engine-cli <command> [...]\n\
          \n\
          commands:\n\
-           step [--turns N]   Construct a Battle, step it N times (default 1), print state.\n\
-           info               Print sizes of generated data tables.\n\
-           help               This message.\n"
+           info                      Print data-table sizes.\n\
+           load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
+           help                      This message.\n"
     );
-}
-
-fn cmd_step(args: &[String]) -> ExitCode {
-    let mut turns: u32 = 1;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--turns" => {
-                let Some(v) = args.get(i + 1) else {
-                    eprintln!("--turns requires a value");
-                    return ExitCode::from(2);
-                };
-                turns = v.parse().unwrap_or_else(|_| {
-                    eprintln!("--turns: not a number: {v}");
-                    std::process::exit(2);
-                });
-                i += 2;
-            }
-            other => {
-                eprintln!("unknown step arg: {other}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-    let mut b = core::Battle::default();
-    for _ in 0..turns {
-        let r = b.step(core::Choice::Noop, core::Choice::Noop);
-        if let core::StepResult::Ended { winner } = r {
-            println!("ended at turn {} (winner = {:?})", b.turn(), winner);
-            return ExitCode::SUCCESS;
-        }
-    }
-    println!("turn = {}", b.turn());
-    ExitCode::SUCCESS
 }
 
 fn cmd_info() -> ExitCode {
@@ -65,6 +26,53 @@ fn cmd_info() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_load(args: &[String]) -> ExitCode {
+    let [p1, p2] = match args {
+        [a, b] => [a, b],
+        _ => {
+            eprintln!("load: expected exactly 2 path arguments");
+            return ExitCode::from(2);
+        }
+    };
+    let p1_json = match fs::read_to_string(p1) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("read {p1}: {e}"); return ExitCode::from(1); }
+    };
+    let p2_json = match fs::read_to_string(p2) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("read {p2}: {e}"); return ExitCode::from(1); }
+    };
+    let p1_team = match core::TeamBuilder::from_json(&p1_json) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("parse p1: {e}"); return ExitCode::from(1); }
+    };
+    let p2_team = match core::TeamBuilder::from_json(&p2_json) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("parse p2: {e}"); return ExitCode::from(1); }
+    };
+    let b = core::Battle::new(core::BattleConfig::default(), p1_team, p2_team);
+    println!("format: {:?}", b.format());
+    println!("p1 team ({} mons):", b.p1.team.len());
+    for (i, m) in b.p1.team.iter().enumerate() {
+        let s = m.species();
+        println!(
+            "  {}. {} L{} hp={}/{} atk={} def={} spa={} spd={} spe={}",
+            i, s.slug, m.level, m.current_hp, m.stats.hp,
+            m.stats.atk, m.stats.def, m.stats.spa, m.stats.spd, m.stats.spe,
+        );
+    }
+    println!("p2 team ({} mons):", b.p2.team.len());
+    for (i, m) in b.p2.team.iter().enumerate() {
+        let s = m.species();
+        println!(
+            "  {}. {} L{} hp={}/{} atk={} def={} spa={} spd={} spe={}",
+            i, s.slug, m.level, m.current_hp, m.stats.hp,
+            m.stats.atk, m.stats.def, m.stats.spa, m.stats.spd, m.stats.spe,
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
@@ -72,12 +80,9 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     match cmd.as_str() {
-        "step" => cmd_step(&args[1..]),
         "info" => cmd_info(),
-        "help" | "--help" | "-h" => {
-            print_usage();
-            ExitCode::SUCCESS
-        }
+        "load" => cmd_load(&args[1..]),
+        "help" | "--help" | "-h" => { print_usage(); ExitCode::SUCCESS }
         other => {
             eprintln!("unknown command: {other}");
             print_usage();
