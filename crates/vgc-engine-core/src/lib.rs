@@ -14,9 +14,11 @@ mod side;
 mod team;
 
 pub mod battle;
+pub mod damage;
 
 pub use battle::{Battle, BattleConfig, StepResult};
 pub use choice::{Choice, MoveSlot, Target};
+pub use damage::{calculate_damage, damage_range, type_effectiveness, DamageContext, TypeEff};
 pub use format::Format;
 pub use pokemon::{Nature, Pokemon, Stat, Status};
 pub use side::{Side, SideRef};
