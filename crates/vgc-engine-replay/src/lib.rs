@@ -12,6 +12,7 @@ mod event;
 mod parser;
 mod recon;
 mod replay;
+mod runner;
 
 pub use event::{Event, PokeSlot};
 pub use parser::parse_line;
@@ -20,3 +21,4 @@ pub use recon::{
     ReconError, ReconInput, TeamRecon,
 };
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke};
+pub use runner::{RunnerError, RunnerInit};
