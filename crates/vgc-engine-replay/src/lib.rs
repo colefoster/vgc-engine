@@ -16,7 +16,7 @@ mod replay;
 pub use event::{Event, PokeSlot};
 pub use parser::parse_line;
 pub use recon::{
-    input_from_team_preview, parse_details, CanonicalDefault, PokeObservation, ReconError,
-    ReconInput, TeamRecon,
+    input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,
+    ReconError, ReconInput, TeamRecon,
 };
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke};

@@ -67,13 +67,39 @@ pub enum Event {
     Unboost { slot: PokeSlot, stat: String, amount: i8 },
     /// `|-status|<slot>|<status>`
     Status { slot: PokeSlot, status: String },
+    /// `|-ability|<slot>|<ability>|...` — ability reveal (e.g. trace, weather trigger, Stamina proc).
+    Ability {
+        slot: PokeSlot,
+        ability: String,
+        from: Option<String>,
+    },
+    /// `|-item|<slot>|<item>|...` — item reveal (Frisk, Pickup, etc.).
+    Item {
+        slot: PokeSlot,
+        item: String,
+        from: Option<String>,
+    },
+    /// `|-enditem|<slot>|<item>|...` — item consumed/lost (Sitrus, Focus Sash, Knock Off).
+    EndItem {
+        slot: PokeSlot,
+        item: String,
+        from: Option<String>,
+    },
     /// `|-cureststatus|<slot>|<status>`
     CureStatus { slot: PokeSlot, status: String },
 
     /// `|-weather|<weather>|...`
-    Weather { weather: String, from: Option<String> },
+    Weather {
+        weather: String,
+        from: Option<String>,
+        of: Option<PokeSlot>,
+    },
     /// `|-fieldstart|move: <terrain>|...`
-    FieldStart { effect: String, from: Option<String> },
+    FieldStart {
+        effect: String,
+        from: Option<String>,
+        of: Option<PokeSlot>,
+    },
     /// `|-fieldend|move: <terrain>`
     FieldEnd { effect: String },
     /// `|-sidestart|<side>|<effect>` (Reflect / Light Screen / Tailwind / etc.)

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use vgc_engine_core::{StatSpread, TeamMember};
 use vgc_engine_data as data;
 
+use crate::event::{Event, PokeSlot};
 use crate::replay::TeamPreviewPoke;
 
 /// Per-Pokémon known/observed facts that any reconstruction strategy can use.
@@ -177,8 +178,8 @@ fn slugify_species(s: &str) -> String {
 }
 
 /// Convenience: build a [`ReconInput`] from a side's team-preview entries.
-/// Observed moves/items/abilities can be filled in by a follow-up pass
-/// over the event stream (PR-35 territory).
+/// Observed moves/items/abilities are left empty; call
+/// [`observe_events`] to fill them in from the event stream.
 pub fn input_from_team_preview(player: u8, preview: &[TeamPreviewPoke]) -> ReconInput {
     let mons = preview
         .iter()
@@ -186,6 +187,149 @@ pub fn input_from_team_preview(player: u8, preview: &[TeamPreviewPoke]) -> Recon
         .map(|p| parse_details(&p.details))
         .collect();
     ReconInput { player, mons }
+}
+
+/// Walk the event stream and populate each side's [`PokeObservation`] with
+/// the moves / items / abilities the replay actually reveals.
+///
+/// Returns `[Option<ReconInput>; 2]`, one entry per player (index 0 = p1,
+/// index 1 = p2). Each is `Some` if the team-preview contained mons for
+/// that player, `None` otherwise.
+///
+/// Strategy: maintain a slot-letter → species map per player, updated on
+/// every `Switch`/`Drag`. Each `Move`/`Ability`/`Item`/`EndItem` event is
+/// then attributed to the species currently in that slot. The match against
+/// the team-preview is by species slug.
+///
+/// Observed moves are capped at 4 (PS protocol guarantees no mon legally
+/// reveals more); duplicates are collapsed. Items/abilities are recorded
+/// on first sight; later changes (Trick, Skill Swap, Mega evolution) are
+/// ignored — they'd corrupt the inferred original set.
+pub fn observe_events(
+    events: &[Event],
+    preview: &[TeamPreviewPoke],
+) -> [Option<ReconInput>; 2] {
+    let mut p1 = input_from_team_preview(1, preview);
+    let mut p2 = input_from_team_preview(2, preview);
+
+    // active[player_idx][slot_letter as usize - 'a'] = species_slug, or None.
+    // Slot letters in doubles are 'a' or 'b'; we size 4 to be safe (triples
+    // / horde formats use 'c'/'d' historically — defensive only).
+    let mut active: [[Option<String>; 4]; 2] = Default::default();
+
+    for ev in events {
+        match ev {
+            Event::Switch { slot, details, .. } | Event::Drag { slot, details, .. } => {
+                let species = parse_details(details).species;
+                if let Some(cell) = slot_cell(&mut active, slot) {
+                    *cell = Some(species);
+                }
+            }
+            Event::Faint(slot) => {
+                if let Some(cell) = slot_cell(&mut active, slot) {
+                    *cell = None;
+                }
+            }
+            Event::Move { user, move_name, .. } => {
+                if let Some(species) = current_species(&active, user)
+                    && let Some(input) = input_for(user.player, &mut p1, &mut p2)
+                    && let Some(mon) = input.mons.iter_mut().find(|m| m.species == species)
+                {
+                    let slug = move_slugify(move_name);
+                    // Skip Struggle (auto-generated when no PP remains).
+                    if slug == "struggle" {
+                        continue;
+                    }
+                    if !mon.moves.iter().any(|m| m == &slug) && mon.moves.len() < 4 {
+                        mon.moves.push(slug);
+                    }
+                }
+            }
+            Event::Ability { slot, ability, .. } => {
+                attribute_ability(&active, slot, ability, &mut p1, &mut p2);
+            }
+            // `|-weather|RainDance|[from] ability: Drizzle|[of] p1b: Pelipper`
+            // and `|-fieldstart|move: Electric Terrain|[from] ability: Electric Surge|[of] ...`
+            // reveal abilities without a standalone `|-ability|` event.
+            Event::Weather { from: Some(from_str), of: Some(of_slot), .. }
+            | Event::FieldStart { from: Some(from_str), of: Some(of_slot), .. } => {
+                if let Some(ability) = from_str.strip_prefix("ability: ") {
+                    attribute_ability(&active, of_slot, ability, &mut p1, &mut p2);
+                }
+            }
+            Event::Item { slot, item, .. } | Event::EndItem { slot, item, .. } => {
+                if let Some(species) = current_species(&active, slot)
+                    && let Some(input) = input_for(slot.player, &mut p1, &mut p2)
+                    && let Some(mon) = input.mons.iter_mut().find(|m| m.species == species)
+                    && mon.item.is_none()
+                {
+                    mon.item = Some(move_slugify(item));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    [
+        (!p1.mons.is_empty()).then_some(p1),
+        (!p2.mons.is_empty()).then_some(p2),
+    ]
+}
+
+fn attribute_ability(
+    active: &[[Option<String>; 4]; 2],
+    slot: &PokeSlot,
+    ability: &str,
+    p1: &mut ReconInput,
+    p2: &mut ReconInput,
+) {
+    if let Some(species) = current_species(active, slot)
+        && let Some(input) = input_for(slot.player, p1, p2)
+        && let Some(mon) = input.mons.iter_mut().find(|m| m.species == species)
+        && mon.ability.is_none()
+    {
+        mon.ability = Some(move_slugify(ability));
+    }
+}
+
+fn slot_cell<'a>(
+    active: &'a mut [[Option<String>; 4]; 2],
+    slot: &PokeSlot,
+) -> Option<&'a mut Option<String>> {
+    let p = (slot.player as usize).checked_sub(1)?;
+    if p >= 2 {
+        return None;
+    }
+    let idx = (slot.slot as u8).checked_sub(b'a')? as usize;
+    active[p].get_mut(idx)
+}
+
+fn current_species(active: &[[Option<String>; 4]; 2], slot: &PokeSlot) -> Option<String> {
+    let p = (slot.player as usize).checked_sub(1)?;
+    if p >= 2 {
+        return None;
+    }
+    let idx = (slot.slot as u8).checked_sub(b'a')? as usize;
+    active[p].get(idx).and_then(|s| s.clone())
+}
+
+fn input_for<'a>(
+    player: u8,
+    p1: &'a mut ReconInput,
+    p2: &'a mut ReconInput,
+) -> Option<&'a mut ReconInput> {
+    match player {
+        1 => Some(p1),
+        2 => Some(p2),
+        _ => None,
+    }
+}
+
+fn move_slugify(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 #[cfg(test)]

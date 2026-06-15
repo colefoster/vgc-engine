@@ -21,6 +21,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
             .find_map(|p| p.strip_prefix(&format!("[{key}] ")).map(str::to_string))
     };
     let from = || kv("from");
+    let of = || kv("of").as_deref().and_then(parse_slot);
 
     Some(match kind {
         "turn" => Event::Turn(rest.first()?.parse().ok()?),
@@ -78,6 +79,21 @@ pub fn parse_line(line: &str) -> Option<Event> {
             slot: parse_slot(rest.first()?)?,
             status: rest.get(1)?.to_string(),
         },
+        "-ability" => Event::Ability {
+            slot: parse_slot(rest.first()?)?,
+            ability: rest.get(1)?.to_string(),
+            from: from(),
+        },
+        "-item" => Event::Item {
+            slot: parse_slot(rest.first()?)?,
+            item: rest.get(1)?.to_string(),
+            from: from(),
+        },
+        "-enditem" => Event::EndItem {
+            slot: parse_slot(rest.first()?)?,
+            item: rest.get(1)?.to_string(),
+            from: from(),
+        },
         "-curestatus" => Event::CureStatus {
             slot: parse_slot(rest.first()?)?,
             status: rest.get(1)?.to_string(),
@@ -85,10 +101,12 @@ pub fn parse_line(line: &str) -> Option<Event> {
         "-weather" => Event::Weather {
             weather: rest.first()?.to_string(),
             from: from(),
+            of: of(),
         },
         "-fieldstart" => Event::FieldStart {
             effect: rest.first()?.to_string(),
             from: from(),
+            of: of(),
         },
         "-fieldend" => Event::FieldEnd {
             effect: rest.first()?.to_string(),
@@ -160,7 +178,7 @@ mod tests {
     fn weather_with_from() {
         let ev = parse_line("|-weather|RainDance|[from] ability: Drizzle|[of] p1b: Pelipper").unwrap();
         match ev {
-            Event::Weather { weather, from } => {
+            Event::Weather { weather, from, .. } => {
                 assert_eq!(weather, "RainDance");
                 assert_eq!(from.as_deref(), Some("ability: Drizzle"));
             }
