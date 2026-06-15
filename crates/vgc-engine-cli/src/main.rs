@@ -211,7 +211,7 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let mut agreements: Vec<f32> = Vec::new();
+    let mut sweep_agreements: Vec<replay::ReplayScore> = Vec::new();
     let mut parse_failed: usize = 0;
     let mut recon_failed: usize = 0;
     let mut total_turns: usize = 0;
@@ -234,16 +234,17 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             replay::DEFAULT_HP_TOLERANCE,
         ) {
             Ok(s) if !s.per_turn.is_empty() => {
-                agreements.push(s.agreement_pct);
                 total_turns += s.per_turn.len();
                 hp_div += s.hp_diverged_turns();
                 faint_div += s.faint_diverged_turns();
                 status_div += s.status_diverged_turns();
+                sweep_agreements.push(s);
             }
             Ok(_) => recon_failed += 1,
             Err(_) => recon_failed += 1,
         }
     }
+    let agreements: Vec<f32> = sweep_agreements.iter().map(|s| s.agreement_pct).collect();
 
     println!("processed     : {}", files.len());
     println!("parse failed  : {parse_failed}");
@@ -261,6 +262,17 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
 
     println!("mean agreement   : {:.1}%", mean * 100.0);
     println!("median agreement : {:.1}%", median * 100.0);
+    println!();
+    println!("tolerance sweep (mean agreement at each HP-L1 tolerance):");
+    for tol in [0.05f32, 0.10, 0.20, 0.40] {
+        let mean_at: f32 = sweep_agreements
+            .iter()
+            .map(|score| score.agreement_at(tol))
+            .sum::<f32>()
+            / sweep_agreements.len() as f32;
+        let bar: String = "#".repeat(((mean_at * 40.0) as usize).min(40));
+        println!("  ±{:>4.0}%  {:>5.1}%  {bar}", tol * 100.0, mean_at * 100.0);
+    }
     println!();
     println!("divergence categories (of {total_turns} total turns):");
     println!("  hp_l1   : {hp_div:>5}  ({:.1}%)", pct(hp_div, total_turns));

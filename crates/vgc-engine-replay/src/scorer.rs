@@ -87,6 +87,28 @@ impl ReplayScore {
     pub fn status_diverged_turns(&self) -> usize {
         self.per_turn.iter().filter(|t| t.status_diverged).count()
     }
+
+    /// Recompute the agreement fraction at a different HP tolerance,
+    /// without re-running the engine. `faint_diverged` and
+    /// `status_diverged` still veto, only the HP-fraction L1 gate is
+    /// reconsidered. Useful for the tolerance-sweep diagnostic.
+    pub fn agreement_at(&self, tol: f32) -> f32 {
+        if self.per_turn.is_empty() {
+            return 0.0;
+        }
+        let agreed = self
+            .per_turn
+            .iter()
+            .filter(|t| {
+                !t.faint_diverged
+                    && !t.status_diverged
+                    && t.compared_slots > 0
+                    && !t.hp_l1.is_nan()
+                    && t.hp_l1 <= tol
+            })
+            .count();
+        agreed as f32 / self.per_turn.len() as f32
+    }
 }
 
 /// End-to-end: parse → recon → init → step turn-by-turn → score.
