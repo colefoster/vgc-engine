@@ -13,7 +13,8 @@ Within gen 9 itself we **slice by mechanic coverage, not by feature completeness
 
 ## Current phase
 
-**Phase 0** — project scaffolded, no code.
+**Phase 2** — top-50 mechanic coverage. See `data/corpus_frequency.md` for the
+work order.
 
 ---
 
@@ -69,3 +70,4 @@ Each backfill gen follows the same phase structure (corpus → top-50 → long-t
 | date       | phase | result | notes |
 |------------|-------|--------|-------|
 | 2026-06-15 | 0     | DONE   | repo scaffolded, no code |
+| 2026-06-15 | 1     | DONE   | cargo workspace (core/data/py/cli), build.rs codegens 1416 species / 935 moves / 581 items / 311 abilities / 18-type chart from @pkmn/dex; pyo3 wheel installs into mimikyu's .venv-analytics and `import vgc_engine; vgc_engine.Battle()` works; corpus_frequency.md generated from 1,047,787 replays (top-95% cutoffs: 166 moves / 27 abilities / 10 items / 152 species — Phase 2 work order) |
