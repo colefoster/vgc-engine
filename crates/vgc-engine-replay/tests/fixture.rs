@@ -120,6 +120,49 @@ fn runner_builds_battle_from_fixture() {
 }
 
 #[test]
+fn turn_bucketing_matches_fixture() {
+    let r = Replay::from_json(SAMPLE).unwrap();
+    let turns = r.turns();
+
+    // Fixture log has |turn|1..=6 (6 turn markers). Plus a synthetic
+    // turn-0 bucket for pre-turn-1 setup ⇒ 7 buckets total.
+    assert_eq!(turns.len(), 7);
+    assert_eq!(turns[0].number, 0);
+    assert_eq!(turns.last().unwrap().number, 6);
+
+    // Every Move event in the replay should appear in some turn>=1 bucket
+    // (Moves don't happen during the pre-turn-1 init phase).
+    let pre_turn_moves = turns[0].events.iter().filter(|e| matches!(e, Event::Move { .. })).count();
+    assert_eq!(pre_turn_moves, 0);
+    let total_moves: usize = turns
+        .iter()
+        .map(|t| t.events.iter().filter(|e| matches!(e, Event::Move { .. })).count())
+        .sum();
+    let raw_moves = r
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Move { .. }))
+        .count();
+    assert_eq!(total_moves, raw_moves, "no Move events lost in bucketing");
+
+    // The four lead switches (p1a, p1b, p2a, p2b) should all be in turn 0.
+    let switches_turn0 = turns[0]
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Switch { .. }))
+        .count();
+    assert!(switches_turn0 >= 4, "turn 0 has the lead switches");
+
+    // Win event lands in the last bucket.
+    assert!(turns
+        .last()
+        .unwrap()
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::Win(_))));
+}
+
+#[test]
 fn other_variant_preserves_unknown_lines() {
     let r = Replay::from_json(SAMPLE).unwrap();
     // Sample log contains -supereffective / -resisted / -crit / etc. that
