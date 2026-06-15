@@ -90,12 +90,33 @@ pub fn action_order(
                     let (priority, speed) = match mon {
                         Some(m) => {
                             let mid = m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX);
-                            let pri = if mid == u16::MAX {
-                                0
+                            let (base_pri, category) = if mid == u16::MAX {
+                                (0i32, 2u8)
                             } else {
-                                data::MOVES[mid as usize].priority as i32
+                                let mv = &data::MOVES[mid as usize];
+                                (mv.priority as i32, mv.category)
                             };
-                            (pri, effective_speed(m, tailwind) as i64)
+                            // Prankster: +1 priority to status moves used
+                            // by the holder. Dark-type immunity to the
+                            // boosted move is enforced at resolve time
+                            // (gen 7+), not here — order-resolution still
+                            // uses the bumped priority. PS data/abilities.ts
+                            // prankster onModifyPriority.
+                            let pri_after_ability = if category == 2 {
+                                let ability_slug = if m.ability_id == u16::MAX {
+                                    ""
+                                } else {
+                                    data::ABILITIES[m.ability_id as usize].slug
+                                };
+                                if ability_slug == "prankster" {
+                                    base_pri + 1
+                                } else {
+                                    base_pri
+                                }
+                            } else {
+                                base_pri
+                            };
+                            (pri_after_ability, effective_speed(m, tailwind) as i64)
                         }
                         None => (0, 0),
                     };

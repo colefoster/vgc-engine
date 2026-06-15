@@ -436,6 +436,37 @@ impl Battle {
 
         // 4. Status-move dispatch.
         if m.category == 2 {
+            // Prankster + Dark-type immunity (gen 7+). Prankster-boosted
+            // status moves that target an opposing mon fail vs a Dark-
+            // type target. Side-targeted (Tailwind/Reflect/Light Screen)
+            // and self-targeted status moves are NOT blocked. PS
+            // data/abilities.ts:prankster — sets `pranksterBoosted` on
+            // the move; data/conditions.ts checks it at onTryHit vs
+            // Dark targets.
+            let attacker_ability = if attacker.ability_id == u16::MAX {
+                ""
+            } else {
+                data::ABILITIES[attacker.ability_id as usize].slug
+            };
+            let prankster_boosted = attacker_ability == "prankster";
+            let opposing_targeting = is_targeting_move(m.target);
+            if prankster_boosted && opposing_targeting {
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                let all_targets_dark = (0..n)
+                    .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                    .filter(|t| t.is_alive())
+                    .all(|t| {
+                        let s = t.species();
+                        (0..s.num_types as usize).any(|i| s.types[i] == 15) // Dark = 15
+                    });
+                let any_alive_target = (0..n)
+                    .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                    .any(|t| t.is_alive());
+                if any_alive_target && all_targets_dark {
+                    return;
+                }
+            }
             self.resolve_status_move(actor_side, actor_slot, m);
             return;
         }
@@ -2537,6 +2568,91 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn prankster_boosts_status_move_priority() {
+        // Whimsicott (Prankster, fast) vs Garchomp (faster than non-
+        // Prankster Whimsicott, but Prankster Encore goes at +1).
+        // Set up so Encore lands on a target whose last move was EQ.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        // Turn 1: get Garchomp's last_used set to EQ.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Sanity: Prankster boosted Encore priority is reflected in
+        // action_order — Encore should resolve BEFORE Garchomp's EQ
+        // even though Garchomp is faster in raw speed.
+        let mut rng_copy = b.rng;
+        let order = crate::order::action_order(
+            &b,
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &mut rng_copy,
+        );
+        let move_only: Vec<_> = order.iter().filter_map(|a| match a.choice {
+            Choice::Move { .. } => Some(a.side),
+            _ => None,
+        }).collect();
+        assert_eq!(move_only[0], SideRef::P1, "Prankster status move resolves first");
+    }
+
+    #[test]
+    fn prankster_blocked_by_dark_target() {
+        // Whimsicott Prankster vs Incineroar (Dark/Fire). Encore must
+        // FAIL — gen 7+ Dark immunity to Prankster-boosted status.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["knockoff","flareblitz","fakeout","partingshot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: set Incineroar's last move so Encore would otherwise
+        // land.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Turn 2: try to Encore the Dark-type Incineroar.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].encore_turns, 0, "Prankster Encore blocked by Dark target");
+        assert_eq!(b.p2.team[0].encored_move_slot, 255);
+    }
+
+    #[test]
+    fn prankster_does_not_block_self_side_targeting_moves() {
+        // Tailwind (side-targeted) is NOT blocked by a Dark opponent
+        // even when boosted by Prankster — the move doesn't aim at
+        // the foe.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["knockoff","flareblitz","fakeout","partingshot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.tailwind_turns, 3, "Tailwind landed despite Dark opponent");
     }
 
     #[test]
