@@ -244,8 +244,6 @@ impl Battle {
             return;
         };
         let actor_side = action.side;
-        let target_side = target.map(|t| t.side).unwrap_or_else(|| actor_side.opposing());
-        let target_slot = target.map(|t| t.slot).unwrap_or(0);
 
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc.
@@ -286,71 +284,73 @@ impl Battle {
             }
         }
 
-        // 4. Status-move dispatch by slug. Currently: Protect only.
+        // 4. Status-move dispatch.
         if m.category == 2 {
             self.resolve_status_move(actor_side, actor_slot, m);
             return;
         }
 
-        // 3. Accuracy check (255 = always-hit; e.g. Aerial Ace, Swift).
-        if m.accuracy != 255 {
-            let acc = m.accuracy as u32;
-            let roll = self.rng.percent_1_100() as u32;
-            if roll > acc {
-                return; // miss — no damage, no PP refund.
-            }
-        }
-
-        // 4. Resolve target.
-        let defender = match self.side(target_side).active_mon(target_slot as usize).cloned() {
-            Some(d) if d.is_alive() => d,
-            _ => return,
-        };
-
-        // 5. Protect: targeting move against a protected defender fails.
-        //    "Targeting" here = move.target ∈ {normal, adjacentFoe,
-        //    adjacentAlly, adjacentAllyOrSelf, any}. Spread / self / side
-        //    moves are handled by their own resolution and won't reach
-        //    here at all for self/ally-side targets.
-        if defender.is_protected_this_turn && is_targeting_move(m.target) {
+        // 5. Enumerate targets (spread or single).
+        let targets = enumerate_targets(self, actor_side, actor_slot, m, target);
+        if targets.is_empty() {
             return;
         }
+        let is_spread = targets.len() > 1;
+        let damaging = m.base_power > 0;
 
-        // 6. Status / 0-BP non-status edge case (shouldn't reach here
-        //    given category check above, but guard anyway).
-        if m.base_power == 0 {
-            return;
-        }
+        // 6. Per-target resolution — PS does accuracy + damage rolls and
+        //    Protect/secondary checks independently per target.
+        for (tside, tslot) in targets {
+            let defender = match self.side(tside).active_mon(tslot as usize).cloned() {
+                Some(d) if d.is_alive() => d,
+                _ => continue,
+            };
 
-        // 7. Crit roll. Gen 6+ base rate is 1/24. High-crit-ratio moves
-        //    (Slash, Stone Edge, Storm Throw) deferred to their PRs.
-        let crit = self.rng.range(24) == 0;
-        let roll = self.rng.damage_roll();
-        let dmg = calculate_damage(
-            &attacker,
-            &defender,
-            move_id,
-            DamageContext { crit, roll },
-        );
-
-        // 8. Apply damage.
-        if let Some(t) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
-            t.current_hp = t.current_hp.saturating_sub(dmg);
-            if t.current_hp == 0 {
-                t.fainted = true;
+            // Accuracy.
+            if m.accuracy != 255 {
+                let roll = self.rng.percent_1_100() as u32;
+                if roll > m.accuracy as u32 {
+                    continue;
+                }
             }
-        }
 
-        // 9. Secondary effects. Hard-coded by slug for now; future PR
-        //    refactors into a data-driven dispatcher once we have ~10+
-        //    moves with secondaries. PS rule: secondaries only fire if
-        //    the target didn't faint.
-        let target_alive_post = self
-            .side(target_side)
-            .active_mon(target_slot as usize)
-            .is_some_and(|m| m.is_alive());
-        if target_alive_post {
-            apply_secondary_effect(self, target_side, target_slot, m.slug);
+            // Protect interception (single-target codes only; spread
+            // hits each target independently and Protect intercepts the
+            // single hit on the protected slot — already handled here).
+            if defender.is_protected_this_turn && is_targeting_move(m.target) {
+                continue;
+            }
+
+            if !damaging {
+                continue;
+            }
+
+            // Crit + damage roll.
+            let crit = self.rng.range(24) == 0;
+            let roll = self.rng.damage_roll();
+            let dmg = calculate_damage(
+                &attacker,
+                &defender,
+                move_id,
+                DamageContext { crit, roll, is_spread },
+            );
+
+            // Apply.
+            if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                t.current_hp = t.current_hp.saturating_sub(dmg);
+                if t.current_hp == 0 {
+                    t.fainted = true;
+                }
+            }
+
+            // Secondary if target still alive.
+            let alive_post = self.side(tside).active_mon(tslot as usize)
+                .is_some_and(|m| m.is_alive());
+            if alive_post {
+                let mut rng = self.rng;
+                apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
+                self.rng = rng;
+            }
         }
     }
 
@@ -399,24 +399,124 @@ impl Battle {
     }
 }
 
-/// Apply a move's secondary effect to the target. Phase 2 PR-6 hard-codes
-/// the Fake Out flinch as the only secondary. Subsequent PRs add Rock
-/// Slide 30% flinch, Scald 30% burn, Discharge 30% para, Close Combat
-/// self stat drops, etc.
+/// Enumerate concrete (side, slot) targets a move will hit.
+///
+/// `chosen` is the explicit target supplied in the Choice (used for
+/// single-target moves). Spread / self / ally-side moves ignore it.
+fn enumerate_targets(
+    battle: &Battle,
+    actor_side: SideRef,
+    actor_slot: u8,
+    m: &data::MoveDef,
+    chosen: Option<Target>,
+) -> Vec<(SideRef, u8)> {
+    let opp = actor_side.opposing();
+    let active_n = battle.format().active_count() as u8;
+    let alive = |side: SideRef, slot: u8| -> bool {
+        battle.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive())
+    };
+    match m.target {
+        // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
+        0 | 4 | 10 | 13 => {
+            if let Some(t) = chosen {
+                if alive(t.side, t.slot) {
+                    return vec![(t.side, t.slot)];
+                }
+            }
+            // Fallback: first alive opposing active slot.
+            for slot in 0..active_n {
+                if alive(opp, slot) {
+                    return vec![(opp, slot)];
+                }
+            }
+            vec![]
+        }
+        // 1 self
+        1 => vec![(actor_side, actor_slot)],
+        // 2 adjacentAlly | 3 adjacentAllyOrSelf — single target on own side.
+        2 | 3 => {
+            if let Some(t) = chosen {
+                if t.side == actor_side && alive(t.side, t.slot) {
+                    return vec![(t.side, t.slot)];
+                }
+            }
+            for slot in 0..active_n {
+                if slot != actor_slot && alive(actor_side, slot) {
+                    return vec![(actor_side, slot)];
+                }
+            }
+            vec![]
+        }
+        // 5 allAdjacent — all adjacent foes + ally (skip self).
+        5 => {
+            let mut out = Vec::with_capacity(3);
+            for slot in 0..active_n {
+                if alive(opp, slot) {
+                    out.push((opp, slot));
+                }
+            }
+            for slot in 0..active_n {
+                if slot != actor_slot && alive(actor_side, slot) {
+                    out.push((actor_side, slot));
+                }
+            }
+            out
+        }
+        // 6 allAdjacentFoes — both opposing actives.
+        6 => {
+            let mut out = Vec::with_capacity(2);
+            for slot in 0..active_n {
+                if alive(opp, slot) {
+                    out.push((opp, slot));
+                }
+            }
+            out
+        }
+        // Targets we don't damage-resolve here (allies / side / team / all / scripted).
+        _ => vec![],
+    }
+}
+
+/// Per-slug flinch chance for moves whose secondary is a flinch.
+///
+/// All values cross-checked against PS data/moves.ts. Moves with other
+/// secondaries (burn, paralysis, stat drops) land in their respective PRs.
+fn flinch_chance(slug: &str) -> Option<u8> {
+    Some(match slug {
+        "fakeout" => 100,
+        "rockslide" | "airslash" | "ironhead" | "zenheadbutt"
+        | "headbutt" | "bite" | "stomp" | "needleam"
+        | "extrasensory" | "astonish" | "hyperfang" => 30,
+        "darkpulse" | "twister" | "dragonrush" | "snore" => 20,
+        "icefang" | "thunderfang" | "firefang" | "fireblast"
+        | "rollingkick" | "lowkick" | "steamroller" => 10,
+        // Heat Wave: 10% BURN, not flinch — handled elsewhere.
+        _ => return None,
+    })
+}
+
+/// Apply a move's secondary effect to the target. Currently this is
+/// flinch-only (the secondaries covered in PR-6 + PR-7). Burn/poison/
+/// para/stat-drop secondaries land in subsequent PRs.
+///
+/// PS rolls secondaries per target independently.
 fn apply_secondary_effect(
     battle: &mut Battle,
     target_side: SideRef,
     target_slot: u8,
     move_slug: &str,
+    rng: &mut Rng,
 ) {
-    if move_slug == "fakeout" {
-        // PS data/moves.ts fakeout: secondary { chance: 100, volatileStatus: 'flinch' }.
-        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-            t.flinched_this_turn = true;
+    if let Some(chance) = flinch_chance(move_slug) {
+        if rng.percent_1_100() <= chance {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                t.flinched_this_turn = true;
+            }
         }
     }
-    // Future PRs add more arms here (rockslide 30% flinch, scald 30% burn, ...).
 }
+
+
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
 /// self, and side-targeted moves are not blocked by Protect.
@@ -706,6 +806,58 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn rock_slide_hits_both_opposing_actives() {
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let pika_hp = b.p2.team[0].current_hp;
+        let flutter_hp = b.p2.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        // Rock Slide is allAdjacentFoes → should damage both opposing actives.
+        assert!(b.p2.team[0].current_hp < pika_hp, "Pikachu took spread damage");
+        assert!(b.p2.team[1].current_hp < flutter_hp, "Flutter Mane took spread damage");
+    }
+
+    #[test]
+    fn spread_modifier_reduces_damage_vs_single_target() {
+        // Compare Earthquake (allAdjacent) in doubles vs singles.
+        // In singles the spread mod doesn't apply; in doubles with 2
+        // foes it does, so damage should be lower.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_team = TeamBuilder::from_json(r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#).unwrap();
+        let p2_team = TeamBuilder::from_json(r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#).unwrap();
+        let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
+        let single = calculate_damage(
+            &p1_team[0], &p2_team[0], eq_id,
+            DamageContext { crit: false, roll: 15, is_spread: false },
+        );
+        let spread = calculate_damage(
+            &p1_team[0], &p2_team[0], eq_id,
+            DamageContext { crit: false, roll: 15, is_spread: true },
+        );
+        // spread should be ~0.75× single (truncation-modulo).
+        assert!(spread < single);
     }
 
     #[test]
