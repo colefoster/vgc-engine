@@ -172,6 +172,10 @@ pub struct Pokemon {
     /// turn = max_hp * counter / 16. Reset to 0 when status clears or
     /// on switch-out.
     pub toxic_counter: u8,
+    /// Choice-item lock: when the holder uses a move while holding
+    /// Band/Specs/Scarf, subsequent move selections are restricted to
+    /// that slot. `255 = unlocked`. Cleared on switch-out.
+    pub locked_move_slot: u8,
 }
 
 impl Pokemon {

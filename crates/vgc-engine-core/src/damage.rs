@@ -260,6 +260,7 @@ mod tests {
             turns_active: 0,
             flinched_this_turn: false,
             toxic_counter: 0,
+            locked_move_slot: 255,
         }
     }
 

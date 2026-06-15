@@ -129,12 +129,31 @@ impl Battle {
             return switches;
         }
 
+        let item_slug = if active.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[active.item_id as usize].slug
+        };
+        let is_choice_item = matches!(item_slug, "choiceband" | "choicespecs" | "choicescarf");
+        let is_assault_vest = item_slug == "assaultvest";
+
         let mut out = Vec::with_capacity(8);
         for (i, &move_id) in active.moves.iter().enumerate() {
             if move_id == u16::MAX || active.pp.get(i).copied().unwrap_or(0) == 0 {
                 continue;
             }
+            // Choice lock: only the locked slot is usable.
+            if is_choice_item
+                && active.locked_move_slot != 255
+                && active.locked_move_slot as usize != i
+            {
+                continue;
+            }
             let m = &data::MOVES[move_id as usize];
+            // Assault Vest: status moves disallowed.
+            if is_assault_vest && m.category == 2 {
+                continue;
+            }
             let needs_pick = matches!(m.target, 0 | 4 | 10);
             if needs_pick {
                 for opp_slot in 0..self.config.format.active_count() as u8 {
@@ -273,6 +292,7 @@ impl Battle {
                     incoming.flinched_this_turn = false;
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
+                    incoming.locked_move_slot = 255; // Choice lock clears on switch.
                     switched_slots.push(actor_slot);
                 }
             }
@@ -322,9 +342,18 @@ impl Battle {
         }
 
         // 3. PP cost — ticked even on miss / immunity (PS behavior).
+        // Also: Choice items lock the holder into this move slot after
+        // a successful invocation (PP-consumption suffices).
+        let is_choice = matches!(
+            if attacker.item_id == u16::MAX { "" } else { data::ITEMS[attacker.item_id as usize].slug },
+            "choiceband" | "choicespecs" | "choicescarf"
+        );
         if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
             if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                 *pp = pp.saturating_sub(1);
+            }
+            if is_choice && mon.locked_move_slot == 255 {
+                mon.locked_move_slot = move_slot;
             }
         }
 
@@ -1194,6 +1223,91 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn choice_band_locks_into_first_move() {
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"choiceband","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // First move: Wicked Blow (slot 1).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].locked_move_slot, 1);
+        // legal_choices now only includes slot 1.
+        let lc = b.legal_choices(SideRef::P1, 0);
+        let moves_only: Vec<_> = lc.iter().filter(|c| matches!(c, Choice::Move { .. })).collect();
+        for c in &moves_only {
+            if let Choice::Move { move_slot, .. } = **c {
+                assert_eq!(move_slot, 1, "Choice Band locks Urshifu into Wicked Blow");
+            }
+        }
+        assert!(!moves_only.is_empty(), "should still have the locked move available");
+    }
+
+    #[test]
+    fn assault_vest_blocks_status_moves() {
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let _b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2.clone());
+        // None of Iron Hands' moves are status (all attacking). Verify
+        // by adding a different team with a status move available:
+        let p1b_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","helpinghand","wildcharge"]}
+        ]"#;
+        let p1b = TeamBuilder::from_json(p1b_json).unwrap();
+        let bb = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2);
+        let lc = bb.legal_choices(SideRef::P1, 0);
+        // Helping Hand (slot 2) is a status move — should NOT appear in legal_choices.
+        for c in &lc {
+            if let Choice::Move { move_slot, .. } = *c {
+                assert_ne!(move_slot, 2, "Assault Vest filters out Helping Hand");
+            }
+        }
+    }
+
+    #[test]
+    fn choice_lock_clears_on_switch() {
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"choiceband","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Lock Urshifu into Wicked Blow.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].locked_move_slot, 1);
+        // Switch out → Snorlax. Then back to Urshifu.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].locked_move_slot, 255, "lock cleared on switch-out");
     }
 
     #[test]
