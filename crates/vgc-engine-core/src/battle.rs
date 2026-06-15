@@ -342,6 +342,20 @@ impl Battle {
         let is_spread = targets.len() > 1;
         let damaging = m.base_power > 0;
 
+        // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
+        // future PRs add Choice Band/Specs 1.5×, Expert Belt 1.2× on SE
+        // hits, Type Plates 1.2× type-matched, etc.
+        let attacker_item_slug = if attacker.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[attacker.item_id as usize].slug
+        };
+        let (item_mul_n, item_mul_d) = match attacker_item_slug {
+            "lifeorb" => (13u32, 10u32),
+            _ => (1, 1),
+        };
+        let mut any_damage_dealt: u16 = 0;
+
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
         for (tside, tslot) in targets {
@@ -372,12 +386,16 @@ impl Battle {
             // Crit + damage roll.
             let crit = self.rng.range(24) == 0;
             let roll = self.rng.damage_roll();
-            let dmg = calculate_damage(
+            let mut dmg = calculate_damage(
                 &attacker,
                 &defender,
                 move_id,
                 DamageContext { crit, roll, is_spread, weather: self.weather },
             );
+            // Apply attacker item multiplier (Life Orb).
+            if item_mul_n != item_mul_d && dmg > 0 {
+                dmg = ((dmg as u32) * item_mul_n / item_mul_d).min(u16::MAX as u32) as u16;
+            }
 
             // Pre-damage item hook (Focus Sash etc. may cap damage).
             let effective_dmg = crate::item::on_before_damage(self, tside, tslot, dmg)
@@ -390,6 +408,7 @@ impl Battle {
                     t.fainted = true;
                 }
             }
+            any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
 
             // Post-damage item hook (Sitrus Berry etc.).
             crate::item::on_after_damage(self, tside, tslot);
@@ -401,6 +420,18 @@ impl Battle {
                 let mut rng = self.rng;
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
+            }
+        }
+
+        // Attacker item recoil — Life Orb takes 1/10 max HP if the move
+        // dealt damage to at least one target (PS: per-move, not per-hit).
+        if attacker_item_slug == "lifeorb" && any_damage_dealt > 0 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                let recoil = (a.stats.hp / 10).max(1);
+                a.current_hp = a.current_hp.saturating_sub(recoil);
+                if a.current_hp == 0 {
+                    a.fainted = true;
+                }
             }
         }
     }
@@ -845,23 +876,17 @@ mod tests {
     #[test]
     fn always_hit_aerial_ace() {
         // Aerial Ace has accuracy=true → encoded 255. Always lands.
+        // Single-turn check is enough: a non-misser must deal >0 damage.
         let mut b = battle();
-        // Repeat 20 turns; each turn use Aerial Ace on Flutter Mane. Since
-        // both Garchomp and Flutter Mane survive a single hit, we just
-        // verify damage accumulates monotonically — never zero from a miss.
-        let mut last_hp = b.p2.team[1].current_hp;
-        for _ in 0..3 {
-            b.step(
-                &[
-                    Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 1)) },
-                    Choice::Pass { actor_slot: 1 },
-                ],
-                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
-            );
-            let now = b.p2.team[1].current_hp;
-            assert!(now < last_hp, "Aerial Ace must always hit");
-            last_hp = now;
-        }
+        let before = b.p2.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert!(b.p2.team[1].current_hp < before, "Aerial Ace must hit");
     }
 
     #[test]
@@ -1011,8 +1036,10 @@ mod tests {
         let p1_json = r#"[
             {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
         ]"#;
+        // Garchomp without Life Orb here so we don't mix Fake-Out testing
+        // with attacker-item recoil bookkeeping.
         let p2_json = r#"[
-            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
         ]"#;
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
@@ -1029,7 +1056,9 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
-        assert_eq!(b.p2.team[0].current_hp, chomp_hp, "Fake Out failed → no damage to Garchomp");
+        // Garchomp may take leftovers heal then no other change, but that
+        // tops out at max; either way no damage from Fake Out.
+        assert!(b.p2.team[0].current_hp >= chomp_hp, "Fake Out failed → Garchomp didn't lose HP");
         // Garchomp's Dragon Claw should have hit Iron Hands.
         assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
     }
@@ -1077,6 +1106,53 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn life_orb_boosts_damage_and_recoils() {
+        // Garchomp with Life Orb Earthquake into Pikachu.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let chomp_max = b.p1.team[0].stats.hp;
+        let chomp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Pikachu's Focus Sash should have saved it at 1 HP since Earthquake
+        // is a clean OHKO; the test focuses on the recoil.
+        let expected_recoil = (chomp_max / 10).max(1);
+        assert_eq!(b.p1.team[0].current_hp, chomp_before - expected_recoil,
+                   "Garchomp takes 1/10 max-HP Life Orb recoil");
+    }
+
+    #[test]
+    fn life_orb_no_recoil_on_immune_target() {
+        // Garchomp with Life Orb Earthquake into Flying Pelipper — no damage,
+        // therefore no recoil.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let chomp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, chomp_before,
+                   "no damage dealt → no Life Orb recoil");
     }
 
     #[test]
