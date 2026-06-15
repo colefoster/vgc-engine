@@ -47,6 +47,65 @@ fn drop_atk(mon: &mut crate::pokemon::Pokemon) {
     mon.boosts[0] = (mon.boosts[0] - 1).clamp(-6, 6);
 }
 
+/// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest base
+/// computed stat. PS tie-breaker order (data/abilities.ts:protosynthesis
+/// onStart -> getActiveBoost):
+///   atk > def > spa > spd > spe.
+/// Stat *stages* are NOT considered (PS uses base stat). HP excluded.
+fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
+    let s = &mon.stats;
+    let candidates = [
+        (0u8, s.atk as u32),
+        (1u8, s.def as u32),
+        (2u8, s.spa as u32),
+        (3u8, s.spd as u32),
+        (4u8, s.spe as u32),
+    ];
+    let mut best_idx = 0u8;
+    let mut best_val = candidates[0].1;
+    for &(i, v) in &candidates[1..] {
+        // PS order is atk > def > spa > spd > spe; the loop already
+        // visits in that order, so use strict `>` to preserve the
+        // earlier-index winner on tie.
+        if v > best_val {
+            best_idx = i;
+            best_val = v;
+        }
+    }
+    best_idx
+}
+
+/// Re-evaluate paradox-booster ability state for one slot. Activates the
+/// volatile (sets `boosted_stat`) when the trigger condition holds and
+/// deactivates it when the trigger is gone. Called from `on_switch_in`
+/// and from a battle-state hook whenever weather / terrain changes.
+///
+/// Currently handles `protosynthesis` (trigger: Sun weather). Quark
+/// Drive (Electric Terrain) lands once terrain state is in.
+pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
+    let (slug, currently_active) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.boosted_stat != 255),
+        _ => return,
+    };
+    let trigger = match slug {
+        "protosynthesis" => matches!(battle.weather, crate::weather::Weather::Sun),
+        _ => return,
+    };
+    if trigger && !currently_active {
+        let new_idx = match battle.side(side).active_mon(slot as usize) {
+            Some(m) => best_stat_index(m),
+            None => return,
+        };
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.boosted_stat = new_idx;
+        }
+    } else if !trigger && currently_active {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.boosted_stat = 255;
+        }
+    }
+}
+
 /// Run all on-switch-in ability hooks for a single newly-active Pokémon.
 ///
 /// Called from Battle::new (for initial sendouts) and from
@@ -97,6 +156,18 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Future PRs add more arms: drizzle/drought/sandstream/snowwarning
     // (weather), electricsurge/grassysurge/etc. (terrain), trace,
     // intrepidsword, dauntlessshield, ...
+
+    // Re-evaluate paradox boosters AFTER weather-setting abilities
+    // resolve — Drought + Protosynthesis on the same switch-in must
+    // activate, not miss the weather-change edge.
+    refresh_paradox_booster(battle, side, slot);
+    // Also re-check the OPPOSING side's actives: if this switch-in
+    // brought up Sun, an opposing Protosynthesis user can flip on.
+    let n = battle.format().active_count() as u8;
+    let opp = side.opposing();
+    for s in 0..n {
+        refresh_paradox_booster(battle, opp, s);
+    }
 }
 
 /// Run end-of-turn ability residual hooks for one active slot.
