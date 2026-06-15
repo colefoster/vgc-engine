@@ -16,6 +16,7 @@ mod team;
 pub mod ability;
 pub mod battle;
 pub mod damage;
+pub mod item;
 pub mod order;
 pub mod rng;
 pub mod weather;

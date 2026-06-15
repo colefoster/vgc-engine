@@ -394,6 +394,17 @@ impl Battle {
     /// after move resolution. Currently: Sand weather damage. Subsequent
     /// PRs add Leftovers, burn/poison/toxic damage, Speed Boost, etc.
     fn resolve_end_of_turn(&mut self) {
+        // Item residuals (Leftovers etc.) fire before weather damage in
+        // gen 5+ — PS order: ability residuals → item residuals → weather.
+        // We don't have ability residuals yet, so item-then-weather here
+        // matches the relevant subset.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                crate::item::on_residual(self, side, slot);
+            }
+        }
+
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities (Sand Veil ignored — that's evasion
         // not damage immunity; Magic Guard / Overcoat / Safety Goggles
@@ -887,6 +898,57 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn leftovers_heals_one_sixteenth_per_turn() {
+        // Snorlax with Leftovers — heals 1/16 max HP each end of turn.
+        // Damage it first with a moonblast from Flutter Mane.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Damage Snorlax.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let dmg_hp = b.p1.team[0].current_hp;
+        // Already healed by Leftovers post-Moonblast, this turn. Verify
+        // a SECOND turn of passes heals exactly max/16 more.
+        let max = b.p1.team[0].stats.hp;
+        let expected_heal = (max / 16).max(1);
+        let target_hp = (dmg_hp + expected_heal).min(max);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, target_hp);
+    }
+
+    #[test]
+    fn leftovers_does_not_overheal() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        assert_eq!(b.p1.team[0].current_hp, max);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max, "Leftovers caps at max HP");
     }
 
     #[test]
