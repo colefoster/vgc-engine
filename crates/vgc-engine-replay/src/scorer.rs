@@ -56,6 +56,14 @@ pub struct TurnScore {
     /// psn/tox/frz/None) diverged between engine and replay at end of
     /// turn.
     pub status_diverged: bool,
+    /// True when at least one slot's `is_alive()` disagreed with the
+    /// replay's `fainted` flag.
+    pub faint_diverged: bool,
+    /// True when `hp_l1` exceeded the configured tolerance. Stored
+    /// separately so the scorer can attribute disagreements per
+    /// category (HP vs. faint vs. status) even when several fire at
+    /// once.
+    pub hp_diverged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +75,18 @@ pub struct ReplayScore {
     /// Total turns the engine actually stepped through. May be < the
     /// replay's turn count if the engine ended the battle early.
     pub turns_run: u32,
+}
+
+impl ReplayScore {
+    pub fn hp_diverged_turns(&self) -> usize {
+        self.per_turn.iter().filter(|t| t.hp_diverged).count()
+    }
+    pub fn faint_diverged_turns(&self) -> usize {
+        self.per_turn.iter().filter(|t| t.faint_diverged).count()
+    }
+    pub fn status_diverged_turns(&self) -> usize {
+        self.per_turn.iter().filter(|t| t.status_diverged).count()
+    }
 }
 
 /// End-to-end: parse → recon → init → step turn-by-turn → score.
@@ -206,7 +226,8 @@ fn score_turn(
     } else {
         hp_l1 / compared as f32
     };
-    let agreed = compared > 0 && !faint_diverged && !status_diverged && per_slot_l1 <= tol;
+    let hp_diverged = compared > 0 && !per_slot_l1.is_nan() && per_slot_l1 > tol;
+    let agreed = compared > 0 && !faint_diverged && !status_diverged && !hp_diverged;
 
     TurnScore {
         turn: tv.number,
@@ -215,6 +236,8 @@ fn score_turn(
         compared_slots: compared,
         ended: false,
         status_diverged,
+        faint_diverged,
+        hp_diverged,
     }
 }
 

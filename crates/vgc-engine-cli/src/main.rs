@@ -214,6 +214,10 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
     let mut agreements: Vec<f32> = Vec::new();
     let mut parse_failed: usize = 0;
     let mut recon_failed: usize = 0;
+    let mut total_turns: usize = 0;
+    let mut hp_div: usize = 0;
+    let mut faint_div: usize = 0;
+    let mut status_div: usize = 0;
     for path in &files {
         let Ok(json) = fs::read_to_string(path) else {
             parse_failed += 1;
@@ -229,7 +233,13 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             0xC0FFEE_DEADBEEF,
             replay::DEFAULT_HP_TOLERANCE,
         ) {
-            Ok(s) if !s.per_turn.is_empty() => agreements.push(s.agreement_pct),
+            Ok(s) if !s.per_turn.is_empty() => {
+                agreements.push(s.agreement_pct);
+                total_turns += s.per_turn.len();
+                hp_div += s.hp_diverged_turns();
+                faint_div += s.faint_diverged_turns();
+                status_div += s.status_diverged_turns();
+            }
             Ok(_) => recon_failed += 1,
             Err(_) => recon_failed += 1,
         }
@@ -251,6 +261,11 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
 
     println!("mean agreement   : {:.1}%", mean * 100.0);
     println!("median agreement : {:.1}%", median * 100.0);
+    println!();
+    println!("divergence categories (of {total_turns} total turns):");
+    println!("  hp_l1   : {hp_div:>5}  ({:.1}%)", pct(hp_div, total_turns));
+    println!("  faint   : {faint_div:>5}  ({:.1}%)", pct(faint_div, total_turns));
+    println!("  status  : {status_div:>5}  ({:.1}%)", pct(status_div, total_turns));
 
     let mut buckets = [0usize; 5]; // 0-20, 20-40, 40-60, 60-80, 80-100
     for a in &agreements {
@@ -265,6 +280,10 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
         println!("  {label} {n:>5}  {bar}");
     }
     ExitCode::SUCCESS
+}
+
+fn pct(n: usize, d: usize) -> f32 {
+    if d == 0 { 0.0 } else { (n as f32 / d as f32) * 100.0 }
 }
 
 fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
