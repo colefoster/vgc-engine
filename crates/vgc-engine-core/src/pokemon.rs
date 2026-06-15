@@ -176,6 +176,13 @@ pub struct Pokemon {
     /// Band/Specs/Scarf, subsequent move selections are restricted to
     /// that slot. `255 = unlocked`. Cleared on switch-out.
     pub locked_move_slot: u8,
+    /// True for the step in which this mon was brought in via a Switch
+    /// action (NOT for initial sendouts at battle start). Cleared at
+    /// end of step. Used to suppress end-of-turn ability residuals like
+    /// Speed Boost on the switch-in turn — matches PS, where
+    /// `activeTurns` is incremented at the START of each turn so
+    /// mid-battle switch-ins see `activeTurns==0` at end of that turn.
+    pub switched_in_this_turn: bool,
 }
 
 impl Pokemon {

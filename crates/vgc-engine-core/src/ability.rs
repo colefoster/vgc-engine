@@ -98,3 +98,28 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // (weather), electricsurge/grassysurge/etc. (terrain), trace,
     // intrepidsword, dauntlessshield, ...
 }
+
+/// Run end-of-turn ability residual hooks for one active slot.
+///
+/// PS `data/abilities.ts` `onResidual` (e.g. speedboost order 28). Called
+/// from `Battle::resolve_end_of_turn` after item residuals, status DOT,
+/// and weather damage — the relative order matches PS (item order ≈ 5,
+/// status ≈ 9, speedboost = 28).
+pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
+    let (slug, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn),
+        _ => return,
+    };
+
+    // Speed Boost: +1 Spe at end of turn, except on the turn the mon
+    // was switched in mid-battle. PS guards with `if (pokemon.activeTurns)`
+    // — activeTurns is incremented at turn-start in nextTurn(), so it's
+    // truthy for any mon already on the field at turn-start (including
+    // turn-1 starters) and 0 for mons brought in via this turn's switch
+    // action. Our `switched_in_this_turn` flag is that exact bit.
+    if slug == "speedboost" && !switched_in_this_turn {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.boosts[4] = (m.boosts[4] + 1).clamp(-6, 6);
+        }
+    }
+}
