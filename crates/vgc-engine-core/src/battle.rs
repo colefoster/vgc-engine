@@ -549,6 +549,25 @@ impl Battle {
         if boosted_attacker.boosted_stat == 2 && special_move {
             boosted_attacker.stats.spa = scale_off_13(boosted_attacker.stats.spa);
         }
+        // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
+        // on special moves while Electric Terrain is up. The ability also
+        // sets Electric Terrain on switch-in (`ability::on_switch_in`).
+        // PS data/abilities.ts:hadronengine `onModifyAtk` is misnamed in
+        // the file — the real handler is `onModifySpA`. Same chainModify
+        // shape as Orichalcum Pulse on Atk.
+        let attacker_ability_slug = if attacker.ability_id == u16::MAX {
+            ""
+        } else {
+            data::ABILITIES[attacker.ability_id as usize].slug
+        };
+        if attacker_ability_slug == "hadronengine"
+            && special_move
+            && matches!(self.terrain, crate::terrain::Terrain::Electric)
+        {
+            // PS chainModify([5461, 4096]) — fixed-point ≈ 1.3333.
+            boosted_attacker.stats.spa =
+                ((boosted_attacker.stats.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+        }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
@@ -3196,6 +3215,101 @@ mod tests {
             );
         }
         assert_eq!(b.p1.team[0].boosted_stat, 4, "Booster-locked volatile persists");
+    }
+
+    #[test]
+    fn hadron_engine_sets_terrain_and_boosts_spa() {
+        // Iron Moth (Hadron Engine) sets Electric Terrain on switch-in
+        // and then deals MORE damage than its Quark Drive counterfactual
+        // would, because Hadron Engine's SpA boost stacks on top.
+        let p1_json = r#"[
+            {"species":"ironmoth","level":50,"ability":"hadronengine","item":"focussash","nature":"timid","moves":["fierydance","sludgewave","discharge","energyball"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Switch-in set Electric Terrain.
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        // Cast Fiery Dance at Snorlax; record the damage.
+        let snor_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_with_he = snor_hp_before - b.p2.team[0].current_hp;
+        assert!(dmg_with_he > 0, "Fiery Dance hit");
+
+        // Counterfactual: same Iron Moth with a non-boosting ability and
+        // no E-Terrain — should deal strictly less damage.
+        // We zero the seed so both battles take the same accuracy/roll
+        // path and the only delta is the SpA modifier.
+        let p1_json2 = r#"[
+            {"species":"ironmoth","level":50,"ability":"levitate","item":"focussash","nature":"timid","moves":["fierydance","sludgewave","discharge","energyball"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1b = TeamBuilder::from_json(p1_json2).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        assert_eq!(b2.terrain, crate::terrain::Terrain::None);
+        let snor_hp_before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_without_he = snor_hp_before2 - b2.p2.team[0].current_hp;
+        // Fiery Dance is Fire; Electric Terrain only buffs Electric-type
+        // moves' base power, so the move-power modifier doesn't differ.
+        // The only delta is Hadron Engine's ×5461/4096 SpA. Expected
+        // ratio ≈ 1.333 (allow some slack for integer rounding).
+        assert!(
+            dmg_with_he as u32 * 100 > dmg_without_he as u32 * 125,
+            "Hadron Engine boost not visible: {} vs {}",
+            dmg_with_he, dmg_without_he
+        );
+    }
+
+    #[test]
+    fn hadron_engine_no_boost_outside_e_terrain() {
+        // If the terrain leaves (e.g. someone overrides it), Hadron
+        // Engine's boost is gone. We simulate by directly clearing
+        // terrain in the test — switch-in already set it.
+        let p1_json = r#"[
+            {"species":"ironmoth","level":50,"ability":"hadronengine","item":"focussash","nature":"timid","moves":["fierydance","sludgewave","discharge","energyball"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Clear terrain (proxy for "no E-Terrain on the field"). Hadron
+        // Engine's SpA modifier should drop and damage should match the
+        // Levitate baseline within one HP.
+        b.terrain = crate::terrain::Terrain::None;
+        b.terrain_turns = 0;
+        let snor_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_no_terrain = snor_hp_before - b.p2.team[0].current_hp;
+        let p1b = TeamBuilder::from_json(r#"[
+            {"species":"ironmoth","level":50,"ability":"levitate","item":"focussash","nature":"timid","moves":["fierydance","sludgewave","discharge","energyball"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        let snor_hp_before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_baseline = snor_hp_before2 - b2.p2.team[0].current_hp;
+        assert_eq!(
+            dmg_no_terrain, dmg_baseline,
+            "Hadron Engine with no E-Terrain matches the unbuffed baseline"
+        );
     }
 
     #[test]
