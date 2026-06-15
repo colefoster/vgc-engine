@@ -252,6 +252,8 @@ impl Battle {
             side.conditions.reflect_turns = side.conditions.reflect_turns.saturating_sub(1);
             side.conditions.light_screen_turns =
                 side.conditions.light_screen_turns.saturating_sub(1);
+            side.conditions.aurora_veil_turns =
+                side.conditions.aurora_veil_turns.saturating_sub(1);
         }
         // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
@@ -452,6 +454,7 @@ impl Battle {
             let def_conds = self.side(tside).conditions;
             let defender_has_reflect = def_conds.reflect_turns > 0;
             let defender_has_light_screen = def_conds.light_screen_turns > 0;
+            let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
             let mut dmg = calculate_damage(
                 &boosted_attacker,
@@ -459,7 +462,8 @@ impl Battle {
                 move_id,
                 DamageContext {
                     crit, roll, is_spread, weather: self.weather,
-                    defender_has_reflect, defender_has_light_screen, is_doubles,
+                    defender_has_reflect, defender_has_light_screen,
+                    defender_has_aurora_veil, is_doubles,
                 },
             );
             // Apply attacker item multiplier (Life Orb).
@@ -744,6 +748,17 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.light_screen_turns == 0 {
                     s.conditions.light_screen_turns = 5;
+                }
+            }
+            "auroraveil" => {
+                // Reflect + Light Screen combined. PS data/moves.ts:auroraveil
+                // `onTry` fails unless the field weather is Hail or Snow.
+                if !matches!(self.weather, crate::weather::Weather::Snow) {
+                    return;
+                }
+                let s = self.side_mut(actor_side);
+                if s.conditions.aurora_veil_turns == 0 {
+                    s.conditions.aurora_veil_turns = 5;
                 }
             }
             // Status-inflicting status moves. PS data/moves.ts marks each
@@ -1917,11 +1932,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -2287,6 +2302,135 @@ mod tests {
     }
 
     #[test]
+    fn aurora_veil_halves_both_categories_in_snow() {
+        // Blissey with Snow Warning ability sets Snow on switch-in; then
+        // uses Aurora Veil. Garchomp EQ (physical) and Alakazam Psychic
+        // (special) should both land ~50% vs baseline.
+        let physical_check_p1 = r#"[
+            {"species":"blissey","level":50,"ability":"snowwarning","nature":"bold","moves":["auroraveil","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let physical_check_p2 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        // Physical baseline (no Aurora Veil).
+        let p1a = TeamBuilder::from_json(physical_check_p1).unwrap();
+        let p2a = TeamBuilder::from_json(physical_check_p2).unwrap();
+        let mut no_veil = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1a, p2a);
+        no_veil.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp = no_veil.p1.team[0].current_hp;
+        no_veil.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_veil_phys = start_hp - no_veil.p1.team[0].current_hp;
+
+        // Physical with Aurora Veil up.
+        let p1b = TeamBuilder::from_json(physical_check_p1).unwrap();
+        let p2b = TeamBuilder::from_json(physical_check_p2).unwrap();
+        let mut with_veil = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        with_veil.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(with_veil.p1.conditions.aurora_veil_turns, 4, "5 → 4 after end of turn 1");
+        let start_hp_b = with_veil.p1.team[0].current_hp;
+        with_veil.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let veil_phys = start_hp_b - with_veil.p1.team[0].current_hp;
+        let pct_phys = veil_phys as i32 * 100 / no_veil_phys as i32;
+        assert!(
+            (40..=60).contains(&pct_phys),
+            "Aurora Veil should halve physical; got {veil_phys}/{no_veil_phys} ({pct_phys}%)",
+        );
+
+        // Special check — swap the attacker for Alakazam Psychic.
+        let special_check_p2 = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1c = TeamBuilder::from_json(physical_check_p1).unwrap();
+        let p2c = TeamBuilder::from_json(special_check_p2).unwrap();
+        let mut no_veil_sp = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1c, p2c);
+        no_veil_sp.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp_s = no_veil_sp.p1.team[0].current_hp;
+        no_veil_sp.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_veil_spec = start_hp_s - no_veil_sp.p1.team[0].current_hp;
+
+        let p1d = TeamBuilder::from_json(physical_check_p1).unwrap();
+        let p2d = TeamBuilder::from_json(special_check_p2).unwrap();
+        let mut with_veil_sp = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1d, p2d);
+        with_veil_sp.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp_d = with_veil_sp.p1.team[0].current_hp;
+        with_veil_sp.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let veil_spec = start_hp_d - with_veil_sp.p1.team[0].current_hp;
+        let pct_spec = veil_spec as i32 * 100 / no_veil_spec as i32;
+        assert!(
+            (40..=60).contains(&pct_spec),
+            "Aurora Veil should halve special; got {veil_spec}/{no_veil_spec} ({pct_spec}%)",
+        );
+    }
+
+    #[test]
+    fn aurora_veil_fails_outside_snow() {
+        // No snow → Aurora Veil must fail to set the side condition.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["auroraveil","softboiled","seismictoss","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.aurora_veil_turns, 0, "Aurora Veil must fail outside Snow");
+    }
+
+    #[test]
+    fn aurora_veil_expires_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"snowwarning","nature":"bold","moves":["auroraveil","softboiled","seismictoss","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.aurora_veil_turns, 4);
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.conditions.aurora_veil_turns, expected);
+        }
+    }
+
+    #[test]
     fn reflect_does_not_affect_special_damage() {
         // Reflect is physical-only. Special hits should be unchanged.
         let p1_json = r#"[
@@ -2408,11 +2552,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);

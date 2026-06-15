@@ -52,6 +52,11 @@ pub struct SideConditions {
     /// Light Screen: halves special damage taken by this side. Same
     /// duration and bypass rules as Reflect (crit, infiltrator).
     pub light_screen_turns: u8,
+    /// Aurora Veil: combined Reflect + Light Screen — halves both
+    /// physical AND special damage. Requires Snow weather active at
+    /// the moment of use; otherwise the move fails. Duration 5
+    /// (8 with Light Clay — deferred). Same bypass rules.
+    pub aurora_veil_turns: u8,
 }
 
 impl Side {
