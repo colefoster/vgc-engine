@@ -260,6 +260,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vgc-engine-replay"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
