@@ -27,7 +27,7 @@ pub use choice::{Choice, MoveSlot, Target};
 pub use damage::{calculate_damage, damage_range, type_effectiveness, DamageContext, TypeEff};
 pub use format::Format;
 pub use order::{action_order, effective_speed, ScheduledAction};
-pub use pokemon::{Nature, Pokemon, Stat, Status};
+pub use pokemon::{Nature, Pokemon, Stat, StatSpread, Status, nature_by_slug};
 pub use rng::Rng;
 pub use side::{Side, SideRef};
 pub use team::{TeamBuilder, TeamLoadError, TeamMember};
