@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vgc_engine_core as core;
@@ -16,6 +17,7 @@ fn print_usage() {
            load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
            replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
            score <replay.json>        Run the engine against a replay and print per-turn agreement.\n\
+           score-corpus <dir> [N]     Score every replay JSON under <dir> (recursive); optional cap N.\n\
            help                      This message.\n"
     );
 }
@@ -179,6 +181,105 @@ fn cmd_score(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_score_corpus(args: &[String]) -> ExitCode {
+    let (dir, limit) = match args {
+        [d] => (d.as_str(), usize::MAX),
+        [d, n] => match n.parse::<usize>() {
+            Ok(k) => (d.as_str(), k),
+            Err(_) => {
+                eprintln!("score-corpus: <N> must be a positive integer");
+                return ExitCode::from(2);
+            }
+        },
+        _ => {
+            eprintln!("score-corpus: expected <dir> [N]");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Err(e) = collect_json_files(Path::new(dir), &mut files) {
+        eprintln!("walk {dir}: {e}");
+        return ExitCode::from(1);
+    }
+    files.sort();
+    if files.len() > limit {
+        files.truncate(limit);
+    }
+    if files.is_empty() {
+        eprintln!("no JSON files under {dir}");
+        return ExitCode::from(1);
+    }
+
+    let mut agreements: Vec<f32> = Vec::new();
+    let mut parse_failed: usize = 0;
+    let mut recon_failed: usize = 0;
+    for path in &files {
+        let Ok(json) = fs::read_to_string(path) else {
+            parse_failed += 1;
+            continue;
+        };
+        let r = match replay::Replay::from_json(&json) {
+            Ok(r) => r,
+            Err(_) => { parse_failed += 1; continue; }
+        };
+        match replay::score_replay(
+            &r,
+            &replay::CanonicalDefault,
+            0xC0FFEE_DEADBEEF,
+            replay::DEFAULT_HP_TOLERANCE,
+        ) {
+            Ok(s) if !s.per_turn.is_empty() => agreements.push(s.agreement_pct),
+            Ok(_) => recon_failed += 1,
+            Err(_) => recon_failed += 1,
+        }
+    }
+
+    println!("processed     : {}", files.len());
+    println!("parse failed  : {parse_failed}");
+    println!("recon failed  : {recon_failed}");
+    println!("scored        : {}", agreements.len());
+    if agreements.is_empty() {
+        println!("(no successful scores)");
+        return ExitCode::SUCCESS;
+    }
+
+    let mean = agreements.iter().sum::<f32>() / agreements.len() as f32;
+    let mut sorted = agreements.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+
+    println!("mean agreement   : {:.1}%", mean * 100.0);
+    println!("median agreement : {:.1}%", median * 100.0);
+
+    let mut buckets = [0usize; 5]; // 0-20, 20-40, 40-60, 60-80, 80-100
+    for a in &agreements {
+        let idx = ((*a * 5.0).floor() as usize).min(4);
+        buckets[idx] += 1;
+    }
+    let labels = ["0-20%  ", "20-40% ", "40-60% ", "60-80% ", "80-100%"];
+    println!();
+    println!("agreement distribution:");
+    for (label, n) in labels.iter().zip(buckets.iter()) {
+        let bar: String = "#".repeat(((n * 40) / agreements.len()).min(40));
+        println!("  {label} {n:>5}  {bar}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, out)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
@@ -190,6 +291,7 @@ fn main() -> ExitCode {
         "load" => cmd_load(&args[1..]),
         "replay-init" => cmd_replay_init(&args[1..]),
         "score" => cmd_score(&args[1..]),
+        "score-corpus" => cmd_score_corpus(&args[1..]),
         "help" | "--help" | "-h" => { print_usage(); ExitCode::SUCCESS }
         other => {
             eprintln!("unknown command: {other}");
