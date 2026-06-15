@@ -250,6 +250,8 @@ impl Battle {
             // Tailwind / future side-condition timers.
             side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
             side.conditions.reflect_turns = side.conditions.reflect_turns.saturating_sub(1);
+            side.conditions.light_screen_turns =
+                side.conditions.light_screen_turns.saturating_sub(1);
         }
         // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
@@ -447,7 +449,9 @@ impl Battle {
                 boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
             }
-            let defender_has_reflect = self.side(tside).conditions.reflect_turns > 0;
+            let def_conds = self.side(tside).conditions;
+            let defender_has_reflect = def_conds.reflect_turns > 0;
+            let defender_has_light_screen = def_conds.light_screen_turns > 0;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
             let mut dmg = calculate_damage(
                 &boosted_attacker,
@@ -455,7 +459,7 @@ impl Battle {
                 move_id,
                 DamageContext {
                     crit, roll, is_spread, weather: self.weather,
-                    defender_has_reflect, is_doubles,
+                    defender_has_reflect, defender_has_light_screen, is_doubles,
                 },
             );
             // Apply attacker item multiplier (Life Orb).
@@ -732,6 +736,14 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.reflect_turns == 0 {
                     s.conditions.reflect_turns = 5;
+                }
+            }
+            "lightscreen" => {
+                // Mirror of Reflect for special damage. Duration 5; PS
+                // data/conditions.ts:lightscreen.
+                let s = self.side_mut(actor_side);
+                if s.conditions.light_screen_turns == 0 {
+                    s.conditions.light_screen_turns = 5;
                 }
             }
             // Status-inflicting status moves. PS data/moves.ts marks each
@@ -1905,11 +1917,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -2159,6 +2171,122 @@ mod tests {
     }
 
     #[test]
+    fn light_screen_halves_special_damage_singles() {
+        // Mirror of the Reflect test: Alakazam Psychic vs Blissey. With
+        // Light Screen up the damage should land in 40–60% of baseline.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["lightscreen","softboiled","seismictoss","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut no_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1a, p2a);
+        no_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp = no_screen.p1.team[0].current_hp;
+        no_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_screen_dmg = start_hp - no_screen.p1.team[0].current_hp;
+
+        let mut with_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        with_screen.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(with_screen.p1.conditions.light_screen_turns, 4, "5 → 4 after end of turn 1");
+        let start_hp_b = with_screen.p1.team[0].current_hp;
+        with_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let screen_dmg = start_hp_b - with_screen.p1.team[0].current_hp;
+        let pct = screen_dmg as i32 * 100 / no_screen_dmg as i32;
+        assert!(
+            (40..=60).contains(&pct),
+            "Light Screen should halve damage; got {screen_dmg}/{no_screen_dmg} ({pct}%)",
+        );
+    }
+
+    #[test]
+    fn light_screen_does_not_affect_physical_damage() {
+        // Light Screen must NOT reduce physical hits.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["lightscreen","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut no_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1a, p2a);
+        no_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp = no_screen.p1.team[0].current_hp;
+        no_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let no_screen_dmg = start_hp - no_screen.p1.team[0].current_hp;
+
+        let mut with_screen = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        with_screen.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let start_hp_b = with_screen.p1.team[0].current_hp;
+        with_screen.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let with_screen_dmg = start_hp_b - with_screen.p1.team[0].current_hp;
+        // Light Screen must not halve a physical hit. Allow ±1 HP rounding
+        // slack from RNG drift across the two scenarios (status-move
+        // resolution on turn 1 vs Pass nudges some intermediate values).
+        let diff = (with_screen_dmg as i32 - no_screen_dmg as i32).abs();
+        assert!(
+            diff <= 1,
+            "Light Screen must not reduce physical damage; got {with_screen_dmg} vs {no_screen_dmg}",
+        );
+    }
+
+    #[test]
+    fn light_screen_expires_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["lightscreen","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["lightscreen","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.light_screen_turns, 4);
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.conditions.light_screen_turns, expected);
+        }
+    }
+
+    #[test]
     fn reflect_does_not_affect_special_damage() {
         // Reflect is physical-only. Special hits should be unchanged.
         let p1_json = r#"[
@@ -2280,11 +2408,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, is_doubles: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);

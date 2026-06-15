@@ -49,6 +49,9 @@ pub struct SideConditions {
     /// (8 with Light Clay — deferred). Same end-of-step tick model as
     /// Tailwind: set to 5 on use; active for N..=N+4; expires end of N+4.
     pub reflect_turns: u8,
+    /// Light Screen: halves special damage taken by this side. Same
+    /// duration and bypass rules as Reflect (crit, infiltrator).
+    pub light_screen_turns: u8,
 }
 
 impl Side {
