@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+.idea/
+.vscode/
+*.swp
+/data/replays/
+/data/corpus_cache/
+/.cache/
