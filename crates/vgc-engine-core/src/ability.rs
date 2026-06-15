@@ -94,6 +94,7 @@ pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
     };
     let trigger = match slug {
         "protosynthesis" => matches!(battle.weather, crate::weather::Weather::Sun),
+        "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
         _ => return,
     };
     if trigger && !currently_active {

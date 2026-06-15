@@ -303,6 +303,14 @@ impl Battle {
             self.terrain_turns -= 1;
             if self.terrain_turns == 0 {
                 self.terrain = crate::terrain::Terrain::None;
+                // Refresh paradox boosters — Quark Drive users drop
+                // their volatile when E-Terrain expires.
+                let n = self.format().active_count() as u8;
+                for s in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n {
+                        crate::ability::refresh_paradox_booster(self, s, slot);
+                    }
+                }
             }
         }
 
@@ -1021,6 +1029,13 @@ impl Battle {
                 if self.terrain != crate::terrain::Terrain::Electric {
                     self.terrain = crate::terrain::Terrain::Electric;
                     self.terrain_turns = 5;
+                    // Quark Drive users on either side may now flip on.
+                    let n = self.format().active_count() as u8;
+                    for s in [SideRef::P1, SideRef::P2] {
+                        for slot in 0..n {
+                            crate::ability::refresh_paradox_booster(self, s, slot);
+                        }
+                    }
                 }
             }
             "encore" => {
@@ -2633,6 +2648,73 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn quark_drive_activates_under_electric_terrain() {
+        // Iron Hands has Quark Drive. Ally switches in with Electric
+        // Surge → Quark Drive flips on.
+        let p1_json = r#"[
+            {"species":"pincurchin","level":50,"ability":"electricsurge","item":"focussash","nature":"hardy","moves":["thunderbolt","liquidation","scald","protect"]},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"focussash","nature":"adamant","moves":["drainpunch","wildcharge","fakeout","heavyslam"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // E-Terrain already up from Pincurchin's Electric Surge.
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        // Switch in Iron Hands.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Iron Hands best stat with adamant + 252 Atk: Atk = index 0.
+        assert_eq!(b.p1.team[1].boosted_stat, 0, "Quark Drive picked Atk");
+    }
+
+    #[test]
+    fn quark_drive_deactivates_when_terrain_expires() {
+        let p1_json = r#"[
+            {"species":"pincurchin","level":50,"ability":"electricsurge","item":"focussash","nature":"hardy","moves":["thunderbolt","liquidation","scald","protect"]},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"focussash","nature":"adamant","moves":["drainpunch","wildcharge","fakeout","heavyslam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_ne!(b.p1.team[1].boosted_stat, 255);
+        // E-terrain lasts 5 turns (one already ticked).
+        for _ in 0..5 {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.terrain, crate::terrain::Terrain::None);
+        assert_eq!(b.p1.team[1].boosted_stat, 255, "Quark Drive deactivated");
+    }
+
+    #[test]
+    fn quark_drive_does_not_activate_outside_terrain() {
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"focussash","nature":"adamant","moves":["drainpunch","wildcharge","fakeout","heavyslam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosted_stat, 255);
     }
 
     #[test]
