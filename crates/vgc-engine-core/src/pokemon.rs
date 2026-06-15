@@ -224,6 +224,35 @@ impl Pokemon {
     pub fn is_alive(&self) -> bool {
         !self.fainted && self.current_hp > 0
     }
+
+    /// True if the mon is grounded — i.e. terrain effects, Earthquake,
+    /// Spikes etc. apply. False for Flying-type (type code 9),
+    /// Levitate ability, or Air Balloon holder. Magnet Rise /
+    /// Telekinesis / Roost / Gravity edge cases deferred.
+    pub fn is_grounded(&self) -> bool {
+        let s = self.species();
+        let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
+        if flying {
+            return false;
+        }
+        let ability = if self.ability_id == u16::MAX {
+            ""
+        } else {
+            data::ABILITIES[self.ability_id as usize].slug
+        };
+        if ability == "levitate" {
+            return false;
+        }
+        let item = if self.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[self.item_id as usize].slug
+        };
+        if item == "airballoon" {
+            return false;
+        }
+        true
+    }
 }
 
 /// Gen 3+ stat formula. See Bulbapedia "Stat — Determination of stats".

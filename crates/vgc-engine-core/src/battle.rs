@@ -53,6 +53,11 @@ pub struct Battle {
     pub weather: crate::weather::Weather,
     /// Remaining-turn counter for weather. 0 when `weather == None`.
     pub weather_turns: u8,
+    /// Active terrain (Electric / Grassy / Psychic / Misty). 0 turns
+    /// when `terrain == None`. 5-turn duration; Terrain Extender → 8
+    /// is deferred.
+    pub terrain: crate::terrain::Terrain,
+    pub terrain_turns: u8,
     /// Trick Room remaining turns (0 = inactive). Battle-wide field
     /// condition reversing the speed-sort order within each priority
     /// bracket.
@@ -70,6 +75,7 @@ impl Battle {
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
             weather: crate::weather::Weather::None, weather_turns: 0,
+            terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
@@ -292,6 +298,12 @@ impl Battle {
         }
         if self.trick_room_turns > 0 {
             self.trick_room_turns -= 1;
+        }
+        if self.terrain_turns > 0 {
+            self.terrain_turns -= 1;
+            if self.terrain_turns == 0 {
+                self.terrain = crate::terrain::Terrain::None;
+            }
         }
 
         self.turn = self.turn.saturating_add(1);
@@ -586,12 +598,22 @@ impl Battle {
             let defender_has_light_screen = def_conds.light_screen_turns > 0;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
+            // Terrain mult only when defender is grounded — Flying types,
+            // Levitate ability, and Air Balloon defenders see plain
+            // damage. PS data/conditions.ts:electricterrain onBasePower
+            // only fires for grounded targets.
+            let active_terrain = if defender.is_grounded() {
+                self.terrain
+            } else {
+                crate::terrain::Terrain::None
+            };
             let mut dmg = calculate_damage(
                 &boosted_attacker,
                 &boosted_defender,
                 move_id,
                 DamageContext {
                     crit, roll, is_spread, weather: self.weather,
+                    terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
                     defender_has_aurora_veil, is_doubles,
                 },
@@ -764,16 +786,22 @@ impl Battle {
     /// Attempt to apply a status to a specific mon. No-op if the mon
     /// already has a non-None status, or if it's type-immune to this status.
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
-        let immune = match self.side(side).active_mon(slot as usize) {
+        let (immune, terrain_blocks_sleep) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
                     return;
                 }
-                is_type_immune_to_status(m.species(), status)
+                // Electric Terrain blocks sleep on grounded mons (gen 7+).
+                // Misty Terrain blocks ALL major statuses (gen 7+, lands
+                // when Misty Terrain ships). PS data/conditions.ts.
+                let e_terrain_blocks = matches!(self.terrain, crate::terrain::Terrain::Electric)
+                    && matches!(status, Status::Sleep)
+                    && m.is_grounded();
+                (is_type_immune_to_status(m.species(), status), e_terrain_blocks)
             }
             _ => return,
         };
-        if immune {
+        if immune || terrain_blocks_sleep {
             return;
         }
         // Sleep duration roll: gen 5+ uses 1..=3 turns. `rng.range(3)`
@@ -987,6 +1015,14 @@ impl Battle {
             // with `status: 'xxx'`. Accuracy is rolled at the standard
             // move-resolution point; here we just apply the status to the
             // chosen target (or the actor for self-target moves).
+            "electricterrain" => {
+                // PS data/moves.ts:electricterrain — sets terrain unless
+                // already Electric, duration 5.
+                if self.terrain != crate::terrain::Terrain::Electric {
+                    self.terrain = crate::terrain::Terrain::Electric;
+                    self.terrain_turns = 5;
+                }
+            }
             "encore" => {
                 // Locks the first alive opposing target into its last-
                 // used move for 3 turns. PS data/conditions.ts:encore
@@ -2230,11 +2266,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -2597,6 +2633,166 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn electric_surge_sets_terrain_on_switch_in() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"hardy","moves":["hurricane","weatherball","tailwind","airslash"]},
+            {"species":"pincurchin","level":50,"ability":"electricsurge","item":"focussash","nature":"hardy","moves":["thunderbolt","liquidation","scald","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::None);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric, "Electric Surge set terrain");
+        assert_eq!(b.terrain_turns, 4, "tick 5 → 4 after end of turn 1");
+    }
+
+    #[test]
+    fn electric_terrain_move_sets_terrain() {
+        let p1_json = r#"[
+            {"species":"tapukoko","level":50,"ability":"static","nature":"hardy","moves":["electricterrain","thunderbolt","wildcharge","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        assert_eq!(b.terrain_turns, 4);
+    }
+
+    #[test]
+    fn electric_terrain_boosts_electric_damage_on_grounded() {
+        // Same Thunderbolt vs grounded Pikachu, with and without
+        // Electric Terrain — ×1.3 boost.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut no_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1a, p2a);
+        let start_hp = no_terrain.p2.team[0].current_hp;
+        no_terrain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_no = start_hp - no_terrain.p2.team[0].current_hp;
+
+        let mut with_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        with_terrain.terrain = crate::terrain::Terrain::Electric;
+        with_terrain.terrain_turns = 5;
+        let start_hp_b = with_terrain.p2.team[0].current_hp;
+        with_terrain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_with = start_hp_b - with_terrain.p2.team[0].current_hp;
+        let pct = dmg_with as i32 * 100 / dmg_no as i32;
+        assert!((125..=135).contains(&pct), "expected ~130%; got {pct}%");
+    }
+
+    #[test]
+    fn electric_terrain_does_not_boost_flying_defender() {
+        // Pelipper is Water/Flying — ungrounded → no terrain boost.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"calm","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut no_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1a, p2a);
+        // Pelipper sets Rain on switch-in — that's neutral for the test
+        // (electric damage doesn't care about rain).
+        let _ = no_terrain.weather;
+        let start = no_terrain.p2.team[0].current_hp;
+        no_terrain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_no = start - no_terrain.p2.team[0].current_hp;
+
+        let mut with_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1b, p2b);
+        with_terrain.terrain = crate::terrain::Terrain::Electric;
+        with_terrain.terrain_turns = 5;
+        let start_b = with_terrain.p2.team[0].current_hp;
+        with_terrain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_with = start_b - with_terrain.p2.team[0].current_hp;
+        // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
+        let diff = (dmg_with as i32 - dmg_no as i32).abs();
+        assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+    }
+
+    #[test]
+    fn electric_terrain_blocks_sleep_on_grounded() {
+        // Amoonguss Spore → grounded Pikachu under E-Terrain — fails.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.terrain = crate::terrain::Terrain::Electric;
+        b.terrain_turns = 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None), "E-Terrain blocks sleep on grounded");
+    }
+
+    #[test]
+    fn electric_terrain_does_not_block_sleep_on_flying() {
+        // Pelipper (Flying) under E-Terrain — Spore can still land
+        // (but Pelipper is Flying/Water, immune to powder via Grass
+        // check... actually Pelipper is Water/Flying, NOT Grass — so
+        // Spore lands). Test the terrain part: a Flying mon under
+        // E-Terrain CAN still be put to sleep (E-Terrain only blocks
+        // grounded mons).
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"calm","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.terrain = crate::terrain::Terrain::Electric;
+        b.terrain_turns = 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::Sleep), "Flying Pelipper still sleeps under E-Terrain");
     }
 
     #[test]
@@ -3510,11 +3706,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
