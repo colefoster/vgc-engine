@@ -194,6 +194,18 @@ pub struct Pokemon {
     /// `data/conditions.ts:slp onBeforeMove`. Persists across switches
     /// (the timer pauses while the mon is on the bench).
     pub sleep_turns: u8,
+    /// Slot index of the most recent move this mon used (PP-consumed),
+    /// or 255 if it hasn't moved yet on the field. Cleared on switch-
+    /// out. Used by Encore to determine the lock target.
+    pub last_used_move_slot: u8,
+    /// Encore lock: when > 0, this mon must use `encored_move_slot`.
+    /// Decremented at end of step; the volatile ends at 0. Cleared on
+    /// switch-out or when the locked move runs out of PP. PS:
+    /// `data/conditions.ts:encore`, duration 3.
+    pub encore_turns: u8,
+    /// Slot index the Encore volatile is locking the user into.
+    /// 255 = no encore.
+    pub encored_move_slot: u8,
 }
 
 impl Pokemon {
