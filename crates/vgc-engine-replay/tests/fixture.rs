@@ -112,11 +112,11 @@ fn runner_builds_battle_from_fixture() {
     assert_eq!(p2a.species().slug, "garchomp");
     assert_eq!(p2b.species().slug, "talonflame");
 
-    // PR-36 reconstructs every team-preview entry (6 per side here);
-    // the "brought-4 of 6" filtering surfaced by `|teampreview|4` will
-    // land in a follow-up PR once the runner learns to drop unused mons.
-    assert_eq!(battle.p1.team.len(), 6);
-    assert_eq!(battle.p2.team.len(), 6);
+    // Brought-set filter (PR-37): only mons that actually appeared on the
+    // field are kept. The fixture's |teampreview|4 means each side brings
+    // 4 of 6.
+    assert_eq!(battle.p1.team.len(), 4);
+    assert_eq!(battle.p2.team.len(), 4);
 }
 
 #[test]

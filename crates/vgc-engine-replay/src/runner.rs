@@ -73,12 +73,16 @@ impl RunnerInit {
         let p1_obs = p1_obs.ok_or(RunnerError::MissingSide(1))?;
         let p2_obs = p2_obs.ok_or(RunnerError::MissingSide(2))?;
 
-        let mut p1_team = recon.reconstruct(&p1_obs)?;
-        let mut p2_team = recon.reconstruct(&p2_obs)?;
+        let brought = brought_species(&replay.events);
+        let p1_filtered = filter_brought(p1_obs, &brought[0]);
+        let p2_filtered = filter_brought(p2_obs, &brought[1]);
+
+        let mut p1_team = recon.reconstruct(&p1_filtered)?;
+        let mut p2_team = recon.reconstruct(&p2_filtered)?;
 
         let (p1_leads, p2_leads) = detect_leads(&replay.events);
-        reorder_leads(&mut p1_team, &p1_obs, p1_leads, 1)?;
-        reorder_leads(&mut p2_team, &p2_obs, p2_leads, 2)?;
+        reorder_leads(&mut p1_team, &p1_filtered, p1_leads, 1)?;
+        reorder_leads(&mut p2_team, &p2_filtered, p2_leads, 2)?;
 
         // Doubles is the only format the corpus targets. Singles falls out
         // of the same machinery once we have a singles fixture.
@@ -165,6 +169,47 @@ fn reorder_leads(
         team.swap(1, lead_b_idx);
     }
     Ok(())
+}
+
+/// Per-player set of species slugs that the replay actually shows on the
+/// field (initial leads + any mid-battle switches). Drives "brought-N of 6"
+/// filtering since PS public replays don't include the team-preview
+/// selection prompt.
+fn brought_species(events: &[Event]) -> [Vec<String>; 2] {
+    let mut out: [Vec<String>; 2] = Default::default();
+    for ev in events {
+        let (slot, details) = match ev {
+            Event::Switch { slot, details, .. } | Event::Drag { slot, details, .. } => {
+                (slot, details)
+            }
+            _ => continue,
+        };
+        let Some(p) = (slot.player as usize).checked_sub(1) else { continue };
+        if p >= 2 {
+            continue;
+        }
+        let species = crate::recon::parse_details(details).species;
+        if !species.is_empty() && !out[p].contains(&species) {
+            out[p].push(species);
+        }
+    }
+    out
+}
+
+/// Drop mons from the team-preview-derived input whose species never
+/// appeared on the field. If the brought-set is empty (degenerate replay
+/// with no switches), keep all preview entries — better to over-include
+/// than crash the runner.
+fn filter_brought(input: ReconInput, brought: &[String]) -> ReconInput {
+    if brought.is_empty() {
+        return input;
+    }
+    let ReconInput { player, mons } = input;
+    let mons = mons
+        .into_iter()
+        .filter(|m| brought.contains(&m.species))
+        .collect();
+    ReconInput { player, mons }
 }
 
 fn find_unique(team: &[TeamMember], species: &str, start: usize) -> Option<usize> {
