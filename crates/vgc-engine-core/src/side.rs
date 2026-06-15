@@ -45,6 +45,10 @@ pub struct SideConditions {
     /// (counted at end of step — so Tailwind used on turn N is active
     /// for turns N, N+1, N+2, N+3, gone end of N+3).
     pub tailwind_turns: u8,
+    /// Reflect: halves physical damage taken by this side. PS duration 5
+    /// (8 with Light Clay — deferred). Same end-of-step tick model as
+    /// Tailwind: set to 5 on use; active for N..=N+4; expires end of N+4.
+    pub reflect_turns: u8,
 }
 
 impl Side {
