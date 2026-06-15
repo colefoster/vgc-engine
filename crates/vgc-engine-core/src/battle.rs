@@ -361,6 +361,23 @@ impl Battle {
             }
         }
 
+        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
+        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
+        //       user and lets the move proceed regardless of the roll.
+        //     - otherwise 20% chance to thaw and proceed; 80% to stay
+        //       frozen and skip the move (no PP).
+        if matches!(attacker.status, Status::Freeze) {
+            let thaws_self = move_is_defrost(m.slug);
+            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
+            if thaws_self || lucky_thaw {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.status = Status::None;
+                }
+            } else {
+                return;
+            }
+        }
+
         // 2. Fake Out: fails unless attacker has been on the field 0 turns
         //    (i.e. this is its first action since switch-in). PS marks
         //    this with the 'fakeout' move's onTry checking activeTurns.
@@ -535,6 +552,20 @@ impl Battle {
 
                 // Post-damage item hook (Sitrus Berry etc.).
                 crate::item::on_after_damage(self, tside, tslot);
+
+                // Defender thaw on Fire-type hit (PS cartridge rule —
+                // any Fire damaging move thaws the target) or on any
+                // explicit defrost-flagged move. Done after damage so a
+                // frozen mon that's KO'd by the hit doesn't get cured
+                // first. type code 1 = Fire.
+                let thawed = m.type_ == 1 || move_is_defrost(m.slug);
+                if thawed {
+                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        if t.is_alive() && matches!(t.status, Status::Freeze) {
+                            t.status = Status::None;
+                        }
+                    }
+                }
             }
 
             // Knock Off item removal — after damage, after Sitrus etc.,
@@ -1108,6 +1139,21 @@ fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool 
         Status::Poison | Status::Toxic => has(7) || has(16),
         Status::Sleep | Status::None => false,
     }
+}
+
+/// Moves whose PS `flags.defrost = 1` — the user-of-the-move thaws on
+/// use, and being hit by such a move thaws the target. Subset relevant
+/// to gen 9 top-50: Scald, Flare Blitz, Sacred Fire, Flame Wheel,
+/// Fusion Flare, Pyro Ball, Burn Up, Steam Eruption, Searing Shot,
+/// Scorching Sands. Plus every Fire-type damaging move thaws the
+/// defender (cartridge rule); we approximate with this slug list plus
+/// the "any Fire-type damaging hit thaws" check at the use site.
+fn move_is_defrost(slug: &str) -> bool {
+    matches!(
+        slug,
+        "scald" | "flareblitz" | "sacredfire" | "flamewheel" | "fusionflare"
+        | "pyroball" | "burnup" | "steameruption" | "searingshot" | "scorchingsands"
+    )
 }
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
@@ -2419,6 +2465,86 @@ mod tests {
             );
             assert_eq!(b.p1.conditions.light_screen_turns, expected);
         }
+    }
+
+    #[test]
+    fn freeze_skips_move_until_thaw_roll() {
+        // Frozen Pikachu attempts T-bolt across many turns. With 20%
+        // thaw rate, the move should be skipped most turns and
+        // occasionally connect. We force a specific seed to be
+        // deterministic about the first thaw turn.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].status = Status::Freeze;
+        let bliss_hp_start = b.p2.team[0].current_hp;
+        // Run up to 25 turns. The mon should remain frozen for several
+        // turns, then thaw, then deal damage. Track first damage turn.
+        let mut first_damage_turn = None;
+        for turn in 1..=25u32 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp < bliss_hp_start && first_damage_turn.is_none() {
+                first_damage_turn = Some(turn);
+            }
+            if matches!(b.p1.team[0].status, Status::None) {
+                break;
+            }
+        }
+        assert!(first_damage_turn.is_some(), "should thaw + connect within 25 turns");
+        assert!(matches!(b.p1.team[0].status, Status::None), "thawed");
+    }
+
+    #[test]
+    fn defrost_move_thaws_self_and_resolves() {
+        // Flare Blitz is defrost-flagged. A frozen mon using it MUST
+        // thaw and execute the move (no PP-only skip).
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","nature":"jolly","moves":["flareblitz","closecombat","uturn","stoneedge"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].status = Status::Freeze;
+        let bliss_hp_start = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, Status::None), "defrost-flagged move thaws self");
+        assert!(b.p2.team[0].current_hp < bliss_hp_start, "Flare Blitz connected");
+    }
+
+    #[test]
+    fn fire_move_thaws_defender() {
+        // Being hit by ANY Fire-type move thaws the target (cartridge
+        // rule, gen 9). Use Incineroar Flare Blitz vs a frozen Blissey.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["flareblitz","knockoff","fakeout","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].status = Status::Freeze;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None), "Fire hit thaws defender");
     }
 
     #[test]
