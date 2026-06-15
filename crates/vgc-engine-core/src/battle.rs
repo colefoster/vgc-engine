@@ -151,12 +151,12 @@ impl Battle {
             return StepResult::Ended { winner: w };
         }
 
-        // 0. Per-turn volatile reset on every mon: clear single-turn
-        //    protect flag and the stall-attempt tracking flag.
+        // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
                 m.is_protected_this_turn = false;
                 m.used_stall_this_turn = false;
+                m.flinched_this_turn = false;
             }
         }
 
@@ -185,12 +185,20 @@ impl Battle {
             self.resolve_move(action);
         }
 
-        // 3. End-of-turn cleanup: any mon that did NOT use a stall move
-        //    this turn resets its stall_counter.
+        // 3. End-of-turn cleanup.
+        // 3a. Any mon that did NOT use a stall move resets its counter.
+        // 3b. Every currently-active mon's turns_active increments by 1.
         for s in [SideRef::P1, SideRef::P2] {
-            for m in self.side_mut(s).team.iter_mut() {
+            let side = self.side_mut(s);
+            for m in side.team.iter_mut() {
                 if !m.used_stall_this_turn {
                     m.stall_counter = 0;
+                }
+            }
+            for &active_idx in side.active.iter() {
+                if (active_idx as usize) < side.team.len() {
+                    let mon = &mut side.team[active_idx as usize];
+                    mon.turns_active = mon.turns_active.saturating_add(1);
                 }
             }
         }
@@ -220,7 +228,12 @@ impl Battle {
                     && s.team[team_index as usize].is_alive()
                 {
                     s.active[actor_slot as usize] = team_index;
-                    s.team[team_index as usize].boosts = [0; 7];
+                    let incoming = &mut s.team[team_index as usize];
+                    incoming.boosts = [0; 7];
+                    incoming.turns_active = 0;
+                    incoming.flinched_this_turn = false;
+                    incoming.is_protected_this_turn = false;
+                    incoming.stall_counter = 0;
                 }
             }
         }
@@ -246,14 +259,34 @@ impl Battle {
         };
         let m = &data::MOVES[move_id as usize];
 
-        // 1. PP cost — ticked even on miss / immunity (PS behavior).
+        // 1. Flinch check — flinched mons cannot move at all this turn.
+        //    PS: PP is NOT consumed on flinch (the move is replaced with
+        //    inaction). Source: PS sim/battle-actions.ts:runMove.
+        if attacker.flinched_this_turn {
+            return;
+        }
+
+        // 2. Fake Out: fails unless attacker has been on the field 0 turns
+        //    (i.e. this is its first action since switch-in). PS marks
+        //    this with the 'fakeout' move's onTry checking activeTurns.
+        if m.slug == "fakeout" && attacker.turns_active != 0 {
+            // Failure still ticks PP per PS.
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1);
+                }
+            }
+            return;
+        }
+
+        // 3. PP cost — ticked even on miss / immunity (PS behavior).
         if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
             if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                 *pp = pp.saturating_sub(1);
             }
         }
 
-        // 2. Status-move dispatch by slug. Currently: Protect only.
+        // 4. Status-move dispatch by slug. Currently: Protect only.
         if m.category == 2 {
             self.resolve_status_move(actor_side, actor_slot, m);
             return;
@@ -307,6 +340,18 @@ impl Battle {
                 t.fainted = true;
             }
         }
+
+        // 9. Secondary effects. Hard-coded by slug for now; future PR
+        //    refactors into a data-driven dispatcher once we have ~10+
+        //    moves with secondaries. PS rule: secondaries only fire if
+        //    the target didn't faint.
+        let target_alive_post = self
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|m| m.is_alive());
+        if target_alive_post {
+            apply_secondary_effect(self, target_side, target_slot, m.slug);
+        }
     }
 
     /// Status-move dispatch. Phase 2 PR-5 implements: Protect.
@@ -352,6 +397,25 @@ impl Battle {
             }
         }
     }
+}
+
+/// Apply a move's secondary effect to the target. Phase 2 PR-6 hard-codes
+/// the Fake Out flinch as the only secondary. Subsequent PRs add Rock
+/// Slide 30% flinch, Scald 30% burn, Discharge 30% para, Close Combat
+/// self stat drops, etc.
+fn apply_secondary_effect(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_slug: &str,
+) {
+    if move_slug == "fakeout" {
+        // PS data/moves.ts fakeout: secondary { chance: 100, volatileStatus: 'flinch' }.
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            t.flinched_this_turn = true;
+        }
+    }
+    // Future PRs add more arms here (rockslide 30% flinch, scald 30% burn, ...).
 }
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
@@ -547,6 +611,101 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].stall_counter, 1, "fresh streak — counter back to 1");
+    }
+
+    #[test]
+    fn fake_out_flinches_first_turn() {
+        // Singles to keep it tidy. Iron Hands knows Fake Out.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let ih_hp = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Fake Out priority +3 beats Earthquake. Target flinches → Earthquake skipped.
+        assert_eq!(b.p1.team[0].current_hp, ih_hp, "Iron Hands took no damage — flinched");
+        assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Garchomp took Fake Out damage");
+    }
+
+    #[test]
+    fn fake_out_fails_on_second_turn() {
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Turn 1: Iron Hands uses Drain Punch (anything non-Fake-Out), Garchomp Protects.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].turns_active, 1, "Iron Hands has been out 1 turn");
+        let chomp_hp = b.p2.team[0].current_hp;
+        // Turn 2: Iron Hands tries Fake Out — should fail (no damage, no flinch).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, chomp_hp, "Fake Out failed → no damage to Garchomp");
+        // Garchomp's Dragon Claw should have hit Iron Hands.
+        assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn switching_resets_turns_active() {
+        // Doubles: switch out a mon and bring it back; turns_active should reset.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Turn 1: pass everything to age the active mons.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[0].turns_active, 1);
+        // Turn 2: switch slot 0 (Iron Hands) → Pelipper.
+        b.step(
+            &[
+                Choice::Switch { actor_slot: 0, team_index: 2 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        // Pelipper just switched in this turn; end-of-step increments → 1.
+        assert_eq!(b.p1.team[2].turns_active, 1, "Pelipper has now been out 1 turn");
+        // Turn 3: switch back to Iron Hands.
+        b.step(
+            &[
+                Choice::Switch { actor_slot: 0, team_index: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        // Iron Hands was reset on switch-in, then incremented at end → 1.
+        // Its first action turn (turns_active == 0 during move resolution)
+        // is the NEXT turn — confirm by trying Fake Out.
+        assert_eq!(b.p1.team[0].turns_active, 1);
     }
 
     #[test]
