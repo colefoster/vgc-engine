@@ -15,6 +15,7 @@ fn print_usage() {
            info                      Print data-table sizes.\n\
            load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
            replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
+           score <replay.json>        Run the engine against a replay and print per-turn agreement.\n\
            help                      This message.\n"
     );
 }
@@ -125,6 +126,59 @@ fn print_recon_team(label: &str, team: &[core::TeamMember]) {
     }
 }
 
+fn cmd_score(args: &[String]) -> ExitCode {
+    let [path] = match args {
+        [a] => [a],
+        _ => {
+            eprintln!("score: expected exactly 1 path argument");
+            return ExitCode::from(2);
+        }
+    };
+    let json = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("read {path}: {e}"); return ExitCode::from(1); }
+    };
+    let r = match replay::Replay::from_json(&json) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("parse: {e}"); return ExitCode::from(1); }
+    };
+    let score = match replay::score_replay(
+        &r,
+        &replay::CanonicalDefault,
+        0xC0FFEE_DEADBEEF,
+        replay::DEFAULT_HP_TOLERANCE,
+    ) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("score: {e}"); return ExitCode::from(1); }
+    };
+
+    println!("replay         : {}", score.replay_id);
+    println!("turns scored   : {}", score.per_turn.len());
+    println!("turns stepped  : {}", score.turns_run);
+    println!("agreement      : {:.1}% ({} / {})",
+        score.agreement_pct * 100.0,
+        score.per_turn.iter().filter(|t| t.agreed).count(),
+        score.per_turn.len(),
+    );
+    println!();
+    println!("turn  hp_l1  agreed  slots");
+    for t in &score.per_turn {
+        let l1 = if t.hp_l1.is_nan() {
+            "  nan".to_string()
+        } else {
+            format!("{:5.3}", t.hp_l1)
+        };
+        println!(
+            "{:>4}  {}  {:>6}  {:>5}",
+            t.turn,
+            l1,
+            if t.agreed { "yes" } else { "no" },
+            t.compared_slots,
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
@@ -135,6 +189,7 @@ fn main() -> ExitCode {
         "info" => cmd_info(),
         "load" => cmd_load(&args[1..]),
         "replay-init" => cmd_replay_init(&args[1..]),
+        "score" => cmd_score(&args[1..]),
         "help" | "--help" | "-h" => { print_usage(); ExitCode::SUCCESS }
         other => {
             eprintln!("unknown command: {other}");
