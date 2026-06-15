@@ -14,6 +14,7 @@ mod parser;
 mod recon;
 mod replay;
 mod runner;
+mod scorer;
 mod trace;
 
 pub use choices::ChoiceExtractor;
@@ -25,4 +26,5 @@ pub use recon::{
 };
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
+pub use scorer::{score_replay, ReplayScore, TurnScore, DEFAULT_HP_TOLERANCE};
 pub use trace::{hp_trace, parse_hp, HpEvent, HpSource};
