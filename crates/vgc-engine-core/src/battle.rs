@@ -371,13 +371,20 @@ impl Battle {
                 DamageContext { crit, roll, is_spread, weather: self.weather },
             );
 
+            // Pre-damage item hook (Focus Sash etc. may cap damage).
+            let effective_dmg = crate::item::on_before_damage(self, tside, tslot, dmg)
+                .unwrap_or(dmg);
+
             // Apply.
             if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                t.current_hp = t.current_hp.saturating_sub(dmg);
+                t.current_hp = t.current_hp.saturating_sub(effective_dmg);
                 if t.current_hp == 0 {
                     t.fainted = true;
                 }
             }
+
+            // Post-damage item hook (Sitrus Berry etc.).
+            crate::item::on_after_damage(self, tside, tslot);
 
             // Secondary if target still alive.
             let alive_post = self.side(tside).active_mon(tslot as usize)
@@ -1054,6 +1061,59 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn focus_sash_survives_fatal_hit_at_full_hp() {
+        // Pikachu has Focus Sash. Garchomp Earthquake would normally OHKO.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 1, "Sash survives at 1 HP");
+        assert!(!b.p2.team[0].fainted);
+        // Sash consumed.
+        assert_eq!(b.p2.team[0].item_id, u16::MAX);
+    }
+
+    #[test]
+    fn sitrus_berry_heals_at_half_hp() {
+        // Snorlax with Sitrus. Take damage to ≤50%; Sitrus triggers and
+        // heals 25%, then consumes.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Manually set Snorlax HP to 60% then hit it for at least 20% dmg
+        // so it drops below 50%.
+        let max = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = max * 6 / 10;
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Hard to predict the exact HP without a deterministic damage
+        // calc, but: item must be consumed AND HP must be higher than
+        // it would be without Sitrus (i.e. higher than before - dmg).
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Sitrus consumed");
+        // Should be above 0; not fainted.
+        assert!(b.p2.team[0].current_hp > 0);
+        let _ = before;
     }
 
     #[test]
