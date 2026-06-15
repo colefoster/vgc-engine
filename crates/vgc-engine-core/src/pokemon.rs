@@ -183,6 +183,11 @@ pub struct Pokemon {
     /// `activeTurns` is incremented at the START of each turn so
     /// mid-battle switch-ins see `activeTurns==0` at end of that turn.
     pub switched_in_this_turn: bool,
+    /// Substitute HP. `0` = no sub. When > 0, incoming damage is absorbed
+    /// by the sub before reaching `current_hp`; secondaries are blocked.
+    /// Cleared on switch-out. Set to `max_hp / 4` when Substitute is
+    /// successfully used (the user pays the same amount up front).
+    pub substitute_hp: u16,
 }
 
 impl Pokemon {

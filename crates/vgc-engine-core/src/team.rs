@@ -174,6 +174,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         toxic_counter: 0,
         locked_move_slot: 255,
         switched_in_this_turn: false,
+        substitute_hp: 0,
     })
 }
 
