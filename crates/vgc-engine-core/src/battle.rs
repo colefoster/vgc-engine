@@ -202,10 +202,13 @@ impl Battle {
             self.resolve_move(action);
         }
 
-        // 3. End-of-turn cleanup.
-        // 3a. Any mon that did NOT use a stall move resets its counter.
-        // 3b. Every currently-active mon's turns_active increments by 1.
-        // 3c. Side-condition timers tick down.
+        // 3. End-of-turn residuals (weather damage, future leftovers /
+        //    status damage / Speed Boost / etc.). Runs BEFORE timer
+        //    decrement so a mon takes its last sand damage on the turn
+        //    sand expires (PS behavior).
+        self.resolve_end_of_turn();
+
+        // 4. Per-mon end-of-turn flags + side-condition timers.
         for s in [SideRef::P1, SideRef::P2] {
             let side = self.side_mut(s);
             for m in side.team.iter_mut() {
@@ -222,8 +225,7 @@ impl Battle {
             // Tailwind / future side-condition timers.
             side.conditions.tailwind_turns = side.conditions.tailwind_turns.saturating_sub(1);
         }
-        // Weather decrement (battle-wide). Sand/Hail residual damage and
-        // Snow def boost land in the end-of-turn-residuals PR.
+        // 5. Weather timer decrement (battle-wide).
         if self.weather_turns > 0 {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
@@ -384,6 +386,43 @@ impl Battle {
                 let mut rng = self.rng;
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
+            }
+        }
+    }
+
+    /// End-of-turn residuals: damage / heal sources that fire each turn
+    /// after move resolution. Currently: Sand weather damage. Subsequent
+    /// PRs add Leftovers, burn/poison/toxic damage, Speed Boost, etc.
+    fn resolve_end_of_turn(&mut self) {
+        // Sand: 1/16 max HP per turn to every active mon not type-immune.
+        // Ability / item immunities (Sand Veil ignored — that's evasion
+        // not damage immunity; Magic Guard / Overcoat / Safety Goggles
+        // are real damage immunities) land in their own PRs.
+        if self.weather == crate::weather::Weather::Sand {
+            for side in [SideRef::P1, SideRef::P2] {
+                let n = self.format().active_count();
+                for slot in 0..n {
+                    let immune = match self.side(side).active_mon(slot) {
+                        Some(m) if m.is_alive() => {
+                            let species = m.species();
+                            (0..species.num_types as usize).any(|i| {
+                                // Type codes: 12 Rock, 8 Ground, 16 Steel.
+                                matches!(species.types[i], 12 | 8 | 16)
+                            })
+                        }
+                        _ => true, // missing/fainted → skip
+                    };
+                    if immune {
+                        continue;
+                    }
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        let dmg = (m.stats.hp / 16).max(1);
+                        m.current_hp = m.current_hp.saturating_sub(dmg);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -848,6 +887,38 @@ mod tests {
         // Its first action turn (turns_active == 0 during move resolution)
         // is the NEXT turn — confirm by trying Fake Out.
         assert_eq!(b.p1.team[0].turns_active, 1);
+    }
+
+    #[test]
+    fn sand_damages_non_immune_active() {
+        // Tyranitar (Rock/Dark) has Sand Stream → triggers Sand.
+        // Garchomp (Dragon/Ground) is Ground-type → immune.
+        // Pikachu (Electric) → takes damage.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"smoothrock","nature":"adamant","moves":["rockslide","crunch","earthquake","stealthrock"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["rockslide","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Sand active from battle start (Tyranitar's Sand Stream).
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        let chomp_hp = b.p1.team[1].current_hp;
+        let pika_hp = b.p2.team[0].current_hp;
+        let ttar_hp = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].current_hp, chomp_hp, "Garchomp (Ground) immune");
+        assert_eq!(b.p1.team[0].current_hp, ttar_hp, "Tyranitar (Rock) immune");
+        assert!(b.p2.team[0].current_hp < pika_hp, "Pikachu takes sand damage");
+        // Exact: 1/16 of max HP.
+        let expected = b.p2.team[0].stats.hp / 16;
+        assert_eq!(pika_hp - b.p2.team[0].current_hp, expected);
     }
 
     #[test]
