@@ -21,7 +21,7 @@
 use crate::pokemon::{Pokemon, Status};
 use vgc_engine_data as data;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DamageContext {
     /// Caller decides whether this hit is a crit; we just apply the multiplier.
     pub crit: bool,
@@ -32,6 +32,8 @@ pub struct DamageContext {
     /// PS only applies this when the move actually hit multiple targets;
     /// a spread move hitting just one target deals full damage.
     pub is_spread: bool,
+    /// Battle-wide weather state (PS step 3). `Weather::None` is a no-op.
+    pub weather: crate::weather::Weather,
 }
 
 impl DamageContext {
@@ -164,6 +166,12 @@ pub fn calculate_damage(
         dmg = dmg * 3 / 4;
     }
 
+    // Weather — PS step 3. ×1.5 / ×0.5 for water/fire under Rain/Sun.
+    let (wn, wd) = ctx.weather.damage_mult(m.type_);
+    if wn != wd {
+        dmg = dmg * wn / wd;
+    }
+
     // Crit (gen 6+): ×1.5
     if ctx.crit {
         dmg = dmg * 3 / 2;
@@ -205,13 +213,13 @@ pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u1
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false },
+        DamageContext { crit: false, roll: DamageContext::MIN_ROLL, is_spread: false, weather: crate::weather::Weather::None },
     );
     let max = calculate_damage(
         attacker,
         defender,
         move_id,
-        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false },
+        DamageContext { crit: false, roll: DamageContext::MAX_ROLL, is_spread: false, weather: crate::weather::Weather::None },
     );
     (min, max)
 }
@@ -298,7 +306,7 @@ mod tests {
             &attacker,
             &defender,
             move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None },
         );
         assert_eq!(dmg, 444);
     }
@@ -325,7 +333,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let pelipper = make_mon("pelipper", 50, "modest", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &pelipper, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         assert_eq!(dmg, 0);
     }
 
@@ -334,9 +342,9 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         assert!(crit > no_crit);
         // 148 * 3/2 = 222; × roll 100/100 = 222; × STAB 3/2 = 333; × type 2 = 666
         assert_eq!(crit, 666);
@@ -348,7 +356,7 @@ mod tests {
         attacker.status = Status::Burn;
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let burned = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         // 444 / 2 = 222
         assert_eq!(burned, 222);
     }
@@ -359,9 +367,9 @@ mod tests {
         attacker.boosts[0] = -2; // -50% atk pre-crit
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let no_crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         let crit = calculate_damage(&attacker, &defender, move_id("earthquake"),
-            DamageContext { crit: true, roll: 15, is_spread: false });
+            DamageContext { crit: true, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         // With -2 atk boost ignored on crit, crit damage > no-crit (with -2 applied).
         assert!(crit > no_crit * 2, "crit should ignore -2 atk boost");
     }
@@ -372,7 +380,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("tackle"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
         // × 100/100 × 1.0 STAB × 1.0 type = 60.
         assert_eq!(dmg, 60);
@@ -383,7 +391,7 @@ mod tests {
         let attacker = make_mon("garchomp", 50, "adamant", StatSpread::ZERO);
         let defender = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         let dmg = calculate_damage(&attacker, &defender, move_id("protect"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         assert_eq!(dmg, 0);
     }
 
@@ -397,7 +405,7 @@ mod tests {
         let d = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
         // With atk = 300 and the same setup as the Garchomp test, damage scales linearly.
         let dmg = calculate_damage(&m, &d, move_id("earthquake"),
-            DamageContext { crit: false, roll: 15, is_spread: false });
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None });
         // base = 22 * 100 * 300 / 60 / 50 + 2 = 22 * 100 * 300 / 3000 + 2 = 220 + 2 = 222
         // × STAB 3/2 = 333, × type 2 = 666.
         assert_eq!(dmg, 666);
