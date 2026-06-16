@@ -12,6 +12,7 @@ mod format;
 mod pokemon;
 mod side;
 mod team;
+mod team_export;
 
 pub mod ability;
 pub mod battle;
@@ -31,5 +32,6 @@ pub use pokemon::{Nature, Pokemon, Stat, StatSpread, Status, nature_by_slug};
 pub use rng::{Rng, RngEvent};
 pub use side::{Side, SideRef};
 pub use team::{build_member, TeamBuilder, TeamLoadError, TeamMember};
+pub use team_export::parse_showdown_export;
 pub use terrain::Terrain;
 pub use weather::Weather;
