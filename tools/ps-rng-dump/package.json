@@ -1,0 +1,12 @@
+{
+  "name": "ps-rng-dump",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drives Pokemon Showdown sim under a fixed seed against an action sequence extracted from a replay, captures every Battle.random/randomChance call, and writes a vgc-engine OracleRng event stream as JSON. Consumed by vgc-engine-replay's score_replay_oracle.",
+  "bin": {
+    "ps-rng-dump": "./dump.js"
+  },
+  "dependencies": {
+    "pokemon-showdown": "file:/tmp/pokemon-showdown-research"
+  }
+}

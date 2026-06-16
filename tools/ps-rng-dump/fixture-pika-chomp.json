@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "turns": 1,
+  "events": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 3,
+      "denom": 10
+    }
+  ]
+}
