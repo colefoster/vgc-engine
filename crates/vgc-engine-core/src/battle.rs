@@ -1652,6 +1652,27 @@ impl Battle {
             }
         }
 
+        // Max-HP recoil — Steel Beam / Mind Blown / Chloroblast take
+        // 50% of *max HP* regardless of damage dealt. PS uses the
+        // `mindBlownRecoil` flag and fires it even on a no-damage hit
+        // (e.g. into a Ghost type for Mind Blown). Magic Guard blocks it
+        // (PS routes through standard onDamage event). Rock Head does
+        // NOT block (PS scopes Rock Head to the `recoil` effect id only).
+        // PS data/moves.ts:steelbeam,mindblown,chloroblast.
+        if matches!(m.slug, "steelbeam" | "mindblown" | "chloroblast") {
+            let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
+            let skip = attacker_post.is_some_and(crate::ability::has_magic_guard);
+            if !skip {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let recoil = (a.stats.hp / 2).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
+        }
+
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move
         // dealt damage to at least one target (PS: per-move, not per-hit).
         // Magic Guard blocks Life Orb recoil: PS's `onDamage` returns false
@@ -7838,6 +7859,56 @@ mod tests {
         );
         assert_eq!(b2.p1.team[0].current_hp, hp2,
                    "Rock Head should block Brave Bird recoil");
+    }
+
+    #[test]
+    fn steel_beam_recoils_user_half_max_hp() {
+        // PS data/moves.ts:steelbeam mindBlownRecoil flag → user loses
+        // round(maxhp / 2) regardless of damage dealt. Verify by checking
+        // recoil ≈ floor(max_hp / 2) within ±1.
+        let p1_json = r#"[
+            {"species":"magnezone","level":50,"ability":"sturdy","item":"","nature":"modest","moves":["steelbeam","thunderbolt","flashcannon","voltswitch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max_hp = b.p1.team[0].stats.hp;
+        let hp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let recoil = hp_before - b.p1.team[0].current_hp;
+        let expected = max_hp / 2;
+        assert!(
+            (recoil as i32 - expected as i32).abs() <= 1,
+            "Steel Beam recoil should be ≈max_hp/2: recoil={recoil} expected={expected}"
+        );
+    }
+
+    #[test]
+    fn magic_guard_blocks_steel_beam_max_hp_recoil() {
+        // Magic Guard blocks Mind Blown / Steel Beam / Chloroblast max-HP
+        // recoil (PS routes through onDamage with effect.id 'recoil').
+        let p1_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"","nature":"modest","moves":["steelbeam","moonblast","thunderbolt","flashcannon"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, hp_before,
+                   "Magic Guard should block Steel Beam max-HP recoil");
     }
 
     #[test]
