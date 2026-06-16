@@ -878,6 +878,24 @@ impl Battle {
             return;
         }
 
+        // 2a. Lock-in (Outrage / Petal Dance / Thrash) — while locked,
+        //     the player's move slot choice is overridden to the locked
+        //     slot. PS data/conditions.ts:253 `lockedmove`
+        //     `onLockMove` returns the stored move id regardless of
+        //     player intent. Status: this only fires when
+        //     `lockin_turns > 0` and a locked slot is recorded.
+        // Snapshot move_slot can change here; rebind below.
+        let mut move_slot = move_slot;
+        if attacker.lockin_turns > 0 && attacker.lockin_move_slot != 255 {
+            move_slot = attacker.lockin_move_slot;
+        }
+        // Re-resolve move-data if the slot got overridden.
+        let move_id = match attacker.moves.get(move_slot as usize).copied() {
+            Some(id) if id != u16::MAX => id,
+            _ => return,
+        };
+        let m = &data::MOVES[move_id as usize];
+
         // 2b. Recharge after Hyper Beam family. PS data/conditions.ts:364
         //     `mustrecharge` volatile with `onBeforeMove` priority 11 that
         //     consumes the action and removes itself. We collapse to a
@@ -1980,6 +1998,40 @@ impl Battle {
         // PS: data/moves.ts:hyperbeam:9115 (and family); behaviour shared
         // via flags.recharge + self.volatileStatus.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
+        // Lock-in moves (Outrage / Petal Dance / Thrash). PS handler:
+        // data/moves.ts:outrage:13088 `self.volatileStatus: 'lockedmove'`;
+        // data/conditions.ts:253 `lockedmove.onStart` sets
+        // `trueDuration = this.random(2, 4)` (i.e. 2 or 3 turns); at end
+        // of lock, target gets confused. The PS volatile auto-decrements
+        // each turn; we mirror with `lockin_turns` counting *remaining*
+        // turns including the current one.
+        if any_damage_dealt > 0
+            && matches!(m.slug, "outrage" | "petaldance" | "thrash")
+        {
+            // First use of the lock: pick random 2 or 3 duration.
+            // Subsequent uses just decrement.
+            let first_use = attacker.lockin_turns == 0;
+            let dur_roll = if first_use { 2 + self.rng.range(2) as u8 } else { 0 };
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.is_alive() {
+                    if first_use {
+                        a.lockin_turns = dur_roll;
+                        a.lockin_move_slot = move_slot;
+                    }
+                    a.lockin_turns = a.lockin_turns.saturating_sub(1);
+                    if a.lockin_turns == 0 {
+                        // Lock ended — confuse the user, clear slot.
+                        a.lockin_move_slot = 255;
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Confusion,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
+        }
+
         if any_damage_dealt > 0
             && matches!(
                 m.slug,
@@ -9980,6 +10032,55 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Solar Beam hits turn 1 with Power Herb");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
         assert_eq!(b.p1.team[0].charging_turns, 0);
+    }
+
+    #[test]
+    fn outrage_locks_in_and_ends_with_confusion() {
+        // Garchomp clicks Outrage; lockin sets to 2 or 3. Subsequent turns
+        // dispatch Outrage regardless of player's slot choice. On lock
+        // end, Confusion volatile is added.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["outrage","earthquake","protect","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Outrage — sets lockin_turns to (2 or 3) - 1 (one used).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let after_first = b.p1.team[0].lockin_turns;
+        assert!(after_first == 1 || after_first == 2,
+                "lockin_turns after first use should be 1 or 2; got {after_first}");
+        assert_eq!(b.p1.team[0].lockin_move_slot, 0);
+
+        // Keep stepping with a non-Outrage choice; engine should override
+        // to Outrage and decrement. Walk until lock ends.
+        let outrage_pp_after_first = b.p1.team[0].pp[0];
+        let other_pp_before = b.p1.team[0].pp[1];
+        let mut steps = 0;
+        while b.p1.team[0].lockin_turns > 0 {
+            // Pick slot 1 — engine should ignore and use slot 0 (lockin).
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            steps += 1;
+            if steps > 5 { break; }
+        }
+        assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
+                "after lock ends, Confusion volatile added");
+        assert_eq!(b.p1.team[0].lockin_move_slot, 255, "lockin slot cleared");
+        // Outrage PP decremented further (lock forced re-use), slot 1 PP
+        // unchanged (player choice ignored).
+        assert!(b.p1.team[0].pp[0] < outrage_pp_after_first,
+                "Outrage PP kept decreasing while locked");
+        assert_eq!(b.p1.team[0].pp[1], other_pp_before,
+                "slot 1 PP unchanged — locked into Outrage");
     }
 
     #[test]
