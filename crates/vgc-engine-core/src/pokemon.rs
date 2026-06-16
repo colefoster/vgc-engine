@@ -237,6 +237,19 @@ impl Pokemon {
     /// Levitate ability, or Air Balloon holder. Magnet Rise /
     /// Telekinesis / Roost / Gravity edge cases deferred.
     pub fn is_grounded(&self) -> bool {
+        self.is_grounded_internal(false)
+    }
+
+    /// Variant used by Mold Breaker / Teravolt / Turboblaze: the
+    /// breakable Levitate ability is treated as absent. Flying type and
+    /// Air Balloon are NOT breakable, so they still ground-out the mon
+    /// when set. Caller asserts that the attacker is currently breaking
+    /// abilities on damaging moves.
+    pub fn is_grounded_for_mold_breaker(&self) -> bool {
+        self.is_grounded_internal(true)
+    }
+
+    fn is_grounded_internal(&self, ignore_levitate: bool) -> bool {
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
         if flying {
@@ -247,7 +260,7 @@ impl Pokemon {
         } else {
             data::ABILITIES[self.ability_id as usize].slug
         };
-        if ability == "levitate" {
+        if ability == "levitate" && !ignore_levitate {
             return false;
         }
         let item = if self.item_id == u16::MAX {
