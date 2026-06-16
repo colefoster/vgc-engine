@@ -44,7 +44,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `MoveDef::flags.bite` predicate.
 
-**Status**: not implemented.
+**Status**: shipped — PR-103.
 
 ### Mega Launcher
 

@@ -305,6 +305,17 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Strong Jaw — PS `data/abilities.ts:strongjaw` `onBasePower`
+    // returns `chainModify([6144, 4096])` (×1.5) on moves with
+    // `flags.bite`. Hydreigon / Mega Sharpedo / Krookodile (HA).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Strong_Jaw_(Ability)>.
+    if m.is_bite
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "strongjaw"
+    {
+        bp = bp * 6144 / 4096;
+    }
+
     // Tough Claws — PS `data/abilities.ts:toughclaws` `onBasePower`
     // returns `chainModify([5325, 4096])` (≈ ×1.3) when the move makes
     // contact (`move.flags['contact']`). Mega Charizard-X / Aerodactyl-Mega
@@ -766,6 +777,33 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn strong_jaw_boosts_bite_moves() {
+        // Crunch has bite flag; Tackle does not.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let crunch = move_id("crunch");
+        let tackle = move_id("tackle");
+        let no_crunch = mk(&atk, crunch);
+        let no_tackle = mk(&atk, tackle);
+        let sj_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "strongjaw").unwrap() as u16;
+        atk.ability_id = sj_id;
+        let sj_crunch = mk(&atk, crunch);
+        let sj_tackle = mk(&atk, tackle);
+        assert!(sj_crunch > no_crunch, "Strong Jaw boosts Crunch");
+        assert_eq!(sj_tackle, no_tackle, "Strong Jaw must NOT boost Tackle");
     }
 
     #[test]
