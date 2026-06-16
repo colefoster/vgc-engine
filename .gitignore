@@ -8,3 +8,4 @@ Cargo.lock.bak
 /data/replays/
 /data/corpus_cache/
 /.cache/
+/.claude/
