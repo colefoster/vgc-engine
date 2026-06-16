@@ -530,8 +530,48 @@ pub fn calculate_damage(
         }
     }
 
-    // Type effectiveness
-    let eff = type_effectiveness(move_type, defender.species());
+    // Type effectiveness. Freeze-Dry overrides the per-type matchup
+    // against Water from -1 (resist) to +1 (SE) — PS
+    // `onEffectiveness(typeMod, target, type) { if (type === 'Water') return 1; }`
+    // (data/moves.ts:freezedry line 6158). On a dual-type target the
+    // override applies only to the Water slot, so e.g. Water/Ground
+    // (Quagsire) goes from -1+-1 = -2 (×0.25) to +1+-1 = 0 (neutral).
+    // We replicate by computing the per-type sum here when the slug
+    // matches, and otherwise delegate to `type_effectiveness`.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Freeze-Dry_(move)>.
+    let eff = if m.slug == "freezedry" {
+        let s = defender.species();
+        let mut net = 0i32;
+        let mut immune = false;
+        for i in 0..s.num_types as usize {
+            let def_type = s.types[i] as usize;
+            if def_type == 2 {
+                // Water slot: override to +1 (SE).
+                net += 1;
+            } else {
+                match data::TYPE_CHART[def_type][move_type as usize] {
+                    0 => {}
+                    1 => net += 1,
+                    2 => net -= 1,
+                    3 => immune = true,
+                    other => unreachable!("bad type-chart code {other}"),
+                }
+            }
+        }
+        if immune {
+            TypeEff::Immune
+        } else {
+            match net {
+                n if n <= -2 => TypeEff::QuarterX,
+                -1 => TypeEff::HalfX,
+                0 => TypeEff::Neutral,
+                1 => TypeEff::DoubleX,
+                _ => TypeEff::QuadrupleX,
+            }
+        }
+    } else {
+        type_effectiveness(move_type, defender.species())
+    };
     if eff.is_immune() {
         return 0;
     }
@@ -635,6 +675,41 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn freeze_dry_hits_water_super_effective() {
+        // PS data/moves.ts:freezedry onEffectiveness returns 1 vs Water.
+        // Normally Ice vs Water is 0.5× (resist). Freeze-Dry flips it
+        // to 2× (super-effective). Verify against a pure-Water target.
+        let attacker = make_mon(
+            "froslass",
+            50,
+            "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 252 },
+        );
+        let target = make_mon(
+            "vaporeon",
+            50,
+            "bold",
+            StatSpread { hp: 252, atk: 0, def: 252, spa: 0, spd: 0, spe: 0 },
+        );
+        let fd = move_id("freezedry");
+        let ib = move_id("icebeam");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let dmg_fd = calculate_damage(&attacker, &target, fd, ctx);
+        let dmg_ib = calculate_damage(&attacker, &target, ib, ctx);
+        // Freeze-Dry: 70 BP × 2 (SE override). Ice Beam: 90 BP × 0.5
+        // (Ice vs Water resist). Ratio = (70*2)/(90*0.5) ≈ 3.1.
+        // Freeze-Dry should deal noticeably more despite lower BP.
+        assert!(dmg_fd > dmg_ib * 2,
+                "Freeze-Dry vs Water should hit ≥2× Ice Beam: fd={dmg_fd} ib={dmg_ib}");
     }
 
     #[test]

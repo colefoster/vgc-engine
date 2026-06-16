@@ -292,7 +292,7 @@ See systems.md (sleep status hooks).
 
 **Depends on**: Per-slug damage type-effectiveness override.
 
-**Status**: not implemented.
+**Status**: shipped — PR-103 (per-type-slot override; matches PS for dual-Water targets).
 
 ### Flying Press
 
