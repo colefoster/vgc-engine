@@ -1065,6 +1065,31 @@ impl Battle {
             }
         }
 
+        // Move recoil — Flare Blitz / Wild Charge / Brave Bird /
+        // Double-Edge / Head Smash / Take Down / Wave Crash, etc.
+        // PS sim/battle.ts:2173 gen>4 path:
+        //   amount = round(targetDamage * recoil[0] / recoil[1])
+        // Per-move, not per-hit; aggregates over spread damage to all
+        // targets. Magic Guard and Rock Head block it. Sub-absorbed
+        // damage doesn't count (see drain note above). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Recoil>.
+        if m.recoil_num > 0 && any_damage_dealt > 0 {
+            let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
+            let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
+                || attacker_post.is_some_and(crate::ability::has_rock_head);
+            if !skip_recoil {
+                let num = m.recoil_num as u32;
+                let den = m.recoil_den.max(1) as u32;
+                let recoil = ((any_damage_dealt as u32 * num + den / 2) / den).max(1) as u16;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
+        }
+
         // Attacker item recoil — Life Orb takes 1/10 max HP if the move
         // dealt damage to at least one target (PS: per-move, not per-hit).
         // Magic Guard blocks Life Orb recoil: PS's `onDamage` returns false
@@ -6120,6 +6145,74 @@ mod tests {
         let snor_max = b.p2.team[1].stats.hp;
         assert_eq!(b.p2.team[1].current_hp, snor_max,
                    "Sucker Punch must fail vs a switching target");
+    }
+
+    #[test]
+    fn flare_blitz_recoils_user_one_third_of_damage_dealt() {
+        // Flare Blitz: PS data/moves.ts:flareblitz recoil: [33, 100]
+        // → user takes round(damage * 33 / 100) self-damage. Use a
+        // Fire-neutral defender so the damage figure is clean.
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","item":"","nature":"jolly","moves":["flareblitz","closecombat","uturn","stoneedge"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let user_hp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_dealt = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+        assert!(dmg_dealt > 0, "Flare Blitz should deal damage");
+        let recoil_taken = user_hp_before - b.p1.team[0].current_hp;
+        let expected = (dmg_dealt as u32 * 33 + 50) / 100;
+        let diff = (recoil_taken as i32 - expected as i32).abs();
+        assert!(
+            diff <= 1,
+            "Flare Blitz recoil off: dealt={} recoil={} expected≈{} diff={}",
+            dmg_dealt, recoil_taken, expected, diff
+        );
+    }
+
+    #[test]
+    fn rock_head_blocks_brave_bird_recoil() {
+        // Rock Head zeroes out move recoil. Use Aggron — wait, we need
+        // a Rock-Head mon that knows Brave Bird... we'll just set the
+        // ability manually post-team-build for the test.
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","item":"","nature":"jolly","moves":["bravebird","closecombat","uturn","stoneedge"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Force Rock Head on Infernape for the test.
+        let rh_id = data::ABILITIES.iter().position(|a| a.slug == "rockhead").unwrap() as u16;
+        let mut p1_rh = p1.clone();
+        p1_rh[0].ability_id = rh_id;
+        // Baseline: no Rock Head — should take recoil.
+        let mut b1 = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2.clone());
+        let hp1 = b1.p1.team[0].current_hp;
+        b1.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let recoil_baseline = hp1 - b1.p1.team[0].current_hp;
+        assert!(recoil_baseline > 0, "baseline Brave Bird should recoil");
+        // Rock Head: no recoil.
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1_rh, p2);
+        let hp2 = b2.p1.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b2.p1.team[0].current_hp, hp2,
+                   "Rock Head should block Brave Bird recoil");
     }
 
     #[test]

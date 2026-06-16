@@ -33,6 +33,17 @@ pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
     ability_slug(mon.ability_id) == "magicguard"
 }
 
+/// Rock Head — PS `data/abilities.ts:rockhead` `onDamage`:
+/// `if (effect.id === 'recoil') return null;` Blocks move-recoil
+/// damage outright. Does NOT block Life Orb recoil (item, not the
+/// move's `recoil` field), Struggle, or self-inflicted moves like
+/// Steel Beam (`mindBlownRecoil`). Aggron / Rampardos / Tyrantrum
+/// users. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Rock_Head_(Ability)>.
+pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
+    ability_slug(mon.ability_id) == "rockhead"
+}
+
 /// Returns true if the target's ability blocks Intimidate.
 ///
 /// PS data/abilities.ts: each blocker has an onTryBoost / onTryHit hook
