@@ -318,6 +318,26 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Defender ability `onSwitchOut` — runs on the leaving mon BEFORE the
+/// active slot is replaced. Regenerator heals 1/3 of max HP (PS:
+/// `pokemon.heal(pokemon.baseMaxhp / 3)` in `data/abilities.ts`).
+/// Fainted mons don't switch (PS gates earlier in the action queue),
+/// so no liveness check needed beyond the standard active-slot
+/// resolution. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Regenerator_(Ability)>.
+pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
+    let slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => ability_slug(m.ability_id),
+        _ => return,
+    };
+    if slug == "regenerator" {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            let heal = (m.stats.hp / 3).max(1);
+            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+        }
+    }
+}
+
 /// Run end-of-turn ability residual hooks for one active slot.
 ///
 /// PS `data/abilities.ts` `onResidual` (e.g. speedboost order 28). Called

@@ -351,6 +351,20 @@ impl Battle {
         let mut switched_slots: Vec<u8> = Vec::new();
         for c in choices {
             if let Choice::Switch { actor_slot, team_index } = *c {
+                // PS fires the leaving mon's `onSwitchOut` BEFORE the
+                // active slot is swapped — the hook reads the outgoing
+                // mon's current state. Regenerator heals 1/3 max HP
+                // here; Natural Cure / Cotton Down etc. plug into the
+                // same dispatcher when they land.
+                {
+                    let s_view = self.side(side);
+                    if (actor_slot as usize) < s_view.active.len()
+                        && (team_index as usize) < s_view.team.len()
+                        && s_view.team[team_index as usize].is_alive()
+                    {
+                        crate::ability::on_switch_out(self, side, actor_slot);
+                    }
+                }
                 let s = self.side_mut(side);
                 if (actor_slot as usize) < s.active.len()
                     && (team_index as usize) < s.team.len()
@@ -4849,6 +4863,58 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn regenerator_heals_third_on_switch_out() {
+        // Amoonguss (Regenerator) gets hurt, then switches out — must
+        // gain 1/3 max HP on the way out (PS: `pokemon.heal(maxhp/3)`).
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"sitrusberry","nature":"calm","moves":["spore","ragepowder","gigadrain","clearsmog"],"evs":{"hp":252,"spd":252,"def":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Wound Amoonguss to 1 HP.
+        let amoo_max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = 1;
+        // Switch to Snorlax (team index 1). Garchomp passes.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Amoonguss should now be at 1 + maxhp/3, capped at maxhp.
+        let expected = (1 + (amoo_max / 3).max(1)).min(amoo_max);
+        assert_eq!(b.p1.team[0].current_hp, expected,
+                   "Regenerator should heal 1/3 max HP on switch out");
+    }
+
+    #[test]
+    fn regenerator_does_not_heal_a_non_regenerator() {
+        // Snorlax (Thick Fat) switching out — no regen.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snor_max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, 1,
+                   "Non-Regenerator must NOT heal on switch out (still at 1 of {})",
+                   snor_max);
     }
 
     #[test]
