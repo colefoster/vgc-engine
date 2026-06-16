@@ -216,6 +216,17 @@ pub fn calculate_damage(
         // Basculegion-F / Pecharunt's late-game finisher.
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
+    } else if m.slug == "acrobatics" && attacker.item_id == u16::MAX {
+        // PS data/moves.ts:acrobatics `onBasePower(bp, pokemon) {
+        //   if (!pokemon.item) return this.chainModify(2); }`. Doubles
+        //   BP (55 → 110) when the user holds no item. Flying Gem
+        //   case (item consumed pre-hit) deferred.
+        (m.type_, (m.base_power as u32) * 2)
+    } else if m.slug == "hex" && !matches!(defender.status, Status::None) {
+        // PS data/moves.ts:hex `basePowerCallback` doubles BP
+        // (65 → 130) when the target carries a non-volatile status.
+        // Comatose ability (treats holder as Sleep) deferred.
+        (m.type_, (m.base_power as u32) * 2)
     } else {
         (m.type_, m.base_power as u32)
     };

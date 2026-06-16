@@ -6216,6 +6216,54 @@ mod tests {
     }
 
     #[test]
+    fn acrobatics_doubles_bp_when_user_has_no_item() {
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["acrobatics","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let mut p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let acro = data::MOVES.iter().position(|m| m.slug == "acrobatics").unwrap() as u16;
+        // No item: doubled.
+        assert_eq!(p1[0].item_id, u16::MAX);
+        let dmg_no_item = calculate_damage(&p1[0], &p2[0], acro,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        // With an item: base BP.
+        let leftovers = data::ITEMS.iter().position(|i| i.slug == "leftovers").unwrap() as u16;
+        p1[0].item_id = leftovers;
+        let dmg_with_item = calculate_damage(&p1[0], &p2[0], acro,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        assert!(dmg_no_item > dmg_with_item * 18 / 10,
+                "Acrobatics no-item should ~2× with-item: {dmg_no_item} vs {dmg_with_item}");
+    }
+
+    #[test]
+    fn hex_doubles_bp_when_target_is_statused() {
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["hex","weatherball","tailwind","airslash"]}
+        ]"#;
+        // Ghost-neutral defender (Garchomp = Dragon/Ground).
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","aerialace","ironhead","stoneedge"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let hex = data::MOVES.iter().position(|m| m.slug == "hex").unwrap() as u16;
+        let mut p2_statused = p2.clone();
+        p2_statused[0].status = Status::Burn;
+        let dmg_clean = calculate_damage(&p1[0], &p2[0], hex,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let dmg_burned = calculate_damage(&p1[0], &p2_statused[0], hex,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        assert!(dmg_burned > dmg_clean * 18 / 10,
+                "Hex on burned target should ~2× clean: {dmg_burned} vs {dmg_clean}");
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
