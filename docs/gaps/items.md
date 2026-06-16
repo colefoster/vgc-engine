@@ -170,7 +170,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Like Leftovers (1/16 heal) for Poison-types; 1/8 damage per turn for non-Poison.
 
-**Status**: not implemented.
+**Status**: shipped — PR-104.
 
 ### Sticky Barb
 
@@ -394,3 +394,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Expert Belt (PR-101)
 - Wise Glasses (PR-102)
 - Muscle Band (PR-103)
+- Black Sludge (PR-104)
