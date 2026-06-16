@@ -6342,6 +6342,58 @@ mod tests {
     }
 
     #[test]
+    fn foul_play_scales_with_target_attack() {
+        // Weak-Atk attacker, strong-Atk target. Foul Play damage
+        // should track the target's Atk, not the attacker's.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["foulplay","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let fp = data::MOVES.iter().position(|m| m.slug == "foulplay").unwrap() as u16;
+        let high_atk = calculate_damage(&p1[0], &p2[0], fp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        // Halve target's Atk; damage should drop ~50%.
+        let mut p2_weak = p2.clone();
+        p2_weak[0].stats.atk = (p2_weak[0].stats.atk / 2).max(1);
+        let low_atk = calculate_damage(&p1[0], &p2_weak[0], fp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        assert!(high_atk > low_atk * 16 / 10,
+                "Foul Play should scale with TARGET atk: {high_atk} vs {low_atk}");
+    }
+
+    #[test]
+    fn foul_play_reads_target_attack_boost_stage() {
+        // Target with +2 Atk (Swords Dance equivalent) should make
+        // Foul Play hit ~2× harder.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["foulplay","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let fp = data::MOVES.iter().position(|m| m.slug == "foulplay").unwrap() as u16;
+        let baseline = calculate_damage(&p1[0], &p2[0], fp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let mut p2_boosted = p2.clone();
+        p2_boosted[0].boosts[0] = 2;
+        let boosted = calculate_damage(&p1[0], &p2_boosted[0], fp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let ratio = (boosted as u32) * 100 / baseline as u32;
+        assert!(
+            ratio >= 180 && ratio <= 220,
+            "Foul Play +2 Atk target ratio out of band: {boosted}/{baseline} = {ratio}%"
+        );
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
