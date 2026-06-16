@@ -18,6 +18,7 @@ mod replay;
 mod runner;
 mod scorer;
 mod smogon_stats;
+mod spread_recon;
 mod trace;
 
 pub use choices::ChoiceExtractor;
@@ -35,6 +36,7 @@ pub use recon::{
 pub use recon_smogon::SmogonStatsRecon;
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
+pub use spread_recon::{narrow_by_damage, SideShape, SpreadEvidence, SpreadEvidenceRole};
 pub use smogon_stats::{
     parse as parse_smogon_stats, ParseError as SmogonParseError, SmogonStats, SpeciesUsage,
 };
