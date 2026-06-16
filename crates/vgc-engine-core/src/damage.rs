@@ -840,6 +840,25 @@ pub fn calculate_damage(
 
 /// Min/max damage across all 16 random rolls (no crit). Useful for tests
 /// and for the eventual MCTS damage frontier.
+/// Min/max damage across all 16 random rolls using the supplied
+/// non-roll context (weather/terrain/screens/...). The Rng damage-hint
+/// path needs this — `damage_range`'s no-context variant is only
+/// accurate for plain neutral conditions.
+pub fn damage_range_in_ctx(
+    attacker: &Pokemon,
+    defender: &Pokemon,
+    move_id: u16,
+    ctx: DamageContext,
+) -> (u16, u16) {
+    let mut ctx_lo = ctx;
+    ctx_lo.roll = DamageContext::MIN_ROLL;
+    let mut ctx_hi = ctx;
+    ctx_hi.roll = DamageContext::MAX_ROLL;
+    let min = calculate_damage(attacker, defender, move_id, ctx_lo);
+    let max = calculate_damage(attacker, defender, move_id, ctx_hi);
+    (min, max)
+}
+
 pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u16, u16) {
     let min = calculate_damage(
         attacker,

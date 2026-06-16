@@ -1546,7 +1546,9 @@ impl Battle {
                 .effective_crit_stage()
                 .saturating_add(m.crit_stage_delta);
             let crit = self.rng.crit_with_stage(crit_stage);
-            let roll = self.rng.damage_roll();
+            // Damage roll happens later (after `boosted_defender` /
+            // ctx fields are computed) so the hint path can pass the
+            // ctx-matched (min, max) to the back-solver.
             // Apply Assault Vest spd boost to the defender if the attack
             // is special (×1.5 spd; physical untouched).
             let mut boosted_defender = defender.clone();
@@ -1609,6 +1611,30 @@ impl Battle {
             // derivation from team state; see `Side::total_fainted`.
             let attacker_total_fainted_allies =
                 self.side(actor_side).total_fainted();
+            // Roll the damage bucket. Oracle / OraclePartial paths may
+            // consume a `DamageHint(target)` from their queue and
+            // back-solve the matching bucket against the live (min, max)
+            // window. Splitmix path is identical to `damage_roll()` and
+            // the range computation is dead code (cheap but constant
+            // overhead — calculate_damage runs twice; live calc runs
+            // again below for the actual roll).
+            let roll = match &self.rng {
+                Rng::Splitmix(_) => self.rng.damage_roll(),
+                _ => {
+                    let stub_ctx = DamageContext {
+                        crit, roll: 0, is_spread, weather: self.weather,
+                        terrain: active_terrain,
+                        defender_has_reflect, defender_has_light_screen,
+                        defender_has_aurora_veil, is_doubles,
+                        fairy_aura_active, dark_aura_active, aura_break_active,
+                        attacker_total_fainted_allies,
+                    };
+                    let (lo, hi) = crate::damage::damage_range_in_ctx(
+                        &boosted_attacker, &boosted_defender, move_id, stub_ctx,
+                    );
+                    self.rng.damage_roll_hint(lo, hi)
+                }
+            };
             let mut dmg = calculate_damage(
                 &boosted_attacker,
                 &boosted_defender,

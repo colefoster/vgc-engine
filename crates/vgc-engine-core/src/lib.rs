@@ -25,7 +25,10 @@ pub mod weather;
 
 pub use battle::{Battle, BattleConfig, StepResult};
 pub use choice::{Choice, MoveSlot, Target};
-pub use damage::{calculate_damage, damage_range, type_effectiveness, DamageContext, TypeEff};
+pub use damage::{
+    calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
+    TypeEff,
+};
 pub use format::Format;
 pub use order::{action_order, effective_speed, ScheduledAction};
 pub use pokemon::{
