@@ -116,7 +116,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Required for Heat Crash, Heavy Slam, Low Kick, Grass Knot, Sky Drop weight cap, Heavy Metal / Light Metal abilities.
 
-**Status**: shipped — PR-100 (`SpeciesDef::weight_dg` in decigrams).
+**Status**: shipped — PR-114 (`SpeciesDef::weight_dg` in decigrams).
 
 ### Species evolution-stage flag
 
@@ -124,17 +124,17 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Required for Eviolite.
 
-**Status**: shipped — PR-101 (`SpeciesDef::is_nfe` from PS `evos` non-empty).
+**Status**: shipped — PR-115 (`SpeciesDef::is_nfe` from PS `evos` non-empty).
 
 ## Move data fields known missing
 
 (From audit of `MoveDef` consumption sites in `battle.rs` / `damage.rs`.)
 
-- `cannot_use_twice: bool` — shipped PR-103 as `MoveDef::cannot_use_twice` (covers PS `flags.cantusetwice`: Gigaton Hammer, Blood Moon). Last Resort uses a different "all other moves used" mechanism, still TODO.
-- `self_max_hp_recoil_num/den` — shipped PR-104 as `MoveDef::self_max_hp_recoil_num/den` (set to 1/2 on Steel Beam, Mind Blown, Chloroblast). Consumer in damage pipeline still TODO.
-- `flags.bite` / `flags.punch` / `flags.pulse` / `flags.bullet` / `flags.dance` — shipped PR-102 as `MoveDef::is_{punch,bite,pulse,bullet,dance}` (consumers still TODO).
-- `flags.powder` — shipped PR-102 as `MoveDef::is_powder` (inline Grass-immunity approximation still in `battle.rs`; switch sites pending).
-- `flags.heal` — shipped PR-102 as `MoveDef::is_heal` (Heal Block consumer TODO).
+- `cannot_use_twice: bool` — shipped PR-117 as `MoveDef::cannot_use_twice` (covers PS `flags.cantusetwice`: Gigaton Hammer, Blood Moon). Last Resort uses a different "all other moves used" mechanism, still TODO.
+- `self_max_hp_recoil_num/den` — shipped PR-118 as `MoveDef::self_max_hp_recoil_num/den` (set to 1/2 on Steel Beam, Mind Blown, Chloroblast). Consumer in damage pipeline still TODO.
+- `flags.bite` / `flags.punch` / `flags.pulse` / `flags.bullet` / `flags.dance` — shipped PR-116 as `MoveDef::is_{punch,bite,pulse,bullet,dance}` (consumers still TODO).
+- `flags.powder` — shipped PR-116 as `MoveDef::is_powder` (inline Grass-immunity approximation still in `battle.rs`; switch sites pending).
+- `flags.heal` — shipped PR-116 as `MoveDef::is_heal` (Heal Block consumer TODO).
 - `flags.gravity` / `flags.metronome` — niche.
 - `target: MoveTarget` — currently inferred from spread flag; needs the full PS enum (adjacentAlly, adjacentAllyOrSelf, allAdjacent, allAdjacentFoes, allies, allySide, allyTeam, any, foeSide, normal, randomNormal, scripted, self).
 

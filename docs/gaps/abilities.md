@@ -14,7 +14,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **PS reference**: `data/abilities.ts:adaptability`.
 
-**Status**: shipped — PR-100.
+**Status**: shipped — PR-119.
 
 ### Supreme Overlord
 
@@ -26,7 +26,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **PS reference**: `data/abilities.ts:supremeoverlord`.
 
-**Status**: shipped — PR-101.
+**Status**: shipped — PR-120.
 
 ### Tough Claws
 
@@ -36,7 +36,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `MoveDef::makes_contact` is already populated per PR-55.
 
-**Status**: shipped — PR-102.
+**Status**: shipped — PR-121.
 
 ### Strong Jaw
 
@@ -44,7 +44,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `MoveDef::flags.bite` predicate.
 
-**Status**: shipped — PR-103.
+**Status**: shipped — PR-122.
 
 ### Mega Launcher
 
@@ -52,7 +52,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `flags.pulse`.
 
-**Status**: shipped — PR-104.
+**Status**: shipped — PR-123.
 
 ### Iron Fist
 
@@ -62,19 +62,19 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `flags.punch`.
 
-**Status**: shipped — PR-105.
+**Status**: shipped — PR-124.
 
 ### Sniper
 
 **What it is**: Critical-hit damage ×1.5 (so total crit multiplier becomes 1.5 × 1.5 = 2.25).
 
-**Status**: shipped — PR-106.
+**Status**: shipped — PR-125.
 
 ### Sand Force
 
 **What it is**: In Sand, Rock/Ground/Steel moves ×1.3 BP; also immunity to Sand chip.
 
-**Status**: shipped — PR-108.
+**Status**: shipped — PR-127.
 
 ### Solar Power
 
@@ -88,7 +88,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Swift Swim Basculegion (6.6% per Smogon, fallback ability), Swift Swim Pelipper teams. Chlorophyll Venusaur. Sand Rush Excadrill.
 
-**Status**: shipped — PR-107.
+**Status**: shipped — PR-126.
 
 ### Sand Veil / Snow Cloak
 
@@ -188,19 +188,19 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Electric immunity + +1 Spe on hit.
 
-**Status**: shipped — PR-110.
+**Status**: shipped — PR-129.
 
 ### Volt Absorb / Water Absorb / Earth Eater
 
 **What it is**: Electric / Water / Ground immunity + heal 1/4 max HP on hit.
 
-**Status**: shipped — Volt Absorb PR-111, Water Absorb PR-112, Earth Eater PR-113.
+**Status**: shipped — Volt Absorb PR-130, Water Absorb PR-131, Earth Eater PR-132.
 
 ### Sap Sipper
 
 **What it is**: Grass immunity + +1 Atk on hit.
 
-**Status**: shipped — PR-109.
+**Status**: shipped — PR-128.
 
 ### Levitate
 

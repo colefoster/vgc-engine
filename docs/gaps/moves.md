@@ -42,7 +42,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:triplekick,tripleaxel`.
 
-**Status**: shipped — PR-100 (per-hit BP ramp approximated via triangular factor N(N+1)/2).
+**Status**: shipped — PR-133 (per-hit BP ramp approximated via triangular factor N(N+1)/2).
 
 ### Population Bomb
 
@@ -80,7 +80,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:steelbeam,mindblown,chloroblast`. PS handler key: `mindBlownRecoil`.
 
-**Status**: shipped — PR-107. Hardcoded slug list (no new data field); Magic Guard blocks; Rock Head does not (PS scopes Rock Head to `recoil` effect id only).
+**Status**: shipped — PR-140. Hardcoded slug list (no new data field); Magic Guard blocks; Rock Head does not (PS scopes Rock Head to `recoil` effect id only).
 
 ## Same-move-twice lockouts
 
@@ -92,7 +92,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:gigatonhammer,bloodmoon`.
 
-**Status**: shipped — PR-101 (resolve-time fail; choice-time disable deferred).
+**Status**: shipped — PR-134 (resolve-time fail; choice-time disable deferred).
 
 ## Stat-based attack-source replacements
 
@@ -114,7 +114,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Damage formula branch on offensive stat selection.
 
-**Status**: shipped — PR-102 (picks Physical iff boosted Atk > boosted SpA; ignoreAbility deferred).
+**Status**: shipped — PR-135 (picks Physical iff boosted Atk > boosted SpA; ignoreAbility deferred).
 
 ### Shell Side Arm
 
@@ -144,7 +144,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: 80-BP Normal special; 20% chance to burn / freeze / paralyze (rolled which one). PS rolls one of the three at random.
 
-**Status**: shipped — PR-104.
+**Status**: shipped — PR-137.
 
 ### Fire Fang / Ice Fang / Thunder Fang
 
@@ -156,7 +156,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: Burn-chance + thaws frozen user. Defrost shipped via the `move_is_defrost` table (battle.rs:2318). Burn-secondary fires through the generic secondary table.
 
-**Status**: shipped — PR-108. Defrost-on-use AND thaw-target-on-hit both fire (battle.rs:1276); fixed `matchagotcha` slug typo (was `matchaprep` in burn-secondary and defrost tables).
+**Status**: shipped — PR-141. Defrost-on-use AND thaw-target-on-hit both fire (battle.rs:1276); fixed `matchagotcha` slug typo (was `matchaprep` in burn-secondary and defrost tables).
 
 ### Dire Claw
 
@@ -200,7 +200,7 @@ Knock Off shipped (PR-17). Trick / Switcheroo / Bestow — see systems.md (item 
 
 **Depends on**: Species weight data in the build dump.
 
-**Status**: shipped — PR-105 (weight_hg added to SpeciesDef; Heavy Metal / Light Metal / Float Stone multipliers deferred).
+**Status**: shipped — PR-138 (weight_dg added to SpeciesDef in PR-114; Heavy Metal / Light Metal / Float Stone multipliers deferred).
 
 ### Gyro Ball / Electro Ball
 
@@ -212,7 +212,7 @@ Knock Off shipped (PR-17). Trick / Switcheroo / Bestow — see systems.md (item 
 
 **What it is**: BP from target weight: ≥200kg → 120; ≥100kg → 100; ≥50kg → 80; ≥25kg → 60; ≥10kg → 40; <10kg → 20.
 
-**Status**: shipped — PR-106.
+**Status**: shipped — PR-139.
 
 ### Power Trip / Stored Power
 
@@ -292,13 +292,13 @@ See systems.md (sleep status hooks).
 
 **Depends on**: Per-slug damage type-effectiveness override.
 
-**Status**: shipped — PR-103 (per-type-slot override; matches PS for dual-Water targets).
+**Status**: shipped — PR-136 (per-type-slot override; matches PS for dual-Water targets).
 
 ### Flying Press
 
 **What it is**: Hawlucha signature; counts as both Fighting and Flying for type effectiveness.
 
-**Status**: shipped — PR-110. Slug-keyed branch in `type_effectiveness` sums Fighting + Flying chart rows.
+**Status**: shipped — PR-143. Slug-keyed branch in `type_effectiveness` sums Fighting + Flying chart rows.
 
 ### Thousand Arrows
 
