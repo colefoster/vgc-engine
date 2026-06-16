@@ -256,7 +256,7 @@ pub fn calculate_damage(
 
     // Boost-stage indices into `Pokemon::boosts`:
     //   0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva
-    let (atk_stage, def_stage, atk_stat, def_stat) = if physical {
+    let (mut atk_stage, def_stage, mut atk_stat, def_stat) = if physical {
         (
             attacker.boosts[0],
             defender.boosts[1],
@@ -271,6 +271,16 @@ pub fn calculate_damage(
             defender.stats.spd as u32,
         )
     };
+
+    // Body Press — `overrideOffensiveStat: 'def'`. PS uses the
+    // attacker's Defense stat (and its Def boost stage) in place of
+    // Attack for the damage formula. Defender's defensive stat /
+    // stage are unaffected (still its Def vs a Physical move).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Body_Press_(move)>.
+    if m.slug == "bodypress" {
+        atk_stat = attacker.stats.def as u32;
+        atk_stage = attacker.boosts[1];
+    }
 
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.

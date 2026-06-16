@@ -5497,6 +5497,72 @@ mod tests {
     }
 
     #[test]
+    fn body_press_scales_with_defense_not_attack() {
+        // Body Press is Physical Fighting at 80 BP but reads the
+        // attacker's Def stat (and Def boost stage) instead of Atk.
+        // Stakataka (high Def, low Atk) is the canonical demo, but we
+        // don't have that mon in the team builder yet — use a hand-
+        // tuned Garchomp: bury its Atk, leave Def high, watch Body
+        // Press out-damage Dragon Claw despite the type mismatch.
+        use crate::damage::{calculate_damage, damage_range, DamageContext};
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["bodypress","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let mut p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Force atk way down, def way up — Body Press should now
+        // out-hit a normal physical reading from Atk.
+        p1[0].stats.atk = 50;
+        p1[0].stats.def = 250;
+        let bp_id = data::MOVES.iter().position(|m| m.slug == "bodypress").unwrap() as u16;
+        // Synthetic Atk move at the same BP/type to compare against:
+        // reuse the same Body Press id but compute the off-by-attack
+        // baseline via swap. Simplest: assert max-roll BP damage
+        // tracks Def, not Atk, by mutating Def and confirming damage
+        // shifts.
+        let high_def = calculate_damage(&p1[0], &p2[0], bp_id, DamageContext { roll: 15, ..DamageContext::default() });
+        // Swap def → atk-equivalent: now drop def to 50 (same as low atk).
+        let mut p1b = p1.clone();
+        p1b[0].stats.def = 50;
+        let low_def = calculate_damage(&p1b[0], &p2[0], bp_id, DamageContext { roll: 15, ..DamageContext::default() });
+        assert!(
+            high_def > low_def * 3,
+            "Body Press damage must scale with Def: {high_def} vs {low_def}"
+        );
+        // And damage_range bounds are coherent.
+        let (min_d, max_d) = damage_range(&p1[0], &p2[0], bp_id);
+        assert!(min_d > 0 && max_d >= min_d);
+    }
+
+    #[test]
+    fn body_press_uses_defense_boost_stage() {
+        // Iron Defense (+2 Def) should boost Body Press damage.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["bodypress","dragonclaw","aerialace","ironhead"],"evs":{"def":252,"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let bp_id = data::MOVES.iter().position(|m| m.slug == "bodypress").unwrap() as u16;
+        let unboosted = calculate_damage(&p1[0], &p2[0], bp_id, DamageContext { roll: 15, ..DamageContext::default() });
+        let mut boosted = p1.clone();
+        boosted[0].boosts[1] = 2; // +2 Def stage
+        let boosted_dmg = calculate_damage(&boosted[0], &p2[0], bp_id, DamageContext { roll: 15, ..DamageContext::default() });
+        // +2 Def stage → ×2 mult on the offensive stat → ~×2 damage.
+        let ratio = (boosted_dmg as u32) * 100 / unboosted as u32;
+        assert!(
+            ratio >= 180 && ratio <= 220,
+            "Body Press +2 Def boost ratio out of band: {boosted_dmg}/{unboosted} = {ratio}%"
+        );
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
