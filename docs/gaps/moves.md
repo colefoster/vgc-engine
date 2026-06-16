@@ -156,7 +156,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: Burn-chance + thaws frozen user. Defrost shipped via the `move_is_defrost` table (battle.rs:2318). Burn-secondary fires through the generic secondary table.
 
-**Status**: partial — defrost on use shipped, but PS additionally has a "thaw target on hit" branch for Scald / Steam Eruption / Matcha Gotcha against frozen *target*. Engine doesn't check that.
+**Status**: shipped — PR-108. Defrost-on-use AND thaw-target-on-hit both fire (battle.rs:1276); fixed `matchagotcha` slug typo (was `matchaprep` in burn-secondary and defrost tables).
 
 ### Dire Claw
 

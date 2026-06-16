@@ -2703,7 +2703,7 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         "flamethrower" | "fireblast" | "firepunch" | "ember" | "flareblitz"
         | "blueflare" | "heatwave" | "blazekick" | "firefang" | "searingshot" => (Status::Burn, 10),
         // Burn 30%:
-        "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchaprep" => (Status::Burn, 30),
+        "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchagotcha" => (Status::Burn, 30),
         // Paralysis 10%:
         "thunderbolt" | "thunder" | "thundershock" | "spark" | "thunderpunch"
         | "thunderfang" | "zingzap" | "lightningbird" => (Status::Paralysis, 10),
@@ -2928,6 +2928,7 @@ fn move_is_defrost(slug: &str) -> bool {
         slug,
         "scald" | "flareblitz" | "sacredfire" | "flamewheel" | "fusionflare"
         | "pyroball" | "burnup" | "steameruption" | "searingshot" | "scorchingsands"
+        | "matchagotcha"
     )
 }
 
