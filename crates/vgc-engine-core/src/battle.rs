@@ -2112,6 +2112,55 @@ impl Battle {
                     }
                 }
             }
+            "strengthsap" => {
+                // PS data/moves.ts:strengthsap onHit. Heals the user by
+                // the target's effective Atk stat (post-boost stage,
+                // pre-item/ability via `getStat('atk', false, true)`),
+                // then drops the target's Atk by 1. Fails if the
+                // target's Atk stage is already -6. Accuracy 100, but
+                // we still run the accuracy roll (a future Acc-boost
+                // edge could matter). Powder/Goggles/etc gates skipped
+                // for now — Strength Sap is not a powder move.
+                //
+                // Sinistcha signature; mirrored on Whimsicott (filler).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Strength_Sap_(move)>
+                if !self.rolled_accuracy_passed(m) { return; }
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                // Pick first alive opposing as the target (matches the
+                // existing apply_status_to_opposing pattern). Singles is
+                // exact; doubles approximates the chosen target slot
+                // until status moves carry the explicit target id.
+                let mut target_slot: Option<u8> = None;
+                for slot in 0..n {
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
+                        target_slot = Some(slot);
+                        break;
+                    }
+                }
+                let ts = match target_slot { Some(s) => s, None => return };
+                // Snapshot target Atk stat post-stage.
+                let (raw_atk, atk_stage, has_substitute) = match self.side(opp).active_mon(ts as usize) {
+                    Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp > 0),
+                    None => return,
+                };
+                if atk_stage <= -6 { return; }
+                // Substitute blocks Strength Sap (PS reflectable + not
+                // sound; sub absorbs onHit). Approximate: skip if sub up.
+                if has_substitute { return; }
+                let effective_atk = crate::damage::apply_boost(raw_atk, atk_stage).max(1);
+                // Heal user.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        let max = a.stats.hp as u32;
+                        a.current_hp = (a.current_hp as u32 + effective_atk).min(max) as u16;
+                    }
+                }
+                // Drop target Atk by 1.
+                if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
+                    t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
+                }
+            }
             "recover" | "softboiled" | "slackoff" | "milkdrink" | "roost"
             | "synthesis" | "morningsun" | "moonlight" | "shoreup" => {
                 // Recover-class self heals. PS data/moves.ts: each entry
@@ -8522,5 +8571,51 @@ mod tests {
         // damage adjustment needed.
         let expected = (1u32 + (max as u32 * 2 / 3)).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Shore Up heals 2/3 in Sand");
+    }
+
+    #[test]
+    fn strength_sap_heals_user_by_target_atk_and_drops_atk() {
+        // PS data/moves.ts:strengthsap onHit: heal user by target's Atk
+        // (post-boost), drop target Atk by 1.
+        let p1_json = r#"[
+            {"species":"sinistcha","level":50,"ability":"hospitality","nature":"bold","moves":["strengthsap","shadowball","leafstorm","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let user_max = b.p1.team[0].stats.hp;
+        let foe_atk = b.p2.team[0].stats.atk as u32;
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(crate::choice::Target { side: SideRef::P2, slot: 0 }) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let expected_hp = (1u32 + foe_atk).min(user_max as u32) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected_hp, "user heals by target Atk");
+        assert_eq!(b.p2.team[0].boosts[0], -1, "target Atk -1");
+    }
+
+    #[test]
+    fn strength_sap_fails_when_target_atk_at_minus_six() {
+        let p1_json = r#"[
+            {"species":"sinistcha","level":50,"ability":"hospitality","nature":"bold","moves":["strengthsap","shadowball","leafstorm","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = 1;
+        b.p2.team[0].boosts[0] = -6;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(crate::choice::Target { side: SideRef::P2, slot: 0 }) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, 1, "no heal — target Atk floor");
+        assert_eq!(b.p2.team[0].boosts[0], -6, "Atk stage unchanged");
     }
 }
