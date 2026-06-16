@@ -42,7 +42,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:triplekick,tripleaxel`.
 
-**Status**: partial — multihit count is correct (PR-83); per-hit BP ramp missing.
+**Status**: shipped — PR-100 (per-hit BP ramp approximated via triangular factor N(N+1)/2).
 
 ### Population Bomb
 
