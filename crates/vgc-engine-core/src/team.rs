@@ -213,6 +213,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         last_damage_taken: 0,
         tera_type,
         terastallized: false,
+        stellar_boosted_types: 0,
         semi_invuln: 0,
         charging_turns: 0,
         charging_move_slot: 255,

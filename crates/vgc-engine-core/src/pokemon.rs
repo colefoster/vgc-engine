@@ -482,6 +482,15 @@ pub struct Pokemon {
     /// once-per-type bookkeeping. Persists across switch-out (Tera
     /// state survives switching in PS gen-9 doubles).
     pub terastallized: bool,
+    /// Stellar once-per-type bookkeeping. Bit `i` is set the first time
+    /// this mon lands a Stellar-bonus hit of move-type `i` (`i` in
+    /// `0..18`, matching the data crate's type indexing). Subsequent
+    /// Stellar attacks of the same type get no Stellar bonus per PS
+    /// `sim/pokemon.ts` `runEffectiveness` Stellar branch. Persists
+    /// across switch-out (Tera state — and the consumed-type list — does
+    /// not reset on switching out in gen 9 doubles). Reset only at
+    /// battle start.
+    pub stellar_boosted_types: u32,
     /// Volatile crit-stage contributors from on-mon sources (Focus
     /// Energy / Laser Focus / Dire Hit). Held item, ability, and the
     /// move's high-crit-ratio flag are summed at damage time. Cleared
@@ -862,7 +871,7 @@ mod tests {
             boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
             last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
-            tera_type: 1 /* fire */, terastallized: false,
+            tera_type: 1 /* fire */, terastallized: false, stellar_boosted_types: 0,
             semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
             must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
             volatiles: VolatileSet::default(),
@@ -913,7 +922,7 @@ mod tests {
             last_attacker_category: 255,
             last_damage_taken: 0,
             tera_type: 0,
-            terastallized: false,
+            terastallized: false, stellar_boosted_types: 0,
             semi_invuln: 0,
             charging_turns: 0,
             charging_move_slot: 255,
