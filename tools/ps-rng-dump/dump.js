@@ -464,7 +464,7 @@ async function driveSide(playerStream, queue, team, slots, sideTag, teamOrder, o
   if (debug) process.stderr.write(`[${sideTag} EXIT, qIdx=${qIdx}/${queue.length}]\n`);
   // Mark variable as used to satisfy linters.
   void sideTag;
-  return responses;
+  return { responses, errors };
 }
 
 // --- Job runner -----------------------------------------------------------
@@ -484,6 +484,7 @@ async function runJob(job) {
   const seed = job.seed || [1, 2, 3, 4];
   const format = job.format || 'gen9customgame';
   const events = [];
+  let sideErrors = [];
   const restore = patchRng(events);
 
   const stream = new BattleStream();
@@ -544,9 +545,38 @@ async function runJob(job) {
       // both sides bail mid-prompt.
       const sideTimeoutMs = 5_000;
       const timeoutSym = Symbol('timeout');
+      // Defensive: never let an awaited driver promise reject — wrap in
+      // a resolve so we can always pull `.errors` off both sides after
+      // the race, even when one side timed out waiting for input.
+      const safeP1 = driveP1.catch((e) => ({ responses: [], errors: [String(e)] }));
+      const safeP2 = driveP2.catch((e) => ({ responses: [], errors: [String(e)] }));
       const sideTimeout = new Promise((res) => setTimeout(() => res(timeoutSym), sideTimeoutMs));
-      await Promise.race([Promise.all([driveP1, driveP2]), sideTimeout]);
+      const raceResult = await Promise.race([
+        Promise.all([safeP1, safeP2]),
+        sideTimeout,
+      ]);
       sides.omniscient.writeEnd();
+      if (raceResult !== timeoutSym) {
+        const [p1res, p2res] = raceResult;
+        sideErrors = [...p1res.errors, ...p2res.errors];
+      } else {
+        // Timeout: one or both sides are still iterating but PS isn't
+        // sending them anything. Try to drain whatever errors each
+        // side ALREADY collected by giving them a brief window after
+        // the omniscient writeEnd closes their streams.
+        const drainMs = 500;
+        const drained = await Promise.race([
+          Promise.all([safeP1, safeP2]),
+          new Promise((res) => setTimeout(() => res(null), drainMs)),
+        ]);
+        if (drained) {
+          const [p1res, p2res] = drained;
+          sideErrors = [...p1res.errors, ...p2res.errors];
+        }
+        if (sideErrors.length === 0) {
+          sideErrors = ['side driver timed out'];
+        }
+      }
     }
 
     // Drain omniscient with its own short timeout in case PS doesn't
@@ -556,11 +586,19 @@ async function runJob(job) {
       drainOmni,
       new Promise((res) => setTimeout(res, drainTimeoutMs)),
     ]);
+    // `ok` is true only when neither player-side driver reported an
+    // |error| line back from PS. The omniscient stream doesn't echo
+    // those errors, so checking `log` alone (as `generate-sidecars.sh`
+    // used to do) silently classifies aborted-mid-turn dumps as clean.
+    // Surfacing `errors` here lets the driver reject them and avoids
+    // poisoning the oracle queue with zero-event sidecars from runs
+    // that bailed at turn 1.
     return {
-      ok: true,
+      ok: sideErrors.length === 0,
       seed,
       turns: extracted ? Math.max(extracted.queueP1.length, extracted.queueP2.length) : (job.actions || []).length,
       events,
+      errors: sideErrors,
       log: logChunks.join(''),
     };
   } finally {
