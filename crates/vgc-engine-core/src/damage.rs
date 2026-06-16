@@ -186,7 +186,17 @@ pub fn calculate_damage(
     let m = &data::MOVES[move_id as usize];
     // 2 = Status (no damage). bp == 0 for status / weird moves; treat as 0
     // until variable-BP / OHKO mechanics land.
-    if m.category == 2 || m.base_power == 0 {
+    // Status moves never deal damage. Most variable-BP moves carry
+    // `basePower: 0` in PS and route through a basePowerCallback; we
+    // allow those slugs past this gate so the per-slug branches below
+    // can compute the real BP. Anything else with bp == 0 still bails.
+    if m.category == 2 {
+        return 0;
+    }
+    if m.base_power == 0 && !matches!(
+        m.slug,
+        "heatcrash" | "heavyslam"
+    ) {
         return 0;
     }
     // Weather Ball — type and BP change with active weather. PS
@@ -264,6 +274,31 @@ pub fn calculate_damage(
         //   BP (55 → 110) when the user holds no item. Flying Gem
         //   case (item consumed pre-hit) deferred.
         (m.type_, (m.base_power as u32) * 2)
+    } else if matches!(m.slug, "heatcrash" | "heavyslam") {
+        // PS data/moves.ts:heatcrash / :heavyslam basePowerCallback:
+        //   const targetWeight = target.getWeight();
+        //   const pokemonWeight = pokemon.getWeight();
+        //   let bp;
+        //   if (pokemonWeight >= targetWeight * 5)  bp = 120;
+        //   else if (pokemonWeight >= targetWeight * 4) bp = 100;
+        //   else if (pokemonWeight >= targetWeight * 3) bp = 80;
+        //   else if (pokemonWeight >= targetWeight * 2) bp = 60;
+        //   else bp = 40;
+        //   return bp;
+        // We use hectograms (kg × 10) so the multiplicative checks are
+        // exact integer comparisons. Float-ability multipliers from
+        // Heavy Metal (×2) / Light Metal (×0.5) / Float Stone (×0.5)
+        // are NOT applied here yet — they belong to their own PRs.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heat_Crash_(move)>
+        //             <https://bulbapedia.bulbagarden.net/wiki/Heavy_Slam_(move)>
+        let user_w = attacker.species().weight_dg as u64;
+        let tgt_w = (defender.species().weight_dg as u64).max(1);
+        let bp = if user_w >= tgt_w * 5 { 120 }
+            else if user_w >= tgt_w * 4 { 100 }
+            else if user_w >= tgt_w * 3 { 80 }
+            else if user_w >= tgt_w * 2 { 60 }
+            else { 40 };
+        (m.type_, bp as u32)
     } else if m.slug == "hex" && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
@@ -675,6 +710,40 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn heavy_slam_scales_with_weight_ratio() {
+        // PS basePowerCallback returns 120/100/80/60/40 by weight ratio.
+        // Heavy Slam (and Heat Crash) on a heavy attacker vs a light
+        // target should reach 120 BP. Pick Tinkaton-class heavy vs a
+        // very light target; confirm BP-scaled damage is well above the
+        // 40-BP floor by comparing to a hardcoded baseline.
+        let heavy = make_mon(
+            "snorlax",  // 460 kg
+            50, "adamant",
+            StatSpread { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 },
+        );
+        // Pichu = 2 kg in @pkmn/dex; Snorlax = 460 kg.
+        let target = make_mon("pichu", 50, "hardy", StatSpread::ZERO);
+        let hs = move_id("heavyslam");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let dmg_heavy_vs_light = calculate_damage(&heavy, &target, hs, ctx);
+        // Heavy (Snorlax 460 kg) vs light (Pichu 2 kg): ratio ≫ 5 → 120 BP.
+        // Vs a same-weight target (Snorlax vs Snorlax-equivalent),
+        // ratio < 2 → 40 BP. Compare:
+        let heavy_target = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let dmg_heavy_vs_heavy = calculate_damage(&heavy, &heavy_target, hs, ctx);
+        // The light target also has less Def so we expect a much
+        // bigger ratio than 3 (BP 120/40 = 3) — Snorlax Def >> Pichu Def.
+        assert!(dmg_heavy_vs_light > dmg_heavy_vs_heavy * 3,
+                "Heavy Slam should hit much harder vs Pichu: light={dmg_heavy_vs_light} heavy={dmg_heavy_vs_heavy}");
     }
 
     #[test]
