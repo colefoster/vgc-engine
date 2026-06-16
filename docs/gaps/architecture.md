@@ -165,7 +165,7 @@ Remaining for full close:
 
 **Why it matters**: Without correct EV spreads (especially HP/Def/SpD), HP-trace is wrong from turn 1.
 
-**Status**: partial — recon hooks shipped (PR-96/97/98); PR-165 added the `spread_recon` module with `narrow_by_damage(candidates, evidence, role)`. Given a `(nature, StatSpread)` candidate list and one `|-damage|` observation (with the opposing side fully resolved via `SideShape`), the call returns the subset of candidates whose damage range contains the observation (using the PR-164 back-solve primitive). Caller can iterate `|-damage|` events to monotonically narrow the candidate distribution. Wiring into a `recon_smogon::SpreadEvidenceObserver` that consumes a replay event stream and feeds the surviving distribution back into `SmogonStatsRecon` is the next step.
+**Status**: shipped — recon hooks shipped (PR-96/97/98); PR-165 added the `spread_recon` module with `narrow_by_damage(candidates, evidence, role)`; PR-176 added `recon_smogon::SpreadEvidenceObserver` — initialized from `SmogonStats::top_n` per species, consumes `|-damage|` observations via `observe_damage(...)` and shrinks each species' candidate set monotonically using `narrow_by_damage` under the hood. `surviving_top(species)` exposes the highest-weighted surviving spread (or `None` if narrowing emptied the set, signaling fall-back to the raw Smogon prior).
 
 ## Format / mode
 
