@@ -411,7 +411,7 @@ pub fn calculate_damage(
     // and cleared at end of turn. Stacking (multiple allies helping
     // the same target in one turn) is not modelled — Doubles only
     // has one ally.
-    if attacker.helping_handed_this_turn {
+    if attacker.helping_handed_this_turn() {
         bp = bp * 3 / 2;
     }
 
@@ -927,7 +927,6 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             flinched_this_turn: false,
-            helping_handed_this_turn: false,
             redirecting_this_turn: false,
             redirecting_is_powder: false,
             damaged_this_turn: false,

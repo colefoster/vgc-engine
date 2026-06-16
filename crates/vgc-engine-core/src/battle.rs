@@ -298,7 +298,7 @@ impl Battle {
                 m.is_protected_this_turn = false;
                 m.used_stall_this_turn = false;
                 m.flinched_this_turn = false;
-                m.helping_handed_this_turn = false;
+                m.set_helping_handed(false);
                 m.redirecting_this_turn = false;
                 m.redirecting_is_powder = false;
                 m.damaged_this_turn = false;
@@ -567,7 +567,7 @@ impl Battle {
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
             incoming.flinched_this_turn = false;
-            incoming.helping_handed_this_turn = false;
+            incoming.set_helping_handed(false);
             incoming.redirecting_this_turn = false;
             incoming.redirecting_is_powder = false;
             incoming.damaged_this_turn = false;
@@ -2540,7 +2540,7 @@ impl Battle {
                 // common case (Helping Hand goes before partner's
                 // attack thanks to +5 priority) is already correct.
                 // BP application: `damage.rs` reads
-                // `attacker.helping_handed_this_turn`.
+                // `attacker.helping_handed_this_turn()`.
                 let n = self.format().active_count() as u8;
                 if n < 2 {
                     return;
@@ -2548,7 +2548,7 @@ impl Battle {
                 let partner_slot = actor_slot ^ 1;
                 if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot as usize) {
                     if p.is_alive() {
-                        p.helping_handed_this_turn = true;
+                        p.set_helping_handed(true);
                     }
                 }
             }
@@ -7686,7 +7686,7 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
         );
-        assert!(!b2.p1.team[1].helping_handed_this_turn);
+        assert!(!b2.p1.team[1].helping_handed_this_turn());
     }
 
     #[test]
@@ -7709,7 +7709,7 @@ mod tests {
         // No partner to set the flag on; ensure the user itself
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
-        assert!(!b.p1.team[0].helping_handed_this_turn);
+        assert!(!b.p1.team[0].helping_handed_this_turn());
     }
 
     #[test]
