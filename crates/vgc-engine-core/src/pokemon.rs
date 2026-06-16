@@ -213,6 +213,11 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Choice-item move lock (PS `data/items.ts:choiceband` / scarf /
+    /// specs). Indefinite duration; `payload` carries the locked move
+    /// slot (0..=3). Set when the holder uses a move; cleared on
+    /// switch-out or item swap.
+    Locked,
     /// Stall counter for the Protect family (PS `data/conditions.ts:stall`).
     /// Indefinite duration; `payload` packs `(used_this_turn << 8) | counter`:
     /// the low byte is the current streak count (0..=6; success
@@ -388,10 +393,6 @@ pub struct Pokemon {
     /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
     /// calculation. Cleared at end of step.
     pub last_damage_taken: u16,
-    /// Choice-item lock: when the holder uses a move while holding
-    /// Band/Specs/Scarf, subsequent move selections are restricted to
-    /// that slot. `255 = unlocked`. Cleared on switch-out.
-    pub locked_move_slot: u8,
     /// Slot index of the most recent move this mon used (PP-consumed),
     /// or 255 if it hasn't moved yet on the field. Cleared on switch-
     /// out. Used by Encore to determine the lock target.
@@ -705,6 +706,29 @@ impl Pokemon {
             });
         } else {
             self.volatiles.remove(VolatileKind::Flinch);
+        }
+    }
+
+    /// Choice-item locked move slot. 255 when not locked.
+    #[inline]
+    pub fn locked_move_slot(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Locked)
+            .map(|v| v.payload as u8)
+            .unwrap_or(255)
+    }
+
+    /// Set / clear the Choice-item lock. `slot == 255` removes it.
+    #[inline]
+    pub fn set_locked_move_slot(&mut self, slot: u8) {
+        if slot == 255 {
+            self.volatiles.remove(VolatileKind::Locked);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Locked,
+                turns_remaining: 0,
+                payload: slot as u32,
+            });
         }
     }
 
@@ -1044,7 +1068,6 @@ mod tests {
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             turns_active: 0,
-            locked_move_slot: 255,
             last_used_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
@@ -1081,7 +1104,6 @@ mod tests {
             boosts: [0; 7],
             fainted: false,
             turns_active: 0,
-            locked_move_slot: 255,
             last_used_move_slot: 255,
             boosted_stat: 255,
             booster_locked: false,

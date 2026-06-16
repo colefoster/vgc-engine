@@ -193,7 +193,6 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         boosts: [0; 7],
         fainted: false,
         turns_active: 0,
-        locked_move_slot: 255,
         last_used_move_slot: 255,
         boosted_stat: 255,
         booster_locked: false,
