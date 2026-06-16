@@ -10,6 +10,7 @@
 
 mod choices;
 mod event;
+mod oracle;
 mod parser;
 mod recon;
 mod replay;
@@ -19,6 +20,7 @@ mod trace;
 
 pub use choices::ChoiceExtractor;
 pub use event::{Event, PokeSlot};
+pub use oracle::{build_crit_oracle_for_turn, build_crit_oracle_for_replay};
 pub use parser::parse_line;
 pub use recon::{
     input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,

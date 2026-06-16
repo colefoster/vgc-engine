@@ -55,6 +55,10 @@ pub enum Event {
         hp: String,
         from: Option<String>,
     },
+    /// `|-crit|<slot>` — PS emits this immediately after the `|move|`
+    /// line for the hit, before the `|-damage|` line. Used by the
+    /// Oracle harness to record each damaging hit's crit outcome.
+    Crit(PokeSlot),
     /// `|-heal|<slot>|<hp>|...`
     Heal {
         slot: PokeSlot,
