@@ -306,6 +306,18 @@ pub fn calculate_damage(
         atk_stat = attacker.stats.def as u32;
         atk_stage = attacker.boosts[1];
     }
+    // Foul Play — `overrideOffensivePokemon: 'target'`. PS reads the
+    // target's Attack stat (and Atk boost stage) instead of the
+    // user's. Defender's defensive read is unchanged. Crit-ignores-
+    // negative-stages still keys on the *effective* atk stage —
+    // i.e. the TARGET's Atk stage — so an Intimidate-dropped target
+    // still attacks itself at -1 unless this move crits. PS does
+    // the same. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Foul_Play_(move)>.
+    if m.slug == "foulplay" {
+        atk_stat = defender.stats.atk as u32;
+        atk_stage = defender.boosts[0];
+    }
 
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
