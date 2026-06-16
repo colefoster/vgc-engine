@@ -57,6 +57,11 @@ mod tests {
         let recover = move_by_slug("recover").unwrap();
         assert!(recover.is_heal);
 
+        // Gigaton Hammer and Blood Moon are the two `cantusetwice` moves.
+        assert!(move_by_slug("gigatonhammer").unwrap().cannot_use_twice);
+        assert!(move_by_slug("bloodmoon").unwrap().cannot_use_twice);
+        assert!(!move_by_slug("tackle").unwrap().cannot_use_twice);
+
         // Tackle has none of these flags.
         let tackle = move_by_slug("tackle").unwrap();
         assert!(!tackle.is_punch);
