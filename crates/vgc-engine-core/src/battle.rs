@@ -1281,6 +1281,15 @@ impl Battle {
                     self, tside, tslot, move_id, actor_side, actor_slot, &mut rng,
                 );
                 self.rng = rng;
+                // Defender's held item reacts to the contact hit —
+                // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
+                // Skin / Iron Barbs: contact-only, attacker not Magic-
+                // Guarded. PS `data/items.ts:rockyhelmet`.
+                if data::MOVES[move_id as usize].makes_contact {
+                    crate::item::on_attacker_contact_hit(
+                        self, tside, tslot, actor_side, actor_slot,
+                    );
+                }
             }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
@@ -5477,6 +5486,74 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn rocky_helmet_chips_contact_attacker() {
+        // Lucario @ Close Combat (contact) into Garchomp @ Rocky Helmet.
+        // PS: 1/6 max HP recoil to the attacker.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"focussash","nature":"adamant","moves":["closecombat","extremespeed","crunch","bulletpunch"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"rockyhelmet","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        let luc_full = b.p1.team[0].stats.hp;
+        let luc_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let lost = luc_before - b.p1.team[0].current_hp;
+        assert!(lost >= (luc_full / 6).max(1),
+                "Rocky Helmet should chip >= 1/6 max HP ({} lost, expected >= {})",
+                lost, luc_full / 6);
+    }
+
+    #[test]
+    fn rocky_helmet_does_not_proc_on_non_contact() {
+        // Earthquake — no contact. Rocky Helmet must not fire.
+        let p1_json = r#"[
+            {"species":"krookodile","level":50,"ability":"moxie","item":"focussash","nature":"jolly","moves":["earthquake","crunch","stoneedge","closecombat"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"rockyhelmet","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        let kro_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, kro_before,
+                   "Rocky Helmet must NOT proc on non-contact move");
+    }
+
+    #[test]
+    fn magic_guard_blocks_rocky_helmet() {
+        // Alakazam @ Magic Guard uses Focus Punch (contact) on Garchomp @
+        // Rocky Helmet. MG blocks the recoil (PS routes through onDamage).
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"leftovers","nature":"timid","moves":["focuspunch","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"rockyhelmet","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        let zam_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, zam_before,
+                   "Magic Guard blocks Rocky Helmet recoil");
     }
 
     #[test]
