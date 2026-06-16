@@ -1055,6 +1055,24 @@ impl Battle {
                 continue;
             }
 
+            // Motor Drive — PS `data/abilities.ts:motordrive` `onTryHit`
+            // returns null on Electric-type moves and triggers +1 Spe.
+            // Electric type code = 3. Electivire signature.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Motor_Drive_(Ability)>.
+            if m.type_ == 3 {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "motordrive" && !attacker_breaks_mold {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        d.boosts[4] = (d.boosts[4] + 1).clamp(-6, 6);
+                    }
+                    continue;
+                }
+            }
+
             // Sap Sipper — PS `data/abilities.ts:sapsipper` `onTryHit`
             // returns null on Grass-type moves and triggers a +1 Atk on
             // the target. Grass type code = 4. Absorbs the hit (no
@@ -6390,6 +6408,31 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, zam_before,
                    "Magic Guard blocks Rough Skin recoil");
+    }
+
+    #[test]
+    fn motor_drive_absorbs_electric_and_boosts_spe() {
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["thunderbolt","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        // Pawmot doesn't have Motor Drive, but Electivire does — but
+        // Electivire isn't in our localdex pool necessarily. Try Manectric.
+        let p2_json = r#"[
+            {"species":"electivire","level":50,"ability":"motordrive","item":"sitrusberry","nature":"adamant","moves":["wildcharge","earthquake","icepunch","crosschop"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        let spe_before = b.p2.team[0].boosts[4];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before,
+                   "Motor Drive absorbs Electric move");
+        assert_eq!(b.p2.team[0].boosts[4], spe_before + 1,
+                   "Motor Drive grants +1 Spe");
     }
 
     #[test]
