@@ -110,7 +110,8 @@ pub fn action_order(
                 Choice::Switch { actor_slot, .. } => {
                     switches.push(ScheduledAction { side, actor_slot, choice: *c });
                 }
-                Choice::Move { actor_slot, move_slot, .. } => {
+                Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. } => {
                     let tailwind = battle.side(side).conditions.tailwind_turns > 0;
                     let mon = battle.side(side).active_mon(actor_slot as usize);
                     let (priority, speed) = match mon {

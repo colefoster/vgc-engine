@@ -136,6 +136,15 @@ impl PyBattle {
                 core::Choice::Pass { actor_slot } => {
                     ("pass".to_string(), actor_slot, 0, -1, -1)
                 }
+                core::Choice::Terastallize { actor_slot, move_slot, target } => {
+                    let (ts, tl) = target.map_or((-1, -1), |t| {
+                        (
+                            if t.side == core::SideRef::P1 { 0 } else { 1 },
+                            t.slot as i8,
+                        )
+                    });
+                    ("tera".to_string(), actor_slot, move_slot, ts, tl)
+                }
             })
             .collect())
     }

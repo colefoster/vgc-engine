@@ -28,6 +28,18 @@ pub enum Choice {
         move_slot: MoveSlot,
         target: Option<Target>,
     },
+    /// Terastallize-and-Move. PS protocol: `move N terastallize` is a
+    /// single action emitted on the same turn as the move. The engine
+    /// consumes one `Side::tera_used` permit, sets
+    /// `Pokemon::terastallized = true` BEFORE the move resolves so the
+    /// move's STAB read sees the Tera type. If `tera_used` is already
+    /// true, the Terastallize component is silently skipped and the
+    /// move proceeds normally — keeps the protocol forgiving.
+    Terastallize {
+        actor_slot: u8,
+        move_slot: MoveSlot,
+        target: Option<Target>,
+    },
     /// Send out a benched Pokémon to replace the active in `actor_slot`.
     Switch {
         actor_slot: u8,
@@ -41,6 +53,7 @@ impl Choice {
     pub fn actor_slot(&self) -> u8 {
         match *self {
             Choice::Move { actor_slot, .. } => actor_slot,
+            Choice::Terastallize { actor_slot, .. } => actor_slot,
             Choice::Switch { actor_slot, .. } => actor_slot,
             Choice::Pass { actor_slot } => actor_slot,
         }
