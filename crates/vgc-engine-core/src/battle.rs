@@ -1870,6 +1870,21 @@ impl Battle {
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
 
+                // Stellar once-per-type bookkeeping. PS
+                // `sim/pokemon.ts` runEffectiveness sets the consumed-
+                // type bit on the user's `terastallizedType` for every
+                // Stellar-bonus hit. We mark after the hit lands so the
+                // damage call's read above sees `bit == 0` on the first
+                // use of that type. Subsequent Stellar hits of the same
+                // move-type drop back to regular STAB / off-type.
+                if effective_dmg > 0 {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        if a.terastallized && a.tera_type == 255 && (m.type_ as u32) < 32 {
+                            a.stellar_boosted_types |= 1u32 << (m.type_ as u32);
+                        }
+                    }
+                }
+
                 // Post-damage item hook (Sitrus Berry etc.).
                 crate::item::on_after_damage(self, tside, tslot);
 

@@ -663,13 +663,15 @@ pub fn calculate_damage(
     //     stab = isSTAB ? 2 : [4915, 4096];   // ×2 or ×1.2
     //     ... (mark this move type as consumed)
     //   }
-    // Bookkeeping (once-per-type per battle) is deferred — without a
-    // `stellar_boosted_types` mask we apply the Stellar boost on every
-    // Tera-Stellar attack. In corpus, repeat Tera-Stellar attacks of the
-    // same type within a single battle are vanishingly rare, so the
-    // attribution error is small. Future PR will add the bitmask field
-    // and gate this on first-use.
-    let stellar = attacker.terastallized && attacker.tera_type == 255;
+    // Bookkeeping (once-per-type per battle): only the first
+    // Stellar-bonus hit of a given move-type gets the boost; subsequent
+    // hits of the same type are normal STAB (or ignore Stellar entirely
+    // on off-type). The bitmask is set at the battle.rs call site after
+    // the hit lands.
+    let stellar = attacker.terastallized
+        && attacker.tera_type == 255
+        && (move_type as u32) < 32
+        && (attacker.stellar_boosted_types & (1u32 << (move_type as u32))) == 0;
     if stellar {
         if is_stab {
             // ×2 (over-rides the regular ×1.5 / Adaptability path).
@@ -943,6 +945,7 @@ mod tests {
             last_damage_taken: 0,
             tera_type: 0,
             terastallized: false,
+            stellar_boosted_types: 0,
             semi_invuln: 0,
             charging_turns: 0,
             charging_move_slot: 255,
@@ -1559,6 +1562,39 @@ mod tests {
         let ratio_x100 = (ada as u32) * 100 / (base.max(1) as u32);
         assert!((130..=136).contains(&ratio_x100),
                 "Adaptability STAB ratio ≈ 4/3, got ×{}/100", ratio_x100);
+    }
+
+    #[test]
+    fn stellar_once_per_type_bookkeeping_drops_bonus_on_second_hit() {
+        // Garchomp Tera-Stellar firing Earthquake (Ground, type code 8).
+        // First hit reads `stellar_boosted_types & (1 << 8) == 0` → Stellar
+        // STAB ×2. After the hit, battle.rs sets bit 8. Second hit reads
+        // bit 8 set → drops back to regular STAB ×1.5 (Garchomp base type
+        // Ground gives plain STAB).
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        atk.terastallized = true;
+        atk.tera_type = 255; // Stellar
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mid = move_id("earthquake");
+        let mk = |a: &Pokemon| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let first = mk(&atk);
+        // Simulate battle.rs setting the consumed-type bit after first hit.
+        atk.stellar_boosted_types |= 1u32 << 8; // Ground = 8
+        let second = mk(&atk);
+        assert!(first > second,
+            "first Stellar Earthquake hit gets ×2 STAB; second drops to ×1.5 (first={first}, second={second})");
+        // Ratio should be approximately 2/1.5 ≈ 4/3 ≈ 1.33.
+        let ratio_x100 = (first as u32) * 100 / (second.max(1) as u32);
+        assert!((130..=136).contains(&ratio_x100),
+            "Stellar→STAB drop ratio ≈ 4/3, got ×{}/100", ratio_x100);
     }
 
     #[test]

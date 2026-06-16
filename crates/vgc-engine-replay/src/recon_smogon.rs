@@ -402,7 +402,7 @@ mod tests {
                     boosted_stat: 255, booster_locked: false,
                     ability_suppressed: false, crit_stage_volatile: 0,
                     last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
-                    tera_type: 0, terastallized: false,
+                    tera_type: 0, terastallized: false, stellar_boosted_types: 0,
                     semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
                     must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
                     volatiles: VolatileSet::default(),
