@@ -1565,23 +1565,26 @@ fn flinch_chance(slug: &str) -> Option<u8> {
 fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
     Some(match slug {
         // Guaranteed -1 Spe (used as soft speed control in VGC):
-        "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate" => (4, -1, 100),
-        // -1 SpA (Mystical Fire — 100%, Eerie Spell — 100% PP drop is
-        // a different effect, omit):
-        "mysticalfire" => (2, -1, 100),
-        // Acc drops:
+        "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate"
+        | "rocktomb" => (4, -1, 100),
+        // 100% -1 SpA:
+        "mysticalfire" | "snarl" => (2, -1, 100),
+        // 100% -2 SpD:
+        "acidspray" => (3, -2, 100),
+        // 100% -1 Acc:
         "mudslap" | "muddywater" => (5, -1, 100),
+        // 30% -1 SpA (Moonblast — #8 by usage):
+        "moonblast" => (2, -1, 30),
         // 30% -1 Def (contact biters):
-        "crunch" => (2, -1, 20), // 20% -1 SpD per PS
         "irontail" => (1, -1, 30),
-        "liquidation" | "rockSmash" | "rocksmash" => (1, -1, 30),
+        "liquidation" | "rocksmash" => (1, -1, 30),
+        // 20% -1 Def (Crunch per PS data/moves.ts:crunch).
+        "crunch" => (1, -1, 20),
         // 10% -1 SpD:
         "earthpower" | "flashcannon" | "energyball" | "focusblast"
         | "psychic" | "shadowball" | "bugbuzz" => (3, -1, 10),
         // 10% -1 Atk:
         "aurorabeam" => (0, -1, 10),
-        // 10% -1 Spe:
-        "rockTomb" | "rocktomb" => (4, -1, 100),
         _ => return None,
     })
 }
