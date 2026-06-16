@@ -16,7 +16,9 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 Migration of the ad-hoc per-Pokemon volatile fields (`is_protected_this_turn`, `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`, `redirecting_this_turn`, `damaged_this_turn`, `substitute_hp`, `sleep_turns`, `encore_turns`, `crit_stage_volatile`, `semi_invuln`, `charging_turns`, `must_recharge`, `lockin_turns`, ...) onto the registry happens incrementally per-volatile in follow-up slices — each migration is its own behavior-preserving PR + diff test.
 
-Continuation note (next session): start with `helping_handed_this_turn` (4 call sites, no behaviour gotchas). Sequence: (1) add `HelpingHand` to `VolatileKind`, (2) replace 4 read sites in `damage.rs` / `battle.rs`, (3) replace 4 write sites (set/clear), (4) drop the field from `Pokemon`, (5) drop from the 4 init sites. Lockstep: keep both forms compiling until step 4 lands so the migration is a single atomic PR. Then `flinched_this_turn` (similar shape, ~10 sites). Each migration must pass the full corpus baseline (run `cargo test --workspace` + corpus harness — net-neutral expected).
+Migrated so far: `helping_handed_this_turn` → `VolatileKind::HelpingHand` (PR-169 — accessor methods `Pokemon::helping_handed_this_turn()` / `set_helping_handed(bool)` wrap the VolatileSet, field dropped from `Pokemon`, init sites collapsed).
+
+Continuation note (next session): `flinched_this_turn` next (similar shape, ~10 sites), then the rest in the sequence listed above. Each migration must pass `cargo test --workspace --exclude vgc-engine-py` + corpus harness — net-neutral expected.
 
 ### Tera state
 

@@ -180,6 +180,12 @@ pub enum VolatileKind {
     SaltCure,
     Endure,
     DragonCheer,
+    /// Single-turn 'helpinghand' volatile (PS data/moves.ts:helpinghand,
+    /// duration 1). Set by an adjacent ally's Helping Hand on this mon;
+    /// read by `damage.rs` to multiply BP ×1.5 on the next damaging move
+    /// this turn. Cleared at the per-turn volatile reset / on switch-out.
+    /// Payload unused.
+    HelpingHand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -319,16 +325,6 @@ pub struct Pokemon {
     /// move; checked at the start of resolve_move to skip the mon's
     /// action. Cleared at end of step.
     pub flinched_this_turn: bool,
-    /// Single-turn 'helpinghand' volatile (PS data/moves.ts:helpinghand
-    /// condition, duration 1). Set when an adjacent ally successfully
-    /// used Helping Hand targeting this mon; read by `damage.rs` to
-    /// multiply BP ×1.5 on the next damaging move this turn. Cleared
-    /// at end of step. Multi-stack (two allies each Helping Hand'ing
-    /// the same target → ×2.25) is deferred — Doubles has only one
-    /// ally, and the same target getting helped twice in one turn
-    /// requires Allies of the same team (3+ Pokémon active), which
-    /// Doubles never produces.
-    pub helping_handed_this_turn: bool,
     /// Single-turn 'ragepowder' / 'followme' redirection volatile (PS
     /// data/moves.ts:ragepowder / :followme conditions, duration 1).
     /// Set when this mon successfully uses Rage Powder or Follow Me;
@@ -612,6 +608,31 @@ impl Pokemon {
             .unwrap_or("")
     }
 
+    /// `true` while a `VolatileKind::HelpingHand` volatile is on this mon
+    /// (an ally Helping Hand'd this target on the current turn). Read by
+    /// `damage.rs` for the ×1.5 BP multiplier. PS analog:
+    /// `data/moves.ts:helpinghand` condition.
+    #[inline]
+    pub fn helping_handed_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::HelpingHand)
+    }
+
+    /// Set or clear the Helping Hand volatile. Setting to `true` adds a
+    /// duration-1 entry (PS clears it at end of turn via the per-turn
+    /// volatile reset, which calls this with `false`).
+    #[inline]
+    pub fn set_helping_handed(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::HelpingHand,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::HelpingHand);
+        }
+    }
+
     fn is_grounded_internal(&self, ignore_levitate: bool) -> bool {
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
@@ -729,7 +750,7 @@ mod tests {
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             is_protected_this_turn: false, stall_counter: 0, used_stall_this_turn: false,
-            turns_active: 0, flinched_this_turn: false, helping_handed_this_turn: false,
+            turns_active: 0, flinched_this_turn: false,
             redirecting_this_turn: false, redirecting_is_powder: false,
             damaged_this_turn: false, toxic_counter: 0, locked_move_slot: 255,
             switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
@@ -773,7 +794,6 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             flinched_this_turn: false,
-            helping_handed_this_turn: false,
             redirecting_this_turn: false,
             redirecting_is_powder: false,
             damaged_this_turn: false,
