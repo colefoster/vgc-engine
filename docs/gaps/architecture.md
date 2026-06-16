@@ -159,7 +159,7 @@ Remaining slices:
 
 **Why it matters**: This is the headline lever for corpus agreement. PR-66 landed crit back-solve and moved median 8.3 → 12.5. Damage back-solve is the next 10-30 percentage points.
 
-**Status**: design deferred (PR-67 placeholder).
+**Status**: partial — design pinned (PR-67 placeholder), implementation deferred. Continuation note: the cleanest path is option (b) — a `Rng::damage_roll_hint(target: u16, dmg_min: u16, dmg_max: u16)` that runs the formula across all 16 buckets and selects the bucket whose output minimises `|out - target|`. Plumbed through a new `Rng::OracleDamageHint { state, fallback }` variant that consumes the `|-damage|` payload from the replay event stream. Owner: next PR-stream session.
 
 ### Set reconnaissance for spreads / abilities / items
 
@@ -167,7 +167,7 @@ Remaining slices:
 
 **Why it matters**: Without correct EV spreads (especially HP/Def/SpD), HP-trace is wrong from turn 1.
 
-**Status**: partial — recon hooks shipped (PR-96/97/98); EV-spread distribution not yet sampled.
+**Status**: partial — recon hooks shipped (PR-96/97/98); EV-spread distribution not yet sampled. Continuation note: sketch — at team-preview, for each PS species/item/ability triple, fetch the Smogon top-N usage candidate sets (already cached in `crates/vgc-engine-replay/src/smogon_stats.rs`). For each subsequent `|-damage|` event, run the damage formula across each candidate's stat block, drop candidates whose damage range doesn't contain the observation, marginalise back to a posterior over EV spreads. Lands as a new `recon_smogon::SpreadEvidenceObserver` layered on top of the existing prior — needs the damage back-solver (above) to be in place first. Owner: next PR-stream session.
 
 ## Format / mode
 
@@ -181,4 +181,4 @@ Remaining slices:
 
 **What it is**: Best-of-3 series state machine (team preview reveal, bring 4 of 6, re-pick between games). Out of scope for engine — handled by the harness.
 
-**Status**: out of scope.
+**Status**: out of scope (closed). The harness (`vgc-engine-replay`) owns this; no engine-side hook is needed.
