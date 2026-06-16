@@ -922,7 +922,6 @@ mod tests {
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
-            is_protected_this_turn: false,
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,
