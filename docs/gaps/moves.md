@@ -92,7 +92,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:gigatonhammer,bloodmoon`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-101 (resolve-time fail; choice-time disable deferred).
 
 ## Stat-based attack-source replacements
 
