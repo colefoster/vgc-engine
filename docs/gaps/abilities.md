@@ -68,7 +68,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Critical-hit damage ×1.5 (so total crit multiplier becomes 1.5 × 1.5 = 2.25).
 
-**Status**: not implemented.
+**Status**: shipped — PR-106.
 
 ### Sand Force
 
