@@ -189,6 +189,7 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
     // draws (accuracy, secondaries, range).
     let mut positional: Vec<&str> = Vec::with_capacity(args.len());
     let mut use_oracle = false;
+    let mut use_full_oracle = false;
     let mut rng_dump_dir: Option<&str> = None;
     let mut smogon_stats_path: Option<&str> = None;
     let mut prev_flag: Option<&str> = None;
@@ -202,6 +203,9 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             continue;
         }
         if a == "--oracle" {
+            use_oracle = true;
+        } else if a == "--full-oracle" {
+            use_full_oracle = true;
             use_oracle = true;
         } else if a == "--rng-dump-dir" {
             prev_flag = Some("--rng-dump-dir");
@@ -295,25 +299,32 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
                 }
             });
 
-        let scored = match (&smogon_recon, sidecar_events, use_oracle) {
-            (Some(recon), Some(events), _) => replay::score_replay_with_events(
+        let scored = match (&smogon_recon, sidecar_events, use_oracle, use_full_oracle) {
+            (Some(recon), Some(events), _, _) => replay::score_replay_with_events(
                 &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE, events,
             ),
-            (Some(recon), None, true) => replay::score_replay_oracle(
+            (Some(recon), None, _, true) => replay::score_replay_full_oracle(
                 &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
-            (Some(recon), None, false) => replay::score_replay(
+            (Some(recon), None, true, false) => replay::score_replay_oracle(
                 &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
-            (None, Some(events), _) => replay::score_replay_with_events(
+            (Some(recon), None, false, false) => replay::score_replay(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (None, Some(events), _, _) => replay::score_replay_with_events(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE, events,
             ),
-            (None, None, true) => replay::score_replay_oracle(
+            (None, None, _, true) => replay::score_replay_full_oracle(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
             ),
-            (None, None, false) => replay::score_replay(
+            (None, None, true, false) => replay::score_replay_oracle(
+                &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
+                replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (None, None, false, false) => replay::score_replay(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
             ),

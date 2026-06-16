@@ -145,6 +145,135 @@ pub fn score_replay_oracle(
     score_replay_with_events(replay, recon, seed, tolerance, events)
 }
 
+/// Like `score_replay_oracle`, but additionally builds `DamageHint`
+/// events via [`crate::oracle::build_damage_oracle_for_replay`] and
+/// concatenates them onto the crit + accuracy queue.
+///
+/// The `max_hp_for_slot` callback resolves the engine's max HP for
+/// the mon currently at `(player, slot)` by walking the replay's
+/// `|switch|` / `|drag|` events alongside the damage walker and
+/// looking each lead/replacement species up in the reconstructed
+/// team. When a switch lands on a species not in the reconstructed
+/// team (cross-replay weirdness) the lookup returns 0 and the damage
+/// hint for that hit is skipped — the engine falls back to Splitmix
+/// for that one draw, preserving queue coherence.
+///
+/// Wires PR-175 damage-oracle infra into the scoring pipeline.
+pub fn score_replay_full_oracle(
+    replay: &Replay,
+    recon: &impl TeamRecon,
+    seed: u64,
+    tolerance: f32,
+) -> Result<ReplayScore, RunnerError> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    // Pre-build the team to get max-HP-per-(player, species_slug).
+    let init = RunnerInit::from_replay(replay, recon)?;
+    let mut max_hp: HashMap<(u8, String), u16> = HashMap::new();
+    for (player_idx, team) in [&init.p1_team, &init.p2_team].iter().enumerate() {
+        let player = (player_idx + 1) as u8;
+        for m in team.iter() {
+            if let Ok(p) = vgc_engine_core::build_member(m) {
+                max_hp.insert((player, m.species.clone()), p.stats.hp);
+            }
+        }
+    }
+
+    // Track currently-active species per (player, slot) by walking
+    // switch/drag events. Seed with the leads at indices 0/1.
+    let active: RefCell<HashMap<(u8, char), String>> = RefCell::new(HashMap::new());
+    if let Some(m) = init.p1_team.first() {
+        active.borrow_mut().insert((1, 'a'), m.species.clone());
+    }
+    if init.p1_team.len() > 1 {
+        active.borrow_mut().insert((1, 'b'), init.p1_team[1].species.clone());
+    }
+    if let Some(m) = init.p2_team.first() {
+        active.borrow_mut().insert((2, 'a'), m.species.clone());
+    }
+    if init.p2_team.len() > 1 {
+        active.borrow_mut().insert((2, 'b'), init.p2_team[1].species.clone());
+    }
+
+    // Pre-walk switches into a per-event-index timeline so the
+    // closure can update `active` deterministically. The damage
+    // oracle walker visits each turn's events in order, but it
+    // doesn't expose the index. Simpler: drive the closure via
+    // RefCell and pre-emit max_hp lookups by also pre-walking and
+    // emitting damage events directly here.
+    //
+    // We bypass `build_damage_oracle_for_replay` and inline its
+    // logic so we can update `active` from switches in the same pass.
+    let mut prev_pct: HashMap<(u8, char), f32> = HashMap::new();
+    let mut damage_events: Vec<vgc_engine_core::rng::RngEvent> = Vec::new();
+    for tv in replay.turns() {
+        if tv.number == 0 {
+            // Pre-battle / team-preview: still update switches so leads
+            // are correct, and prev_pct for HP starts.
+            for ev in tv.events {
+                update_active_and_hp(ev, &mut active.borrow_mut(), &mut prev_pct);
+            }
+            continue;
+        }
+        for ev in tv.events {
+            if let crate::event::Event::Damage { slot, hp, from } = ev {
+                if let Some((new_frac, _)) = crate::trace::parse_hp(hp) {
+                    let key = (slot.player, slot.slot);
+                    let prev = prev_pct.get(&key).copied().unwrap_or(1.0);
+                    if from.is_none() {
+                        // Resolve max HP from the currently-active species.
+                        let species = active.borrow().get(&key).cloned();
+                        let max = species
+                            .and_then(|s| max_hp.get(&(slot.player, s)).copied())
+                            .unwrap_or(0);
+                        if max > 0 {
+                            let delta = (prev - new_frac).max(0.0);
+                            let observed = (delta * max as f32).round() as u32;
+                            let observed = observed.min(u16::MAX as u32) as u16;
+                            if observed > 0 {
+                                damage_events.push(
+                                    vgc_engine_core::rng::RngEvent::DamageHint(observed),
+                                );
+                            }
+                        }
+                    }
+                    prev_pct.insert(key, new_frac);
+                }
+                continue;
+            }
+            update_active_and_hp(ev, &mut active.borrow_mut(), &mut prev_pct);
+        }
+    }
+
+    let mut events = crate::oracle::build_oracle_for_replay(replay);
+    events.extend(damage_events);
+    score_replay_with_events(replay, recon, seed, tolerance, events)
+}
+
+fn update_active_and_hp(
+    ev: &crate::event::Event,
+    active: &mut std::collections::HashMap<(u8, char), String>,
+    prev_pct: &mut std::collections::HashMap<(u8, char), f32>,
+) {
+    use crate::event::Event;
+    match ev {
+        Event::Switch { slot, details, hp } | Event::Drag { slot, details, hp } => {
+            let species = crate::recon::parse_details(details).species;
+            active.insert((slot.player, slot.slot), species);
+            if let Some((new_frac, _)) = crate::trace::parse_hp(hp) {
+                prev_pct.insert((slot.player, slot.slot), new_frac);
+            }
+        }
+        Event::Heal { slot, hp, .. } => {
+            if let Some((new_frac, _)) = crate::trace::parse_hp(hp) {
+                prev_pct.insert((slot.player, slot.slot), new_frac);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Like `score_replay`, but the caller supplies the full `RngEvent`
 /// queue (typically loaded from a `ps-rng-dump` sidecar via
 /// `oracle::load_rng_dump`). Events feed into `Rng::oracle_partial`;
