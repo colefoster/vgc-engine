@@ -1241,6 +1241,22 @@ impl Battle {
                 boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
             }
+            // Eviolite — PS `data/items.ts:eviolite` `onModifyDef` /
+            // `onModifySpD` ×1.5 for NFE holders (any species whose
+            // `evos` is non-empty). Build dump exposes that as
+            // `SpeciesDef::is_nfe`. Doesn't stack with Assault Vest
+            // (different slots), but does stack with paradox booster
+            // ×1.3 above (PS chains both modifiers).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eviolite>.
+            if def_item_slug == "eviolite" && boosted_defender.species().is_nfe {
+                if m.category == 0 {
+                    boosted_defender.stats.def = ((boosted_defender.stats.def as u32 * 3 / 2)
+                        .min(u16::MAX as u32)) as u16;
+                } else if m.category == 1 {
+                    boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
+                        .min(u16::MAX as u32)) as u16;
+                }
+            }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
             if boosted_defender.boosted_stat == 1 && m.category == 0 {
@@ -3171,6 +3187,40 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].stall_counter, 1, "fresh streak — counter back to 1");
+    }
+
+    #[test]
+    fn eviolite_reduces_damage_to_nfe() {
+        // Pure damage-calc test: Chansey (NFE) holding Eviolite takes
+        // 1/1.5 the special damage of no-item Chansey. We call into the
+        // damage formula directly to bypass speed/move-order noise.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"chansey","level":50,"ability":"naturalcure","item":"eviolite","nature":"calm","moves":["softboiled","seismictoss","thunderwave","aromatherapy"],"evs":{"hp":252,"def":4,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"miraidon","level":50,"ability":"hadronengine","item":"choicespecs","nature":"modest","moves":["thunderbolt","dracometeor","voltswitch","overheat"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut chansey_evi = p1[0].clone();
+        let miraidon = p2[0].clone();
+        // No-item variant: same stats, blank item.
+        let mut chansey_no = chansey_evi.clone();
+        chansey_no.item_id = u16::MAX;
+        // Apply Eviolite's spd bump to the eviolite variant (the battle
+        // loop does this inline; we replicate it for the pure-fn call).
+        chansey_evi.stats.spd = (chansey_evi.stats.spd as u32 * 3 / 2).min(u16::MAX as u32) as u16;
+
+        let tbolt = data::MOVES.iter().position(|m| m.slug == "thunderbolt").unwrap() as u16;
+        let ctx = DamageContext { roll: 15, ..DamageContext::default() };
+        let dmg_evi = calculate_damage(&miraidon, &chansey_evi, tbolt, ctx);
+        let dmg_no  = calculate_damage(&miraidon, &chansey_no,  tbolt, ctx);
+        assert!(dmg_evi > 0 && dmg_no > 0);
+        assert!(dmg_evi < dmg_no, "Eviolite should reduce damage to NFE: {dmg_evi} vs {dmg_no}");
+        let ratio = (dmg_evi as u32) * 100 / dmg_no as u32;
+        // Tight band around 67%.
+        assert!(ratio >= 64 && ratio <= 72, "Eviolite ratio should be ~67%, got {ratio}%");
     }
 
     #[test]
