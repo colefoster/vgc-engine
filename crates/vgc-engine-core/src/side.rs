@@ -69,6 +69,13 @@ pub struct SideConditions {
     /// Sucker Punch on its own user — gated check happens at
     /// per-target resolution.
     pub quick_guard_this_turn: bool,
+    /// Stealth Rock hazard on this side. PS data/moves.ts:stealthrock
+    /// sets a `foeSide` `sideCondition: 'stealthrock'`. Damages each
+    /// non-immune switch-in for `maxhp * 2^typeMod / 8`, where typeMod
+    /// is the clamped Rock-vs-defender type effectiveness exponent
+    /// (-6..6). Cleared by Defog / Rapid Spin / Tidy Up / Court Change
+    /// / Mortal Spin in later PRs.
+    pub stealth_rock: bool,
 }
 
 impl Side {

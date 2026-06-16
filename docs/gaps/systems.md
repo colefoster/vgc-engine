@@ -114,7 +114,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:stealthrock`, `data/conditions.ts:stealthrock`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-113 (Heavy Boots immunity deferred — no item handler yet).
 
 ### Spikes / Toxic Spikes / Sticky Web
 
