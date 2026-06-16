@@ -237,6 +237,17 @@ impl TeamBuilder {
     pub fn from_json(s: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
         let specs: Vec<TeamMember> =
             serde_json::from_str(s).map_err(|e| TeamLoadError::Parse(e.to_string()))?;
+        Self::finalize(specs)
+    }
+
+    /// Parse a Showdown export blob (`Mon @ Item` / `Ability:` / `EVs:` /
+    /// `<Nature> Nature` / `- Move` ...) — the same format Pokepaste hands out.
+    pub fn from_showdown_text(s: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
+        let specs = crate::team_export::parse_showdown_export(s)?;
+        Self::finalize(specs)
+    }
+
+    fn finalize(specs: Vec<TeamMember>) -> Result<Vec<Pokemon>, TeamLoadError> {
         if specs.is_empty() {
             return Err(TeamLoadError::Empty);
         }
