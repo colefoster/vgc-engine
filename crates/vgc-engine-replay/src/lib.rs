@@ -25,15 +25,16 @@ pub use choices::ChoiceExtractor;
 pub use event::{Event, PokeSlot};
 pub use oracle::{
     build_accuracy_oracle_for_replay, build_accuracy_oracle_for_turn,
-    build_crit_oracle_for_replay, build_crit_oracle_for_turn, build_oracle_for_replay,
-    load_rng_dump, DumpLoadError,
+    build_crit_oracle_for_replay, build_crit_oracle_for_turn,
+    build_damage_oracle_for_replay, build_damage_oracle_for_turn,
+    build_oracle_for_replay, load_rng_dump, DumpLoadError,
 };
 pub use parser::parse_line;
 pub use recon::{
     input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,
     ReconError, ReconInput, TeamRecon,
 };
-pub use recon_smogon::SmogonStatsRecon;
+pub use recon_smogon::{SmogonStatsRecon, SpreadEvidenceObserver};
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
 pub use spread_recon::{narrow_by_damage, SideShape, SpreadEvidence, SpreadEvidenceRole};
