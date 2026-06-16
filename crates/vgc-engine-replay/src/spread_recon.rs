@@ -201,7 +201,6 @@ fn make_pokemon(
         turns_active: 0,
         redirecting_this_turn: false,
         redirecting_is_powder: false,
-        damaged_this_turn: false,
         toxic_counter: 0,
         locked_move_slot: 255,
         switched_in_this_turn: false,

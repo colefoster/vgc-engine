@@ -287,7 +287,7 @@ pub fn calculate_damage(
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
     } else if matches!(m.slug, "avalanche" | "revenge")
-        && attacker.damaged_this_turn
+        && attacker.damaged_this_turn()
     {
         // PS data/moves.ts:avalanche / revenge basePowerCallback —
         // doubles BP (60 → 120) if the user was damaged earlier this
@@ -927,7 +927,6 @@ mod tests {
             turns_active: 0,
             redirecting_this_turn: false,
             redirecting_is_powder: false,
-            damaged_this_turn: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             switched_in_this_turn: false,

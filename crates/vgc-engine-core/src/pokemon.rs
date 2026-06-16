@@ -196,6 +196,11 @@ pub enum VolatileKind {
     /// Baneful Bunker / Burning Bulwark / Silk Trap. Causes targeting moves
     /// against this mon to fail; cleared at end of turn. Payload unused.
     Protect,
+    /// Single-turn 'was damaged' marker. Set when an opposing damaging
+    /// move actually lands HP damage on this mon. Read by Avalanche /
+    /// Revenge for the ×2 BP bonus. Cleared at the per-turn volatile
+    /// reset / on switch-in. Payload unused.
+    DamagedThisTurn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -344,14 +349,6 @@ pub struct Pokemon {
     /// (powder-gated), `false` when set by Follow Me. Only meaningful
     /// while `redirecting_this_turn` is true.
     pub redirecting_is_powder: bool,
-    /// Single-turn flag — true if any opposing damaging move actually
-    /// landed HP damage on this mon earlier this turn. PS tracks
-    /// `pokemon.attackedBy` per-source; we collapse to "any foe hit
-    /// me" which is exact in Singles and over-permissive in Doubles
-    /// (Avalanche / Revenge will double BP even if the foe at the
-    /// other slot dealt the damage). Read by `damage.rs` for
-    /// Avalanche / Revenge. Cleared at end of step.
-    pub damaged_this_turn: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -610,6 +607,28 @@ impl Pokemon {
             .unwrap_or("")
     }
 
+    /// `true` while `VolatileKind::DamagedThisTurn` is on this mon.
+    /// Set by `battle.rs` when an opposing damaging move lands HP
+    /// damage. Read by Avalanche / Revenge for ×2 BP.
+    #[inline]
+    pub fn damaged_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::DamagedThisTurn)
+    }
+
+    /// Set or clear the DamagedThisTurn marker.
+    #[inline]
+    pub fn set_damaged_this_turn(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::DamagedThisTurn,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::DamagedThisTurn);
+        }
+    }
+
     /// `true` while `VolatileKind::Protect` is on this mon. Read at
     /// move-resolution time to fail targeting moves.
     #[inline]
@@ -795,7 +814,7 @@ mod tests {
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0, redirecting_this_turn: false, redirecting_is_powder: false,
-            damaged_this_turn: false, toxic_counter: 0, locked_move_slot: 255,
+            toxic_counter: 0, locked_move_slot: 255,
             switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
             boosted_stat: 255, booster_locked: false, pending_self_switch: false,
@@ -837,7 +856,6 @@ mod tests {
             turns_active: 0,
             redirecting_this_turn: false,
             redirecting_is_powder: false,
-            damaged_this_turn: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             switched_in_this_turn: false,
