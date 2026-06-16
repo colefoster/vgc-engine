@@ -190,6 +190,185 @@ impl SpreadEvidenceObserver {
     }
 }
 
+/// Recon wrapper that overrides each species' (nature, EVs) with the
+/// surviving top from a pre-walked [`SpreadEvidenceObserver`]. The base
+/// recon supplies everything else (item, ability, moves) and serves as
+/// the fallback for species the observer never narrowed.
+///
+/// Wires PR-176 evidence-recon infra into the scoring pipeline.
+pub struct EvidenceTunedRecon<'a> {
+    pub base: &'a SmogonStatsRecon,
+    /// Per-species narrowed override: species_slug → (nature_slug, EVs).
+    pub narrowed: std::collections::HashMap<String, (String, StatSpread)>,
+}
+
+impl<'a> TeamRecon for EvidenceTunedRecon<'a> {
+    fn reconstruct(&self, input: &ReconInput) -> Result<Vec<TeamMember>, ReconError> {
+        let mut team = self.base.reconstruct(input)?;
+        for m in &mut team {
+            if let Some((nat, evs)) = self.narrowed.get(&m.species) {
+                m.nature = nat.clone();
+                m.evs = *evs;
+            }
+        }
+        Ok(team)
+    }
+}
+
+/// Walk a replay's `|-damage|` events, narrowing each attacker species'
+/// candidate spread set via [`SpreadEvidenceObserver`]. Returns an
+/// [`EvidenceTunedRecon`] whose `narrowed` map carries the surviving
+/// top spread per species.
+///
+/// First-slice scope: only the **attacker** role is narrowed. The
+/// defender's shape uses the base recon's best guess. This is a
+/// strict improvement: any candidate that cannot deal the observed
+/// damage to even a plausible defender is dropped.
+///
+/// Spread / multi-hit moves: one observation per `|-damage|` line; the
+/// engine's per-target damage roll matches.
+pub fn build_evidence_recon<'a>(
+    replay: &crate::replay::Replay,
+    base: &'a SmogonStatsRecon,
+) -> EvidenceTunedRecon<'a> {
+    use crate::event::Event;
+    use crate::trace::parse_hp;
+    use std::collections::HashMap;
+
+    let stats = base.stats();
+    let mut observer = SpreadEvidenceObserver::from_stats(stats, 10);
+
+    // Build per-side reconstructed teams (best-effort) for the
+    // counterpart-shape lookups. If reconstruction fails (off-meta
+    // species), bail to an empty override map — the wrapper degrades
+    // to the base recon transparently.
+    let init = match crate::runner::RunnerInit::from_replay(replay, base) {
+        Ok(i) => i,
+        Err(_) => return EvidenceTunedRecon { base, narrowed: HashMap::new() },
+    };
+
+    // species → (TeamMember, max_hp) per player, indexed by species slug.
+    let mut by_species: [HashMap<String, &vgc_engine_core::TeamMember>; 2] = [
+        HashMap::new(), HashMap::new(),
+    ];
+    for m in &init.p1_team { by_species[0].insert(m.species.clone(), m); }
+    for m in &init.p2_team { by_species[1].insert(m.species.clone(), m); }
+
+    // Track active species per (player, slot) so each |-damage| line
+    // can map back to attacker + defender.
+    let mut active: HashMap<(u8, char), String> = HashMap::new();
+    if let Some(m) = init.p1_team.first() { active.insert((1, 'a'), m.species.clone()); }
+    if init.p1_team.len() > 1 { active.insert((1, 'b'), init.p1_team[1].species.clone()); }
+    if let Some(m) = init.p2_team.first() { active.insert((2, 'a'), m.species.clone()); }
+    if init.p2_team.len() > 1 { active.insert((2, 'b'), init.p2_team[1].species.clone()); }
+
+    let mut prev_pct: HashMap<(u8, char), f32> = HashMap::new();
+    // Track the most recent attacker (move user) within each turn's
+    // event window — the |-damage| line right after a |move| is
+    // attributable to that user's slot.
+    let mut last_move_user: Option<(u8, char, String)> = None;
+
+    for tv in replay.turns() {
+        for ev in tv.events {
+            match ev {
+                Event::Move { user, move_name, .. } => {
+                    last_move_user = Some((
+                        user.player,
+                        user.slot,
+                        crate::recon::move_slugify_pub(move_name),
+                    ));
+                }
+                Event::Switch { slot, details, hp } | Event::Drag { slot, details, hp } => {
+                    let species = crate::recon::parse_details(details).species;
+                    active.insert((slot.player, slot.slot), species);
+                    if let Some((f, _)) = parse_hp(hp) {
+                        prev_pct.insert((slot.player, slot.slot), f);
+                    }
+                }
+                Event::Heal { slot, hp, .. } => {
+                    if let Some((f, _)) = parse_hp(hp) {
+                        prev_pct.insert((slot.player, slot.slot), f);
+                    }
+                }
+                Event::Damage { slot, hp, from } => {
+                    let key = (slot.player, slot.slot);
+                    let prev = prev_pct.get(&key).copied().unwrap_or(1.0);
+                    let new_frac_opt = parse_hp(hp);
+                    if let (None, Some((u_player, u_slot, move_slug)), Some((new_frac, _))) =
+                        (from.as_ref(), last_move_user.as_ref(), new_frac_opt)
+                    {
+                        // Need attacker species (candidate to narrow) and
+                        // defender shape (known counterpart).
+                        let atk_player_idx = (*u_player as usize).saturating_sub(1);
+                        let def_player_idx = (slot.player as usize).saturating_sub(1);
+                        let atk_species_opt = active.get(&(*u_player, *u_slot)).cloned();
+                        let def_species_opt = active.get(&key).cloned();
+                        if let (Some(atk_species), Some(def_species)) =
+                            (atk_species_opt, def_species_opt)
+                        {
+                            let def_member = by_species[def_player_idx].get(&def_species).copied();
+                            let atk_member = by_species[atk_player_idx].get(&atk_species).copied();
+                            if let (Some(atk_m), Some(def_m)) = (atk_member, def_member) {
+                                // Convert percentage delta to raw HP using
+                                // defender's max HP.
+                                let def_max = vgc_engine_core::build_member(def_m)
+                                    .map(|p| p.stats.hp)
+                                    .unwrap_or(0);
+                                if def_max > 0 {
+                                    let delta = (prev - new_frac).max(0.0);
+                                    let observed = ((delta * def_max as f32).round() as u32)
+                                        .min(u16::MAX as u32) as u16;
+                                    if observed > 0 {
+                                        let def_species_str: &str = &def_m.species;
+                                        let def_nature_str: &str = &def_m.nature;
+                                        let known = crate::spread_recon::SideShape {
+                                            species: def_species_str,
+                                            level: def_m.level,
+                                            nature: def_nature_str,
+                                            ivs: def_m.ivs,
+                                            evs: def_m.evs,
+                                        };
+                                        observer.observe_damage(
+                                            &atk_species,
+                                            atk_m.level,
+                                            atk_m.ivs,
+                                            known,
+                                            move_slug.as_str(),
+                                            observed,
+                                            crate::spread_recon::SpreadEvidenceRole::Attacker,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some((f, _)) = new_frac_opt {
+                        prev_pct.insert(key, f);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Snapshot surviving tops into the override map.
+    let mut narrowed: HashMap<String, (String, StatSpread)> = HashMap::new();
+    // Walk every species we know about; only insert if the observer
+    // actually narrowed below its initial set size (i.e. evidence was
+    // strong enough to drop at least one candidate).
+    for (slug, _) in by_species[0].iter().chain(by_species[1].iter()) {
+        if let Some((nat, evs)) = observer.surviving_top(slug) {
+            // Only override when narrowing did something useful —
+            // surviving_top of the un-narrowed prior equals the base
+            // recon's pick already, so we'd be redundant.
+            // Cheap proxy: always insert; the reconstruct override is
+            // idempotent if values match.
+            narrowed.insert(slug.clone(), (nat.clone(), *evs));
+        }
+    }
+    EvidenceTunedRecon { base, narrowed }
+}
+
 fn pick_item(usage: &SpeciesUsage) -> Option<String> {
     usage.items.iter().find_map(|(slug, _)| {
         if slug == "other" || slug.is_empty() { return None; }

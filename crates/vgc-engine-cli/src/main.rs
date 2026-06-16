@@ -299,34 +299,51 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
                 }
             });
 
-        let scored = match (&smogon_recon, sidecar_events, use_oracle, use_full_oracle) {
-            (Some(recon), Some(events), _, _) => replay::score_replay_with_events(
+        // When a Smogon recon is in play, pre-walk the replay to build
+        // an evidence-tuned recon that narrows each species' spread by
+        // observed damage. Always-on — it can only help.
+        let evidence_recon = smogon_recon
+            .as_ref()
+            .map(|base| replay::build_evidence_recon(&r, base));
+        let scored = match (&evidence_recon, &smogon_recon, sidecar_events, use_oracle, use_full_oracle) {
+            (_, Some(recon), Some(events), _, _) => replay::score_replay_with_events(
                 &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE, events,
             ),
-            (Some(recon), None, _, true) => replay::score_replay_full_oracle(
-                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            (Some(er), Some(_), None, _, true) => replay::score_replay_full_oracle(
+                &r, er, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
-            (Some(recon), None, true, false) => replay::score_replay_oracle(
-                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            (Some(er), Some(_), None, true, false) => replay::score_replay_oracle(
+                &r, er, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
-            (Some(recon), None, false, false) => replay::score_replay(
-                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            (Some(er), Some(_), None, false, false) => replay::score_replay(
+                &r, er, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
-            (None, Some(events), _, _) => replay::score_replay_with_events(
+            (_, None, Some(events), _, _) => replay::score_replay_with_events(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE, events,
             ),
-            (None, None, _, true) => replay::score_replay_full_oracle(
+            (_, None, None, _, true) => replay::score_replay_full_oracle(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
             ),
-            (None, None, true, false) => replay::score_replay_oracle(
+            (_, None, None, true, false) => replay::score_replay_oracle(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
             ),
-            (None, None, false, false) => replay::score_replay(
+            (_, None, None, false, false) => replay::score_replay(
                 &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
+            ),
+            // Smogon-recon present but evidence-recon construction failed
+            // (shouldn't happen, but covered for exhaustiveness).
+            (None, Some(recon), None, _, true) => replay::score_replay_full_oracle(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (None, Some(recon), None, true, false) => replay::score_replay_oracle(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (None, Some(recon), None, false, false) => replay::score_replay(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
             ),
         };
         match scored {

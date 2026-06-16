@@ -326,6 +326,12 @@ fn input_for<'a>(
     }
 }
 
+/// Public re-export of the internal move slug normalizer for callers
+/// outside this module (e.g. evidence-recon walking |move| events).
+pub fn move_slugify_pub(s: &str) -> String {
+    move_slugify(s)
+}
+
 fn move_slugify(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
