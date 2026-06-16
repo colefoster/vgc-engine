@@ -351,6 +351,14 @@ fn main() {
     writeln!(f, "    /// cannot select it again on the next turn (Gigaton Hammer,").unwrap();
     writeln!(f, "    /// Blood Moon). Encoded as a per-mon volatile in the move handler.").unwrap();
     writeln!(f, "    pub cannot_use_twice: bool,").unwrap();
+    writeln!(f, "    /// Self-recoil expressed as a fraction of user's max HP, taken").unwrap();
+    writeln!(f, "    /// unconditionally after a successful hit — independent of the").unwrap();
+    writeln!(f, "    /// damage dealt. Steel Beam / Mind Blown / Chloroblast all use").unwrap();
+    writeln!(f, "    /// `maxhp / 2` in PS (`mindBlownRecoil: true` + chloroblast id).").unwrap();
+    writeln!(f, "    /// 0 = no max-HP recoil. Distinct from `recoil_num/den` which").unwrap();
+    writeln!(f, "    /// scales with damage dealt.").unwrap();
+    writeln!(f, "    pub self_max_hp_recoil_num: u8,").unwrap();
+    writeln!(f, "    pub self_max_hp_recoil_den: u8,").unwrap();
     writeln!(f, "    /// PS `drain: [num, den]` numerator (0 if move does not drain).").unwrap();
     writeln!(f, "    /// Heal `round(damage * num / den)` of damage dealt onto the user.").unwrap();
     writeln!(f, "    pub drain_num: u8,").unwrap();
@@ -376,7 +384,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -398,6 +406,13 @@ fn main() {
             m.flags.contains_key("powder"),
             m.flags.contains_key("heal"),
             m.flags.contains_key("cantusetwice"),
+            // PS hardcodes `mindBlownRecoil: true` on Mind Blown and Steel Beam,
+            // and singles out Chloroblast by id in the same `onAfterMove`. All
+            // three apply 1/2 max HP. The @pkmn/dex JSON strips the mindBlownRecoil
+            // field, so we hardcode the three known slugs here. Last reviewed
+            // gen 9 SV (PS data/moves.ts:17890).
+            if matches!(slug.as_str(), "steelbeam" | "mindblown" | "chloroblast") { 1u8 } else { 0u8 },
+            if matches!(slug.as_str(), "steelbeam" | "mindblown" | "chloroblast") { 2u8 } else { 1u8 },
             m.drain.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
             m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
             m.recoil.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),

@@ -57,6 +57,15 @@ mod tests {
         let recover = move_by_slug("recover").unwrap();
         assert!(recover.is_heal);
 
+        // Self-max-HP recoil: Steel Beam, Mind Blown, Chloroblast all take 1/2 max HP.
+        for s in ["steelbeam", "mindblown", "chloroblast"] {
+            let m = move_by_slug(s).unwrap();
+            assert_eq!(m.self_max_hp_recoil_num, 1, "{} num", s);
+            assert_eq!(m.self_max_hp_recoil_den, 2, "{} den", s);
+        }
+        // Tackle takes no max-HP recoil.
+        assert_eq!(move_by_slug("tackle").unwrap().self_max_hp_recoil_num, 0);
+
         // Gigaton Hammer and Blood Moon are the two `cantusetwice` moves.
         assert!(move_by_slug("gigatonhammer").unwrap().cannot_use_twice);
         assert!(move_by_slug("bloodmoon").unwrap().cannot_use_twice);
