@@ -188,7 +188,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Electric immunity + +1 Spe on hit.
 
-**Status**: not implemented.
+**Status**: shipped — PR-110.
 
 ### Volt Absorb / Water Absorb / Earth Eater
 
