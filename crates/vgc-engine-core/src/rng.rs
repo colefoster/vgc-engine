@@ -30,6 +30,12 @@ pub enum RngEvent {
     Range(u32),
     /// Damage-roll bucket 0..=15.
     DamageRoll(u8),
+    /// Damage-roll hint: target HP delta observed in the replay
+    /// `|-damage|` event. The Rng can back-solve the matching 0..=15
+    /// bucket given (`dmg_min`, `dmg_max`) supplied at draw time via
+    /// `damage_roll_hint`. Consumed by `damage_roll_hint` only;
+    /// `damage_roll` ignores it (falls through to its own branch logic).
+    DamageHint(u16),
     /// Percent roll 1..=100.
     PercentRoll(u8),
     /// Crit hit/miss.
@@ -242,6 +248,49 @@ impl Rng {
     /// span can't produce the observation.
     pub fn damage_range_contains(target: u16, dmg_min: u16, dmg_max: u16) -> bool {
         Self::back_solve_damage_bucket(target, dmg_min, dmg_max).is_some()
+    }
+
+    /// Damage roll bucket selected from a replay-observed `target` HP
+    /// delta. On `Oracle` / `OraclePartial` variants, if the next event
+    /// is a `DamageHint(observed)`, consume it and back-solve the
+    /// matching bucket against `(dmg_min, dmg_max)`. On variant
+    /// mismatch (or `Splitmix`), fall through to `damage_roll()`.
+    ///
+    /// Caller responsibility: pass the candidate engine's own damage
+    /// range (via `damage::damage_range`) and the replay's observed
+    /// damage. The Rng picks the closest bucket; if the observation is
+    /// outside the engine's plausible window, falls back to a Splitmix
+    /// draw rather than forcing an out-of-range bucket.
+    pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
+        match self {
+            Rng::Splitmix(_) => self.damage_roll(),
+            Rng::Oracle(state) => {
+                if let Some(RngEvent::DamageHint(target)) = state.peek() {
+                    state.pos += 1;
+                    if let Some(b) = Self::back_solve_damage_bucket(target, dmg_min, dmg_max) {
+                        return b;
+                    }
+                    // Out-of-range hint — degrade to mid-bucket. Strict
+                    // Oracle never falls through to Splitmix, but an
+                    // unsolvable hint is worth surfacing as the safe
+                    // middle (rather than panicking).
+                    return 7;
+                }
+                self.damage_roll()
+            }
+            Rng::OraclePartial { state, fallback } => {
+                if let Some(RngEvent::DamageHint(target)) =
+                    state.pop_if(|e| matches!(e, RngEvent::DamageHint(_)))
+                {
+                    if let Some(b) = Self::back_solve_damage_bucket(target, dmg_min, dmg_max) {
+                        return b;
+                    }
+                    // Out-of-range: fall through to Splitmix.
+                    return (Self::splitmix_step(fallback) & 0xF) as u8;
+                }
+                self.damage_roll()
+            }
+        }
     }
 
     /// Convenience: a damage roll bucket in `0..=15`.
@@ -584,6 +633,44 @@ mod tests {
         assert!(b <= 15);
         // Bucket should land near the middle.
         assert!((6..=9).contains(&b), "expected near mid bucket, got {b}");
+    }
+
+    #[test]
+    fn damage_roll_hint_oracle_back_solves_to_bucket() {
+        // Hint queue: replay observed 92 damage; engine candidate range
+        // 85..=100 → midpoint bucket.
+        let mut r = Rng::oracle(vec![RngEvent::DamageHint(92)]);
+        let b = r.damage_roll_hint(85, 100);
+        assert!(b == 7 || b == 8, "expected mid bucket, got {b}");
+    }
+
+    #[test]
+    fn damage_roll_hint_partial_falls_through_on_mismatch() {
+        // Queue has a Crit; damage_roll_hint should not consume it and
+        // should fall through to a Splitmix bucket.
+        let mut r = Rng::oracle_partial(vec![RngEvent::Crit(true)], 42);
+        let b = r.damage_roll_hint(85, 100);
+        assert!(b < 16);
+        // Crit is still there.
+        assert!(r.crit());
+    }
+
+    #[test]
+    fn damage_roll_hint_oracle_out_of_range_returns_safe_middle() {
+        // Hint says 500 dmg, but engine range is 85..=100 → unsolvable.
+        // Strict Oracle returns bucket 7 (mid) rather than panicking.
+        let mut r = Rng::oracle(vec![RngEvent::DamageHint(500)]);
+        assert_eq!(r.damage_roll_hint(85, 100), 7);
+    }
+
+    #[test]
+    fn damage_roll_hint_splitmix_acts_like_damage_roll() {
+        // Splitmix has no hints to consume; hint method = damage_roll.
+        let mut r1 = Rng::new(123);
+        let mut r2 = Rng::new(123);
+        for _ in 0..20 {
+            assert_eq!(r1.damage_roll(), r2.damage_roll_hint(85, 100));
+        }
     }
 
     #[test]

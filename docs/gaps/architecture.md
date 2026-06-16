@@ -153,7 +153,7 @@ Remaining for full close:
 
 **Why it matters**: This is the headline lever for corpus agreement. PR-66 landed crit back-solve and moved median 8.3 → 12.5. Damage back-solve is the next 10-30 percentage points.
 
-**Status**: partial — PR-164 (back-solve primitive: `Rng::back_solve_damage_bucket(target, dmg_min, dmg_max) -> Option<u8>` returns the 0..=15 bucket index whose linear-interp damage `dmg_min + (dmg_max-dmg_min)*b/15` is closest to the observed `target`; returns `None` if the target is outside `[dmg_min - bucket_w, dmg_max + bucket_w]` (the candidate can't have produced this damage). Also `Rng::damage_range_contains` shim for set-recon plausibility checks). Wiring into a `Rng::OracleDamageHint` variant that consumes `|-damage|` payloads at draw time is the next step. Owner: this PR stream.
+**Status**: partial — PR-164 (back-solve primitive), PR-166 (`RngEvent::DamageHint(u16)` queue variant + `Rng::damage_roll_hint(dmg_min, dmg_max) -> u8` method: when the next event is a hint, consumes it and returns the back-solved bucket; on `OraclePartial` variant mismatch falls through to Splitmix; on `Oracle` with an out-of-range hint, returns safe mid-bucket 7 rather than panicking). Next step: at the damage call site in `battle.rs`, replace `self.rng.damage_roll()` with `self.rng.damage_roll_hint(min, max)` using the per-hit `damage_range`. The replay-side feeder that emits `DamageHint(observed)` events from `|-damage|` lines into `Rng::oracle_partial(events, seed)` lands as a separate replay-crate PR.
 
 ### Set reconnaissance for spreads / abilities / items
 
