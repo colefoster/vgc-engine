@@ -878,24 +878,87 @@ impl Battle {
             return;
         }
 
+        // 2c. Two-turn semi-invulnerable charge moves (Fly / Dig / Dive /
+        //     Bounce / Phantom Force / Shadow Force). PS handler pattern
+        //     (data/moves.ts:fly:5894, dig:3578, dive:3737, bounce:1709,
+        //     phantomforce:13320, shadowforce:16086):
+        //       onTryMove(attacker) {
+        //         if (attacker.removeVolatile(move.id)) return;   // turn 2
+        //         this.add('-prepare', attacker, move.name);
+        //         attacker.addVolatile('twoturnmove', defender);
+        //         return null;                                     // turn 1
+        //       }
+        //     We deduct PP turn 1 (same as PS's runMove order) and skip
+        //     re-deduct turn 2. Bulbapedia:
+        //     <https://bulbapedia.bulbagarden.net/wiki/Semi-invulnerable_turn>.
+        let semi_invuln_code_for = |slug: &str| -> u8 {
+            match slug {
+                "dig" => 1,
+                "dive" => 2,
+                "fly" => 3,
+                "bounce" => 4,
+                "phantomforce" => 5,
+                "shadowforce" => 6,
+                "skydrop" => 7,
+                _ => 0,
+            }
+        };
+        let semi_code = semi_invuln_code_for(m.slug);
+        let mut skip_pp_deduct = false;
+        if semi_code != 0 {
+            let release = attacker.charging_turns == 1
+                && attacker.charging_move_slot == move_slot;
+            if release {
+                // Turn 2: clear state and fall through to normal damage.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                    a.semi_invuln = 0;
+                }
+                skip_pp_deduct = true;
+            } else {
+                // Turn 1: enter semi-invuln, deduct PP, no damage.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = a.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1);
+                    }
+                    a.last_used_move_slot = move_slot;
+                    a.charging_turns = 1;
+                    a.charging_move_slot = move_slot;
+                    a.semi_invuln = semi_code;
+                }
+                return;
+            }
+        }
+
         // 3. PP cost — ticked even on miss / immunity (PS behavior).
         // Also: Choice items lock the holder into this move slot after
         // a successful invocation (PP-consumption suffices).
+        if skip_pp_deduct {
+            // Turn 2 of a semi-invuln move — PP was deducted on turn 1.
+            // Still update `last_used_move_slot` so Encore / Choice item
+            // bookkeeping is consistent.
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                mon.last_used_move_slot = move_slot;
+            }
+        }
         let is_choice = matches!(
             if attacker.item_id == u16::MAX { "" } else { data::ITEMS[attacker.item_id as usize].slug },
             "choiceband" | "choicespecs" | "choicescarf"
         );
-        if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-            if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                *pp = pp.saturating_sub(1);
+        if !skip_pp_deduct {
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1);
+                }
+                if is_choice && mon.locked_move_slot == 255 {
+                    mon.locked_move_slot = move_slot;
+                }
+                // Track the most recent move used — Encore reads this when
+                // it lands on a target. PS sim/pokemon.ts updates lastMove
+                // after PP deduction, regardless of accuracy outcome.
+                mon.last_used_move_slot = move_slot;
             }
-            if is_choice && mon.locked_move_slot == 255 {
-                mon.locked_move_slot = move_slot;
-            }
-            // Track the most recent move used — Encore reads this when
-            // it lands on a target. PS sim/pokemon.ts updates lastMove
-            // after PP deduction, regardless of accuracy outcome.
-            mon.last_used_move_slot = move_slot;
         }
 
         // 4. Status-move dispatch.
@@ -1126,6 +1189,39 @@ impl Battle {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
             };
+
+            // Semi-invulnerable defender: dodge unless the incoming move
+            // is in the per-state hit-through list. PS
+            // `data/moves.ts:fly/dig/dive/bounce/phantomforce/shadowforce`
+            // `condition.onInvulnerability` — returns `false` (dodge)
+            // unless `move.id` is in the exception list:
+            //   Fly / Bounce: gust, twister, skyuppercut, thunder,
+            //                 hurricane, smackdown, thousandarrows
+            //   Dig: earthquake, magnitude, (fissure unmodeled here)
+            //   Dive: surf, whirlpool
+            //   Phantom Force / Shadow Force: nothing hits through.
+            //   Sky Drop: nothing hits through (handled like Fly target).
+            // Gust / Twister BP ×2 vs airborne is `onSourceModifyDamage`;
+            // we land the BP doubling as additive move PRs.
+            if defender.semi_invuln != 0 {
+                let hits_through = match defender.semi_invuln {
+                    // Dig
+                    1 => matches!(m.slug, "earthquake" | "magnitude"),
+                    // Dive
+                    2 => matches!(m.slug, "surf" | "whirlpool"),
+                    // Fly / Bounce
+                    3 | 4 => matches!(
+                        m.slug,
+                        "gust" | "twister" | "skyuppercut" | "thunder"
+                            | "hurricane" | "smackdown" | "thousandarrows"
+                    ),
+                    // Phantom Force, Shadow Force, Sky Drop: nothing hits.
+                    _ => false,
+                };
+                if !hits_through {
+                    continue;
+                }
+            }
 
             // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
             // accuracy stage minus defender's evasion stage as a combined
@@ -9671,5 +9767,83 @@ mod tests {
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
         );
         assert_eq!(b.p2.team[1].current_hp, clef_max, "Magic Guard blocks SR");
+    }
+
+    #[test]
+    fn fly_charge_then_release_skips_pp_on_release() {
+        // Turn 1: Salamence uses Fly — enters semi-invuln, deducts 1 PP.
+        // Turn 2: Salamence re-uses Fly — releases, hits, no further PP.
+        let p1_json = r#"[
+            {"species":"salamence","level":50,"ability":"intimidate","item":"lifeorb","nature":"jolly","moves":["fly","dragonclaw","protect","aerialace"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        let snorlax_hp = b.p2.team[0].current_hp;
+        // Turn 1: Fly.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "PP deducted on Fly turn 1");
+        assert_eq!(b.p1.team[0].semi_invuln, 3, "Fly sets semi_invuln=3");
+        assert_eq!(b.p1.team[0].charging_turns, 1);
+        assert_eq!(b.p2.team[0].current_hp, snorlax_hp, "Snorlax unhurt on charge turn");
+        // Turn 2: Fly release.
+        let pp_mid = b.p1.team[0].pp[0];
+        let snorlax_hp_mid = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_mid, "no PP deduct on Fly release turn");
+        assert_eq!(b.p1.team[0].semi_invuln, 0, "semi_invuln cleared on release");
+        assert_eq!(b.p1.team[0].charging_turns, 0);
+        assert!(b.p2.team[0].current_hp < snorlax_hp_mid, "Fly hits on release");
+    }
+
+    #[test]
+    fn fly_dodges_normal_attack_during_charge() {
+        // Salamence Fly turn 1 (charging), Snorlax Body Slam misses.
+        let p1_json = r#"[
+            {"species":"salamence","level":50,"ability":"intimidate","item":"lifeorb","nature":"jolly","moves":["fly","dragonclaw","protect","aerialace"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let mence_hp = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, mence_hp, "Body Slam dodged by Fly");
+    }
+
+    #[test]
+    fn dig_is_hit_through_by_earthquake() {
+        // Garchomp Dig turn 1, partner Earthquake. EQ hits Garchomp through Dig.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dig","dragonclaw","protect","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"landorus_therian","level":50,"ability":"intimidate","nature":"jolly","moves":["earthquake","stoneedge","uturn","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let chomp_hp = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p1.team[0].current_hp < chomp_hp, "EQ hits through Dig");
+        assert_eq!(b.p1.team[0].semi_invuln, 1, "Dig state still set (charge turn)");
     }
 }

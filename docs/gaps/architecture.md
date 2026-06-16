@@ -33,11 +33,10 @@ Remaining slices:
 
 **Why it matters**: Blocks all two-turn moves (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy, Dig/Dive/Fly/Bounce/Phantom Force/Shadow Force), Hyper Beam recharge family, Gigaton Hammer / Blood Moon lockout, lock-in moves.
 
-**Status**: partial — slice 1 of 4 — PR-150 (fields: `semi_invuln: u8`, `charging_turns: u8`, `charging_move_slot: u8`, `must_recharge: bool`, `lockin_turns: u8`, `lockin_move_slot: u8`; cleared on switch-out).
+**Status**: partial — slice 2 of 4 — PR-150 (fields), PR-159 (semi-invuln semi-turn moves: Fly / Dig / Dive / Bounce / Phantom Force / Shadow Force / Sky Drop now charge on turn 1 (PP deducted, `semi_invuln` + `charging_turns` set, damage skipped), release on turn 2 when the player re-issues the same slot (no PP re-deduct, state cleared, damage proceeds). Incoming attacks dodge a semi-invuln defender unless the move is in the PS per-state hit-through list: Dig vs Earthquake/Magnitude, Dive vs Surf/Whirlpool, Fly/Bounce vs Gust/Twister/Sky Uppercut/Thunder/Hurricane/Smack Down/Thousand Arrows; Phantom/Shadow Force / Sky Drop dodge everything).
 
 Remaining slices:
-- slice 2: charging-move dispatch — `onTryMove` hook that sets `charging_turns = 1` + skips damage on turn 1, then re-issues the same move on turn 2 (Solar Beam / Sky Attack / Meteor Beam).
-- slice 3: semi-invuln gates — incoming targeting filters by `semi_invuln`, with Earthquake hitting Dig and Surf hitting Dive at ×2 BP per PS.
+- slice 3: charging-move dispatch — `onTryMove` hook that sets `charging_turns = 1` + skips damage on turn 1 with NO semi-invuln state (Solar Beam / Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor Beam), plus Power Herb skip + Sun no-charge on solar moves.
 - slice 4: recharge / lock-in (Hyper Beam family, Outrage / Petal Dance / Thrash with confusion payload, Gigaton Hammer / Blood Moon — last one already half-shipped via `cannot_use_twice`).
 
 ## Pipeline / ordering
