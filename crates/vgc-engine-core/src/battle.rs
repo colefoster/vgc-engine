@@ -1647,6 +1647,22 @@ fn apply_secondary_effect(
             }
         }
     }
+    // Dire Claw — 50% chance to inflict a random non-volatile status
+    // sampled uniformly from {psn, par, slp}. PS data/moves.ts:direclaw
+    // `secondary: { chance: 50, onHit() { sample(['psn','par','slp']) } }`.
+    // Two RNG draws: gate (percent_1_100) then status pick (range(3)).
+    // Type / status immunity gates handled inside `try_set_status`.
+    if move_slug == "direclaw" {
+        if rng.percent_1_100() <= 50 {
+            let pick = rng.range(3);
+            let status = match pick {
+                0 => Status::Poison,
+                1 => Status::Paralysis,
+                _ => Status::Sleep,
+            };
+            battle.try_set_status(target_side, target_slot, status);
+        }
+    }
 }
 
 
@@ -5814,6 +5830,57 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(!matches!(b.p1.team[0].status, Status::Paralysis));
+    }
+
+    #[test]
+    fn dire_claw_inflicts_one_of_three_statuses_about_half_the_time() {
+        // PS: 50% chance to set psn/par/slp uniformly. Over 300 trials
+        // the total status-inflict rate should land near 50%, and the
+        // distribution across the three statuses should be roughly
+        // even.
+        let p1_json = r#"[
+            {"species":"sneasler","level":50,"ability":"unburden","item":"","nature":"jolly","moves":["direclaw","closecombat","throatchop","detect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        // Sneasler isn't in the species table yet — fall back to a
+        // proxy attacker with a Dire-Claw-known mon. Sample uses any
+        // species; the move data carries the secondary.
+        let p1_alt = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["direclaw","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json)
+            .or_else(|_| TeamBuilder::from_json(p1_alt))
+            .unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 300u32;
+        let mut psn = 0u32;
+        let mut par = 0u32;
+        let mut slp = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            match b.p2.team[0].status {
+                Status::Poison => psn += 1,
+                Status::Paralysis => par += 1,
+                Status::Sleep => slp += 1,
+                _ => {}
+            }
+        }
+        let any_status = psn + par + slp;
+        let rate = any_status * 100 / trials;
+        assert!(
+            rate >= 35 && rate <= 65,
+            "Dire Claw status-inflict rate {rate}% (expected ≈50%) — psn={psn} par={par} slp={slp}"
+        );
+        // Each individual status should fire at least a handful of times
+        // — uniformity sanity check (1/6 per status, ~50 expected, demand >5).
+        assert!(psn > 5 && par > 5 && slp > 5,
+                "Dire Claw distribution too skewed: psn={psn} par={par} slp={slp}");
     }
 
     #[test]
