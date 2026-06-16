@@ -202,6 +202,23 @@ pub struct Pokemon {
     /// other slot dealt the damage). Read by `damage.rs` for
     /// Avalanche / Revenge. Cleared at end of step.
     pub damaged_this_turn: bool,
+    /// Encoded `(side_byte, slot_byte)` of the most recent attacker
+    /// that landed damaging-move HP damage on this mon this turn.
+    /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
+    /// 1 = P2. Read by Stamina / Anger Point / Cotton Down to direct
+    /// counter-effects at the actual attacker; Counter / Mirror Coat
+    /// / Metal Burst will also consume this. Cleared at end of step
+    /// alongside `damaged_this_turn`. PS analog: the last entry of
+    /// `pokemon.attackedBy` filtered to the current turn.
+    pub last_attacker: (u8, u8),
+    /// Move category of the last damaging hit (0 = physical, 1 = special,
+    /// 255 = none). Used by Counter (physical-only) and Mirror Coat
+    /// (special-only) when those moves land. Cleared at end of step.
+    pub last_attacker_category: u8,
+    /// HP damage dealt by the last attacker this turn (0 = none).
+    /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
+    /// calculation. Cleared at end of step.
+    pub last_damage_taken: u16,
     /// Toxic damage counter (1-based). 1 on the turn Toxic is applied;
     /// increments by 1 each end of turn (gen 5+ formula). Damage per
     /// turn = max_hp * counter / 16. Reset to 0 when status clears or
@@ -472,6 +489,9 @@ mod tests {
             pending_self_switch: false,
             ability_suppressed: false,
             crit_stage_volatile: 0,
+            last_attacker: (255, 255),
+            last_attacker_category: 255,
+            last_damage_taken: 0,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

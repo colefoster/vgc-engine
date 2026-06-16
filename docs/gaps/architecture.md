@@ -82,7 +82,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Counter, Mirror Coat, Metal Burst, Avalanche, Revenge, Anger Point, Steam Engine, Cotton Down, Wind Power, Berserk, Justified, Rattled, Stamina, Anger Shell — all read different facets of "what hit me this turn".
 
-**Status**: partial — PR-89 added a single `attacked_by_target_this_turn: bool` bool used by Avalanche / Revenge. PR-54 (Stamina) fires on any damaging hit without source info.
+**Status**: shipped — PR-146 (`Pokemon::last_attacker: (u8, u8)` side+slot tuple, `last_attacker_category: u8`, `last_damage_taken: u16`; populated at the damage-apply site; cleared at end of turn and on switch-out). `damaged_this_turn: bool` kept as a fast-path predicate for existing consumers. Counter / Mirror Coat / Metal Burst / Stamina / Anger Point / Cotton Down etc. can now build directly off the typed source.
 
 ## Data model
 

@@ -231,6 +231,9 @@ impl Battle {
                 m.redirecting_this_turn = false;
                 m.redirecting_is_powder = false;
                 m.damaged_this_turn = false;
+                m.last_attacker = (255, 255);
+                m.last_attacker_category = 255;
+                m.last_damage_taken = 0;
                 m.pending_self_switch = false;
             }
         }
@@ -472,6 +475,9 @@ impl Battle {
             incoming.redirecting_this_turn = false;
             incoming.redirecting_is_powder = false;
             incoming.damaged_this_turn = false;
+            incoming.last_attacker = (255, 255);
+            incoming.last_attacker_category = 255;
+            incoming.last_damage_taken = 0;
             incoming.is_protected_this_turn = false;
             incoming.stall_counter = 0;
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
@@ -1491,6 +1497,13 @@ impl Battle {
                     // moves never go through this branch (status path).
                     if effective_dmg > 0 && tside != actor_side {
                         t.damaged_this_turn = true;
+                        // Record attacker for Counter / Mirror Coat /
+                        // Stamina / Anger Point / Cotton Down /
+                        // Berserk etc. Side byte: 0=P1, 1=P2.
+                        let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
+                        t.last_attacker = (aside_byte, actor_slot as u8);
+                        t.last_attacker_category = m.category;
+                        t.last_damage_taken = effective_dmg;
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
@@ -8467,6 +8480,13 @@ mod tests {
         );
         assert!(b.p1.team[0].damaged_this_turn,
                 "Snorlax should be flagged as damaged after Garchomp's hit");
+        // Per-source attribution: attacker should be P2 / slot 0.
+        assert_eq!(b.p1.team[0].last_attacker, (1, 0),
+                   "last_attacker should record (P2, slot 0)");
+        assert_eq!(b.p1.team[0].last_attacker_category, 0,
+                   "Dragon Claw is physical (category 0)");
+        assert!(b.p1.team[0].last_damage_taken > 0,
+                "last_damage_taken should be recorded > 0");
     }
 
     #[test]
