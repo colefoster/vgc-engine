@@ -282,3 +282,30 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 }
+
+/// Defender ability `onDamagingHit` — runs after a damaging move has
+/// connected with the target and dealt > 0 HP of damage. PS
+/// `sim/battle-actions.ts:1142` fires `runEvent('DamagingHit', ...)`
+/// only on targets that actually took numeric damage.
+///
+/// Caller is responsible for the gate: target must be alive after
+/// damage and the hit must not have been absorbed by a Substitute
+/// (PS treats sub-absorbed hits as not reaching the holder, so
+/// Stamina / Rough Skin / Iron Barbs etc. don't fire).
+pub fn on_damaging_hit(battle: &mut Battle, target_side: SideRef, target_slot: u8) {
+    let slug = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) if m.is_alive() => ability_slug(m.ability_id),
+        _ => return,
+    };
+    // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
+    // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
+    // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
+    // list, so Mold Breaker does NOT bypass it (verified empty `flags: {}`
+    // on the handler). Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
+    if slug == "stamina" {
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6);
+        }
+    }
+}

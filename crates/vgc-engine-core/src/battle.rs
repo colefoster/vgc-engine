@@ -771,6 +771,14 @@ impl Battle {
             // above), so their secondaries fire normally.
             let alive_post = self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive());
+            // Defender ability `onDamagingHit` (PS step before secondary
+            // effects). Runs only when the hit actually reached the
+            // mon — sub-absorbed hits skipped. Currently dispatches to
+            // Stamina (+1 Def); Rough Skin / Iron Barbs / Static / etc.
+            // land in their own PRs.
+            if alive_post && !hit_sub && effective_dmg > 0 {
+                crate::ability::on_damaging_hit(self, tside, tslot);
+            }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
             // `data/abilities.ts:sheerforce` `onModifyMove` clears
@@ -4484,5 +4492,53 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snor_before, "Earth Power hit landed");
         assert_eq!(b.p1.team[0].current_hp, nido_before,
                    "Sheer Force should skip Life Orb recoil on a boosted move");
+    }
+
+    #[test]
+    fn stamina_raises_def_when_hit_by_damaging_move() {
+        // Mudsdale @ Stamina: every damaging hit gives +1 Def. PS
+        // `data/abilities.ts:stamina` onDamagingHit boosts {def: 1}
+        // unconditionally on the holder. Sub-absorbed hits don't fire it
+        // (the holder didn't take damage); status moves don't fire it
+        // (no damaging hit).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["dragonclaw","earthquake","rockslide","crunch"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"mudsdale","level":50,"ability":"stamina","item":"leftovers","nature":"impish","moves":["earthquake","bodypress","highhorsepower","rest"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[1], 0);
+        let mud_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < mud_full, "Dragon Claw hit Mudsdale");
+        assert_eq!(b.p2.team[0].boosts[1], 1, "Stamina should grant +1 Def");
+    }
+
+    #[test]
+    fn stamina_does_not_proc_on_status_move() {
+        // Will-O-Wisp is non-damaging — Stamina's onDamagingHit gate
+        // means no Def boost. (Burn is also resisted on Mudsdale-Ground
+        // type but Will-O-Wisp still lands status; verify Def untouched.)
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["willowisp","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"mudsdale","level":50,"ability":"stamina","item":"leftovers","nature":"impish","moves":["earthquake","bodypress","highhorsepower","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[1], 0,
+                   "Status move must not trigger Stamina");
     }
 }
