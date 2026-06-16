@@ -1931,6 +1931,48 @@ impl Battle {
                 if !self.rolled_accuracy_passed(m) { return; }
                 self.apply_status_to_opposing(actor_side, Status::Poison);
             }
+            "partingshot" => {
+                // Parting Shot — PS data/moves.ts:partingshot:13171.
+                // Status move with `onHit: this.boost({atk:-1,spa:-1},
+                // target, source)` followed by `selfSwitch: true`. If
+                // the boost call returns success on at least one stat,
+                // the self-switch fires; otherwise PS deletes the
+                // selfSwitch (Mirror Armor edge — not modelled). We
+                // approximate "succeeded" as "the user is still alive
+                // AND at least one alive opposing target exists" — the
+                // intersection of PS's failure modes (no target, no
+                // valid boost, no bench) collapses to that predicate
+                // for top-50 corpus replays. Drops Defiant /
+                // Competitive react via `react_to_opposing_stat_drop`,
+                // shared with Intimidate. accuracy 100 — gate on the
+                // standard accuracy roll. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)>.
+                if !self.rolled_accuracy_passed(m) { return; }
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                let mut dropped_any = false;
+                for slot in 0..n {
+                    let alive = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.is_alive());
+                    if !alive { continue; }
+                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                        t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
+                        t.boosts[2] = (t.boosts[2] - 1).clamp(-6, 6);
+                    }
+                    crate::ability::react_to_opposing_stat_drop(self, opp, slot);
+                    dropped_any = true;
+                    // PS targets a single mon ("normal"); pick the first
+                    // alive slot. Doubles target-picker refinement
+                    // deferred until Choice::Move's `target` field is
+                    // threaded into resolve_status_move.
+                    break;
+                }
+                if dropped_any && self.has_eligible_bench(actor_side) {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.pending_self_switch = true;
+                    }
+                }
+            }
             "teleport" => {
                 // Teleport — priority -6 selfSwitch. PS
                 // `data/moves.ts:teleport` `onTry` returns
@@ -7539,5 +7581,84 @@ mod tests {
         assert!(b.p2.team[0].current_hp < pika_hp, "Flip Turn dealt damage");
         assert_eq!(b.p1.active[0], 0, "Greninja stays in (no bench)");
         assert!(!b.p1.team[0].pending_self_switch);
+    }
+
+    #[test]
+    fn parting_shot_drops_and_switches() {
+        // Singles: Incineroar Parting Shot vs Pikachu → Pika -1/-1
+        // boosts; Incineroar swaps to Pelipper on bench.
+        let p1 = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["partingshot","knockoff","flareblitz","fakeout"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"vitalspirit","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Intimidate dropped Atk to -1 on switch-in; Parting Shot adds -1 → -2.
+        assert_eq!(b.p2.team[0].boosts[0], -2, "Pikachu -1 Atk after Intimidate base");
+        assert_eq!(b.p2.team[0].boosts[2], -1, "Pikachu -1 SpA");
+        assert_eq!(b.p1.active[0], 1, "Pelipper swapped in");
+    }
+
+    #[test]
+    fn parting_shot_no_bench_drops_only() {
+        // Solo Incineroar → boosts land but no replacement → user stays.
+        let p1 = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["partingshot","knockoff","flareblitz","fakeout"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"vitalspirit","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Vital Spirit on Pikachu — no rebound. Intimidate baseline -1
+        // from Incineroar lead-in, then Parting Shot adds another -1.
+        assert_eq!(b.p2.team[0].boosts[0], -2);
+        assert_eq!(b.p2.team[0].boosts[2], -1);
+        assert_eq!(b.p1.active[0], 0, "Incineroar still in");
+    }
+
+    #[test]
+    fn parting_shot_triggers_defiant_rebound() {
+        // Drops land on a Defiant target → +2 Atk rebound.
+        let p1 = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["partingshot","knockoff","flareblitz","fakeout"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        // Bisharp has Defiant in dex.
+        let p2 = r#"[
+            {"species":"bisharp","level":50,"ability":"defiant","nature":"adamant","moves":["knockoff","ironhead","suckerpunch","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Intimidate on Incineroar switch-in already dropped Bisharp's
+        // atk by 1, which Defiant rebounds (+2). After the step, Parting
+        // Shot then drops Atk again (-1) and SpA (-1) and triggers
+        // another +2 atk rebound: total atk stage = -1 + 2 - 1 + 2 = +2.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 2, "Bisharp Defiant rebound stacks");
+        assert_eq!(b.p2.team[0].boosts[2], -1, "SpA -1 still landed");
     }
 }
