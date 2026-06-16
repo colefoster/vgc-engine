@@ -701,6 +701,33 @@ impl Battle {
             }
         }
 
+        // 1b. Gigaton Hammer / Blood Moon — `flags: { cantusetwice: 1 }`.
+        // PS sim/battle.ts:1692 disables the move at choice-selection
+        // time when the user's lastMove id matches the slot. We model
+        // this as a resolve-time failure (PP still ticks, matching PS
+        // semantics for a move that "fails"). `last_used_move_slot`
+        // is set in PP-deduct below, cleared on switch-out, so it
+        // exactly tracks "did this mon use this same slot last turn?"
+        // PS source: data/moves.ts:gigatonhammer (line 6589),
+        //            data/moves.ts:bloodmoon (line 1528).
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gigaton_Hammer_(move)>
+        //             <https://bulbapedia.bulbagarden.net/wiki/Blood_Moon_(move)>
+        if matches!(m.slug, "gigatonhammer" | "bloodmoon")
+            && attacker.last_used_move_slot == move_slot
+        {
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1);
+                }
+                // Set last_used_move_slot to 255 so a third attempt
+                // succeeds — PS clears the volatile on every other
+                // turn (the move becomes usable again every other
+                // turn whether the user actually used it or not).
+                mon.last_used_move_slot = 255;
+            }
+            return;
+        }
+
         // 2. Fake Out: fails unless attacker has been on the field 0 turns
         //    (i.e. this is its first action since switch-in). PS marks
         //    this with the 'fakeout' move's onTry checking activeTurns.
@@ -7881,6 +7908,48 @@ mod tests {
         // 2 × (35 BP @ min roll). Empirically this is well above the
         // pure single-hit floor. We just verify nonzero and consistent.
         assert!(dmg >= 1);
+    }
+
+    #[test]
+    fn gigaton_hammer_blocks_consecutive_use() {
+        // PS data/moves.ts:gigatonhammer carries `flags: { cantusetwice: 1 }`.
+        // Sim/battle.ts:1692 disables the move at choice time if
+        // lastMove?.id matches it. We model as resolve-time fail; a
+        // second consecutive Gigaton Hammer should land zero damage,
+        // and a third should land normal damage.
+        let p1_json = r#"[
+            {"species":"tinkaton","level":50,"ability":"moldbreaker","item":"","nature":"adamant","moves":["gigatonhammer","playrough","encore","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // T1: Gigaton Hammer lands.
+        let hp0 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg1 = hp0 - b.p2.team[0].current_hp;
+        assert!(dmg1 > 0, "T1 Gigaton Hammer should land damage");
+        // T2: Second Gigaton Hammer fails — no damage to defender.
+        let hp1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg2 = hp1 - b.p2.team[0].current_hp;
+        assert_eq!(dmg2, 0, "T2 consecutive Gigaton Hammer should fail");
+        // T3: Should be usable again (skipping a turn cleared the lock).
+        let hp2 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg3 = hp2 - b.p2.team[0].current_hp;
+        assert!(dmg3 > 0, "T3 Gigaton Hammer should land again");
     }
 
     #[test]
