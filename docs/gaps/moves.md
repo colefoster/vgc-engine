@@ -200,7 +200,7 @@ Knock Off shipped (PR-17). Trick / Switcheroo / Bestow — see systems.md (item 
 
 **Depends on**: Species weight data in the build dump.
 
-**Status**: not implemented.
+**Status**: shipped — PR-105 (weight_hg added to SpeciesDef; Heavy Metal / Light Metal / Float Stone multipliers deferred).
 
 ### Gyro Ball / Electro Ball
 
