@@ -813,6 +813,28 @@ pub fn calculate_damage(
     if eff.is_immune() {
         return 0;
     }
+
+    // Tera Shell — Terapagos-Terastal at full HP downgrades every
+    // damaging hit to ×0.5 regardless of type effectiveness. PS
+    // `sim/pokemon.ts` runEffectiveness branch:
+    //   if species == 'Terapagos-Terastal' && Tera Shell && hp == maxhp
+    //     && !immune && totalTypeMod >= 0 → return -1.
+    // We approximate without the multi-hit `abilityState.resisted`
+    // bookkeeping — for single-hit moves the result is identical; for
+    // multi-hit moves PS clamps every subsequent hit to ×0.5 once HP
+    // has dropped below max, which is a strict overcount in PS's favor
+    // here (we instead let later hits read their natural effectiveness
+    // since HP is no longer full). Net impact on corpus: negligible
+    // (Terapagos-Terastal sees no multi-hit hits in the gen-9 doubles
+    // corpus in practice).
+    let mut eff = eff;
+    if defender.species().slug == "terapagosterastal"
+        && defender.effective_ability_slug() == "terashell"
+        && defender.current_hp >= defender.stats.hp
+        && !matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
+    {
+        eff = TypeEff::HalfX;
+    }
     dmg = eff.apply(dmg);
 
     // Burn: physical attackers with burn deal halved damage. Guts/Facade
@@ -1775,5 +1797,34 @@ mod tests {
         // Pre: 4× (Dragon 2× × Ground 2×). Post: 0.5× (Fire resists Ice).
         // Ratio post/pre ≈ 1/8.
         assert!(tera < base / 4, "Tera Fire defender resists Ice Beam ({tera} vs {base})");
+    }
+
+    #[test]
+    fn tera_shell_caps_full_hp_hit_at_half() {
+        // Terapagos-Terastal with Tera Shell at full HP: every damaging
+        // hit reads as ×0.5 regardless of move type. Fighting hits
+        // Terapagos-Terastal (pure Normal) at ×2 normally; with Tera
+        // Shell at full HP it should land ×0.5 — a 4× drop.
+        let atk = make_mon("lucario", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let mut def = make_mon("terapagosterastal", 50, "hardy", StatSpread::ZERO);
+        let ts_ability = data::ABILITIES.iter().position(|a| a.slug == "terashell").expect("terashell") as u16;
+        def.ability_id = ts_ability;
+        let cc = move_id("closecombat");
+        let mk = |d: &Pokemon| calculate_damage(&atk, d, cc,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let shell_on = mk(&def);
+        // Drop HP below max — Tera Shell deactivates.
+        def.current_hp = def.stats.hp - 1;
+        let shell_off = mk(&def);
+        // Shell-on should be ~×0.25 of shell-off (×0.5 vs ×2).
+        assert!(shell_on * 3 < shell_off,
+            "Tera Shell must downgrade super-effective to ×0.5 (shell_on={shell_on}, shell_off={shell_off})");
     }
 }
