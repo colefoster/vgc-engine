@@ -212,7 +212,7 @@ Knock Off shipped (PR-17). Trick / Switcheroo / Bestow — see systems.md (item 
 
 **What it is**: BP from target weight: ≥200kg → 120; ≥100kg → 100; ≥50kg → 80; ≥25kg → 60; ≥10kg → 40; <10kg → 20.
 
-**Status**: not implemented.
+**Status**: shipped — PR-106.
 
 ### Power Trip / Stored Power
 
