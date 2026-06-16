@@ -927,8 +927,6 @@ mod tests {
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,
-            redirecting_this_turn: false,
-            redirecting_is_powder: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             substitute_hp: 0,

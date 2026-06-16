@@ -395,7 +395,6 @@ mod tests {
                     boosts: [0; 7], fainted: false,
                     stall_counter: 0, used_stall_this_turn: false,
                     turns_active: 0,
-                    redirecting_this_turn: false, redirecting_is_powder: false,
                     toxic_counter: 0, locked_move_slot: 255,
                     substitute_hp: 0, sleep_turns: 0,
                     last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,

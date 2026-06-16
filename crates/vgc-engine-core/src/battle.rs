@@ -299,8 +299,7 @@ impl Battle {
                 m.used_stall_this_turn = false;
                 m.set_flinched(false);
                 m.set_helping_handed(false);
-                m.redirecting_this_turn = false;
-                m.redirecting_is_powder = false;
+                m.set_redirecting(false, false);
                 m.set_damaged_this_turn(false);
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
@@ -568,8 +567,7 @@ impl Battle {
             incoming.turns_active = 0;
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
-            incoming.redirecting_this_turn = false;
-            incoming.redirecting_is_powder = false;
+            incoming.set_redirecting(false, false);
             incoming.set_damaged_this_turn(false);
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
@@ -1141,8 +1139,8 @@ impl Battle {
                 let mut found_powder = false;
                 for slot in 0..n {
                     if let Some(p) = self.side(opp).active_mon(slot as usize) {
-                        if p.is_alive() && p.redirecting_this_turn {
-                            if p.redirecting_is_powder {
+                        if p.is_alive() && p.redirecting_this_turn() {
+                            if p.redirecting_is_powder() {
                                 redirector = Some(slot);
                                 found_powder = true;
                                 break;
@@ -2592,8 +2590,7 @@ impl Battle {
                 let is_powder = m.slug == "ragepowder";
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() {
-                        a.redirecting_this_turn = true;
-                        a.redirecting_is_powder = is_powder;
+                        a.set_redirecting(true, is_powder);
                     }
                 }
             }
@@ -9137,7 +9134,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         assert!(
-            !b.p1.team[0].redirecting_this_turn,
+            !b.p1.team[0].redirecting_this_turn(),
             "Rage Powder must not set the volatile in singles"
         );
         // Amoonguss took damage from Crunch as the only target.
