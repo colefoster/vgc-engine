@@ -17,7 +17,7 @@ fn print_usage() {
            load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
            replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
            score <replay.json>        Run the engine against a replay and print per-turn agreement.\n\
-           score-corpus <dir> [N]     Score every replay JSON under <dir> (recursive); optional cap N.\n\
+           score-corpus <dir> [N] [--oracle]   Score every replay JSON under <dir> (recursive); optional cap N. --oracle replays PS's crit outcomes via Rng::oracle_partial.\n\
            help                      This message.\n"
     );
 }
@@ -182,17 +182,31 @@ fn cmd_score(args: &[String]) -> ExitCode {
 }
 
 fn cmd_score_corpus(args: &[String]) -> ExitCode {
-    let (dir, limit) = match args {
-        [d] => (d.as_str(), usize::MAX),
+    // Optional `--oracle` flag (in any position) enables the OracleRng
+    // path: per-replay Crit events are extracted via
+    // `replay::build_crit_oracle_for_replay` and fed into the engine
+    // via `Rng::oracle_partial`. Falls back to Splitmix for un-recorded
+    // draws (accuracy, secondaries, range).
+    let mut positional: Vec<&str> = Vec::with_capacity(args.len());
+    let mut use_oracle = false;
+    for a in args {
+        if a == "--oracle" {
+            use_oracle = true;
+        } else {
+            positional.push(a.as_str());
+        }
+    }
+    let (dir, limit) = match positional.as_slice() {
+        [d] => (*d, usize::MAX),
         [d, n] => match n.parse::<usize>() {
-            Ok(k) => (d.as_str(), k),
+            Ok(k) => (*d, k),
             Err(_) => {
                 eprintln!("score-corpus: <N> must be a positive integer");
                 return ExitCode::from(2);
             }
         },
         _ => {
-            eprintln!("score-corpus: expected <dir> [N]");
+            eprintln!("score-corpus: expected <dir> [N] [--oracle]");
             return ExitCode::from(2);
         }
     };
@@ -227,12 +241,22 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             Ok(r) => r,
             Err(_) => { parse_failed += 1; continue; }
         };
-        match replay::score_replay(
-            &r,
-            &replay::CanonicalDefault,
-            0xC0FFEE_DEADBEEF,
-            replay::DEFAULT_HP_TOLERANCE,
-        ) {
+        let scored = if use_oracle {
+            replay::score_replay_oracle(
+                &r,
+                &replay::CanonicalDefault,
+                0xC0FFEE_DEADBEEF,
+                replay::DEFAULT_HP_TOLERANCE,
+            )
+        } else {
+            replay::score_replay(
+                &r,
+                &replay::CanonicalDefault,
+                0xC0FFEE_DEADBEEF,
+                replay::DEFAULT_HP_TOLERANCE,
+            )
+        };
+        match scored {
             Ok(s) if !s.per_turn.is_empty() => {
                 total_turns += s.per_turn.len();
                 hp_div += s.hp_diverged_turns();

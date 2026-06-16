@@ -122,6 +122,33 @@ pub fn score_replay(
     seed: u64,
     tolerance: f32,
 ) -> Result<ReplayScore, RunnerError> {
+    score_replay_inner(replay, recon, seed, tolerance, false)
+}
+
+/// Like `score_replay` but uses the OracleRng path: extracts
+/// `RngEvent`s from the replay (`build_crit_oracle_for_replay`) and
+/// feeds them into the engine via `Rng::oracle_partial`. Un-recorded
+/// draws (accuracy, secondaries, range, tiebreak) fall back to the
+/// Splitmix stream seeded from `seed`.
+///
+/// Phase-2 scope: the recorded channel is **crit only**. Damage-roll
+/// back-solving and percent extraction come in later PRs.
+pub fn score_replay_oracle(
+    replay: &Replay,
+    recon: &impl TeamRecon,
+    seed: u64,
+    tolerance: f32,
+) -> Result<ReplayScore, RunnerError> {
+    score_replay_inner(replay, recon, seed, tolerance, true)
+}
+
+fn score_replay_inner(
+    replay: &Replay,
+    recon: &impl TeamRecon,
+    seed: u64,
+    tolerance: f32,
+    use_oracle: bool,
+) -> Result<ReplayScore, RunnerError> {
     let ex_init = RunnerInit::from_replay(replay, recon)?;
     let active_count = match ex_init.format {
         Format::Singles => 1,
@@ -130,7 +157,14 @@ pub fn score_replay(
     let mut ex = ChoiceExtractor::new(&ex_init);
     // Build a second init for the engine — `into_battle` consumes the
     // owner, and `ex` still needs to hold its borrow.
-    let mut b = RunnerInit::from_replay(replay, recon)?.into_battle(seed)?;
+    let init2 = RunnerInit::from_replay(replay, recon)?;
+    let mut b = if use_oracle {
+        let events = crate::oracle::build_crit_oracle_for_replay(replay);
+        let rng = vgc_engine_core::rng::Rng::oracle_partial(events, seed);
+        init2.into_battle_with_rng(seed, rng)?
+    } else {
+        init2.into_battle(seed)?
+    };
 
     let turns = replay.turns();
     let mut per_turn: Vec<TurnScore> = Vec::new();

@@ -103,6 +103,23 @@ impl RunnerInit {
         let cfg = BattleConfig { format: self.format, seed };
         Ok(Battle::new(cfg, p1?, p2?))
     }
+
+    /// Instantiate a `Battle` with a caller-supplied RNG. The oracle
+    /// path of `score_replay` passes `Rng::oracle_partial(events,
+    /// fallback_seed)` here so the engine consumes recorded crit /
+    /// damage-roll / accuracy outcomes from a replay and falls back
+    /// to Splitmix for un-recorded draws. `seed` is kept on
+    /// `BattleConfig` for reporting; the actual draws come from `rng`.
+    pub fn into_battle_with_rng(
+        self,
+        seed: u64,
+        rng: vgc_engine_core::rng::Rng,
+    ) -> Result<Battle, RunnerError> {
+        let p1: Result<Vec<_>, _> = self.p1_team.iter().map(build_member).collect();
+        let p2: Result<Vec<_>, _> = self.p2_team.iter().map(build_member).collect();
+        let cfg = BattleConfig { format: self.format, seed };
+        Ok(Battle::with_rng(cfg, rng, p1?, p2?))
+    }
 }
 
 /// Lead-pair detected per side as `[species_slug; 2]` for slot a and b.

@@ -28,5 +28,7 @@ pub use recon::{
 };
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
-pub use scorer::{score_replay, ReplayScore, TurnScore, DEFAULT_HP_TOLERANCE};
+pub use scorer::{
+    score_replay, score_replay_oracle, ReplayScore, TurnScore, DEFAULT_HP_TOLERANCE,
+};
 pub use trace::{hp_trace, parse_hp, HpEvent, HpSource};
