@@ -483,9 +483,56 @@ impl Battle {
             incoming.boosted_stat = 255;
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.pending_self_switch = false;
-            true
         } else {
-            false
+            return false;
+        }
+        // Apply switch-in hazards. PS runs hazards BEFORE ability triggers
+        // (which fire in `apply_switches` / caller after this returns).
+        // Heavy Boots immunity is deferred (no item handler yet); Magic
+        // Guard is the only ability that blocks Stealth Rock and gets
+        // checked at damage time.
+        self.apply_stealth_rock_to(side, actor_slot);
+        true
+    }
+
+    /// Stealth Rock damage on switch-in. PS:
+    ///   damage = maxhp * 2^typeMod / 8
+    /// where `typeMod = clamp(runEffectiveness(stealthrock), -6, 6)`.
+    /// In practice the type chart caps Rock-vs-defender at ±2; the
+    /// fractions resolve to 1/32, 1/16, 1/8, 1/4, 1/2.
+    /// Magic Guard blocks all indirect damage.
+    fn apply_stealth_rock_to(&mut self, side: SideRef, slot: u8) {
+        if !self.side(side).conditions.stealth_rock {
+            return;
+        }
+        let (max_hp, type_mult_num, type_mult_den, magic_guard) = {
+            let mon = match self.side(side).active_mon(slot as usize) {
+                Some(m) if m.is_alive() => m,
+                _ => return,
+            };
+            let mg = crate::ability::has_magic_guard(mon);
+            // Rock type index = 12 per build.rs TYPE_NAMES order.
+            let eff = crate::damage::type_effectiveness(12, mon.species());
+            let (num, den) = match eff {
+                crate::damage::TypeEff::Immune => (0, 1),
+                crate::damage::TypeEff::QuarterX => (1, 4),   // 1/8 * 1/4 = 1/32
+                crate::damage::TypeEff::HalfX => (1, 2),      // 1/8 * 1/2 = 1/16
+                crate::damage::TypeEff::Neutral => (1, 1),    // 1/8
+                crate::damage::TypeEff::DoubleX => (2, 1),    // 1/4
+                crate::damage::TypeEff::QuadrupleX => (4, 1), // 1/2
+            };
+            (mon.stats.hp, num, den, mg)
+        };
+        if magic_guard || type_mult_num == 0 {
+            return;
+        }
+        // maxhp * 2^typeMod / 8 → maxhp * num / (8 * den)
+        let dmg = ((max_hp as u32 * type_mult_num) / (8 * type_mult_den)).max(1) as u16;
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.current_hp = m.current_hp.saturating_sub(dmg);
+            if m.current_hp == 0 {
+                m.fainted = true;
+            }
         }
     }
 
@@ -1960,6 +2007,16 @@ impl Battle {
                         }
                     }
                 }
+            }
+            "stealthrock" => {
+                // PS data/moves.ts:stealthrock — `sideCondition` on the
+                // foe side. Idempotent: re-setting an already-up rock
+                // doesn't stack. Damage application happens at
+                // switch-in time (`apply_stealth_rock_to`), not here.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stealth_Rock_(move)>
+                let opp = actor_side.opposing();
+                self.side_mut(opp).conditions.stealth_rock = true;
             }
             "encore" => {
                 // Locks the first alive opposing target into its last-
@@ -8787,5 +8844,97 @@ mod tests {
         assert_eq!(b.p1.team[0].boosts[0], 2, "Atk +2");
         assert_eq!(b.p1.team[0].boosts[2], 2, "SpA +2");
         assert_eq!(b.p1.team[0].boosts[4], 2, "Spe +2");
+    }
+
+    #[test]
+    fn stealth_rock_damages_neutral_switchin_one_eighth() {
+        // PS: maxhp * 2^typeMod / 8. Neutral (Rock vs Garchomp): typeMod
+        // = 0 → 1/8 max HP. (Garchomp is Dragon/Ground; Rock is neutral
+        // vs Dragon, neutral vs Ground.)
+        let p1_json = r#"[
+            {"species":"landorus_therian","level":50,"ability":"intimidate","nature":"jolly","moves":["stealthrock","earthquake","uturn","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"tyranitar","level":50,"ability":"sandstream","nature":"adamant","moves":["crunch","stoneedge","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: SR set up.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.conditions.stealth_rock, "SR set on P2 side");
+        // Turn 2: P2 switches Tyranitar in.
+        let tyranitar_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        // Tyranitar is Rock/Dark: Rock vs Rock = 0.5, Rock vs Dark = 1 →
+        // neutral. So 1/8 max HP.
+        let expected_dmg = (tyranitar_max / 8).max(1);
+        assert_eq!(
+            b.p2.team[1].current_hp,
+            tyranitar_max - expected_dmg,
+            "Tyranitar takes 1/8 SR chip (Rock×Dark = neutral)",
+        );
+    }
+
+    #[test]
+    fn stealth_rock_quadruples_on_flying_quadweak() {
+        let p1_json = r#"[
+            {"species":"landorus_therian","level":50,"ability":"intimidate","nature":"jolly","moves":["stealthrock","earthquake","uturn","protect"]}
+        ]"#;
+        // Charizard is Fire/Flying: Rock vs Fire = 2, Rock vs Flying = 2 → 4x.
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"charizard","level":50,"ability":"blaze","nature":"timid","moves":["flamethrower","airslash","focusblast","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let charizard_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        // 4x → 1/2 max HP.
+        let expected_dmg = (charizard_max / 2).max(1);
+        assert_eq!(
+            b.p2.team[1].current_hp,
+            charizard_max - expected_dmg,
+            "Charizard takes 1/2 SR chip (4x weak)",
+        );
+    }
+
+    #[test]
+    fn stealth_rock_no_damage_to_magic_guard() {
+        let p1_json = r#"[
+            {"species":"landorus_therian","level":50,"ability":"intimidate","nature":"jolly","moves":["stealthrock","earthquake","uturn","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"clefable","level":50,"ability":"magicguard","nature":"calm","moves":["moonblast","calmmind","softboiled","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let clef_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].current_hp, clef_max, "Magic Guard blocks SR");
     }
 }
