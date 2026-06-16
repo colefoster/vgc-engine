@@ -197,8 +197,6 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         turns_active: 0,
         locked_move_slot: 255,
         last_used_move_slot: 255,
-        encore_turns: 0,
-        encored_move_slot: 255,
         boosted_stat: 255,
         booster_locked: false,
         ability_suppressed: false,

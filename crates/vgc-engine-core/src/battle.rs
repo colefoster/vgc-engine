@@ -243,9 +243,9 @@ impl Battle {
             }
             // Encore lock: while encored, only the encored slot is
             // selectable. PS data/conditions.ts:encore onDisableMove.
-            if active.encore_turns > 0
-                && active.encored_move_slot != 255
-                && active.encored_move_slot as usize != i
+            if active.encore_turns() > 0
+                && active.encored_move_slot() != 255
+                && active.encored_move_slot() as usize != i
             {
                 continue;
             }
@@ -423,13 +423,14 @@ impl Battle {
                     // Encore tick. PS: duration counts down each end of
                     // turn; the volatile ends at 0. Also clears early
                     // if the locked move has no PP left.
-                    if mon.encore_turns > 0 {
-                        let locked = mon.encored_move_slot as usize;
+                    if mon.encore_turns() > 0 {
+                        let locked = mon.encored_move_slot() as usize;
                         let no_pp = mon.pp.get(locked).copied().unwrap_or(0) == 0;
-                        mon.encore_turns -= 1;
-                        if mon.encore_turns == 0 || no_pp {
-                            mon.encore_turns = 0;
-                            mon.encored_move_slot = 255;
+                        let next = mon.encore_turns() - 1;
+                        if next == 0 || no_pp {
+                            mon.clear_encore();
+                        } else {
+                            mon.set_encore(next, locked as u8);
                         }
                     }
                 }
@@ -577,8 +578,7 @@ impl Battle {
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
             incoming.set_substitute_hp(0); // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
-            incoming.encore_turns = 0;
-            incoming.encored_move_slot = 255;
+            incoming.clear_encore();
             incoming.boosted_stat = 255;
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.set_pending_self_switch(false);
@@ -2684,7 +2684,7 @@ impl Battle {
                 for slot in 0..n {
                     let (last, ok) = match self.side(opp).active_mon(slot as usize) {
                         Some(t) if t.is_alive() => {
-                            if t.encore_turns > 0 {
+                            if t.encore_turns() > 0 {
                                 continue;
                             }
                             let last = t.last_used_move_slot;
@@ -2711,8 +2711,7 @@ impl Battle {
                         continue;
                     }
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                        t.encored_move_slot = last;
-                        t.encore_turns = 3;
+                        t.set_encore(3, last);
                     }
                     return;
                 }
@@ -5665,8 +5664,8 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert_eq!(b.p2.team[0].encore_turns, 0, "Prankster Encore blocked by Dark target");
-        assert_eq!(b.p2.team[0].encored_move_slot, 255);
+        assert_eq!(b.p2.team[0].encore_turns(), 0, "Prankster Encore blocked by Dark target");
+        assert_eq!(b.p2.team[0].encored_move_slot(), 255);
     }
 
     #[test]
@@ -5716,8 +5715,8 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert_eq!(b.p2.team[0].encored_move_slot, 0, "encored to EQ slot");
-        assert_eq!(b.p2.team[0].encore_turns, 2, "duration 3 → 2 after end-of-turn tick");
+        assert_eq!(b.p2.team[0].encored_move_slot(), 0, "encored to EQ slot");
+        assert_eq!(b.p2.team[0].encore_turns(), 2, "duration 3 → 2 after end-of-turn tick");
         let legal = b.legal_choices(SideRef::P2, 0);
         assert!(
             legal.iter().all(|c| matches!(c, Choice::Move { move_slot: 0, .. } | Choice::Switch { .. })),
@@ -5743,7 +5742,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p2.team[0].encored_move_slot, 255, "no encore — target has no last move");
+        assert_eq!(b.p2.team[0].encored_move_slot(), 255, "no encore — target has no last move");
     }
 
     #[test]
@@ -5767,20 +5766,20 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert_eq!(b.p2.team[0].encore_turns, 2);
+        assert_eq!(b.p2.team[0].encore_turns(), 2);
         // Turn 3: still locked, ticks to 1.
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert_eq!(b.p2.team[0].encore_turns, 1);
+        assert_eq!(b.p2.team[0].encore_turns(), 1);
         // Turn 4: tick to 0 — encore clears at end of turn.
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert_eq!(b.p2.team[0].encore_turns, 0);
-        assert_eq!(b.p2.team[0].encored_move_slot, 255);
+        assert_eq!(b.p2.team[0].encore_turns(), 0);
+        assert_eq!(b.p2.team[0].encored_move_slot(), 255);
     }
 
     #[test]
@@ -5805,7 +5804,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
-        assert!(b.p2.team[0].encore_turns > 0);
+        assert!(b.p2.team[0].encore_turns() > 0);
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
@@ -5815,8 +5814,8 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Switch { actor_slot: 0, team_index: 0 }],
         );
-        assert_eq!(b.p2.team[0].encore_turns, 0, "Encore cleared on switch-out");
-        assert_eq!(b.p2.team[0].encored_move_slot, 255);
+        assert_eq!(b.p2.team[0].encore_turns(), 0, "Encore cleared on switch-out");
+        assert_eq!(b.p2.team[0].encored_move_slot(), 255);
     }
 
     #[test]
