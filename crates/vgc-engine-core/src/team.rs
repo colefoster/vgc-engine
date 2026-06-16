@@ -195,7 +195,6 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         stall_counter: 0,
         used_stall_this_turn: false,
         turns_active: 0,
-        toxic_counter: 0,
         locked_move_slot: 255,
         substitute_hp: 0,
         sleep_turns: 0,

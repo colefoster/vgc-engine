@@ -213,6 +213,12 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Toxic counter (PS `data/conditions.ts:tox`). Indefinite duration
+    /// (`turns_remaining == 0`); `payload` carries the 1-based counter
+    /// (1 on the turn Toxic is applied; +1 each end of turn, capped at
+    /// 15). Damage per turn = max_hp * counter / 16. Cleared when the
+    /// Toxic status clears.
+    ToxicCounter,
     /// Single-turn redirection volatile (PS data/moves.ts:ragepowder /
     /// :followme conditions, duration 1). Set when this mon successfully
     /// uses Rage Powder or Follow Me. Read at single-target resolution
@@ -369,11 +375,6 @@ pub struct Pokemon {
     /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
     /// calculation. Cleared at end of step.
     pub last_damage_taken: u16,
-    /// Toxic damage counter (1-based). 1 on the turn Toxic is applied;
-    /// increments by 1 each end of turn (gen 5+ formula). Damage per
-    /// turn = max_hp * counter / 16. Reset to 0 when status clears or
-    /// on switch-out.
-    pub toxic_counter: u8,
     /// Choice-item lock: when the holder uses a move while holding
     /// Band/Specs/Scarf, subsequent move selections are restricted to
     /// that slot. `255 = unlocked`. Cleared on switch-out.
@@ -713,6 +714,30 @@ impl Pokemon {
         }
     }
 
+    /// Current Toxic counter (1-based). `0` if Toxic is not active.
+    /// Read by the end-of-turn DOT phase and the Toxic-apply path.
+    #[inline]
+    pub fn toxic_counter(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::ToxicCounter)
+            .map(|v| v.payload as u8)
+            .unwrap_or(0)
+    }
+
+    /// Set the Toxic counter. `c == 0` removes the volatile.
+    #[inline]
+    pub fn set_toxic_counter(&mut self, c: u8) {
+        if c == 0 {
+            self.volatiles.remove(VolatileKind::ToxicCounter);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::ToxicCounter,
+                turns_remaining: 0,
+                payload: c as u32,
+            });
+        }
+    }
+
     /// `true` while a `VolatileKind::Redirect` volatile is on this mon
     /// (this mon used Rage Powder / Follow Me this turn).
     #[inline]
@@ -889,7 +914,7 @@ mod tests {
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0,
-            toxic_counter: 0, locked_move_slot: 255,
+            locked_move_slot: 255,
             substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
@@ -929,7 +954,6 @@ mod tests {
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,
-            toxic_counter: 0,
             locked_move_slot: 255,
             substitute_hp: 0,
             sleep_turns: 0,
