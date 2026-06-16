@@ -21,6 +21,28 @@
 use crate::pokemon::{Pokemon, Status};
 use vgc_engine_data as data;
 
+/// True iff the attacker's ability is Sheer Force. Inlined here so the
+/// damage calculation stays pure (no battle-state lookup).
+pub(crate) fn attacker_has_sheer_force(mon: &Pokemon) -> bool {
+    if mon.ability_id == u16::MAX {
+        return false;
+    }
+    data::ABILITIES
+        .get(mon.ability_id as usize)
+        .map(|a| a.slug)
+        .unwrap_or("")
+        == "sheerforce"
+}
+
+/// True iff this move is boosted by Sheer Force on a Sheer Force user —
+/// either it carries a `secondary` block in PS data or it's manually
+/// flagged `hasSheerForceBoost`. Shared with `battle.rs` so the
+/// secondary-strip and Life-Orb-recoil-skip use the same predicate as
+/// the BP boost below.
+pub(crate) fn move_is_sheer_force_boosted(m: &data::MoveDef) -> bool {
+    m.has_secondary || m.has_sheer_force_boost
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DamageContext {
     /// Caller decides whether this hit is a crit; we just apply the multiplier.
@@ -157,6 +179,17 @@ pub fn calculate_damage(
     let (tn, td) = ctx.terrain.damage_mult(m.type_);
     if tn != td {
         bp = bp * tn / td;
+    }
+
+    // Sheer Force base-power boost — ×5325/4096 (≈1.3) on any move PS
+    // would have stripped a secondary from, plus the manual opt-in
+    // moves flagged `hasSheerForceBoost: true`. PS `data/abilities.ts`
+    // sheerforce `onModifyMove` sets `move.hasSheerForce = true` and
+    // deletes secondaries; the companion `onBasePower` applies
+    // chainModify([5325, 4096]) only when that flag is set.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sheer_Force_(Ability)>.
+    if attacker_has_sheer_force(attacker) && move_is_sheer_force_boosted(m) {
+        bp = bp * 5325 / 4096;
     }
 
     let physical = m.category == 0;
