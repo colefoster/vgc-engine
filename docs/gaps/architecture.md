@@ -12,7 +12,9 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Suggested shape**: `Pokemon::volatiles: SmallVec<[Volatile; 8]>` where `Volatile { kind: VolatileKind, turns_remaining: u8, payload: u32 }`. Constant-time lookup by `VolatileKind` enum. End-of-turn iteration via a vtable-free `match` per kind.
 
-**Status**: deferred.
+**Status**: partial — slice 1 of N — PR-155 (`VolatileKind` enum with 30+ PS-named kinds, `Volatile { kind, turns_remaining: u8, payload: u32 }`, `VolatileSet` fixed-cap 8-slot registry with `add` / `remove` / `has` / `get` / `position` / `tick` / `clear`. Wired onto `Pokemon::volatiles`; cleared blanket-style on switch-out.).
+
+Migration of the ad-hoc per-Pokemon volatile fields (`is_protected_this_turn`, `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`, `redirecting_this_turn`, `damaged_this_turn`, `substitute_hp`, `sleep_turns`, `encore_turns`, `crit_stage_volatile`, `semi_invuln`, `charging_turns`, `must_recharge`, `lockin_turns`, ...) onto the registry happens incrementally per-volatile in follow-up slices — each migration is its own behavior-preserving PR + diff test.
 
 ### Tera state
 

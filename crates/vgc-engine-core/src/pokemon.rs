@@ -130,6 +130,158 @@ impl FinalStats {
     }
 }
 
+/// PS-named identity for the per-Pokemon volatile registry. Each
+/// kind maps 1:1 to a PS `data/conditions.ts` entry (the `id` of the
+/// volatile, e.g. `'taunt'`, `'disable'`, ...). Pokemon carries a
+/// fixed-capacity `volatiles: [Volatile; 8]` array (PS limits in
+/// practice — corpus mons rarely carry more than 3-4 at a time);
+/// callers look up by kind in O(1). The migration of the ad-hoc
+/// boolean / counter fields (`is_protected_this_turn`, `encore_turns`,
+/// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
+/// `redirecting_this_turn`, `damaged_this_turn`, `substitute_hp`,
+/// `sleep_turns`, `crit_stage_volatile`, `semi_invuln`,
+/// `charging_turns`, `must_recharge`, `lockin_turns`) into this
+/// registry is staged per-volatile in follow-up PRs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum VolatileKind {
+    #[default]
+    None = 0,
+    Taunt,
+    Disable,
+    Confusion,
+    Torment,
+    Yawn,
+    HealBlock,
+    Embargo,
+    Imprison,
+    MagicCoat,
+    Snatch,
+    LeechSeed,
+    Curse,
+    Nightmare,
+    PerishSong,
+    Ingrain,
+    AquaRing,
+    MagnetRise,
+    Telekinesis,
+    GastroAcid,
+    PowderShield,
+    FocusEnergy,
+    LaserFocus,
+    Charge,
+    Stockpile,
+    Roost,
+    Foresight,
+    MiracleEye,
+    Tarshot,
+    SyrupBomb,
+    GlaiveRush,
+    SaltCure,
+    Endure,
+    DragonCheer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Volatile {
+    pub kind: VolatileKind,
+    /// Turns until the volatile is cleared at end of turn. Set on
+    /// add (PS `duration`); decremented at end of `step`; the
+    /// volatile is removed when it reaches 0. `0` here means
+    /// "indefinite" — only ticks via an explicit clear (Leech Seed
+    /// drains until switch-out, Ingrain until switch-out, ...).
+    pub turns_remaining: u8,
+    /// Free-form 32-bit payload — Disable holds the disabled move
+    /// slot (0..=3, 4..=7 reserved); Encore holds the locked slot;
+    /// LeechSeed holds the source (side|slot) tuple; etc. Each
+    /// kind's payload encoding is documented at its consumer site.
+    pub payload: u32,
+}
+
+/// Fixed-cap volatile registry. 8 slots is comfortably more than the
+/// in-corpus max (≈4). Lookup is a linear scan — at this size, that's
+/// faster than the branchier alternatives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VolatileSet {
+    pub items: [Volatile; 8],
+    pub len: u8,
+}
+
+impl VolatileSet {
+    /// Find the slot index of the given kind, or `None` if absent.
+    #[inline]
+    pub fn position(&self, k: VolatileKind) -> Option<usize> {
+        (0..self.len as usize).find(|&i| self.items[i].kind == k)
+    }
+
+    pub fn has(&self, k: VolatileKind) -> bool {
+        self.position(k).is_some()
+    }
+
+    pub fn get(&self, k: VolatileKind) -> Option<&Volatile> {
+        self.position(k).map(|i| &self.items[i])
+    }
+
+    /// Add a fresh volatile or refresh the duration on an existing one
+    /// (PS adds replace silently — Taunt re-application resets the
+    /// turn counter). Returns `false` and silently drops the add if
+    /// the registry is full (8 slots — never observed full in corpus,
+    /// but the bound is defensive). Caller is responsible for
+    /// per-volatile gating (e.g. Substitute fails if a sub already
+    /// exists).
+    pub fn add(&mut self, v: Volatile) -> bool {
+        if let Some(i) = self.position(v.kind) {
+            self.items[i] = v;
+            return true;
+        }
+        if (self.len as usize) >= self.items.len() {
+            return false;
+        }
+        self.items[self.len as usize] = v;
+        self.len += 1;
+        true
+    }
+
+    /// Remove a volatile by kind. No-op if absent.
+    pub fn remove(&mut self, k: VolatileKind) {
+        if let Some(i) = self.position(k) {
+            let last = self.len as usize - 1;
+            self.items[i] = self.items[last];
+            self.items[last] = Volatile::default();
+            self.len -= 1;
+        }
+    }
+
+    /// Reset to empty. Used on switch-out (PS drops every volatile
+    /// except `mustrecharge` / `partiallytrapped` per move; we
+    /// blanket-clear since each migrated mechanic re-implements its
+    /// own switch-out rule).
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Decrement every volatile's `turns_remaining` (if non-zero); drop
+    /// those that reach 0. Called once at end of step from
+    /// `resolve_end_of_turn` after the per-volatile residual phases.
+    /// Indefinite volatiles (`turns_remaining == 0`) are untouched.
+    pub fn tick(&mut self) {
+        let mut i = 0;
+        while (i as u8) < self.len {
+            if self.items[i].turns_remaining > 0 {
+                self.items[i].turns_remaining -= 1;
+                if self.items[i].turns_remaining == 0 {
+                    let last = self.len as usize - 1;
+                    self.items[i] = self.items[last];
+                    self.items[last] = Volatile::default();
+                    self.len -= 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
 #[derive(Debug, Clone)]
 pub struct Pokemon {
@@ -273,6 +425,11 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// PS-named volatile registry. Empty at start of battle. New
+    /// per-Pokemon volatiles (Taunt, Disable, Confusion, ...) land
+    /// here instead of growing more ad-hoc fields on `Pokemon`.
+    /// Cleared blanket-style on switch-out. See `VolatileSet`.
+    pub volatiles: VolatileSet,
     /// Two-turn-move semi-invulnerable state. Distinct positions hit
     /// through by distinct moves (PS gates each in the move's
     /// `onTryHit`): Dig is hit by Earthquake / Magnitude / Fissure;
@@ -520,6 +677,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn volatile_set_add_remove_tick_basic() {
+        let mut v = VolatileSet::default();
+        assert!(!v.has(VolatileKind::Taunt));
+        // Add Taunt (duration 3).
+        assert!(v.add(Volatile { kind: VolatileKind::Taunt, turns_remaining: 3, payload: 0 }));
+        assert!(v.has(VolatileKind::Taunt));
+        assert_eq!(v.get(VolatileKind::Taunt).unwrap().turns_remaining, 3);
+        // Re-add refreshes duration.
+        v.add(Volatile { kind: VolatileKind::Taunt, turns_remaining: 5, payload: 0 });
+        assert_eq!(v.get(VolatileKind::Taunt).unwrap().turns_remaining, 5);
+        // Add a second kind.
+        v.add(Volatile { kind: VolatileKind::Disable, turns_remaining: 4, payload: 2 });
+        assert_eq!(v.len, 2);
+        // Tick — both decrement.
+        v.tick();
+        assert_eq!(v.get(VolatileKind::Taunt).unwrap().turns_remaining, 4);
+        assert_eq!(v.get(VolatileKind::Disable).unwrap().turns_remaining, 3);
+        // Remove by kind.
+        v.remove(VolatileKind::Taunt);
+        assert!(!v.has(VolatileKind::Taunt));
+        assert!(v.has(VolatileKind::Disable));
+        assert_eq!(v.len, 1);
+    }
+
+    #[test]
+    fn volatile_set_tick_drops_at_zero() {
+        let mut v = VolatileSet::default();
+        v.add(Volatile { kind: VolatileKind::FocusEnergy, turns_remaining: 1, payload: 0 });
+        v.tick();
+        assert!(!v.has(VolatileKind::FocusEnergy));
+        assert_eq!(v.len, 0);
+    }
+
+    #[test]
+    fn volatile_set_indefinite_does_not_tick() {
+        let mut v = VolatileSet::default();
+        v.add(Volatile { kind: VolatileKind::LeechSeed, turns_remaining: 0, payload: 0 });
+        v.tick();
+        v.tick();
+        v.tick();
+        assert!(v.has(VolatileKind::LeechSeed));
+    }
+
+    #[test]
     fn effective_types_pre_tera_matches_species() {
         let species_idx = data::SPECIES.iter().position(|s| s.slug == "garchomp").unwrap() as u16;
         let species = &data::SPECIES[species_idx as usize];
@@ -539,6 +740,7 @@ mod tests {
             tera_type: 1 /* fire */, terastallized: false,
             semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
             must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
+            volatiles: VolatileSet::default(),
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -599,6 +801,7 @@ mod tests {
             must_recharge: false,
             lockin_turns: 0,
             lockin_move_slot: 255,
+            volatiles: VolatileSet::default(),
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();
