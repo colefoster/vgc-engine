@@ -195,7 +195,7 @@ pub fn calculate_damage(
     }
     if m.base_power == 0 && !matches!(
         m.slug,
-        "heatcrash" | "heavyslam"
+        "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
     ) {
         return 0;
     }
@@ -274,6 +274,21 @@ pub fn calculate_damage(
         //   BP (55 → 110) when the user holds no item. Flying Gem
         //   case (item consumed pre-hit) deferred.
         (m.type_, (m.base_power as u32) * 2)
+    } else if matches!(m.slug, "lowkick" | "grassknot") {
+        // PS data/moves.ts:lowkick / :grassknot basePowerCallback
+        // keys off the *target's* weight in hg:
+        //   ≥2000 → 120, ≥1000 → 100, ≥500 → 80, ≥250 → 60, ≥100 → 40, else 20.
+        // Heavy/Light Metal + Float Stone modifiers deferred. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Low_Kick_(move)>
+        // <https://bulbapedia.bulbagarden.net/wiki/Grass_Knot_(move)>
+        let w = defender.species().weight_dg as u32;
+        let bp = if w >= 2000 { 120 }
+            else if w >= 1000 { 100 }
+            else if w >= 500 { 80 }
+            else if w >= 250 { 60 }
+            else if w >= 100 { 40 }
+            else { 20 };
+        (m.type_, bp)
     } else if matches!(m.slug, "heatcrash" | "heavyslam") {
         // PS data/moves.ts:heatcrash / :heavyslam basePowerCallback:
         //   const targetWeight = target.getWeight();
@@ -744,6 +759,34 @@ mod tests {
         // bigger ratio than 3 (BP 120/40 = 3) — Snorlax Def >> Pichu Def.
         assert!(dmg_heavy_vs_light > dmg_heavy_vs_heavy * 3,
                 "Heavy Slam should hit much harder vs Pichu: light={dmg_heavy_vs_light} heavy={dmg_heavy_vs_heavy}");
+    }
+
+    #[test]
+    fn low_kick_scales_with_target_weight() {
+        // PS data/moves.ts:lowkick basePowerCallback keys off target's
+        // weight in hg: ≥2000 → 120, ≥1000 → 100, ≥500 → 80,
+        // ≥250 → 60, ≥100 → 40, else 20.
+        // Snorlax = 460 kg (4600 hg) → 120 BP. Pikachu = 6 kg (60 hg) → 20 BP.
+        let attacker = make_mon(
+            "garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let heavy = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let light = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let lk = move_id("lowkick");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let dmg_heavy = calculate_damage(&attacker, &heavy, lk, ctx);
+        let dmg_light = calculate_damage(&attacker, &light, lk, ctx);
+        // Heavy target gets 120 BP; light gets 20 BP — 6x BP ratio.
+        // Even with Snorlax's higher Def the heavy hit should dwarf light.
+        assert!(dmg_heavy > dmg_light,
+                "Low Kick vs Snorlax (120 BP) should beat vs Pikachu (20 BP): heavy={dmg_heavy} light={dmg_light}");
     }
 
     #[test]
