@@ -420,7 +420,7 @@ impl Battle {
                 if (active_idx as usize) < side.team.len() {
                     let mon = &mut side.team[active_idx as usize];
                     mon.turns_active = mon.turns_active.saturating_add(1);
-                    mon.switched_in_this_turn = false;
+                    mon.set_switched_in_this_turn(false);
                     // Encore tick. PS: duration counts down each end of
                     // turn; the volatile ends at 0. Also clears early
                     // if the locked move has no PP left.
@@ -577,7 +577,6 @@ impl Battle {
             incoming.set_protected(false);
             incoming.stall_counter = 0;
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
-            incoming.switched_in_this_turn = true;
             incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
             incoming.encore_turns = 0;
@@ -599,6 +598,9 @@ impl Battle {
             incoming.lockin_turns = 0;
             incoming.lockin_move_slot = 255;
             incoming.volatiles.clear();
+            // Set after the blanket clear so the marker survives until
+            // the end-of-turn reset.
+            incoming.set_switched_in_this_turn(true);
         } else {
             return false;
         }

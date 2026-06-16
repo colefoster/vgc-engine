@@ -201,6 +201,12 @@ pub enum VolatileKind {
     /// Revenge for the ×2 BP bonus. Cleared at the per-turn volatile
     /// reset / on switch-in. Payload unused.
     DamagedThisTurn,
+    /// Single-turn 'just switched in' marker. Set when this mon enters
+    /// the field via a Switch action (NOT for battle-start sendouts).
+    /// Read by ability residual hooks (Speed Boost et al.) to suppress
+    /// the residual on the switch-in turn. PS analog: `activeTurns == 0`
+    /// at end of turn. Cleared at the per-turn volatile reset.
+    JustSwitchedIn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -375,13 +381,6 @@ pub struct Pokemon {
     /// Band/Specs/Scarf, subsequent move selections are restricted to
     /// that slot. `255 = unlocked`. Cleared on switch-out.
     pub locked_move_slot: u8,
-    /// True for the step in which this mon was brought in via a Switch
-    /// action (NOT for initial sendouts at battle start). Cleared at
-    /// end of step. Used to suppress end-of-turn ability residuals like
-    /// Speed Boost on the switch-in turn — matches PS, where
-    /// `activeTurns` is incremented at the START of each turn so
-    /// mid-battle switch-ins see `activeTurns==0` at end of that turn.
-    pub switched_in_this_turn: bool,
     /// Substitute HP. `0` = no sub. When > 0, incoming damage is absorbed
     /// by the sub before reaching `current_hp`; secondaries are blocked.
     /// Cleared on switch-out. Set to `max_hp / 4` when Substitute is
@@ -607,6 +606,29 @@ impl Pokemon {
             .unwrap_or("")
     }
 
+    /// `true` while `VolatileKind::JustSwitchedIn` is on this mon. Set
+    /// when entering via a mid-battle Switch action; read by ability
+    /// residuals (Speed Boost) to skip the residual on the switch-in
+    /// turn. PS analog: `pokemon.activeTurns == 0`.
+    #[inline]
+    pub fn switched_in_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::JustSwitchedIn)
+    }
+
+    /// Set or clear the JustSwitchedIn marker.
+    #[inline]
+    pub fn set_switched_in_this_turn(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::JustSwitchedIn,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::JustSwitchedIn);
+        }
+    }
+
     /// `true` while `VolatileKind::DamagedThisTurn` is on this mon.
     /// Set by `battle.rs` when an opposing damaging move lands HP
     /// damage. Read by Avalanche / Revenge for ×2 BP.
@@ -815,7 +837,7 @@ mod tests {
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0, redirecting_this_turn: false, redirecting_is_powder: false,
             toxic_counter: 0, locked_move_slot: 255,
-            switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
+            substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
             boosted_stat: 255, booster_locked: false, pending_self_switch: false,
             ability_suppressed: false, crit_stage_volatile: 0,
@@ -858,7 +880,6 @@ mod tests {
             redirecting_is_powder: false,
             toxic_counter: 0,
             locked_move_slot: 255,
-            switched_in_this_turn: false,
             substitute_hp: 0,
             sleep_turns: 0,
             last_used_move_slot: 255,

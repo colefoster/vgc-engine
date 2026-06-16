@@ -203,7 +203,6 @@ fn make_pokemon(
         redirecting_is_powder: false,
         toxic_counter: 0,
         locked_move_slot: 255,
-        switched_in_this_turn: false,
         substitute_hp: 0,
         sleep_turns: 0,
         last_used_move_slot: 255,

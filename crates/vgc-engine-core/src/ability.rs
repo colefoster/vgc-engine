@@ -357,7 +357,7 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
 /// status ≈ 9, speedboost = 28).
 pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     let (slug, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn),
+        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn()),
         _ => return,
     };
 
