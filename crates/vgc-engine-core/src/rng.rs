@@ -236,9 +236,45 @@ impl Rng {
         }
     }
 
-    /// Crit hit/miss. Splitmix uses gen-9 base 1/24; Oracle replays
-    /// the recorded outcome (which already encodes ability/item/
-    /// high-crit-ratio adjustments from the source sim).
+    /// Crit hit/miss at a given crit stage. PS gen-9 table
+    /// (`sim/battle.ts` `randomChance` / `data/conditions.ts`):
+    ///   stage 0 → 1/24, 1 → 1/8, 2 → 1/2, 3+ → guaranteed crit.
+    /// Caller is responsible for summing held item (Scope Lens +1,
+    /// Razor Claw +1, Lucky Punch on Chansey +2, Stick on Farfetch'd
+    /// +2), ability (Super Luck +1), volatile (Focus Energy / Dire
+    /// Hit / Laser Focus → +2 or guaranteed), and move flag
+    /// (high-crit-ratio +1). Oracle just replays its recorded outcome
+    /// (the source sim already applied the stage).
+    pub fn crit_with_stage(&mut self, stage: u8) -> bool {
+        match self {
+            Rng::Splitmix(_) => match stage {
+                0 => self.range(24) == 0,
+                1 => self.range(8) == 0,
+                2 => self.range(2) == 0,
+                _ => true,
+            },
+            Rng::Oracle(state) => match state.pop() {
+                RngEvent::Crit(v) => v,
+                other => panic!("OracleRng: expected Crit, got {other:?}"),
+            },
+            Rng::OraclePartial { state, fallback } => {
+                let matched = state.pop_if(|e| matches!(e, RngEvent::Crit(_)));
+                if let Some(RngEvent::Crit(v)) = matched {
+                    v
+                } else {
+                    match stage {
+                        0 => ((Self::splitmix_step(fallback) as u32) % 24) == 0,
+                        1 => ((Self::splitmix_step(fallback) as u32) % 8) == 0,
+                        2 => ((Self::splitmix_step(fallback) as u32) % 2) == 0,
+                        _ => true,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stage-0 crit. Kept as a thin shim around `crit_with_stage(0)`
+    /// for existing call sites; new code should prefer the staged form.
     pub fn crit(&mut self) -> bool {
         match self {
             Rng::Splitmix(_) => self.range(24) == 0,
@@ -409,6 +445,31 @@ mod tests {
         assert!(v < 4);
         // The 8 is still there for a wider range.
         assert_eq!(r.range(16), 8);
+    }
+
+    #[test]
+    fn crit_stage_3_always_crits() {
+        let mut r = Rng::new(0xABCD);
+        for _ in 0..1000 {
+            assert!(r.crit_with_stage(3));
+        }
+    }
+
+    #[test]
+    fn crit_stage_1_rate_is_one_eighth() {
+        let mut r = Rng::new(0xCAFE);
+        let mut crits = 0u32;
+        let trials = 80_000u32;
+        for _ in 0..trials {
+            if r.crit_with_stage(1) {
+                crits += 1;
+            }
+        }
+        let rate = crits as f64 / trials as f64;
+        assert!(
+            (rate - 0.125).abs() < 0.01,
+            "stage-1 crit rate {rate} too far from 1/8"
+        );
     }
 
     #[test]

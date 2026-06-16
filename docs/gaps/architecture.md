@@ -108,7 +108,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Scope Lens / Razor Claw / Super Luck / Focus Energy / Laser Focus / Dire Hit all read into the same crit-stage roll.
 
-**Status**: not implemented. (Damage formula uses a fixed crit chance.)
+**Status**: shipped — PR-145 (`Pokemon::effective_crit_stage()` + `crit_stage_volatile` field; `Rng::crit_with_stage(stage)` with PS 1/24, 1/8, 1/2, 1 ladder; `MoveDef::crit_stage_delta` populated from PS `critRatio`; battle.rs damage call wired). Focus Energy / Laser Focus / Dire Hit volatile-setters land as separate move PRs.
 
 ### Species weight in build dump
 

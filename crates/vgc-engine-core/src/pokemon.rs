@@ -256,6 +256,11 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// Volatile crit-stage contributors from on-mon sources (Focus
+    /// Energy / Laser Focus / Dire Hit). Held item, ability, and the
+    /// move's high-crit-ratio flag are summed at damage time. Cleared
+    /// on switch-out.
+    pub crit_stage_volatile: u8,
     /// Ability suppression flag — when `true`, `effective_ability_slug()`
     /// returns `""` regardless of `ability_id`. Set by Gastro Acid (and
     /// Neutralizing Gas — TBD). PS models this as the `gastroacid`
@@ -300,6 +305,47 @@ impl Pokemon {
     /// abilities on damaging moves.
     pub fn is_grounded_for_mold_breaker(&self) -> bool {
         self.is_grounded_internal(true)
+    }
+
+    /// Effective crit stage from on-mon contributors (held item,
+    /// ability, volatile). Caller adds the move's high-crit-ratio
+    /// contribution (`+1`) before passing to `Rng::crit_with_stage`.
+    /// PS gen-9:
+    ///   Scope Lens / Razor Claw: +1 (item)
+    ///   Lucky Punch on Chansey / Stick on Farfetch'd: +2 (item, species-gated)
+    ///   Super Luck ability: +1
+    ///   Focus Energy / Laser Focus / Dire Hit volatile: +2
+    /// PS: `data/items.ts`:scopelens / `data/abilities.ts`:superluck /
+    /// `data/conditions.ts`:focusenergy.
+    pub fn effective_crit_stage(&self) -> u8 {
+        let mut s = self.crit_stage_volatile;
+        let ability = self.effective_ability_slug();
+        if ability == "superluck" {
+            s = s.saturating_add(1);
+        }
+        let item = if self.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[self.item_id as usize].slug
+        };
+        match item {
+            "scopelens" | "razorclaw" => s = s.saturating_add(1),
+            "luckypunch" => {
+                // Chansey-only (PS species gate). dex num 113.
+                if self.species().num == 113 {
+                    s = s.saturating_add(2);
+                }
+            }
+            "stick" | "leek" => {
+                // Farfetch'd 83 / Sirfetch'd 865.
+                let n = self.species().num;
+                if n == 83 || n == 865 {
+                    s = s.saturating_add(2);
+                }
+            }
+            _ => {}
+        }
+        s
     }
 
     /// Effective ability slug. Returns `""` when the ability is
@@ -425,6 +471,7 @@ mod tests {
             booster_locked: false,
             pending_self_switch: false,
             ability_suppressed: false,
+            crit_stage_volatile: 0,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();
