@@ -689,6 +689,13 @@ impl Battle {
             } else {
                 crate::terrain::Terrain::None
             };
+            // Aura abilities — scan every alive active for fairyaura /
+            // darkaura / aurabreak. PS `onAnyBasePower` fires from
+            // each holder; here we precompute presence (PS de-dupes via
+            // `move.auraBooster`, so two Fairy Aura users boost the same
+            // move just once).
+            let (fairy_aura_active, dark_aura_active, aura_break_active) =
+                scan_aura_field(self);
             let mut dmg = calculate_damage(
                 &boosted_attacker,
                 &boosted_defender,
@@ -698,6 +705,7 @@ impl Battle {
                     terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
                     defender_has_aurora_veil, is_doubles,
+                    fairy_aura_active, dark_aura_active, aura_break_active,
                 },
             );
             // Apply attacker item multiplier (Life Orb).
@@ -1516,6 +1524,34 @@ fn move_is_defrost(slug: &str) -> bool {
         "scald" | "flareblitz" | "sacredfire" | "flamewheel" | "fusionflare"
         | "pyroball" | "burnup" | "steameruption" | "searingshot" | "scorchingsands"
     )
+}
+
+/// Scan every alive active mon on both sides for aura abilities. PS
+/// `onAnyBasePower` handlers fire from each holder; the BP modifier is
+/// gated on `move.auraBooster` so a second Fairy Aura on the field does
+/// NOT stack — we just track presence per type, which matches that.
+fn scan_aura_field(b: &Battle) -> (bool, bool, bool) {
+    let mut fairy = false;
+    let mut dark = false;
+    let mut brk = false;
+    let n = b.format().active_count() as u8;
+    for &s in &[SideRef::P1, SideRef::P2] {
+        for slot in 0..n {
+            let slug = match b.side(s).active_mon(slot as usize) {
+                Some(m) if m.is_alive() && m.ability_id != u16::MAX => {
+                    data::ABILITIES[m.ability_id as usize].slug
+                }
+                _ => continue,
+            };
+            match slug {
+                "fairyaura" => fairy = true,
+                "darkaura" => dark = true,
+                "aurabreak" => brk = true,
+                _ => {}
+            }
+        }
+    }
+    (fairy, dark, brk)
 }
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
@@ -2583,11 +2619,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -4414,11 +4450,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -4748,6 +4784,27 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp,
                    "Sinistcha itself is unaffected by its own Hospitality");
+    }
+
+    #[test]
+    fn fairy_aura_field_scan_picks_up_xerneas() {
+        // End-to-end: launch a Xerneas (Fairy Aura) vs Garchomp battle
+        // and assert that `scan_aura_field` flips the fairy bit. This
+        // verifies the dispatcher; the BP modifier itself is exercised
+        // directly in `damage::tests::fairy_aura_modifier`.
+        let p1_json = r#"[
+            {"species":"xerneas","level":50,"ability":"fairyaura","item":"focussash","nature":"timid","moves":["dazzlinggleam","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let (fairy, dark, brk) = scan_aura_field(&b);
+        assert!(fairy, "Fairy Aura should be detected on Xerneas");
+        assert!(!dark);
+        assert!(!brk);
     }
 
     #[test]
