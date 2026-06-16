@@ -13,6 +13,7 @@ mod event;
 mod oracle;
 mod parser;
 mod recon;
+mod recon_smogon;
 mod replay;
 mod runner;
 mod scorer;
@@ -31,6 +32,7 @@ pub use recon::{
     input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,
     ReconError, ReconInput, TeamRecon,
 };
+pub use recon_smogon::SmogonStatsRecon;
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
 pub use smogon_stats::{
