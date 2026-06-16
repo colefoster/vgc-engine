@@ -878,6 +878,19 @@ impl Battle {
             return;
         }
 
+        // 2b. Recharge after Hyper Beam family. PS data/conditions.ts:364
+        //     `mustrecharge` volatile with `onBeforeMove` priority 11 that
+        //     consumes the action and removes itself. We collapse to a
+        //     single `must_recharge: bool` field. Skip the entire move,
+        //     clear the flag, no PP deduct.
+        //     Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
+        if attacker.must_recharge {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.must_recharge = false;
+            }
+            return;
+        }
+
         // 2c. Two-turn semi-invulnerable charge moves (Fly / Dig / Dive /
         //     Bounce / Phantom Force / Shadow Force). PS handler pattern
         //     (data/moves.ts:fly:5894, dig:3578, dive:3737, bounce:1709,
@@ -1958,6 +1971,30 @@ impl Battle {
         // targets. Magic Guard and Rock Head block it. Sub-absorbed
         // damage doesn't count (see drain note above). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Recoil>.
+        // Recharge moves — set `must_recharge` on the user if the move
+        // actually connected (PS `self.volatileStatus: 'mustrecharge'`
+        // arms only fire on a successful hit). On miss / immunity, no
+        // recharge. Move list: Hyper Beam, Giga Impact, Blast Burn,
+        // Hydro Cannon, Frenzy Plant, Rock Wrecker, Roar of Time,
+        // Prismatic Laser, Eternabeam, Meteor Assault.
+        // PS: data/moves.ts:hyperbeam:9115 (and family); behaviour shared
+        // via flags.recharge + self.volatileStatus.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
+        if any_damage_dealt > 0
+            && matches!(
+                m.slug,
+                "hyperbeam" | "gigaimpact" | "blastburn" | "hydrocannon"
+                    | "frenzyplant" | "rockwrecker" | "roaroftime"
+                    | "prismaticlaser" | "eternabeam" | "meteorassault"
+            )
+        {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.is_alive() {
+                    a.must_recharge = true;
+                }
+            }
+        }
+
         if m.recoil_num > 0 && any_damage_dealt > 0 {
             let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
             let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
@@ -9943,6 +9980,37 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Solar Beam hits turn 1 with Power Herb");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
         assert_eq!(b.p1.team[0].charging_turns, 0);
+    }
+
+    #[test]
+    fn hyper_beam_sets_must_recharge_then_skips_next_turn() {
+        // Turn 1: Snorlax Hyper Beam hits → must_recharge set.
+        // Turn 2: Snorlax tries Body Slam → action skipped (recharge),
+        // flag cleared, no PP deducted on slot 0 (target slot would have
+        // been the player choice but action is consumed).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"adamant","moves":["hyperbeam","bodyslam","crunch","earthquake"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"chansey","level":50,"ability":"naturalcure","item":"eviolite","nature":"bold","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Hyper Beam.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].must_recharge, "Hyper Beam sets must_recharge on hit");
+        let body_slam_pp = b.p1.team[0].pp[1];
+        // Turn 2: Snorlax tries Body Slam, but is locked into recharge.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(!b.p1.team[0].must_recharge, "must_recharge cleared after recharge turn");
+        assert_eq!(b.p1.team[0].pp[1], body_slam_pp, "no PP deducted while recharging");
     }
 
     #[test]

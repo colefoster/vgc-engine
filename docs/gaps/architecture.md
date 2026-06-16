@@ -33,10 +33,10 @@ Remaining slices:
 
 **Why it matters**: Blocks all two-turn moves (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy, Dig/Dive/Fly/Bounce/Phantom Force/Shadow Force), Hyper Beam recharge family, Gigaton Hammer / Blood Moon lockout, lock-in moves.
 
-**Status**: partial — slice 3 of 4 — PR-150 (fields), PR-159 (semi-invuln), PR-160 (non-semi-invuln charge moves: Solar Beam / Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor Beam now charge turn 1 / release turn 2; Power Herb consumed to skip charge; Sun skips charge on Solar Beam / Solar Blade. Per-move charge-turn boosts — Meteor Beam +1 SpA, Skull Bash +1 Def — left for follow-up move PRs alongside their boost arms.).
+**Status**: partial — slice 4a of 4 — PR-150 (fields), PR-159 (semi-invuln), PR-160 (charging moves), PR-161 (recharge: Hyper Beam / Giga Impact / Blast Burn / Hydro Cannon / Frenzy Plant / Rock Wrecker / Roar of Time / Prismatic Laser / Eternabeam / Meteor Assault now set `must_recharge=true` on a hit that deals damage; on the next turn the user's action is consumed (no PP deduct) and the flag is cleared).
 
-Remaining slices:
-- slice 4: recharge / lock-in (Hyper Beam family `must_recharge`, Outrage / Petal Dance / Thrash with confusion payload, Gigaton Hammer / Blood Moon — last one already half-shipped via `cannot_use_twice`).
+Remaining sub-slice:
+- slice 4b: lock-in (Outrage / Petal Dance / Thrash — 2-3 turn lock via `lockin_turns` + `lockin_move_slot`; on lock break, confuse the user. Requires runner-side forced dispatch of `lockin_move_slot` regardless of `Choice::Move`).
 
 ## Pipeline / ordering
 
