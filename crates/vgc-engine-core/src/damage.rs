@@ -828,6 +828,7 @@ mod tests {
             must_recharge: false,
             lockin_turns: 0,
             lockin_move_slot: 255,
+            volatiles: crate::pokemon::VolatileSet::default(),
         }
     }
 

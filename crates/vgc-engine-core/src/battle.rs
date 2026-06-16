@@ -596,6 +596,7 @@ impl Battle {
             incoming.must_recharge = false;
             incoming.lockin_turns = 0;
             incoming.lockin_move_slot = 255;
+            incoming.volatiles.clear();
         } else {
             return false;
         }
