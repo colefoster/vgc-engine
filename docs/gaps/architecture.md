@@ -84,7 +84,7 @@ Remaining slices:
 
 **Why it matters**: Pursuit needs to detect "foe queued a switch". Me First needs to detect "foe queued a damaging move + copy BP". Quash needs to rewrite the queue. After You needs to advance the queue. Sucker Punch + Quick Guard interaction needs more than just `pending_kind`. Generalize into a typed `ActionQueue` accessor.
 
-**Status**: partial.
+**Status**: shipped — PR-153 (`ActionQueue { entries: [[ActionQueueEntry; 2]; 2] }`, `ActionKind { None, DamagingMove, StatusMove, Switch }`, `will_use_damaging_move(side, slot)`, `will_switch(side, slot)`, `queued_move_id(side, slot)`. Built at top of `step` from both players' choices; existing `pending_kind` flat byte view kept for backward compat with Sucker Punch's existing call site.).
 
 ### Per-source damage attribution
 
