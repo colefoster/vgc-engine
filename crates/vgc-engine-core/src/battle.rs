@@ -773,11 +773,13 @@ impl Battle {
                 .is_some_and(|m| m.is_alive());
             // Defender ability `onDamagingHit` (PS step before secondary
             // effects). Runs only when the hit actually reached the
-            // mon — sub-absorbed hits skipped. Currently dispatches to
-            // Stamina (+1 Def); Rough Skin / Iron Barbs / Static / etc.
-            // land in their own PRs.
+            // mon — sub-absorbed hits skipped. Dispatches Stamina,
+            // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
+            // their own PRs.
             if alive_post && !hit_sub && effective_dmg > 0 {
-                crate::ability::on_damaging_hit(self, tside, tslot);
+                crate::ability::on_damaging_hit(
+                    self, tside, tslot, move_id, actor_side, actor_slot,
+                );
             }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
@@ -1701,7 +1703,15 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         // Fake Out priority +3 beats Earthquake. Target flinches → Earthquake skipped.
-        assert_eq!(b.p1.team[0].current_hp, ih_hp, "Iron Hands took no damage — flinched");
+        // Fake Out is a contact move, so Garchomp's Rough Skin chips Iron Hands
+        // for 1/8 max HP. Earthquake doesn't land (flinched), so the ONLY HP loss
+        // is the Rough Skin recoil.
+        let expected_recoil = (b.p1.team[0].stats.hp / 8).max(1);
+        assert_eq!(
+            b.p1.team[0].current_hp,
+            ih_hp - expected_recoil,
+            "Iron Hands took only Rough Skin recoil (no Earthquake damage — flinched)",
+        );
         assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Garchomp took Fake Out damage");
     }
 
@@ -4540,5 +4550,104 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].boosts[1], 0,
                    "Status move must not trigger Stamina");
+    }
+
+    #[test]
+    fn rough_skin_chips_contact_attacker() {
+        // Garchomp @ Rough Skin takes a contact move (Close Combat from
+        // Lucario). PS: 1/8 max HP recoil to the attacker.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"focussash","nature":"adamant","moves":["closecombat","extremespeed","crunch","bulletpunch"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        let luc_full_hp = b.p1.team[0].stats.hp;
+        let luc_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Rough Skin recoil = 1/8 max HP, after Close Combat's damage —
+        // Lucario must have lost at LEAST 1/8 of max HP.
+        let lost = luc_before - b.p1.team[0].current_hp;
+        assert!(lost >= (luc_full_hp / 8).max(1),
+                "Rough Skin should chip ≥ 1/8 max HP ({} lost, expected ≥ {})",
+                lost, luc_full_hp / 8);
+    }
+
+    #[test]
+    fn rough_skin_does_not_proc_on_non_contact_move() {
+        // Earthquake has no contact flag — Rough Skin must not fire.
+        let p1_json = r#"[
+            {"species":"krookodile","level":50,"ability":"moxie","item":"focussash","nature":"jolly","moves":["earthquake","crunch","stoneedge","closecombat"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        let kro_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Krookodile must be fully intact — no Rough Skin chip from EQ.
+        assert_eq!(b.p1.team[0].current_hp, kro_before,
+                   "Rough Skin must NOT proc on non-contact move (Earthquake)");
+    }
+
+    #[test]
+    fn iron_barbs_chips_contact_attacker() {
+        // Ferrothorn @ Iron Barbs — same handler as Rough Skin.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"focussash","nature":"adamant","moves":["closecombat","extremespeed","crunch","bulletpunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","item":"leftovers","nature":"relaxed","moves":["powerwhip","gyroball","leechseed","spikes"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        let luc_full_hp = b.p1.team[0].stats.hp;
+        let luc_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let lost = luc_before - b.p1.team[0].current_hp;
+        assert!(lost >= (luc_full_hp / 8).max(1),
+                "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn magic_guard_blocks_rough_skin_chip() {
+        // Alakazam @ Magic Guard uses Focus Blast (no contact) on
+        // Garchomp — no Rough Skin to trigger. Now flip to a contact
+        // move from a MG attacker: PS routes Rough Skin recoil through
+        // onDamage, which MG blocks.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"lifeorb","nature":"timid","moves":["focuspunch","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        let zam_before = b.p1.team[0].current_hp;
+        b.step(
+            // Focus Punch (move 0) is a contact move; Alakazam should
+            // skate past Rough Skin via Magic Guard (and Life Orb recoil
+            // is also blocked by MG, already covered elsewhere).
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, zam_before,
+                   "Magic Guard blocks Rough Skin recoil");
     }
 }
