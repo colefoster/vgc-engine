@@ -243,6 +243,32 @@ impl Battle {
         let order: Vec<ScheduledAction> =
             action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
+        // Track which (side, slot) pairs still have an unresolved Move
+        // action this turn. Sucker Punch uses this to inspect whether
+        // its target has yet to move and is queued with a damaging
+        // attack. PS: `this.queue.willMove(target)`.
+        let mut pending_move: [[Option<u16>; 2]; 2] = Default::default();
+        let mut pending_kind: [[u8; 2]; 2] = Default::default(); // 0 = none, 1 = damaging, 2 = status
+        for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            for c in choices {
+                if let Choice::Move { actor_slot, move_slot, .. } = *c {
+                    let attacker = self.side(side_ref).active_mon(actor_slot as usize);
+                    if let Some(a) = attacker {
+                        if let Some(mid) = a.moves.get(move_slot as usize).copied() {
+                            if mid != u16::MAX {
+                                let cat = data::MOVES[mid as usize].category;
+                                let s = side_ref as usize;
+                                let slot = (actor_slot as usize).min(1);
+                                pending_move[s][slot] = Some(mid);
+                                pending_kind[s][slot] = if cat == 2 { 2 } else { 1 };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let _ = pending_move; // reserved for future hooks; pending_kind drives Sucker Punch today
+
         for action in order {
             if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
                 continue;
@@ -255,7 +281,14 @@ impl Battle {
             if !actor_alive {
                 continue;
             }
-            self.resolve_move(action);
+            // Mark this actor as having consumed their queued action
+            // BEFORE resolving — so Sucker Punch's `willMove(target)`
+            // check sees the target as "still pending" only when it
+            // genuinely hasn't acted yet.
+            let s = action.side as usize;
+            let slot = (action.actor_slot as usize).min(1);
+            pending_kind[s][slot] = 0;
+            self.resolve_move_with_pending(action, &pending_kind);
         }
 
         // 3. End-of-turn residuals (weather damage, future leftovers /
@@ -397,7 +430,11 @@ impl Battle {
         }
     }
 
-    fn resolve_move(&mut self, action: ScheduledAction) {
+    fn resolve_move_with_pending(
+        &mut self,
+        action: ScheduledAction,
+        pending_kind: &[[u8; 2]; 2],
+    ) {
         let Choice::Move { actor_slot, move_slot, target } = action.choice else {
             return;
         };
@@ -460,6 +497,43 @@ impl Battle {
                     a.status = Status::None;
                 }
             } else {
+                return;
+            }
+        }
+
+        // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
+        //     fails unless the target is still queued to use a
+        //     damaging (non-Status) move this turn. Approximation:
+        //     scan every opposing slot's `pending_kind`; if at least
+        //     one is still pending with a damaging move, succeed;
+        //     otherwise fail (PS targets exactly one mon and checks
+        //     that mon's queued action, but the engine often passes
+        //     `target: None` for `target: "normal"` and resolves by
+        //     position later — using "any unmoved foe is attacking"
+        //     matches PS in the singles case and is correct for
+        //     doubles whenever Sucker Punch has been routed to a
+        //     specific slot via the action target field — see below.
+        //     Fails still tick PP (PS behavior).
+        if m.slug == "suckerpunch" {
+            let opp = actor_side.opposing() as usize;
+            // If the action specifies a target slot, check ONLY that
+            // slot's pending action. Otherwise (single-target moves
+            // sometimes pass target: None when target: "normal" auto-
+            // resolves), check whether any opposing actor is queued
+            // with a damaging move.
+            let ok = match target {
+                Some(Target { side, slot }) if side == actor_side.opposing() => {
+                    let s = slot as usize & 1;
+                    pending_kind[opp][s] == 1
+                }
+                _ => pending_kind[opp].iter().any(|&k| k == 1),
+            };
+            if !ok {
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1);
+                    }
+                }
                 return;
             }
         }
@@ -5968,6 +6042,84 @@ mod tests {
         // Sanity: more than negligible.
         assert!(dmg as u32 * 10 > hp_before as u32,
                 "Last Respects damage too low: {dmg} / {hp_before}");
+    }
+
+    #[test]
+    fn sucker_punch_fails_against_a_protect_user() {
+        // Target uses Protect (status). Sucker Punch should fail —
+        // the target isn't queued with a damaging move.
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"","nature":"jolly","moves":["suckerpunch","closecombat","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Target took no damage (Sucker Punch failed); target is
+        // protected — independent of Sucker Punch's resolution but
+        // consistent with no damaging move landing.
+        assert_eq!(b.p2.team[0].current_hp, hp_before,
+                   "Sucker Punch should fail vs a Protect user");
+    }
+
+    #[test]
+    fn sucker_punch_hits_when_target_queues_a_damaging_move() {
+        // Slower target queues Earthquake. Sucker Punch (priority +1)
+        // resolves first and should connect.
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"","nature":"jolly","moves":["suckerpunch","closecombat","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < hp_before,
+                "Sucker Punch should hit when target queues a damaging move");
+    }
+
+    #[test]
+    fn sucker_punch_fails_when_target_switches() {
+        // Target queues a switch — not a damaging move; Sucker Punch
+        // should fail. (Sucker Punch user also moves with +1 priority,
+        // before the switch resolves in the move loop. Switches actually
+        // resolve before all moves in our engine — so target's "next
+        // action" is gone by the time Sucker Punch runs — that's still
+        // a failure case per PS, because the target won't move at all.)
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"","nature":"jolly","moves":["suckerpunch","closecombat","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // P2 switches to Snorlax.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        // After the turn, Snorlax is active. Sucker Punch should have
+        // failed because no damaging move was queued — so Snorlax must
+        // be at full HP.
+        let snor_max = b.p2.team[1].stats.hp;
+        assert_eq!(b.p2.team[1].current_hp, snor_max,
+                   "Sucker Punch must fail vs a switching target");
     }
 
     #[test]
