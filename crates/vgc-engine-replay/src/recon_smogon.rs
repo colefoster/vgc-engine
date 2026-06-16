@@ -93,6 +93,7 @@ impl SmogonStatsRecon {
             moves,
             ivs: StatSpread::MAX_IV,
             evs,
+            teratype: None,
         })
     }
 }

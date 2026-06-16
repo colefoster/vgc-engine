@@ -71,6 +71,12 @@ pub struct TeamMember {
     pub ivs: StatSpread,
     #[serde(default)]
     pub evs: StatSpread,
+    /// Tera type as a PS type slug ("fire", "water", "stellar", ...).
+    /// Optional — when omitted, defaults to the species' first type
+    /// (gen-9 set-build convention). Resolved to a type code 0..=17
+    /// (Stellar deferred to its own PR). Case-insensitive.
+    #[serde(default)]
+    pub teratype: Option<String>,
 }
 
 fn default_level() -> u8 { 50 }
@@ -140,6 +146,26 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         pp[i] = data::MOVES[id as usize].pp;
     }
 
+    // Tera type: PS type names → typechart index (0..=17). Stellar is
+    // gen-9 special (effective only on first hit per type) and isn't
+    // in our 18-type chart — represented as 255 for now and consumers
+    // gate on the sentinel until the Stellar PR lands.
+    let tera_type = match m.teratype.as_deref() {
+        None => species.types[0],
+        Some(s) => {
+            let lower = s.to_ascii_lowercase();
+            if lower == "stellar" {
+                255
+            } else {
+                data::TYPE_NAMES
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(&lower))
+                    .map(|i| i as u8)
+                    .unwrap_or(species.types[0])
+            }
+        }
+    };
+
     let ability_id = m
         .ability
         .as_deref()
@@ -191,6 +217,8 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         last_attacker: (255, 255),
         last_attacker_category: 255,
         last_damage_taken: 0,
+        tera_type,
+        terastallized: false,
     })
 }
 

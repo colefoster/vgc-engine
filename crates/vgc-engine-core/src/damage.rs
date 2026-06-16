@@ -820,6 +820,8 @@ mod tests {
             last_attacker: (255, 255),
             last_attacker_category: 255,
             last_damage_taken: 0,
+            tera_type: 0,
+            terastallized: false,
         }
     }
 
