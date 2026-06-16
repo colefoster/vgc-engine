@@ -1055,6 +1055,25 @@ impl Battle {
                 continue;
             }
 
+            // Sap Sipper — PS `data/abilities.ts:sapsipper` `onTryHit`
+            // returns null on Grass-type moves and triggers a +1 Atk on
+            // the target. Grass type code = 4. Absorbs the hit (no
+            // damage, no secondaries). Goodra / Azumarill HA fallback.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sap_Sipper_(Ability)>.
+            if m.type_ == 4 {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "sapsipper" && !attacker_breaks_mold {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        d.boosts[0] = (d.boosts[0] + 1).clamp(-6, 6);
+                    }
+                    continue;
+                }
+            }
+
             // Ground-immunity gate. Levitate (ability), Air Balloon
             // (item), Flying-type defenders, and grounded-disabling
             // volatiles (Magnet Rise / Telekinesis — not modeled yet)
@@ -6371,6 +6390,31 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, zam_before,
                    "Magic Guard blocks Rough Skin recoil");
+    }
+
+    #[test]
+    fn sap_sipper_absorbs_grass_and_boosts_atk() {
+        // Garchomp uses Energy Ball (Grass, type 11) against Azumarill.
+        // Azumarill with Sap Sipper takes 0 damage AND gains +1 Atk.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["energyball","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"azumarill","level":50,"ability":"sapsipper","item":"sitrusberry","nature":"adamant","moves":["aquajet","playrough","superpower","aquatail"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let azu_hp_before = b.p2.team[0].current_hp;
+        let azu_atk_before = b.p2.team[0].boosts[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, azu_hp_before,
+                   "Sap Sipper absorbs Energy Ball");
+        assert_eq!(b.p2.team[0].boosts[0], azu_atk_before + 1,
+                   "Sap Sipper grants +1 Atk");
     }
 
     #[test]

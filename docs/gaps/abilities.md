@@ -200,7 +200,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Grass immunity + +1 Atk on hit.
 
-**Status**: not implemented.
+**Status**: shipped — PR-109.
 
 ### Levitate
 
