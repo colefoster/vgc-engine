@@ -136,7 +136,7 @@ impl FinalStats {
 /// fixed-capacity `volatiles: [Volatile; 8]` array (PS limits in
 /// practice — corpus mons rarely carry more than 3-4 at a time);
 /// callers look up by kind in O(1). The migration of the ad-hoc
-/// boolean / counter fields (`is_protected_this_turn`, `encore_turns`,
+/// boolean / counter fields (`is_protected_this_turn`,
 /// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
 /// `damaged_this_turn`,
 /// `crit_stage_volatile`, `semi_invuln`,
@@ -213,6 +213,12 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Encore lock (PS `data/conditions.ts:encore`, duration 3). Payload
+    /// packs `(turns << 8) | slot` — high 8 bits are remaining turns,
+    /// low 8 bits are the locked move slot (0..=3). Decremented at end
+    /// of step; cleared on switch-out or when the locked move's PP
+    /// runs out.
+    Encore,
     /// Sleep counter (PS `data/conditions.ts:slp`). Indefinite duration;
     /// `payload` carries the remaining sleep turns (1..=3 on gen 5+ apply,
     /// decremented at the start of each move attempt; the mon wakes when
@@ -393,14 +399,6 @@ pub struct Pokemon {
     /// or 255 if it hasn't moved yet on the field. Cleared on switch-
     /// out. Used by Encore to determine the lock target.
     pub last_used_move_slot: u8,
-    /// Encore lock: when > 0, this mon must use `encored_move_slot`.
-    /// Decremented at end of step; the volatile ends at 0. Cleared on
-    /// switch-out or when the locked move runs out of PP. PS:
-    /// `data/conditions.ts:encore`, duration 3.
-    pub encore_turns: u8,
-    /// Slot index the Encore volatile is locking the user into.
-    /// 255 = no encore.
-    pub encored_move_slot: u8,
     /// Paradox booster stat index (0=atk, 1=def, 2=spa, 3=spd, 4=spe;
     /// 255 = no boost active). Set when Protosynthesis or Quark Drive
     /// activates via its trigger (Sun / Electric Terrain / Booster
@@ -713,6 +711,45 @@ impl Pokemon {
         }
     }
 
+    /// Remaining Encore turns; `0` when not encored.
+    #[inline]
+    pub fn encore_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Encore)
+            .map(|v| (v.payload >> 8) as u8)
+            .unwrap_or(0)
+    }
+
+    /// Encored move slot (0..=3). 255 if not encored.
+    #[inline]
+    pub fn encored_move_slot(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Encore)
+            .map(|v| (v.payload & 0xFF) as u8)
+            .unwrap_or(255)
+    }
+
+    /// Apply an Encore lock for `turns` (1..=3) on move slot `slot`. If
+    /// `turns == 0`, clears the lock instead.
+    #[inline]
+    pub fn set_encore(&mut self, turns: u8, slot: u8) {
+        if turns == 0 {
+            self.volatiles.remove(VolatileKind::Encore);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Encore,
+                turns_remaining: 0,
+                payload: ((turns as u32) << 8) | (slot as u32 & 0xFF),
+            });
+        }
+    }
+
+    /// Clear the Encore volatile.
+    #[inline]
+    pub fn clear_encore(&mut self) {
+        self.volatiles.remove(VolatileKind::Encore);
+    }
+
     /// Remaining sleep turns. `0` if not asleep.
     #[inline]
     pub fn sleep_turns(&self) -> u8 {
@@ -962,7 +999,7 @@ mod tests {
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
-            last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
+            last_used_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
             last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
@@ -1002,8 +1039,6 @@ mod tests {
             turns_active: 0,
             locked_move_slot: 255,
             last_used_move_slot: 255,
-            encore_turns: 0,
-            encored_move_slot: 255,
             boosted_stat: 255,
             booster_locked: false,
             ability_suppressed: false,
