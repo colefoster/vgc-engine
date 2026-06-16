@@ -131,7 +131,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 (From audit of `MoveDef` consumption sites in `battle.rs` / `damage.rs`.)
 
 - `cannot_use_twice: bool` — shipped PR-103 as `MoveDef::cannot_use_twice` (covers PS `flags.cantusetwice`: Gigaton Hammer, Blood Moon). Last Resort uses a different "all other moves used" mechanism, still TODO.
-- `self_max_hp_recoil_num/den` — Steel Beam, Mind Blown, Chloroblast (50% max HP recoil).
+- `self_max_hp_recoil_num/den` — shipped PR-104 as `MoveDef::self_max_hp_recoil_num/den` (set to 1/2 on Steel Beam, Mind Blown, Chloroblast). Consumer in damage pipeline still TODO.
 - `flags.bite` / `flags.punch` / `flags.pulse` / `flags.bullet` / `flags.dance` — shipped PR-102 as `MoveDef::is_{punch,bite,pulse,bullet,dance}` (consumers still TODO).
 - `flags.powder` — shipped PR-102 as `MoveDef::is_powder` (inline Grass-immunity approximation still in `battle.rs`; switch sites pending).
 - `flags.heal` — shipped PR-102 as `MoveDef::is_heal` (Heal Block consumer TODO).
