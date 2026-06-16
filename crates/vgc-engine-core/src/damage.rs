@@ -305,6 +305,26 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Supreme Overlord — PS `data/abilities.ts:supremeoverlord`
+    // `onBasePower` returns `chainModify([powMod[fallen], 4096])` with
+    // `powMod = [4096, 4506, 4915, 5325, 5734, 6144]` (so 5 fallen → ×1.5).
+    // PS caches `fallen = min(side.totalFainted, 5)` at switch-in via
+    // `onStart`; we read `attacker_total_fainted_allies` live (the same
+    // value PS sees when nobody faints mid-turn — Kingambit doesn't
+    // normally see its own teammates faint between its switch-in and its
+    // own move). Kingambit signature, 24.5% usage per Smogon 2026-05.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Supreme_Overlord_(Ability)>.
+    if attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "supremeoverlord"
+    {
+        let fallen = (ctx.attacker_total_fainted_allies as usize).min(5);
+        const POW_MOD: [u32; 6] = [4096, 4506, 4915, 5325, 5734, 6144];
+        let n = POW_MOD[fallen];
+        if n != 4096 {
+            bp = bp * n / 4096;
+        }
+    }
+
     // Reckless — PS `data/abilities.ts:reckless` `onBasePower`
     // returns `chainModify([4915, 4096])` (≈ ×1.2) when the move
     // carries `recoil` or `hasCrashDamage`. Recoil is data-flagged
@@ -734,6 +754,34 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn supreme_overlord_scales_with_fallen() {
+        // Kingambit's Atk doesn't change but Supreme Overlord scales BP.
+        // 5 fallen → ×6144/4096 = ×1.5; expect ~1.5× damage.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let ovr_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "supremeoverlord").unwrap() as u16;
+        atk.ability_id = ovr_id;
+        let def = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let mid = move_id("earthquake");
+        let mk = |fallen: u8| calculate_damage(&atk, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: fallen });
+        let zero = mk(0);
+        let five = mk(5);
+        let ratio_x100 = (five as u32) * 100 / (zero.max(1) as u32);
+        assert!((148..=152).contains(&ratio_x100),
+                "5 fallen ≈ ×1.5, got ×{}/100", ratio_x100);
+        assert!(mk(1) > zero, "1 fallen boosts");
+        assert!(mk(5) == mk(6), "caps at 5 fallen");
     }
 
     #[test]
