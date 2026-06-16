@@ -107,6 +107,115 @@ pub fn build_crit_oracle_for_replay(replay: &Replay) -> Vec<RngEvent> {
     out
 }
 
+/// Walk one turn's events and emit one `RngEvent::PercentRoll(v)` per
+/// `|move|` line whose accuracy outcome we can read off the log:
+///
+///   * `-miss` anywhere in the move's resolution window → `100`
+///     (force-miss for any sub-100-acc move at the engine's
+///     `roll > eff_acc` gate; harmless for 100-acc moves which PS
+///     wouldn't have miss-marked anyway).
+///   * otherwise, a `-damage` / `-heal` / `-boost` / `-status` /
+///     `-unboost` for a target in the window → `1` (force-hit;
+///     `1 <= eff_acc` for any non-zero accuracy).
+///   * no observable effect (Protect, Wide Guard, immunity, Fail) →
+///     skip. We can't tell if PS rolled accuracy for those, so the
+///     engine falls back to splitmix and the queue position stays
+///     coherent for later moves.
+///
+/// Spread moves: emit ONE event per `|move|` line. The engine rolls
+/// accuracy per target, so only the first target's accuracy is
+/// oracle-driven and remaining targets fall through to splitmix. That
+/// is a strict improvement over "no oracle" without risking queue
+/// desync.
+///
+/// Status moves with `accuracy == 255` (Protect, Tailwind, Trick Room,
+/// etc.) never roll in the engine, so an emitted PercentRoll for them
+/// would stay un-popped and corrupt later draws. We approximate "never
+/// rolled" by skipping any move where neither `-miss` nor a
+/// hit-effect is observed (covers status moves that simply succeed
+/// without a per-target event, e.g. Tailwind → `-sidestart`).
+pub fn build_accuracy_oracle_for_turn(tv: &TurnView<'_>) -> Vec<RngEvent> {
+    let mut out = Vec::new();
+    let evs = tv.events;
+    let mut i = 0;
+    while i < evs.len() {
+        let Event::Move { user, target, .. } = &evs[i] else {
+            i += 1;
+            continue;
+        };
+        // Scan the resolution window [i+1 .. next move or end).
+        let mut j = i + 1;
+        let mut saw_miss = false;
+        let mut saw_hit_effect = false;
+        while j < evs.len() && !matches!(evs[j], Event::Move { .. }) {
+            match &evs[j] {
+                Event::Miss { source, .. } => {
+                    // Only count miss if it belongs to this move's user.
+                    if source.player == user.player && source.slot == user.slot {
+                        saw_miss = true;
+                    }
+                }
+                Event::Damage { from: None, slot, .. } => {
+                    // A bare damage to anyone not the user is a hit on a target.
+                    if !(slot.player == user.player && slot.slot == user.slot) {
+                        saw_hit_effect = true;
+                    }
+                }
+                Event::Status { slot, .. }
+                | Event::Boost { slot, .. }
+                | Event::Unboost { slot, .. }
+                    if !(slot.player == user.player && slot.slot == user.slot) =>
+                {
+                    // Effects on a target (not the user) mean the move connected.
+                    saw_hit_effect = true;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        // Decision rules:
+        //   * pure-hit (≥1 hit effect, no miss) → PercentRoll(1)
+        //   * pure-miss (≥1 miss, no hit effect) → PercentRoll(100)
+        //   * mixed (spread move where some targets hit, some missed) →
+        //     SKIP. Emitting a single force-hit-or-miss would force the
+        //     engine's first per-target roll the wrong way for ~half the
+        //     remaining targets — strictly worse than letting splitmix
+        //     guess. The engine's per-target rolls fall back to splitmix
+        //     and the queue stays coherent for later moves.
+        //   * no observable effect (Protect, Wide Guard, Fail, status
+        //     moves with no trace) → skip. We can't tell whether PS
+        //     rolled accuracy.
+        if saw_miss && !saw_hit_effect {
+            out.push(RngEvent::PercentRoll(100));
+        } else if saw_hit_effect && !saw_miss && target.is_some() {
+            out.push(RngEvent::PercentRoll(1));
+        }
+        i = j;
+    }
+    out
+}
+
+/// Concatenate accuracy events across every turn of a replay.
+pub fn build_accuracy_oracle_for_replay(replay: &Replay) -> Vec<RngEvent> {
+    let mut out = Vec::new();
+    for tv in replay.turns() {
+        if tv.number == 0 {
+            continue;
+        }
+        out.extend(build_accuracy_oracle_for_turn(&tv));
+    }
+    out
+}
+
+/// Combined oracle: crit + accuracy events. The engine pops by variant
+/// (Crit vs PercentRoll), so we can simply concatenate the two lists —
+/// their per-variant relative order is preserved.
+pub fn build_oracle_for_replay(replay: &Replay) -> Vec<RngEvent> {
+    let mut out = build_crit_oracle_for_replay(replay);
+    out.extend(build_accuracy_oracle_for_replay(replay));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +325,100 @@ mod tests {
         let falses = events.iter().filter(|e| matches!(e, RngEvent::Crit(false))).count();
         assert_eq!(trues, 1, "fixture has exactly 1 crit (the Acrobatics)");
         assert!(falses >= 8, "expected many non-crit damaging hits, got {falses}");
+    }
+
+    #[test]
+    fn accuracy_hit_yields_percent_1() {
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            mk_damage(2, 'a', "Peli", None),
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        assert_eq!(
+            build_accuracy_oracle_for_turn(&tv),
+            vec![RngEvent::PercentRoll(1)],
+        );
+    }
+
+    #[test]
+    fn accuracy_miss_yields_percent_100() {
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            Event::Miss {
+                source: slot(1, 'a', "Chomp"),
+                target: Some(slot(2, 'a', "Peli")),
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        assert_eq!(
+            build_accuracy_oracle_for_turn(&tv),
+            vec![RngEvent::PercentRoll(100)],
+        );
+    }
+
+    #[test]
+    fn accuracy_protect_emits_nothing() {
+        // Move was protected — no -miss, no -damage, no -boost on a target.
+        // The engine might still roll accuracy, but we can't classify it.
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            // Just a -singleturn/-activate which we don't model — appears
+            // as nothing to the accuracy walker.
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        assert!(build_accuracy_oracle_for_turn(&tv).is_empty());
+    }
+
+    #[test]
+    fn accuracy_self_targeted_move_emits_nothing() {
+        // Tailwind / Trick Room / Dragon Dance — no real target, no
+        // accuracy gate in the engine. Skip.
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", None),
+            Event::Boost {
+                slot: slot(1, 'a', "Chomp"),
+                stat: "atk".into(),
+                amount: 1,
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        assert!(build_accuracy_oracle_for_turn(&tv).is_empty());
+    }
+
+    #[test]
+    fn accuracy_two_moves_yield_two_events() {
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            mk_damage(2, 'a', "Peli", None),
+            mk_move(2, 'a', "Peli", Some(slot(1, 'a', "Chomp"))),
+            Event::Miss {
+                source: slot(2, 'a', "Peli"),
+                target: Some(slot(1, 'a', "Chomp")),
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        assert_eq!(
+            build_accuracy_oracle_for_turn(&tv),
+            vec![RngEvent::PercentRoll(1), RngEvent::PercentRoll(100)],
+        );
+    }
+
+    #[test]
+    fn combined_oracle_concatenates_crits_then_accuracy() {
+        // Build a tiny synthetic replay-like input: 1 move, 1 crit, 1 hit.
+        // Combined should produce [Crit(true), PercentRoll(1)].
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            Event::Crit(slot(2, 'a', "Peli")),
+            mk_damage(2, 'a', "Peli", None),
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        let mut combined = build_crit_oracle_for_turn(&tv);
+        combined.extend(build_accuracy_oracle_for_turn(&tv));
+        assert_eq!(
+            combined,
+            vec![RngEvent::Crit(true), RngEvent::PercentRoll(1)],
+        );
     }
 
     #[test]

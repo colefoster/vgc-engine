@@ -21,7 +21,9 @@ mod trace;
 pub use choices::ChoiceExtractor;
 pub use event::{Event, PokeSlot};
 pub use oracle::{
-    build_crit_oracle_for_replay, build_crit_oracle_for_turn, load_rng_dump, DumpLoadError,
+    build_accuracy_oracle_for_replay, build_accuracy_oracle_for_turn,
+    build_crit_oracle_for_replay, build_crit_oracle_for_turn, build_oracle_for_replay,
+    load_rng_dump, DumpLoadError,
 };
 pub use parser::parse_line;
 pub use recon::{

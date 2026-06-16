@@ -139,6 +139,13 @@ pub fn score_replay_oracle(
     seed: u64,
     tolerance: f32,
 ) -> Result<ReplayScore, RunnerError> {
+    // PR-95: combined oracle (crit + accuracy) is available via
+    // `build_oracle_for_replay`, but defaults to crit-only here because
+    // CanonicalDefault recon's damage miscalibration interacts badly
+    // with force-hit/force-miss decisions — the engine's wrongly-scaled
+    // damage on a force-hit causes earlier-than-PS faints that compound
+    // through subsequent turns. Once set reconstruction lands, switch
+    // this to `build_oracle_for_replay`.
     let events = crate::oracle::build_crit_oracle_for_replay(replay);
     score_replay_with_events(replay, recon, seed, tolerance, events)
 }
