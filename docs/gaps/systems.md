@@ -306,7 +306,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:strengthsap`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-110.
 
 ## Misc moves / status hooks
 
