@@ -232,3 +232,150 @@ mod tests {
         assert_eq!(build_crit_oracle_for_turn(&tv), vec![RngEvent::Crit(false)]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// ps-rng-dump sidecar loader
+// ---------------------------------------------------------------------------
+//
+// `tools/ps-rng-dump/dump.js` drives a Pokémon Showdown BattleStream
+// under a fixed PRNG seed against an action sequence and writes a JSON
+// dump with shape:
+//
+//   { "ok": true, "events": [
+//       { "kind": "Crit", "value": true },
+//       { "kind": "DamageRoll", "value": 7 },
+//       { "kind": "PercentRoll", "value": true, "threshold": 30 },
+//       ...
+//   ] }
+//
+// `load_rng_dump` parses this into `Vec<RngEvent>` ready for
+// `Rng::oracle_partial(events, fallback_seed)`. Variants not yet
+// mapped to a vgc-engine draw site (`Chance` with arbitrary
+// num/denom) are skipped — the engine falls back to Splitmix at those
+// draw sites and we don't risk smashing a draw with the wrong type.
+
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind")]
+enum DumpEvent {
+    Crit { value: bool },
+    DamageRoll { value: u8 },
+    PercentRoll { value: bool, threshold: u8 },
+    Range { value: u32, bound: u32 },
+    Tiebreak { value: String },
+    Chance {
+        // arbitrary randomChance(num, denom) — no vgc-engine draw site
+        // for these yet; skip on load. Fields are decoded so serde
+        // doesn't choke on extra keys.
+        #[allow(dead_code)] value: bool,
+        #[allow(dead_code)] num: u32,
+        #[allow(dead_code)] denom: u32,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct Dump {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    events: Vec<DumpEvent>,
+}
+
+#[derive(Debug)]
+pub enum DumpLoadError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    NotOk,
+}
+
+impl core::fmt::Display for DumpLoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "io: {e}"),
+            Self::Json(e) => write!(f, "json: {e}"),
+            Self::NotOk => write!(f, "dump.ok == false"),
+        }
+    }
+}
+impl std::error::Error for DumpLoadError {}
+
+/// Load a ps-rng-dump JSON file and lower it to the `Vec<RngEvent>`
+/// queue consumed by `Rng::oracle_partial`. PercentRoll events
+/// recover the percent value the engine sees from `(threshold, value)`:
+/// PS asks `randomChance(threshold, 100)`, returning true when
+/// `roll <= threshold` (PS uses 1..=100). We emit a percent that lands
+/// just inside the matching half of the inclusive range:
+///   * `value = true`  → emit the threshold itself (smallest pass)
+///   * `value = false` → emit `threshold + 1` (smallest fail)
+///
+/// Range events with bound 16 are remapped to DamageRoll for
+/// engine-side compatibility.
+pub fn load_rng_dump(path: impl AsRef<std::path::Path>) -> Result<Vec<RngEvent>, DumpLoadError> {
+    let bytes = std::fs::read(path).map_err(DumpLoadError::Io)?;
+    let dump: Dump = serde_json::from_slice(&bytes).map_err(DumpLoadError::Json)?;
+    if !dump.ok {
+        return Err(DumpLoadError::NotOk);
+    }
+    let mut out = Vec::with_capacity(dump.events.len());
+    for e in dump.events {
+        match e {
+            DumpEvent::Crit { value } => out.push(RngEvent::Crit(value)),
+            DumpEvent::DamageRoll { value } => out.push(RngEvent::DamageRoll(value)),
+            DumpEvent::PercentRoll { value, threshold } => {
+                let v: u8 = if value {
+                    threshold.clamp(1, 100)
+                } else {
+                    threshold.saturating_add(1).clamp(1, 100)
+                };
+                out.push(RngEvent::PercentRoll(v));
+            }
+            DumpEvent::Range { value, bound } => {
+                if bound == 16 {
+                    out.push(RngEvent::DamageRoll(value as u8));
+                } else {
+                    out.push(RngEvent::Range(value));
+                }
+            }
+            DumpEvent::Tiebreak { value } => {
+                // Parse "0xHEX" or decimal.
+                let v = u64::from_str_radix(value.trim_start_matches("0x"), 16)
+                    .or_else(|_| value.parse::<u64>())
+                    .unwrap_or(0);
+                out.push(RngEvent::Tiebreak(v));
+            }
+            DumpEvent::Chance { .. } => {
+                // No vgc-engine draw site for arbitrary randomChance
+                // yet — skip rather than corrupt the queue.
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod dump_tests {
+    use super::*;
+
+    #[test]
+    fn load_fixture_pika_chomp_dump() {
+        // Bundled fixture from tools/ps-rng-dump/fixture-pika-chomp.json:
+        // 1-turn Pikachu Thunderbolt vs Garchomp Dragon Claw under seed
+        // [1,2,3,4]. Expected events: accuracy (PercentRoll), crit,
+        // damage roll, secondary chance (Chance, dropped on load).
+        let raw = include_str!("../../../tools/ps-rng-dump/fixture-pika-chomp.json");
+        let dump: Dump = serde_json::from_str(raw).unwrap();
+        assert!(dump.ok);
+        // Save to a temp file so load_rng_dump's file-read path is exercised.
+        let tmp = std::env::temp_dir().join("vgc-engine-replay-dump-test.json");
+        std::fs::write(&tmp, raw).unwrap();
+        let events = load_rng_dump(&tmp).unwrap();
+        // PercentRoll (accuracy) + Crit + DamageRoll. The Chance(3,10)
+        // secondary-effect roll is dropped on purpose — vgc-engine
+        // doesn't have a draw site for it yet.
+        assert_eq!(events.len(), 3, "got: {events:?}");
+        assert!(matches!(events[0], RngEvent::PercentRoll(_)));
+        assert!(matches!(events[1], RngEvent::Crit(false)));
+        assert!(matches!(events[2], RngEvent::DamageRoll(13)));
+    }
+}
