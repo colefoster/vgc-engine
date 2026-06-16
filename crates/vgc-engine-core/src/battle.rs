@@ -2789,6 +2789,28 @@ fn apply_secondary_effect(
     // `secondary: { chance: 50, onHit() { sample(['psn','par','slp']) } }`.
     // Two RNG draws: gate (percent_1_100) then status pick (range(3)).
     // Type / status immunity gates handled inside `try_set_status`.
+    // Tri Attack — 20% chance to inflict one of brn / frz / par,
+    // sampled uniformly. PS data/moves.ts:triattack
+    //   secondary: { chance: 20, onHit(target, source) {
+    //     const result = source.battle.random(3);
+    //     if (result === 0) target.trySetStatus('brn', ...)
+    //     else if (result === 1) target.trySetStatus('par', ...)
+    //     else target.trySetStatus('frz', ...);
+    //   } }
+    // Two RNG draws: gate, then status pick. Type / immunity gates
+    // handled by `try_set_status`. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Tri_Attack_(move)>.
+    if move_slug == "triattack" {
+        if rng.percent_1_100() <= 20 {
+            let pick = rng.range(3);
+            let status = match pick {
+                0 => Status::Burn,
+                1 => Status::Paralysis,
+                _ => Status::Freeze,
+            };
+            battle.try_set_status(target_side, target_slot, status);
+        }
+    }
     if move_slug == "direclaw" {
         if rng.percent_1_100() <= 50 {
             let pick = rng.range(3);
@@ -7908,6 +7930,37 @@ mod tests {
         // 2 × (35 BP @ min roll). Empirically this is well above the
         // pure single-hit floor. We just verify nonzero and consistent.
         assert!(dmg >= 1);
+    }
+
+    #[test]
+    fn tri_attack_can_inflict_burn_paralysis_or_freeze() {
+        // PS data/moves.ts:triattack secondary fires at 20%; on hit it
+        // samples one of brn/par/frz uniformly. Over many seeds we
+        // should observe each outcome at least once with a properly
+        // immune-free defender. Use a Normal-type target with no
+        // type immunities to any of the three statuses.
+        let p1_json = r#"[
+            {"species":"porygonz","level":50,"ability":"download","item":"","nature":"modest","moves":["triattack","icebeam","thunderbolt","protect"],"evs":{"hp":4,"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut saw_any_status = false;
+        for seed in 0..200u64 {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1.clone(), p2.clone());
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            let st = b.p2.team[0].status;
+            if matches!(st, Status::Burn | Status::Paralysis | Status::Freeze) {
+                saw_any_status = true;
+                break;
+            }
+        }
+        assert!(saw_any_status, "Tri Attack should land a status across 200 seeds");
     }
 
     #[test]

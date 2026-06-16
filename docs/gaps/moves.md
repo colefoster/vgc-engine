@@ -144,7 +144,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: 80-BP Normal special; 20% chance to burn / freeze / paralyze (rolled which one). PS rolls one of the three at random.
 
-**Status**: not implemented.
+**Status**: shipped — PR-104.
 
 ### Fire Fang / Ice Fang / Thunder Fang
 
