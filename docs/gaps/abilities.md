@@ -14,7 +14,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **PS reference**: `data/abilities.ts:adaptability`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-100.
 
 ### Supreme Overlord
 
