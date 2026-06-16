@@ -26,7 +26,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **PS reference**: `data/abilities.ts:supremeoverlord`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-101.
 
 ### Tough Claws
 
