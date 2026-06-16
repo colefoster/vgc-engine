@@ -60,6 +60,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
             hp: rest.get(1).map(|s| s.to_string()).unwrap_or_default(),
             from: from(),
         },
+        "-crit" => Event::Crit(parse_slot(rest.first()?)?),
         "-heal" => Event::Heal {
             slot: parse_slot(rest.first()?)?,
             hp: rest.get(1).map(|s| s.to_string()).unwrap_or_default(),
