@@ -253,6 +253,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vgc-engine-golden"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vgc-engine-core",
+]
+
+[[package]]
 name = "vgc-engine-py"
 version = "0.0.1"
 dependencies = [

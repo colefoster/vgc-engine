@@ -1,0 +1,13 @@
+[package]
+name = "vgc-engine-golden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Synthetic golden-master differential harness — replays a scripted battle against PS-recorded ground truth and reports per-turn divergence. Primary correctness signal for engine mechanics."
+
+[dependencies]
+vgc-engine-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
