@@ -278,6 +278,33 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Embody Aspect (Ogerpon Tera forms): on switch-in while
+    // Terastallized, raise one stat by +1. PS handler in
+    // `data/abilities.ts:embodyaspect{teal/wellspring/hearthflame/cornerstone}`:
+    //   if (baseSpecies == 'Ogerpon-<Mask>-Tera' && pokemon.terastallized &&
+    //       !effectState.embodied) { this.boost({ stat: 1 }); }
+    // PS gates additionally on `effectState.embodied` to avoid stacking
+    // across multiple `onStart` fires within a single battle; our
+    // switch-in path only fires `on_switch_in` on real switches, and
+    // the Tera-form species slugs (`ogerponXteratera`) only exist
+    // post-Terastallize, so the gate is sufficient in practice.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Embody_Aspect_(Ability)>.
+    let embody_stat = match slug {
+        "embodyaspectteal" => Some((4u8, "ogerpontealtera")),
+        "embodyaspectwellspring" => Some((3, "ogerponwellspringtera")),
+        "embodyaspecthearthflame" => Some((0, "ogerponhearthflametera")),
+        "embodyaspectcornerstone" => Some((1, "ogerponcornerstonetera")),
+        _ => None,
+    };
+    if let Some((stat_idx, expected_slug)) = embody_stat {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.is_alive() && m.terastallized && m.species().slug == expected_slug {
+                let cur = m.boosts[stat_idx as usize];
+                m.boosts[stat_idx as usize] = (cur + 1).min(6);
+            }
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
