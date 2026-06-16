@@ -114,7 +114,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Damage formula branch on offensive stat selection.
 
-**Status**: not implemented.
+**Status**: shipped — PR-102 (picks Physical iff boosted Atk > boosted SpA; ignoreAbility deferred).
 
 ### Shell Side Arm
 

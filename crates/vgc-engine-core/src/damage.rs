@@ -412,7 +412,23 @@ pub fn calculate_damage(
         bp = bp * n / d;
     }
 
-    let physical = m.category == 0;
+    // Photon Geyser / Light That Burns the Sky — `onModifyMove` PS sets
+    // category to 'Physical' iff atk > spa (PS uses the *boosted* atk
+    // and spa via `getStat('atk', false, true)`). Otherwise the move
+    // stays Special. We pick the same category here so the rest of the
+    // formula (atk/def vs spa/spd, stage selection, screens) routes
+    // through the right branch. Necrozma / Ultra Necrozma signatures.
+    // PS: data/moves.ts:photongeyser (line 13342),
+    //     data/moves.ts:lightthatburnsthesky.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Photon_Geyser_(move)>
+    //             <https://bulbapedia.bulbagarden.net/wiki/Light_That_Burns_the_Sky_(move)>
+    let physical = if matches!(m.slug, "photongeyser" | "lightthatburnsthesky") {
+        let atk_boosted = apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
+        let spa_boosted = apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
+        atk_boosted > spa_boosted
+    } else {
+        m.category == 0
+    };
 
     // Boost-stage indices into `Pokemon::boosts`:
     //   0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva
@@ -619,6 +635,60 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn photon_geyser_picks_higher_offense() {
+        // Necrozma base 107 Atk / 127 SpA → SpA-leaning by default →
+        // Special. Crank Atk EVs+nature so Atk > SpA → Photon Geyser
+        // should flip to Physical and read Atk + opp Def, not SpA +
+        // opp SpD. Compare against an opponent with Def << SpD: if we
+        // correctly flipped to Physical, damage spikes.
+        let necrozma_atk = make_mon(
+            "necrozma",
+            50,
+            "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 },
+        );
+        let necrozma_spa = make_mon(
+            "necrozma",
+            50,
+            "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 252 },
+        );
+        // Defender: huge SpD, small Def → physical hits harder.
+        let target = make_mon(
+            "blissey",
+            50,
+            "calm",
+            StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 },
+        );
+        let pg = move_id("photongeyser");
+        let dmg_atk = calculate_damage(
+            &necrozma_atk, &target, pg,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 },
+        );
+        let dmg_spa = calculate_damage(
+            &necrozma_spa, &target, pg,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 },
+        );
+        // Adamant 252+ Atk Necrozma has higher Atk than its SpA. The
+        // physical branch then hits Blissey's tiny Def — should land
+        // way more damage than the special branch.
+        assert!(dmg_atk > dmg_spa * 2,
+                "Photon Geyser with higher Atk should hit Blissey's Def for >2× SpA-branch dmg: atk={dmg_atk} spa={dmg_spa}");
     }
 
     #[test]
