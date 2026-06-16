@@ -6628,6 +6628,73 @@ mod tests {
     }
 
     #[test]
+    fn stored_power_scales_with_positive_boost_count() {
+        // 20 + 20 * positiveBoosts. With +0 → 20 BP, +1 → 40 BP,
+        // +6 → 140 BP. Damage scales linearly with BP through the
+        // formula (modulo a tiny +2 constant), so ratios should
+        // mirror BP ratios.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["storedpower","moonblast","shadowball","dazzlinggleam"]}
+        ]"#;
+        // Ghost-neutral defender (Stored Power's STAB Psychic vs
+        // Snorlax is neutral; Snorlax is fine).
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let sp = data::MOVES.iter().position(|m| m.slug == "storedpower").unwrap() as u16;
+        let mk = |boosts: [i8; 7]| {
+            let mut a = p1[0].clone();
+            a.boosts = boosts;
+            calculate_damage(&a, &p2[0], sp,
+                DamageContext { roll: 15, ..DamageContext::default() })
+        };
+        // Use stats that don't double-count through the boost math:
+        // Stored Power is Special so atk(0) and def(1) don't affect
+        // damage. spa(2) and spd(3) would. spe(4), acc(5), eva(6)
+        // are safe.
+        let bp_20 = mk([0; 7]);
+        let bp_40 = mk([0, 0, 0, 0, 1, 0, 0]); // +1 spe
+        let bp_140 = mk([0, 0, 0, 0, 2, 2, 2]); // +2 spe / acc / eva = 6
+        assert!(bp_20 > 0);
+        let r1 = (bp_40 as u32) * 100 / bp_20 as u32;
+        assert!(r1 >= 180 && r1 <= 220,
+                "Stored Power +1 ratio off: {bp_40}/{bp_20} = {r1}%");
+        // +6 → BP 140 (7× of 20). The +2 floor constant in the damage
+        // formula compresses the ratio at small BP — at BP 20 the +2
+        // is a meaningful fraction of the result. Tolerate a wider
+        // band that's still well above any non-BP source of variance.
+        let r2 = (bp_140 as u32) * 100 / bp_20 as u32;
+        assert!(r2 >= 550 && r2 <= 750,
+                "Stored Power +6 ratio off: {bp_140}/{bp_20} = {r2}%");
+    }
+
+    #[test]
+    fn stored_power_ignores_negative_boosts() {
+        // Negative entries shouldn't count.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["storedpower","moonblast","shadowball","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let sp = data::MOVES.iter().position(|m| m.slug == "storedpower").unwrap() as u16;
+        let mut a_neg = p1[0].clone();
+        a_neg.boosts = [-3, 0, 0, 0, 0, 0, 0];
+        let dmg_neg = calculate_damage(&a_neg, &p2[0], sp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let dmg_base = calculate_damage(&p1[0], &p2[0], sp,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        assert_eq!(dmg_neg, dmg_base,
+                   "Negative boosts must not bump Stored Power BP");
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[

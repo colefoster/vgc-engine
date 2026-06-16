@@ -216,6 +216,21 @@ pub fn calculate_damage(
         // Basculegion-F / Pecharunt's late-game finisher.
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
+    } else if matches!(m.slug, "storedpower" | "powertrip") {
+        // PS data/moves.ts:storedpower / powertrip basePowerCallback:
+        // `bp = move.basePower + 20 * pokemon.positiveBoosts()`.
+        // `positiveBoosts` counts only the strictly positive entries
+        // in `boosts`, summed (not capped at 6 per stage — a +6 mon
+        // contributes 6, not 1). Acc and evasion stages are included
+        // per PS. Hard ceiling at PS's chainModify(860) — practical
+        // max is 20 + 20*42 = 860 anyway.
+        let pos: u32 = attacker
+            .boosts
+            .iter()
+            .filter(|&&b| b > 0)
+            .map(|&b| b as u32)
+            .sum();
+        (m.type_, (20 + 20 * pos).min(860))
     } else if m.slug == "acrobatics" && attacker.item_id == u16::MAX {
         // PS data/moves.ts:acrobatics `onBasePower(bp, pokemon) {
         //   if (!pokemon.item) return this.chainModify(2); }`. Doubles
