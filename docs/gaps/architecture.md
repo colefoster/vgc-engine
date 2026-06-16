@@ -174,7 +174,7 @@ Remaining slices:
 
 **What it is**: Engine ships with doubles as primary (Champions VGC 2026). Singles toggle exists in `format.rs` but ability hooks like Hospitality / Helping Hand assume the partner slot. Re-audit before claiming singles is supported.
 
-**Status**: partial.
+**Status**: shipped — PR-151 (audit: every partner-slot ability hook — `hospitality`, `helpinghand`, all "redirect"-family — already gates on `format.active_count() >= 2`. Targeting / spread-cap / aura aggregation already key off `active_count`. Singles flag changes `active_count` correctly, and the existing 10+ singles test fixtures exercise that path.).
 
 ### BO3 / team preview
 
