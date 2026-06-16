@@ -92,7 +92,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Blocks Skill Swap, Role Play, Entrainment, Worry Seed, Simple Beam, Gastro Acid, Mummy, Wandering Spirit, Imposter (Transform copies effective).
 
-**Status**: deferred.
+**Status**: shipped — PR-144 (`Pokemon::effective_ability_slug()` + `ability_suppressed` flag; clears on switch-out; consumer migration of the ~40 ability_id call sites in battle.rs is incremental).
 
 ### Effective stat accessor with boost-ignore policy
 
