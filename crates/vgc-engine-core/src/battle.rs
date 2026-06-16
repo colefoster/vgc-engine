@@ -236,8 +236,8 @@ impl Battle {
             }
             // Choice lock: only the locked slot is usable.
             if is_choice_item
-                && active.locked_move_slot != 255
-                && active.locked_move_slot as usize != i
+                && active.locked_move_slot() != 255
+                && active.locked_move_slot() as usize != i
             {
                 continue;
             }
@@ -575,7 +575,7 @@ impl Battle {
             incoming.last_damage_taken = 0;
             incoming.set_protected(false);
             incoming.set_stall(0, false);
-            incoming.locked_move_slot = 255; // Choice lock clears on switch.
+            incoming.set_locked_move_slot(255); // Choice lock clears on switch.
             incoming.set_substitute_hp(0); // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
             incoming.clear_encore();
@@ -1045,8 +1045,8 @@ impl Battle {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                     *pp = pp.saturating_sub(1);
                 }
-                if is_choice && mon.locked_move_slot == 255 {
-                    mon.locked_move_slot = move_slot;
+                if is_choice && mon.locked_move_slot() == 255 {
+                    mon.set_locked_move_slot(move_slot);
                 }
                 // Track the most recent move used — Encore reads this when
                 // it lands on a target. PS sim/pokemon.ts updates lastMove
@@ -3816,7 +3816,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].locked_move_slot, 1);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 1);
         // legal_choices now only includes slot 1.
         let lc = b.legal_choices(SideRef::P1, 0);
         let moves_only: Vec<_> = lc.iter().filter(|c| matches!(c, Choice::Move { .. })).collect();
@@ -3872,7 +3872,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].locked_move_slot, 1);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 1);
         // Switch out → Snorlax. Then back to Urshifu.
         b.step(
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
@@ -3882,7 +3882,7 @@ mod tests {
             &[Choice::Switch { actor_slot: 0, team_index: 0 }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].locked_move_slot, 255, "lock cleared on switch-out");
+        assert_eq!(b.p1.team[0].locked_move_slot(), 255, "lock cleared on switch-out");
     }
 
     #[test]
