@@ -491,6 +491,17 @@ impl Battle {
             incoming.pending_self_switch = false;
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
+            // Multi-turn move state — semi-invuln / charging / recharge /
+            // lock-in are all field-only volatiles. PS drops the
+            // `twoturnmove` / `lockedmove` / `mustrecharge` volatiles
+            // on `onSwitchOut`. Switching mid-charge cancels the move
+            // wholesale (Sky Drop release is special-cased separately).
+            incoming.semi_invuln = 0;
+            incoming.charging_turns = 0;
+            incoming.charging_move_slot = 255;
+            incoming.must_recharge = false;
+            incoming.lockin_turns = 0;
+            incoming.lockin_move_slot = 255;
         } else {
             return false;
         }

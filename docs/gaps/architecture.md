@@ -33,7 +33,12 @@ Remaining slices:
 
 **Why it matters**: Blocks all two-turn moves (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy, Dig/Dive/Fly/Bounce/Phantom Force/Shadow Force), Hyper Beam recharge family, Gigaton Hammer / Blood Moon lockout, lock-in moves.
 
-**Status**: deferred.
+**Status**: partial — slice 1 of 4 — PR-150 (fields: `semi_invuln: u8`, `charging_turns: u8`, `charging_move_slot: u8`, `must_recharge: bool`, `lockin_turns: u8`, `lockin_move_slot: u8`; cleared on switch-out).
+
+Remaining slices:
+- slice 2: charging-move dispatch — `onTryMove` hook that sets `charging_turns = 1` + skips damage on turn 1, then re-issues the same move on turn 2 (Solar Beam / Sky Attack / Meteor Beam).
+- slice 3: semi-invuln gates — incoming targeting filters by `semi_invuln`, with Earthquake hitting Dig and Surf hitting Dive at ×2 BP per PS.
+- slice 4: recharge / lock-in (Hyper Beam family, Outrage / Petal Dance / Thrash with confusion payload, Gigaton Hammer / Blood Moon — last one already half-shipped via `cannot_use_twice`).
 
 ## Pipeline / ordering
 
