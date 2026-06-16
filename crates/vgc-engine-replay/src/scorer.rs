@@ -126,27 +126,22 @@ pub fn score_replay(
 }
 
 /// Like `score_replay` but uses the OracleRng path: extracts
-/// `RngEvent`s from the replay (`build_crit_oracle_for_replay`) and
-/// feeds them into the engine via `Rng::oracle_partial`. Un-recorded
-/// draws (accuracy, secondaries, range, tiebreak) fall back to the
-/// Splitmix stream seeded from `seed`.
+/// `RngEvent`s from the replay (`build_oracle_for_replay` — crit +
+/// accuracy) and feeds them into the engine via `Rng::oracle_partial`.
+/// Un-recorded draws (secondaries, range, tiebreak, damage-roll) fall
+/// back to the Splitmix stream seeded from `seed`.
 ///
-/// Phase-2 scope: the recorded channel is **crit only**. Damage-roll
-/// back-solving and percent extraction come in later PRs.
+/// Set reconstruction (PR-96/97/98 `SmogonStatsRecon`) supplies the
+/// damage calibration that makes accuracy oracling safe to combine
+/// with crit oracling — earlier crit-only fallback was a stopgap for
+/// the CanonicalDefault era.
 pub fn score_replay_oracle(
     replay: &Replay,
     recon: &impl TeamRecon,
     seed: u64,
     tolerance: f32,
 ) -> Result<ReplayScore, RunnerError> {
-    // PR-95: combined oracle (crit + accuracy) is available via
-    // `build_oracle_for_replay`, but defaults to crit-only here because
-    // CanonicalDefault recon's damage miscalibration interacts badly
-    // with force-hit/force-miss decisions — the engine's wrongly-scaled
-    // damage on a force-hit causes earlier-than-PS faints that compound
-    // through subsequent turns. Once set reconstruction lands, switch
-    // this to `build_oracle_for_replay`.
-    let events = crate::oracle::build_crit_oracle_for_replay(replay);
+    let events = crate::oracle::build_oracle_for_replay(replay);
     score_replay_with_events(replay, recon, seed, tolerance, events)
 }
 
