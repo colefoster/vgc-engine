@@ -89,6 +89,10 @@ struct MoveJson {
     /// dealt damage onto the user (gen 5+). Absent on most moves.
     #[serde(default)]
     drain: Option<[u32; 2]>,
+    /// PS `recoil: [num, den]`. User takes `round(damage * num / den)`
+    /// self-damage from the move (gen 5+). Absent on most moves.
+    #[serde(default)]
+    recoil: Option<[u32; 2]>,
     /// Move flags from PS `data/moves.ts`. We only need a few bits for
     /// gen-9 work so far — `contact` (Rough Skin / Iron Barbs / Rocky
     /// Helmet / Tough Claws / Static / Flame Body / Cute Charm) and
@@ -286,6 +290,11 @@ fn main() {
     writeln!(f, "    pub drain_num: u8,").unwrap();
     writeln!(f, "    /// PS `drain: [num, den]` denominator (1 sentinel when num == 0).").unwrap();
     writeln!(f, "    pub drain_den: u8,").unwrap();
+    writeln!(f, "    /// PS `recoil: [num, den]` numerator (0 if no recoil).").unwrap();
+    writeln!(f, "    /// User takes `round(damage * num / den)` self-damage after the hit.").unwrap();
+    writeln!(f, "    pub recoil_num: u8,").unwrap();
+    writeln!(f, "    /// PS `recoil: [num, den]` denominator (1 sentinel when num == 0).").unwrap();
+    writeln!(f, "    pub recoil_den: u8,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -294,7 +303,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -310,6 +319,8 @@ fn main() {
             m.flags.contains_key("contact"),
             m.drain.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
             m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
+            m.recoil.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
+            m.recoil.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();
