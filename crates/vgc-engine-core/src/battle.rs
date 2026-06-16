@@ -1055,21 +1055,40 @@ impl Battle {
                 continue;
             }
 
-            // Motor Drive — PS `data/abilities.ts:motordrive` `onTryHit`
-            // returns null on Electric-type moves and triggers +1 Spe.
-            // Electric type code = 3. Electivire signature.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Motor_Drive_(Ability)>.
+            // Electric-immunity absorbing abilities — Motor Drive
+            // (+1 Spe), Volt Absorb (heal 1/4 max HP), Lightning Rod
+            // (deferred; needs redirect). PS handlers all `onTryHit`
+            // return null on Electric-type moves and apply their effect.
+            // Electric type code = 3. Mold Breaker honored.
             if m.type_ == 3 {
                 let def_ability = if defender.ability_id == u16::MAX {
                     ""
                 } else {
                     data::ABILITIES[defender.ability_id as usize].slug
                 };
-                if def_ability == "motordrive" && !attacker_breaks_mold {
-                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                        d.boosts[4] = (d.boosts[4] + 1).clamp(-6, 6);
+                if !attacker_breaks_mold {
+                    match def_ability {
+                        "motordrive" => {
+                            // <https://bulbapedia.bulbagarden.net/wiki/Motor_Drive_(Ability)>
+                            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                                d.boosts[4] = (d.boosts[4] + 1).clamp(-6, 6);
+                            }
+                            continue;
+                        }
+                        "voltabsorb" => {
+                            // PS `data/abilities.ts:voltabsorb` —
+                            // `if (!this.heal(target.baseMaxhp / 4))` falls
+                            // back to a flavor message; effect is heal 1/4
+                            // max HP and absorb the hit. Bulbapedia:
+                            // <https://bulbapedia.bulbagarden.net/wiki/Volt_Absorb_(Ability)>.
+                            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                                let heal = (d.stats.hp / 4).max(1);
+                                d.current_hp = d.current_hp.saturating_add(heal).min(d.stats.hp);
+                            }
+                            continue;
+                        }
+                        _ => {}
                     }
-                    continue;
                 }
             }
 
@@ -6408,6 +6427,34 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, zam_before,
                    "Magic Guard blocks Rough Skin recoil");
+    }
+
+    #[test]
+    fn volt_absorb_absorbs_electric_and_heals_quarter() {
+        // Damage Jolteon-with-Volt-Absorb a bit, then hit it with Thunderbolt;
+        // it should heal back 1/4 max HP and take no damage.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["thunderbolt","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"jolteon","level":50,"ability":"voltabsorb","item":"sitrusberry","nature":"timid","moves":["thunderbolt","shadowball","quickattack","substitute"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max_hp = b.p2.team[0].stats.hp;
+        // Pre-damage Jolteon to half so we can see heal.
+        b.p2.team[0].current_hp = max_hp / 2;
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let after = b.p2.team[0].current_hp;
+        let expected_heal = (max_hp / 4).max(1);
+        assert!(after > before, "Volt Absorb heals (after={}, before={})", after, before);
+        assert_eq!(after, (before + expected_heal).min(max_hp),
+                   "Volt Absorb heals exactly 1/4 max HP");
     }
 
     #[test]
