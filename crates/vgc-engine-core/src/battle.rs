@@ -228,11 +228,21 @@ impl Battle {
                 m.used_stall_this_turn = false;
                 m.flinched_this_turn = false;
                 m.helping_handed_this_turn = false;
+                m.redirecting_this_turn = false;
+                m.redirecting_is_powder = false;
                 m.damaged_this_turn = false;
+                m.pending_self_switch = false;
             }
         }
 
-        // 1. Switches first (PS priority +6).
+        // 1. Switches first (PS priority +6). Only "pre-turn" switches
+        //    fire now — switches whose actor_slot already had a Move
+        //    earlier in the same choice queue are treated as self-switch
+        //    follow-ups and deferred until after move resolution. PS
+        //    routes the player's replacement pick for U-turn / Volt
+        //    Switch / Parting Shot etc. through the same Choice::Switch
+        //    queue; the runner emits them after the `|move|` event in
+        //    that turn.
         self.apply_switches(SideRef::P1, p1_choices);
         self.apply_switches(SideRef::P2, p2_choices);
 
@@ -416,6 +426,8 @@ impl Battle {
                     incoming.turns_active = 0;
                     incoming.flinched_this_turn = false;
                     incoming.helping_handed_this_turn = false;
+                    incoming.redirecting_this_turn = false;
+                    incoming.redirecting_is_powder = false;
                     incoming.damaged_this_turn = false;
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
@@ -616,9 +628,98 @@ impl Battle {
         }
 
         // 5. Enumerate targets (spread or single).
-        let targets = enumerate_targets(self, actor_side, actor_slot, m, target);
+        let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
         if targets.is_empty() {
             return;
+        }
+        // Rage Powder / Follow Me redirection. PS data/moves.ts:ragepowder
+        // / :followme `onFoeRedirectTarget` (priority 1) — fires during
+        // target-pick on single-target opposing moves. If any alive mon
+        // on the FOE side (relative to the attacker) is carrying the
+        // redirect volatile, the target is overridden to that mon.
+        // Gates:
+        //   - Doubles only (`active_count >= 2`).
+        //   - Only single-target opposing target codes 0 (normal),
+        //     4 (adjacentFoe), 10 (any). Spread / self / ally targets
+        //     untouched.
+        //   - Only when the resolved target is on the opposing side
+        //     (a self-targeted single-target move resolved to actor's
+        //     own slot via a future mechanic would not redirect).
+        //   - Rage Powder powder gate: skipped if the ATTACKER is
+        //     Grass-type, holds Safety Goggles, or has Overcoat
+        //     ability. Follow Me has no gate.
+        //   - If two foes both used a redirect this turn (e.g. Indeedee
+        //     Follow Me + Amoonguss Rage Powder on the same side), the
+        //     first-to-resolve claims the target — PS does this via
+        //     queue order, and since the volatile carrier had to move
+        //     before the attacker's action could redirect, both
+        //     volatiles are present. Tie-break: prefer Rage Powder
+        //     (it has the powder bonus on Bug type and is the more
+        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
+        //     runs first in queue order in practice as Amoonguss
+        //     typically outruns Indeedee here is irrelevant — the
+        //     volatile lookup is order-independent). Concretely we
+        //     iterate slot order on the foe side and pick the first
+        //     `redirecting_is_powder == true` carrier, falling back
+        //     to the first `redirecting_this_turn` carrier.
+        if self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let (orig_side, _orig_slot) = targets[0];
+            if orig_side != actor_side {
+                let opp = orig_side; // foe side relative to attacker
+                let n = self.format().active_count() as u8;
+                // Find a redirector. Prefer Rage Powder (powder) if both.
+                let mut redirector: Option<u8> = None;
+                let mut found_powder = false;
+                for slot in 0..n {
+                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
+                        if p.is_alive() && p.redirecting_this_turn {
+                            if p.redirecting_is_powder {
+                                redirector = Some(slot);
+                                found_powder = true;
+                                break;
+                            } else if redirector.is_none() {
+                                redirector = Some(slot);
+                            }
+                        }
+                    }
+                }
+                if let Some(rslot) = redirector {
+                    // Don't redirect onto the original target itself
+                    // (would be a no-op, but also covers the case where
+                    // the attacker's chosen target IS the redirector).
+                    if (opp, rslot) != targets[0] {
+                        // Powder gate (Rage Powder only).
+                        let mut blocked = false;
+                        if found_powder {
+                            let s = attacker.species();
+                            let grass_attacker =
+                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
+                            let attacker_item = if attacker.item_id == u16::MAX {
+                                ""
+                            } else {
+                                data::ITEMS[attacker.item_id as usize].slug
+                            };
+                            let attacker_ability = if attacker.ability_id == u16::MAX {
+                                ""
+                            } else {
+                                data::ABILITIES[attacker.ability_id as usize].slug
+                            };
+                            if grass_attacker
+                                || attacker_item == "safetygoggles"
+                                || attacker_ability == "overcoat"
+                            {
+                                blocked = true;
+                            }
+                        }
+                        if !blocked {
+                            targets = vec![(opp, rslot)];
+                        }
+                    }
+                }
+            }
         }
         let is_spread = targets.len() > 1;
         let damaging = m.base_power > 0;
@@ -1514,6 +1615,34 @@ impl Battle {
                 if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot as usize) {
                     if p.is_alive() {
                         p.helping_handed_this_turn = true;
+                    }
+                }
+            }
+            "ragepowder" | "followme" => {
+                // Doubles-only redirection. PS data/moves.ts:
+                //   ragepowder — priority +2, target: self, powder flag,
+                //     volatileStatus 'ragepowder' (duration 1, onFoeRedirectTarget
+                //     priority 1) that retargets single-target opposing
+                //     moves at the user. Powder-immune attackers (Grass
+                //     type, Overcoat ability, Safety Goggles item) bypass
+                //     the redirect — the move keeps its original target.
+                //   followme — priority +2, target: self, volatileStatus
+                //     'followme' (duration 1, onFoeRedirectTarget priority
+                //     1) — same retarget, NO powder gate.
+                // In Singles the redirect has no opposing-side ally to be
+                // mis-targeted from, and PS's `onFoeRedirectTarget` never
+                // fires because the only opposing slot is already the
+                // intended target — match the Helping Hand pattern and
+                // no-op in Singles.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let is_powder = m.slug == "ragepowder";
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        a.redirecting_this_turn = true;
+                        a.redirecting_is_powder = is_powder;
                     }
                 }
             }
@@ -6790,6 +6919,300 @@ mod tests {
         );
         assert!(b.p1.team[0].damaged_this_turn,
                 "Snorlax should be flagged as damaged after Garchomp's hit");
+    }
+
+    #[test]
+    fn rage_powder_redirects_single_target_move() {
+        // Doubles: Amoonguss Rage Powder + Garchomp partner; Snorlax
+        // single-targets Garchomp with Crunch but should hit Amoonguss
+        // instead because Rage Powder is up.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"sitrusberry","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["crunch","bodyslam","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let amoonguss_hp_before = b.p1.team[0].current_hp;
+        let garchomp_hp_before = b.p1.team[1].current_hp;
+        // Rage Powder is +2 priority — resolves before Crunch.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p1.team[0].current_hp < amoonguss_hp_before,
+            "Amoonguss should have been redirected into and taken Crunch damage"
+        );
+        assert_eq!(
+            b.p1.team[1].current_hp, garchomp_hp_before,
+            "Garchomp should be untouched (Crunch redirected away)"
+        );
+    }
+
+    #[test]
+    fn follow_me_redirects_single_target_move() {
+        // Indeedee-F Follow Me draws single-target attacks even though
+        // it has no powder gate.
+        let p1_json = r#"[
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"focussash","nature":"calm","moves":["followme","psychic","dazzlinggleam","helpinghand"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["crunch","bodyslam","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let indeedee_hp_before = b.p1.team[0].current_hp;
+        let garchomp_hp_before = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p1.team[0].current_hp < indeedee_hp_before,
+            "Indeedee should have been redirected into and taken damage"
+        );
+        assert_eq!(
+            b.p1.team[1].current_hp, garchomp_hp_before,
+            "Garchomp should be untouched"
+        );
+    }
+
+    #[test]
+    fn rage_powder_does_not_redirect_spread_move() {
+        // Earthquake (allAdjacent) hits both opposing slots regardless
+        // of Rage Powder being up.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","crunch","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let amoonguss_hp = b.p1.team[0].current_hp;
+        let pikachu_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        // Both p1 slots took EQ damage — redirection did NOT collapse
+        // the spread move onto Amoonguss alone.
+        assert!(b.p1.team[0].current_hp < amoonguss_hp, "Amoonguss took EQ");
+        assert!(b.p1.team[1].current_hp < pikachu_hp, "Pikachu took EQ");
+    }
+
+    #[test]
+    fn rage_powder_no_op_in_singles() {
+        // In singles, Rage Powder has nothing to redirect from — the only
+        // valid target is the attacker. Crunch should still hit Amoonguss
+        // (the only opposing slot). Verifies we don't crash and that the
+        // status branch is reached without setting a doubles-only volatile.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["crunch","bodyslam","rest","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            !b.p1.team[0].redirecting_this_turn,
+            "Rage Powder must not set the volatile in singles"
+        );
+        // Amoonguss took damage from Crunch as the only target.
+        assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn grass_attacker_bypasses_rage_powder_but_not_follow_me() {
+        // A Grass-type attacker (Venusaur) targeting the partner should
+        // NOT be redirected by Rage Powder (powder immunity), but WOULD
+        // be redirected by Follow Me. Verify the powder side here.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","item":"","nature":"modest","moves":["sludgebomb","gigadrain","earthquake","sleeppowder"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let amoonguss_hp = b.p1.team[0].current_hp;
+        let garchomp_hp = b.p1.team[1].current_hp;
+        // Venusaur Sludge Bomb at Garchomp; Amoonguss Rage Powder.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        // Grass Venusaur bypasses the powder redirect — Garchomp takes
+        // the Sludge Bomb, Amoonguss is untouched.
+        assert_eq!(
+            b.p1.team[0].current_hp, amoonguss_hp,
+            "Amoonguss should NOT be hit (Grass attacker bypasses Rage Powder)"
+        );
+        assert!(
+            b.p1.team[1].current_hp < garchomp_hp,
+            "Garchomp should take the Sludge Bomb directly"
+        );
+    }
+
+    #[test]
+    fn grass_attacker_still_redirected_by_follow_me() {
+        // Same scenario but with Follow Me (no powder gate) — the Grass
+        // Venusaur IS redirected.
+        let p1_json = r#"[
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"","nature":"calm","moves":["followme","psychic","dazzlinggleam","helpinghand"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","item":"","nature":"modest","moves":["sludgebomb","gigadrain","earthquake","sleeppowder"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let indeedee_hp = b.p1.team[0].current_hp;
+        let garchomp_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p1.team[0].current_hp < indeedee_hp,
+            "Indeedee should be redirected into (no powder gate on Follow Me)"
+        );
+        assert_eq!(
+            b.p1.team[1].current_hp, garchomp_hp,
+            "Garchomp should be untouched"
+        );
+    }
+
+    #[test]
+    fn safety_goggles_bypasses_rage_powder() {
+        // Safety Goggles holder bypasses Rage Powder redirection.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["knockoff","fakeout","flareblitz","partingshot"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let amoonguss_hp = b.p1.team[0].current_hp;
+        let garchomp_hp = b.p1.team[1].current_hp;
+        // Incineroar Knock Off at Garchomp — Intimidate fires at start but
+        // we just need to check that the Knock Off itself lands on Garchomp.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert_eq!(
+            b.p1.team[0].current_hp, amoonguss_hp,
+            "Amoonguss NOT hit (Safety Goggles ignores Rage Powder)"
+        );
+        assert!(
+            b.p1.team[1].current_hp < garchomp_hp,
+            "Garchomp took Knock Off directly"
+        );
+    }
+
+    #[test]
+    fn rage_powder_beats_follow_me_when_both_up() {
+        // If both redirectors are alive (Rage Powder slot 0, Follow Me
+        // slot 1), Rage Powder wins (powder carrier preferred). Attacker
+        // targets the *other* slot; should land on the Rage Powder user.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"","nature":"calm","moves":["followme","psychic","dazzlinggleam","helpinghand"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["crunch","bodyslam","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let amoonguss_hp = b.p1.team[0].current_hp;
+        let indeedee_hp = b.p1.team[1].current_hp;
+        // Snorlax Crunches Pikachu's intended target would be (P1, 0)
+        // anyway; instead aim at neither — pick the partner of Amoonguss,
+        // which is the Indeedee slot. Both volatiles set, Rage Powder
+        // should claim the hit.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p1.team[0].current_hp < amoonguss_hp,
+            "Amoonguss (Rage Powder) should be the redirect target when both are up"
+        );
+        assert_eq!(
+            b.p1.team[1].current_hp, indeedee_hp,
+            "Indeedee (Follow Me) untouched — Rage Powder wins tie-break"
+        );
     }
 
     #[test]
