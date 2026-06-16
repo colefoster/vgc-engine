@@ -59,6 +59,39 @@ fn drop_atk(mon: &mut crate::pokemon::Pokemon) {
     mon.boosts[0] = (mon.boosts[0] - 1).clamp(-6, 6);
 }
 
+/// PS `onAfterEachBoost` for the just-dropped mon. Triggers Defiant
+/// (+2 Atk) and Competitive (+2 SpA) when an opposing source lowers
+/// any stat. Caller is responsible for the cross-side / hit-actually-
+/// dropped-something invariant; we simply read the target's ability
+/// and apply the rebound boost.
+///
+/// PS: `data/abilities.ts:{defiant,competitive}` — both gate on
+/// `!source || target.isAlly(source)` (caller handles), then
+/// `any(boost[i] < 0)` (caller is invoked only after a successful drop),
+/// then `this.boost({atk: 2}, target, target, null, false, true)` /
+/// `{spa: 2}`. The `isSecondary=true` flag at the end means the rebound
+/// itself does NOT re-trigger Defiant/Competitive — important so a
+/// Defiant mon doesn't loop on its own +2 Atk. We mirror that by not
+/// recursing here.
+pub(crate) fn react_to_opposing_stat_drop(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+) {
+    let slug = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) if m.is_alive() => ability_slug(m.ability_id),
+        _ => return,
+    };
+    let stat_index: usize = match slug {
+        "defiant" => 0,      // Atk
+        "competitive" => 2,  // SpA
+        _ => return,
+    };
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.boosts[stat_index] = (t.boosts[stat_index] + 2).clamp(-6, 6);
+    }
+}
+
 /// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
 /// boosted stat. PS `Pokemon.getBestStat(false, true)` from
 /// sim/pokemon.ts: stat stages ARE applied (unboosted=false), but
@@ -236,7 +269,15 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
-        // unless their ability blocks the drop.
+        // unless their ability blocks the drop. After each successful
+        // drop, run the target's `onAfterEachBoost` — Defiant (+2 Atk)
+        // and Competitive (+2 SpA) react to any stat drop caused by an
+        // opposing source. PS gates on
+        // `!target.isAlly(source) && any(boost[i] < 0)`; since
+        // Intimidate's user is `side` and its target is on `opp`, the
+        // cross-side check is automatic. Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Defiant_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Competitive_(Ability)>
         let opp = side.opposing();
         let n = battle.format().active_count() as u8;
         for s in 0..n {
@@ -250,6 +291,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
                 drop_atk(t);
             }
+            react_to_opposing_stat_drop(battle, opp, s);
         }
     }
     // Future PRs add more arms: drizzle/drought/sandstream/snowwarning

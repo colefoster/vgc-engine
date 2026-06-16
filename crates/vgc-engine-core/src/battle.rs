@@ -4808,6 +4808,44 @@ mod tests {
     }
 
     #[test]
+    fn defiant_rebounds_intimidate_with_plus_two_atk() {
+        // Defiant Bisharp gets Intimidated. Net Atk change should be
+        // -1 (Intimidate) + +2 (Defiant) = +1.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"focussash","nature":"adamant","moves":["flareblitz","knockoff","fakeout","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"bisharp","level":50,"ability":"defiant","item":"focussash","nature":"adamant","moves":["ironhead","suckerpunch","knockoff","stoneedge"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Initial sendouts trigger Intimidate; Defiant should net Bisharp
+        // to +1 Atk.
+        assert_eq!(b.p2.team[0].boosts[0], 1,
+                   "Intimidate -1 + Defiant +2 = +1 Atk on Bisharp");
+        // Incineroar (the Intimidate user) is unaffected.
+        assert_eq!(b.p1.team[0].boosts[0], 0);
+    }
+
+    #[test]
+    fn competitive_rebounds_intimidate_with_plus_two_spa() {
+        // Competitive Indeedee-F gets Intimidated. Atk -1, SpA +2.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"focussash","nature":"adamant","moves":["flareblitz","knockoff","fakeout","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"indeedeef","level":50,"ability":"competitive","item":"focussash","nature":"timid","moves":["psychic","dazzlinggleam","followme","helpinghand"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drop landed");
+        assert_eq!(b.p2.team[0].boosts[2], 2,
+                   "Competitive rebounds with +2 SpA");
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
