@@ -1912,55 +1912,29 @@ impl Battle {
     /// status DOT (burn/poison/toxic), sand weather damage. Subsequent
     /// PRs add Speed Boost, Life Orb recoil, etc.
     fn resolve_end_of_turn(&mut self) {
-        // Item residuals (Leftovers etc.) fire before weather damage in
-        // gen 5+ — PS order: ability residuals → item residuals → weather.
-        for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
-            for slot in 0..n {
-                crate::item::on_residual(self, side, slot);
-            }
-        }
+        // PS gen-9 `sim/battle.ts` residualOrder summary, in execution
+        // order:
+        //   1. weather damage (sand)
+        //   2. Future Sight / Doom Desire delivery       [not impl]
+        //   3. Wish                                       [not impl]
+        //   4. Aqua Ring / Ingrain heal                   [not impl]
+        //   5. Leech Seed                                 [not impl]
+        //   5b. item residual (Leftovers; PS order 5)
+        //   6. status DOT (burn / poison / toxic)
+        //   7. Curse                                      [not impl]
+        //   8. Trap                                       [not impl]
+        //   9. Uproar                                     [not impl]
+        //   10. Disable / Encore / Taunt ticks            [Encore done below]
+        //   11. Yawn → sleep                              [not impl]
+        //   12. Perish Song                               [not impl]
+        //   13. screens tick                              [done elsewhere]
+        //   14. Tailwind tick                             [done elsewhere]
+        //   15. Trick Room tick                           [done elsewhere]
+        //   16. Wonder / Magic Room                       [not impl]
+        //   17. Slow Start tick                           [not impl]
+        //   28. ability residuals (Speed Boost)
 
-        // Status DOT: burn (1/16), poison (1/8), toxic (counter/16
-        // increasing). Gen 7+ burn rate; PS data/conditions.ts. Magic Guard
-        // blocks the HP loss but the toxic counter still ticks — PS's
-        // `onDamage` short-circuits the damage but `onResidual` for `tox`
-        // increments the badly-poisoned counter unconditionally.
-        for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
-            for slot in 0..n {
-                let (dmg, mg) = match self.side(side).active_mon(slot as usize) {
-                    Some(m) if m.is_alive() => {
-                        let d = match m.status {
-                            Status::Burn => (m.stats.hp / 16).max(1),
-                            Status::Poison => (m.stats.hp / 8).max(1),
-                            Status::Toxic => {
-                                let c = m.toxic_counter.max(1) as u32;
-                                ((m.stats.hp as u32 * c / 16) as u16).max(1)
-                            }
-                            _ => 0,
-                        };
-                        (d, crate::ability::has_magic_guard(m))
-                    }
-                    _ => (0, false),
-                };
-                if dmg == 0 {
-                    continue;
-                }
-                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                    if !mg {
-                        m.current_hp = m.current_hp.saturating_sub(dmg);
-                        if m.current_hp == 0 {
-                            m.fainted = true;
-                        }
-                    }
-                    if matches!(m.status, Status::Toxic) {
-                        m.toxic_counter = m.toxic_counter.saturating_add(1).min(15);
-                    }
-                }
-            }
-        }
-
+        // 1. Weather damage (sand) — PS residualOrder 1.
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities: Magic Guard blocks the damage (PS
         // routes weather damage through `onDamage`). Sand Veil is evasion-
@@ -2012,8 +1986,54 @@ impl Battle {
             }
         }
 
-        // Ability residuals (Speed Boost etc.). PS onResidualOrder for
-        // speedboost is 28 — after items/status/weather above.
+        // 5. Item residuals (Leftovers, Black Sludge, ...) — PS order 5.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                crate::item::on_residual(self, side, slot);
+            }
+        }
+
+        // 6. Status DOT (burn 1/16, poison 1/8, toxic counter/16).
+        // Gen 7+ burn rate; PS data/conditions.ts. Magic Guard blocks
+        // the HP loss but the toxic counter still ticks unconditionally.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let (dmg, mg) = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive() => {
+                        let d = match m.status {
+                            Status::Burn => (m.stats.hp / 16).max(1),
+                            Status::Poison => (m.stats.hp / 8).max(1),
+                            Status::Toxic => {
+                                let c = m.toxic_counter.max(1) as u32;
+                                ((m.stats.hp as u32 * c / 16) as u16).max(1)
+                            }
+                            _ => 0,
+                        };
+                        (d, crate::ability::has_magic_guard(m))
+                    }
+                    _ => (0, false),
+                };
+                if dmg == 0 {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if !mg {
+                        m.current_hp = m.current_hp.saturating_sub(dmg);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
+                    }
+                    if matches!(m.status, Status::Toxic) {
+                        m.toxic_counter = m.toxic_counter.saturating_add(1).min(15);
+                    }
+                }
+            }
+        }
+
+        // 28. Ability residuals (Speed Boost etc.). PS onResidualOrder
+        // for speedboost is 28 — last among the residual phases.
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
             for slot in 0..n {
