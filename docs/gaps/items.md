@@ -316,7 +316,7 @@ See type-boost items above.
 
 **What it is**: Foe's accuracy ×0.9 against holder.
 
-**Status**: not implemented.
+**Status**: shipped — PR-107.
 
 ## Priority items
 
@@ -397,3 +397,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Black Sludge (PR-104)
 - Shell Bell (PR-105)
 - Wide Lens (PR-106)
+- Bright Powder / Lax Incense (PR-107)

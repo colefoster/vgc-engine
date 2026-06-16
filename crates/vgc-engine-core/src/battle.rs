@@ -945,6 +945,29 @@ impl Battle {
                 if attacker_item_slug == "widelens" {
                     eff_acc = (eff_acc * 4505 / 4096).min(100);
                 }
+                // Bright Powder / Lax Incense — defender-side accuracy
+                // ×3686/4096 (≈ ×0.9). PS `data/items.ts:brightpowder`
+                // and `:laxincense`:
+                //   onModifyAccuracyPriority: -4,
+                //   onModifyAccuracy(accuracy) {
+                //     if (typeof accuracy === 'number')
+                //       return this.chainModify([3686, 4096]);
+                //   }
+                // PS uses chainModify on the same accuracy variable, so
+                // both items stack additively with Wide Lens — order is
+                // priority-driven and not visible at the final integer.
+                // Applied after Wide Lens to match PS's negative-prio
+                // ordering. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Bright_Powder>,
+                // <https://bulbapedia.bulbagarden.net/wiki/Lax_Incense>.
+                let def_item_for_acc = if defender.item_id == u16::MAX {
+                    ""
+                } else {
+                    data::ITEMS[defender.item_id as usize].slug
+                };
+                if def_item_for_acc == "brightpowder" || def_item_for_acc == "laxincense" {
+                    eff_acc = eff_acc * 3686 / 4096;
+                }
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
                     continue;
@@ -5643,6 +5666,37 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn bright_powder_lowers_hit_rate_against_holder() {
+        // Stone Edge (80 acc) into Snorlax — Bright Powder reduces
+        // attacker accuracy to ~72. Stochastic over 200 trials.
+        let mk = |def_item: &str, seed: u64| {
+            let p1_json = r#"[
+                {"species":"garchomp","level":50,"ability":"sandveil","item":"leftovers","nature":"adamant","moves":["stoneedge","tackle","aerialace","ironhead"]}
+            ]"#;
+            let p2_json = format!(r#"[
+                {{"species":"snorlax","level":50,"ability":"thickfat","item":"{def_item}","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{{"hp":252,"def":252}}}}
+            ]"#);
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let trials = 200u64;
+        let plain: u32 = (0..trials).map(|s| mk("leftovers", s) as u32).sum();
+        let bp:    u32 = (0..trials).map(|s| mk("brightpowder", s) as u32).sum();
+        let lax:   u32 = (0..trials).map(|s| mk("laxincense", s) as u32).sum();
+        assert!(bp < plain,
+                "Bright Powder should reduce hit rate ({} vs {})", bp, plain);
+        assert!(lax < plain,
+                "Lax Incense should reduce hit rate ({} vs {})", lax, plain);
     }
 
     #[test]
