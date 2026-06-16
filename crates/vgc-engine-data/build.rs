@@ -93,6 +93,11 @@ struct MoveJson {
     /// self-damage from the move (gen 5+). Absent on most moves.
     #[serde(default)]
     recoil: Option<[u32; 2]>,
+    /// PS `multihit`: either a fixed integer (Double Hit = 2,
+    /// Population Bomb = 10) or a `[min, max]` range (Bullet Seed =
+    /// [2, 5]). Null on single-hit moves.
+    #[serde(default)]
+    multihit: serde_json::Value,
     /// Move flags from PS `data/moves.ts`. We only need a few bits for
     /// gen-9 work so far — `contact` (Rough Skin / Iron Barbs / Rocky
     /// Helmet / Tough Claws / Static / Flame Body / Cute Charm) and
@@ -186,6 +191,33 @@ fn target_code(s: &str) -> u8 {
         "scripted" => 14,
         // Unknown → 255 (will surface in tests when implemented).
         _ => 255,
+    }
+}
+
+/// Parse PS `multihit` lower bound. Accepts a number (fixed n hits),
+/// a `[min, max]` array (random in range), or null/missing (no
+/// multihit). Returns 0 when the move is single-hit.
+fn multihit_min(v: &serde_json::Value) -> u8 {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().map(|x| x.min(u8::MAX as u64) as u8).unwrap_or(0),
+        serde_json::Value::Array(a) => a
+            .first()
+            .and_then(|x| x.as_u64())
+            .map(|x| x.min(u8::MAX as u64) as u8)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+fn multihit_max(v: &serde_json::Value) -> u8 {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().map(|x| x.min(u8::MAX as u64) as u8).unwrap_or(0),
+        serde_json::Value::Array(a) => a
+            .get(1)
+            .or_else(|| a.first())
+            .and_then(|x| x.as_u64())
+            .map(|x| x.min(u8::MAX as u64) as u8)
+            .unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -295,6 +327,13 @@ fn main() {
     writeln!(f, "    pub recoil_num: u8,").unwrap();
     writeln!(f, "    /// PS `recoil: [num, den]` denominator (1 sentinel when num == 0).").unwrap();
     writeln!(f, "    pub recoil_den: u8,").unwrap();
+    writeln!(f, "    /// PS `multihit` lower bound. 0 = single-hit move (no multihit).").unwrap();
+    writeln!(f, "    /// Fixed multihit (Population Bomb = 10) has min == max.").unwrap();
+    writeln!(f, "    pub multihit_min: u8,").unwrap();
+    writeln!(f, "    /// PS `multihit` upper bound. For range multihit (Bullet Seed").unwrap();
+    writeln!(f, "    /// = [2, 5]), Splitmix samples uniformly across [min, max]; PS's").unwrap();
+    writeln!(f, "    /// 35/35/15/15 weighting for 2-5 hits is approximated as uniform.").unwrap();
+    writeln!(f, "    pub multihit_max: u8,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -303,7 +342,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -321,6 +360,8 @@ fn main() {
             m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
             m.recoil.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
             m.recoil.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
+            multihit_min(&m.multihit),
+            multihit_max(&m.multihit),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();
