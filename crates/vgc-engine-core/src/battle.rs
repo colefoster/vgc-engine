@@ -2305,7 +2305,7 @@ impl Battle {
         if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
             m.status = status;
             if matches!(status, Status::Toxic) {
-                m.toxic_counter = 1;
+                m.set_toxic_counter(1);
             }
             if matches!(status, Status::Sleep) {
                 m.sleep_turns = sleep_turns;
@@ -2412,7 +2412,7 @@ impl Battle {
                             Status::Burn => (m.stats.hp / 16).max(1),
                             Status::Poison => (m.stats.hp / 8).max(1),
                             Status::Toxic => {
-                                let c = m.toxic_counter.max(1) as u32;
+                                let c = m.toxic_counter().max(1) as u32;
                                 ((m.stats.hp as u32 * c / 16) as u16).max(1)
                             }
                             _ => 0,
@@ -2432,7 +2432,8 @@ impl Battle {
                         }
                     }
                     if matches!(m.status, Status::Toxic) {
-                        m.toxic_counter = m.toxic_counter.saturating_add(1).min(15);
+                        let next = m.toxic_counter().saturating_add(1).min(15);
+                        m.set_toxic_counter(next);
                     }
                 }
             }
@@ -4548,7 +4549,7 @@ mod tests {
         assert_eq!(b.p2.team[0].status, Status::Toxic, "Toxic landed");
         let zam_max = b.p2.team[0].stats.hp;
         assert_eq!(b.p2.team[0].current_hp, zam_max, "Magic Guard blocks toxic DOT");
-        let counter_after_t1 = b.p2.team[0].toxic_counter;
+        let counter_after_t1 = b.p2.team[0].toxic_counter();
         // PS: tox counter starts at 1 on apply and is incremented in the
         // residual even when MG blocked the damage. After t1's residual it's 2.
         assert_eq!(counter_after_t1, 2, "toxic counter advanced past MG block");
@@ -4557,7 +4558,7 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].current_hp, zam_max);
-        assert_eq!(b.p2.team[0].toxic_counter, 3);
+        assert_eq!(b.p2.team[0].toxic_counter(), 3);
     }
 
     #[test]
