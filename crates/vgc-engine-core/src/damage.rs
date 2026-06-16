@@ -465,9 +465,18 @@ pub fn calculate_damage(
     }
 
 
-    // Crit (gen 6+): ×1.5
+    // Crit (gen 6+): ×1.5. Sniper — PS `data/abilities.ts:sniper`
+    // `onModifyDamage` (priority -1) returns `chainModify([6144, 4096])`
+    // (×1.5) on crit hits, stacking with the base ×1.5 for an effective
+    // ×2.25 crit multiplier. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Sniper_(Ability)>.
     if ctx.crit {
         dmg = dmg * 3 / 2;
+        let sniper = attacker.ability_id != u16::MAX
+            && data::ABILITIES[attacker.ability_id as usize].slug == "sniper";
+        if sniper {
+            dmg = dmg * 6144 / 4096;
+        }
     }
 
     // Random
@@ -801,6 +810,34 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn sniper_boosts_crit_damage() {
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, crit: bool| calculate_damage(a, &def, move_id("earthquake"),
+            DamageContext { crit, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let no_crit = mk(&atk, false);
+        let plain_crit = mk(&atk, true);
+        let sn_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "sniper").unwrap() as u16;
+        atk.ability_id = sn_id;
+        let snip_crit = mk(&atk, true);
+        let snip_no = mk(&atk, false);
+        assert_eq!(snip_no, no_crit, "Sniper must not affect non-crit");
+        assert!(snip_crit > plain_crit, "Sniper boosts crit damage");
+        // ×1.5 over plain crit, ±rounding
+        let ratio_x100 = (snip_crit as u32) * 100 / (plain_crit.max(1) as u32);
+        assert!((148..=152).contains(&ratio_x100),
+                "Sniper ≈ ×1.5 over plain crit, got ×{}/100", ratio_x100);
     }
 
     #[test]
