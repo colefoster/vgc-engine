@@ -138,7 +138,7 @@ impl FinalStats {
 /// callers look up by kind in O(1). The migration of the ad-hoc
 /// boolean / counter fields (`is_protected_this_turn`, `encore_turns`,
 /// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
-/// `damaged_this_turn`, `substitute_hp`,
+/// `damaged_this_turn`,
 /// `sleep_turns`, `crit_stage_volatile`, `semi_invuln`,
 /// `charging_turns`, `must_recharge`, `lockin_turns`) into this
 /// registry is staged per-volatile in follow-up PRs.
@@ -213,6 +213,10 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Substitute (PS `data/conditions.ts:substitute`). Indefinite
+    /// duration (`turns_remaining == 0`); `payload` carries the current
+    /// HP of the sub doll. Cleared on switch-out.
+    Substitute,
     /// Toxic counter (PS `data/conditions.ts:tox`). Indefinite duration
     /// (`turns_remaining == 0`); `payload` carries the 1-based counter
     /// (1 on the turn Toxic is applied; +1 each end of turn, capped at
@@ -379,11 +383,6 @@ pub struct Pokemon {
     /// Band/Specs/Scarf, subsequent move selections are restricted to
     /// that slot. `255 = unlocked`. Cleared on switch-out.
     pub locked_move_slot: u8,
-    /// Substitute HP. `0` = no sub. When > 0, incoming damage is absorbed
-    /// by the sub before reaching `current_hp`; secondaries are blocked.
-    /// Cleared on switch-out. Set to `max_hp / 4` when Substitute is
-    /// successfully used (the user pays the same amount up front).
-    pub substitute_hp: u16,
     /// Remaining sleep turns. Set to a random 1..=3 (gen 5+) when Sleep
     /// is applied; decremented at the start of each move attempt; the
     /// mon wakes up (Status -> None) at the decrement that hits 0. PS:
@@ -714,6 +713,31 @@ impl Pokemon {
         }
     }
 
+    /// Substitute HP. `0` = no sub. When > 0, incoming damage is
+    /// absorbed by the sub before reaching `current_hp` (sound moves
+    /// bypass it — PR-51).
+    #[inline]
+    pub fn substitute_hp(&self) -> u16 {
+        self.volatiles
+            .get(VolatileKind::Substitute)
+            .map(|v| v.payload as u16)
+            .unwrap_or(0)
+    }
+
+    /// Set / clear the Substitute volatile. `hp == 0` removes it.
+    #[inline]
+    pub fn set_substitute_hp(&mut self, hp: u16) {
+        if hp == 0 {
+            self.volatiles.remove(VolatileKind::Substitute);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Substitute,
+                turns_remaining: 0,
+                payload: hp as u32,
+            });
+        }
+    }
+
     /// Current Toxic counter (1-based). `0` if Toxic is not active.
     /// Read by the end-of-turn DOT phase and the Toxic-apply path.
     #[inline]
@@ -915,7 +939,7 @@ mod tests {
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
-            substitute_hp: 0, sleep_turns: 0,
+            sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
@@ -955,7 +979,6 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
-            substitute_hp: 0,
             sleep_turns: 0,
             last_used_move_slot: 255,
             encore_turns: 0,

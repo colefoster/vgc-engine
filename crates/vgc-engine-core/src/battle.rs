@@ -575,7 +575,7 @@ impl Battle {
             incoming.set_protected(false);
             incoming.stall_counter = 0;
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
-            incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
+            incoming.set_substitute_hp(0); // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
             incoming.encore_turns = 0;
             incoming.encored_move_slot = 255;
@@ -1791,12 +1791,13 @@ impl Battle {
             // sub HP is unchanged. Same exemption applies to moves with
             // the `authentic` flag (Hyperspace Hole etc.) and to
             // Infiltrator users; both deferred to their own PRs.
-            let sub_hp_pre = defender.substitute_hp;
+            let sub_hp_pre = defender.substitute_hp();
             let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug);
             let effective_dmg = if hit_sub {
                 let absorbed = dmg.min(sub_hp_pre);
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                    t.substitute_hp = t.substitute_hp.saturating_sub(absorbed);
+                    let next = t.substitute_hp().saturating_sub(absorbed);
+                    t.set_substitute_hp(next);
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(absorbed);
                 0u16
@@ -2619,7 +2620,7 @@ impl Battle {
                 //            if (pokemon.hp <= pokemon.maxhp/4 || pokemon.maxhp == 1)
                 //                this.add('-fail'); return null;`
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if a.substitute_hp > 0 {
+                    if a.substitute_hp() > 0 {
                         return;
                     }
                     let cost = (a.stats.hp / 4).max(1);
@@ -2627,7 +2628,7 @@ impl Battle {
                         return;
                     }
                     a.current_hp -= cost;
-                    a.substitute_hp = cost;
+                    a.set_substitute_hp(cost);
                 }
             }
             "auroraveil" => {
@@ -2880,7 +2881,7 @@ impl Battle {
                 }
                 let ts = match target_slot { Some(s) => s, None => return };
                 let (target_hp, target_max, has_sub) = match self.side(opp).active_mon(ts as usize) {
-                    Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp > 0),
+                    Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp() > 0),
                     None => return,
                 };
                 if has_sub { return; }
@@ -2931,7 +2932,7 @@ impl Battle {
                 let ts = match target_slot { Some(s) => s, None => return };
                 // Snapshot target Atk stat post-stage.
                 let (raw_atk, atk_stage, has_substitute) = match self.side(opp).active_mon(ts as usize) {
-                    Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp > 0),
+                    Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp() > 0),
                     None => return,
                 };
                 if atk_stage <= -6 { return; }
@@ -6026,7 +6027,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].substitute_hp, sub_cost, "sub HP = max/4");
+        assert_eq!(b.p1.team[0].substitute_hp(), sub_cost, "sub HP = max/4");
         assert_eq!(b.p1.team[0].current_hp, max_hp - sub_cost, "user pays max/4");
         let hp_after_sub = b.p1.team[0].current_hp;
         // Turn 2: Garchomp Earthquakes; damage hits the sub, not Blissey.
@@ -6036,7 +6037,7 @@ mod tests {
         );
         // Blissey's HP unchanged; sub absorbed something (or broke).
         assert_eq!(b.p1.team[0].current_hp, hp_after_sub, "Blissey HP unchanged behind sub");
-        assert!(b.p1.team[0].substitute_hp < sub_cost, "sub took damage");
+        assert!(b.p1.team[0].substitute_hp() < sub_cost, "sub took damage");
     }
 
     #[test]
@@ -6059,7 +6060,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].substitute_hp, 0, "Sub must fail at hp == max/4");
+        assert_eq!(b.p1.team[0].substitute_hp(), 0, "Sub must fail at hp == max/4");
         assert_eq!(b.p1.team[0].current_hp, cost, "No HP deducted on failure");
     }
 
@@ -6079,7 +6080,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert!(b.p1.team[0].substitute_hp > 0);
+        assert!(b.p1.team[0].substitute_hp() > 0);
         // Switch Blissey out, then back in. Sub must be gone.
         b.step(
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
@@ -6089,7 +6090,7 @@ mod tests {
             &[Choice::Switch { actor_slot: 0, team_index: 0 }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].substitute_hp, 0, "Sub does not persist across switches");
+        assert_eq!(b.p1.team[0].substitute_hp(), 0, "Sub does not persist across switches");
     }
 
     #[test]
@@ -6110,7 +6111,7 @@ mod tests {
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
                 &[Choice::Pass { actor_slot: 0 }],
             );
-            assert!(b.p1.team[0].substitute_hp > 0);
+            assert!(b.p1.team[0].substitute_hp() > 0);
             b.step(
                 &[Choice::Pass { actor_slot: 0 }],
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -6140,7 +6141,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert!(b.p1.team[0].substitute_hp > 0);
+        assert!(b.p1.team[0].substitute_hp() > 0);
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -6169,7 +6170,7 @@ mod tests {
         );
         let bliss_max = b.p1.team[0].stats.hp;
         let expected_sub_hp = bliss_max / 4;
-        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp, "sub set at full");
+        assert_eq!(b.p1.team[0].substitute_hp(), expected_sub_hp, "sub set at full");
         let bliss_hp_at_t2 = b.p1.team[0].current_hp;
         // Turn 2: Sylveon fires Hyper Voice (sound) at Blissey behind sub.
         b.step(
@@ -6177,7 +6178,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         // Sound bypass: sub HP untouched, Blissey took the damage directly.
-        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp,
+        assert_eq!(b.p1.team[0].substitute_hp(), expected_sub_hp,
                    "sound move did not chip the sub");
         assert!(b.p1.team[0].current_hp < bliss_hp_at_t2,
                 "Blissey took Hyper Voice damage through the sub: {} -> {}",
@@ -6204,7 +6205,7 @@ mod tests {
         );
         let bliss_max = b.p1.team[0].stats.hp;
         let expected_sub_hp = bliss_max / 4;
-        assert_eq!(b.p1.team[0].substitute_hp, expected_sub_hp);
+        assert_eq!(b.p1.team[0].substitute_hp(), expected_sub_hp);
         let bliss_hp_at_t2 = b.p1.team[0].current_hp;
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
@@ -6212,9 +6213,9 @@ mod tests {
         );
         // Mystical Fire (Fire, non-sound) chips the sub; Blissey HP didn't
         // take damage (it can only go UP from Leftovers).
-        assert!(b.p1.team[0].substitute_hp < expected_sub_hp,
+        assert!(b.p1.team[0].substitute_hp() < expected_sub_hp,
                 "Mystical Fire chipped the sub: sub={}",
-                b.p1.team[0].substitute_hp);
+                b.p1.team[0].substitute_hp());
         assert!(b.p1.team[0].current_hp >= bliss_hp_at_t2,
                 "Blissey HP not reduced behind the sub: {} -> {}",
                 bliss_hp_at_t2, b.p1.team[0].current_hp);
