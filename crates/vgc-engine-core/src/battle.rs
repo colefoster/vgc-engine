@@ -39,6 +39,77 @@ impl Default for BattleConfig {
     }
 }
 
+/// Typed snapshot of a single queued action on a turn. Read-only; the
+/// queue is built at the top of `step` and consumed by handlers that
+/// need to look at the rest of the turn (Sucker Punch — "is the foe
+/// queued with a damaging move?"; Me First — "copy the foe's queued BP";
+/// After You / Quash — manipulate turn order; Quick Guard — block any
+/// queued +priority move). PS analog: `this.queue.willMove(target)` /
+/// `this.queue.willSwitch(side)` / `this.queue.changeAction(...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionKind {
+    #[default]
+    None,
+    DamagingMove,
+    StatusMove,
+    Switch,
+}
+
+impl ActionKind {
+    /// Compact byte for the legacy `pending_kind: [[u8; 2]; 2]` table
+    /// consumed by `resolve_move_with_pending`. 0/1/2 mapping is
+    /// load-bearing — Sucker Punch checks `== 1` for "queued damaging".
+    pub const fn as_byte(self) -> u8 {
+        match self {
+            ActionKind::None => 0,
+            ActionKind::DamagingMove => 1,
+            ActionKind::StatusMove => 2,
+            ActionKind::Switch => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActionQueueEntry {
+    pub kind: ActionKind,
+    /// Move id (`u16::MAX` = none, or for Switch). The category lives
+    /// in `kind`; this is the canonical move identifier so Me First /
+    /// Pursuit etc. can read BP / type / accuracy off `data::MOVES`.
+    pub move_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ActionQueue {
+    /// `[side as usize][slot]` — Side P1 / P2, slot 0 or 1.
+    pub entries: [[ActionQueueEntry; 2]; 2],
+}
+
+impl ActionQueue {
+    /// Is the named (side, slot) queued with a damaging move that
+    /// has not yet resolved? Sucker Punch reads this for ALL opposing
+    /// slots; Quick Guard reads it for any queued priority move.
+    pub fn will_use_damaging_move(&self, side: SideRef, slot: u8) -> bool {
+        matches!(self.entries[side as usize][slot.min(1) as usize].kind, ActionKind::DamagingMove)
+    }
+
+    /// Is the named (side, slot) queued to switch out this turn?
+    /// Used by Pursuit to ×2 BP + move before the switch.
+    pub fn will_switch(&self, side: SideRef, slot: u8) -> bool {
+        matches!(self.entries[side as usize][slot.min(1) as usize].kind, ActionKind::Switch)
+    }
+
+    /// Move id the named (side, slot) is queued to use (`u16::MAX` if
+    /// not queued / switching). Me First reads BP off this.
+    pub fn queued_move_id(&self, side: SideRef, slot: u8) -> u16 {
+        match self.entries[side as usize][slot.min(1) as usize].kind {
+            ActionKind::DamagingMove | ActionKind::StatusMove => {
+                self.entries[side as usize][slot.min(1) as usize].move_id
+            }
+            _ => u16::MAX,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepResult {
     Continue,
@@ -257,31 +328,48 @@ impl Battle {
         let order: Vec<ScheduledAction> =
             action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
-        // Track which (side, slot) pairs still have an unresolved Move
-        // action this turn. Sucker Punch uses this to inspect whether
-        // its target has yet to move and is queued with a damaging
-        // attack. PS: `this.queue.willMove(target)`.
-        let mut pending_move: [[Option<u16>; 2]; 2] = Default::default();
-        let mut pending_kind: [[u8; 2]; 2] = Default::default(); // 0 = none, 1 = damaging, 2 = status
+        // Typed `ActionQueue` view of every queued action on this turn,
+        // indexed [side][slot]. Sucker Punch / Quick Guard read
+        // `kind`; Me First reads `move_id` to copy BP; Pursuit /
+        // After You / Quash read `is_switch` and the move_id to
+        // re-target / rewrite the queue. PS analog: `this.queue`,
+        // surveyed by `this.queue.willMove(target)` / `willSwitch` /
+        // `cancelMove`.
+        let mut queue = ActionQueue::default();
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
-                if let Choice::Move { actor_slot, move_slot, .. } = *c {
-                    let attacker = self.side(side_ref).active_mon(actor_slot as usize);
-                    if let Some(a) = attacker {
-                        if let Some(mid) = a.moves.get(move_slot as usize).copied() {
-                            if mid != u16::MAX {
-                                let cat = data::MOVES[mid as usize].category;
-                                let s = side_ref as usize;
-                                let slot = (actor_slot as usize).min(1);
-                                pending_move[s][slot] = Some(mid);
-                                pending_kind[s][slot] = if cat == 2 { 2 } else { 1 };
+                let s = side_ref as usize;
+                match *c {
+                    Choice::Move { actor_slot, move_slot, .. } => {
+                        let slot = (actor_slot as usize).min(1);
+                        if let Some(a) = self.side(side_ref).active_mon(actor_slot as usize) {
+                            if let Some(mid) = a.moves.get(move_slot as usize).copied() {
+                                if mid != u16::MAX {
+                                    let cat = data::MOVES[mid as usize].category;
+                                    queue.entries[s][slot] = ActionQueueEntry {
+                                        kind: if cat == 2 { ActionKind::StatusMove } else { ActionKind::DamagingMove },
+                                        move_id: mid,
+                                    };
+                                }
                             }
                         }
                     }
+                    Choice::Switch { actor_slot, .. } => {
+                        let slot = (actor_slot as usize).min(1);
+                        queue.entries[s][slot] = ActionQueueEntry {
+                            kind: ActionKind::Switch,
+                            move_id: u16::MAX,
+                        };
+                    }
+                    Choice::Pass { .. } => {}
                 }
             }
         }
-        let _ = pending_move; // reserved for future hooks; pending_kind drives Sucker Punch today
+        // Backwards-compatible flat view consumed by `resolve_move_with_pending`.
+        let mut pending_kind: [[u8; 2]; 2] = [
+            [queue.entries[0][0].kind.as_byte(), queue.entries[0][1].kind.as_byte()],
+            [queue.entries[1][0].kind.as_byte(), queue.entries[1][1].kind.as_byte()],
+        ];
 
         for action in order {
             if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
