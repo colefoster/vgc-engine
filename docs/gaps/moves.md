@@ -298,7 +298,7 @@ See systems.md (sleep status hooks).
 
 **What it is**: Hawlucha signature; counts as both Fighting and Flying for type effectiveness.
 
-**Status**: not implemented.
+**Status**: shipped — PR-110. Slug-keyed branch in `type_effectiveness` sums Fighting + Flying chart rows.
 
 ### Thousand Arrows
 
