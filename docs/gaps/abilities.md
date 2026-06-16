@@ -194,7 +194,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Electric / Water / Ground immunity + heal 1/4 max HP on hit.
 
-**Status**: not implemented.
+**Status**: partial — Volt Absorb shipped PR-111. Water Absorb / Earth Eater still open.
 
 ### Sap Sipper
 
