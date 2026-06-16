@@ -577,6 +577,20 @@ impl Battle {
         } else {
             data::ABILITIES[attacker.ability_id as usize].slug
         };
+        // Mold Breaker / Teravolt / Turboblaze — the attacker's
+        // damaging moves bypass defender abilities flagged
+        // `breakable: 1`. PS sets `move.ignoreAbility = true` in the
+        // ability's `onModifyMove`; downstream defender-ability checks
+        // consult it. Gen-9 trio is functionally identical at the rules
+        // level (PS handler bodies are the same; only flavor text and
+        // species differ). Status moves are unaffected per PS — gates
+        // already exist on `move.category` at each defender-ability
+        // site. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Mold_Breaker_(Ability)>.
+        let attacker_breaks_mold = matches!(
+            attacker_ability_slug,
+            "moldbreaker" | "teravolt" | "turboblaze"
+        );
         if attacker_ability_slug == "hadronengine"
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
@@ -644,7 +658,12 @@ impl Battle {
             // is supposed to bypass it — Mold Breaker landing is its own
             // PR. Air Balloon is not breakable (item, not ability).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Levitate_(Ability)>.
-            if m.type_ == 8 && !defender.is_grounded() {
+            let defender_grounded = if attacker_breaks_mold {
+                defender.is_grounded_for_mold_breaker()
+            } else {
+                defender.is_grounded()
+            };
+            if m.type_ == 8 && !defender_grounded {
                 continue;
             }
 
@@ -731,6 +750,7 @@ impl Battle {
                 data::ABILITIES[defender.ability_id as usize].slug
             };
             if defender_ability_slug == "thickfat"
+                && !attacker_breaks_mold
                 && (m.type_ == 1 || m.type_ == 5)
                 && dmg > 0
             {
@@ -4829,6 +4849,76 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn mold_breaker_bypasses_levitate_ground_immunity() {
+        // Excadrill @ Mold Breaker fires Earthquake into a Levitate
+        // Cresselia. PS: `move.ignoreAbility = true` → Levitate is
+        // bypassed → EQ hits at full damage.
+        let p1_json = r#"[
+            {"species":"excadrill","level":50,"ability":"moldbreaker","item":"focussash","nature":"adamant","moves":["earthquake","ironhead","rockslide","drillrun"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"mentalherb","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let cres_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < cres_before,
+                "Mold Breaker Earthquake must bypass Levitate");
+    }
+
+    #[test]
+    fn mold_breaker_bypasses_thick_fat_resistance() {
+        // Excadrill @ Mold Breaker doesn't have a strong Fire/Ice move,
+        // so use a Pheromosa stand-in via species swap: a Mold Breaker
+        // Sandile (Earthquake user) is also Mold Breaker, but for a
+        // clean Fire test, use Excadrill's Drill Run (Ground) vs a
+        // Thick Fat target — but that's not Fire/Ice. The right test:
+        // give a Mold Breaker mon a Fire move. Sawk-G is Mold Breaker
+        // but has no Fire move by level-up. Easiest path: assemble
+        // Drilbur (Mold Breaker) with a Fire move via TM — Drilbur learns
+        // Rock Tomb but no Fire. Use Excadrill + Earthquake — Earthquake
+        // is Ground, but Thick Fat only halves Fire/Ice. So we need a
+        // different attacker. Use Pheromosa? No — that's Beast Boost.
+        //
+        // Workaround: use Reshiram's Turboblaze (functionally identical
+        // to Mold Breaker). Reshiram has Fusion Flare / Flamethrower.
+        let p1_json = r#"[
+            {"species":"reshiram","level":50,"ability":"turboblaze","item":"focussash","nature":"modest","moves":["flamethrower","dragonpulse","fusionflare","earthpower"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_fat_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_plain_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let mut fat = Battle::new(BattleConfig { format: Format::Singles, seed: 22 },
+                                  p1.clone(),
+                                  TeamBuilder::from_json(p2_fat_json).unwrap());
+        let mut plain = Battle::new(BattleConfig { format: Format::Singles, seed: 22 },
+                                    p1,
+                                    TeamBuilder::from_json(p2_plain_json).unwrap());
+        let snor_full = fat.p2.team[0].current_hp;
+        fat.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        plain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let fat_dmg = snor_full - fat.p2.team[0].current_hp;
+        let plain_dmg = snor_full - plain.p2.team[0].current_hp;
+        assert_eq!(fat_dmg, plain_dmg,
+                   "Turboblaze (=Mold Breaker) must bypass Thick Fat");
     }
 
     #[test]
