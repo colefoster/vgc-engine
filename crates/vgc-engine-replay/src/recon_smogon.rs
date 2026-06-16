@@ -396,7 +396,6 @@ mod tests {
                     stall_counter: 0, used_stall_this_turn: false,
                     turns_active: 0,
                     locked_move_slot: 255,
-                    sleep_turns: 0,
                     last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
                     boosted_stat: 255, booster_locked: false,
                     ability_suppressed: false, crit_stage_volatile: 0,

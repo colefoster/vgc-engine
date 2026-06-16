@@ -139,7 +139,7 @@ impl FinalStats {
 /// boolean / counter fields (`is_protected_this_turn`, `encore_turns`,
 /// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
 /// `damaged_this_turn`,
-/// `sleep_turns`, `crit_stage_volatile`, `semi_invuln`,
+/// `crit_stage_volatile`, `semi_invuln`,
 /// `charging_turns`, `must_recharge`, `lockin_turns`) into this
 /// registry is staged per-volatile in follow-up PRs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -213,6 +213,12 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Sleep counter (PS `data/conditions.ts:slp`). Indefinite duration;
+    /// `payload` carries the remaining sleep turns (1..=3 on gen 5+ apply,
+    /// decremented at the start of each move attempt; the mon wakes when
+    /// the decrement hits 0). Persists across switches (PS analog:
+    /// `pokemon.statusState.time`). Cleared when Status leaves Sleep.
+    Sleep,
     /// Substitute (PS `data/conditions.ts:substitute`). Indefinite
     /// duration (`turns_remaining == 0`); `payload` carries the current
     /// HP of the sub doll. Cleared on switch-out.
@@ -383,12 +389,6 @@ pub struct Pokemon {
     /// Band/Specs/Scarf, subsequent move selections are restricted to
     /// that slot. `255 = unlocked`. Cleared on switch-out.
     pub locked_move_slot: u8,
-    /// Remaining sleep turns. Set to a random 1..=3 (gen 5+) when Sleep
-    /// is applied; decremented at the start of each move attempt; the
-    /// mon wakes up (Status -> None) at the decrement that hits 0. PS:
-    /// `data/conditions.ts:slp onBeforeMove`. Persists across switches
-    /// (the timer pauses while the mon is on the bench).
-    pub sleep_turns: u8,
     /// Slot index of the most recent move this mon used (PP-consumed),
     /// or 255 if it hasn't moved yet on the field. Cleared on switch-
     /// out. Used by Encore to determine the lock target.
@@ -713,6 +713,29 @@ impl Pokemon {
         }
     }
 
+    /// Remaining sleep turns. `0` if not asleep.
+    #[inline]
+    pub fn sleep_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Sleep)
+            .map(|v| v.payload as u8)
+            .unwrap_or(0)
+    }
+
+    /// Set / clear the Sleep counter volatile. `t == 0` removes it.
+    #[inline]
+    pub fn set_sleep_turns(&mut self, t: u8) {
+        if t == 0 {
+            self.volatiles.remove(VolatileKind::Sleep);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Sleep,
+                turns_remaining: 0,
+                payload: t as u32,
+            });
+        }
+    }
+
     /// Substitute HP. `0` = no sub. When > 0, incoming damage is
     /// absorbed by the sub before reaching `current_hp` (sound moves
     /// bypass it — PR-51).
@@ -939,7 +962,6 @@ mod tests {
             stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
-            sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
@@ -979,7 +1001,6 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
-            sleep_turns: 0,
             last_used_move_slot: 255,
             encore_turns: 0,
             encored_move_slot: 255,
