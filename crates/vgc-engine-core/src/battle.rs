@@ -1093,6 +1093,13 @@ impl Battle {
             if attacker_item_slug == "wiseglasses" && special_move && dmg > 0 {
                 dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
             }
+            // Muscle Band — physical moves ×1.1 BP. PS
+            // `data/items.ts:muscleband` mirrors Wise Glasses with
+            // `move.category === 'Physical'`. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
+            if attacker_item_slug == "muscleband" && physical_move && dmg > 0 {
+                dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+            }
             if attacker_item_slug == "expertbelt" && dmg > 0 {
                 let eff = crate::damage::type_effectiveness(
                     m.type_,
@@ -5521,6 +5528,63 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn muscle_band_boosts_physical_only() {
+        // Garchomp Dragon Claw (Physical) into Heracross — Muscle Band
+        // boosts ~×1.10; Tackle as control. Status moves untouched.
+        let mk = |item: &str, slot: u8| -> u16 {
+            let p1_json = format!(r#"[
+                {{"species":"garchomp","level":50,"ability":"sandveil","item":"{item}","nature":"hardy","moves":["tackle","dragonclaw","aerialace","ironhead"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"heracross","level":50,"ability":"guts","item":"leftovers","nature":"impish","moves":["closecombat","megahorn","stoneedge","earthquake"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 14 }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: slot, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        // Dragon Claw — Physical, should boost.
+        let mb = mk("muscleband", 1);
+        let plain = mk("leftovers", 1);
+        assert!(mb > plain,
+                "Muscle Band should boost physical damage ({} > {})", mb, plain);
+        let ratio_x1000 = (mb as u32) * 1000 / (plain.max(1) as u32);
+        assert!((1080..=1130).contains(&ratio_x1000),
+                "Muscle Band ×1.10 expected, got ×{}/1000", ratio_x1000);
+    }
+
+    #[test]
+    fn muscle_band_does_not_boost_special() {
+        // Alakazam Psychic (Special) — Muscle Band must NOT boost.
+        let mk = |item: &str| -> u16 {
+            let p1_json = format!(r#"[
+                {{"species":"alakazam","level":50,"ability":"synchronize","item":"{item}","nature":"hardy","moves":["psychic","crunch","focusblast","dazzlinggleam"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 15 }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let mb = mk("muscleband");
+        let plain = mk("leftovers");
+        assert_eq!(mb, plain,
+                "Muscle Band must NOT boost special damage");
     }
 
     #[test]

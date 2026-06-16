@@ -52,7 +52,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **What it is**: Physical moves ×1.1 BP.
 
-**Status**: not implemented.
+**Status**: shipped — PR-103.
 
 ## Defensive items
 
@@ -393,3 +393,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Rocky Helmet (PR-100)
 - Expert Belt (PR-101)
 - Wise Glasses (PR-102)
+- Muscle Band (PR-103)
