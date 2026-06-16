@@ -80,6 +80,11 @@ struct MoveJson {
     gen_: u32,
     #[serde(rename = "isNonstandard", default)]
     is_nonstandard: Option<String>,
+    /// Presence of a `secondary` object in PS `data/moves.ts`. Drives
+    /// Sheer Force eligibility — sheerforce `onModifyMove` deletes the
+    /// secondary and applies the BP boost only when one was present.
+    #[serde(default)]
+    secondary: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -256,6 +261,13 @@ fn main() {
     writeln!(f, "    pub pp: u8,").unwrap();
     writeln!(f, "    pub priority: i8,").unwrap();
     writeln!(f, "    pub target: u8,").unwrap();
+    writeln!(f, "    /// True iff PS `data/moves.ts` carries a `secondary` block.").unwrap();
+    writeln!(f, "    /// Source of truth for Sheer Force eligibility.").unwrap();
+    writeln!(f, "    pub has_secondary: bool,").unwrap();
+    writeln!(f, "    /// True iff the move is in PS's manual `hasSheerForceBoost: true` list").unwrap();
+    writeln!(f, "    /// (gen 9: electroshot, orderup). Sheer Force boosts these even with no").unwrap();
+    writeln!(f, "    /// `secondary` field. Hardcoded — @pkmn/dex JSON drops the flag.").unwrap();
+    writeln!(f, "    pub has_sheer_force_boost: bool,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -264,7 +276,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -275,6 +287,8 @@ fn main() {
             m.pp.min(u8::MAX as u32) as u8,
             m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
             target_code(&m.target),
+            !m.secondary.is_null(),
+            matches!(slug.as_str(), "electroshot" | "orderup"),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

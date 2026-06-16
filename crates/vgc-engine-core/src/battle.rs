@@ -771,7 +771,15 @@ impl Battle {
             // above), so their secondaries fire normally.
             let alive_post = self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive());
-            if alive_post && !hit_sub {
+            // Sheer Force strips secondaries entirely — flinch, stat
+            // drops, burn chance etc. are deleted before they roll. PS
+            // `data/abilities.ts:sheerforce` `onModifyMove` clears
+            // `move.secondaries` (and `move.self`); the secondary roll
+            // never reaches `runEvent('Hit')`. Same predicate as the BP
+            // boost in `damage.rs`.
+            let sheer_force_strip = crate::damage::attacker_has_sheer_force(&attacker)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            if alive_post && !hit_sub && !sheer_force_strip {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
@@ -800,8 +808,19 @@ impl Battle {
         // residual, not the move itself. PS: `data/items.ts:lifeorb` recoil
         // routes through the standard onDamage event.
         if attacker_item_slug == "lifeorb" && any_damage_dealt > 0 {
-            let skip_recoil = self.side(actor_side).active_mon(actor_slot as usize)
-                .is_some_and(crate::ability::has_magic_guard);
+            // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
+            // gates the whole `AfterMoveSecondarySelf` step on
+            // `!(move.hasSheerForce && pokemon.hasAbility('sheerforce'))`,
+            // so Life Orb's recoil (fired in that step) is skipped on
+            // any Sheer-Force-boosted move. The Life Orb damage modifier
+            // is applied upstream and still counts. Bulbapedia confirms
+            // cartridge parity from gen 5.
+            let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
+            let sheer_force_skip = attacker_post
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
+                || sheer_force_skip;
             if !skip_recoil {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     let recoil = (a.stats.hp / 10).max(1);
@@ -4391,5 +4410,79 @@ mod tests {
         for i in 0..a.p2.team.len() {
             assert_eq!(a.p2.team[i].current_hp, b.p2.team[i].current_hp);
         }
+    }
+
+    #[test]
+    fn sheer_force_boosts_damage_and_strips_secondary() {
+        // Nidoking + Earth Power: PS `data/moves.ts:earthpower` carries a
+        // secondary (10% SpD drop). Sheer Force should
+        //   (a) boost BP ×5325/4096 ≈ 1.3, increasing damage, and
+        //   (b) delete the secondary so the SpD drop never rolls.
+        // Compared against the same Nidoking running its other gen-9
+        // legal ability (Poison Point) — identical EVs/nature/RNG seed.
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let sheer_json = r#"[
+            {"species":"nidoking","level":50,"ability":"sheerforce","item":"focussash","nature":"modest","moves":["earthpower","sludgewave","icebeam","thunderbolt"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let plain_json = r#"[
+            {"species":"nidoking","level":50,"ability":"poisonpoint","item":"focussash","nature":"modest","moves":["earthpower","sludgewave","icebeam","thunderbolt"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let mut sheer = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 42 },
+            TeamBuilder::from_json(sheer_json).unwrap(), p2.clone(),
+        );
+        let mut plain = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 42 },
+            TeamBuilder::from_json(plain_json).unwrap(), p2,
+        );
+        let snor_full = sheer.p2.team[0].current_hp;
+        sheer.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        plain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let sheer_dmg = snor_full - sheer.p2.team[0].current_hp;
+        let plain_dmg = snor_full - plain.p2.team[0].current_hp;
+        assert!(sheer_dmg > plain_dmg,
+                "Sheer Force should boost Earth Power damage ({} > {})",
+                sheer_dmg, plain_dmg);
+        let ratio_x100 = (sheer_dmg as u32) * 100 / (plain_dmg.max(1) as u32);
+        assert!((125..=135).contains(&ratio_x100),
+                "Damage ratio ≈ ×1.3 expected, got ×{}/100", ratio_x100);
+        assert_eq!(sheer.p2.team[0].boosts[3], 0,
+                   "Sheer Force should strip Earth Power's SpD-drop secondary");
+    }
+
+    #[test]
+    fn sheer_force_skips_life_orb_recoil() {
+        // Nidoking @ Life Orb + Sheer Force using Earth Power: Life Orb
+        // damage modifier still applies (×1.3), but the recoil step is
+        // skipped because PS gates the whole `AfterMoveSecondarySelf`
+        // event on `!(move.hasSheerForce && hasAbility('sheerforce'))`.
+        // PS: `sim/battle-actions.ts:531`.
+        let p1_json = r#"[
+            {"species":"nidoking","level":50,"ability":"sheerforce","item":"lifeorb","nature":"modest","moves":["earthpower","sludgewave","icebeam","thunderbolt"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let nido_before = b.p1.team[0].current_hp;
+        let snor_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < snor_before, "Earth Power hit landed");
+        assert_eq!(b.p1.team[0].current_hp, nido_before,
+                   "Sheer Force should skip Life Orb recoil on a boosted move");
     }
 }
