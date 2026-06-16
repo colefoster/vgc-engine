@@ -262,7 +262,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:recover,softboiled,moonlight,synthesis,morningsun,shoreup,roost,slackoff,milkdrink`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-109 (Roost Flying-type-removal volatile deferred).
 
 ### Wish
 
