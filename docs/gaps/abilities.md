@@ -74,7 +74,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: In Sand, Rock/Ground/Steel moves ×1.3 BP; also immunity to Sand chip.
 
-**Status**: not implemented.
+**Status**: shipped — PR-108.
 
 ### Solar Power
 

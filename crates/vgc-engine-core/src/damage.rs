@@ -305,6 +305,19 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
+    // `chainModify([5325, 4096])` (×1.3) on Rock/Ground/Steel moves while
+    // Sand is up. Move-type codes: Ground=8, Rock=12, Steel=16. Damage
+    // immunity to Sand chip is handled in `battle.rs`.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Force_(Ability)>.
+    if matches!(ctx.weather, crate::weather::Weather::Sand)
+        && matches!(move_type, 8 | 12 | 16)
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "sandforce"
+    {
+        bp = bp * 5325 / 4096;
+    }
+
     // Iron Fist — PS `data/abilities.ts:ironfist` `onBasePower`
     // returns `chainModify([4915, 4096])` (≈×1.2) on moves with
     // `flags.punch`. Iron Hands (top-25 corpus, niche but seen) /
@@ -810,6 +823,32 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn sand_force_boosts_rock_ground_steel_in_sand() {
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let sf_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "sandforce").unwrap() as u16;
+        atk.ability_id = sf_id;
+        let def = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let mk = |w: crate::weather::Weather, mid: u16| calculate_damage(&atk, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: w,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let eq = move_id("earthquake");
+        let tackle = move_id("tackle");
+        let dry = mk(crate::weather::Weather::None, eq);
+        let sand = mk(crate::weather::Weather::Sand, eq);
+        let sand_tackle = mk(crate::weather::Weather::Sand, tackle);
+        let dry_tackle = mk(crate::weather::Weather::None, tackle);
+        assert!(sand > dry, "Sand Force boosts Ground EQ in sand");
+        assert_eq!(sand_tackle, dry_tackle, "Sand Force must not boost Normal-type");
     }
 
     #[test]
