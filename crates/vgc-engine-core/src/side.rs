@@ -84,6 +84,16 @@ impl Side {
         self.team.iter().all(|m| !m.is_alive())
     }
 
+    /// Cumulative count of this side's Pokémon that have fainted so far
+    /// in this battle. Derived from `team` rather than maintained as
+    /// a counter — keeps the multiple faint-marking call sites
+    /// (move damage, end-of-turn residuals, contact recoil, etc.)
+    /// trivially correct. Mirrors PS `side.totalFainted`; consumed by
+    /// Last Respects (`BP = 50 + 50 * totalFainted`).
+    pub fn total_fainted(&self) -> u8 {
+        self.team.iter().filter(|m| m.fainted).count().min(u8::MAX as usize) as u8
+    }
+
     /// Indices of bench Pokémon that could be switched in.
     pub fn switch_candidates(&self, active_slot: usize) -> impl Iterator<Item = u8> + '_ {
         let active = self.active;

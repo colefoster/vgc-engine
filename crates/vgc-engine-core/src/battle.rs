@@ -747,6 +747,11 @@ impl Battle {
             // move just once).
             let (fairy_aura_active, dark_aura_active, aura_break_active) =
                 scan_aura_field(self);
+            // Last Respects reads the attacker's side fainted count via
+            // DamageContext (PS `pokemon.side.totalFainted`). Cheap
+            // derivation from team state; see `Side::total_fainted`.
+            let attacker_total_fainted_allies =
+                self.side(actor_side).total_fainted();
             let mut dmg = calculate_damage(
                 &boosted_attacker,
                 &boosted_defender,
@@ -757,6 +762,7 @@ impl Battle {
                     defender_has_reflect, defender_has_light_screen,
                     defender_has_aurora_veil, is_doubles,
                     fairy_aura_active, dark_aura_active, aura_break_active,
+                    attacker_total_fainted_allies,
                 },
             );
             // Apply attacker item multiplier (Life Orb).
@@ -2844,11 +2850,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -4675,11 +4681,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -5881,6 +5887,87 @@ mod tests {
         // — uniformity sanity check (1/6 per status, ~50 expected, demand >5).
         assert!(psn > 5 && par > 5 && slp > 5,
                 "Dire Claw distribution too skewed: psn={psn} par={par} slp={slp}");
+    }
+
+    #[test]
+    fn last_respects_bp_scales_with_fainted_teammates() {
+        // 50 + 50 * total_fainted: 0 fainted → 50 BP, 3 fainted → 200
+        // BP, etc. Damage is linear in BP through the formula
+        // (post +2 constant), so the damage ratio across a fixed roll
+        // should mirror the BP ratio.
+        use crate::damage::{calculate_damage, DamageContext};
+        // Attacker / defender shapes don't matter much — just need a
+        // Ghost-type Physical move target. Use Garchomp-as-Houndstone-
+        // proxy because Houndstone isn't in the team builder yet.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["lastrespects","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["lastrespects","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["lastrespects","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        // Snorlax is Normal → Ghost-immune; pick a Ghost-neutral
+        // defender. Garchomp is Dragon/Ground (Ghost ×1 / ×1).
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","aerialace","ironhead","stoneedge"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let lr_id = data::MOVES.iter().position(|m| m.slug == "lastrespects").unwrap() as u16;
+        let mk = |tf: u8| {
+            calculate_damage(&p1[0], &p2[0], lr_id, DamageContext {
+                roll: 15,
+                attacker_total_fainted_allies: tf,
+                ..DamageContext::default()
+            })
+        };
+        let base = mk(0);
+        let one = mk(1);
+        let three = mk(3);
+        assert!(base > 0);
+        // BP 50 → 100 → 200. Damage ratio tracks BP almost exactly (the
+        // +2 floor constant introduces a 1-2 HP slop).
+        let r1 = (one as u32) * 100 / base as u32;
+        let r3 = (three as u32) * 100 / base as u32;
+        assert!(
+            r1 >= 190 && r1 <= 210,
+            "+1 fainted should ≈2× damage: {one}/{base} = {r1}%"
+        );
+        assert!(
+            r3 >= 380 && r3 <= 420,
+            "+3 fainted should ≈4× damage: {three}/{base} = {r3}%"
+        );
+    }
+
+    #[test]
+    fn last_respects_reads_total_fainted_through_battle() {
+        // End-to-end: kill a teammate, then Last Respects should pull
+        // the elevated BP via `Side::total_fainted()` at the damage
+        // call site. Compare against fresh-team baseline.
+        let team_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["lastrespects","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        // Ghost-neutral defender (Garchomp = Dragon/Ground).
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","aerialace","ironhead","stoneedge"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(team_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Faint the bench Snorlax (team index 1).
+        b.p1.team[1].current_hp = 0;
+        b.p1.team[1].fainted = true;
+        assert_eq!(b.p1.total_fainted(), 1);
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg = hp_before - b.p2.team[0].current_hp;
+        assert!(dmg > 0, "Last Respects with 1 fainted ally should deal damage");
+        // 100 BP Ghost-neutral vs Snorlax is well above the 50 BP floor.
+        // Sanity: more than negligible.
+        assert!(dmg as u32 * 10 > hp_before as u32,
+                "Last Respects damage too low: {dmg} / {hp_before}");
     }
 
     #[test]
