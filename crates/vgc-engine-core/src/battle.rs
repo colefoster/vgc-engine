@@ -768,8 +768,9 @@ impl Battle {
                 let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
                 match mon {
                     Some(a) => {
-                        a.sleep_turns = a.sleep_turns.saturating_sub(1);
-                        if a.sleep_turns == 0 {
+                        let next = a.sleep_turns().saturating_sub(1);
+                        a.set_sleep_turns(next);
+                        if next == 0 {
                             a.status = Status::None;
                             false
                         } else {
@@ -2309,7 +2310,7 @@ impl Battle {
                 m.set_toxic_counter(1);
             }
             if matches!(status, Status::Sleep) {
-                m.sleep_turns = sleep_turns;
+                m.set_sleep_turns(sleep_turns);
             }
         }
     }
@@ -5921,7 +5922,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert!(matches!(b.p2.team[0].status, Status::Sleep), "Pikachu asleep after turn 1");
-        assert!((1..=3).contains(&b.p2.team[0].sleep_turns), "1..=3 sleep_turns");
+        assert!((1..=3).contains(&b.p2.team[0].sleep_turns()), "1..=3 sleep_turns");
         let amoonguss_hp_after_t1 = b.p1.team[0].current_hp;
         assert!(amoonguss_hp_after_t1 < amoonguss_start_hp, "T-bolt hit on turn 1");
 
@@ -5948,13 +5949,13 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         b.p2.team[0].status = Status::Sleep;
-        b.p2.team[0].sleep_turns = 1; // wake on the next move attempt
+        b.p2.team[0].set_sleep_turns(1); // wake on the next move attempt
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "wakes after 1-turn timer");
-        assert_eq!(b.p2.team[0].sleep_turns, 0);
+        assert_eq!(b.p2.team[0].sleep_turns(), 0);
     }
 
     #[test]
