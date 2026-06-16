@@ -161,7 +161,7 @@ Remaining for full close:
 
 **Why it matters**: Without correct EV spreads (especially HP/Def/SpD), HP-trace is wrong from turn 1.
 
-**Status**: partial — recon hooks shipped (PR-96/97/98); EV-spread distribution not yet sampled. Continuation note: sketch — at team-preview, for each PS species/item/ability triple, fetch the Smogon top-N usage candidate sets (already cached in `crates/vgc-engine-replay/src/smogon_stats.rs`). For each subsequent `|-damage|` event, run the damage formula across each candidate's stat block, drop candidates whose damage range doesn't contain the observation, marginalise back to a posterior over EV spreads. Lands as a new `recon_smogon::SpreadEvidenceObserver` layered on top of the existing prior — needs the damage back-solver (above) to be in place first. Owner: next PR-stream session.
+**Status**: partial — recon hooks shipped (PR-96/97/98); PR-165 added the `spread_recon` module with `narrow_by_damage(candidates, evidence, role)`. Given a `(nature, StatSpread)` candidate list and one `|-damage|` observation (with the opposing side fully resolved via `SideShape`), the call returns the subset of candidates whose damage range contains the observation (using the PR-164 back-solve primitive). Caller can iterate `|-damage|` events to monotonically narrow the candidate distribution. Wiring into a `recon_smogon::SpreadEvidenceObserver` that consumes a replay event stream and feeds the surviving distribution back into `SmogonStatsRecon` is the next step.
 
 ## Format / mode
 
