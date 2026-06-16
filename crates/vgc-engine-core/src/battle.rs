@@ -483,6 +483,7 @@ impl Battle {
             incoming.boosted_stat = 255;
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.pending_self_switch = false;
+            incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
         } else {
             return false;
         }

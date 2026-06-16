@@ -256,6 +256,16 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// Ability suppression flag — when `true`, `effective_ability_slug()`
+    /// returns `""` regardless of `ability_id`. Set by Gastro Acid (and
+    /// Neutralizing Gas — TBD). PS models this as the `gastroacid`
+    /// volatile + `Ability.isPermanent` gate; we collapse to a single
+    /// bool for now. Cleared on switch-out (PS `onSwitchOut` /
+    /// `onSwitchIn` reset paths). Abilities flagged "permanent" in PS
+    /// (Multitype, RKS System, etc.) ignore the suppression — we keep
+    /// the bool tight for the moment and gate at the consumer when
+    /// those abilities are added.
+    pub ability_suppressed: bool,
     /// Self-switch volatile: set by U-turn / Volt Switch / Flip Turn /
     /// Parting Shot / Teleport / Chilly Reception once their hit
     /// resolves successfully. After the move-resolution loop the engine
@@ -292,17 +302,35 @@ impl Pokemon {
         self.is_grounded_internal(true)
     }
 
+    /// Effective ability slug. Returns `""` when the ability is
+    /// suppressed (Gastro Acid) or the slot is the sentinel. All new
+    /// code that branches on ability should call this instead of
+    /// reading `ability_id` directly. PS analog: `Pokemon.getAbility()`
+    /// in `sim/pokemon.ts`, which returns the suppressed ability when
+    /// Gastro Acid'd / Neutralizing Gas'd unless the ability is
+    /// `isPermanent`. We collapse to a single `ability_suppressed`
+    /// bool; consumers needing the "permanent" exception read
+    /// `ability_id` directly.
+    pub fn effective_ability_slug(&self) -> &'static str {
+        if self.ability_suppressed {
+            return "";
+        }
+        if self.ability_id == u16::MAX {
+            return "";
+        }
+        data::ABILITIES
+            .get(self.ability_id as usize)
+            .map(|a| a.slug)
+            .unwrap_or("")
+    }
+
     fn is_grounded_internal(&self, ignore_levitate: bool) -> bool {
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
         if flying {
             return false;
         }
-        let ability = if self.ability_id == u16::MAX {
-            ""
-        } else {
-            data::ABILITIES[self.ability_id as usize].slug
-        };
+        let ability = self.effective_ability_slug();
         if ability == "levitate" && !ignore_levitate {
             return false;
         }
@@ -359,6 +387,50 @@ pub fn compute_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_ability_slug_respects_suppression() {
+        let species = data::species_by_slug("garchomp").expect("garchomp");
+        let ab_id = data::ABILITIES.iter().position(|a| a.slug == "roughskin").unwrap() as u16;
+        let mon = Pokemon {
+            species_id: species.num,
+            level: 50,
+            moves: [u16::MAX; 4],
+            pp: [0; 4],
+            ability_id: ab_id,
+            item_id: u16::MAX,
+            stats: FinalStats::default(),
+            current_hp: 100,
+            status: Status::None,
+            boosts: [0; 7],
+            fainted: false,
+            is_protected_this_turn: false,
+            stall_counter: 0,
+            used_stall_this_turn: false,
+            turns_active: 0,
+            flinched_this_turn: false,
+            helping_handed_this_turn: false,
+            redirecting_this_turn: false,
+            redirecting_is_powder: false,
+            damaged_this_turn: false,
+            toxic_counter: 0,
+            locked_move_slot: 255,
+            switched_in_this_turn: false,
+            substitute_hp: 0,
+            sleep_turns: 0,
+            last_used_move_slot: 255,
+            encore_turns: 0,
+            encored_move_slot: 255,
+            boosted_stat: 255,
+            booster_locked: false,
+            pending_self_switch: false,
+            ability_suppressed: false,
+        };
+        assert_eq!(mon.effective_ability_slug(), "roughskin");
+        let mut sup = mon.clone();
+        sup.ability_suppressed = true;
+        assert_eq!(sup.effective_ability_slug(), "");
+    }
 
     #[test]
     fn adamant_garchomp_l50_31_252_atk() {
