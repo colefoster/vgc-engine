@@ -85,6 +85,12 @@ struct MoveJson {
     /// secondary and applies the BP boost only when one was present.
     #[serde(default)]
     secondary: serde_json::Value,
+    /// Move flags from PS `data/moves.ts`. We only need a few bits for
+    /// gen-9 work so far — `contact` (Rough Skin / Iron Barbs / Rocky
+    /// Helmet / Tough Claws / Static / Flame Body / Cute Charm) and
+    /// `punch` / `bite` etc. come later as their consumers land.
+    #[serde(default)]
+    flags: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -268,6 +274,9 @@ fn main() {
     writeln!(f, "    /// (gen 9: electroshot, orderup). Sheer Force boosts these even with no").unwrap();
     writeln!(f, "    /// `secondary` field. Hardcoded — @pkmn/dex JSON drops the flag.").unwrap();
     writeln!(f, "    pub has_sheer_force_boost: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.contact = 1`. Used by Rough Skin / Iron Barbs / Rocky").unwrap();
+    writeln!(f, "    /// Helmet / Tough Claws / Static / Flame Body / Cute Charm.").unwrap();
+    writeln!(f, "    pub makes_contact: bool,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -276,7 +285,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -289,6 +298,7 @@ fn main() {
             target_code(&m.target),
             !m.secondary.is_null(),
             matches!(slug.as_str(), "electroshot" | "orderup"),
+            m.flags.contains_key("contact"),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

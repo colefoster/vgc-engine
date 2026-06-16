@@ -292,7 +292,14 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
 /// damage and the hit must not have been absorbed by a Substitute
 /// (PS treats sub-absorbed hits as not reaching the holder, so
 /// Stamina / Rough Skin / Iron Barbs etc. don't fire).
-pub fn on_damaging_hit(battle: &mut Battle, target_side: SideRef, target_slot: u8) {
+pub fn on_damaging_hit(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_id: u16,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+) {
     let slug = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => ability_slug(m.ability_id),
         _ => return,
@@ -306,6 +313,38 @@ pub fn on_damaging_hit(battle: &mut Battle, target_side: SideRef, target_slot: u
     if slug == "stamina" {
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6);
+        }
+    }
+    // Rough Skin (Garchomp/Carvanha) and Iron Barbs (Ferrothorn): 1/8
+    // max HP recoil to any contact attacker. PS handlers are functionally
+    // identical — `checkMoveMakesContact(move, source, target, true)` gate
+    // plus `this.damage(source.baseMaxhp / 8, source, target)`. The final
+    // arg to checkMoveMakesContact is `nofreeze`-style overrideable; gen-9
+    // contact negators (Long Reach, Protective Pads, Punching Glove on
+    // punch moves) aren't modeled yet, so a plain `flags.contact` check is
+    // currently equivalent. PS routes the recoil through the standard
+    // `onDamage` event, so Magic Guard on the attacker blocks it.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rough_Skin_(Ability)>,
+    //             <https://bulbapedia.bulbagarden.net/wiki/Iron_Barbs_(Ability)>.
+    if slug == "roughskin" || slug == "ironbarbs" {
+        let m = &data::MOVES[move_id as usize];
+        if m.makes_contact {
+            let attacker_alive_and_no_mg = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| a.is_alive() && !has_magic_guard(a));
+            if attacker_alive_and_no_mg {
+                if let Some(a) = battle
+                    .side_mut(attacker_side)
+                    .active_mon_mut(attacker_slot as usize)
+                {
+                    let recoil = (a.stats.hp / 8).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
         }
     }
 }
