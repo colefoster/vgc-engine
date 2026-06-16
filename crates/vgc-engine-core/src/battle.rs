@@ -302,6 +302,14 @@ impl Battle {
             self.resolve_move_with_pending(action, &pending_kind);
         }
 
+        // 2b. Self-switch sweep — U-turn / Volt Switch / Flip Turn /
+        //     Parting Shot / Teleport / Chilly Reception all leave the
+        //     user with `pending_self_switch == true`. Consume the next
+        //     un-applied Switch choice for that slot and run the swap
+        //     before end-of-turn residuals. PS analogue:
+        //     `Battle.runSelfSwitch` (sim/battle.ts).
+        self.apply_self_switches(p1_choices, p2_choices);
+
         // 3. End-of-turn residuals (weather damage, future leftovers /
         //    status damage / Speed Boost / etc.). Runs BEFORE timer
         //    decrement so a mon takes its last sand damage on the turn
@@ -398,54 +406,143 @@ impl Battle {
     }
 
     fn apply_switches(&mut self, side: SideRef, choices: &[Choice]) {
+        // A Switch that comes AFTER a Move for the same actor_slot in
+        // the same choice array is a self-switch follow-up (U-turn /
+        // Volt Switch / Parting Shot / Teleport / Chilly Reception);
+        // it is consumed later by `apply_self_switches` once the move
+        // has resolved and set `pending_self_switch`. PS emits the
+        // |move| event BEFORE the |switch| event for the same slot in
+        // a turn, so the runner naturally orders them this way.
+        let mut moved_slot: [bool; 2] = [false; 2];
         let mut switched_slots: Vec<u8> = Vec::new();
         for c in choices {
-            if let Choice::Switch { actor_slot, team_index } = *c {
-                // PS fires the leaving mon's `onSwitchOut` BEFORE the
-                // active slot is swapped — the hook reads the outgoing
-                // mon's current state. Regenerator heals 1/3 max HP
-                // here; Natural Cure / Cotton Down etc. plug into the
-                // same dispatcher when they land.
-                {
-                    let s_view = self.side(side);
-                    if (actor_slot as usize) < s_view.active.len()
-                        && (team_index as usize) < s_view.team.len()
-                        && s_view.team[team_index as usize].is_alive()
-                    {
-                        crate::ability::on_switch_out(self, side, actor_slot);
+            match *c {
+                Choice::Move { actor_slot, .. } => {
+                    if (actor_slot as usize) < 2 {
+                        moved_slot[actor_slot as usize] = true;
                     }
                 }
-                let s = self.side_mut(side);
-                if (actor_slot as usize) < s.active.len()
-                    && (team_index as usize) < s.team.len()
-                    && s.team[team_index as usize].is_alive()
-                {
-                    s.active[actor_slot as usize] = team_index;
-                    let incoming = &mut s.team[team_index as usize];
-                    incoming.boosts = [0; 7];
-                    incoming.turns_active = 0;
-                    incoming.flinched_this_turn = false;
-                    incoming.helping_handed_this_turn = false;
-                    incoming.redirecting_this_turn = false;
-                    incoming.redirecting_is_powder = false;
-                    incoming.damaged_this_turn = false;
-                    incoming.is_protected_this_turn = false;
-                    incoming.stall_counter = 0;
-                    incoming.locked_move_slot = 255; // Choice lock clears on switch.
-                    incoming.switched_in_this_turn = true;
-                    incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
-                    incoming.last_used_move_slot = 255;
-                    incoming.encore_turns = 0;
-                    incoming.encored_move_slot = 255;
-                    incoming.boosted_stat = 255;
-                    incoming.booster_locked = false; // Booster lock only persists while on field.
-                    switched_slots.push(actor_slot);
+                Choice::Switch { actor_slot, team_index } => {
+                    if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
+                        // Deferred self-switch follow-up; skip for now.
+                        continue;
+                    }
+                    if self.do_switch(side, actor_slot, team_index) {
+                        switched_slots.push(actor_slot);
+                    }
                 }
+                Choice::Pass { .. } => {}
             }
         }
         // Run on-switch-in ability hooks for each newly-active mon.
         for slot in switched_slots {
             crate::ability::on_switch_in(self, side, slot);
+        }
+    }
+
+    /// Execute the physical swap for one (side, actor_slot, team_index).
+    /// Returns true if the swap actually fired. Shared by the pre-turn
+    /// switch path and the post-move self-switch sweep.
+    fn do_switch(&mut self, side: SideRef, actor_slot: u8, team_index: u8) -> bool {
+        // PS fires the leaving mon's `onSwitchOut` BEFORE the active
+        // slot is swapped — the hook reads the outgoing mon's current
+        // state. Regenerator heals 1/3 max HP here; Natural Cure /
+        // Cotton Down etc. plug into the same dispatcher when they
+        // land.
+        {
+            let s_view = self.side(side);
+            if (actor_slot as usize) < s_view.active.len()
+                && (team_index as usize) < s_view.team.len()
+                && s_view.team[team_index as usize].is_alive()
+            {
+                crate::ability::on_switch_out(self, side, actor_slot);
+            }
+        }
+        let s = self.side_mut(side);
+        if (actor_slot as usize) < s.active.len()
+            && (team_index as usize) < s.team.len()
+            && s.team[team_index as usize].is_alive()
+        {
+            s.active[actor_slot as usize] = team_index;
+            let incoming = &mut s.team[team_index as usize];
+            incoming.boosts = [0; 7];
+            incoming.turns_active = 0;
+            incoming.flinched_this_turn = false;
+            incoming.helping_handed_this_turn = false;
+            incoming.redirecting_this_turn = false;
+            incoming.redirecting_is_powder = false;
+            incoming.damaged_this_turn = false;
+            incoming.is_protected_this_turn = false;
+            incoming.stall_counter = 0;
+            incoming.locked_move_slot = 255; // Choice lock clears on switch.
+            incoming.switched_in_this_turn = true;
+            incoming.substitute_hp = 0; // Sub doesn't survive switch-out.
+            incoming.last_used_move_slot = 255;
+            incoming.encore_turns = 0;
+            incoming.encored_move_slot = 255;
+            incoming.boosted_stat = 255;
+            incoming.booster_locked = false; // Booster lock only persists while on field.
+            incoming.pending_self_switch = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// After the move loop, every actor_slot whose user set
+    /// `pending_self_switch` consumes the next un-applied Switch choice
+    /// for that slot from the player's choice array. PS's analogue:
+    /// `Battle.runSelfSwitch` prompts the player for a replacement and
+    /// applies it before end-of-turn residuals. If no Switch was queued
+    /// (e.g. there is no alive bench mon), the user just stays in —
+    /// matches PS's "no eligible replacement → switch fails silently".
+    fn apply_self_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            // Build "deferred" set: Switches that came AFTER a Move for
+            // the same slot. Identical predicate as apply_switches above.
+            let mut moved_slot: [bool; 2] = [false; 2];
+            let mut deferred: Vec<(u8, u8)> = Vec::new();
+            for c in choices {
+                match *c {
+                    Choice::Move { actor_slot, .. } => {
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
+                        }
+                    }
+                    Choice::Switch { actor_slot, team_index } => {
+                        if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
+                            deferred.push((actor_slot, team_index));
+                        }
+                    }
+                    Choice::Pass { .. } => {}
+                }
+            }
+            let n = self.format().active_count() as u8;
+            let mut switched_slots: Vec<u8> = Vec::new();
+            for slot in 0..n {
+                let pending = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_self_switch);
+                if !pending {
+                    continue;
+                }
+                // Clear the flag regardless — even if no replacement is
+                // available, the move doesn't re-fire next turn.
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.pending_self_switch = false;
+                }
+                // Find the first deferred switch matching this slot and
+                // pop it. If none is queued, the switch silently fails.
+                let Some(pos) = deferred.iter().position(|&(s, _)| s == slot) else { continue };
+                let (_, team_index) = deferred.remove(pos);
+                if self.do_switch(side, slot, team_index) {
+                    switched_slots.push(slot);
+                }
+            }
+            for slot in switched_slots {
+                crate::ability::on_switch_in(self, side, slot);
+            }
         }
     }
 
@@ -1359,6 +1456,25 @@ impl Battle {
 
     /// Attempt to apply a status to a specific mon. No-op if the mon
     /// already has a non-None status, or if it's type-immune to this status.
+    /// True iff `side` has at least one alive bench Pokémon that
+    /// could be switched in. Used by self-switch moves (Teleport,
+    /// Chilly Reception, U-turn etc.) — PS's `canSwitch(side)` check.
+    pub(crate) fn has_eligible_bench(&self, side: SideRef) -> bool {
+        let s = self.side(side);
+        let n = self.format().active_count();
+        s.team.iter().enumerate().any(|(idx, mon)| {
+            if !mon.is_alive() {
+                return false;
+            }
+            for (_, &a) in s.active.iter().take(n).enumerate() {
+                if a as usize == idx {
+                    return false;
+                }
+            }
+            true
+        })
+    }
+
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
         let (immune, terrain_blocks_sleep) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
@@ -1791,6 +1907,34 @@ impl Battle {
             "poisonpowder" => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 self.apply_status_to_opposing(actor_side, Status::Poison);
+            }
+            "teleport" => {
+                // Teleport — priority -6 selfSwitch. PS
+                // `data/moves.ts:teleport` `onTry` returns
+                // `!!this.canSwitch(source.side)`, i.e. fails when the
+                // user has no alive bench mon. Failure is silent (PP
+                // already deducted upstream). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Teleport_(move)>.
+                if self.has_eligible_bench(actor_side) {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.pending_self_switch = true;
+                    }
+                }
+            }
+            "chillyreception" => {
+                // Chilly Reception — sets Snow for 5 turns AND
+                // self-switches. PS `data/moves.ts:chillyreception`
+                // schedules the weather change via `weather: 'snowscape'`
+                // and the switch via `selfSwitch: true`. Snow is the
+                // gen-9 rename of Hail (same `Weather::Snow` here). The
+                // cosmetic `priorityChargeCallback` flavor is skipped.
+                self.weather = crate::weather::Weather::Snow;
+                self.weather_turns = 5;
+                if self.has_eligible_bench(actor_side) {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.pending_self_switch = true;
+                    }
+                }
             }
             _ => {
                 // Unimplemented status move — no effect. Subsequent PRs
@@ -7229,5 +7373,72 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
         assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn teleport_self_switches_user() {
+        let p1 = r#"[
+            {"species":"mrmime","level":50,"ability":"vitalspirit","nature":"timid","moves":["teleport","psychic","dazzlinggleam","protect"]},
+            {"species":"hatterene","level":50,"ability":"magicbounce","nature":"quiet","moves":["dazzlinggleam","psychic","mysticalfire","protect"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active[0], 1, "Hatterene swapped in");
+        assert!(!b.p1.team[0].pending_self_switch);
+        assert!(!b.p1.team[1].pending_self_switch);
+    }
+
+    #[test]
+    fn teleport_no_bench_does_not_switch() {
+        let p1 = r#"[
+            {"species":"mrmime","level":50,"ability":"vitalspirit","nature":"timid","moves":["teleport","psychic","dazzlinggleam","protect"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active[0], 0, "Mr. Mime still in slot a");
+        assert!(!b.p1.team[0].pending_self_switch);
+    }
+
+    #[test]
+    fn chilly_reception_sets_snow_and_switches() {
+        let p1 = r#"[
+            {"species":"slowkinggalar","level":50,"ability":"regenerator","nature":"sassy","moves":["chillyreception","sludgebomb","futuresight","protect"]},
+            {"species":"bronzong","level":50,"ability":"levitate","nature":"sassy","moves":["gyroball","trickroom","heavyslam","protect"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active[0], 1, "Bronzong swapped in");
+        assert!(matches!(b.weather, crate::weather::Weather::Snow));
+        assert_eq!(b.weather_turns, 4);
     }
 }
