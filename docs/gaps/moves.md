@@ -182,7 +182,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: 120-BP Water physical, 33% recoil. Last-turn-effects flag for Basculegion.
 
-**Status**: assumed partial — generic recoil shipped in PR-81 covers BP-fraction recoil; check that wavecrash's specific recoil_num/den is set in the data dump.
+**Status**: shipped — confirmed wavecrash data dump carries `recoil_num=33, recoil_den=100`; PR-81 generic recoil handles it. Basculegion last-turn-effects flag deferred (no engine consumers yet).
 
 ### Knock Off / Trick / Switcheroo / Bestow
 
@@ -274,7 +274,7 @@ See systems.md (sleep status hooks).
 
 **What it is**: Skill Link guarantees max hits on random-hit-count moves (Bullet Seed, Rock Blast, Pin Missile, Icicle Spear, Tail Slap, Arm Thrust, Comet Punch, Fury Attack, Fury Swipes, Scale Shot, Surging Strikes).
 
-**Status**: partial — PR-83 wired the multihit roll. Skill Link override deferred.
+**Status**: shipped — multihit roll site at battle.rs:1120 already gates `hit_count = max` on the `skilllink` ability check.
 
 ### Loaded Dice item interactions
 
@@ -282,7 +282,7 @@ See systems.md (sleep status hooks).
 
 **Depends on**: PR-83 multihit roll site + new `loadeddice` item arm.
 
-**Status**: not implemented.
+**Status**: shipped (approximate) — loadeddice forces max-hit roll alongside Skill Link at battle.rs:1123. Exact 4-10 range for Population Bomb is approximated as 10; 4-5 range for 2-5 multihits also approximated as 5.
 
 ## Type / accuracy modifier moves
 
@@ -310,4 +310,4 @@ See systems.md (sleep status hooks).
 
 **What it is**: Bypass-accuracy moves (always hit absent Protect / semi-invuln). Engine's accuracy roll respects the data dump's `accuracy: true` so these should already work — verify post PR-76.
 
-**Status**: shipped via PR-76 accuracy roll; spot-check.
+**Status**: shipped — confirmed by `always_hit_aerial_ace` test (battle.rs:2496); data dump encodes `accuracy: true` as 255 which the accuracy roll skips.
