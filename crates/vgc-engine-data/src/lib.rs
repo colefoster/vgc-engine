@@ -31,6 +31,43 @@ mod tests {
         assert!(species_by_slug("pikachu").is_some());
     }
 
+    /// PS move flags populate the new MoveDef bool fields.
+    /// Verified against PS `data/moves.ts` flag entries.
+    #[test]
+    fn move_flag_fields_populated() {
+        let icepunch = move_by_slug("icepunch").unwrap();
+        assert!(icepunch.is_punch);
+        assert!(icepunch.makes_contact);
+
+        let crunch = move_by_slug("crunch").unwrap();
+        assert!(crunch.is_bite);
+
+        let darkpulse = move_by_slug("darkpulse").unwrap();
+        assert!(darkpulse.is_pulse);
+
+        let shadowball = move_by_slug("shadowball").unwrap();
+        assert!(shadowball.is_bullet);
+
+        let swordsdance = move_by_slug("swordsdance").unwrap();
+        assert!(swordsdance.is_dance);
+
+        let spore = move_by_slug("spore").unwrap();
+        assert!(spore.is_powder);
+
+        let recover = move_by_slug("recover").unwrap();
+        assert!(recover.is_heal);
+
+        // Tackle has none of these flags.
+        let tackle = move_by_slug("tackle").unwrap();
+        assert!(!tackle.is_punch);
+        assert!(!tackle.is_bite);
+        assert!(!tackle.is_pulse);
+        assert!(!tackle.is_bullet);
+        assert!(!tackle.is_dance);
+        assert!(!tackle.is_powder);
+        assert!(!tackle.is_heal);
+    }
+
     /// `is_nfe` is set for species that can still evolve.
     /// Verified against PS `data/pokedex.ts` `evos` field.
     #[test]
