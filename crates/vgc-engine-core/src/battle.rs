@@ -6695,6 +6695,40 @@ mod tests {
     }
 
     #[test]
+    fn eruption_bp_scales_with_user_hp_fraction() {
+        // 150 BP * hp / maxhp. Full HP → full damage; 50% HP → ~half.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["eruption","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let er = data::MOVES.iter().position(|m| m.slug == "eruption").unwrap() as u16;
+        // Eruption is Fire — Thick Fat halves Fire on Snorlax. That
+        // halves both samples symmetrically, ratios still hold.
+        let full = calculate_damage(&p1[0], &p2[0], er,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let mut half = p1[0].clone();
+        half.current_hp = half.stats.hp / 2;
+        let mid = calculate_damage(&half, &p2[0], er,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let mut low = p1[0].clone();
+        low.current_hp = low.stats.hp / 10;
+        let dim = calculate_damage(&low, &p2[0], er,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        assert!(full > 0);
+        let r_mid = (mid as u32) * 100 / full as u32;
+        assert!(r_mid >= 40 && r_mid <= 60,
+                "Eruption at 50% HP should ≈50% damage: {mid}/{full} = {r_mid}%");
+        let r_dim = (dim as u32) * 100 / full as u32;
+        assert!(r_dim <= 20,
+                "Eruption at 10% HP should ≤20% damage: {dim}/{full} = {r_dim}%");
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
