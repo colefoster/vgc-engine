@@ -148,7 +148,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:swordsdance,nastyplot,calmmind,dragondance,etc.`.
 
-**Status**: shipped — PR-108.
+**Status**: shipped — PR-111.
 
 ### Dragon Dance / Quiver Dance / Shift Gear / Victory Dance
 
@@ -158,7 +158,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:dragondance,quiverdance,shiftgear,victorydance`.
 
-**Status**: shipped — PR-108 (bundled with single-stat boosters; same `self_boost_moves` table).
+**Status**: shipped — PR-111 (bundled with single-stat boosters; same `self_boost_moves` table).
 
 ### Belly Drum / Filler Up / Stockpile family
 
@@ -278,7 +278,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **What it is**: Pain Split averages user's and target's current HP. Endeavor sets target's HP equal to user's HP (fails if user >= target). Final Gambit deals damage = user's current HP and faints the user.
 
-**Status**: not implemented.
+**Status**: partial — Pain Split shipped PR-111; Endeavor / Final Gambit need damage-callback plumbing, deferred.
 
 ### Memento / Healing Wish / Lunar Dance
 

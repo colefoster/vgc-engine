@@ -2112,6 +2112,48 @@ impl Battle {
                     }
                 }
             }
+            "painsplit" => {
+                // PS data/moves.ts:painsplit onHit: averages user + target
+                // current HP, sets both to that average (or 1 if it would
+                // round to 0). Status category, "normal" target.
+                //
+                // Substitute on the target blocks (move is reflectable +
+                // hits through-sub == false; sub absorbs the onHit).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pain_Split_(move)>
+                if !self.rolled_accuracy_passed(m) { return; }
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                let mut target_slot: Option<u8> = None;
+                for slot in 0..n {
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
+                        target_slot = Some(slot);
+                        break;
+                    }
+                }
+                let ts = match target_slot { Some(s) => s, None => return };
+                let (target_hp, target_max, has_sub) = match self.side(opp).active_mon(ts as usize) {
+                    Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp > 0),
+                    None => return,
+                };
+                if has_sub { return; }
+                let user_hp = match self.side(actor_side).active_mon(actor_slot as usize) {
+                    Some(a) => a.current_hp as u32,
+                    None => return,
+                };
+                let avg = ((target_hp + user_hp) / 2).max(1);
+                // Set user; clamp to user max.
+                let user_max = match self.side(actor_side).active_mon(actor_slot as usize) {
+                    Some(a) => a.stats.hp as u32,
+                    None => return,
+                };
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = avg.min(user_max) as u16;
+                }
+                // Set target; clamp to target max.
+                if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
+                    t.current_hp = avg.min(target_max) as u16;
+                }
+            }
             "strengthsap" => {
                 // PS data/moves.ts:strengthsap onHit. Heals the user by
                 // the target's effective Atk stat (post-boost stage,
@@ -8617,5 +8659,30 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, 1, "no heal — target Atk floor");
         assert_eq!(b.p2.team[0].boosts[0], -6, "Atk stage unchanged");
+    }
+
+    #[test]
+    fn pain_split_averages_user_and_target_hp() {
+        // PS: avg = floor((target_hp + user_hp) / 2), both clamped to max.
+        let p1_json = r#"[
+            {"species":"misdreavus","level":50,"ability":"levitate","nature":"timid","moves":["painsplit","shadowball","thunderbolt","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let user_max = b.p1.team[0].stats.hp as u32;
+        let foe_max = b.p2.team[0].stats.hp as u32;
+        b.p1.team[0].current_hp = 1;
+        // Leave foe at full.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(crate::choice::Target { side: SideRef::P2, slot: 0 }) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let avg = ((1u32 + foe_max) / 2).max(1);
+        assert_eq!(b.p1.team[0].current_hp as u32, avg.min(user_max), "user set to avg");
+        assert_eq!(b.p2.team[0].current_hp as u32, avg.min(foe_max), "target set to avg");
     }
 }
