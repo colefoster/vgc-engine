@@ -17,7 +17,7 @@ fn print_usage() {
            load <p1.json> <p2.json>   Load two team JSON files and print the battle repr.\n\
            replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
            score <replay.json>        Run the engine against a replay and print per-turn agreement.\n\
-           score-corpus <dir> [N] [--oracle]   Score every replay JSON under <dir> (recursive); optional cap N. --oracle replays PS's crit outcomes via Rng::oracle_partial.\n\
+           score-corpus <dir> [N] [--oracle] [--smogon-stats <path>]   Score every replay JSON under <dir> (recursive); optional cap N. --oracle replays PS's crit outcomes via Rng::oracle_partial. --smogon-stats switches recon from CanonicalDefault to SmogonStatsRecon backed by the supplied moveset file.\n\
            help                      This message.\n"
     );
 }
@@ -190,11 +190,14 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
     let mut positional: Vec<&str> = Vec::with_capacity(args.len());
     let mut use_oracle = false;
     let mut rng_dump_dir: Option<&str> = None;
+    let mut smogon_stats_path: Option<&str> = None;
     let mut prev_flag: Option<&str> = None;
     for a in args {
         if let Some(flag) = prev_flag.take() {
-            if flag == "--rng-dump-dir" {
-                rng_dump_dir = Some(a.as_str());
+            match flag {
+                "--rng-dump-dir" => rng_dump_dir = Some(a.as_str()),
+                "--smogon-stats" => smogon_stats_path = Some(a.as_str()),
+                _ => {}
             }
             continue;
         }
@@ -202,6 +205,8 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             use_oracle = true;
         } else if a == "--rng-dump-dir" {
             prev_flag = Some("--rng-dump-dir");
+        } else if a == "--smogon-stats" {
+            prev_flag = Some("--smogon-stats");
         } else {
             positional.push(a.as_str());
         }
@@ -216,8 +221,33 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             }
         },
         _ => {
-            eprintln!("score-corpus: expected <dir> [N] [--oracle] [--rng-dump-dir <dir>]");
+            eprintln!("score-corpus: expected <dir> [N] [--oracle] [--rng-dump-dir <dir>] [--smogon-stats <path>]");
             return ExitCode::from(2);
+        }
+    };
+
+    // Build the recon strategy up-front. SmogonStatsRecon owns the parsed
+    // stats; we hand `score_replay*` a `&dyn TeamRecon` view.
+    let smogon_recon: Option<replay::SmogonStatsRecon> = match smogon_stats_path {
+        Some(path) => match fs::read_to_string(path) {
+            Ok(text) => match replay::parse_smogon_stats(&text) {
+                Ok(stats) => {
+                    println!("recon         : SmogonStatsRecon ({} species from {path})", stats.species.len());
+                    Some(replay::SmogonStatsRecon::new(stats))
+                }
+                Err(e) => {
+                    eprintln!("smogon-stats parse {path}: {e}");
+                    return ExitCode::from(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("smogon-stats read {path}: {e}");
+                return ExitCode::from(1);
+            }
+        },
+        None => {
+            println!("recon         : CanonicalDefault");
+            None
         }
     };
 
@@ -265,28 +295,28 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
                 }
             });
 
-        let scored = if let Some(events) = sidecar_events {
-            replay::score_replay_with_events(
-                &r,
-                &replay::CanonicalDefault,
-                0xC0FFEE_DEADBEEF,
+        let scored = match (&smogon_recon, sidecar_events, use_oracle) {
+            (Some(recon), Some(events), _) => replay::score_replay_with_events(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE, events,
+            ),
+            (Some(recon), None, true) => replay::score_replay_oracle(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (Some(recon), None, false) => replay::score_replay(
+                &r, recon, 0xC0FFEE_DEADBEEF, replay::DEFAULT_HP_TOLERANCE,
+            ),
+            (None, Some(events), _) => replay::score_replay_with_events(
+                &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
+                replay::DEFAULT_HP_TOLERANCE, events,
+            ),
+            (None, None, true) => replay::score_replay_oracle(
+                &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
-                events,
-            )
-        } else if use_oracle {
-            replay::score_replay_oracle(
-                &r,
-                &replay::CanonicalDefault,
-                0xC0FFEE_DEADBEEF,
+            ),
+            (None, None, false) => replay::score_replay(
+                &r, &replay::CanonicalDefault, 0xC0FFEE_DEADBEEF,
                 replay::DEFAULT_HP_TOLERANCE,
-            )
-        } else {
-            replay::score_replay(
-                &r,
-                &replay::CanonicalDefault,
-                0xC0FFEE_DEADBEEF,
-                replay::DEFAULT_HP_TOLERANCE,
-            )
+            ),
         };
         match scored {
             Ok(s) if !s.per_turn.is_empty() => {
@@ -297,7 +327,12 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
                 sweep_agreements.push(s);
             }
             Ok(_) => recon_failed += 1,
-            Err(_) => recon_failed += 1,
+            Err(e) => {
+                if recon_failed < 3 {
+                    eprintln!("recon {}: {e}", path.display());
+                }
+                recon_failed += 1;
+            }
         }
     }
     let agreements: Vec<f32> = sweep_agreements.iter().map(|s| s.agreement_pct).collect();
