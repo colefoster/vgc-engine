@@ -119,15 +119,19 @@ function extractFromReplay(replay) {
 
   const slotChars = ['a', 'b'];
   // active[player][slot] = team-index of the mon currently in that slot.
-  const active = [
-    [0, gametype === 'doubles' ? 1 : null],
-    [0, gametype === 'doubles' ? 1 : null],
-  ];
+  // Initialized null so the first lead-switch fills it in. Singles uses
+  // only [slot 0]; doubles uses [0, 1].
+  const active = [[null, null], [null, null]];
 
   // Per-mon move-slot map: moves[player][teamIdx] = [moveSlug…] (up to 4)
   const moves = [[], []];
+  // Per-mon already-terastallized flag.
+  const teraDone = [[], []];
   for (let p = 0; p < 2; p++) {
-    for (let i = 0; i < teams[p].length; i++) moves[p].push([]);
+    for (let i = 0; i < teams[p].length; i++) {
+      moves[p].push([]);
+      teraDone[p].push(false);
+    }
   }
 
   function moveSlug(name) {
@@ -148,76 +152,154 @@ function extractFromReplay(replay) {
     return targetSlot + 1; // foe slot
   }
 
+  // Per-turn structure now carries:
+  //   { p1: <main command>, p2: <main command>,
+  //     replacements: [ { side: "p1"|"p2", slot, teamIdx }, ... ] }
+  // Forced replacements (post-faint mid-turn) are SENT after the main
+  // turn command and before the next turn — PS prompts for them with
+  // a sideupdate of `forceSwitch: [true,...]`.
   const actions = [];
-  let pending = { p1: [null, null], p2: [null, null] };
+  let pending = { p1: [null, null], p2: [null, null], replacements: [] };
+  // Mark a slot as "needs replacement" the moment we see its faint;
+  // the NEXT non-[from] switch on that slot becomes the replacement.
+  const needsReplace = [[false, false], [false, false]];
 
   function pushTurn() {
-    // Coerce two-slot doubles arrays into comma-separated commands.
     function pack(actionArr) {
-      const parts = actionArr.map((a) => a || 'pass');
+      const slots = gametype === 'doubles' ? 2 : 1;
+      const parts = [];
+      for (let s = 0; s < slots; s++) parts.push(actionArr[s] || 'pass');
       return parts.join(', ');
     }
     actions.push({
-      p1: pack(pending.p1.slice(0, gametype === 'doubles' ? 2 : 1)),
-      p2: pack(pending.p2.slice(0, gametype === 'doubles' ? 2 : 1)),
+      p1: pack(pending.p1),
+      p2: pack(pending.p2),
+      replacements: pending.replacements,
     });
-    pending = { p1: [null, null], p2: [null, null] };
+    pending = { p1: [null, null], p2: [null, null], replacements: [] };
   }
 
+  // Track when each side terastallizes — `|-terastallize|p1a: X|Type`
+  // immediately follows the `|move|` that triggered it.
+  const pendingTera = [[false, false], [false, false]];
+
   let sawFirstTurn = false;
+  // Pending tera attribution. PS may emit -terastallize a few events
+  // before/after the move; we set the flag for the next move command
+  // on that slot in the current turn.
+  let lastTeraSlot = null;
+
   for (const line of lines) {
     if (!line.startsWith('|')) continue;
     const parts = line.split('|');
     const kind = parts[1];
     if (kind === 'turn') {
-      // Boundary: stash the previous turn's collected actions.
       if (sawFirstTurn) pushTurn();
       sawFirstTurn = true;
       continue;
     }
-    if (!sawFirstTurn) continue; // skip team preview / lead switches
     const fromIdx = parts.indexOf('[from]', 3);
     const isFromCause = fromIdx > 0;
-    if (kind === 'move') {
-      // |move|p1a: NICK|MoveName|p2a: NICK
-      const slotStr = parts[2].split(': ')[0]; // p1a, p2b…
-      const actorPlayer = parseInt(slotStr[1]) - 1;
-      const actorSlot = slotChars.indexOf(slotStr[2]);
-      if (actorSlot < 0) continue;
-      const moveName = parts[3];
-      const targetStr = parts[4] || '';
-      const teamIdx = active[actorPlayer][actorSlot];
-      const slug = moveSlug(moveName);
-      ensureMove(actorPlayer, teamIdx, slug);
-      const slot = moveSlot(actorPlayer, teamIdx, slug);
-      let targetCmd = '';
-      if (gametype === 'doubles' && targetStr && targetStr.startsWith('p')) {
-        const targetPlayer = parseInt(targetStr[1]) - 1;
-        const targetSlot = slotChars.indexOf(targetStr[2]);
-        if (targetSlot >= 0) {
-          targetCmd = ' ' + targetIdxForReplay(actorPlayer, actorSlot, targetPlayer, targetSlot);
-        }
-      }
-      const sideKey = actorPlayer === 0 ? 'p1' : 'p2';
-      pending[sideKey][actorSlot] = `move ${slot}${targetCmd}`;
-    } else if (kind === 'switch' && !isFromCause) {
-      // |switch|p1a: NICK|species, L50, X|HP
+    // Pre-turn-1 lead switches: just update active[] without emitting
+    // an action. PS sends `|switch|p1a: <lead>` before `|turn|1` to
+    // declare the starting state.
+    if (kind === 'switch' && !isFromCause) {
       const slotStr = parts[2].split(': ')[0];
       const actorPlayer = parseInt(slotStr[1]) - 1;
       const actorSlot = slotChars.indexOf(slotStr[2]);
       if (actorSlot < 0) continue;
       const details = parts[3];
       const incomingSpecies = details.split(',')[0].trim();
-      // Find the incoming mon's index in the team preview order.
       const teamIdx = teamPreviewOrder[actorPlayer]
         .findIndex((d) => d.split(',')[0].trim() === incomingSpecies);
       if (teamIdx < 0) continue;
       active[actorPlayer][actorSlot] = teamIdx;
+      if (sawFirstTurn) {
+        const sideKey = actorPlayer === 0 ? 'p1' : 'p2';
+        if (needsReplace[actorPlayer][actorSlot]) {
+          // Forced replacement after a faint — PS prompts via a
+          // separate sideupdate, NOT batched with the turn command.
+          pending.replacements.push({
+            side: sideKey,
+            slot: actorSlot,
+            teamIdx,
+          });
+          needsReplace[actorPlayer][actorSlot] = false;
+        } else {
+          pending[sideKey][actorSlot] = `switch ${teamIdx + 1}`;
+        }
+      }
+      continue;
+    }
+    if (!sawFirstTurn) continue;
+
+    if (kind === 'faint') {
+      // |faint|p1a: NICK
+      const slotStr = parts[2].split(': ')[0];
+      const actorPlayer = parseInt(slotStr[1]) - 1;
+      const actorSlot = slotChars.indexOf(slotStr[2]);
+      if (actorSlot >= 0) {
+        needsReplace[actorPlayer][actorSlot] = true;
+        active[actorPlayer][actorSlot] = null;
+      }
+      continue;
+    }
+
+    if (kind === '-terastallize') {
+      // |-terastallize|p1a: NICK|<TeraType>
+      const slotStr = parts[2].split(': ')[0];
+      const teraPlayer = parseInt(slotStr[1]) - 1;
+      const teraSlot = slotChars.indexOf(slotStr[2]);
+      if (teraSlot >= 0) lastTeraSlot = { teraPlayer, teraSlot };
+      continue;
+    }
+
+    if (kind === 'move') {
+      // |move|p1a: NICK|MoveName|TargetSlotOrSelf|[spread] ... |[from] ...
+      const slotStr = parts[2].split(': ')[0];
+      const actorPlayer = parseInt(slotStr[1]) - 1;
+      const actorSlot = slotChars.indexOf(slotStr[2]);
+      if (actorSlot < 0) continue;
+      // Skip `[from]` move triggers — Sleep Talk, Magic Bounce, Copycat,
+      // Snatch etc. These weren't ordered by the player.
+      if (isFromCause) continue;
+      const moveName = parts[3];
+      const targetStr = parts[4] || '';
+      // Detect [spread] / [notarget] / [still] markers.
+      const isSpread = parts.includes('[spread]') || parts.some((p) => p && p.startsWith('[spread]'));
+      const teamIdx = active[actorPlayer][actorSlot];
+      if (teamIdx === null) continue;
+      const slug = moveSlug(moveName);
+      ensureMove(actorPlayer, teamIdx, slug);
+      const slot = moveSlot(actorPlayer, teamIdx, slug);
+      let targetCmd = '';
+      if (gametype === 'doubles' && !isSpread && targetStr && targetStr.startsWith('p')) {
+        const targetPlayer = parseInt(targetStr[1]) - 1;
+        const targetSlot = slotChars.indexOf(targetStr[2]);
+        // Self-target → no target index (PS rejects targets for self
+        // and spread moves). Same source side WITH ally-slot OK.
+        const isSelfTarget =
+          targetPlayer === actorPlayer && targetSlot === actorSlot;
+        if (targetSlot >= 0 && !isSelfTarget) {
+          targetCmd = ' ' + targetIdxForReplay(actorPlayer, actorSlot, targetPlayer, targetSlot);
+        }
+      }
+      let teraSuffix = '';
+      if (lastTeraSlot
+          && lastTeraSlot.teraPlayer === actorPlayer
+          && lastTeraSlot.teraSlot === actorSlot
+          && !teraDone[actorPlayer][teamIdx]) {
+        teraSuffix = ' terastallize';
+        teraDone[actorPlayer][teamIdx] = true;
+        lastTeraSlot = null;
+      }
       const sideKey = actorPlayer === 0 ? 'p1' : 'p2';
-      pending[sideKey][actorSlot] = `switch ${teamIdx + 1}`;
+      pending[sideKey][actorSlot] = `move ${slot}${targetCmd}${teraSuffix}`;
     }
   }
-  if (sawFirstTurn) pushTurn(); // last turn's actions
+  if (sawFirstTurn) pushTurn();
+  // Mark `pendingTera` use to satisfy the linter (kept for future use).
+  void pendingTera;
 
   // Pour the move slugs we observed into each set's `moves` array so PS
   // doesn't reject the move choice. If we never observed a move for a
@@ -322,11 +404,30 @@ async function runJob(job) {
 
     const actions = job.actions || [];
     let turns = 0;
+    const sent = [];
     for (const turn of actions) {
-      if (turn.p1) stream.write('>p1 ' + turn.p1);
-      if (turn.p2) stream.write('>p2 ' + turn.p2);
+      if (turn.p1) { stream.write('>p1 ' + turn.p1); sent.push('>p1 ' + turn.p1); }
+      if (turn.p2) { stream.write('>p2 ' + turn.p2); sent.push('>p2 ' + turn.p2); }
+      // Forced replacements (post-faint mid-turn). Group by side so we
+      // send each side's replacement command in one shot — PS expects
+      // `>p1 switch N` for a single forced switch (singles or doubles
+      // with one slot needing replacement).
+      if (turn.replacements && turn.replacements.length) {
+        const byP1 = turn.replacements.filter((r) => r.side === 'p1');
+        const byP2 = turn.replacements.filter((r) => r.side === 'p2');
+        if (byP1.length) {
+          const cmd = byP1.map((r) => `switch ${r.teamIdx + 1}`).join(', ');
+          stream.write('>p1 ' + cmd); sent.push('>p1 ' + cmd);
+        }
+        if (byP2.length) {
+          const cmd = byP2.map((r) => `switch ${r.teamIdx + 1}`).join(', ');
+          stream.write('>p2 ' + cmd); sent.push('>p2 ' + cmd);
+        }
+      }
       turns += 1;
-      // Surrender if we want a clean tail; harmless here.
+    }
+    if (job.debugCommands) {
+      process.stderr.write('SENT COMMANDS:\n' + sent.join('\n') + '\n');
     }
     // Politely end the battle write side.
     stream.writeEnd();
