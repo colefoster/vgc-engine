@@ -80,7 +80,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:steelbeam,mindblown,chloroblast`. PS handler key: `mindBlownRecoil`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-107. Hardcoded slug list (no new data field); Magic Guard blocks; Rock Head does not (PS scopes Rock Head to `recoil` effect id only).
 
 ## Same-move-twice lockouts
 
