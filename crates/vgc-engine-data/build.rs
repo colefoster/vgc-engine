@@ -329,6 +329,24 @@ fn main() {
     writeln!(f, "    /// PS `flags.contact = 1`. Used by Rough Skin / Iron Barbs / Rocky").unwrap();
     writeln!(f, "    /// Helmet / Tough Claws / Static / Flame Body / Cute Charm.").unwrap();
     writeln!(f, "    pub makes_contact: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.punch = 1`. Boosted by Iron Fist (×1.2) and Punching").unwrap();
+    writeln!(f, "    /// Glove (×1.1, also removes contact); blocked by no abilities.").unwrap();
+    writeln!(f, "    pub is_punch: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.bite = 1`. Boosted by Strong Jaw (×1.5).").unwrap();
+    writeln!(f, "    pub is_bite: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.pulse = 1`. Boosted by Mega Launcher (×1.5).").unwrap();
+    writeln!(f, "    pub is_pulse: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.bullet = 1`. Blocked by Bulletproof; includes ball/").unwrap();
+    writeln!(f, "    /// bomb moves (Shadow Ball, Sludge Bomb, Aura Sphere, etc.).").unwrap();
+    writeln!(f, "    pub is_bullet: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.dance = 1`. Re-triggers Dancer abilities.").unwrap();
+    writeln!(f, "    pub is_dance: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.powder = 1`. Grass types / Safety Goggles / Overcoat").unwrap();
+    writeln!(f, "    /// immune. Currently approximated inline; this flag is the").unwrap();
+    writeln!(f, "    /// canonical source.").unwrap();
+    writeln!(f, "    pub is_powder: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.heal = 1`. Blocked by Heal Block.").unwrap();
+    writeln!(f, "    pub is_heal: bool,").unwrap();
     writeln!(f, "    /// PS `drain: [num, den]` numerator (0 if move does not drain).").unwrap();
     writeln!(f, "    /// Heal `round(damage * num / den)` of damage dealt onto the user.").unwrap();
     writeln!(f, "    pub drain_num: u8,").unwrap();
@@ -354,7 +372,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -368,6 +386,13 @@ fn main() {
             !m.secondary.is_null(),
             matches!(slug.as_str(), "electroshot" | "orderup"),
             m.flags.contains_key("contact"),
+            m.flags.contains_key("punch"),
+            m.flags.contains_key("bite"),
+            m.flags.contains_key("pulse"),
+            m.flags.contains_key("bullet"),
+            m.flags.contains_key("dance"),
+            m.flags.contains_key("powder"),
+            m.flags.contains_key("heal"),
             m.drain.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
             m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
             m.recoil.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
