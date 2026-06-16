@@ -228,6 +228,7 @@ impl Battle {
                 m.used_stall_this_turn = false;
                 m.flinched_this_turn = false;
                 m.helping_handed_this_turn = false;
+                m.damaged_this_turn = false;
             }
         }
 
@@ -415,6 +416,7 @@ impl Battle {
                     incoming.turns_active = 0;
                     incoming.flinched_this_turn = false;
                     incoming.helping_handed_this_turn = false;
+                    incoming.damaged_this_turn = false;
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
                     incoming.locked_move_slot = 255; // Choice lock clears on switch.
@@ -1009,6 +1011,14 @@ impl Battle {
                     t.current_hp = t.current_hp.saturating_sub(effective_dmg);
                     if t.current_hp == 0 {
                         t.fainted = true;
+                    }
+                    // Mark this target as "damaged this turn" so
+                    // Avalanche / Revenge / Counter (when wired) see
+                    // a true source. Cross-side gate: opp-vs-self
+                    // damage is the only case; self-targeted damaging
+                    // moves never go through this branch (status path).
+                    if effective_dmg > 0 && tside != actor_side {
+                        t.damaged_this_turn = true;
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
@@ -6726,6 +6736,60 @@ mod tests {
         let r_dim = (dim as u32) * 100 / full as u32;
         assert!(r_dim <= 20,
                 "Eruption at 10% HP should ≤20% damage: {dim}/{full} = {r_dim}%");
+    }
+
+    #[test]
+    fn avalanche_doubles_bp_when_user_was_damaged_this_turn() {
+        // Direct damage_calc comparison — flag off vs flag on. Using
+        // a battle-driven test would shift the RNG state between the
+        // two runs (Garchomp's hit consumes extra rolls), flattening
+        // the ratio. Calculate twice with identical context, only
+        // `attacker.damaged_this_turn` flipped.
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["avalanche","bodyslam","rest","crunch"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","aerialace","ironhead","stoneedge"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let av = data::MOVES.iter().position(|m| m.slug == "avalanche").unwrap() as u16;
+        let base = calculate_damage(&p1[0], &p2[0], av,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let mut boosted_attacker = p1[0].clone();
+        boosted_attacker.damaged_this_turn = true;
+        let boosted = calculate_damage(&boosted_attacker, &p2[0], av,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let ratio = (boosted as u32) * 100 / base as u32;
+        // BP 60 → 120, exact 2× at the BP layer; ratio compressed by
+        // the +2 damage-floor constant. Land between 180 and 210.
+        assert!(
+            ratio >= 180 && ratio <= 210,
+            "Avalanche flag boost ratio off: {boosted}/{base} = {ratio}%"
+        );
+    }
+
+    #[test]
+    fn avalanche_flag_set_by_opposing_damage() {
+        // End-to-end sanity: Garchomp's Dragon Claw lands on Snorlax,
+        // and Snorlax's `damaged_this_turn` flag flips to true within
+        // this step.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["avalanche","bodyslam","rest","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","aerialace","ironhead","stoneedge"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], // Rest = self status, no damage
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].damaged_this_turn,
+                "Snorlax should be flagged as damaged after Garchomp's hit");
     }
 
     #[test]
