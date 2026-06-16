@@ -903,8 +903,70 @@ impl Battle {
                 _ => 0,
             }
         };
+        // Two-turn charge moves WITHOUT semi-invulnerability (Solar Beam /
+        // Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor
+        // Beam). PS handler pattern (data/moves.ts:solarbeam:17229,
+        // solarblade:17265, skyattack:16670, razorwind:14760,
+        // skullbash:16720, meteorbeam:11740):
+        //   onTryMove: removeVolatile→continue; else addVolatile + return
+        //   null. Solar Beam / Solar Blade additionally skip the charge
+        //   turn under Sun (PS attrLastMove '[still]' + `addMove` early
+        //   return without `addVolatile`). Power Herb consumes the held
+        //   item to skip charge (data/items.ts:powerherb:4770
+        //   `onChargeMove` returns false → skip charge turn). The
+        //   per-charge stat-boost effects (Meteor Beam +1 SpA, Skull
+        //   Bash +1 Def) are load-bearing for follow-up damage and land
+        //   as separate move PRs alongside their `onTryMove` boost arms.
+        let is_charge_move = matches!(
+            m.slug,
+            "solarbeam" | "solarblade" | "skyattack" | "razorwind"
+                | "skullbash" | "meteorbeam"
+        );
         let semi_code = semi_invuln_code_for(m.slug);
         let mut skip_pp_deduct = false;
+        if is_charge_move {
+            let release = attacker.charging_turns == 1
+                && attacker.charging_move_slot == move_slot;
+            if release {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                }
+                skip_pp_deduct = true;
+            } else {
+                // Skip-charge gates: Sun (Solar Beam / Solar Blade) or
+                // Power Herb consumption.
+                let sun_skip = matches!(m.slug, "solarbeam" | "solarblade")
+                    && matches!(self.weather, crate::weather::Weather::Sun);
+                let attacker_item_slug = if attacker.item_id == u16::MAX {
+                    ""
+                } else {
+                    data::ITEMS[attacker.item_id as usize].slug
+                };
+                let power_herb = attacker_item_slug == "powerherb";
+                if sun_skip {
+                    // Skip charge — fall through to normal damage. PP
+                    // deducts via the standard PP block.
+                } else if power_herb {
+                    // Consume Power Herb, skip charge. PS `useItem` clears
+                    // the item slot — match by setting item_id to MAX.
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.item_id = u16::MAX;
+                    }
+                } else {
+                    // Charge turn: deduct PP, set charging state, return.
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        if let Some(pp) = a.pp.get_mut(move_slot as usize) {
+                            *pp = pp.saturating_sub(1);
+                        }
+                        a.last_used_move_slot = move_slot;
+                        a.charging_turns = 1;
+                        a.charging_move_slot = move_slot;
+                    }
+                    return;
+                }
+            }
+        }
         if semi_code != 0 {
             let release = attacker.charging_turns == 1
                 && attacker.charging_move_slot == move_slot;
@@ -9824,6 +9886,63 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].current_hp, mence_hp, "Body Slam dodged by Fly");
+    }
+
+    #[test]
+    fn solar_beam_charges_then_releases() {
+        // Turn 1: Venusaur Solar Beam — no Sun, no Power Herb → charge.
+        // Turn 2: re-issue Solar Beam → release, hits, no PP re-deduct.
+        let p1_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","item":"lifeorb","nature":"modest","moves":["solarbeam","sludgebomb","protect","gigadrain"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        let snorlax_hp = b.p2.team[0].current_hp;
+        // Turn 1: charge.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "PP deducted on charge");
+        assert_eq!(b.p1.team[0].charging_turns, 1);
+        assert_eq!(b.p1.team[0].semi_invuln, 0, "Solar Beam is NOT semi-invuln");
+        assert_eq!(b.p2.team[0].current_hp, snorlax_hp, "no damage on charge turn");
+        // Turn 2: release.
+        let snorlax_hp_mid = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "no PP re-deduct on release");
+        assert_eq!(b.p1.team[0].charging_turns, 0);
+        assert!(b.p2.team[0].current_hp < snorlax_hp_mid, "Solar Beam hits on release");
+    }
+
+    #[test]
+    fn power_herb_skips_solar_beam_charge() {
+        // Power Herb consumes itself + skips charge → Solar Beam hits turn 1.
+        let p1_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","item":"powerherb","nature":"modest","moves":["solarbeam","sludgebomb","gigadrain","leafstorm"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snorlax_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < snorlax_hp, "Solar Beam hits turn 1 with Power Herb");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
+        assert_eq!(b.p1.team[0].charging_turns, 0);
     }
 
     #[test]
