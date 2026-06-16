@@ -331,6 +331,11 @@ impl Battle {
                 side.conditions.light_screen_turns.saturating_sub(1);
             side.conditions.aurora_veil_turns =
                 side.conditions.aurora_veil_turns.saturating_sub(1);
+            // Wide Guard / Quick Guard are explicit 1-turn boolean
+            // side conditions — clear at end of turn so the next
+            // turn's spread / priority moves go through normally.
+            side.conditions.wide_guard_this_turn = false;
+            side.conditions.quick_guard_this_turn = false;
         }
         // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
@@ -735,6 +740,29 @@ impl Battle {
                 }
             }
 
+            // Wide Guard — blocks spread moves directed at this side
+            // (PS data/moves.ts:wideguard `onTryHit(target, source,
+            // move) { if (move.target === 'allAdjacent' || move.target
+            // === 'allAdjacentFoes' || move.target === 'foeSide') { …
+            // }; return null }`). Target codes 5 = allAdjacent,
+            // 6 = allAdjacentFoes, 11 = foeSide. Self-side allAdjacent
+            // (e.g. Earthquake hitting the user's partner) is also
+            // blocked by Wide Guard on the user's side.
+            if self.side(tside).conditions.wide_guard_this_turn
+                && matches!(m.target, 5 | 6 | 11)
+            {
+                continue;
+            }
+            // Quick Guard — blocks priority moves (priority > 0) aimed
+            // at this side. Sucker Punch's onTry runs first, so it
+            // never reaches Quick Guard's check when target queues
+            // a status move; the common interaction is Fake Out being
+            // blocked.
+            if self.side(tside).conditions.quick_guard_this_turn
+                && m.priority > 0
+            {
+                continue;
+            }
             // Protect interception (single-target codes only; spread
             // hits each target independently and Protect intercepts the
             // single hit on the protected slot — already handled here).
@@ -1395,6 +1423,47 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.tailwind_turns == 0 {
                     s.conditions.tailwind_turns = 4;
+                }
+            }
+            "wideguard" | "quickguard" => {
+                // Both follow the Protect stall-counter family. PS
+                // data/moves.ts: `sideCondition` with `duration: 1`,
+                // gated by `onTry: !!this.queue.willAct()` (i.e. some
+                // actor still has an action queued — almost always
+                // true). We approximate by always allowing the set
+                // and rolling the stall counter the same way Protect
+                // does. The block itself fires at per-target damage
+                // resolution: Wide Guard short-circuits spread
+                // (`allAdjacent` / `allAdjacentFoes`) moves;
+                // Quick Guard short-circuits priority > 0 moves.
+                let stall_counter = {
+                    let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        Some(a) => a,
+                        None => return,
+                    };
+                    actor.used_stall_this_turn = true;
+                    actor.stall_counter
+                };
+                let denom: u32 = match stall_counter {
+                    0 => 1,
+                    n => 3u32.saturating_pow(n.min(6) as u32),
+                };
+                let success = self.rng.range(denom) == 0;
+                if !success {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.stall_counter = 0;
+                    }
+                    return;
+                }
+                let is_wide = m.slug == "wideguard";
+                let s = self.side_mut(actor_side);
+                if is_wide {
+                    s.conditions.wide_guard_this_turn = true;
+                } else {
+                    s.conditions.quick_guard_this_turn = true;
+                }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.stall_counter = a.stall_counter.saturating_add(1).min(6);
                 }
             }
             "helpinghand" => {
@@ -6391,6 +6460,87 @@ mod tests {
             ratio >= 180 && ratio <= 220,
             "Foul Play +2 Atk target ratio out of band: {boosted}/{baseline} = {ratio}%"
         );
+    }
+
+    #[test]
+    fn wide_guard_blocks_earthquake_against_partners() {
+        // Doubles: P2 slot 0 uses Wide Guard (priority +3, resolves
+        // first). P1 slot 1 uses Earthquake (allAdjacent). All P2
+        // mons should take 0 damage. P1's own partner (slot 0) is
+        // hit normally (Wide Guard only protects the side that used
+        // it).
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["wideguard","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["wideguard","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Capture HPs before.
+        let p2_hp = [b.p2.team[0].current_hp, b.p2.team[1].current_hp];
+        b.step(
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        // Wide Guard on P2 side → both P2 mons take 0 damage from EQ.
+        assert_eq!(b.p2.team[0].current_hp, p2_hp[0], "wide-guard user untouched");
+        assert_eq!(b.p2.team[1].current_hp, p2_hp[1], "wide-guard partner untouched");
+        // Wide Guard cleared at end of turn.
+        assert!(!b.p2.conditions.wide_guard_this_turn);
+    }
+
+    #[test]
+    fn quick_guard_blocks_fake_out() {
+        // P2 user lobs Fake Out (priority +3). P1 uses Quick Guard
+        // (priority +3) — both same priority so speed-ties; if Quick
+        // Guard goes first, Fake Out is blocked.
+        // To force the ordering test deterministically we run both at
+        // priority +3 with P1 faster. Use a fast P1 with Quick Guard
+        // and slow P2 with Fake Out.
+        let p1_json = r#"[
+            {"species":"flutter mane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["quickguard","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        // Fall back to "fluttermane" if name lookup is case-sensitive.
+        let p1_alt = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["quickguard","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json)
+            .or_else(|_| TeamBuilder::from_json(p1_alt))
+            .unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let chomp_hp_before = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Quick Guard
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Fake Out into Chomp
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        // Quick Guard active → Fake Out (priority +3) blocked, no flinch.
+        assert_eq!(b.p1.team[1].current_hp, chomp_hp_before,
+                   "Quick Guard should block Fake Out damage");
+        assert!(!b.p1.team[1].flinched_this_turn,
+                "Fake Out flinch must not stick when Quick Guard blocks the hit");
     }
 
     #[test]
