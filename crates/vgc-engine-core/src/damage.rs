@@ -305,6 +305,18 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Tough Claws — PS `data/abilities.ts:toughclaws` `onBasePower`
+    // returns `chainModify([5325, 4096])` (≈ ×1.3) when the move makes
+    // contact (`move.flags['contact']`). Mega Charizard-X / Aerodactyl-Mega
+    // / Crawdaunt / Binacle line. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Tough_Claws_(Ability)>.
+    if m.makes_contact
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "toughclaws"
+    {
+        bp = bp * 5325 / 4096;
+    }
+
     // Supreme Overlord — PS `data/abilities.ts:supremeoverlord`
     // `onBasePower` returns `chainModify([powMod[fallen], 4096])` with
     // `powMod = [4096, 4506, 4915, 5325, 5734, 6144]` (so 5 fallen → ×1.5).
@@ -754,6 +766,34 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn tough_claws_boosts_contact_only() {
+        // EQ does not make contact; Tackle does. Tough Claws should boost
+        // Tackle but leave EQ unchanged.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let tackle = move_id("tackle");
+        let eq = move_id("earthquake");
+        let no_t_tackle = mk(&atk, tackle);
+        let no_t_eq = mk(&atk, eq);
+        let tc_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "toughclaws").unwrap() as u16;
+        atk.ability_id = tc_id;
+        let tc_tackle = mk(&atk, tackle);
+        let tc_eq = mk(&atk, eq);
+        assert!(tc_tackle > no_t_tackle, "Tough Claws boosts contact Tackle");
+        assert_eq!(tc_eq, no_t_eq, "Tough Claws must NOT boost non-contact EQ");
     }
 
     #[test]

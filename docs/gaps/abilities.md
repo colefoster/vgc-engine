@@ -36,7 +36,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `MoveDef::makes_contact` is already populated per PR-55.
 
-**Status**: not implemented.
+**Status**: shipped — PR-102.
 
 ### Strong Jaw
 
