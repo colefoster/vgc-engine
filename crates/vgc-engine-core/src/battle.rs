@@ -1092,6 +1092,26 @@ impl Battle {
                 }
             }
 
+            // Water Absorb / Dry Skin heal — PS handlers absorb Water moves
+            // and heal target.baseMaxhp / 4. Water type code = 2. Gastrodon
+            // is the corpus-relevant case. Dry Skin's Sun/Rain residuals
+            // and the ×1.25 Fire weakness aren't in this PR.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>.
+            if m.type_ == 2 {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "waterabsorb" && !attacker_breaks_mold {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        let heal = (d.stats.hp / 4).max(1);
+                        d.current_hp = d.current_hp.saturating_add(heal).min(d.stats.hp);
+                    }
+                    continue;
+                }
+            }
+
             // Sap Sipper — PS `data/abilities.ts:sapsipper` `onTryHit`
             // returns null on Grass-type moves and triggers a +1 Atk on
             // the target. Grass type code = 4. Absorbs the hit (no
@@ -6427,6 +6447,31 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, zam_before,
                    "Magic Guard blocks Rough Skin recoil");
+    }
+
+    #[test]
+    fn water_absorb_absorbs_water_and_heals_quarter() {
+        // Gastrodon w/ Water Absorb — absorb Surf, heal 1/4 max HP.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["surf","hurricane","uturn","tailwind"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"gastrodon","level":50,"ability":"waterabsorb","item":"sitrusberry","nature":"calm","moves":["earthpower","icebeam","recover","stockpile"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max_hp = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = max_hp / 2;
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let expected_heal = (max_hp / 4).max(1);
+        let after = b.p2.team[0].current_hp;
+        assert_eq!(after, (before + expected_heal).min(max_hp),
+                   "Water Absorb heals 1/4 max HP");
     }
 
     #[test]
