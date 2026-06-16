@@ -248,7 +248,29 @@ pub fn calculate_damage(
     // weather and the multiplier still fires — Sun WB hits Fire-type
     // ×1.5). We replicate that ordering: `move_type` flows through to
     // both `ctx.weather.damage_mult` and STAB / type chart below.
-    let (move_type, mut bp) = if m.slug == "weatherball" {
+    let (move_type, mut bp) = if matches!(m.slug, "terablast" | "terastarstorm") {
+        // Tera Blast: PS data/moves.ts:terablast:19234 `onModifyType` sets
+        // `move.type = pokemon.teraType` when terastallized. BP 80 by
+        // default; 100 when Tera type is Stellar (#255).
+        // Tera Starstorm: PS data/moves.ts:terastarstorm:19250 — Terapagos
+        // signature. When the user is Tera-Stellar, type becomes Stellar
+        // and target is `allAdjacentFoes`. BP 120. Type otherwise stays
+        // Normal/Stellar per PS species gate; we approximate by keying off
+        // `tera_type` like Tera Blast.
+        // Stellar (255) is treated below in the STAB block — for damage
+        // type-chart purposes the move type is set to the user's actual
+        // Tera type when Tera-active. A non-Tera Tera Blast keeps Normal
+        // type (PS keeps move.type = 'Normal' when !terastallized).
+        let ttype = if attacker.terastallized { attacker.tera_type } else { m.type_ };
+        let bp_local = if m.slug == "terastarstorm" {
+            120u32
+        } else if attacker.terastallized && attacker.tera_type == 255 {
+            100
+        } else {
+            m.base_power as u32
+        };
+        (ttype, bp_local)
+    } else if m.slug == "weatherball" {
         use crate::weather::Weather;
         match ctx.weather {
             Weather::Sun => (1u8, 100u32),
@@ -514,6 +536,19 @@ pub fn calculate_damage(
         let atk_boosted = apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
         let spa_boosted = apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
         atk_boosted > spa_boosted
+    } else if matches!(m.slug, "terablast" | "terastarstorm") && attacker.terastallized {
+        // Tera Blast: PS data/moves.ts:terablast:19239 `onModifyMove`
+        //   if (pokemon.terastallized && pokemon.getStat('atk', false, true)
+        //       > pokemon.getStat('spa', false, true)) move.category =
+        //   'Physical';
+        // PS `getStat(stat, unboosted=false, unmodified=true)` keeps stage
+        // boosts but ignores ability/item modifiers. We approximate via
+        // boosted Atk vs SpA (same logic Photon Geyser uses) — accurate
+        // for the corpus's most common pivots (no Choice Specs on a
+        // would-be-physical Tera Blast).
+        let atk_boosted = apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
+        let spa_boosted = apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
+        atk_boosted > spa_boosted
     } else {
         m.category == 0
     };
@@ -623,7 +658,27 @@ pub fn calculate_damage(
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);
     let is_stab = base_has_move_type || eff_has_move_type;
-    if is_stab {
+    // Stellar STAB. PS sim/battle-actions.ts:1781:
+    //   if (pokemon.terastallized === 'Stellar') {
+    //     stab = isSTAB ? 2 : [4915, 4096];   // ×2 or ×1.2
+    //     ... (mark this move type as consumed)
+    //   }
+    // Bookkeeping (once-per-type per battle) is deferred — without a
+    // `stellar_boosted_types` mask we apply the Stellar boost on every
+    // Tera-Stellar attack. In corpus, repeat Tera-Stellar attacks of the
+    // same type within a single battle are vanishingly rare, so the
+    // attribution error is small. Future PR will add the bitmask field
+    // and gate this on first-use.
+    let stellar = attacker.terastallized && attacker.tera_type == 255;
+    if stellar {
+        if is_stab {
+            // ×2 (over-rides the regular ×1.5 / Adaptability path).
+            dmg = dmg * 2;
+        } else {
+            // ×1.2 ≈ 4915/4096.
+            dmg = dmg * 4915 / 4096;
+        }
+    } else if is_stab {
         let tera_boosted_stab = attacker.terastallized
             && attacker.tera_type != 255
             && attacker.tera_type == move_type
@@ -719,6 +774,12 @@ pub fn calculate_damage(
                 _ => TypeEff::QuadrupleX,
             }
         }
+    } else if defender.terastallized && move_type == 255 {
+        // Stellar-type moves vs a Terastallized target: PS
+        // sim/pokemon.ts:2216 runEffectiveness sets totalTypeMod = 1
+        // (always SE) regardless of the defender's type. No immunities
+        // apply. Bulbapedia: Stellar tera type interactions.
+        TypeEff::DoubleX
     } else {
         // Iterate Tera-effective types; same logic as `type_effectiveness`
         // but on the post-Tera type list.
@@ -1584,6 +1645,70 @@ mod tests {
         let ratio_x100 = (tera as u32) * 100 / (base.max(1) as u32);
         assert!((148..=152).contains(&ratio_x100),
                 "Tera grants ×1.5 STAB for new type, got ×{}/100", ratio_x100);
+    }
+
+    #[test]
+    fn tera_blast_adopts_tera_type() {
+        // Snorlax (Normal) clicks Tera Blast against a Ghost defender.
+        // Pre-Tera: Normal-type → immune (0 damage).
+        // Post-Tera (Fire): Fire-type → hits at ×1 (Fire vs Ghost = 1×)
+        //                   with ×1.5 STAB.
+        let mut atk = make_mon("snorlax", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        atk.tera_type = 1 /* fire */;
+        let def = make_mon("gengar", 50, "hardy", StatSpread::ZERO);
+        let tb = move_id("terablast");
+        let mk = |a: &Pokemon| calculate_damage(a, &def, tb,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let pre = mk(&atk);
+        atk.terastallized = true;
+        let post = mk(&atk);
+        // Pre: Normal vs Ghost = 0 (immune).
+        // Post: Fire vs Ghost = 1× (Poison doesn't matter on Gengar's
+        //       Poison/Ghost — Fire vs Poison = 1×).
+        assert_eq!(pre, 0, "pre-Tera Tera Blast is Normal-type, immune vs Ghost");
+        assert!(post > 0, "post-Tera Tera Blast is Fire-type, hits Ghost");
+    }
+
+    #[test]
+    fn tera_blast_picks_physical_when_atk_higher() {
+        // Iron Hands (huge Atk, low SpA) Tera Blast → physical category
+        // post-Tera. With +6 Atk + 0 SpA we expect dramatic boost.
+        let mut atk = make_mon("ironhands", 50, "adamant",
+            StatSpread { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 });
+        atk.tera_type = 1 /* fire */;
+        atk.terastallized = true;
+        atk.boosts[0] = 6; // +6 Atk
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let tb = move_id("terablast");
+        let phys = calculate_damage(&atk, &def, tb,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        // Same but reset Atk to 0 stage and pump SpA: should use Special.
+        atk.boosts[0] = 0;
+        atk.boosts[2] = 6;
+        let spec = calculate_damage(&atk, &def, tb,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        // Iron Hands base Atk 140, base SpA 50 — boosted ×4 either way,
+        // physical with +6 Atk should exceed special with +6 SpA.
+        assert!(phys > spec, "Iron Hands Tera Blast physical ({phys}) > special ({spec})");
     }
 
     #[test]
