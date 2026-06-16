@@ -187,6 +187,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         booster_locked: false,
         pending_self_switch: false,
         ability_suppressed: false,
+        crit_stage_volatile: 0,
     })
 }
 

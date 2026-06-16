@@ -484,6 +484,7 @@ impl Battle {
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.pending_self_switch = false;
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
+            incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
         } else {
             return false;
         }
@@ -1210,12 +1211,17 @@ impl Battle {
                 continue;
             }
 
-            // Crit + damage roll.
-            // Splitmix: 1/24 base crit (gen 9; high-crit-ratio moves
-            // deferred). Oracle: replays the source sim's recorded
-            // crit flag, which already encodes ability / item /
-            // high-crit-ratio adjustments.
-            let crit = self.rng.crit();
+            // Crit + damage roll. Stage sums attacker on-mon
+            // contributors (item, ability, volatile) and the move's
+            // `crit_stage_delta`. PS gen-9 stage table:
+            //   0 → 1/24, 1 → 1/8, 2 → 1/2, 3+ → guaranteed.
+            // PS: `sim/battle.ts` `getCritRatio` + `data/conditions.ts`.
+            // Oracle: replays the source sim's recorded crit flag, so
+            // stage is irrelevant on that arm.
+            let crit_stage = attacker
+                .effective_crit_stage()
+                .saturating_add(m.crit_stage_delta);
+            let crit = self.rng.crit_with_stage(crit_stage);
             let roll = self.rng.damage_roll();
             // Apply Assault Vest spd boost to the defender if the attack
             // is special (×1.5 spd; physical untouched).

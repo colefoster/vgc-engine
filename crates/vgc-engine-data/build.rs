@@ -104,6 +104,12 @@ struct MoveJson {
     /// `punch` / `bite` etc. come later as their consumers land.
     #[serde(default)]
     flags: BTreeMap<String, serde_json::Value>,
+    /// PS `critRatio` (defaults to 1 in PS). 2 = +1 crit stage
+    /// (Slash, Karate Chop, Stone Edge, ...); 3 = +2 (Frost Breath,
+    /// Storm Throw — always crit). We store the stage delta
+    /// (`critRatio - 1`).
+    #[serde(default, rename = "critRatio")]
+    crit_ratio: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -376,6 +382,10 @@ fn main() {
     writeln!(f, "    /// = [2, 5]), Splitmix samples uniformly across [min, max]; PS's").unwrap();
     writeln!(f, "    /// 35/35/15/15 weighting for 2-5 hits is approximated as uniform.").unwrap();
     writeln!(f, "    pub multihit_max: u8,").unwrap();
+    writeln!(f, "    /// Crit-stage delta from PS `critRatio` (0 = base,").unwrap();
+    writeln!(f, "    /// 1 = high-crit-ratio +1, 2 = always-crit +2). Added to").unwrap();
+    writeln!(f, "    /// `Pokemon::effective_crit_stage()` at damage time.").unwrap();
+    writeln!(f, "    pub crit_stage_delta: u8,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -384,7 +394,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -419,6 +429,7 @@ fn main() {
             m.recoil.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
             multihit_min(&m.multihit),
             multihit_max(&m.multihit),
+            m.crit_ratio.map(|r| r.saturating_sub(1).min(2) as u8).unwrap_or(0),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();
