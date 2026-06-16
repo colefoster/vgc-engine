@@ -22,10 +22,10 @@ Migration of the ad-hoc per-Pokemon volatile fields (`is_protected_this_turn`, `
 
 **Why it matters**: Blocks Terastallize, Tera Blast, Stellar STAB, Embody Aspect, and Tera Shell. Half of the corpus has Tera resolution; HP-trace divergence on Tera-active mons is structurally unfixable without this.
 
-**Status**: partial — slice 3 of 4 — PR-149 (fields), PR-156 (Terastallize action), PR-158 (damage-pipeline STAB + defender type swap: PS-correct rule `isSTAB = hasType OR base.includes(move_type)`; Tera-boosted STAB ×2 when `terastallized && tera_type == move_type && base_has_move_type`; Adaptability stacks 1.5→2 / 2→2.25; defender-side type effectiveness now iterates `effective_types()` so Tera-active mons resist/weaken per their Tera type; freeze-dry / flying-press branches updated).
+**Status**: partial — slice 4 of 4 — PR-149 (fields), PR-156 (Terastallize action), PR-158 (damage-pipeline STAB + defender type swap), PR-163 (Tera Blast / Tera Starstorm + Stellar damage rules: Tera Blast adopts the user's Tera type when Terastallized (Normal-type otherwise); category flips to Physical when boosted Atk > boosted SpA; Tera Starstorm matches the Tera Blast handler with BP 120 and Stellar-type override; Stellar tera type grants STAB ×2 on matching base type and ×1.2 on off-type — `stellar_boosted_types` once-per-type bookkeeping deferred (over-attribution acceptable for now, repeat Tera-Stellar attacks within a battle are rare in corpus); Stellar-type moves vs a Tera-active target always read as SE per PS `runEffectiveness`.).
 
-Remaining slices:
-- slice 4: Tera Blast (type / category read), Tera Shell (1-hit damage cap), Stellar STAB (once-per-type bookkeeping + ×1.2 boost, Stellar move always SE vs Tera-active), Embody Aspect (Ogerpon Tera form ability).
+Remaining for full close:
+- Tera Shell (Terapagos-Terastal 1-hit-per-turn ×0.5 resist), Embody Aspect (Ogerpon Tera-form ability), Tera-Stellar once-per-type bookkeeping bitmask + self -1 Atk/-1 SpA debuff after Tera Blast use. These are individually small but each is its own mechanic PR — leave to follow-up move/ability PRs.
 
 ### Multi-turn move state
 
