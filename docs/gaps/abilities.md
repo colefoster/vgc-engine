@@ -52,7 +52,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `flags.pulse`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-104.
 
 ### Iron Fist
 

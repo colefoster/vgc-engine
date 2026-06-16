@@ -305,6 +305,18 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Mega Launcher — PS `data/abilities.ts:megalauncher` `onBasePower`
+    // returns `chainModify([6144, 4096])` (×1.5) on moves with
+    // `flags.pulse`. Clawitzer signature. Heal Pulse's healing
+    // boost is handled by the status-move path, not here.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mega_Launcher_(Ability)>.
+    if m.is_pulse
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "megalauncher"
+    {
+        bp = bp * 6144 / 4096;
+    }
+
     // Strong Jaw — PS `data/abilities.ts:strongjaw` `onBasePower`
     // returns `chainModify([6144, 4096])` (×1.5) on moves with
     // `flags.bite`. Hydreigon / Mega Sharpedo / Krookodile (HA).
@@ -777,6 +789,32 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn mega_launcher_boosts_pulse_moves() {
+        let mut atk = make_mon("garchomp", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let aura = move_id("aurasphere");
+        let psy = move_id("psychic");
+        let no_aura = mk(&atk, aura);
+        let no_psy = mk(&atk, psy);
+        let ml_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "megalauncher").unwrap() as u16;
+        atk.ability_id = ml_id;
+        let ml_aura = mk(&atk, aura);
+        let ml_psy = mk(&atk, psy);
+        assert!(ml_aura > no_aura, "Mega Launcher boosts Aura Sphere");
+        assert_eq!(ml_psy, no_psy, "Mega Launcher must NOT boost Psychic");
     }
 
     #[test]
