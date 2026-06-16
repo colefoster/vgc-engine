@@ -138,7 +138,7 @@ impl FinalStats {
 /// callers look up by kind in O(1). The migration of the ad-hoc
 /// boolean / counter fields (`is_protected_this_turn`, `encore_turns`,
 /// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
-/// `redirecting_this_turn`, `damaged_this_turn`, `substitute_hp`,
+/// `damaged_this_turn`, `substitute_hp`,
 /// `sleep_turns`, `crit_stage_volatile`, `semi_invuln`,
 /// `charging_turns`, `must_recharge`, `lockin_turns`) into this
 /// registry is staged per-volatile in follow-up PRs.
@@ -213,6 +213,14 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Single-turn redirection volatile (PS data/moves.ts:ragepowder /
+    /// :followme conditions, duration 1). Set when this mon successfully
+    /// uses Rage Powder or Follow Me. Read at single-target resolution
+    /// to re-aim opposing moves at this mon. Payload bit 0 = `is_powder`
+    /// (Rage Powder sets 1, Follow Me sets 0); used at the redirect
+    /// site for the powder-gate check. Cleared at the per-turn volatile
+    /// reset / on switch-out.
+    Redirect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -344,23 +352,6 @@ pub struct Pokemon {
     /// it switched in / was sent out at battle start). Used by Fake Out,
     /// First Impression, Mat Block, etc. Incremented at end of step.
     pub turns_active: u8,
-    /// Single-turn 'ragepowder' / 'followme' redirection volatile (PS
-    /// data/moves.ts:ragepowder / :followme conditions, duration 1).
-    /// Set when this mon successfully uses Rage Powder or Follow Me;
-    /// causes single-target opposing moves (target codes 0/4/10) aimed
-    /// at the foe side to be re-aimed at this mon. Cleared at end of
-    /// turn / on switch-out. Carries no info about which of the two
-    /// moves set it — Rage Powder vs Follow Me differs only in the
-    /// powder gate, which is applied at the redirect site by reading
-    /// the volatile-carrier's slug separately would be wrong. Instead
-    /// `redirecting_is_powder` records which kind of redirection is in
-    /// effect; Rage Powder sets it true (powder gate applies),
-    /// Follow Me sets it false (no gate).
-    pub redirecting_this_turn: bool,
-    /// `true` when `redirecting_this_turn` was set by Rage Powder
-    /// (powder-gated), `false` when set by Follow Me. Only meaningful
-    /// while `redirecting_this_turn` is true.
-    pub redirecting_is_powder: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -722,6 +713,39 @@ impl Pokemon {
         }
     }
 
+    /// `true` while a `VolatileKind::Redirect` volatile is on this mon
+    /// (this mon used Rage Powder / Follow Me this turn).
+    #[inline]
+    pub fn redirecting_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::Redirect)
+    }
+
+    /// `true` if the active Redirect volatile was set by Rage Powder
+    /// (powder-gated). Only meaningful when `redirecting_this_turn()`
+    /// is true. Encoded in payload bit 0.
+    #[inline]
+    pub fn redirecting_is_powder(&self) -> bool {
+        self.volatiles
+            .get(VolatileKind::Redirect)
+            .map(|v| (v.payload & 1) != 0)
+            .unwrap_or(false)
+    }
+
+    /// Set the Redirect volatile (`is_powder=true` for Rage Powder,
+    /// `false` for Follow Me) or clear it when `on == false`.
+    #[inline]
+    pub fn set_redirecting(&mut self, on: bool, is_powder: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Redirect,
+                turns_remaining: 0,
+                payload: if is_powder { 1 } else { 0 },
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::Redirect);
+        }
+    }
+
     /// `true` while a `VolatileKind::HelpingHand` volatile is on this mon
     /// (an ally Helping Hand'd this target on the current turn). Read by
     /// `damage.rs` for the ×1.5 BP multiplier. PS analog:
@@ -864,7 +888,7 @@ mod tests {
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             stall_counter: 0, used_stall_this_turn: false,
-            turns_active: 0, redirecting_this_turn: false, redirecting_is_powder: false,
+            turns_active: 0,
             toxic_counter: 0, locked_move_slot: 255,
             substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
@@ -905,8 +929,6 @@ mod tests {
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,
-            redirecting_this_turn: false,
-            redirecting_is_powder: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             substitute_hp: 0,
