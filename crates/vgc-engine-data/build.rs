@@ -85,6 +85,10 @@ struct MoveJson {
     /// secondary and applies the BP boost only when one was present.
     #[serde(default)]
     secondary: serde_json::Value,
+    /// PS `drain: [num, den]`. Heal `round(damage * num / den)` of the
+    /// dealt damage onto the user (gen 5+). Absent on most moves.
+    #[serde(default)]
+    drain: Option<[u32; 2]>,
     /// Move flags from PS `data/moves.ts`. We only need a few bits for
     /// gen-9 work so far — `contact` (Rough Skin / Iron Barbs / Rocky
     /// Helmet / Tough Claws / Static / Flame Body / Cute Charm) and
@@ -277,6 +281,11 @@ fn main() {
     writeln!(f, "    /// PS `flags.contact = 1`. Used by Rough Skin / Iron Barbs / Rocky").unwrap();
     writeln!(f, "    /// Helmet / Tough Claws / Static / Flame Body / Cute Charm.").unwrap();
     writeln!(f, "    pub makes_contact: bool,").unwrap();
+    writeln!(f, "    /// PS `drain: [num, den]` numerator (0 if move does not drain).").unwrap();
+    writeln!(f, "    /// Heal `round(damage * num / den)` of damage dealt onto the user.").unwrap();
+    writeln!(f, "    pub drain_num: u8,").unwrap();
+    writeln!(f, "    /// PS `drain: [num, den]` denominator (1 sentinel when num == 0).").unwrap();
+    writeln!(f, "    pub drain_den: u8,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
@@ -285,7 +294,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, drain_num: {}, drain_den: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -299,6 +308,8 @@ fn main() {
             !m.secondary.is_null(),
             matches!(slug.as_str(), "electroshot" | "orderup"),
             m.flags.contains_key("contact"),
+            m.drain.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
+            m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

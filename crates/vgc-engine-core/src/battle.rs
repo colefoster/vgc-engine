@@ -922,6 +922,29 @@ impl Battle {
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
             }
+
+            // Drain — heal the attacker for `round(damage * num/den)`
+            // of the HP damage just applied. PS sim/battle.ts:2173
+            // (`this.gen > 4`): `Math.round(targetDamage * drain[0] / drain[1])`.
+            // Per-target heal (spread drain moves like Matcha Gotcha
+            // tick once per target); sub-absorbed hits are skipped —
+            // PS's `targetDamage` is non-zero on sub absorption but
+            // the engine doesn't expose that signal here yet, and the
+            // common case (single-target drain into a live mon) is
+            // exact. Liquid Ooze flip not modelled (rare ability).
+            // Big Root +30% boost also deferred.
+            if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
+                // Round half-up: (x*n + den/2) / den.
+                let num = m.drain_num as u32;
+                let den = m.drain_den.max(1) as u32;
+                let heal = ((effective_dmg as u32 * num + den / 2) / den).max(1) as u16;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        let max = a.stats.hp;
+                        a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
+                    }
+                }
+            }
         }
 
         // Self stat drops (PS `self.boosts` on the move def). Applies
@@ -5334,6 +5357,82 @@ mod tests {
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
         assert!(!b.p1.team[0].helping_handed_this_turn);
+    }
+
+    #[test]
+    fn drain_punch_heals_user_by_half_damage_dealt() {
+        // Iron Hands @ partial HP uses Drain Punch on Snorlax. After
+        // the hit, Iron Hands should be healed for ≈50% of the damage
+        // it dealt (PS gen 9: round(dmg * 1/2)).
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Wound the attacker so the heal is observable (otherwise it
+        // clamps to max HP).
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_dealt = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+        assert!(dmg_dealt > 0, "Drain Punch should deal damage");
+        let healed = b.p1.team[0].current_hp - 1;
+        // Round half-up of dmg/2. Tolerate ±1 for integer slop.
+        let expected = (dmg_dealt + 1) / 2;
+        let diff = (healed as i32 - expected as i32).abs();
+        assert!(
+            diff <= 1,
+            "Drain Punch heal off: dealt={} healed={} expected≈{} diff={}",
+            dmg_dealt, healed, expected, diff
+        );
+    }
+
+    #[test]
+    fn drain_does_not_overheal_above_max() {
+        // Full-HP user using Drain Punch — heal clamps at max, current_hp
+        // should remain at max.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max_hp = b.p1.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max_hp,
+                   "drain heal should clamp at max HP, not overflow");
+    }
+
+    #[test]
+    fn non_drain_moves_do_not_heal() {
+        // Sanity: Thunder Punch (no drain) should not heal Iron Hands.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, 1, "Thunder Punch should not heal");
     }
 
     #[test]
