@@ -88,7 +88,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Swift Swim Basculegion (6.6% per Smogon, fallback ability), Swift Swim Pelipper teams. Chlorophyll Venusaur. Sand Rush Excadrill.
 
-**Status**: not implemented.
+**Status**: shipped — PR-107.
 
 ### Sand Veil / Snow Cloak
 
