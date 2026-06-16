@@ -147,6 +147,13 @@ struct SpeciesJson {
     gen_: u32,
     #[serde(rename = "isNonstandard", default)]
     is_nonstandard: Option<String>,
+    /// PS `weightkg`. Used by Heat Crash / Heavy Slam / Low Kick / Grass
+    /// Knot BP scaling, Sky Drop weight cap, Heavy Metal / Light Metal
+    /// ability modifiers. JSON value can be a float (e.g. Joltik 0.6 kg);
+    /// emit as decigrams (kg * 10, rounded) so we keep one decimal of
+    /// precision in a `u16`. Defaults to 0 when missing (forme stubs).
+    #[serde(default, rename = "weightkg")]
+    weight_kg: f64,
 }
 
 #[derive(Deserialize)]
@@ -418,6 +425,12 @@ fn main() {
     writeln!(f, "    pub types: [u8; 2],").unwrap();
     writeln!(f, "    pub num_types: u8,").unwrap();
     writeln!(f, "    pub base_stats: [u8; 6], // hp, atk, def, spa, spd, spe").unwrap();
+    writeln!(f, "    /// Species weight in decigrams (kg * 10, rounded). Used by Heat").unwrap();
+    writeln!(f, "    /// Crash / Heavy Slam / Low Kick / Grass Knot BP scaling, Sky").unwrap();
+    writeln!(f, "    /// Drop weight cap, Heavy Metal / Light Metal modifiers. Stored").unwrap();
+    writeln!(f, "    /// as decigrams so single-decimal PS weights (Joltik 0.6 kg = 6)").unwrap();
+    writeln!(f, "    /// round-trip without floats. 0 = unknown (forme stubs).").unwrap();
+    writeln!(f, "    pub weight_dg: u16,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
@@ -434,14 +447,16 @@ fn main() {
         if bad_type { continue; }
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
+        let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
         writeln!(
             f,
-            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}] }},",
+            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {} }},",
             s.num.max(0) as u16,
             rust_str_lit(&s.name),
             rust_str_lit(slug),
             t[0], t[1], nt,
             clamp(bs.hp), clamp(bs.atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
+            weight_dg,
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

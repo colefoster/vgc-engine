@@ -30,4 +30,16 @@ mod tests {
         assert!(move_by_slug("tackle").is_some());
         assert!(species_by_slug("pikachu").is_some());
     }
+
+    /// Weights round-trip from `@pkmn/dex` `weightkg` into decigrams.
+    /// Verified against PS `data/pokedex.ts` weightkg field.
+    #[test]
+    fn species_weights_populated() {
+        // Pikachu = 6.0 kg → 60 dg.
+        assert_eq!(species_by_slug("pikachu").unwrap().weight_dg, 60);
+        // Snorlax = 460.0 kg → 4600 dg.
+        assert_eq!(species_by_slug("snorlax").unwrap().weight_dg, 4600);
+        // Joltik = 0.6 kg → 6 dg. Confirms sub-kg precision survives.
+        assert_eq!(species_by_slug("joltik").unwrap().weight_dg, 6);
+    }
 }
