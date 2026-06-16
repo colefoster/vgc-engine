@@ -33,10 +33,7 @@ Remaining slices:
 
 **Why it matters**: Blocks all two-turn moves (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy, Dig/Dive/Fly/Bounce/Phantom Force/Shadow Force), Hyper Beam recharge family, Gigaton Hammer / Blood Moon lockout, lock-in moves.
 
-**Status**: partial — slice 4a of 4 — PR-150 (fields), PR-159 (semi-invuln), PR-160 (charging moves), PR-161 (recharge: Hyper Beam / Giga Impact / Blast Burn / Hydro Cannon / Frenzy Plant / Rock Wrecker / Roar of Time / Prismatic Laser / Eternabeam / Meteor Assault now set `must_recharge=true` on a hit that deals damage; on the next turn the user's action is consumed (no PP deduct) and the flag is cleared).
-
-Remaining sub-slice:
-- slice 4b: lock-in (Outrage / Petal Dance / Thrash — 2-3 turn lock via `lockin_turns` + `lockin_move_slot`; on lock break, confuse the user. Requires runner-side forced dispatch of `lockin_move_slot` regardless of `Choice::Move`).
+**Status**: shipped — PR-150 (fields), PR-159 (semi-invuln), PR-160 (charging moves), PR-161 (recharge), PR-162 (lock-in: Outrage / Petal Dance / Thrash now seed `lockin_turns = rng.range(2..=3)` on first use and decrement each subsequent turn; while `lockin_turns > 0` the engine overrides the player's move-slot choice with `lockin_move_slot` at resolve time; when the lock breaks, slot clears and `VolatileKind::Confusion` is added). Legal-action restriction at choice-selection time can land later as a runner refinement — the engine-side override already enforces correctness.
 
 ## Pipeline / ordering
 
