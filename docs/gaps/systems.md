@@ -164,7 +164,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **What it is**: Belly Drum spends 50% max HP for +6 Atk (fails below 50% HP). Fillet Away spends 50% max HP for +2 Atk/SpA/Spe. Stockpile (1-3 stacks +1 Def +1 SpD per use), Swallow (consume stacks to heal), Spit Up (consume stacks for damage). Clangorous Soul / Blaze: 33% max HP for +1 all offensive stats.
 
-**Status**: not implemented.
+**Status**: partial — Belly Drum, Fillet Away, Clangorous Soul shipped PR-112; Stockpile / Swallow / Spit Up still open (stack volatile).
 
 ### Stuff Cheeks
 
@@ -262,7 +262,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:recover,softboiled,moonlight,synthesis,morningsun,shoreup,roost,slackoff,milkdrink`.
 
-**Status**: shipped — PR-109 (Roost Flying-type-removal volatile deferred).
+**Status**: shipped — PR-112 (Roost Flying-type-removal volatile deferred).
 
 ### Wish
 

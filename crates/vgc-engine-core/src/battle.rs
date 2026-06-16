@@ -2112,6 +2112,45 @@ impl Battle {
                     }
                 }
             }
+            "bellydrum" | "filletaway" | "clangoroussoul" => {
+                // PS data/moves.ts: each pays HP up-front, then applies a
+                // self-target boost set. Belly Drum: pays 1/2 maxhp,
+                // boosts atk +12 (i.e. straight to +6 from any starting
+                // stage). Fillet Away: pays 1/2 maxhp, boosts atk/spa/spe
+                // +2 each. Clangorous Soul: pays 33/100 maxhp, boosts
+                // all five stats +1 each.
+                //
+                // Fail predicates (PS onTry):
+                //   - HP <= cost (`maxhp/2` or `maxhp*33/100`).
+                //   - Shedinja clause (maxhp == 1).
+                //   - Belly Drum only: target.boosts.atk >= 6 (already
+                //     maxed; boost call would no-op so PS bails before
+                //     paying the cost).
+                //
+                // HP is paid via PS `directDamage`, which bypasses
+                // Magic Guard / Substitute redirect — same as Substitute
+                // pays itself. We mirror by deducting current_hp directly.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Belly_Drum_(move)>
+                let (cost_num, cost_den, boosts): (u32, u32, &[(u8, i8)]) = match m.slug {
+                    "bellydrum" => (1, 2, &[(0, 12)]), // +12 → clamps to +6
+                    "filletaway" => (1, 2, &[(0, 2), (2, 2), (4, 2)]),
+                    "clangoroussoul" => (33, 100, &[(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]),
+                    _ => unreachable!(),
+                };
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let max = a.stats.hp as u32;
+                    if max <= 1 { return; }
+                    let cost = ((max * cost_num) / cost_den).max(1) as u16;
+                    if a.current_hp <= cost { return; }
+                    if m.slug == "bellydrum" && a.boosts[0] >= 6 { return; }
+                    a.current_hp -= cost;
+                    for &(idx, delta) in boosts {
+                        a.boosts[idx as usize] =
+                            (a.boosts[idx as usize] + delta).clamp(-6, 6);
+                    }
+                }
+            }
             "painsplit" => {
                 // PS data/moves.ts:painsplit onHit: averages user + target
                 // current HP, sets both to that average (or 1 if it would
@@ -8684,5 +8723,69 @@ mod tests {
         let avg = ((1u32 + foe_max) / 2).max(1);
         assert_eq!(b.p1.team[0].current_hp as u32, avg.min(user_max), "user set to avg");
         assert_eq!(b.p2.team[0].current_hp as u32, avg.min(foe_max), "target set to avg");
+    }
+
+    #[test]
+    fn belly_drum_pays_half_hp_for_plus_six_atk() {
+        let p1_json = r#"[
+            {"species":"azumarill","level":50,"ability":"hugepower","nature":"adamant","moves":["bellydrum","aquajet","playrough","protect"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max - max / 2, "paid half max HP");
+        assert_eq!(b.p1.team[0].boosts[0], 6, "Atk → +6");
+    }
+
+    #[test]
+    fn belly_drum_fails_below_half_hp() {
+        let p1_json = r#"[
+            {"species":"azumarill","level":50,"ability":"hugepower","nature":"adamant","moves":["bellydrum","aquajet","playrough","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop below half.
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2;
+        let before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, before, "Belly Drum no-ops below half");
+        assert_eq!(b.p1.team[0].boosts[0], 0, "no boost on fail");
+    }
+
+    #[test]
+    fn fillet_away_pays_half_for_plus_two_atk_spa_spe() {
+        let p1_json = r#"[
+            {"species":"ceruledge","level":50,"ability":"flashfire","nature":"adamant","moves":["filletaway","bitterblade","closecombat","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max - max / 2, "paid half max HP");
+        assert_eq!(b.p1.team[0].boosts[0], 2, "Atk +2");
+        assert_eq!(b.p1.team[0].boosts[2], 2, "SpA +2");
+        assert_eq!(b.p1.team[0].boosts[4], 2, "Spe +2");
     }
 }
