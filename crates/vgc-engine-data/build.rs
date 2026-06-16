@@ -154,6 +154,11 @@ struct SpeciesJson {
     /// precision in a `u16`. Defaults to 0 when missing (forme stubs).
     #[serde(default, rename = "weightkg")]
     weight_kg: f64,
+    /// PS `evos: [string, ...]`. Non-empty iff the species can still
+    /// evolve — i.e. is Not Fully Evolved. Eviolite's 1.5× Def/SpD
+    /// multiplier reads this. Defaults to empty when absent.
+    #[serde(default)]
+    evos: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -431,6 +436,10 @@ fn main() {
     writeln!(f, "    /// as decigrams so single-decimal PS weights (Joltik 0.6 kg = 6)").unwrap();
     writeln!(f, "    /// round-trip without floats. 0 = unknown (forme stubs).").unwrap();
     writeln!(f, "    pub weight_dg: u16,").unwrap();
+    writeln!(f, "    /// True iff this species has at least one evolution (Not Fully").unwrap();
+    writeln!(f, "    /// Evolved). Read by Eviolite to apply its 1.5× Def/SpD multiplier.").unwrap();
+    writeln!(f, "    /// Sourced from PS `evos` array being non-empty.").unwrap();
+    writeln!(f, "    pub is_nfe: bool,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
@@ -448,15 +457,17 @@ fn main() {
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
+        let is_nfe = !s.evos.is_empty();
         writeln!(
             f,
-            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {} }},",
+            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {}, is_nfe: {} }},",
             s.num.max(0) as u16,
             rust_str_lit(&s.name),
             rust_str_lit(slug),
             t[0], t[1], nt,
             clamp(bs.hp), clamp(bs.atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
             weight_dg,
+            is_nfe,
         ).unwrap();
     }
     writeln!(f, "];").unwrap();
