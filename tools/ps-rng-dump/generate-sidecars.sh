@@ -42,9 +42,13 @@ while IFS= read -r -d '' replay; do
     # PS log contains no |error| lines AND ok==true.
     result=$(jq -nc --slurpfile r "$replay" '{replay: $r[0], seed:[1,2,3,4]}' \
         | node "$DUMP_JS" 2>/dev/null)
+    # `dump.js` now sets `ok:false` whenever any player-side stream got
+    # an `|error|` line back from PS — those errors are no longer
+    # visible in the omniscient log so the old log-grep check missed
+    # them and produced zero-event sidecars that actively hurt the
+    # oracle agreement.
     is_ok=$(echo "$result" | jq -r '.ok // false')
-    has_error=$(echo "$result" | jq -r '.log // "" | test("\\|error\\|")')
-    if [[ "$is_ok" == "true" && "$has_error" == "false" ]]; then
+    if [[ "$is_ok" == "true" ]]; then
         # Strip the giant `log` field to keep sidecars small.
         echo "$result" | jq -c 'del(.log)' > "$out"
         ok_count=$((ok_count+1))
