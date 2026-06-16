@@ -1763,11 +1763,25 @@ impl Battle {
                             if crate::ability::has_magic_guard(m) {
                                 true
                             } else {
-                                let species = m.species();
-                                (0..species.num_types as usize).any(|i| {
-                                    // Type codes: 12 Rock, 8 Ground, 16 Steel.
-                                    matches!(species.types[i], 12 | 8 | 16)
-                                })
+                                // PS `data/abilities.ts:sandforce` / sandrush /
+                                // sandveil all carry `onImmunity('sandstorm')`
+                                // returning false; sandforce is the only one
+                                // we hit here (the speed/eva ones live elsewhere).
+                                let ability_slug = if m.ability_id == u16::MAX {
+                                    ""
+                                } else {
+                                    data::ABILITIES[m.ability_id as usize].slug
+                                };
+                                if matches!(ability_slug,
+                                    "sandforce" | "sandrush" | "sandveil") {
+                                    true
+                                } else {
+                                    let species = m.species();
+                                    (0..species.num_types as usize).any(|i| {
+                                        // Type codes: 12 Rock, 8 Ground, 16 Steel.
+                                        matches!(species.types[i], 12 | 8 | 16)
+                                    })
+                                }
                             }
                         }
                         _ => true, // missing/fainted → skip
