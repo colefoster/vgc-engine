@@ -190,6 +190,60 @@ impl Rng {
         }
     }
 
+    /// Back-solve a damage-roll bucket from an observed damage value.
+    /// Given a candidate `(dmg_min, dmg_max)` range (the 16-bucket span
+    /// from `damage::damage_range` for a specific attacker/defender/move)
+    /// and the observed damage `target` taken from a replay
+    /// `|-damage|` event, return the bucket `b ∈ 0..=15` that minimizes
+    /// `|f(b) − target|` where `f(b) = dmg_min + (dmg_max − dmg_min) · b / 15`.
+    ///
+    /// PS computes `damage = base · (85 + roll) / 100` with integer
+    /// truncation, so the per-bucket increment is constant within ±1.
+    /// The linear-interp back-solve is exact for the mid-range buckets
+    /// and rounds correctly at the edges.
+    ///
+    /// Returns `None` if the observed damage cannot plausibly have come
+    /// from this candidate (target outside `[dmg_min − tol, dmg_max +
+    /// tol]` where tol is one bucket width). Callers use a `None` to
+    /// drop the candidate from a set-recon distribution.
+    pub fn back_solve_damage_bucket(
+        target: u16,
+        dmg_min: u16,
+        dmg_max: u16,
+    ) -> Option<u8> {
+        if dmg_max < dmg_min {
+            return None;
+        }
+        let span = (dmg_max - dmg_min) as u32;
+        let bucket_w = (span + 15) / 15; // round up — used for tolerance only
+        let t = target as u32;
+        let lo = (dmg_min as u32).saturating_sub(bucket_w);
+        let hi = (dmg_max as u32).saturating_add(bucket_w);
+        if t < lo || t > hi {
+            return None;
+        }
+        if span == 0 {
+            // Degenerate: all 16 buckets produce the same number (e.g.
+            // 1 HP after rounding). Return bucket 0 if target matches,
+            // else `None`.
+            return if t == dmg_min as u32 { Some(0) } else { None };
+        }
+        // b = round((t - dmg_min) * 15 / span). Clamp to 0..=15.
+        let delta = t.saturating_sub(dmg_min as u32);
+        let num = delta.saturating_mul(15);
+        let b = ((num + span / 2) / span).min(15) as u8;
+        Some(b)
+    }
+
+    /// Check whether an observed `target` damage is plausibly inside the
+    /// candidate `[dmg_min, dmg_max]` damage range (with one bucket of
+    /// slack on each side, matching `back_solve_damage_bucket`). Used by
+    /// the spread-recon observer to drop candidate sets whose damage
+    /// span can't produce the observation.
+    pub fn damage_range_contains(target: u16, dmg_min: u16, dmg_max: u16) -> bool {
+        Self::back_solve_damage_bucket(target, dmg_min, dmg_max).is_some()
+    }
+
     /// Convenience: a damage roll bucket in `0..=15`.
     pub fn damage_roll(&mut self) -> u8 {
         match self {
@@ -470,6 +524,66 @@ mod tests {
             (rate - 0.125).abs() < 0.01,
             "stage-1 crit rate {rate} too far from 1/8"
         );
+    }
+
+    #[test]
+    fn back_solve_picks_correct_bucket_at_endpoints() {
+        // dmg_min=85, dmg_max=100 (per PS roll formula at base=100).
+        // target=85 → bucket 0; target=100 → bucket 15.
+        assert_eq!(Rng::back_solve_damage_bucket(85, 85, 100), Some(0));
+        assert_eq!(Rng::back_solve_damage_bucket(100, 85, 100), Some(15));
+    }
+
+    #[test]
+    fn back_solve_picks_midpoint() {
+        // Halfway between 85 and 100 = 92.5 → bucket 7 or 8.
+        let b = Rng::back_solve_damage_bucket(93, 85, 100).unwrap();
+        assert!(b == 7 || b == 8, "bucket near midpoint, got {b}");
+    }
+
+    #[test]
+    fn back_solve_returns_none_for_out_of_range() {
+        // target way above max → not from this candidate.
+        assert_eq!(Rng::back_solve_damage_bucket(500, 100, 120), None);
+        assert_eq!(Rng::back_solve_damage_bucket(10, 100, 120), None);
+    }
+
+    #[test]
+    fn back_solve_allows_one_bucket_slack() {
+        // dmg_min=100, dmg_max=115 → bucket width 1. target=99 (1 below)
+        // is still plausible (rounding).
+        assert!(Rng::back_solve_damage_bucket(99, 100, 115).is_some());
+        // target=116 (1 above) also plausible.
+        assert!(Rng::back_solve_damage_bucket(116, 100, 115).is_some());
+        // target=120 (5 above with 1-bucket width 1) — out of range.
+        assert_eq!(Rng::back_solve_damage_bucket(120, 100, 115), None);
+    }
+
+    #[test]
+    fn damage_range_contains_matches_back_solve() {
+        assert!(Rng::damage_range_contains(92, 85, 100));
+        assert!(!Rng::damage_range_contains(500, 85, 100));
+    }
+
+    #[test]
+    fn back_solve_handles_degenerate_zero_span() {
+        // Both ends equal — common for 1-HP hits.
+        assert_eq!(Rng::back_solve_damage_bucket(1, 1, 1), Some(0));
+        assert_eq!(Rng::back_solve_damage_bucket(2, 1, 1), None);
+    }
+
+    #[test]
+    fn back_solve_realistic_garchomp_eq_into_pikachu() {
+        // From damage::tests::garchomp_earthquake_vs_pikachu_max_roll
+        // baseline: max-roll EQ deals ~250 ish. Use a plausible span and
+        // assert mid-range damage maps inside the bucket grid.
+        let dmin = 234; // approximate min roll
+        let dmax = 276; // approximate max roll
+        let target = 255; // mid-ish observed
+        let b = Rng::back_solve_damage_bucket(target, dmin, dmax).unwrap();
+        assert!(b <= 15);
+        // Bucket should land near the middle.
+        assert!((6..=9).contains(&b), "expected near mid bucket, got {b}");
     }
 
     #[test]

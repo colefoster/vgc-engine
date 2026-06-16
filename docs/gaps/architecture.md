@@ -153,7 +153,7 @@ Remaining for full close:
 
 **Why it matters**: This is the headline lever for corpus agreement. PR-66 landed crit back-solve and moved median 8.3 → 12.5. Damage back-solve is the next 10-30 percentage points.
 
-**Status**: partial — design pinned (PR-67 placeholder), implementation deferred. Continuation note: the cleanest path is option (b) — a `Rng::damage_roll_hint(target: u16, dmg_min: u16, dmg_max: u16)` that runs the formula across all 16 buckets and selects the bucket whose output minimises `|out - target|`. Plumbed through a new `Rng::OracleDamageHint { state, fallback }` variant that consumes the `|-damage|` payload from the replay event stream. Owner: next PR-stream session.
+**Status**: partial — PR-164 (back-solve primitive: `Rng::back_solve_damage_bucket(target, dmg_min, dmg_max) -> Option<u8>` returns the 0..=15 bucket index whose linear-interp damage `dmg_min + (dmg_max-dmg_min)*b/15` is closest to the observed `target`; returns `None` if the target is outside `[dmg_min - bucket_w, dmg_max + bucket_w]` (the candidate can't have produced this damage). Also `Rng::damage_range_contains` shim for set-recon plausibility checks). Wiring into a `Rng::OracleDamageHint` variant that consumes `|-damage|` payloads at draw time is the next step. Owner: this PR stream.
 
 ### Set reconnaissance for spreads / abilities / items
 
