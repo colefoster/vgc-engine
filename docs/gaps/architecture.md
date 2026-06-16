@@ -100,7 +100,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Crit bypass is currently hardcoded in `damage.rs`; Unaware needs a parallel branch. Generalize once.
 
-**Status**: partial.
+**Status**: shipped — PR-147 (`damage::BoostIgnore { None, Positive, Negative, All }` enum + `project(stage)` projection. Crit branch in `calculate_damage` now expressed as `BoostIgnore::Negative` for attacker / `Positive` for defender. Unaware and Sacred Sword / Chip Away land as additive consumers that just OR-in another policy at the call site.).
 
 ### Crit stage
 
