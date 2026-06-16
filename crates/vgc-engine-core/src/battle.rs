@@ -305,7 +305,7 @@ impl Battle {
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
-                m.pending_self_switch = false;
+                m.set_pending_self_switch(false);
             }
         }
 
@@ -583,7 +583,7 @@ impl Battle {
             incoming.encored_move_slot = 255;
             incoming.boosted_stat = 255;
             incoming.booster_locked = false; // Booster lock only persists while on field.
-            incoming.pending_self_switch = false;
+            incoming.set_pending_self_switch(false);
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
             // Multi-turn move state — semi-invuln / charging / recharge /
@@ -689,14 +689,14 @@ impl Battle {
                 let pending = self
                     .side(side)
                     .active_mon(slot as usize)
-                    .is_some_and(|m| m.pending_self_switch);
+                    .is_some_and(|m| m.pending_self_switch());
                 if !pending {
                     continue;
                 }
                 // Clear the flag regardless — even if no replacement is
                 // available, the move doesn't re-fire next turn.
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                    m.pending_self_switch = false;
+                    m.set_pending_self_switch(false);
                 }
                 // Find the first deferred switch matching this slot and
                 // pop it. If none is queued, the switch silently fails.
@@ -2188,7 +2188,7 @@ impl Battle {
                 .is_some_and(|a| a.is_alive());
             if still_alive && self.has_eligible_bench(actor_side) {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.pending_self_switch = true;
+                    a.set_pending_self_switch(true);
                 }
             }
         }
@@ -2776,7 +2776,7 @@ impl Battle {
                 }
                 if dropped_any && self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.pending_self_switch = true;
+                        a.set_pending_self_switch(true);
                     }
                 }
             }
@@ -2789,7 +2789,7 @@ impl Battle {
                 // <https://bulbapedia.bulbagarden.net/wiki/Teleport_(move)>.
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.pending_self_switch = true;
+                        a.set_pending_self_switch(true);
                     }
                 }
             }
@@ -2804,7 +2804,7 @@ impl Battle {
                 self.weather_turns = 5;
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.pending_self_switch = true;
+                        a.set_pending_self_switch(true);
                     }
                 }
             }
@@ -9323,8 +9323,8 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.active[0], 1, "Hatterene swapped in");
-        assert!(!b.p1.team[0].pending_self_switch);
-        assert!(!b.p1.team[1].pending_self_switch);
+        assert!(!b.p1.team[0].pending_self_switch());
+        assert!(!b.p1.team[1].pending_self_switch());
     }
 
     #[test]
@@ -9343,7 +9343,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.active[0], 0, "Mr. Mime still in slot a");
-        assert!(!b.p1.team[0].pending_self_switch);
+        assert!(!b.p1.team[0].pending_self_switch());
     }
 
     #[test]
@@ -9394,8 +9394,8 @@ mod tests {
         );
         assert!(b.p2.team[0].current_hp < pika_hp, "U-turn dealt damage");
         assert_eq!(b.p1.active[0], 1, "Pelipper swapped in after U-turn");
-        assert!(!b.p1.team[0].pending_self_switch);
-        assert!(!b.p1.team[1].pending_self_switch);
+        assert!(!b.p1.team[0].pending_self_switch());
+        assert!(!b.p1.team[1].pending_self_switch());
     }
 
     #[test]
@@ -9420,7 +9420,7 @@ mod tests {
         );
         // Pikachu stays in — Volt Switch was Ground-immune.
         assert_eq!(b.p1.active[0], 0, "Pikachu stays in on Ground immunity");
-        assert!(!b.p1.team[0].pending_self_switch);
+        assert!(!b.p1.team[0].pending_self_switch());
     }
 
     #[test]
@@ -9443,7 +9443,7 @@ mod tests {
         );
         assert!(b.p2.team[0].current_hp < pika_hp, "Flip Turn dealt damage");
         assert_eq!(b.p1.active[0], 0, "Greninja stays in (no bench)");
-        assert!(!b.p1.team[0].pending_self_switch);
+        assert!(!b.p1.team[0].pending_self_switch());
     }
 
     #[test]

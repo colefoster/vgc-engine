@@ -936,7 +936,6 @@ mod tests {
             encored_move_slot: 255,
             boosted_stat: 255,
             booster_locked: false,
-            pending_self_switch: false,
             ability_suppressed: false,
             crit_stage_volatile: 0,
             last_attacker: (255, 255),

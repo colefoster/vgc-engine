@@ -207,6 +207,12 @@ pub enum VolatileKind {
     /// the residual on the switch-in turn. PS analog: `activeTurns == 0`
     /// at end of turn. Cleared at the per-turn volatile reset.
     JustSwitchedIn,
+    /// 'pending self-switch' marker (PS `pokemon.switchFlag`). Set by
+    /// U-turn / Volt Switch / Flip Turn / Parting Shot / Teleport /
+    /// Chilly Reception after a successful resolution; consumed by the
+    /// engine's deferred-switch sweep. Cleared at end of step, on
+    /// switch-out, or once the deferred switch is applied.
+    PendingSelfSwitch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -491,14 +497,6 @@ pub struct Pokemon {
     /// the bool tight for the moment and gate at the consumer when
     /// those abilities are added.
     pub ability_suppressed: bool,
-    /// Self-switch volatile: set by U-turn / Volt Switch / Flip Turn /
-    /// Parting Shot / Teleport / Chilly Reception once their hit
-    /// resolves successfully. After the move-resolution loop the engine
-    /// sweeps every active slot with this flag and consumes a deferred
-    /// `Choice::Switch` for that slot (PS routes the player's chosen
-    /// replacement through `selfSwitch`). Cleared once the switch is
-    /// applied, on switch-out, and at the top of each turn.
-    pub pending_self_switch: bool,
 }
 
 impl Pokemon {
@@ -604,6 +602,28 @@ impl Pokemon {
             .get(self.ability_id as usize)
             .map(|a| a.slug)
             .unwrap_or("")
+    }
+
+    /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
+    /// Set by self-switch moves (U-turn etc.); consumed by the engine's
+    /// deferred-switch sweep.
+    #[inline]
+    pub fn pending_self_switch(&self) -> bool {
+        self.volatiles.has(VolatileKind::PendingSelfSwitch)
+    }
+
+    /// Set or clear the PendingSelfSwitch marker.
+    #[inline]
+    pub fn set_pending_self_switch(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::PendingSelfSwitch,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        }
     }
 
     /// `true` while `VolatileKind::JustSwitchedIn` is on this mon. Set
@@ -839,7 +859,7 @@ mod tests {
             toxic_counter: 0, locked_move_slot: 255,
             substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
-            boosted_stat: 255, booster_locked: false, pending_self_switch: false,
+            boosted_stat: 255, booster_locked: false,
             ability_suppressed: false, crit_stage_volatile: 0,
             last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
             tera_type: 1 /* fire */, terastallized: false,
@@ -887,7 +907,6 @@ mod tests {
             encored_move_slot: 255,
             boosted_stat: 255,
             booster_locked: false,
-            pending_self_switch: false,
             ability_suppressed: false,
             crit_stage_volatile: 0,
             last_attacker: (255, 255),
