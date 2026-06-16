@@ -124,7 +124,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Required for Eviolite.
 
-**Status**: shipped — PR-115 (`SpeciesDef::is_nfe` from PS `evos` non-empty).
+**Status**: shipped — PR-115 (`SpeciesDef::is_nfe` from PS `evos` non-empty). Eviolite consumer in damage path: shipped PR-148 (defender Def / SpD ×1.5 on NFE holders, alongside Assault Vest's spd bump).
 
 ## Move data fields known missing
 
