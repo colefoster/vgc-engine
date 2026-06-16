@@ -177,6 +177,14 @@ pub struct Pokemon {
     /// requires Allies of the same team (3+ Pokémon active), which
     /// Doubles never produces.
     pub helping_handed_this_turn: bool,
+    /// Single-turn flag — true if any opposing damaging move actually
+    /// landed HP damage on this mon earlier this turn. PS tracks
+    /// `pokemon.attackedBy` per-source; we collapse to "any foe hit
+    /// me" which is exact in Singles and over-permissive in Doubles
+    /// (Avalanche / Revenge will double BP even if the foe at the
+    /// other slot dealt the damage). Read by `damage.rs` for
+    /// Avalanche / Revenge. Cleared at end of step.
+    pub damaged_this_turn: bool,
     /// Toxic damage counter (1-based). 1 on the turn Toxic is applied;
     /// increments by 1 each end of turn (gen 5+ formula). Damage per
     /// turn = max_hp * counter / 16. Reset to 0 when status clears or

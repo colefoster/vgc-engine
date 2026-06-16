@@ -216,6 +216,20 @@ pub fn calculate_damage(
         // Basculegion-F / Pecharunt's late-game finisher.
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
+    } else if matches!(m.slug, "avalanche" | "revenge")
+        && attacker.damaged_this_turn
+    {
+        // PS data/moves.ts:avalanche / revenge basePowerCallback —
+        // doubles BP (60 → 120) if the user was damaged earlier this
+        // turn by the move's target. Our `damaged_this_turn` flag is
+        // any-source (collapses cross-slot attribution in Doubles —
+        // an Avalanche user that got Earthquake'd by a partner's
+        // EQ will trigger here, where PS would only key on the
+        // specific target). Acceptable approximation in Singles
+        // (corpus today is mostly Singles-shape per replay slot).
+        // Both moves are priority -4 so they naturally resolve after
+        // most attacks.
+        (m.type_, (m.base_power as u32) * 2)
     } else if matches!(m.slug, "eruption" | "waterspout" | "dragonenergy") {
         // PS data/moves.ts: shared basePowerCallback
         //   bp = move.basePower * pokemon.hp / pokemon.maxhp
@@ -487,6 +501,7 @@ mod tests {
             turns_active: 0,
             flinched_this_turn: false,
             helping_handed_this_turn: false,
+            damaged_this_turn: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             switched_in_this_turn: false,
