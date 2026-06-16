@@ -28,7 +28,7 @@ pub use damage::{calculate_damage, damage_range, type_effectiveness, DamageConte
 pub use format::Format;
 pub use order::{action_order, effective_speed, ScheduledAction};
 pub use pokemon::{Nature, Pokemon, Stat, StatSpread, Status, nature_by_slug};
-pub use rng::Rng;
+pub use rng::{Rng, RngEvent};
 pub use side::{Side, SideRef};
 pub use team::{build_member, TeamBuilder, TeamLoadError, TeamMember};
 pub use terrain::Terrain;
