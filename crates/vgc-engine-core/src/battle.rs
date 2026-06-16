@@ -296,7 +296,7 @@ impl Battle {
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
                 m.set_protected(false);
-                m.used_stall_this_turn = false;
+                m.clear_used_stall_this_turn();
                 m.set_flinched(false);
                 m.set_helping_handed(false);
                 m.set_redirecting(false, false);
@@ -411,8 +411,8 @@ impl Battle {
         for s in [SideRef::P1, SideRef::P2] {
             let side = self.side_mut(s);
             for m in side.team.iter_mut() {
-                if !m.used_stall_this_turn {
-                    m.stall_counter = 0;
+                if !m.used_stall_this_turn() {
+                    m.set_stall(0, false);
                 }
             }
             for &active_idx in side.active.iter() {
@@ -574,7 +574,7 @@ impl Battle {
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
             incoming.set_protected(false);
-            incoming.stall_counter = 0;
+            incoming.set_stall(0, false);
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
             incoming.set_substitute_hp(0); // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
@@ -2465,8 +2465,8 @@ impl Battle {
                         Some(a) => a,
                         None => return,
                     };
-                    actor.used_stall_this_turn = true;
-                    actor.stall_counter
+                    actor.mark_used_stall_this_turn();
+                    actor.stall_counter()
                 };
 
                 // Success probability: 1 / 3^stall_counter.
@@ -2483,9 +2483,10 @@ impl Battle {
                 };
                 if success {
                     actor.set_protected(true);
-                    actor.stall_counter = actor.stall_counter.saturating_add(1).min(6);
+                    let c = actor.stall_counter().saturating_add(1).min(6);
+                    actor.set_stall(c, true);
                 } else {
-                    actor.stall_counter = 0;
+                    actor.set_stall(0, true);
                 }
             }
             "trickroom" => {
@@ -2520,8 +2521,8 @@ impl Battle {
                         Some(a) => a,
                         None => return,
                     };
-                    actor.used_stall_this_turn = true;
-                    actor.stall_counter
+                    actor.mark_used_stall_this_turn();
+                    actor.stall_counter()
                 };
                 let denom: u32 = match stall_counter {
                     0 => 1,
@@ -2530,7 +2531,7 @@ impl Battle {
                 let success = self.rng.range(denom) == 0;
                 if !success {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.stall_counter = 0;
+                        a.set_stall(0, true);
                     }
                     return;
                 }
@@ -2542,7 +2543,8 @@ impl Battle {
                     s.conditions.quick_guard_this_turn = true;
                 }
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.stall_counter = a.stall_counter.saturating_add(1).min(6);
+                    let c = a.stall_counter().saturating_add(1).min(6);
+                    a.set_stall(c, true);
                 }
             }
             "helpinghand" => {
@@ -3560,7 +3562,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].current_hp, pex_hp, "first Protect always succeeds; Toxapex takes no damage");
-        assert_eq!(b.p1.team[0].stall_counter, 1);
+        assert_eq!(b.p1.team[0].stall_counter(), 1);
     }
 
     #[test]
@@ -3612,19 +3614,19 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
-        assert_eq!(b.p1.team[0].stall_counter, 1);
+        assert_eq!(b.p1.team[0].stall_counter(), 1);
         // Turn 2: Scald (not a stall move) → counter resets at end of turn.
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
-        assert_eq!(b.p1.team[0].stall_counter, 0);
+        assert_eq!(b.p1.team[0].stall_counter(), 0);
         // Turn 3: Protect again — succeeds (counter was 0).
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
-        assert_eq!(b.p1.team[0].stall_counter, 1, "fresh streak — counter back to 1");
+        assert_eq!(b.p1.team[0].stall_counter(), 1, "fresh streak — counter back to 1");
     }
 
     #[test]

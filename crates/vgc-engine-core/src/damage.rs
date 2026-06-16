@@ -924,8 +924,6 @@ mod tests {
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
-            stall_counter: 0,
-            used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
             last_used_move_slot: 255,

@@ -137,7 +137,7 @@ impl FinalStats {
 /// practice — corpus mons rarely carry more than 3-4 at a time);
 /// callers look up by kind in O(1). The migration of the ad-hoc
 /// boolean / counter fields (`is_protected_this_turn`,
-/// `stall_counter`, `flinched_this_turn`, `helping_handed_this_turn`,
+/// `flinched_this_turn`, `helping_handed_this_turn`,
 /// `damaged_this_turn`,
 /// `crit_stage_volatile`, `semi_invuln`,
 /// `charging_turns`, `must_recharge`, `lockin_turns`) into this
@@ -213,6 +213,13 @@ pub enum VolatileKind {
     /// engine's deferred-switch sweep. Cleared at end of step, on
     /// switch-out, or once the deferred switch is applied.
     PendingSelfSwitch,
+    /// Stall counter for the Protect family (PS `data/conditions.ts:stall`).
+    /// Indefinite duration; `payload` packs `(used_this_turn << 8) | counter`:
+    /// the low byte is the current streak count (0..=6; success
+    /// probability `1 / 3^counter`), bit 8 is `used_stall_this_turn`
+    /// (set when the mon issues a stall move on the current turn, read
+    /// at end of turn to reset the counter if the streak broke).
+    Stall,
     /// Encore lock (PS `data/conditions.ts:encore`, duration 3). Payload
     /// packs `(turns << 8) | slot` — high 8 bits are remaining turns,
     /// low 8 bits are the locked move slot (0..=3). Decremented at end
@@ -360,16 +367,6 @@ pub struct Pokemon {
     /// Stat boost stages in -6..=6 for [atk, def, spa, spd, spe, acc, eva].
     pub boosts: [i8; 7],
     pub fainted: bool,
-    /// 'stall' volatile counter — number of consecutive turns the mon has
-    /// successfully used a stall move (Protect family). Probability of
-    /// the next use succeeding is `1 / 3^stall_counter`. Reset to 0 when
-    /// the mon does not issue a stall move that turn, or when the stall
-    /// move fails.
-    pub stall_counter: u8,
-    /// Flag set during resolve_move whenever this mon issues a stall move
-    /// this turn (regardless of success). Read & cleared at end of turn
-    /// to drive stall_counter resets.
-    pub used_stall_this_turn: bool,
     /// Number of turns this Pokémon has been on the field (0 on the turn
     /// it switched in / was sent out at battle start). Used by Fake Out,
     /// First Impression, Mat Block, etc. Incremented at end of step.
@@ -711,6 +708,56 @@ impl Pokemon {
         }
     }
 
+    /// Consecutive-stall-success counter (Protect family). `0` if no
+    /// streak in progress.
+    #[inline]
+    pub fn stall_counter(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Stall)
+            .map(|v| (v.payload & 0xFF) as u8)
+            .unwrap_or(0)
+    }
+
+    /// `true` if this mon has already issued a stall move this turn.
+    #[inline]
+    pub fn used_stall_this_turn(&self) -> bool {
+        self.volatiles
+            .get(VolatileKind::Stall)
+            .map(|v| (v.payload >> 8) & 1 != 0)
+            .unwrap_or(false)
+    }
+
+    /// Set the stall counter (0..=6). 0 removes the volatile unless
+    /// `used_this_turn` is also set.
+    #[inline]
+    pub fn set_stall(&mut self, counter: u8, used_this_turn: bool) {
+        if counter == 0 && !used_this_turn {
+            self.volatiles.remove(VolatileKind::Stall);
+        } else {
+            let payload = ((used_this_turn as u32) << 8) | (counter as u32 & 0xFF);
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Stall,
+                turns_remaining: 0,
+                payload,
+            });
+        }
+    }
+
+    /// Mark that this mon issued a stall move on the current turn,
+    /// preserving the streak counter.
+    #[inline]
+    pub fn mark_used_stall_this_turn(&mut self) {
+        let c = self.stall_counter();
+        self.set_stall(c, true);
+    }
+
+    /// Clear the "used stall this turn" bit, preserving the counter.
+    #[inline]
+    pub fn clear_used_stall_this_turn(&mut self) {
+        let c = self.stall_counter();
+        self.set_stall(c, false);
+    }
+
     /// Remaining Encore turns; `0` when not encored.
     #[inline]
     pub fn encore_turns(&self) -> u8 {
@@ -996,7 +1043,6 @@ mod tests {
             species_id: species_idx, level: 50, moves: [u16::MAX; 4], pp: [0; 4],
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
-            stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
             last_used_move_slot: 255,
@@ -1034,8 +1080,6 @@ mod tests {
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
-            stall_counter: 0,
-            used_stall_this_turn: false,
             turns_active: 0,
             locked_move_slot: 255,
             last_used_move_slot: 255,
