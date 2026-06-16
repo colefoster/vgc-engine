@@ -20,7 +20,12 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Blocks Terastallize, Tera Blast, Stellar STAB, Embody Aspect, and Tera Shell. Half of the corpus has Tera resolution; HP-trace divergence on Tera-active mons is structurally unfixable without this.
 
-**Status**: deferred.
+**Status**: partial — slice 1 of 4 — PR-149 (`Pokemon::tera_type: u8`, `terastallized: bool`; `Side::tera_used: bool`; `TeamMember::teratype` parsed; `Pokemon::effective_types()` accessor returns `(types, num_types)` with Tera override).
+
+Remaining slices:
+- slice 2: `Choice::Terastallize` action + `tera: true` move modifier, gated by `Side::tera_used`.
+- slice 3: damage path reads `effective_types()` for STAB / type chart.
+- slice 4: Tera Blast (type read), Tera Shell (1-hit damage cap), Stellar STAB (once-per-type bookkeeping).
 
 ### Multi-turn move state
 

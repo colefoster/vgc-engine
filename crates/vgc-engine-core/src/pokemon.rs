@@ -273,6 +273,19 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// Tera type. PS `pokemon.teraType` — encoded as a type code
+    /// 0..=17 (same indexing as `species().types`). 255 = none assigned
+    /// (legacy / set without teratype). Set at team load from the JSON
+    /// `teratype` field; immutable thereafter (Tera Shell / Stellar
+    /// re-typing is handled via `terastallized`).
+    pub tera_type: u8,
+    /// `true` if the mon has currently Terastallized. Set by the
+    /// Terastallize action (separate `Choice::Terastallize` arm — TBD)
+    /// or by the `tera: true` flag on a Move choice. Drives type
+    /// override (offensive STAB read), Tera Blast BP gating, Stellar
+    /// once-per-type bookkeeping. Persists across switch-out (Tera
+    /// state survives switching in PS gen-9 doubles).
+    pub terastallized: bool,
     /// Volatile crit-stage contributors from on-mon sources (Focus
     /// Energy / Laser Focus / Dire Hit). Held item, ability, and the
     /// move's high-crit-ratio flag are summed at damage time. Cleared
@@ -322,6 +335,22 @@ impl Pokemon {
     /// abilities on damaging moves.
     pub fn is_grounded_for_mold_breaker(&self) -> bool {
         self.is_grounded_internal(true)
+    }
+
+    /// Effective types after Tera. Returns the species' types unless
+    /// `terastallized` is true, in which case the mon has a single
+    /// type equal to `tera_type`. Stellar (`tera_type == 255`) returns
+    /// the species' types — Stellar doesn't re-type the mon, it only
+    /// boosts STAB and adds one-shot type matchups. Callers that need
+    /// to know "is this mon currently Tera-active" read `terastallized`
+    /// directly.
+    pub fn effective_types(&self) -> ([u8; 2], u8) {
+        let s = self.species();
+        if self.terastallized && self.tera_type != 255 {
+            ([self.tera_type, 0], 1)
+        } else {
+            (s.types, s.num_types)
+        }
     }
 
     /// Effective crit stage from on-mon contributors (held item,
@@ -452,6 +481,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effective_types_pre_tera_matches_species() {
+        let species_idx = data::SPECIES.iter().position(|s| s.slug == "garchomp").unwrap() as u16;
+        let species = &data::SPECIES[species_idx as usize];
+        let mut mon = Pokemon {
+            species_id: species_idx, level: 50, moves: [u16::MAX; 4], pp: [0; 4],
+            ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
+            current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
+            is_protected_this_turn: false, stall_counter: 0, used_stall_this_turn: false,
+            turns_active: 0, flinched_this_turn: false, helping_handed_this_turn: false,
+            redirecting_this_turn: false, redirecting_is_powder: false,
+            damaged_this_turn: false, toxic_counter: 0, locked_move_slot: 255,
+            switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
+            last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
+            boosted_stat: 255, booster_locked: false, pending_self_switch: false,
+            ability_suppressed: false, crit_stage_volatile: 0,
+            last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
+            tera_type: 1 /* fire */, terastallized: false,
+        };
+        let (types, n) = mon.effective_types();
+        assert_eq!(n, species.num_types);
+        assert_eq!(types, species.types);
+        // After Tera: single Fire type.
+        mon.terastallized = true;
+        let (types2, n2) = mon.effective_types();
+        assert_eq!(n2, 1);
+        assert_eq!(types2[0], 1);
+    }
+
+    #[test]
     fn effective_ability_slug_respects_suppression() {
         let species = data::species_by_slug("garchomp").expect("garchomp");
         let ab_id = data::ABILITIES.iter().position(|a| a.slug == "roughskin").unwrap() as u16;
@@ -492,6 +550,8 @@ mod tests {
             last_attacker: (255, 255),
             last_attacker_category: 255,
             last_damage_taken: 0,
+            tera_type: 0,
+            terastallized: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

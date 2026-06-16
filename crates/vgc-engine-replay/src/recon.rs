@@ -126,6 +126,7 @@ fn build_member_spec(obs: &PokeObservation) -> Result<TeamMember, ReconError> {
         moves: obs.moves.clone(),
         ivs: StatSpread::MAX_IV,
         evs,
+        teratype: None,
     })
 }
 

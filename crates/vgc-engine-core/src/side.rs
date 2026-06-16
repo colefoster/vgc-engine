@@ -76,6 +76,10 @@ pub struct SideConditions {
     /// (-6..6). Cleared by Defog / Rapid Spin / Tidy Up / Court Change
     /// / Mortal Spin in later PRs.
     pub stealth_rock: bool,
+    /// True once this side has used Terastallize this battle. Gen-9
+    /// rule: at most one mon per side may Terastallize per battle.
+    /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
+    pub tera_used: bool,
 }
 
 impl Side {
