@@ -16,6 +16,7 @@ mod recon;
 mod replay;
 mod runner;
 mod scorer;
+mod smogon_stats;
 mod trace;
 
 pub use choices::ChoiceExtractor;
@@ -32,6 +33,9 @@ pub use recon::{
 };
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
+pub use smogon_stats::{
+    parse as parse_smogon_stats, ParseError as SmogonParseError, SmogonStats, SpeciesUsage,
+};
 pub use scorer::{
     score_replay, score_replay_oracle, score_replay_with_events, ReplayScore, TurnScore,
     DEFAULT_HP_TOLERANCE,
