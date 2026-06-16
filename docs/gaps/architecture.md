@@ -116,7 +116,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Required for Heat Crash, Heavy Slam, Low Kick, Grass Knot, Sky Drop weight cap, Heavy Metal / Light Metal abilities.
 
-**Status**: not implemented.
+**Status**: shipped — PR-100 (`SpeciesDef::weight_dg` in decigrams).
 
 ### Species evolution-stage flag
 
