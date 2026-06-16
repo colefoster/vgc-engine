@@ -22,12 +22,11 @@ Migration of the ad-hoc per-Pokemon volatile fields (`is_protected_this_turn`, `
 
 **Why it matters**: Blocks Terastallize, Tera Blast, Stellar STAB, Embody Aspect, and Tera Shell. Half of the corpus has Tera resolution; HP-trace divergence on Tera-active mons is structurally unfixable without this.
 
-**Status**: partial — slice 1 of 4 — PR-149 (`Pokemon::tera_type: u8`, `terastallized: bool`; `Side::tera_used: bool`; `TeamMember::teratype` parsed; `Pokemon::effective_types()` accessor returns `(types, num_types)` with Tera override).
+**Status**: partial — slice 2 of 4 — PR-149 (fields), PR-156 (`Choice::Terastallize { actor_slot, move_slot, target }` action that flips `Pokemon::terastallized = true` + latches `Side::tera_used` before the move resolves; gated by `tera_used`; ordering / queue arms treat it identically to `Choice::Move`).
 
 Remaining slices:
-- slice 2: `Choice::Terastallize` action + `tera: true` move modifier, gated by `Side::tera_used`.
-- slice 3: damage path reads `effective_types()` for STAB / type chart.
-- slice 4: Tera Blast (type read), Tera Shell (1-hit damage cap), Stellar STAB (once-per-type bookkeeping).
+- slice 3: damage path reads `effective_types()` for STAB / type chart (STAB ×1.5 → ×2 on Tera+matching-type, type effectiveness sees the Tera type defensively).
+- slice 4: Tera Blast (type / category read), Tera Shell (1-hit damage cap), Stellar STAB (once-per-type bookkeeping), Embody Aspect (Ogerpon Tera form ability).
 
 ### Multi-turn move state
 

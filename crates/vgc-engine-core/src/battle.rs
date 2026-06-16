@@ -340,7 +340,8 @@ impl Battle {
             for c in choices {
                 let s = side_ref as usize;
                 match *c {
-                    Choice::Move { actor_slot, move_slot, .. } => {
+                    Choice::Move { actor_slot, move_slot, .. }
+                    | Choice::Terastallize { actor_slot, move_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
                         if let Some(a) = self.side(side_ref).active_mon(actor_slot as usize) {
                             if let Some(mid) = a.moves.get(move_slot as usize).copied() {
@@ -508,7 +509,8 @@ impl Battle {
         let mut switched_slots: Vec<u8> = Vec::new();
         for c in choices {
             match *c {
-                Choice::Move { actor_slot, .. } => {
+                Choice::Move { actor_slot, .. }
+                | Choice::Terastallize { actor_slot, .. } => {
                     if (actor_slot as usize) < 2 {
                         moved_slot[actor_slot as usize] = true;
                     }
@@ -665,7 +667,8 @@ impl Battle {
             let mut deferred: Vec<(u8, u8)> = Vec::new();
             for c in choices {
                 match *c {
-                    Choice::Move { actor_slot, .. } => {
+                    Choice::Move { actor_slot, .. }
+                    | Choice::Terastallize { actor_slot, .. } => {
                         if (actor_slot as usize) < 2 {
                             moved_slot[actor_slot as usize] = true;
                         }
@@ -713,10 +716,29 @@ impl Battle {
         action: ScheduledAction,
         pending_kind: &[[u8; 2]; 2],
     ) {
-        let Choice::Move { actor_slot, move_slot, target } = action.choice else {
-            return;
+        let (actor_slot, move_slot, target, tera) = match action.choice {
+            Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
+            Choice::Terastallize { actor_slot, move_slot, target } => (actor_slot, move_slot, target, true),
+            _ => return,
         };
         let actor_side = action.side;
+        // Process the Terastallize component before the move resolves so
+        // STAB / type chart reads see the Tera type. Gated by
+        // `Side::tera_used` — at most one Terastallize per side per
+        // battle. If already used, the Tera component silently no-ops
+        // and the move proceeds normally. PS:
+        // `sim/side.ts:Side.canTerastallize`.
+        if tera {
+            let tera_used = self.side(actor_side).conditions.tera_used;
+            if !tera_used {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        a.terastallized = true;
+                    }
+                }
+                self.side_mut(actor_side).conditions.tera_used = true;
+            }
+        }
 
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc.
@@ -3314,6 +3336,36 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].stall_counter, 1, "fresh streak — counter back to 1");
+    }
+
+    #[test]
+    fn terastallize_action_sets_flag_and_consumes_permit() {
+        // Use Choice::Terastallize once, verify mon.terastallized
+        // flips and Side::tera_used latches. Second Tera attempt by
+        // the partner does NOT set its flag (permit already used).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{"spe":252,"atk":252,"hp":4},"teratype":"fire"},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"],"teratype":"water"}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","crunch","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Pre: not terastallized.
+        assert!(!b.p1.team[0].terastallized);
+        assert!(!b.p1.conditions.tera_used);
+        b.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].terastallized, "Garchomp should be Tera-active");
+        assert!(b.p1.conditions.tera_used, "Side P1 should have consumed its Tera permit");
+        // Effective types should now report single Fire (code 1).
+        let (types, n) = b.p1.team[0].effective_types();
+        assert_eq!(n, 1);
+        assert_eq!(types[0], 1);
     }
 
     #[test]
