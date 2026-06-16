@@ -1102,7 +1102,23 @@ impl Battle {
                 // Round half-up: (x*n + den/2) / den.
                 let num = m.drain_num as u32;
                 let den = m.drain_den.max(1) as u32;
-                let heal = ((effective_dmg as u32 * num + den / 2) / den).max(1) as u16;
+                let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
+                // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
+                // returns `chainModify([5324, 4096])` (~×1.3) when
+                // the heal source is in {drain, leechseed, ingrain,
+                // aquaring, strengthsap}. We only fire it on drain
+                // moves here; leech-seed / ingrain are handled when
+                // their PRs land.
+                let attacker_item_slug_now = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .map(|a| if a.item_id == u16::MAX { "" }
+                              else { data::ITEMS[a.item_id as usize].slug })
+                    .unwrap_or("");
+                if attacker_item_slug_now == "bigroot" {
+                    heal = heal * 5324 / 4096;
+                }
+                let heal = heal.min(u16::MAX as u32) as u16;
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() {
                         let max = a.stats.hp;
@@ -6541,6 +6557,74 @@ mod tests {
                    "Quick Guard should block Fake Out damage");
         assert!(!b.p1.team[1].flinched_this_turn,
                 "Fake Out flinch must not stick when Quick Guard blocks the hit");
+    }
+
+    #[test]
+    fn reckless_boosts_recoil_move_bp_by_one_point_two() {
+        // Reckless × Flare Blitz. Two damage_calc passes — one with
+        // Reckless slug, one without. Ratio should be ~1.2× (4915/4096).
+        use crate::damage::{calculate_damage, DamageContext};
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","item":"","nature":"jolly","moves":["flareblitz","closecombat","uturn","stoneedge"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let fb = data::MOVES.iter().position(|m| m.slug == "flareblitz").unwrap() as u16;
+        let baseline = calculate_damage(&p1[0], &p2[0], fb,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let mut p1_reck = p1.clone();
+        let reck = data::ABILITIES.iter().position(|a| a.slug == "reckless").unwrap() as u16;
+        p1_reck[0].ability_id = reck;
+        let boosted = calculate_damage(&p1_reck[0], &p2[0], fb,
+            DamageContext { roll: 15, ..DamageContext::default() });
+        let ratio = (boosted as u32) * 100 / baseline as u32;
+        // Thick Fat halves Fire damage too, but it halves baseline AND
+        // boosted symmetrically, so the ratio is preserved.
+        assert!(
+            ratio >= 115 && ratio <= 125,
+            "Reckless × Flare Blitz ratio off: {boosted}/{baseline} = {ratio}% (expected ≈120%)"
+        );
+    }
+
+    #[test]
+    fn big_root_boosts_drain_heal_by_one_point_three() {
+        // Drain Punch with Big Root should heal more than without.
+        let team_no_bigroot = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let team_bigroot = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"bigroot","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1a = TeamBuilder::from_json(team_no_bigroot).unwrap();
+        let p1b = TeamBuilder::from_json(team_bigroot).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Two parallel battles with the same seed → same damage roll
+        // on the Drain Punch hit; only the heal multiplier differs.
+        let mut b1 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1a, p2.clone());
+        b1.p1.team[0].current_hp = 1;
+        b1.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let heal_no = b1.p1.team[0].current_hp - 1;
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2);
+        b2.p1.team[0].current_hp = 1;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let heal_yes = b2.p1.team[0].current_hp - 1;
+        let ratio = (heal_yes as u32) * 100 / heal_no.max(1) as u32;
+        assert!(
+            ratio >= 125 && ratio <= 135,
+            "Big Root × Drain Punch heal ratio off: {heal_yes}/{heal_no} = {ratio}%"
+        );
     }
 
     #[test]
