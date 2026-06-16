@@ -927,13 +927,24 @@ impl Battle {
                 let acc_stage = attacker.boosts[5] as i32;
                 let eva_stage = defender.boosts[6] as i32;
                 let boost = (acc_stage - eva_stage).clamp(-6, 6);
-                let eff_acc: u32 = if boost > 0 {
+                let mut eff_acc: u32 = if boost > 0 {
                     (m.accuracy as u32) * (3 + boost as u32) / 3
                 } else if boost < 0 {
                     (m.accuracy as u32) * 3 / (3 + (-boost) as u32)
                 } else {
                     m.accuracy as u32
                 };
+                // Wide Lens — attacker's accuracy ×4505/4096 (≈ ×1.1).
+                // PS `data/items.ts:widelens` `onSourceModifyAccuracy`:
+                //   `if (typeof accuracy === 'number') return accuracy * 4505 / 4096;`
+                // Status-move OHKO (typeof === boolean) skip is moot
+                // because we guard on `m.accuracy != 255`. PS rounds via
+                // its tr() helper; we use integer-truncating divide which
+                // matches within ±1 percentage point.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wide_Lens>.
+                if attacker_item_slug == "widelens" {
+                    eff_acc = (eff_acc * 4505 / 4096).min(100);
+                }
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
                     continue;
@@ -5632,6 +5643,58 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn wide_lens_raises_hit_rate() {
+        // Stone Edge has accuracy 80 → Wide Lens lifts to ~88. Run 200
+        // trials over varied seeds; the Wide Lens cohort hits strictly
+        // more often than the bare cohort by a healthy margin.
+        let mk_bare = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"garchomp","level":50,"ability":"sandveil","item":"leftovers","nature":"adamant","moves":["stoneedge","tackle","aerialace","ironhead"]}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let mk_lens = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"garchomp","level":50,"ability":"sandveil","item":"widelens","nature":"adamant","moves":["stoneedge","tackle","aerialace","ironhead"]}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let trials = 200u64;
+        let bare_hits: u32 = (0..trials).map(|s| mk_bare(s) as u32).sum();
+        let lens_hits: u32 = (0..trials).map(|s| mk_lens(s) as u32).sum();
+        assert!(lens_hits > bare_hits,
+                "Wide Lens should improve hit rate ({} vs {})",
+                lens_hits, bare_hits);
+        // Expected: bare ≈ 80%, lens ≈ 88%. Gap should be at least 2/200
+        // even with seed jitter.
+        assert!(lens_hits >= bare_hits + 2,
+                "Wide Lens lift below expected ({} vs {})",
+                lens_hits, bare_hits);
     }
 
     #[test]

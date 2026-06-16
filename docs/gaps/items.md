@@ -310,7 +310,7 @@ See type-boost items above.
 
 **What it is**: Accuracy ×1.1.
 
-**Status**: not implemented.
+**Status**: shipped — PR-106.
 
 ### Bright Powder / Lax Incense
 
@@ -396,3 +396,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Muscle Band (PR-103)
 - Black Sludge (PR-104)
 - Shell Bell (PR-105)
+- Wide Lens (PR-106)
