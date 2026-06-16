@@ -20,10 +20,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Blocks Terastallize, Tera Blast, Stellar STAB, Embody Aspect, and Tera Shell. Half of the corpus has Tera resolution; HP-trace divergence on Tera-active mons is structurally unfixable without this.
 
-**Status**: partial — slice 4 of 4 — PR-149 (fields), PR-156 (Terastallize action), PR-158 (damage-pipeline STAB + defender type swap), PR-163 (Tera Blast / Tera Starstorm + Stellar damage rules: Tera Blast adopts the user's Tera type when Terastallized (Normal-type otherwise); category flips to Physical when boosted Atk > boosted SpA; Tera Starstorm matches the Tera Blast handler with BP 120 and Stellar-type override; Stellar tera type grants STAB ×2 on matching base type and ×1.2 on off-type — `stellar_boosted_types` once-per-type bookkeeping deferred (over-attribution acceptable for now, repeat Tera-Stellar attacks within a battle are rare in corpus); Stellar-type moves vs a Tera-active target always read as SE per PS `runEffectiveness`.).
-
-Remaining for full close:
-- Tera Shell (Terapagos-Terastal 1-hit-per-turn ×0.5 resist), Embody Aspect (Ogerpon Tera-form ability). The Tera-Blast self -1 Atk/-1 SpA debuff after use is its own move PR. Tera-Stellar once-per-type bookkeeping: shipped — PR-177 added `Pokemon::stellar_boosted_types: u32` bitmask; `damage.rs` Stellar branch now reads the bit (skip Stellar STAB×2 / off-type×1.2 if already consumed); `battle.rs` sets the bit on each landed Stellar-bonus hit after damage applies.
+**Status**: shipped — PR-149 (fields), PR-156 (Terastallize action), PR-158 (damage-pipeline STAB + defender type swap), PR-163 (Tera Blast / Tera Starstorm + Stellar STAB rules), PR-177 (Stellar once-per-type bookkeeping via `stellar_boosted_types: u32` bitmask — `damage.rs` skips Stellar STAB ×2 / off-type ×1.2 if the matching type bit is already set; `battle.rs` sets the bit on each landed Stellar-bonus hit), PR-185 (Tera Shell — Terapagos-Terastal at full HP clamps incoming type effectiveness to ×0.5), PR-186 (Embody Aspect — each Ogerpon Tera form gets +1 to its signature stat on Tera switch-in). The Tera-Blast self -1 Atk / -1 SpA debuff after use will land in its own move PR.
 
 ### Multi-turn move state
 
