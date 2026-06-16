@@ -1557,11 +1557,38 @@ fn flinch_chance(slug: &str) -> Option<u8> {
     })
 }
 
-/// Apply a move's secondary effect to the target. Currently this is
-/// flinch-only (the secondaries covered in PR-6 + PR-7). Burn/poison/
-/// para/stat-drop secondaries land in subsequent PRs.
-///
-/// PS rolls secondaries per target independently.
+/// Per-slug stat-drop secondary: `(boost_idx, delta, chance%)`. PS
+/// secondaries with `boosts: { <stat>: -1 }`. Boost indices match
+/// `Pokemon::boosts`: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
+/// Substitute / Sheer Force gating happens at the caller — this is
+/// just the table.
+fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
+    Some(match slug {
+        // Guaranteed -1 Spe (used as soft speed control in VGC):
+        "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate" => (4, -1, 100),
+        // -1 SpA (Mystical Fire — 100%, Eerie Spell — 100% PP drop is
+        // a different effect, omit):
+        "mysticalfire" => (2, -1, 100),
+        // Acc drops:
+        "mudslap" | "muddywater" => (5, -1, 100),
+        // 30% -1 Def (contact biters):
+        "crunch" => (2, -1, 20), // 20% -1 SpD per PS
+        "irontail" => (1, -1, 30),
+        "liquidation" | "rockSmash" | "rocksmash" => (1, -1, 30),
+        // 10% -1 SpD:
+        "earthpower" | "flashcannon" | "energyball" | "focusblast"
+        | "psychic" | "shadowball" | "bugbuzz" => (3, -1, 10),
+        // 10% -1 Atk:
+        "aurorabeam" => (0, -1, 10),
+        // 10% -1 Spe:
+        "rockTomb" | "rocktomb" => (4, -1, 100),
+        _ => return None,
+    })
+}
+
+/// Apply a move's secondary effect to the target. Covers flinch,
+/// status (burn/para/poison), and stat-drop secondaries. PS rolls each
+/// independently and per-target.
 fn apply_secondary_effect(
     battle: &mut Battle,
     target_side: SideRef,
@@ -1582,6 +1609,16 @@ fn apply_secondary_effect(
     if let Some((status, chance)) = status_secondary(move_slug) {
         if rng.percent_1_100() <= chance {
             battle.try_set_status(target_side, target_slot, status);
+        }
+    }
+    if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
+        if rng.percent_1_100() <= chance {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                // PS clamps each stage to [-6, 6]. -1 from -6 stays at
+                // -6 (no extra fail signal needed here).
+                let stage = &mut t.boosts[idx as usize];
+                *stage = (*stage + delta).clamp(-6, 6);
+            }
         }
     }
 }
@@ -5560,6 +5597,45 @@ mod tests {
             ratio >= 180 && ratio <= 220,
             "Body Press +2 Def boost ratio out of band: {boosted_dmg}/{unboosted} = {ratio}%"
         );
+    }
+
+    #[test]
+    fn icy_wind_drops_target_speed_by_one() {
+        // Icy Wind is 100% -1 Spe. Spread, but here we hit a single
+        // foe so it's full damage with the secondary always firing.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["icywind","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[4], -1, "Icy Wind should drop Spe by 1");
+    }
+
+    #[test]
+    fn mystical_fire_drops_target_spa() {
+        // 100% -1 SpA secondary.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["mysticalfire","hypervoice","shadowball","helpinghand"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[2], -1, "Mystical Fire should drop SpA by 1");
     }
 
     #[test]
