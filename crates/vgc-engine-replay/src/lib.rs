@@ -34,7 +34,9 @@ pub use recon::{
     input_from_team_preview, observe_events, parse_details, CanonicalDefault, PokeObservation,
     ReconError, ReconInput, TeamRecon,
 };
-pub use recon_smogon::{SmogonStatsRecon, SpreadEvidenceObserver};
+pub use recon_smogon::{
+    build_evidence_recon, EvidenceTunedRecon, SmogonStatsRecon, SpreadEvidenceObserver,
+};
 pub use replay::{ParseError, PlayerInfo, Replay, TeamPreviewPoke, TurnView};
 pub use runner::{RunnerError, RunnerInit};
 pub use spread_recon::{narrow_by_damage, SideShape, SpreadEvidence, SpreadEvidenceRole};
