@@ -626,6 +626,28 @@ impl Battle {
                 continue;
             }
 
+            // Ground-immunity gate. Levitate (ability), Air Balloon
+            // (item), Flying-type defenders, and grounded-disabling
+            // volatiles (Magnet Rise / Telekinesis — not modeled yet)
+            // all funnel through `is_grounded()`. Ground-type moves
+            // (type code 8) deal 0 damage to a non-grounded defender.
+            // Flying-type immunity is already handled by the type chart
+            // (Flying vs Ground = 0); this branch covers the *non-type*
+            // routes that the chart doesn't see — i.e. Levitate +
+            // Air Balloon. PS routes both through the `Immunity` event:
+            // `data/abilities.ts:levitate` documents
+            // `airborneness implemented in sim/pokemon.js:Pokemon#isGrounded`,
+            // and `sim/pokemon.ts:Pokemon.runImmunity` short-circuits on
+            // `move.type === 'Ground' && !this.isGrounded()`.
+            //
+            // Levitate carries `flags: { breakable: 1 }`, so Mold Breaker
+            // is supposed to bypass it — Mold Breaker landing is its own
+            // PR. Air Balloon is not breakable (item, not ability).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Levitate_(Ability)>.
+            if m.type_ == 8 && !defender.is_grounded() {
+                continue;
+            }
+
             // Crit + damage roll.
             // Splitmix: 1/24 base crit (gen 9; high-crit-ratio moves
             // deferred). Oracle: replays the source sim's recorded
@@ -4649,5 +4671,51 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, zam_before,
                    "Magic Guard blocks Rough Skin recoil");
+    }
+
+    #[test]
+    fn levitate_blocks_earthquake() {
+        // Cresselia (Psychic) is normally hit by Earthquake (×1 effectiveness).
+        // With Levitate, the type chart can't see the immunity — it's a
+        // non-grounded check via PS `runImmunity`. Garchomp uses EQ; the
+        // hit is gated out before damage calculation.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"mentalherb","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let cres_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, cres_before,
+                   "Levitate must grant Ground immunity against Earthquake");
+    }
+
+    #[test]
+    fn levitate_does_not_block_non_ground_move() {
+        // Dragon Claw still hits Levitate Cresselia — Levitate only
+        // gates Ground moves.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["dragonclaw","earthquake","rockslide","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"mentalherb","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let cres_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < cres_before,
+                "Dragon Claw (non-Ground) must still hit a Levitate target");
     }
 }
