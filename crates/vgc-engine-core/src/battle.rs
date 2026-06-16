@@ -637,10 +637,26 @@ impl Battle {
                 _ => continue,
             };
 
-            // Accuracy.
+            // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
+            // accuracy stage minus defender's evasion stage as a combined
+            // boost in -6..=6, then:
+            //   boost > 0: acc *= (3 + boost) / 3   (PS uses int trunc)
+            //   boost < 0: acc *= 3 / (3 - boost)
+            // ignoreAccuracy / ignoreEvasion gating (Foresight, Miracle
+            // Eye, etc.) is deferred — none in the gen-9 VGC top-50.
             if m.accuracy != 255 {
+                let acc_stage = attacker.boosts[5] as i32;
+                let eva_stage = defender.boosts[6] as i32;
+                let boost = (acc_stage - eva_stage).clamp(-6, 6);
+                let eff_acc: u32 = if boost > 0 {
+                    (m.accuracy as u32) * (3 + boost as u32) / 3
+                } else if boost < 0 {
+                    (m.accuracy as u32) * 3 / (3 + (-boost) as u32)
+                } else {
+                    m.accuracy as u32
+                };
                 let roll = self.rng.percent_1_100() as u32;
-                if roll > m.accuracy as u32 {
+                if roll > eff_acc {
                     continue;
                 }
             }
@@ -5639,6 +5655,98 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].boosts[2], -1, "Mystical Fire should drop SpA by 1");
+    }
+
+    #[test]
+    fn accuracy_drop_reduces_hit_rate() {
+        // Hurricane has 70% accuracy. Drop attacker Acc by -2: PS
+        // formula `acc * 3 / (3 + 2) = acc * 3/5` → 70 * 3/5 = 42%
+        // effective accuracy. Across many trials the hit rate should
+        // be roughly 42%, well below the unmodified 70%.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Trial count chosen so the 70% vs 42% gap is statistically
+        // unambiguous; seed varies so rolls aren't pathologically
+        // aligned across trials.
+        let trials = 400u32;
+        let mut hits_unboosted = 0u32;
+        let mut hits_dropped = 0u32;
+        for seed in 0..trials {
+            // Baseline: Acc stage 0.
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp < hp_before {
+                hits_unboosted += 1;
+            }
+            // Acc -2 stage on attacker.
+            let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b2.p1.team[0].boosts[5] = -2;
+            let hp_before2 = b2.p2.team[0].current_hp;
+            b2.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b2.p2.team[0].current_hp < hp_before2 {
+                hits_dropped += 1;
+            }
+        }
+        let rate_a = hits_unboosted * 100 / trials;
+        let rate_b = hits_dropped * 100 / trials;
+        // Sanity: unmodified hits near 70%, -2 Acc hits near 42%.
+        // Wide windows because we only run 400 trials.
+        assert!(
+            rate_a >= 60 && rate_a <= 80,
+            "unmodified Hurricane hit rate {rate_a}% (expected ≈70%)"
+        );
+        assert!(
+            rate_b >= 30 && rate_b <= 55,
+            "-2 Acc Hurricane hit rate {rate_b}% (expected ≈42%)"
+        );
+        assert!(
+            rate_a > rate_b + 10,
+            "Acc drop should reduce hit rate by >10pp; got {rate_a} vs {rate_b}"
+        );
+    }
+
+    #[test]
+    fn evasion_boost_reduces_incoming_hit_rate() {
+        // Mirror of the Acc test on the defender side: +2 evasion
+        // turns 70% Hurricane into ≈42% effective.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 300u32;
+        let mut hits = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b.p2.team[0].boosts[6] = 2; // +2 evasion
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp < hp_before { hits += 1; }
+        }
+        let rate = hits * 100 / trials;
+        assert!(
+            rate >= 30 && rate <= 55,
+            "+2 evasion should reduce 70%-acc hit to ≈42%; got {rate}%"
+        );
     }
 
     #[test]
