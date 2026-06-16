@@ -3198,11 +3198,11 @@ mod tests {
         // Garchomp jolly 252 ev L50 base 102 → 169. Garchomp still
         // outpaces — switch to a moderately fast mon.
         // Actually just check the order math directly.
-        let scarfed = crate::order::effective_speed(&b.p1.team[0], false);
+        let scarfed = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
         let bare    = {
             let mut m = b.p1.team[0].clone();
             m.item_id = u16::MAX;
-            crate::order::effective_speed(&m, false)
+            crate::order::effective_speed(&m, false, crate::weather::Weather::None)
         };
         assert!(scarfed > bare);
         assert_eq!(scarfed, bare * 3 / 2);
@@ -4062,8 +4062,8 @@ mod tests {
         assert_eq!(b.p1.conditions.tailwind_turns, 3, "tick from 4 → 3 at end of turn 1");
         // Pelipper-side speed should be doubled while active. Use the
         // order module to verify.
-        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true);
-        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false);
+        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true, crate::weather::Weather::None);
+        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
         assert_eq!(pel_spe_with_tw, pel_spe_no_tw * 2);
         // Steps 2–4: tick down.
         for _ in 0..3 {
@@ -4854,11 +4854,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        let no_boost = crate::order::effective_speed(&b.p1.team[0], false);
+        let no_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
         // Force Spe as the boosted stat (Flutter Mane's best stat is
         // SpA, but the order math only cares about boosted_stat == 4).
         b.p1.team[0].boosted_stat = 4;
-        let with_boost = crate::order::effective_speed(&b.p1.team[0], false);
+        let with_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
         // ×1.5 with rounding tolerance.
         let pct = with_boost as i32 * 100 / no_boost as i32;
         assert!((148..=152).contains(&pct), "expected ~150%; got {pct}%");

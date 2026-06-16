@@ -38,9 +38,10 @@ pub struct ScheduledAction {
 }
 
 /// Speed of `mon` after stage boosts, paralysis, side conditions
-/// (Tailwind), and held item (Choice Scarf). Swift Swim / weather speed
-/// abilities and Trick Room are handled elsewhere.
-pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
+/// (Tailwind), held item (Choice Scarf), Paradox booster, and weather-
+/// keyed speed abilities (Swift Swim / Chlorophyll / Sand Rush / Slush
+/// Rush). Trick Room is handled by the comparator at the call site.
+pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
     let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
     let after_para = if matches!(mon.status, Status::Paralysis) {
         boosted / 2
@@ -66,7 +67,25 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool) -> u16 {
     } else {
         after_item
     };
-    after_paradox.min(u16::MAX as u32) as u16
+    // Weather speed abilities — PS `data/abilities.ts` `onModifySpe`
+    // returns `this.chainModify(2)` for Swift Swim under Rain,
+    // Chlorophyll under Sun, Sand Rush under Sand, Slush Rush under Snow.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swift_Swim_(Ability)>.
+    use crate::weather::Weather;
+    let ability_slug = if mon.ability_id == u16::MAX {
+        ""
+    } else {
+        data::ABILITIES[mon.ability_id as usize].slug
+    };
+    let weather_double = matches!(
+        (ability_slug, weather),
+        ("swiftswim", Weather::Rain)
+            | ("chlorophyll", Weather::Sun)
+            | ("sandrush", Weather::Sand)
+            | ("slushrush", Weather::Snow)
+    );
+    let after_weather = if weather_double { after_paradox * 2 } else { after_paradox };
+    after_weather.min(u16::MAX as u32) as u16
 }
 
 /// Resolve one turn's action order.
@@ -123,7 +142,7 @@ pub fn action_order(
                             } else {
                                 base_pri
                             };
-                            (pri_after_ability, effective_speed(m, tailwind) as i64)
+                            (pri_after_ability, effective_speed(m, tailwind, battle.weather) as i64)
                         }
                         None => (0, 0),
                     };
@@ -259,17 +278,43 @@ mod tests {
         let b = make_battle();
         let mut mon = b.p1.team[0].clone();
         mon.status = Status::Paralysis;
-        let before = effective_speed(&b.p1.team[0], false);
-        let after = effective_speed(&mon, false);
+        let before = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let after = effective_speed(&mon, false, crate::weather::Weather::None);
         assert_eq!(after, before / 2);
     }
 
     #[test]
     fn tailwind_doubles_speed_for_order() {
         let b = make_battle();
-        let base = effective_speed(&b.p1.team[0], false);
-        let with_tw = effective_speed(&b.p1.team[0], true);
+        let base = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let with_tw = effective_speed(&b.p1.team[0], true, crate::weather::Weather::None);
         assert_eq!(with_tw, base * 2);
+    }
+
+    #[test]
+    fn swift_swim_doubles_speed_in_rain_only() {
+        let b = make_battle();
+        let mut mon = b.p1.team[0].clone();
+        let ss_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "swiftswim").unwrap() as u16;
+        mon.ability_id = ss_id;
+        let dry = effective_speed(&mon, false, crate::weather::Weather::None);
+        let rain = effective_speed(&mon, false, crate::weather::Weather::Rain);
+        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
+        assert_eq!(rain, dry * 2, "Swift Swim doubles in Rain");
+        assert_eq!(sun, dry, "Swift Swim no-op in Sun");
+    }
+
+    #[test]
+    fn chlorophyll_doubles_speed_in_sun_only() {
+        let b = make_battle();
+        let mut mon = b.p1.team[0].clone();
+        let id = data::ABILITIES.iter()
+            .position(|a| a.slug == "chlorophyll").unwrap() as u16;
+        mon.ability_id = id;
+        let dry = effective_speed(&mon, false, crate::weather::Weather::None);
+        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
+        assert_eq!(sun, dry * 2);
     }
 
     #[test]
