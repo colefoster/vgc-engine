@@ -263,6 +263,19 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Reckless — PS `data/abilities.ts:reckless` `onBasePower`
+    // returns `chainModify([4915, 4096])` (≈ ×1.2) when the move
+    // carries `recoil` or `hasCrashDamage`. Recoil is data-flagged
+    // via `m.recoil_num > 0`; crash damage (Jump Kick / High Jump
+    // Kick miss penalty) is not modelled yet, so skipped.
+    // Emboar / Staraptor / Pawmot use this.
+    if m.recoil_num > 0
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "reckless"
+    {
+        bp = bp * 4915 / 4096;
+    }
+
     // Aura abilities — Fairy Aura on Fairy moves, Dark Aura on Dark
     // moves. PS chainModify([5448, 4096]) ≈ ×1.33; flipped to
     // chainModify([3072, 4096]) ≈ ×0.75 when Aura Break is on the
