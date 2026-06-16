@@ -1083,6 +1083,16 @@ impl Battle {
             // within rounding (verified against PS damage calc on
             // representative cases). Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Expert_Belt>.
+            // Wise Glasses — special moves ×1.1 BP. PS
+            // `data/items.ts:wiseglasses` `onBasePower(bp, user, target, move)`:
+            //   `if (move.category === 'Special') return this.chainModify([4505, 4096]);`
+            // (≈ ×1.10). Applied at the same step as Life Orb /
+            // Expert Belt — multipliers commute with the formula tail
+            // to within rounding. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>.
+            if attacker_item_slug == "wiseglasses" && special_move && dmg > 0 {
+                dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+            }
             if attacker_item_slug == "expertbelt" && dmg > 0 {
                 let eff = crate::damage::type_effectiveness(
                     m.type_,
@@ -5511,6 +5521,43 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn wise_glasses_boosts_special_only() {
+        // Alakazam Shadow Ball (Special) vs Snorlax — Wise Glasses
+        // boosts ~×1.10; Crunch (Physical) untouched.
+        let mk = |item: &str, slot: u8| -> u16 {
+            let p1_json = format!(r#"[
+                {{"species":"alakazam","level":50,"ability":"synchronize","item":"{item}","nature":"hardy","moves":["dazzlinggleam","crunch","focusblast","psychic"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 13 }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: slot, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        // Shadow Ball — Special, should boost.
+        let belt = mk("wiseglasses", 0);
+        let plain = mk("leftovers", 0);
+        assert!(belt > plain,
+                "Wise Glasses should boost special damage ({} > {})", belt, plain);
+        let ratio_x1000 = (belt as u32) * 1000 / (plain.max(1) as u32);
+        // 4505/4096 ≈ 1.0999.
+        assert!((1080..=1130).contains(&ratio_x1000),
+                "Wise Glasses ×1.10 expected, got ×{}/1000", ratio_x1000);
+        // Crunch — Physical, should NOT boost.
+        let belt_phys = mk("wiseglasses", 1);
+        let plain_phys = mk("leftovers", 1);
+        assert_eq!(belt_phys, plain_phys,
+                "Wise Glasses must NOT boost physical damage");
     }
 
     #[test]
