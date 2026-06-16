@@ -305,6 +305,18 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Iron Fist — PS `data/abilities.ts:ironfist` `onBasePower`
+    // returns `chainModify([4915, 4096])` (≈×1.2) on moves with
+    // `flags.punch`. Iron Hands (top-25 corpus, niche but seen) /
+    // Hitmonchan / Conkeldurr. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Iron_Fist_(Ability)>.
+    if m.is_punch
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "ironfist"
+    {
+        bp = bp * 4915 / 4096;
+    }
+
     // Mega Launcher — PS `data/abilities.ts:megalauncher` `onBasePower`
     // returns `chainModify([6144, 4096])` (×1.5) on moves with
     // `flags.pulse`. Clawitzer signature. Heal Pulse's healing
@@ -789,6 +801,32 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn iron_fist_boosts_punch_moves() {
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let punch = move_id("drainpunch");
+        let tackle = move_id("tackle");
+        let no_punch = mk(&atk, punch);
+        let no_tackle = mk(&atk, tackle);
+        let if_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "ironfist").unwrap() as u16;
+        atk.ability_id = if_id;
+        let if_punch = mk(&atk, punch);
+        let if_tackle = mk(&atk, tackle);
+        assert!(if_punch > no_punch, "Iron Fist boosts Drain Punch");
+        assert_eq!(if_tackle, no_tackle, "Iron Fist must NOT boost Tackle");
     }
 
     #[test]
