@@ -191,6 +191,11 @@ pub enum VolatileKind {
     /// resolve_move to skip the action. Cleared at the per-turn
     /// volatile reset / on switch-in. Payload unused.
     Flinch,
+    /// Single-turn 'protect' family volatile (PS data/conditions.ts:protect).
+    /// Set when the mon successfully used Protect / Detect / Spiky Shield /
+    /// Baneful Bunker / Burning Bulwark / Silk Trap. Causes targeting moves
+    /// against this mon to fail; cleared at end of turn. Payload unused.
+    Protect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -308,10 +313,6 @@ pub struct Pokemon {
     /// Stat boost stages in -6..=6 for [atk, def, spa, spd, spe, acc, eva].
     pub boosts: [i8; 7],
     pub fainted: bool,
-    /// Single-turn 'protect' volatile (PS data/conditions.ts). Set when
-    /// the mon successfully used Protect this turn; cleared at end of
-    /// turn. Causes targeting moves against this mon to fail.
-    pub is_protected_this_turn: bool,
     /// 'stall' volatile counter — number of consecutive turns the mon has
     /// successfully used a stall move (Protect family). Probability of
     /// the next use succeeding is `1 / 3^stall_counter`. Reset to 0 when
@@ -609,6 +610,27 @@ impl Pokemon {
             .unwrap_or("")
     }
 
+    /// `true` while `VolatileKind::Protect` is on this mon. Read at
+    /// move-resolution time to fail targeting moves.
+    #[inline]
+    pub fn is_protected_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::Protect)
+    }
+
+    /// Set or clear the Protect volatile (duration-1).
+    #[inline]
+    pub fn set_protected(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Protect,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::Protect);
+        }
+    }
+
     /// `true` while a `VolatileKind::Flinch` volatile is on this mon.
     /// Read in `battle.rs::resolve_move` to skip the action.
     #[inline]
@@ -771,7 +793,7 @@ mod tests {
             species_id: species_idx, level: 50, moves: [u16::MAX; 4], pp: [0; 4],
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
-            is_protected_this_turn: false, stall_counter: 0, used_stall_this_turn: false,
+            stall_counter: 0, used_stall_this_turn: false,
             turns_active: 0, redirecting_this_turn: false, redirecting_is_powder: false,
             damaged_this_turn: false, toxic_counter: 0, locked_move_slot: 255,
             switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
@@ -810,7 +832,6 @@ mod tests {
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
-            is_protected_this_turn: false,
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,

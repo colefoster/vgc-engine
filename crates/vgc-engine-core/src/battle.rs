@@ -295,7 +295,7 @@ impl Battle {
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
-                m.is_protected_this_turn = false;
+                m.set_protected(false);
                 m.used_stall_this_turn = false;
                 m.set_flinched(false);
                 m.set_helping_handed(false);
@@ -574,7 +574,7 @@ impl Battle {
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
-            incoming.is_protected_this_turn = false;
+            incoming.set_protected(false);
             incoming.stall_counter = 0;
             incoming.locked_move_slot = 255; // Choice lock clears on switch.
             incoming.switched_in_this_turn = true;
@@ -1400,7 +1400,7 @@ impl Battle {
             // Protect interception (single-target codes only; spread
             // hits each target independently and Protect intercepts the
             // single hit on the protected slot — already handled here).
-            if defender.is_protected_this_turn && is_targeting_move(m.target) {
+            if defender.is_protected_this_turn() && is_targeting_move(m.target) {
                 continue;
             }
 
@@ -2464,7 +2464,7 @@ impl Battle {
                     None => return,
                 };
                 if success {
-                    actor.is_protected_this_turn = true;
+                    actor.set_protected(true);
                     actor.stall_counter = actor.stall_counter.saturating_add(1).min(6);
                 } else {
                     actor.stall_counter = 0;
