@@ -207,6 +207,91 @@ pub fn build_accuracy_oracle_for_replay(replay: &Replay) -> Vec<RngEvent> {
     out
 }
 
+/// Walk one turn's events and emit one `RngEvent::DamageHint(observed)`
+/// per damaging hit, where `observed` is the raw HP delta computed from
+/// the `|-damage|` line's fractional HP relative to the previous known
+/// HP for that slot.
+///
+/// PS public replays log HP as `<num>/<den>` percentages (typically
+/// `den == 100`). To convert to raw HP we need each slot's max HP; the
+/// caller supplies it via `max_hp_for_slot`. If the lookup returns 0,
+/// the hint for that hit is skipped (the engine falls back to splitmix
+/// for that draw rather than corrupting the queue).
+///
+/// `prev_pct` is the per-slot running HP fraction, updated from each
+/// `|-damage|` / `|-heal|` / `|switch|` line. Indirect-damage events
+/// (`from: Some(_)`: weather, status, recoil, item / ability residuals)
+/// update `prev_pct` but do NOT emit a `DamageHint` — the engine
+/// doesn't draw `damage_roll` for those.
+///
+/// Spread moves: one event per damaging hit, matching the engine's
+/// per-target damage roll.
+pub fn build_damage_oracle_for_turn(
+    tv: &TurnView<'_>,
+    prev_pct: &mut std::collections::HashMap<(u8, char), f32>,
+    max_hp_for_slot: &dyn Fn(u8, char) -> u16,
+) -> Vec<RngEvent> {
+    use crate::trace::parse_hp;
+    let mut out = Vec::new();
+    for ev in tv.events {
+        match ev {
+            Event::Damage { slot, hp, from } => {
+                let Some((new_frac, _)) = parse_hp(hp) else { continue };
+                let key = (slot.player, slot.slot);
+                let prev = prev_pct.get(&key).copied().unwrap_or(1.0);
+                // Only emit hints for direct damaging hits (from = None).
+                if from.is_none() {
+                    let max_hp = max_hp_for_slot(slot.player, slot.slot);
+                    if max_hp > 0 {
+                        let delta_frac = (prev - new_frac).max(0.0);
+                        let observed = (delta_frac * max_hp as f32).round() as u32;
+                        let observed = observed.min(u16::MAX as u32) as u16;
+                        if observed > 0 {
+                            out.push(RngEvent::DamageHint(observed));
+                        }
+                    }
+                }
+                prev_pct.insert(key, new_frac);
+            }
+            Event::Heal { slot, hp, .. } => {
+                if let Some((new_frac, _)) = parse_hp(hp) {
+                    prev_pct.insert((slot.player, slot.slot), new_frac);
+                }
+            }
+            Event::Switch { slot, hp, .. } | Event::Drag { slot, hp, .. } => {
+                // Incoming mon arrives at the recorded HP fraction (usually
+                // 1.0, unless damaged via hazards in the same window).
+                if let Some((new_frac, _)) = parse_hp(hp) {
+                    prev_pct.insert((slot.player, slot.slot), new_frac);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Concatenate damage events across every turn of a replay.
+/// `max_hp_for_slot(player, slot)` returns the engine-side max HP for
+/// the mon currently at that slot — caller must keep this in sync with
+/// the engine's switch state for accuracy on mid-battle replacements.
+/// On lookup failure (returns 0) the hint is skipped.
+pub fn build_damage_oracle_for_replay(
+    replay: &Replay,
+    max_hp_for_slot: &dyn Fn(u8, char) -> u16,
+) -> Vec<RngEvent> {
+    let mut out = Vec::new();
+    let mut prev_pct: std::collections::HashMap<(u8, char), f32> =
+        std::collections::HashMap::new();
+    for tv in replay.turns() {
+        if tv.number == 0 {
+            continue;
+        }
+        out.extend(build_damage_oracle_for_turn(&tv, &mut prev_pct, max_hp_for_slot));
+    }
+    out
+}
+
 /// Combined oracle: crit + accuracy events. The engine pops by variant
 /// (Crit vs PercentRoll), so we can simply concatenate the two lists —
 /// their per-variant relative order is preserved.
@@ -418,6 +503,88 @@ mod tests {
         assert_eq!(
             combined,
             vec![RngEvent::Crit(true), RngEvent::PercentRoll(1)],
+        );
+    }
+
+    #[test]
+    fn damage_oracle_emits_raw_hp_delta_from_percent() {
+        // Target enters at 100/100 → Damage 70/100 → 30% delta. With a
+        // 200-HP defender, raw delta = 60.
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            mk_damage(2, 'a', "Peli", None),
+        ];
+        // patch the HP string into the damage event we just built.
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            Event::Damage {
+                slot: slot(2, 'a', "Peli"),
+                hp: "70/100".into(),
+                from: None,
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        let mut prev: std::collections::HashMap<(u8, char), f32> =
+            std::collections::HashMap::new();
+        let out = build_damage_oracle_for_turn(&tv, &mut prev, &|_, _| 200);
+        assert_eq!(out, vec![RngEvent::DamageHint(60)]);
+    }
+
+    #[test]
+    fn damage_oracle_skips_indirect_damage() {
+        let evs = vec![
+            mk_damage(2, 'a', "Peli", Some("brn")),
+            mk_damage(1, 'a', "Chomp", Some("Life Orb")),
+            mk_damage(1, 'b', "Pika", Some("Sandstorm")),
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        let mut prev: std::collections::HashMap<(u8, char), f32> =
+            std::collections::HashMap::new();
+        let out = build_damage_oracle_for_turn(&tv, &mut prev, &|_, _| 200);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn damage_oracle_skips_when_max_hp_unknown() {
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            Event::Damage {
+                slot: slot(2, 'a', "Peli"),
+                hp: "70/100".into(),
+                from: None,
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        let mut prev: std::collections::HashMap<(u8, char), f32> =
+            std::collections::HashMap::new();
+        let out = build_damage_oracle_for_turn(&tv, &mut prev, &|_, _| 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn damage_oracle_tracks_running_hp_across_hits() {
+        // Two consecutive hits: 100 → 70 (Δ30) then 70 → 50 (Δ20).
+        let evs = vec![
+            mk_move(1, 'a', "Chomp", Some(slot(2, 'a', "Peli"))),
+            Event::Damage {
+                slot: slot(2, 'a', "Peli"),
+                hp: "70/100".into(),
+                from: None,
+            },
+            mk_move(1, 'b', "Pika", Some(slot(2, 'a', "Peli"))),
+            Event::Damage {
+                slot: slot(2, 'a', "Peli"),
+                hp: "50/100".into(),
+                from: None,
+            },
+        ];
+        let tv = TurnView { number: 1, events: &evs };
+        let mut prev: std::collections::HashMap<(u8, char), f32> =
+            std::collections::HashMap::new();
+        let out = build_damage_oracle_for_turn(&tv, &mut prev, &|_, _| 100);
+        assert_eq!(
+            out,
+            vec![RngEvent::DamageHint(30), RngEvent::DamageHint(20)],
         );
     }
 
