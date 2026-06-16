@@ -177,19 +177,41 @@ pub fn calculate_damage(
     ctx: DamageContext,
 ) -> u16 {
     let m = &data::MOVES[move_id as usize];
-    let mut bp = m.base_power as u32;
     // 2 = Status (no damage). bp == 0 for status / weird moves; treat as 0
     // until variable-BP / OHKO mechanics land.
-    if m.category == 2 || bp == 0 {
+    if m.category == 2 || m.base_power == 0 {
         return 0;
     }
+    // Weather Ball — type and BP change with active weather. PS
+    // data/moves.ts:weatherball implements `onModifyType` (rebinds
+    // to the weather-matched type) and `onModifyMove` (BP 50 → 100
+    // under any weather). Type codes: Fire=1, Water=2, Ice=5, Rock=12.
+    // No weather = Normal-type 50 BP (the data default). Note: PS
+    // does NOT additionally apply the weather Fire/Water ×1.5 STAB-
+    // adjacent mult on Weather Ball itself (the move's own onModifyType
+    // runs before the weather damage mult, so type ends up matching
+    // weather and the multiplier still fires — Sun WB hits Fire-type
+    // ×1.5). We replicate that ordering: `move_type` flows through to
+    // both `ctx.weather.damage_mult` and STAB / type chart below.
+    let (move_type, mut bp) = if m.slug == "weatherball" {
+        use crate::weather::Weather;
+        match ctx.weather {
+            Weather::Sun => (1u8, 100u32),
+            Weather::Rain => (2u8, 100),
+            Weather::Sand => (12u8, 100),
+            Weather::Snow => (5u8, 100),
+            Weather::None => (m.type_, m.base_power as u32),
+        }
+    } else {
+        (m.type_, m.base_power as u32)
+    };
     // Terrain BP modifier — PS data/conditions.ts:electricterrain et al.
     // implement this via `onBasePower` (chainModify [5325, 4096] ≈ 1.3).
     // We apply it here for the same effective order. Caller is
     // responsible for passing Terrain::None when the defender isn't
     // grounded (or, for gen 9 Misty/Psychic terrain that gates on
     // the USER being grounded, see those terrain arms when shipped).
-    let (tn, td) = ctx.terrain.damage_mult(m.type_);
+    let (tn, td) = ctx.terrain.damage_mult(move_type);
     if tn != td {
         bp = bp * tn / td;
     }
@@ -223,8 +245,8 @@ pub fn calculate_damage(
     // PS gate (`move.category === 'Status'` / `target === source`); we
     // can elide self-target here because the per-target loop never calls
     // calculate_damage for a self-target. Fairy=type 17, Dark=type 15.
-    let aura_hits = (ctx.fairy_aura_active && m.type_ == 17)
-        || (ctx.dark_aura_active && m.type_ == 15);
+    let aura_hits = (ctx.fairy_aura_active && move_type == 17)
+        || (ctx.dark_aura_active && move_type == 15);
     if aura_hits {
         let (n, d) = if ctx.aura_break_active { (3072u32, 4096u32) } else { (5448, 4096) };
         bp = bp * n / d;
@@ -268,7 +290,7 @@ pub fn calculate_damage(
     }
 
     // Weather — PS step 3. ×1.5 / ×0.5 for water/fire under Rain/Sun.
-    let (wn, wd) = ctx.weather.damage_mult(m.type_);
+    let (wn, wd) = ctx.weather.damage_mult(move_type);
     if wn != wd {
         dmg = dmg * wn / wd;
     }
@@ -286,13 +308,13 @@ pub fn calculate_damage(
     // STAB
     let species = attacker.species();
     let is_stab = (0..species.num_types as usize)
-        .any(|i| species.types[i] == m.type_);
+        .any(|i| species.types[i] == move_type);
     if is_stab {
         dmg = dmg * 3 / 2;
     }
 
     // Type effectiveness
-    let eff = type_effectiveness(m.type_, defender.species());
+    let eff = type_effectiveness(move_type, defender.species());
     if eff.is_immune() {
         return 0;
     }

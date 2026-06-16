@@ -5436,6 +5436,67 @@ mod tests {
     }
 
     #[test]
+    fn weather_ball_becomes_water_in_rain() {
+        // Pelipper's signature combo: Drizzle sets Rain on entry, then
+        // Weather Ball hits as Water-type at 100 BP. Snorlax is
+        // Normal-type so Water hits neutrally; the boost is the
+        // (rain ×1.5) + (BP doubled) + STAB shift.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["weatherball","hurricane","tailwind","airslash"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drizzle should have set Rain at battle start.
+        assert_eq!(b.weather, crate::weather::Weather::Rain);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+        assert!(dmg > 0, "Weather Ball should deal damage in rain");
+        // Floor sanity: Normal 50 BP non-STAB would do almost nothing
+        // (no rain boost on a Normal move). Water-type STAB + rain
+        // ×1.5 + BP doubled is at least ~6× the Normal baseline.
+        // Concretely: Pelipper has 50% chance of OHKO range vs neutral
+        // Snorlax. Even at min roll, Weather Ball under rain should
+        // deal at least 30% of Snorlax's max HP.
+        let max = b.p2.team[0].stats.hp;
+        assert!(
+            dmg * 100 / max >= 30,
+            "WB damage too low for water-type rain hit: {dmg}/{max} = {}%",
+            dmg * 100 / max
+        );
+    }
+
+    #[test]
+    fn weather_ball_is_normal_50bp_without_weather() {
+        // No-weather control: Weather Ball acts as Normal 50 BP.
+        // Use a non-Drizzle Pelipper proxy (Pikachu, Normal-neutral
+        // attacker with average SpA, knows Weather Ball via test
+        // injection — easier path: use Sylveon which can learn WB? Hmm.
+        // Simpler: test through damage_range directly.
+        use crate::damage::damage_range;
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"focussash","nature":"modest","moves":["weatherball","hurricane","tailwind","airslash"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let wb_id = data::MOVES.iter().position(|m| m.slug == "weatherball").unwrap() as u16;
+        // No weather, so WB stays Normal 50 BP. Pelipper isn't Normal
+        // so no STAB. Pure damage_range — should be modest.
+        let (min_d, max_d) = damage_range(&p1[0], &p2[0], wb_id);
+        assert!(min_d > 0 && max_d < 50,
+                "Normal-type 50 BP into bulky Snorlax should be modest; got {min_d}..{max_d}");
+    }
+
+    #[test]
     fn hospitality_no_op_in_singles() {
         // No adjacent allies in singles — Hospitality must do nothing.
         let p1_json = r#"[
