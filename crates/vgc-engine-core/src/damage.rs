@@ -606,18 +606,38 @@ pub fn calculate_damage(
     let roll = (ctx.roll.min(DamageContext::MAX_ROLL)) as u32;
     dmg = dmg * (85 + roll) / 100;
 
-    // STAB. Adaptability bumps STAB from ×1.5 to ×2 — PS
-    // `data/abilities.ts:adaptability` `onModifyMove` sets
-    // `move.stab = 2`. Basculegion (top-3 corpus, 93.2% Adaptability per
-    // Smogon 2026-05) / Crawdaunt / Dragalge / Porygon-Z. Bulbapedia:
+    // STAB. PS `sim/battle-actions.ts:1761-1797`:
+    //   isSTAB = pokemon.hasType(move.type) || pokemon.getTypes(false, true).includes(move.type)
+    //   (i.e. move type matches effective types OR base species types).
+    //   Default STAB = 1.5.
+    //   If terastallized AND tera_type == move_type AND base species had
+    //   this type → STAB = 2.0 (Tera "boosted" STAB).
+    // Adaptability (`data/abilities.ts:adaptability`):
+    //   1.5 → 2.0, and 2.0 (Tera ×2) → 2.25.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Terastal_Phenomenon>
     // <https://bulbapedia.bulbagarden.net/wiki/Adaptability_(Ability)>.
     let species = attacker.species();
-    let is_stab = (0..species.num_types as usize)
+    let base_has_move_type = (0..species.num_types as usize)
         .any(|i| species.types[i] == move_type);
+    let (eff_atk_types, eff_atk_num) = attacker.effective_types();
+    let eff_has_move_type = (0..eff_atk_num as usize)
+        .any(|i| eff_atk_types[i] == move_type);
+    let is_stab = base_has_move_type || eff_has_move_type;
     if is_stab {
+        let tera_boosted_stab = attacker.terastallized
+            && attacker.tera_type != 255
+            && attacker.tera_type == move_type
+            && base_has_move_type;
         let adaptability = attacker.ability_id != u16::MAX
             && data::ABILITIES[attacker.ability_id as usize].slug == "adaptability";
-        if adaptability {
+        if tera_boosted_stab {
+            if adaptability {
+                // ×2.25 = 9/4. PS returns 2.25 from onModifySTAB.
+                dmg = dmg * 9 / 4;
+            } else {
+                dmg = dmg * 2;
+            }
+        } else if adaptability {
             dmg = dmg * 2;
         } else {
             dmg = dmg * 3 / 2;
@@ -633,12 +653,15 @@ pub fn calculate_damage(
     // We replicate by computing the per-type sum here when the slug
     // matches, and otherwise delegate to `type_effectiveness`.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Freeze-Dry_(move)>.
+    // Defender effective types — post-Tera if the defender is currently
+    // Terastallized. PS `sim/pokemon.ts:Pokemon.runEffectiveness` iterates
+    // `this.getTypes()` which returns the Tera type when active.
+    let (def_eff_types, def_eff_num) = defender.effective_types();
     let eff = if m.slug == "freezedry" {
-        let s = defender.species();
         let mut net = 0i32;
         let mut immune = false;
-        for i in 0..s.num_types as usize {
-            let def_type = s.types[i] as usize;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
             if def_type == 2 {
                 // Water slot: override to +1 (SE).
                 net += 1;
@@ -671,11 +694,10 @@ pub fn calculate_damage(
         // neutral × Flying SE), vs Fairy it's 0.5x (Fighting resist ×
         // Flying neutral), vs Bug it's 1x (Fighting half × Flying 2x).
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flying_Press_(move)>.
-        let s = defender.species();
         let mut net = 0i32;
         let mut immune = false;
-        for i in 0..s.num_types as usize {
-            let def_type = s.types[i] as usize;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
             for atk_type in [move_type as usize, 9 /* Flying */] {
                 match data::TYPE_CHART[def_type][atk_type] {
                     0 => {}
@@ -698,7 +720,32 @@ pub fn calculate_damage(
             }
         }
     } else {
-        type_effectiveness(move_type, defender.species())
+        // Iterate Tera-effective types; same logic as `type_effectiveness`
+        // but on the post-Tera type list.
+        let mut weak = 0i32;
+        let mut resist = 0i32;
+        let mut immune = false;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            match data::TYPE_CHART[def_type][move_type as usize] {
+                0 => {}
+                1 => weak += 1,
+                2 => resist += 1,
+                3 => immune = true,
+                other => unreachable!("bad type-chart code {other}"),
+            }
+        }
+        if immune {
+            TypeEff::Immune
+        } else {
+            match (weak - resist).clamp(-2, 2) {
+                -2 => TypeEff::QuarterX,
+                -1 => TypeEff::HalfX,
+                0 => TypeEff::Neutral,
+                1 => TypeEff::DoubleX,
+                _ => TypeEff::QuadrupleX,
+            }
+        }
     };
     if eff.is_immune() {
         return 0;
@@ -1459,5 +1506,110 @@ mod tests {
         let dazzle = move_id("dazzlinggleam");
         assert!(mk(true, crunch) > mk(false, crunch), "Dark Aura boosts Crunch");
         assert_eq!(mk(true, dazzle), mk(false, dazzle), "Dark Aura must NOT boost Fairy");
+    }
+
+    #[test]
+    fn tera_matching_base_type_gives_x2_stab() {
+        // Garchomp (Ground/Dragon) Tera Ground using Earthquake. Base
+        // species has Ground -> Tera-boosted STAB = ×2 (vs default ×1.5).
+        // Damage ratio ≈ 4/3.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        // Ground = type code 8.
+        atk.tera_type = 8;
+        let eq = move_id("earthquake");
+        let mk = |a: &Pokemon| calculate_damage(a, &def, eq,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let base = mk(&atk);
+        atk.terastallized = true;
+        let tera = mk(&atk);
+        let ratio_x100 = (tera as u32) * 100 / (base.max(1) as u32);
+        assert!((130..=136).contains(&ratio_x100),
+                "Tera-matching STAB ratio ≈ 4/3, got ×{}/100", ratio_x100);
+    }
+
+    #[test]
+    fn tera_offtype_still_gives_15_stab_on_base() {
+        // Garchomp (Ground/Dragon) Tera Fire using Earthquake. Base still
+        // has Ground -> ×1.5 STAB applies (Tera does NOT remove base-type
+        // STAB; PS isSTAB = hasType OR getTypes(false,true)). Should be
+        // unchanged from non-Tera baseline.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        atk.tera_type = 1 /* fire */;
+        let eq = move_id("earthquake");
+        let mk = |a: &Pokemon| calculate_damage(a, &def, eq,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let base = mk(&atk);
+        atk.terastallized = true;
+        let tera = mk(&atk);
+        assert_eq!(base, tera, "Tera-offtype EQ retains base ×1.5 STAB");
+    }
+
+    #[test]
+    fn tera_new_type_grants_stab_for_that_type() {
+        // Snorlax (Normal) Tera Fire using Flamethrower. Base has no
+        // Fire -> no STAB pre-Tera; after Tera the effective Fire type
+        // grants ×1.5 STAB (not ×2, because base species lacks Fire).
+        let mut atk = make_mon("snorlax", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let def = make_mon("garchomp", 50, "hardy", StatSpread::ZERO);
+        atk.tera_type = 1 /* fire */;
+        let ft = move_id("flamethrower");
+        let mk = |a: &Pokemon| calculate_damage(a, &def, ft,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let base = mk(&atk);
+        atk.terastallized = true;
+        let tera = mk(&atk);
+        let ratio_x100 = (tera as u32) * 100 / (base.max(1) as u32);
+        assert!((148..=152).contains(&ratio_x100),
+                "Tera grants ×1.5 STAB for new type, got ×{}/100", ratio_x100);
+    }
+
+    #[test]
+    fn tera_swaps_defender_type_for_effectiveness() {
+        // Garchomp (Ground/Dragon) Tera Fire takes Earthquake. Pre-Tera
+        // Ground takes 2× from EQ; post-Tera defender is Fire-only, EQ
+        // hits ×2 still (Fire weak to Ground). Use Ice Beam instead:
+        // pre-Tera Dragon ×2, post-Tera Fire ×0.5 — clear swap.
+        let atk = make_mon("kyurem", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let mut def = make_mon("garchomp", 50, "hardy", StatSpread::ZERO);
+        def.tera_type = 1 /* fire */;
+        let ib = move_id("icebeam");
+        let mk = |d: &Pokemon| calculate_damage(&atk, d, ib,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let base = mk(&def);
+        def.terastallized = true;
+        let tera = mk(&def);
+        // Pre: 4× (Dragon 2× × Ground 2×). Post: 0.5× (Fire resists Ice).
+        // Ratio post/pre ≈ 1/8.
+        assert!(tera < base / 4, "Tera Fire defender resists Ice Beam ({tera} vs {base})");
     }
 }
