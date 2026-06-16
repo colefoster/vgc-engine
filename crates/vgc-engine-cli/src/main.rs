@@ -189,9 +189,19 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
     // draws (accuracy, secondaries, range).
     let mut positional: Vec<&str> = Vec::with_capacity(args.len());
     let mut use_oracle = false;
+    let mut rng_dump_dir: Option<&str> = None;
+    let mut prev_flag: Option<&str> = None;
     for a in args {
+        if let Some(flag) = prev_flag.take() {
+            if flag == "--rng-dump-dir" {
+                rng_dump_dir = Some(a.as_str());
+            }
+            continue;
+        }
         if a == "--oracle" {
             use_oracle = true;
+        } else if a == "--rng-dump-dir" {
+            prev_flag = Some("--rng-dump-dir");
         } else {
             positional.push(a.as_str());
         }
@@ -206,7 +216,7 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             }
         },
         _ => {
-            eprintln!("score-corpus: expected <dir> [N] [--oracle]");
+            eprintln!("score-corpus: expected <dir> [N] [--oracle] [--rng-dump-dir <dir>]");
             return ExitCode::from(2);
         }
     };
@@ -241,7 +251,29 @@ fn cmd_score_corpus(args: &[String]) -> ExitCode {
             Ok(r) => r,
             Err(_) => { parse_failed += 1; continue; }
         };
-        let scored = if use_oracle {
+        // If a --rng-dump-dir was supplied, look for a sidecar
+        // `<replay-id>.rng.json` and load it into the OraclePartial
+        // queue. Missing or broken sidecars fall back to the standard
+        // log-extraction oracle (or pure Splitmix if --oracle isn't set).
+        let sidecar_events: Option<Vec<vgc_engine_core::rng::RngEvent>> = rng_dump_dir
+            .and_then(|d| {
+                let sidecar = PathBuf::from(d).join(format!("{}.rng.json", r.id));
+                if sidecar.exists() {
+                    replay::load_rng_dump(&sidecar).ok()
+                } else {
+                    None
+                }
+            });
+
+        let scored = if let Some(events) = sidecar_events {
+            replay::score_replay_with_events(
+                &r,
+                &replay::CanonicalDefault,
+                0xC0FFEE_DEADBEEF,
+                replay::DEFAULT_HP_TOLERANCE,
+                events,
+            )
+        } else if use_oracle {
             replay::score_replay_oracle(
                 &r,
                 &replay::CanonicalDefault,

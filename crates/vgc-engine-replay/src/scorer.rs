@@ -139,7 +139,74 @@ pub fn score_replay_oracle(
     seed: u64,
     tolerance: f32,
 ) -> Result<ReplayScore, RunnerError> {
-    score_replay_inner(replay, recon, seed, tolerance, true)
+    let events = crate::oracle::build_crit_oracle_for_replay(replay);
+    score_replay_with_events(replay, recon, seed, tolerance, events)
+}
+
+/// Like `score_replay`, but the caller supplies the full `RngEvent`
+/// queue (typically loaded from a `ps-rng-dump` sidecar via
+/// `oracle::load_rng_dump`). Events feed into `Rng::oracle_partial`;
+/// un-recorded draws fall back to Splitmix from `seed`.
+pub fn score_replay_with_events(
+    replay: &Replay,
+    recon: &impl TeamRecon,
+    seed: u64,
+    tolerance: f32,
+    events: Vec<vgc_engine_core::rng::RngEvent>,
+) -> Result<ReplayScore, RunnerError> {
+    let ex_init = RunnerInit::from_replay(replay, recon)?;
+    let active_count = match ex_init.format {
+        Format::Singles => 1,
+        Format::Doubles => 2,
+    };
+    let mut ex = ChoiceExtractor::new(&ex_init);
+    let init2 = RunnerInit::from_replay(replay, recon)?;
+    let rng = vgc_engine_core::rng::Rng::oracle_partial(events, seed);
+    let mut b = init2.into_battle_with_rng(seed, rng)?;
+    score_loop(replay, &mut ex, &mut b, active_count, tolerance)
+}
+
+fn score_loop(
+    replay: &Replay,
+    ex: &mut ChoiceExtractor<'_>,
+    b: &mut vgc_engine_core::Battle,
+    active_count: usize,
+    tolerance: f32,
+) -> Result<ReplayScore, RunnerError> {
+    let turns = replay.turns();
+    let mut per_turn: Vec<TurnScore> = Vec::new();
+    let mut agreed_count: u32 = 0;
+    let mut turns_run: u32 = 0;
+    let mut ended_flag = false;
+    let mut replay_status: [[Status; 2]; 2] = [[Status::None; 2]; 2];
+
+    for tv in &turns {
+        update_replay_status(&mut replay_status, tv.events);
+        if tv.number == 0 {
+            let _ = ex.extract_turn(tv);
+            continue;
+        }
+        let [mut p1c, mut p2c] = ex.extract_turn(tv);
+        pad_with_pass(&mut p1c, active_count);
+        pad_with_pass(&mut p2c, active_count);
+        if !ended_flag {
+            let r = b.step(&p1c, &p2c);
+            ended_flag = matches!(r, StepResult::Ended { .. });
+            turns_run += 1;
+        }
+        let score = score_turn(b, tv, tolerance, &replay_status);
+        if score.agreed { agreed_count += 1; }
+        per_turn.push(score);
+    }
+    let agreement_pct = if per_turn.is_empty() {
+        0.0
+    } else { agreed_count as f32 / per_turn.len() as f32 };
+    Ok(ReplayScore {
+        replay_id: replay.id.clone(),
+        per_turn,
+        agreement_pct,
+        turns_run,
+    })
 }
 
 fn score_replay_inner(
