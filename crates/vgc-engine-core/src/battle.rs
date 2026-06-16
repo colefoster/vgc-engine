@@ -801,8 +801,46 @@ impl Battle {
                 any_damage_dealt = any_damage_dealt.saturating_add(absorbed);
                 0u16
             } else {
-                // Pre-damage item hook (Focus Sash etc. may cap damage).
-                crate::item::on_before_damage(self, tside, tslot, dmg).unwrap_or(dmg)
+                // Sturdy — defender ability that caps a fatal hit at
+                // 1 HP if the defender is at full HP. PS handler:
+                //   onDamage(damage, target, source, effect) {
+                //     if (target.hp === target.maxhp && damage >= target.hp
+                //         && effect && effect.effectType === 'Move') {
+                //       this.add('-ability', target, 'Sturdy');
+                //       return target.hp - 1;
+                //     }
+                //   }
+                // OHKO-move arm (`onTryHit` for `move.ohko`) is deferred
+                // — Horn Drill / Fissure / Guillotine / Sheer Cold not
+                // implemented yet. Sturdy carries `flags: { breakable: 1 }`,
+                // so Mold Breaker (computed once per move above) lifts it.
+                // Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Sturdy_(Ability)>.
+                let mut capped = dmg;
+                let (def_ability, def_cur, def_max) = match self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                {
+                    Some(d) => (
+                        if d.ability_id == u16::MAX {
+                            ""
+                        } else {
+                            data::ABILITIES[d.ability_id as usize].slug
+                        },
+                        d.current_hp,
+                        d.stats.hp,
+                    ),
+                    None => ("", 0, 0),
+                };
+                if def_ability == "sturdy"
+                    && !attacker_breaks_mold
+                    && def_cur == def_max
+                    && capped >= def_cur
+                {
+                    capped = def_cur - 1;
+                }
+                // Pre-damage item hook (Focus Sash etc. may cap further).
+                crate::item::on_before_damage(self, tside, tslot, capped).unwrap_or(capped)
             };
 
             // Apply (only when the sub didn't intercept).
@@ -4863,6 +4901,87 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn sturdy_survives_otherwise_lethal_hit_at_one_hp() {
+        // Sturdy clamps a lethal hit on a full-HP holder to leave the
+        // mon at 1 HP. We shrink Donphan's max HP to a small value
+        // before the hit so any reasonable attack one-shots from full —
+        // this isolates the Sturdy clamp from damage-roll variance.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake","dragonclaw","rockslide","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        // No Leftovers — keep end-of-turn HP untouched so the Sturdy
+        // clamp is observable as exactly 1 HP.
+        let p2_json = r#"[
+            {"species":"donphan","level":50,"ability":"sturdy","item":"focussash","nature":"hardy","moves":["earthquake","stoneedge","stealthrock","iceshard"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop Donphan's Def to 1 so Garchomp's EQ overkills from full
+        // HP regardless of the damage roll — isolates the Sturdy clamp.
+        b.p2.team[0].stats.def = 1;
+        // Also strip the Focus Sash so it can't be the thing that saves
+        // Donphan (Sturdy runs first and uses ability slot, but Focus
+        // Sash on the same hit would clamp to the same value — we want
+        // the test to fail loudly if Sturdy stops working).
+        b.p2.team[0].item_id = u16::MAX;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 1,
+                   "Sturdy must clamp to 1 HP after a lethal hit at full HP");
+        assert!(!b.p2.team[0].fainted, "Sturdy must keep Donphan alive");
+    }
+
+    #[test]
+    fn sturdy_does_not_save_partial_hp_donphan() {
+        // Sturdy only fires when starting at full HP. A Donphan already
+        // at low HP gets KO'd normally.
+        let p1_json = r#"[
+            {"species":"latios","level":50,"ability":"levitate","item":"choicespecs","nature":"timid","moves":["psyshock","dracometeor","flamethrower","helpinghand"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"donphan","level":50,"ability":"sturdy","item":"leftovers","nature":"impish","moves":["earthquake","stoneedge","stealthrock","iceshard"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted,
+                "Sturdy should NOT save a non-full-HP holder");
+    }
+
+    #[test]
+    fn mold_breaker_bypasses_sturdy() {
+        // Excadrill @ Mold Breaker uses Earthquake on a Sturdy Donphan
+        // at full HP — Sturdy bypassed, Donphan can faint.
+        let p1_json = r#"[
+            {"species":"excadrill","level":50,"ability":"moldbreaker","item":"focussash","nature":"adamant","moves":["earthquake","ironhead","rockslide","drillrun"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"donphan","level":50,"ability":"sturdy","item":"leftovers","nature":"hardy","moves":["earthquake","stoneedge","stealthrock","iceshard"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop Donphan's Def to 1 so EQ is unambiguously lethal from
+        // full HP. With Sturdy active, the clamp leaves it at 1 HP;
+        // with Mold Breaker bypassing Sturdy, Donphan faints.
+        b.p2.team[0].stats.def = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted,
+                "Mold Breaker must bypass Sturdy — Donphan should faint");
     }
 
     #[test]
