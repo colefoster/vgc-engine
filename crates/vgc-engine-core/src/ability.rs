@@ -216,6 +216,24 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Hospitality (Sinistcha signature): on switch-in, heal each
+    // adjacent ally for 1/4 of THEIR max HP. PS handler:
+    // `onStart { for (const ally of pokemon.adjacentAllies())
+    //   this.heal(ally.baseMaxhp / 4, ally, pokemon); }`
+    // In singles there are no adjacent allies → no-op. In doubles the
+    // only adjacent ally is the partner slot. Capped at the ally's max
+    // HP (PS `heal()` clamps). No effect if the ally is fainted.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Hospitality_(Ability)>.
+    if slug == "hospitality" && battle.format().active_count() > 1 {
+        let partner_slot = if slot == 0 { 1 } else { 0 };
+        if let Some(ally) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
+            if ally.is_alive() {
+                let heal = (ally.stats.hp / 4).max(1);
+                ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
+            }
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop.

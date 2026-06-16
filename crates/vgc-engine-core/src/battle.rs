@@ -4718,4 +4718,51 @@ mod tests {
         assert!(b.p2.team[0].current_hp < cres_before,
                 "Dragon Claw (non-Ground) must still hit a Levitate target");
     }
+
+    #[test]
+    fn hospitality_heals_ally_on_switch_in_in_doubles() {
+        // Sinistcha leads alongside Garchomp. Manually wound Garchomp,
+        // then re-fire Hospitality's on_switch_in (PS handler runs on
+        // initial sendout from `Battle::new`; we observe the heal by
+        // wounding then re-triggering).
+        let p1_json = r#"[
+            {"species":"sinistcha","level":50,"ability":"hospitality","item":"focussash","nature":"calm","moves":["matchagotcha","shadowball","strengthsap","trickroom"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let chomp_max = b.p1.team[1].stats.hp;
+        b.p1.team[1].current_hp = chomp_max / 2;
+        let chomp_before = b.p1.team[1].current_hp;
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+        let expected = (chomp_max / 4).max(1);
+        assert_eq!(
+            b.p1.team[1].current_hp,
+            (chomp_before + expected).min(chomp_max),
+            "Hospitality should heal partner Garchomp by 1/4 max HP",
+        );
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp,
+                   "Sinistcha itself is unaffected by its own Hospitality");
+    }
+
+    #[test]
+    fn hospitality_no_op_in_singles() {
+        // No adjacent allies in singles — Hospitality must do nothing.
+        let p1_json = r#"[
+            {"species":"sinistcha","level":50,"ability":"hospitality","item":"focussash","nature":"calm","moves":["matchagotcha","shadowball","strengthsap","trickroom"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp);
+    }
 }
