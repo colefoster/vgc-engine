@@ -177,6 +177,23 @@ pub struct Pokemon {
     /// requires Allies of the same team (3+ Pokémon active), which
     /// Doubles never produces.
     pub helping_handed_this_turn: bool,
+    /// Single-turn 'ragepowder' / 'followme' redirection volatile (PS
+    /// data/moves.ts:ragepowder / :followme conditions, duration 1).
+    /// Set when this mon successfully uses Rage Powder or Follow Me;
+    /// causes single-target opposing moves (target codes 0/4/10) aimed
+    /// at the foe side to be re-aimed at this mon. Cleared at end of
+    /// turn / on switch-out. Carries no info about which of the two
+    /// moves set it — Rage Powder vs Follow Me differs only in the
+    /// powder gate, which is applied at the redirect site by reading
+    /// the volatile-carrier's slug separately would be wrong. Instead
+    /// `redirecting_is_powder` records which kind of redirection is in
+    /// effect; Rage Powder sets it true (powder gate applies),
+    /// Follow Me sets it false (no gate).
+    pub redirecting_this_turn: bool,
+    /// `true` when `redirecting_this_turn` was set by Rage Powder
+    /// (powder-gated), `false` when set by Follow Me. Only meaningful
+    /// while `redirecting_this_turn` is true.
+    pub redirecting_is_powder: bool,
     /// Single-turn flag — true if any opposing damaging move actually
     /// landed HP damage on this mon earlier this turn. PS tracks
     /// `pokemon.attackedBy` per-source; we collapse to "any foe hit
@@ -239,6 +256,14 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// Self-switch volatile: set by U-turn / Volt Switch / Flip Turn /
+    /// Parting Shot / Teleport / Chilly Reception once their hit
+    /// resolves successfully. After the move-resolution loop the engine
+    /// sweeps every active slot with this flag and consumes a deferred
+    /// `Choice::Switch` for that slot (PS routes the player's chosen
+    /// replacement through `selfSwitch`). Cleared once the switch is
+    /// applied, on switch-out, and at the top of each turn.
+    pub pending_self_switch: bool,
 }
 
 impl Pokemon {
