@@ -61,6 +61,10 @@ pub fn parse_line(line: &str) -> Option<Event> {
             from: from(),
         },
         "-crit" => Event::Crit(parse_slot(rest.first()?)?),
+        "-miss" => Event::Miss {
+            source: parse_slot(rest.first()?)?,
+            target: rest.get(1).and_then(|s| parse_slot(s)),
+        },
         "-heal" => Event::Heal {
             slot: parse_slot(rest.first()?)?,
             hp: rest.get(1).map(|s| s.to_string()).unwrap_or_default(),

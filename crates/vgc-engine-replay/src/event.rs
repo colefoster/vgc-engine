@@ -59,6 +59,11 @@ pub enum Event {
     /// line for the hit, before the `|-damage|` line. Used by the
     /// Oracle harness to record each damaging hit's crit outcome.
     Crit(PokeSlot),
+    /// `|-miss|<source>|<target>` — accuracy roll failed for `source`
+    /// hitting `target`. PS only emits this when the accuracy gate
+    /// fires; status/Protect/immunity refusals use other markers.
+    /// Used by the Oracle harness to record per-hit accuracy outcomes.
+    Miss { source: PokeSlot, target: Option<PokeSlot> },
     /// `|-heal|<slot>|<hp>|...`
     Heal {
         slot: PokeSlot,
