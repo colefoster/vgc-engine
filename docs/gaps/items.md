@@ -66,7 +66,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **PS reference**: `data/items.ts:rockyhelmet`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-100.
 
 ### Eviolite
 
@@ -390,3 +390,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Booster Energy (PR-48)
 - Big Root (PR-86)
 - Air Balloon — Ground immunity only (PR-56; pop-on-hit deferred)
+- Rocky Helmet (PR-100)

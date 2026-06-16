@@ -70,6 +70,53 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Defender's held item reacts to an incoming contact hit. Mirrors PS's
+/// `onDamagingHit` step for items: runs after damage application, only
+/// when the move made contact and the hit wasn't absorbed by a
+/// Substitute (caller-enforced). Currently dispatches Rocky Helmet.
+///
+/// Rocky Helmet — PS `data/items.ts:rockyhelmet`
+/// `onDamagingHitOrder: 2`, `onDamagingHit(damage, target, source, move)`:
+///   `if (this.checkMoveMakesContact(move, source, target)) {
+///      this.damage(source.baseMaxhp / 6, source, target);
+///    }`
+/// Magic Guard on the attacker blocks it (PS routes through onDamage,
+/// which Magic Guard returns false on for non-Move sources). Long Reach
+/// / Protective Pads / Punching Glove negators aren't wired yet —
+/// the `flags.contact` check is currently equivalent.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rocky_Helmet>.
+pub fn on_attacker_contact_hit(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+) {
+    let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => m.item_id,
+        None => return,
+    };
+    let slug = item_slug(item_id);
+    if slug == "rockyhelmet" {
+        let attacker_alive_and_no_mg = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
+        if attacker_alive_and_no_mg {
+            if let Some(a) = battle
+                .side_mut(attacker_side)
+                .active_mon_mut(attacker_slot as usize)
+            {
+                let recoil = (a.stats.hp / 6).max(1);
+                a.current_hp = a.current_hp.saturating_sub(recoil);
+                if a.current_hp == 0 {
+                    a.fainted = true;
+                }
+            }
+        }
+    }
+}
+
 /// End-of-turn item residual: heals / damage from held items.
 ///
 /// Called from `Battle::resolve_end_of_turn` for each active mon.
