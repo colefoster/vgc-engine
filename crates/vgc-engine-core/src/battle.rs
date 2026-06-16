@@ -4677,6 +4677,47 @@ mod tests {
     }
 
     #[test]
+    fn embody_aspect_boosts_on_tera_switch_in() {
+        // All four Ogerpon Tera forms: when Terastallized at switch-in,
+        // raise the form's signature stat by +1. We construct the mon
+        // already Tera'd (the harness path that creates the Tera form
+        // species would set this) and re-invoke `ability::on_switch_in`
+        // to assert each form's stat boost.
+        //   Teal Mask        → +1 Spe (boost idx 4)
+        //   Wellspring Mask  → +1 SpD (boost idx 3)
+        //   Hearthflame Mask → +1 Atk (boost idx 0)
+        //   Cornerstone Mask → +1 Def (boost idx 1)
+        let cases: &[(&str, &str, usize)] = &[
+            ("ogerpontealtera", "embodyaspectteal", 4),
+            ("ogerponwellspringtera", "embodyaspectwellspring", 3),
+            ("ogerponhearthflametera", "embodyaspecthearthflame", 0),
+            ("ogerponcornerstonetera", "embodyaspectcornerstone", 1),
+        ];
+        for (species_slug, ability_slug, stat_idx) in cases {
+            let json = format!(
+                r#"[{{"species":"{species_slug}","level":50,"ability":"{ability_slug}","item":"","nature":"jolly","moves":["ivycudgel","followme","spikyshield","uturn"],"teratype":"grass"}}]"#
+            );
+            let p2_json = r#"[
+                {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            // Battle::new fires ability::on_switch_in BEFORE we can set
+            // `terastallized` — clear the pre-fire state (boosts didn't
+            // happen because terastallized was false at that point),
+            // then flip the Tera flag and re-run.
+            b.p1.team[0].boosts = [0; 7];
+            b.p1.team[0].terastallized = true;
+            crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+            assert_eq!(
+                b.p1.team[0].boosts[*stat_idx], 1,
+                "{ability_slug} boosts stat idx {stat_idx} by +1 on Tera switch-in"
+            );
+        }
+    }
+
+    #[test]
     fn clear_body_blocks_intimidate() {
         let p1_json = r#"[
             {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
