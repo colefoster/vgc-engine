@@ -76,7 +76,7 @@ Remaining slices:
 
 **Why it matters**: Many bugs are off-by-one ticks (e.g. Tailwind ending one turn early); proper ordering matters when multiple residuals co-fire on the same end-of-turn.
 
-**Status**: partial — Sand / Leftovers / Toxic counter / Encore tick / Trick Room tick / Tailwind tick / screens tick exist; full audit against PS ordering not done.
+**Status**: shipped (within implemented sub-phases) — PR-152 (re-ordered `resolve_end_of_turn` to PS canonical: weather (sand) → item residuals (Leftovers) → status DOT → ability residuals (Speed Boost). The unimplemented sub-phases (Future Sight, Wish, Leech Seed, Curse, Trap, Uproar, Yawn, Perish Song, Wonder/Magic Room, Slow Start) are listed inline in `resolve_end_of_turn` so each future mechanic lands in its PS-correct slot.).
 
 ### Action queue access for choice-modifying moves
 
