@@ -297,7 +297,7 @@ impl Battle {
             for m in self.side_mut(s).team.iter_mut() {
                 m.is_protected_this_turn = false;
                 m.used_stall_this_turn = false;
-                m.flinched_this_turn = false;
+                m.set_flinched(false);
                 m.set_helping_handed(false);
                 m.redirecting_this_turn = false;
                 m.redirecting_is_powder = false;
@@ -566,7 +566,7 @@ impl Battle {
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
-            incoming.flinched_this_turn = false;
+            incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.redirecting_this_turn = false;
             incoming.redirecting_is_powder = false;
@@ -755,7 +755,7 @@ impl Battle {
         // 1. Flinch check — flinched mons cannot move at all this turn.
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
-        if attacker.flinched_this_turn {
+        if attacker.flinched_this_turn() {
             return;
         }
 
@@ -3244,7 +3244,7 @@ fn apply_secondary_effect(
     if let Some(chance) = flinch_chance(move_slug) {
         if rng.percent_1_100() <= chance {
             if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                t.flinched_this_turn = true;
+                t.set_flinched(true);
             }
         }
     }
@@ -8757,7 +8757,7 @@ mod tests {
         // Quick Guard active → Fake Out (priority +3) blocked, no flinch.
         assert_eq!(b.p1.team[1].current_hp, chomp_hp_before,
                    "Quick Guard should block Fake Out damage");
-        assert!(!b.p1.team[1].flinched_this_turn,
+        assert!(!b.p1.team[1].flinched_this_turn(),
                 "Fake Out flinch must not stick when Quick Guard blocks the hit");
     }
 

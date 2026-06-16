@@ -186,6 +186,11 @@ pub enum VolatileKind {
     /// this turn. Cleared at the per-turn volatile reset / on switch-out.
     /// Payload unused.
     HelpingHand,
+    /// Single-turn 'flinch' volatile (PS data/conditions.ts:flinch).
+    /// Set when struck by a flinching move; checked at the start of
+    /// resolve_move to skip the action. Cleared at the per-turn
+    /// volatile reset / on switch-in. Payload unused.
+    Flinch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -321,10 +326,6 @@ pub struct Pokemon {
     /// it switched in / was sent out at battle start). Used by Fake Out,
     /// First Impression, Mat Block, etc. Incremented at end of step.
     pub turns_active: u8,
-    /// Single-turn 'flinch' volatile. Set when struck by a flinching
-    /// move; checked at the start of resolve_move to skip the mon's
-    /// action. Cleared at end of step.
-    pub flinched_this_turn: bool,
     /// Single-turn 'ragepowder' / 'followme' redirection volatile (PS
     /// data/moves.ts:ragepowder / :followme conditions, duration 1).
     /// Set when this mon successfully uses Rage Powder or Follow Me;
@@ -608,6 +609,27 @@ impl Pokemon {
             .unwrap_or("")
     }
 
+    /// `true` while a `VolatileKind::Flinch` volatile is on this mon.
+    /// Read in `battle.rs::resolve_move` to skip the action.
+    #[inline]
+    pub fn flinched_this_turn(&self) -> bool {
+        self.volatiles.has(VolatileKind::Flinch)
+    }
+
+    /// Set or clear the Flinch volatile (duration-1).
+    #[inline]
+    pub fn set_flinched(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Flinch,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::Flinch);
+        }
+    }
+
     /// `true` while a `VolatileKind::HelpingHand` volatile is on this mon
     /// (an ally Helping Hand'd this target on the current turn). Read by
     /// `damage.rs` for the ×1.5 BP multiplier. PS analog:
@@ -750,8 +772,7 @@ mod tests {
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             is_protected_this_turn: false, stall_counter: 0, used_stall_this_turn: false,
-            turns_active: 0, flinched_this_turn: false,
-            redirecting_this_turn: false, redirecting_is_powder: false,
+            turns_active: 0, redirecting_this_turn: false, redirecting_is_powder: false,
             damaged_this_turn: false, toxic_counter: 0, locked_move_slot: 255,
             switched_in_this_turn: false, substitute_hp: 0, sleep_turns: 0,
             last_used_move_slot: 255, encore_turns: 0, encored_move_slot: 255,
@@ -793,7 +814,6 @@ mod tests {
             stall_counter: 0,
             used_stall_this_turn: false,
             turns_active: 0,
-            flinched_this_turn: false,
             redirecting_this_turn: false,
             redirecting_is_powder: false,
             damaged_this_turn: false,
