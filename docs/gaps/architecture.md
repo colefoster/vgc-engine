@@ -33,11 +33,10 @@ Remaining slices:
 
 **Why it matters**: Blocks all two-turn moves (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy, Dig/Dive/Fly/Bounce/Phantom Force/Shadow Force), Hyper Beam recharge family, Gigaton Hammer / Blood Moon lockout, lock-in moves.
 
-**Status**: partial — slice 2 of 4 — PR-150 (fields), PR-159 (semi-invuln semi-turn moves: Fly / Dig / Dive / Bounce / Phantom Force / Shadow Force / Sky Drop now charge on turn 1 (PP deducted, `semi_invuln` + `charging_turns` set, damage skipped), release on turn 2 when the player re-issues the same slot (no PP re-deduct, state cleared, damage proceeds). Incoming attacks dodge a semi-invuln defender unless the move is in the PS per-state hit-through list: Dig vs Earthquake/Magnitude, Dive vs Surf/Whirlpool, Fly/Bounce vs Gust/Twister/Sky Uppercut/Thunder/Hurricane/Smack Down/Thousand Arrows; Phantom/Shadow Force / Sky Drop dodge everything).
+**Status**: partial — slice 3 of 4 — PR-150 (fields), PR-159 (semi-invuln), PR-160 (non-semi-invuln charge moves: Solar Beam / Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor Beam now charge turn 1 / release turn 2; Power Herb consumed to skip charge; Sun skips charge on Solar Beam / Solar Blade. Per-move charge-turn boosts — Meteor Beam +1 SpA, Skull Bash +1 Def — left for follow-up move PRs alongside their boost arms.).
 
 Remaining slices:
-- slice 3: charging-move dispatch — `onTryMove` hook that sets `charging_turns = 1` + skips damage on turn 1 with NO semi-invuln state (Solar Beam / Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor Beam), plus Power Herb skip + Sun no-charge on solar moves.
-- slice 4: recharge / lock-in (Hyper Beam family, Outrage / Petal Dance / Thrash with confusion payload, Gigaton Hammer / Blood Moon — last one already half-shipped via `cannot_use_twice`).
+- slice 4: recharge / lock-in (Hyper Beam family `must_recharge`, Outrage / Petal Dance / Thrash with confusion payload, Gigaton Hammer / Blood Moon — last one already half-shipped via `cannot_use_twice`).
 
 ## Pipeline / ordering
 
