@@ -525,9 +525,15 @@ impl Battle {
                 Choice::Pass { .. } => {}
             }
         }
-        // Run on-switch-in ability hooks for each newly-active mon.
+        // Run on-switch-in ability hooks for each newly-active mon,
+        // then item hooks. PS canonical order:
+        //   hazards → ability `onStart` → item `onStart` → forme change.
+        // Hazards already fired in `do_switch`. Forme change (e.g.
+        // Ogerpon mask transformations, Aegislash Blade/Shield) is a
+        // separate per-species concern still TBD.
         for slot in switched_slots {
             crate::ability::on_switch_in(self, side, slot);
+            crate::item::on_switch_in(self, side, slot);
         }
     }
 
@@ -696,6 +702,7 @@ impl Battle {
             }
             for slot in switched_slots {
                 crate::ability::on_switch_in(self, side, slot);
+                crate::item::on_switch_in(self, side, slot);
             }
         }
     }

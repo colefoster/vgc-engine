@@ -48,7 +48,7 @@ Remaining slices:
 
 **Why it matters**: Without a proper pipeline, ordering bugs surface as soon as multiple `onStart` effects co-fire (Drizzle vs Trace, Intimidate vs Eject Pack).
 
-**Status**: partial — abilities fire; hazards / items / forme changes missing.
+**Status**: shipped (pipeline structure) — PR-154 (`item::on_switch_in` stub added; pipeline order at every switch-in site is now hazards → ability `onStart` → item `onStart`, matching PS `runSwitch`. Stealth Rock damage fires inside `do_switch` before the ability hook (correct). Per-item arms (Mirror Herb, White Herb post-switch consume) land additively into `item::on_switch_in`. Forme change (Aegislash Blade/Shield, Ogerpon mask) is a separate species-side concern noted inline.).
 
 ### End-of-turn residual ordering
 

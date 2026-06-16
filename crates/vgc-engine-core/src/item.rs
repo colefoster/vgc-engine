@@ -117,6 +117,31 @@ pub fn on_attacker_contact_hit(
     }
 }
 
+/// On-switch-in hook for held items. PS canonical order on a
+/// switch-in: hazards damage → Heavy Boots gate → Air Balloon
+/// announce → ability `onStart` → item `onStart` → forme change.
+/// We currently land hazards (Stealth Rock) and ability `on_switch_in`
+/// in `Battle::do_switch` / `Battle::apply_switches`; this hook is the
+/// PS slot for item-driven on-start effects:
+///
+///   - Booster Energy (Paradox boost trigger) — already self-fires in
+///     the paradox-ability hook because PS uses `onUpdate`, not
+///     `onStart`; intentionally no-op here.
+///   - Air Balloon: PS emits a "popped" announce flag; the in-engine
+///     side-effect (Ground immunity) is already read from the held
+///     item at `is_grounded()` time, so this is a UI-only announce.
+///   - Mirror Herb (gen 9): copies the foe's most recent boost on
+///     switch-in. TBD.
+///   - White Herb: clears negative boosts on switch-in if any are
+///     pending from prior turns. TBD.
+///
+/// Currently a no-op stub so callers wire correctly. Per-item arms
+/// land additively.
+pub fn on_switch_in(_battle: &mut Battle, _side: SideRef, _slot: u8) {
+    // Intentionally empty for now. See doc-comment for the PS-canonical
+    // item `onStart` set this hook will service.
+}
+
 /// End-of-turn item residual: heals / damage from held items.
 ///
 /// Called from `Battle::resolve_end_of_turn` for each active mon.
