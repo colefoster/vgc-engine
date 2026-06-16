@@ -1406,6 +1406,29 @@ impl Battle {
                 }
             }
         }
+
+        // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
+        // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
+        // `flipturn:5787` all set `selfSwitch: true`. The switch fires
+        // iff the move actually connected (`any_damage_dealt > 0` — which
+        // covers Substitute absorption per PS, since target damage was
+        // taken even though HP didn't move) AND the user is still alive
+        // (Static / Rough Skin / recoil chip could have KO'd them — PS
+        // skips the switch when the user fainted in the same resolution
+        // window). No alive bench mon = silent fail (matches PS
+        // `canSwitch`). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
+        if matches!(m.slug, "uturn" | "voltswitch" | "flipturn") && any_damage_dealt > 0 {
+            let still_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if still_alive && self.has_eligible_bench(actor_side) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.pending_self_switch = true;
+                }
+            }
+        }
     }
 
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
@@ -7440,5 +7463,81 @@ mod tests {
         assert_eq!(b.p1.active[0], 1, "Bronzong swapped in");
         assert!(matches!(b.weather, crate::weather::Weather::Snow));
         assert_eq!(b.weather_turns, 4);
+    }
+
+    #[test]
+    fn uturn_self_switches_when_hit_lands() {
+        // Singles: Beautifly clicks U-turn (move slot 0) on Pikachu,
+        // hit lands, Beautifly should swap to bench Pelipper.
+        let p1 = r#"[
+            {"species":"beautifly","level":50,"ability":"swarm","nature":"adamant","moves":["uturn","gust","protect","airslash"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"vitalspirit","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pika_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < pika_hp, "U-turn dealt damage");
+        assert_eq!(b.p1.active[0], 1, "Pelipper swapped in after U-turn");
+        assert!(!b.p1.team[0].pending_self_switch);
+        assert!(!b.p1.team[1].pending_self_switch);
+    }
+
+    #[test]
+    fn uturn_no_switch_when_target_immune() {
+        // Ground is immune to Volt Switch — no damage dealt → no switch.
+        let p1 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["voltswitch","thunderbolt","grassknot","feint"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Pikachu stays in — Volt Switch was Ground-immune.
+        assert_eq!(b.p1.active[0], 0, "Pikachu stays in on Ground immunity");
+        assert!(!b.p1.team[0].pending_self_switch);
+    }
+
+    #[test]
+    fn flip_turn_no_switch_when_no_bench() {
+        // Solo Greninja flips into Pikachu; damage lands but no
+        // replacement → user stays in.
+        let p1 = r#"[
+            {"species":"greninja","level":50,"ability":"torrent","nature":"timid","moves":["flipturn","watershuriken","icebeam","darkpulse"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pika_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < pika_hp, "Flip Turn dealt damage");
+        assert_eq!(b.p1.active[0], 0, "Greninja stays in (no bench)");
+        assert!(!b.p1.team[0].pending_self_switch);
     }
 }
