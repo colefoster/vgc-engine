@@ -153,7 +153,7 @@ Remaining for full close:
 
 **Why it matters**: This is the headline lever for corpus agreement. PR-66 landed crit back-solve and moved median 8.3 → 12.5. Damage back-solve is the next 10-30 percentage points.
 
-**Status**: partial — PR-164 (back-solve primitive), PR-166 (`RngEvent::DamageHint(u16)` queue variant + `Rng::damage_roll_hint(dmg_min, dmg_max) -> u8` method: when the next event is a hint, consumes it and returns the back-solved bucket; on `OraclePartial` variant mismatch falls through to Splitmix; on `Oracle` with an out-of-range hint, returns safe mid-bucket 7 rather than panicking). Next step: at the damage call site in `battle.rs`, replace `self.rng.damage_roll()` with `self.rng.damage_roll_hint(min, max)` using the per-hit `damage_range`. The replay-side feeder that emits `DamageHint(observed)` events from `|-damage|` lines into `Rng::oracle_partial(events, seed)` lands as a separate replay-crate PR.
+**Status**: partial — PR-164 (back-solve primitive), PR-166 (`DamageHint` event variant + `damage_roll_hint` method), PR-167 (wired into the battle.rs damage call site — on Oracle / OraclePartial paths the engine now computes `damage_range_in_ctx(attacker, defender, move_id, stub_ctx)` and calls `damage_roll_hint(lo, hi)`; Splitmix path unchanged. Cost: two extra `calculate_damage` calls per hit on the Oracle paths; cheap because all per-hit modifiers are already in scope and no allocations). Final step: a replay-crate feeder that walks `|-damage|` events in a `Replay` and pushes `RngEvent::DamageHint(observed)` into an `Rng::oracle_partial(events, seed)` constructed at battle start. The skeleton lives in `vgc-engine-replay::oracle` next to `build_crit_oracle_for_replay`.
 
 ### Set reconnaissance for spreads / abilities / items
 
