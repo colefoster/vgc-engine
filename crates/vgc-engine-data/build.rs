@@ -347,6 +347,10 @@ fn main() {
     writeln!(f, "    pub is_powder: bool,").unwrap();
     writeln!(f, "    /// PS `flags.heal = 1`. Blocked by Heal Block.").unwrap();
     writeln!(f, "    pub is_heal: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.cantusetwice = 1`. After using the move, the user").unwrap();
+    writeln!(f, "    /// cannot select it again on the next turn (Gigaton Hammer,").unwrap();
+    writeln!(f, "    /// Blood Moon). Encoded as a per-mon volatile in the move handler.").unwrap();
+    writeln!(f, "    pub cannot_use_twice: bool,").unwrap();
     writeln!(f, "    /// PS `drain: [num, den]` numerator (0 if move does not drain).").unwrap();
     writeln!(f, "    /// Heal `round(damage * num / den)` of damage dealt onto the user.").unwrap();
     writeln!(f, "    pub drain_num: u8,").unwrap();
@@ -372,7 +376,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -393,6 +397,7 @@ fn main() {
             m.flags.contains_key("dance"),
             m.flags.contains_key("powder"),
             m.flags.contains_key("heal"),
+            m.flags.contains_key("cantusetwice"),
             m.drain.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
             m.drain.map(|[_, d]| d.min(u8::MAX as u32) as u8).unwrap_or(1),
             m.recoil.map(|[n, _]| n.min(u8::MAX as u32) as u8).unwrap_or(0),
