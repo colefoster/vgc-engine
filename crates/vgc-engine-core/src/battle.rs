@@ -2535,8 +2535,12 @@ mod tests {
     fn consecutive_protect_eventually_fails() {
         // After several consecutive Protects the 1/3^n roll WILL fail.
         // Use a tiny denom and many turns to ensure we observe a failure.
+        // Use Leftovers rather than Black Sludge on Toxapex — Black Sludge
+        // heals Poison-types each end of turn, which can mask a single-
+        // turn damage hit when Pikachu's Thunderbolt is offset by the
+        // heal cap on subsequent turns.
         let p1_json = r#"[
-            {"species":"toxapex","level":50,"ability":"regenerator","item":"blacksludge","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"choicescarf","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
         ]"#;
         let p2_json = r#"[
             {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
@@ -3245,6 +3249,80 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].current_hp, target_hp);
+    }
+
+    #[test]
+    fn black_sludge_heals_poison_type() {
+        // Toxapex (Poison/Water) with Black Sludge — heals 1/16 max HP
+        // per turn, like Leftovers for Poison-types.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"blacksludge","nature":"timid","moves":["shadowball","sludgebomb","focusblast","thunderbolt"],"evs":{"hp":252,"spa":4,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let dmg_hp = b.p1.team[0].current_hp;
+        let max = b.p1.team[0].stats.hp;
+        let expected_heal = (max / 16).max(1);
+        let target_hp = (dmg_hp + expected_heal).min(max);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, target_hp,
+                   "Black Sludge should heal Poison-type 1/16 max HP");
+    }
+
+    #[test]
+    fn black_sludge_damages_non_poison() {
+        // Snorlax (Normal) with Black Sludge — takes 1/8 max HP damage
+        // per end of turn.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"blacksludge","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        let chip = (max / 8).max(1);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max - chip,
+                   "Black Sludge should chip non-Poison 1/8 max HP");
+    }
+
+    #[test]
+    fn black_sludge_magic_guard_blocks_chip() {
+        // Clefable (Magic Guard) — non-Poison holder, but MG blocks
+        // the residual damage. Stays at full HP.
+        let p1_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"blacksludge","nature":"bold","moves":["moonblast","softboiled","calmmind","flamethrower"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max,
+                   "Magic Guard should block Black Sludge chip");
     }
 
     #[test]
