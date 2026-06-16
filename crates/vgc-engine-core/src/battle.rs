@@ -1326,7 +1326,24 @@ impl Battle {
                     let span = (m.multihit_max - m.multihit_min + 1) as u32;
                     m.multihit_min as u32 + self.rng.range(span)
                 };
-                dmg = ((dmg as u32) * hits).min(u16::MAX as u32) as u16;
+                // Triple Kick / Triple Axel ramp BP per hit. PS:
+                //   data/moves.ts:triplekick basePowerCallback
+                //     return 10 * move.hit;
+                //   data/moves.ts:tripleaxel basePowerCallback
+                //     return 20 * move.hit;
+                // Hit n's BP = base * n; the total over N hits scales
+                // by 1+2+...+N = N(N+1)/2 rather than just N. Our
+                // single-damage model collapses per-hit variance, so
+                // apply the triangular factor here to recover the
+                // correct mean total damage.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Triple_Kick_(move)>
+                //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>
+                let hit_multiplier = if matches!(m.slug, "triplekick" | "tripleaxel") {
+                    hits * (hits + 1) / 2
+                } else {
+                    hits
+                };
+                dmg = ((dmg as u32) * hit_multiplier).min(u16::MAX as u32) as u16;
             }
             // Thick Fat (Snorlax / Mamoswine / Goodra-H): defender's
             // ability halves the attacker's offensive stat against Fire
@@ -7864,6 +7881,35 @@ mod tests {
         // 2 × (35 BP @ min roll). Empirically this is well above the
         // pure single-hit floor. We just verify nonzero and consistent.
         assert!(dmg >= 1);
+    }
+
+    #[test]
+    fn triple_axel_ramps_bp_per_hit() {
+        // Triple Axel is `basePowerCallback: 20 * move.hit` over 3 hits
+        // — sum is 20+40+60 = 120 effective BP, vs a flat-multihit
+        // approximation of 20×3 = 60. We approximate per-hit ramp by
+        // multiplying single-hit damage by the triangular factor
+        // N(N+1)/2 = 6 (for N=3).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["tripleaxel","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg = hp_before - b.p2.team[0].current_hp;
+        // With ramp (×6) Triple Axel should land meaningful damage —
+        // at least 1/8 of Snorlax's max HP.
+        let max_hp = b.p2.team[0].stats.hp;
+        assert!(dmg as u32 * 8 >= max_hp as u32,
+                "Triple Axel ramp should land >= 1/8 max HP: dmg={dmg} maxhp={max_hp}");
     }
 
     #[test]
