@@ -273,6 +273,45 @@ pub struct Pokemon {
     /// item path (`data/items.ts:boosterenergy onUpdate`), stays active
     /// until switch-out. Reset to false on switch-out.
     pub booster_locked: bool,
+    /// Two-turn-move semi-invulnerable state. Distinct positions hit
+    /// through by distinct moves (PS gates each in the move's
+    /// `onTryHit`): Dig is hit by Earthquake / Magnitude / Fissure;
+    /// Dive by Surf / Whirlpool; Fly / Bounce / Sky Drop by Gust /
+    /// Thunder / Twister / Sky Uppercut / Smack Down / Hurricane;
+    /// Phantom Force / Shadow Force are hit by nothing.
+    /// 0 = None, 1 = Dig, 2 = Dive, 3 = Fly, 4 = Bounce,
+    /// 5 = PhantomForce, 6 = ShadowForce, 7 = SkyDrop.
+    /// Cleared at the end of the second (attack) turn.
+    pub semi_invuln: u8,
+    /// Number of turns the mon has spent charging a multi-turn move
+    /// (Solar Beam, Sky Attack, Electro Shot, Meteor Beam, Geomancy,
+    /// Dig / Dive / Fly / Bounce / Phantom Force / Shadow Force). 0
+    /// when not charging. Set to 1 on the first (charge) turn, the
+    /// move resolves on the second turn and this resets to 0. PS
+    /// `move.flags.charge` + a per-move `onTryMove` hook.
+    pub charging_turns: u8,
+    /// Slot index 0..=3 of the move currently being charged
+    /// (`charging_turns > 0`). 255 = not charging. Used by the runner
+    /// to dispatch the same move on turn 2 without re-reading
+    /// `Choice`. PS `pokemon.moveThisTurn`.
+    pub charging_move_slot: u8,
+    /// `true` if the mon must spend its turn recharging after a
+    /// recharge-flag move (Hyper Beam / Giga Impact / Blast Burn /
+    /// Hydro Cannon / Frenzy Plant / Rock Wrecker / Roar of Time /
+    /// Prismatic Laser / Eternabeam / Meteor Assault). Cleared at
+    /// the end of the recharge turn. PS `flags.recharge`.
+    pub must_recharge: bool,
+    /// Lock-in counter for Outrage / Petal Dance / Thrash (separate
+    /// from `locked_move_slot` which is reserved for Choice items).
+    /// 0 = not locked, 1 = used the 1st turn of the lock, 2 = used
+    /// the 2nd turn of the lock; at the end of turn 2 (or 3, PS rolls
+    /// 2..=3), the mon becomes confused and the counter clears. PS
+    /// `lockedmove` volatile.
+    pub lockin_turns: u8,
+    /// Move slot 0..=3 that the lock-in volatile is keying on
+    /// (255 = none). The runner must dispatch this slot regardless
+    /// of the player's Choice while the lock is active.
+    pub lockin_move_slot: u8,
     /// Tera type. PS `pokemon.teraType` — encoded as a type code
     /// 0..=17 (same indexing as `species().types`). 255 = none assigned
     /// (legacy / set without teratype). Set at team load from the JSON
@@ -498,6 +537,8 @@ mod tests {
             ability_suppressed: false, crit_stage_volatile: 0,
             last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
             tera_type: 1 /* fire */, terastallized: false,
+            semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
+            must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -552,6 +593,12 @@ mod tests {
             last_damage_taken: 0,
             tera_type: 0,
             terastallized: false,
+            semi_invuln: 0,
+            charging_turns: 0,
+            charging_move_slot: 255,
+            must_recharge: false,
+            lockin_turns: 0,
+            lockin_move_slot: 255,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

@@ -822,6 +822,12 @@ mod tests {
             last_damage_taken: 0,
             tera_type: 0,
             terastallized: false,
+            semi_invuln: 0,
+            charging_turns: 0,
+            charging_move_slot: 255,
+            must_recharge: false,
+            lockin_turns: 0,
+            lockin_move_slot: 255,
         }
     }
 
