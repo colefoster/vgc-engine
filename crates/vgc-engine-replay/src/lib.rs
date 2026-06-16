@@ -42,7 +42,7 @@ pub use smogon_stats::{
     parse as parse_smogon_stats, ParseError as SmogonParseError, SmogonStats, SpeciesUsage,
 };
 pub use scorer::{
-    score_replay, score_replay_oracle, score_replay_with_events, ReplayScore, TurnScore,
-    DEFAULT_HP_TOLERANCE,
+    score_replay, score_replay_full_oracle, score_replay_oracle, score_replay_with_events,
+    ReplayScore, TurnScore, DEFAULT_HP_TOLERANCE,
 };
 pub use trace::{hp_trace, parse_hp, HpEvent, HpSource};
