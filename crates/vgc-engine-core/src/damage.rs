@@ -205,6 +205,17 @@ pub fn calculate_damage(
         bp = bp * 5325 / 4096;
     }
 
+    // Helping Hand — ×1.5 BP on the recipient's next damaging move.
+    // PS data/moves.ts:helpinghand condition `onBasePower` priority 10:
+    // `chainModify(this.effectState.multiplier)` (multiplier = 1.5).
+    // Volatile is set by `Battle::resolve_status_move` "helpinghand"
+    // and cleared at end of turn. Stacking (multiple allies helping
+    // the same target in one turn) is not modelled — Doubles only
+    // has one ally.
+    if attacker.helping_handed_this_turn {
+        bp = bp * 3 / 2;
+    }
+
     // Aura abilities — Fairy Aura on Fairy moves, Dark Aura on Dark
     // moves. PS chainModify([5448, 4096]) ≈ ×1.33; flipped to
     // chainModify([3072, 4096]) ≈ ×0.75 when Aura Break is on the
@@ -365,6 +376,7 @@ mod tests {
             used_stall_this_turn: false,
             turns_active: 0,
             flinched_this_turn: false,
+            helping_handed_this_turn: false,
             toxic_counter: 0,
             locked_move_slot: 255,
             switched_in_this_turn: false,

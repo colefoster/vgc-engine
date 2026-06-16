@@ -167,6 +167,16 @@ pub struct Pokemon {
     /// move; checked at the start of resolve_move to skip the mon's
     /// action. Cleared at end of step.
     pub flinched_this_turn: bool,
+    /// Single-turn 'helpinghand' volatile (PS data/moves.ts:helpinghand
+    /// condition, duration 1). Set when an adjacent ally successfully
+    /// used Helping Hand targeting this mon; read by `damage.rs` to
+    /// multiply BP ×1.5 on the next damaging move this turn. Cleared
+    /// at end of step. Multi-stack (two allies each Helping Hand'ing
+    /// the same target → ×2.25) is deferred — Doubles has only one
+    /// ally, and the same target getting helped twice in one turn
+    /// requires Allies of the same team (3+ Pokémon active), which
+    /// Doubles never produces.
+    pub helping_handed_this_turn: bool,
     /// Toxic damage counter (1-based). 1 on the turn Toxic is applied;
     /// increments by 1 each end of turn (gen 5+ formula). Damage per
     /// turn = max_hp * counter / 16. Reset to 0 when status clears or

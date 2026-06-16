@@ -227,6 +227,7 @@ impl Battle {
                 m.is_protected_this_turn = false;
                 m.used_stall_this_turn = false;
                 m.flinched_this_turn = false;
+                m.helping_handed_this_turn = false;
             }
         }
 
@@ -375,6 +376,7 @@ impl Battle {
                     incoming.boosts = [0; 7];
                     incoming.turns_active = 0;
                     incoming.flinched_this_turn = false;
+                    incoming.helping_handed_this_turn = false;
                     incoming.is_protected_this_turn = false;
                     incoming.stall_counter = 0;
                     incoming.locked_move_slot = 255; // Choice lock clears on switch.
@@ -1208,6 +1210,31 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.tailwind_turns == 0 {
                     s.conditions.tailwind_turns = 4;
+                }
+            }
+            "helpinghand" => {
+                // PS data/moves.ts:helpinghand — priority +5,
+                // target: adjacentAlly, sets a single-turn volatile on
+                // the partner that boosts its next damaging move's BP
+                // ×1.5. Fails outside Doubles (no ally) and when the
+                // partner is missing / fainted. PS additionally fails
+                // if the partner has already moved this turn
+                // (`onTryHit: if (!target.newlySwitched && !this.queue.willMove(target)) return false`);
+                // skipped here — the engine doesn't yet expose the
+                // remaining-action queue to status moves, and the
+                // common case (Helping Hand goes before partner's
+                // attack thanks to +5 priority) is already correct.
+                // BP application: `damage.rs` reads
+                // `attacker.helping_handed_this_turn`.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let partner_slot = actor_slot ^ 1;
+                if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot as usize) {
+                    if p.is_alive() {
+                        p.helping_handed_this_turn = true;
+                    }
                 }
             }
             "reflect" => {
@@ -5221,6 +5248,92 @@ mod tests {
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drop landed");
         assert_eq!(b.p2.team[0].boosts[2], 2,
                    "Competitive rebounds with +2 SpA");
+    }
+
+    #[test]
+    fn helping_hand_boosts_partner_damage_by_one_and_a_half() {
+        // Doubles: P1 has Sylveon (knows Helping Hand) + Garchomp
+        // (knows Earthquake). Baseline: Garchomp EQs Pikachu without
+        // a buff. Then: Sylveon Helping Hands Garchomp, Garchomp EQs
+        // the same target. Damage ratio must be ~3/2.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"],"evs":{"spa":252,"spd":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        // Baseline run: Garchomp EQ, no Helping Hand.
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b1 = Battle::new(BattleConfig { format: Format::Doubles, seed: 42 }, p1a, p2a);
+        // EQ hits P2 slot 0 — spread on `allAdjacent` so we read the
+        // unboosted spread-damage baseline.
+        b1.step(
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let baseline_max = b1.p2.team[0].stats.hp;
+        let baseline_dmg = baseline_max - b1.p2.team[0].current_hp;
+        assert!(baseline_dmg > 0, "EQ should deal damage to Pikachu");
+
+        // Boosted run: Sylveon Helping Hands Garchomp on the same
+        // turn. Same seed → same damage roll.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Doubles, seed: 42 }, p1b, p2b);
+        b2.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let boosted_dmg = b2.p2.team[0].stats.hp - b2.p2.team[0].current_hp;
+        // Same damage roll & no other variance → ratio is exactly ×1.5
+        // up to integer truncation (BP rounded, then linearly scaled).
+        // Tolerate ±5% slack.
+        let ratio = (boosted_dmg as u32) * 100 / baseline_dmg as u32;
+        assert!(
+            ratio >= 145 && ratio <= 155,
+            "Helping Hand boost ratio out of band: {boosted_dmg} / {baseline_dmg} = {ratio}%"
+        );
+        // Volatile follows the per-turn-reset pattern used by
+        // `flinched_this_turn` etc.: cleared at the START of the
+        // next `step()`, not the end of this one. Run a no-op turn
+        // and confirm the flag is gone.
+        b2.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert!(!b2.p1.team[1].helping_handed_this_turn);
+    }
+
+    #[test]
+    fn helping_hand_no_op_in_singles() {
+        // No adjacent ally — Helping Hand must do nothing (and must
+        // not panic on the partner-slot calculation).
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // No partner to set the flag on; ensure the user itself
+        // didn't get self-flagged (Helping Hand is `target:
+        // adjacentAlly`, not self).
+        assert!(!b.p1.team[0].helping_handed_this_turn);
     }
 
     #[test]
