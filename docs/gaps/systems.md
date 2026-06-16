@@ -148,7 +148,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:swordsdance,nastyplot,calmmind,dragondance,etc.`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-108.
 
 ### Dragon Dance / Quiver Dance / Shift Gear / Victory Dance
 
@@ -158,7 +158,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:dragondance,quiverdance,shiftgear,victorydance`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-108 (bundled with single-stat boosters; same `self_boost_moves` table).
 
 ### Belly Drum / Filler Up / Stockpile family
 

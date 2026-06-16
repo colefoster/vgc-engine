@@ -2113,11 +2113,78 @@ impl Battle {
                 }
             }
             _ => {
-                // Unimplemented status move — no effect. Subsequent PRs
-                // will add Trick Room, Encore, screens, etc.
+                // Self-boost status moves — PS data/moves.ts: each
+                // listed move has `target: "self"` (or `target: "allies"`
+                // for Howl) and `boosts: { stat: n, ... }`. Application
+                // is unconditional on a self-target — no accuracy roll,
+                // no fail check beyond the standard category gate. Stat
+                // stages clamp to -6..=+6 via the standard helper.
+                // Howl additionally boosts the ally's Atk in doubles
+                // (PS target "allies" enumerates user + adjacent ally).
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swords_Dance_(move)>
+                // plus per-move pages for each entry.
+                if let Some(boosts) = self_boost_moves(m.slug) {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        for &(idx, delta) in boosts {
+                            a.boosts[idx as usize] =
+                                (a.boosts[idx as usize] + delta).clamp(-6, 6);
+                        }
+                    }
+                    if m.slug == "howl" {
+                        // PS target "allies" in doubles: also boost the
+                        // adjacent ally's Atk. Singles → ally slot is
+                        // absent, skip.
+                        let n = self.format().active_count() as u8;
+                        if n >= 2 {
+                            let ally_slot = actor_slot ^ 1;
+                            if let Some(p) = self
+                                .side_mut(actor_side)
+                                .active_mon_mut(ally_slot as usize)
+                            {
+                                if p.is_alive() {
+                                    p.boosts[0] = (p.boosts[0] + 1).clamp(-6, 6);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Otherwise: unimplemented status move — no effect.
+                // Subsequent PRs add Trick Room, screens, etc.
             }
         }
     }
+}
+
+/// Per-slug self-target stat-boost table for boosting status moves.
+/// PS data/moves.ts: each entry's `boosts: { ... }` block. Stat indices
+/// match `Pokemon::boosts`: [atk, def, spa, spd, spe, acc, eva].
+fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
+    Some(match slug {
+        // Single-stat:
+        "swordsdance" => &[(0, 2)],
+        "nastyplot" => &[(2, 2)],
+        "irondefense" | "acidarmor" | "barrier" => &[(1, 2)],
+        "agility" | "rockpolish" | "autotomize" => &[(4, 2)],
+        "amnesia" => &[(3, 2)],
+        "tailglow" => &[(2, 3)],
+        "howl" => &[(0, 1)],
+        "meditate" | "sharpen" => &[(0, 1)],
+        "harden" | "withdraw" | "defensecurl" => &[(1, 1)],
+        "growth" => &[(0, 1), (2, 1)],
+        "workup" => &[(0, 1), (2, 1)],
+        // Two-stat:
+        "calmmind" => &[(2, 1), (3, 1)],
+        "bulkup" => &[(0, 1), (1, 1)],
+        "cosmicpower" => &[(1, 1), (3, 1)],
+        "dragondance" => &[(0, 1), (4, 1)],
+        "shiftgear" => &[(0, 1), (4, 2)],
+        // Three-stat:
+        "coil" => &[(0, 1), (1, 1), (5, 1)],
+        "quiverdance" => &[(2, 1), (3, 1), (4, 1)],
+        "victorydance" => &[(0, 1), (1, 1), (4, 1)],
+        _ => return None,
+    })
 }
 
 /// Enumerate concrete (side, slot) targets a move will hit.
@@ -8217,5 +8284,104 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].boosts[0], 2, "Bisharp Defiant rebound stacks");
         assert_eq!(b.p2.team[0].boosts[2], -1, "SpA -1 still landed");
+    }
+
+    #[test]
+    fn swords_dance_boosts_user_atk_by_two() {
+        // PS data/moves.ts:swordsdance: boosts {atk: 2}, target self.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["swordsdance","dragonclaw","earthquake","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn dragon_dance_boosts_atk_and_spe() {
+        // PS data/moves.ts:dragondance: boosts {atk: 1, spe: 1}.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragondance","dragonclaw","earthquake","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 1, "Dragon Dance +1 Atk");
+        assert_eq!(b.p1.team[0].boosts[4], 1, "Dragon Dance +1 Spe");
+    }
+
+    #[test]
+    fn calm_mind_boosts_spa_and_spd() {
+        // PS data/moves.ts:calmmind: boosts {spa: 1, spd: 1}.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["calmmind","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[2], 1, "Calm Mind +1 SpA");
+        assert_eq!(b.p1.team[0].boosts[3], 1, "Calm Mind +1 SpD");
+    }
+
+    #[test]
+    fn tail_glow_boosts_spa_by_three() {
+        // PS data/moves.ts:tailglow: boosts {spa: 3}.
+        let p1_json = r#"[
+            {"species":"manaphy","level":50,"ability":"hydration","nature":"timid","moves":["tailglow","surf","energyball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[2], 3, "Tail Glow +3 SpA");
+    }
+
+    #[test]
+    fn self_boost_clamps_at_plus_six() {
+        // Four Swords Dances tries to push to +8 → clamps at +6.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["swordsdance","dragonclaw","earthquake","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..4 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.p1.team[0].boosts[0], 6, "Atk stage clamps at +6");
     }
 }
