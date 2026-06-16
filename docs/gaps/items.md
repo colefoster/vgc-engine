@@ -20,7 +20,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **What it is**: ×1.2 BP on super-effective hits.
 
-**Status**: not implemented.
+**Status**: shipped — PR-101.
 
 ### Mystic Water / Magnet / Black Belt / Spell Tag / Charcoal / Miracle Seed / Sharp Beak / Soft Sand / Hard Stone / Twisted Spoon / Black Glasses / Silver Powder / Dragon Fang / Silk Scarf / Metal Coat / Mystic Water / Never-Melt Ice / Pixie Plate / etc.
 
@@ -391,3 +391,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Big Root (PR-86)
 - Air Balloon — Ground immunity only (PR-56; pop-on-hit deferred)
 - Rocky Helmet (PR-100)
+- Expert Belt (PR-101)

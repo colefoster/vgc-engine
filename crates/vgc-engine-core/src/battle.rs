@@ -1071,6 +1071,31 @@ impl Battle {
             if item_mul_n != item_mul_d && dmg > 0 {
                 dmg = ((dmg as u32) * item_mul_n / item_mul_d).min(u16::MAX as u32) as u16;
             }
+            // Expert Belt — ×1.2 BP on super-effective hits (PS
+            // chainModify([4915, 4096]) ≈ ×1.2). PS
+            // `data/items.ts:expertbelt` `onBasePower(bp, user, target, move)`:
+            //   `if (target.runEffectiveness(move) > 0) return this.chainModify([4915, 4096]);`
+            // 2x and 4x both qualify; immune (0x) does not (dmg is 0 by
+            // this point anyway). Applied at the same step as Life Orb
+            // for ordering simplicity — PS runs it as a BP step, but
+            // because multipliers commute with the integer-divides in
+            // the formula's tail, applying it here matches the mean to
+            // within rounding (verified against PS damage calc on
+            // representative cases). Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Expert_Belt>.
+            if attacker_item_slug == "expertbelt" && dmg > 0 {
+                let eff = crate::damage::type_effectiveness(
+                    m.type_,
+                    defender.species(),
+                );
+                let se = matches!(
+                    eff,
+                    crate::damage::TypeEff::DoubleX | crate::damage::TypeEff::QuadrupleX
+                );
+                if se {
+                    dmg = ((dmg as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+                }
+            }
             // Multi-hit — Double Hit, Population Bomb, Bullet Seed,
             // Rock Blast, Triple Axel, Tail Slap, Icicle Spear,
             // Water Shuriken, etc. PS calls calculate_damage per hit
@@ -5486,6 +5511,64 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn expert_belt_boosts_super_effective() {
+        // Garchomp Aerial Ace (Flying 4x vs Heracross Bug/Fighting),
+        // 0 Atk EVs / Hardy so the hit doesn't OHKO. Expert Belt vs
+        // Leftovers — damage rises ~×1.2.
+        let mk = |item: &str, move_slot: u8| -> u16 {
+            let p1_json = format!(r#"[
+                {{"species":"garchomp","level":50,"ability":"sandveil","item":"{item}","nature":"hardy","moves":["tackle","dragonclaw","aerialace","ironhead"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"heracross","level":50,"ability":"guts","item":"leftovers","nature":"impish","moves":["closecombat","megahorn","stoneedge","earthquake"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let belt = mk("expertbelt", 2);    // Aerial Ace, Flying 4x SE
+        let leftovers = mk("leftovers", 2);
+        assert!(belt > leftovers,
+                "Expert Belt should boost SE damage ({} > {})", belt, leftovers);
+        let ratio_x1000 = (belt as u32) * 1000 / (leftovers.max(1) as u32);
+        // ≈ 4915/4096 = 1.2000, allow ±20 of 1000 for integer rounding.
+        assert!((1180..=1220).contains(&ratio_x1000),
+                "Expert Belt ×1.2 BP expected, got ×{}/1000", ratio_x1000);
+    }
+
+    #[test]
+    fn expert_belt_does_not_boost_neutral() {
+        // Garchomp Tackle (Normal, neutral vs Heracross).
+        let mk = |item: &str| -> u16 {
+            let p1_json = format!(r#"[
+                {{"species":"garchomp","level":50,"ability":"sandveil","item":"{item}","nature":"hardy","moves":["tackle","dragonclaw","aerialace","ironhead"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"heracross","level":50,"ability":"guts","item":"leftovers","nature":"impish","moves":["closecombat","megahorn","stoneedge","earthquake"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 12 }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let belt = mk("expertbelt");
+        let leftovers = mk("leftovers");
+        assert_eq!(belt, leftovers,
+                "Expert Belt must NOT boost neutral damage ({} == {})", belt, leftovers);
     }
 
     #[test]
