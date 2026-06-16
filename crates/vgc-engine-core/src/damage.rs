@@ -43,6 +43,44 @@ pub(crate) fn move_is_sheer_force_boosted(m: &data::MoveDef) -> bool {
     m.has_secondary || m.has_sheer_force_boost
 }
 
+/// Boost-stage ignore policy. Selects which signed boost stages are
+/// zeroed before they reach the multiplier table.
+///
+/// PS analog: `Pokemon.getStat(stat, unboosted?: boolean, unmodified?:
+/// boolean)`, plus the `ignoreNegativeOffensive` / `ignorePositiveDefensive`
+/// flags consumed by `sim/battle-actions.ts::getDamage` for crits.
+///
+/// - `None`: pass the stage through unchanged.
+/// - `Positive`: clamp positive stages to 0 (used by Unaware on the
+///    side that reads the *defender's* offensive boosts — i.e. an
+///    Unaware defender ignores attacker's stat boosts on offense).
+/// - `Negative`: clamp negative stages to 0 (Unaware attacker ignores
+///    defender's defensive drops; also the crit "ignore -atk" branch).
+/// - `All`: clamp to 0 in either direction. Used by Sacred Sword / Chip
+///    Away on the defender's defensive stage (ignore both directions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoostIgnore {
+    #[default]
+    None,
+    Positive,
+    Negative,
+    All,
+}
+
+impl BoostIgnore {
+    /// Project the raw stage through this policy, returning the effective
+    /// stage that the multiplier table should read.
+    #[inline]
+    pub fn project(self, stage: i8) -> i8 {
+        match self {
+            BoostIgnore::None => stage,
+            BoostIgnore::Positive => stage.min(0),
+            BoostIgnore::Negative => stage.max(0),
+            BoostIgnore::All => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DamageContext {
     /// Caller decides whether this hit is a crit; we just apply the multiplier.
@@ -522,8 +560,14 @@ pub fn calculate_damage(
 
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
-    let eff_atk_stage = if ctx.crit && atk_stage < 0 { 0 } else { atk_stage };
-    let eff_def_stage = if ctx.crit && def_stage > 0 { 0 } else { def_stage };
+    // Routed through `BoostIgnore` so future Unaware (Negative on the
+    // attacker's defensive read / Positive on the attacker's offensive
+    // read when defender has Unaware), Sacred Sword / Chip Away (All
+    // on defender's defensive read), and crit compose cleanly.
+    let atk_policy = if ctx.crit { BoostIgnore::Negative } else { BoostIgnore::None };
+    let def_policy = if ctx.crit { BoostIgnore::Positive } else { BoostIgnore::None };
+    let eff_atk_stage = atk_policy.project(atk_stage);
+    let eff_def_stage = def_policy.project(def_stage);
     let a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let d = apply_boost(def_stat, eff_def_stage).max(1);
 
@@ -708,6 +752,23 @@ pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u1
 mod tests {
     use super::*;
     use crate::pokemon::{compute_stats, nature_by_slug, FinalStats, Pokemon, StatSpread, Status};
+
+    #[test]
+    fn boost_ignore_policies_project_as_documented() {
+        // Positive: clamp positive to 0; keep negative.
+        assert_eq!(BoostIgnore::Positive.project(2), 0);
+        assert_eq!(BoostIgnore::Positive.project(-2), -2);
+        // Negative: clamp negative to 0; keep positive.
+        assert_eq!(BoostIgnore::Negative.project(-2), 0);
+        assert_eq!(BoostIgnore::Negative.project(2), 2);
+        // All: always 0.
+        assert_eq!(BoostIgnore::All.project(2), 0);
+        assert_eq!(BoostIgnore::All.project(-2), 0);
+        // None: identity.
+        assert_eq!(BoostIgnore::None.project(2), 2);
+        assert_eq!(BoostIgnore::None.project(-2), -2);
+        assert_eq!(BoostIgnore::None.project(0), 0);
+    }
 
     fn make_mon(
         species_slug: &str,
