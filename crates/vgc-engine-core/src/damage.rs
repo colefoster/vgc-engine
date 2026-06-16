@@ -407,12 +407,22 @@ pub fn calculate_damage(
     let roll = (ctx.roll.min(DamageContext::MAX_ROLL)) as u32;
     dmg = dmg * (85 + roll) / 100;
 
-    // STAB
+    // STAB. Adaptability bumps STAB from ×1.5 to ×2 — PS
+    // `data/abilities.ts:adaptability` `onModifyMove` sets
+    // `move.stab = 2`. Basculegion (top-3 corpus, 93.2% Adaptability per
+    // Smogon 2026-05) / Crawdaunt / Dragalge / Porygon-Z. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Adaptability_(Ability)>.
     let species = attacker.species();
     let is_stab = (0..species.num_types as usize)
         .any(|i| species.types[i] == move_type);
     if is_stab {
-        dmg = dmg * 3 / 2;
+        let adaptability = attacker.ability_id != u16::MAX
+            && data::ABILITIES[attacker.ability_id as usize].slug == "adaptability";
+        if adaptability {
+            dmg = dmg * 2;
+        } else {
+            dmg = dmg * 3 / 2;
+        }
     }
 
     // Type effectiveness
@@ -724,6 +734,31 @@ mod tests {
                 aura_break_active: true, attacker_total_fainted_allies: 0 });
         assert!(broken < base,
                 "Aura Break should flip Fairy Aura to ×0.75 ({} < {})", broken, base);
+    }
+
+    #[test]
+    fn adaptability_makes_stab_x2() {
+        // Adaptability bumps STAB ×1.5 → ×2, so damage ratio is 4/3.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let mid = move_id("earthquake"); // STAB Ground for Garchomp
+        let mk = |a: &Pokemon| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let base = mk(&atk);
+        let ada_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "adaptability").unwrap() as u16;
+        atk.ability_id = ada_id;
+        let ada = mk(&atk);
+        let ratio_x100 = (ada as u32) * 100 / (base.max(1) as u32);
+        assert!((130..=136).contains(&ratio_x100),
+                "Adaptability STAB ratio ≈ 4/3, got ×{}/100", ratio_x100);
     }
 
     #[test]
