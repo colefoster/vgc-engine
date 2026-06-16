@@ -216,6 +216,19 @@ pub fn calculate_damage(
         // Basculegion-F / Pecharunt's late-game finisher.
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
+    } else if matches!(m.slug, "eruption" | "waterspout" | "dragonenergy") {
+        // PS data/moves.ts: shared basePowerCallback
+        //   bp = move.basePower * pokemon.hp / pokemon.maxhp
+        // At full HP, 150 BP; linearly down to 1 at fainting. PS uses
+        // truncating integer division; min returned BP is clamped at
+        // 1 by the wider PS engine. We follow the same clamp here.
+        // Eruption (#48 by usage, Torkoal-Sun sets), Water Spout
+        // (Wash Pelipper / Wash Rotom — not common in gen 9 but
+        // appears), Dragon Energy (Regidrago signature).
+        let cur = attacker.current_hp as u32;
+        let max = attacker.stats.hp.max(1) as u32;
+        let scaled = (m.base_power as u32 * cur / max).max(1);
+        (m.type_, scaled)
     } else if matches!(m.slug, "storedpower" | "powertrip") {
         // PS data/moves.ts:storedpower / powertrip basePowerCallback:
         // `bp = move.basePower + 20 * pokemon.positiveBoosts()`.
