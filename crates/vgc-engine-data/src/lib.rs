@@ -31,6 +31,24 @@ mod tests {
         assert!(species_by_slug("pikachu").is_some());
     }
 
+    /// `is_nfe` is set for species that can still evolve.
+    /// Verified against PS `data/pokedex.ts` `evos` field.
+    #[test]
+    fn species_nfe_flag_populated() {
+        // Ivysaur evolves to Venusaur → NFE.
+        assert!(species_by_slug("ivysaur").unwrap().is_nfe);
+        // Chansey evolves to Blissey → NFE (Eviolite Chansey is the
+        // canonical Eviolite user).
+        assert!(species_by_slug("chansey").unwrap().is_nfe);
+        // Dusclops evolves to Dusknoir → NFE.
+        assert!(species_by_slug("dusclops").unwrap().is_nfe);
+        // Venusaur is fully evolved.
+        assert!(!species_by_slug("venusaur").unwrap().is_nfe);
+        // Pikachu evolves to Raichu → NFE (yes, even though it's the
+        // mascot — Eviolite Pikachu is legal, however unwise).
+        assert!(species_by_slug("pikachu").unwrap().is_nfe);
+    }
+
     /// Weights round-trip from `@pkmn/dex` `weightkg` into decigrams.
     /// Verified against PS `data/pokedex.ts` weightkg field.
     #[test]

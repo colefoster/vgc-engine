@@ -124,7 +124,7 @@ Internal engine structure that's known to need rework before certain mechanic cl
 
 **Why it matters**: Required for Eviolite.
 
-**Status**: not implemented.
+**Status**: shipped — PR-101 (`SpeciesDef::is_nfe` from PS `evos` non-empty).
 
 ## Move data fields known missing
 
