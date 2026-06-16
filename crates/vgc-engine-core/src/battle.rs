@@ -712,6 +712,30 @@ impl Battle {
             if item_mul_n != item_mul_d && dmg > 0 {
                 dmg = ((dmg as u32) * item_mul_n / item_mul_d).min(u16::MAX as u32) as u16;
             }
+            // Thick Fat (Snorlax / Mamoswine / Goodra-H): defender's
+            // ability halves the attacker's offensive stat against Fire
+            // (type 1) and Ice (type 5) moves. PS handler shape:
+            //   onSourceModifyAtk(atk, attacker, defender, move) {
+            //     if (move.type === 'Ice' || move.type === 'Fire')
+            //       return this.chainModify(0.5);
+            //   }
+            // Atk and SpA branches are identical bodies. Halving the
+            // offensive stat is mathematically equivalent to halving
+            // damage at the end of the base-formula chain, so we just
+            // do the latter here. Carries `flags: { breakable: 1 }`, so
+            // Mold Breaker (when it lands) lifts it. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>.
+            let defender_ability_slug = if defender.ability_id == u16::MAX {
+                ""
+            } else {
+                data::ABILITIES[defender.ability_id as usize].slug
+            };
+            if defender_ability_slug == "thickfat"
+                && (m.type_ == 1 || m.type_ == 5)
+                && dmg > 0
+            {
+                dmg /= 2;
+            }
             // Knock Off: ×1.5 vs item holders. PS data/moves.ts:knockoff
             // onBasePower step — applied as a move-level mult here.
             let knockoff_boost = m.slug == "knockoff" && defender.item_id != u16::MAX;
@@ -4805,6 +4829,85 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn thick_fat_halves_fire_damage() {
+        // Heatran fires Flamethrower (Fire) into Snorlax. Compare a
+        // Thick Fat Snorlax vs an Immunity (alt ability) Snorlax — only
+        // Thick Fat changes the damage path.
+        let p1_json = r#"[
+            {"species":"heatran","level":50,"ability":"flashfire","item":"focussash","nature":"modest","moves":["flamethrower","earthpower","magmastorm","dragonpulse"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_fat_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_plain_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let mut fat = Battle::new(BattleConfig { format: Format::Singles, seed: 22 },
+                                  p1.clone(),
+                                  TeamBuilder::from_json(p2_fat_json).unwrap());
+        let mut plain = Battle::new(BattleConfig { format: Format::Singles, seed: 22 },
+                                    p1,
+                                    TeamBuilder::from_json(p2_plain_json).unwrap());
+        let snor_full = fat.p2.team[0].current_hp;
+        fat.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        plain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let fat_dmg = snor_full - fat.p2.team[0].current_hp;
+        let plain_dmg = snor_full - plain.p2.team[0].current_hp;
+        assert!(fat_dmg > 0 && plain_dmg > 0);
+        assert!(fat_dmg < plain_dmg,
+                "Thick Fat should reduce Fire damage ({} < {})",
+                fat_dmg, plain_dmg);
+        // ×0.5 — allow ±1 for integer-floor jitter.
+        assert!(
+            fat_dmg as i32 - (plain_dmg as i32 / 2) <= 1
+                && (plain_dmg as i32 / 2) - fat_dmg as i32 <= 1,
+            "Thick Fat damage should be ~half ({} vs {})",
+            fat_dmg, plain_dmg);
+    }
+
+    #[test]
+    fn thick_fat_does_not_affect_non_fire_ice_moves() {
+        // Crunch (Dark) on Thick Fat Snorlax should hit at full damage.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["crunch","earthquake","dragonclaw","rockslide"]}
+        ]"#;
+        let p2_fat_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_plain_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let mut fat = Battle::new(BattleConfig { format: Format::Singles, seed: 4 },
+                                  p1.clone(),
+                                  TeamBuilder::from_json(p2_fat_json).unwrap());
+        let mut plain = Battle::new(BattleConfig { format: Format::Singles, seed: 4 },
+                                    p1,
+                                    TeamBuilder::from_json(p2_plain_json).unwrap());
+        let snor_full = fat.p2.team[0].current_hp;
+        fat.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        plain.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let fat_dmg = snor_full - fat.p2.team[0].current_hp;
+        let plain_dmg = snor_full - plain.p2.team[0].current_hp;
+        assert_eq!(fat_dmg, plain_dmg,
+                   "Thick Fat must not affect Dark moves ({} vs {})",
+                   fat_dmg, plain_dmg);
     }
 
     #[test]
