@@ -354,7 +354,7 @@ See above.
 
 **What it is**: User heals 1/8 of damage dealt.
 
-**Status**: not implemented.
+**Status**: shipped — PR-105.
 
 ## Plate / Memory / Mask items
 
@@ -395,3 +395,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Wise Glasses (PR-102)
 - Muscle Band (PR-103)
 - Black Sludge (PR-104)
+- Shell Bell (PR-105)

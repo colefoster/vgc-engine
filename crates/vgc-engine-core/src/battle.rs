@@ -1458,6 +1458,32 @@ impl Battle {
             }
         }
 
+        // Shell Bell — PS `data/items.ts:shellbell`:
+        //   onAfterMoveSecondarySelf(source, target, move) {
+        //     if (move.category !== 'Status' && !source.forceSwitchFlag) {
+        //       this.heal(this.clampIntRange(
+        //         source.lastDamage / 8, 1), source);
+        //     }
+        //   }
+        // Heals the user 1/8 of damage dealt by their last attacking
+        // move. `source.lastDamage` is PS's per-move damage accumulator;
+        // for spread moves it sums across targets — same shape as our
+        // `any_damage_dealt`. Skipped on status moves and on
+        // forced-switch results (no current self-switch corner case
+        // here — Shell Bell fires before U-turn switch resolution
+        // anyway). Magic Guard does NOT block heals; PS routes through
+        // onTryHeal, not onDamage.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
+        if attacker_item_slug == "shellbell" && any_damage_dealt > 0 && damaging {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.is_alive() {
+                    let heal = (any_damage_dealt as u32 / 8).max(1) as u16;
+                    let max = a.stats.hp;
+                    a.current_hp = ((a.current_hp as u32) + heal as u32).min(max as u32) as u16;
+                }
+            }
+        }
+
         // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
         // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
         // `flipturn:5787` all set `selfSwitch: true`. The switch fires
@@ -5606,6 +5632,71 @@ mod tests {
         let lost = luc_before - b.p1.team[0].current_hp;
         assert!(lost >= (luc_full_hp / 8).max(1),
                 "Iron Barbs should chip ≥ 1/8 max HP (lost {})", lost);
+    }
+
+    #[test]
+    fn shell_bell_heals_one_eighth_of_damage_dealt() {
+        // Garchomp Dragon Claw into Heracross — Shell Bell on Garchomp
+        // heals 1/8 of damage dealt. Damage first so heal can land.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"shellbell","nature":"adamant","moves":["dragonclaw","tackle","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"heracross","level":50,"ability":"guts","item":"leftovers","nature":"impish","moves":["closecombat","megahorn","stoneedge","earthquake"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 21 }, p1, p2);
+        // Pre-damage Garchomp so heal can apply.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let gchomp_pre = b.p1.team[0].current_hp;
+        let herac_pre = b.p2.team[0].current_hp;
+        // Now Garchomp swings; we should observe BOTH Heracross losing
+        // HP AND Garchomp gaining ~dmg/8 HP.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg = herac_pre - b.p2.team[0].current_hp;
+        let expected_heal = (dmg / 8).max(1);
+        // Garchomp's HP went UP by `expected_heal` (capped at max).
+        let gchomp_post = b.p1.team[0].current_hp;
+        assert!(gchomp_post >= gchomp_pre + expected_heal,
+                "Shell Bell should heal >= dmg/8 ({} -> {}, dmg {})",
+                gchomp_pre, gchomp_post, dmg);
+        // And no more than expected_heal + 1 (round-off tolerance).
+        assert!(gchomp_post <= (gchomp_pre + expected_heal + 1).min(b.p1.team[0].stats.hp),
+                "Shell Bell heal cap mismatch");
+    }
+
+    #[test]
+    fn shell_bell_does_not_proc_on_status_move() {
+        // Garchomp Swords Dance — no damage, no heal.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"shellbell","nature":"adamant","moves":["swordsdance","tackle","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"leftovers","nature":"hardy","moves":["thunderbolt","quickattack","ironhead","irontail"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 22 }, p1, p2);
+        // Damage Garchomp first.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let gchomp_pre = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Garchomp should NOT have healed from Shell Bell (status move).
+        assert_eq!(b.p1.team[0].current_hp, gchomp_pre,
+                   "Shell Bell must NOT heal on a status move");
     }
 
     #[test]
