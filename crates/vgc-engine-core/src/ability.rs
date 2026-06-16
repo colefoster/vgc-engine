@@ -379,18 +379,24 @@ pub fn on_damaging_hit(
     move_id: u16,
     attacker_side: SideRef,
     attacker_slot: u8,
+    rng: &mut crate::rng::Rng,
 ) {
-    let slug = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) if m.is_alive() => ability_slug(m.ability_id),
-        _ => return,
+    // Read ability slug + alive flag; the hook fires on a KO hit too
+    // (PS contact-status abilities like Static still paralyze the
+    // attacker even if the target faints). Per-arm gates below decide
+    // whether the target being alive is required.
+    let (slug, target_alive) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (ability_slug(m.ability_id), m.is_alive()),
+        None => return,
     };
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
     // list, so Mold Breaker does NOT bypass it (verified empty `flags: {}`
-    // on the handler). Bulbapedia:
+    // on the handler). Skipped on a KO hit — a fainted mon can't carry
+    // a stat boost. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
-    if slug == "stamina" {
+    if slug == "stamina" && target_alive {
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6);
         }
@@ -424,6 +430,36 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+            }
+        }
+    }
+    // Contact-status abilities — Static (paralyze), Flame Body (burn),
+    // Poison Point (poison). PS handlers all share the shape:
+    //   onDamagingHit(damage, target, source, move) {
+    //     if (this.checkMoveMakesContact(move, source, target)) {
+    //       if (this.randomChance(3, 10)) source.trySetStatus(<status>);
+    //     }
+    //   }
+    // 30% chance per contact hit. `trySetStatus` enforces the standard
+    // status-immunity gates (already-statused / type immunity / Sub),
+    // and Magic Guard / Substitute on the attacker block the status
+    // landing for the same reasons damage doesn't tick. Cute Charm
+    // (infatuate volatile) deferred — infatuation isn't modelled yet.
+    let contact_status = match slug {
+        "static" => Some(crate::pokemon::Status::Paralysis),
+        "flamebody" => Some(crate::pokemon::Status::Burn),
+        "poisonpoint" => Some(crate::pokemon::Status::Poison),
+        _ => None,
+    };
+    if let Some(status) = contact_status {
+        let m = &data::MOVES[move_id as usize];
+        if m.makes_contact {
+            let attacker_alive = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if attacker_alive && rng.percent_1_100() <= 30 {
+                battle.try_set_status(attacker_side, attacker_slot, status);
             }
         }
     }

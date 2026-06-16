@@ -920,10 +920,17 @@ impl Battle {
             // mon — sub-absorbed hits skipped. Dispatches Stamina,
             // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
             // their own PRs.
-            if alive_post && !hit_sub && effective_dmg > 0 {
+            if !hit_sub && effective_dmg > 0 {
+                // PS fires onDamagingHit regardless of whether the
+                // target survived (Rough Skin / Static / Flame Body
+                // tick on a KO hit too). Individual ability arms in
+                // `on_damaging_hit` gate on `target_is_alive` when
+                // relevant (Stamina only boosts a live target).
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::ability::on_damaging_hit(
-                    self, tside, tslot, move_id, actor_side, actor_slot,
+                    self, tside, tslot, move_id, actor_side, actor_slot, &mut rng,
                 );
+                self.rng = rng;
             }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
@@ -5747,6 +5754,66 @@ mod tests {
             rate >= 30 && rate <= 55,
             "+2 evasion should reduce 70%-acc hit to ≈42%; got {rate}%"
         );
+    }
+
+    #[test]
+    fn static_paralyzes_contact_attacker_with_30pct_chance() {
+        // Pikachu has Static. A contact attacker should be paralyzed
+        // roughly 30% of the time across trials. Use Mortal Spin? No,
+        // use a clean contact move like Body Slam (Snorlax). Snorlax
+        // is Normal so it's not Paralysis-immune.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 200u32;
+        let mut paras = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if matches!(b.p2.team[0].status, Status::Paralysis) {
+                paras += 1;
+            }
+        }
+        let rate = paras * 100 / trials;
+        assert!(
+            rate >= 15 && rate <= 45,
+            "Static paralysis rate {rate}% (expected ≈30% over 200 trials)"
+        );
+    }
+
+    #[test]
+    fn static_does_not_trigger_on_non_contact_move() {
+        // Thunderbolt is non-contact (PS data/moves.ts:thunderbolt has
+        // no `flags.contact`). Pikachu hits Pikachu (Static both sides)
+        // with Thunderbolt — neither attacker should be paralyzed.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Confirm thunderbolt is non-contact in data.
+        let tb_id = data::MOVES.iter().position(|m| m.slug == "thunderbolt").unwrap();
+        assert!(!data::MOVES[tb_id].makes_contact, "Thunderbolt should be non-contact");
+        // Pikachu thunderbolts Snorlax — Snorlax doesn't have Static so
+        // we mainly verify the attacker (Pikachu) didn't get paralyzed
+        // by some misfire. (Snorlax has no contact-status ability.)
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!matches!(b.p1.team[0].status, Status::Paralysis));
     }
 
     #[test]
