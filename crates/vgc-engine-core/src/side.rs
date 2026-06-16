@@ -57,6 +57,18 @@ pub struct SideConditions {
     /// the moment of use; otherwise the move fails. Duration 5
     /// (8 with Light Clay — deferred). Same bypass rules.
     pub aurora_veil_turns: u8,
+    /// Wide Guard: 1-turn side condition that blocks incoming spread
+    /// moves (`target: allAdjacent` / `allAdjacentFoes`). PS
+    /// data/moves.ts:wideguard sets `sideCondition: 'wideguard'`
+    /// with `duration: 1`; set to true at use, cleared at end of
+    /// turn. Stall-counter family.
+    pub wide_guard_this_turn: bool,
+    /// Quick Guard: 1-turn side condition that blocks incoming
+    /// priority moves (priority > 0). PS data/moves.ts:quickguard,
+    /// same shape as Wide Guard. Notably Quick Guard does NOT block
+    /// Sucker Punch on its own user — gated check happens at
+    /// per-target resolution.
+    pub quick_guard_this_turn: bool,
 }
 
 impl Side {
