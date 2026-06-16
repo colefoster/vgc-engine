@@ -2112,6 +2112,48 @@ impl Battle {
                     }
                 }
             }
+            "recover" | "softboiled" | "slackoff" | "milkdrink" | "roost"
+            | "synthesis" | "morningsun" | "moonlight" | "shoreup" => {
+                // Recover-class self heals. PS data/moves.ts: each entry
+                // either declares `heal: [1,2]` (flat 50%) or uses an
+                // onHit `factor` depending on weather. We replicate:
+                //
+                //   recover/softboiled/slackoff/milkdrink/roost: 50%.
+                //   synthesis/morningsun/moonlight: 50% default; 66.7%
+                //     in Sun; 25% in Rain/Sand/Snow.
+                //   shoreup: 50% default; 66.7% in Sand.
+                //
+                // PS uses `Math.floor(maxhp * factor)`; floor matches
+                // integer-div in u32. The 66.7% factor is `2/3` in PS
+                // (`this.modify(maxhp, 0.667)` → modify uses 0x1556/0x1000
+                // ≈ 0.66675 which floors to maxhp*2/3 for typical HP).
+                // Roost additionally sets a "Flying type removed for the
+                // turn" volatile — deferred to a follow-up PR since the
+                // type-table read path isn't yet wired for per-turn
+                // overrides. Heal floors at 1 HP per PS heal helper.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recover_(move)>
+                let max_hp_factor: (u32, u32) = match m.slug {
+                    "synthesis" | "morningsun" | "moonlight" => match self.weather {
+                        crate::weather::Weather::Sun => (2, 3),
+                        crate::weather::Weather::Rain
+                        | crate::weather::Weather::Sand
+                        | crate::weather::Weather::Snow => (1, 4),
+                        _ => (1, 2),
+                    },
+                    "shoreup" => match self.weather {
+                        crate::weather::Weather::Sand => (2, 3),
+                        _ => (1, 2),
+                    },
+                    _ => (1, 2),
+                };
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() && a.current_hp < a.stats.hp {
+                        let heal = ((a.stats.hp as u32 * max_hp_factor.0) / max_hp_factor.1).max(1) as u16;
+                        a.current_hp = (a.current_hp as u32 + heal as u32).min(a.stats.hp as u32) as u16;
+                    }
+                }
+            }
             _ => {
                 // Self-boost status moves — PS data/moves.ts: each
                 // listed move has `target: "self"` (or `target: "allies"`
@@ -8383,5 +8425,102 @@ mod tests {
             );
         }
         assert_eq!(b.p1.team[0].boosts[0], 6, "Atk stage clamps at +6");
+    }
+
+    #[test]
+    fn recover_heals_fifty_percent_max_hp() {
+        // PS data/moves.ts:recover: heal [1,2] of max HP. Set up a damage
+        // exchange, then Recover.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["recover","scald","toxic","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Pre-damage Toxapex to half HP.
+        let half = b.p1.team[0].stats.hp / 2;
+        b.p1.team[0].current_hp = half;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let max = b.p1.team[0].stats.hp;
+        let expected = (half as u32 + (max as u32 / 2)).min(max as u32) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Recover heals 50% max HP");
+    }
+
+    #[test]
+    fn moonlight_heals_two_thirds_in_sun() {
+        // PS data/moves.ts:moonlight: factor 0.667 in Sun.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["moonlight","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["sunnyday","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.weather = crate::weather::Weather::Sun;
+        b.weather_turns = 5;
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let expected = (1u32 + (max as u32 * 2 / 3)).min(max as u32) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Moonlight heals 2/3 in Sun");
+    }
+
+    #[test]
+    fn moonlight_heals_one_quarter_in_rain() {
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["moonlight","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.weather = crate::weather::Weather::Rain;
+        b.weather_turns = 5;
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let expected = (1u32 + (max as u32 / 4)).min(max as u32) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Moonlight heals 1/4 in Rain");
+    }
+
+    #[test]
+    fn shore_up_heals_two_thirds_in_sand() {
+        let p1_json = r#"[
+            {"species":"hippowdon","level":50,"ability":"sandstream","nature":"impish","moves":["shoreup","earthquake","stealthrock","slackoff"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.weather = crate::weather::Weather::Sand;
+        b.weather_turns = 5;
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Hippowdon is Ground-type, immune to sand chip — no end-of-turn
+        // damage adjustment needed.
+        let expected = (1u32 + (max as u32 * 2 / 3)).min(max as u32) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Shore Up heals 2/3 in Sand");
     }
 }
