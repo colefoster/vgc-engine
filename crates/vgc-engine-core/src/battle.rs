@@ -69,9 +69,24 @@ pub struct Battle {
 
 impl Battle {
     pub fn new(config: BattleConfig, p1_team: Vec<Pokemon>, p2_team: Vec<Pokemon>) -> Self {
+        let rng = Rng::new(config.seed);
+        Self::with_rng(config, rng, p1_team, p2_team)
+    }
+
+    /// Construct a battle with a caller-supplied RNG. Used by the
+    /// corpus differential harness to inject an `Rng::Oracle(...)`
+    /// queue captured from a PS run of the same action sequence —
+    /// damage-roll / crit / accuracy noise drops out of the diff and
+    /// only mechanic divergence remains. `config.seed` is ignored
+    /// when an Oracle RNG is supplied.
+    pub fn with_rng(
+        config: BattleConfig,
+        rng: Rng,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+    ) -> Self {
         let p1 = Side::new(p1_team, config.format);
         let p2 = Side::new(p2_team, config.format);
-        let rng = Rng::new(config.seed);
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -220,8 +235,10 @@ impl Battle {
         self.apply_switches(SideRef::P2, p2_choices);
 
         // 2. Resolve moves in priority+speed order.
-        // Temporarily move rng out to split-borrow with `self`.
-        let mut rng = self.rng;
+        // Temporarily move rng out to split-borrow with `self`. `Rng`
+        // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
+        // placeholder for the duration of the call.
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         let order: Vec<ScheduledAction> =
             action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
@@ -610,7 +627,11 @@ impl Battle {
             }
 
             // Crit + damage roll.
-            let crit = self.rng.range(24) == 0;
+            // Splitmix: 1/24 base crit (gen 9; high-crit-ratio moves
+            // deferred). Oracle: replays the source sim's recorded
+            // crit flag, which already encodes ability / item /
+            // high-crit-ratio adjustments.
+            let crit = self.rng.crit();
             let roll = self.rng.damage_roll();
             // Apply Assault Vest spd boost to the defender if the attack
             // is special (×1.5 spd; physical untouched).
@@ -751,7 +772,7 @@ impl Battle {
             let alive_post = self.side(tside).active_mon(tslot as usize)
                 .is_some_and(|m| m.is_alive());
             if alive_post && !hit_sub {
-                let mut rng = self.rng;
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
                 self.rng = rng;
             }
@@ -3488,7 +3509,7 @@ mod tests {
         // Sanity: Prankster boosted Encore priority is reflected in
         // action_order — Encore should resolve BEFORE Garchomp's EQ
         // even though Garchomp is faster in raw speed.
-        let mut rng_copy = b.rng;
+        let mut rng_copy = b.rng.clone();
         let order = crate::order::action_order(
             &b,
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
