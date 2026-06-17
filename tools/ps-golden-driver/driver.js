@@ -267,8 +267,13 @@ function parseLog(log) {
 // player stream and writes the next pre-specified action for that side.
 // Handles team preview and forceSwitch automatically (sends a default
 // team order; uses the next turn entry for forceSwitch).
+//
+// In random-play mode, `actions` is null and `picker` is a function
+// `(request) => choiceString` that picks a uniformly-random legal
+// action per-request. Picker logic mirrors PS's own
+// `sim/tools/random-player-ai.ts` `receiveRequest` (lines 37-189).
 
-async function driveSide(playerStream, actions, teamLen, sideTag, debug, errorsOut) {
+async function driveSide(playerStream, actions, teamLen, sideTag, debug, errorsOut, picker) {
   let idx = 0;
   for await (const chunk of playerStream) {
     if (debug) process.stderr.write(`[${sideTag}] ${chunk.slice(0, 200).replace(/\n/g, ' | ')}\n`);
@@ -288,12 +293,142 @@ async function driveSide(playerStream, actions, teamLen, sideTag, debug, errorsO
     }
     if (req.wait) continue;
     if (req.forceSwitch || req.active) {
+      if (picker) {
+        const cmd = picker(req);
+        if (cmd == null) break;
+        playerStream.write(cmd);
+        continue;
+      }
       if (idx >= actions.length) break;
       const cmd = actions[idx++];
       playerStream.write(cmd);
       continue;
     }
   }
+}
+
+// --- Random-play picker --------------------------------------------------
+//
+// mulberry32 — same PRNG team-gen.js uses; small, deterministic, no deps.
+
+function mulberry32(seed) {
+  let a = (seed >>> 0) || 1;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Picks a uniformly-random legal action per request. Mirrors
+// sim/tools/random-player-ai.ts:37-189 (`receiveRequest`) — same
+// branching on req.wait / req.forceSwitch / req.active, same legal-set
+// construction, same one-side comma-joined output.
+function makeRandomPicker(rand) {
+  const randInt = (n) => Math.floor(rand() * n);
+  const sample = (arr) => arr[randInt(arr.length)];
+
+  return function picker(req) {
+    if (req.wait) return null;
+
+    if (req.forceSwitch) {
+      // sim/tools/random-player-ai.ts:41-67
+      const pokemon = req.side.pokemon;
+      const chosen = [];
+      const choices = req.forceSwitch.map((mustSwitch, i) => {
+        if (!mustSwitch) return 'pass';
+        const canSwitch = [];
+        for (let j = 1; j <= 6; j++) {
+          const p = pokemon[j - 1];
+          if (!p) continue;
+          if (j <= req.forceSwitch.length && !pokemon[i].reviving) continue;
+          if (chosen.includes(j)) continue;
+          const isFnt = p.condition.endsWith(' fnt');
+          // Same parity rule as the PS AI (random-player-ai.ts:55):
+          // keep j when `!fnt === !reviving` — normal switch wants
+          // alive (reviving=false → !fnt must be true), revival-blessing
+          // wants fainted.
+          if ((!isFnt) !== (!pokemon[i].reviving)) continue;
+          canSwitch.push(j);
+        }
+        if (!canSwitch.length) return 'pass';
+        const target = sample(canSwitch);
+        chosen.push(target);
+        return `switch ${target}`;
+      });
+      return choices.join(', ');
+    }
+
+    if (req.active) {
+      // sim/tools/random-player-ai.ts:70-189
+      const pokemon = req.side.pokemon;
+      const chosen = [];
+      const choices = req.active.map((active, i) => {
+        if (pokemon[i].condition.endsWith(' fnt') || pokemon[i].commanding) return 'pass';
+
+        const possibleMoves = active.moves || [];
+        const canMove = [];
+        for (let j = 1; j <= possibleMoves.length; j++) {
+          if (possibleMoves[j - 1].disabled) continue;
+          canMove.push({
+            slot: j,
+            move: possibleMoves[j - 1].move,
+            target: possibleMoves[j - 1].target,
+          });
+        }
+        // Filter adjacentAlly moves if no ally alive.
+        const hasAlly = pokemon.length > 1 && pokemon[i ^ 1] &&
+          !pokemon[i ^ 1].condition.endsWith(' fnt');
+        const filtered = canMove.filter((m) => m.target !== 'adjacentAlly' || hasAlly);
+        const movesList = filtered.length ? filtered : canMove;
+
+        const moves = movesList.map((m) => {
+          let move = `move ${m.slot}`;
+          if (req.active.length > 1) {
+            if (['normal', 'any', 'adjacentFoe'].includes(m.target)) {
+              move += ` ${1 + randInt(2)}`;
+            } else if (m.target === 'adjacentAlly') {
+              move += ` -${(i ^ 1) + 1}`;
+            } else if (m.target === 'adjacentAllyOrSelf') {
+              if (hasAlly) move += ` -${1 + randInt(2)}`;
+              else move += ` -${i + 1}`;
+            }
+          }
+          return move;
+        });
+
+        const canSwitch = [];
+        for (let j = 1; j <= 6; j++) {
+          const p = pokemon[j - 1];
+          if (!p) continue;
+          if (p.active) continue;
+          if (chosen.includes(j)) continue;
+          if (p.condition.endsWith(' fnt')) continue;
+          canSwitch.push(j);
+        }
+        const switches = active.trapped ? [] : canSwitch;
+
+        // Same gate as PS AI: switch if no moves OR `random() > move` (1.0
+        // by default → never switch voluntarily, but we use 0.8 so we
+        // exercise voluntary switching in the random goldens).
+        const moveRate = 0.8;
+        if (switches.length && (!moves.length || rand() > moveRate)) {
+          const target = sample(switches);
+          chosen.push(target);
+          return `switch ${target}`;
+        }
+        if (moves.length) {
+          return sample(moves);
+        }
+        return 'pass';
+      });
+      return choices.join(', ');
+    }
+
+    return null;
+  };
 }
 
 // --- Job runner ----------------------------------------------------------
@@ -314,8 +449,22 @@ async function runJob(job) {
   if (!Array.isArray(team1) || team1.length === 0) throw new Error('p1.team failed to parse');
   if (!Array.isArray(team2) || team2.length === 0) throw new Error('p2.team failed to parse');
 
-  const p1Actions = (job.turns || []).map((t) => normalizeTurnAction(t.p1));
-  const p2Actions = (job.turns || []).map((t) => normalizeTurnAction(t.p2));
+  const randomPlay = !!job.random_play;
+  const maxTurns = job.max_turns || 30;
+
+  const p1Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p1));
+  const p2Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p2));
+
+  // Side-distinct PRNG seeds: derived from seed[0] so the run is
+  // reproducible from a single integer (matches team-gen.js convention).
+  // The constants are arbitrary but distinct large primes so p1's stream
+  // doesn't trivially alias p2's.
+  const p1Picker = randomPlay
+    ? makeRandomPicker(mulberry32(((seed[0] || 1) * 2654435761) >>> 0))
+    : null;
+  const p2Picker = randomPlay
+    ? makeRandomPicker(mulberry32(((seed[0] || 1) * 1597334677) >>> 0))
+    : null;
 
   const rng = [];
   const restore = patchRng(rng);
@@ -324,15 +473,31 @@ async function runJob(job) {
   const stream = new BattleStream();
   const sides = getPlayerStreams(stream);
   const logChunks = [];
+  let currentTurn = 0;
   const drainOmni = (async () => {
-    for await (const chunk of sides.omniscient) logChunks.push(chunk);
+    for await (const chunk of sides.omniscient) {
+      logChunks.push(chunk);
+      // Track turn number from the protocol so we can stop after max_turns.
+      for (const l of chunk.split('\n')) {
+        if (l.startsWith('|turn|')) {
+          const n = parseInt(l.slice('|turn|'.length), 10);
+          if (Number.isFinite(n)) currentTurn = n;
+          if (randomPlay && currentTurn > maxTurns) {
+            try { sides.omniscient.write('>forcetie'); } catch (_) {}
+          }
+        }
+        if (l.startsWith('|win|') || l.startsWith('|tie')) {
+          // Battle ended naturally.
+        }
+      }
+    }
   })();
 
   const debug = process.env.PS_GOLDEN_DEBUG === '1';
 
   try {
-    const driveP1 = driveSide(sides.p1, p1Actions, team1.length, 'p1', debug, sideErrors);
-    const driveP2 = driveSide(sides.p2, p2Actions, team2.length, 'p2', debug, sideErrors);
+    const driveP1 = driveSide(sides.p1, p1Actions, team1.length, 'p1', debug, sideErrors, p1Picker);
+    const driveP2 = driveSide(sides.p2, p2Actions, team2.length, 'p2', debug, sideErrors, p2Picker);
 
     sides.omniscient.write('>start ' + JSON.stringify({ formatid: format, seed }));
     sides.omniscient.write('>player p1 ' + JSON.stringify({
@@ -344,7 +509,9 @@ async function runJob(job) {
 
     // Wait for both sides to exhaust their action lists or stop receiving
     // requests; hard timeout in case PS hangs waiting on input.
-    const timeoutMs = 10_000;
+    // Random-play battles run to 30 turns by default — bump the cap so the
+    // long ones don't get truncated by the watchdog.
+    const timeoutMs = randomPlay ? 60_000 : 10_000;
     const timeoutSym = Symbol('timeout');
     const safeP1 = driveP1.catch((e) => { if (debug) process.stderr.write(`p1 err: ${e}\n`); });
     const safeP2 = driveP2.catch((e) => { if (debug) process.stderr.write(`p2 err: ${e}\n`); });
@@ -368,7 +535,8 @@ async function runJob(job) {
     name: job.name || null,
     seed,
     format,
-    turns: (job.turns || []).length,
+    turns: randomPlay ? currentTurn : (job.turns || []).length,
+    random_play: randomPlay,
     events,
     rng,
     errors: sideErrors,
