@@ -2168,6 +2168,16 @@ impl Battle {
             // Subsequent uses just decrement.
             let first_use = attacker.lockin_turns == 0;
             let dur_roll = if first_use { 2 + self.rng.range(2) as u8 } else { 0 };
+            // Predict whether the lock will END this turn so we know
+            // whether to consume a confusion-duration draw. PS rolls
+            // `random(2, 6)` (= 2/3/4/5 turns) at confusion.onStart,
+            // and confusion is only applied when the lock ends — so
+            // pre-rolling here matches PS's draw-order exactly. If we
+            // don't pre-roll, the engine's Range(4) site would
+            // conditionally fire mid-mutation, defeating oracle alignment.
+            let current_remaining = if first_use { dur_roll } else { attacker.lockin_turns };
+            let will_end = current_remaining.saturating_sub(1) == 0;
+            let conf_dur_roll = if will_end { 2 + self.rng.range(4) as u32 } else { 0 };
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if a.is_alive() {
                     if first_use {
@@ -2178,16 +2188,18 @@ impl Battle {
                     if a.lockin_turns == 0 {
                         // Lock ended — confuse the user, clear slot.
                         a.lockin_move_slot = 255;
-                        // payload = remaining confusion turns. PS rolls
-                        // `random(2, 6)` (2-5 turns); we pick 4 (mode of
-                        // PS distribution) until the duration random
-                        // call lands as its own PR. The Confusion
-                        // onBeforeMove gate consumes payload-1 per
-                        // attempt — see resolve_move_with_pending.
+                        // payload = remaining confusion turns. PS
+                        // `data/conditions.ts:174 confusion.onStart`:
+                        //   `this.effectState.time = this.random(min, 6);`
+                        // with `min = 2` (or 3 for Axe Kick — separate
+                        // mechanic). `random(2, 6)` = 2/3/4/5 turns.
+                        // Confusion onBeforeMove decrements first and
+                        // resolves when counter hits 0, so the stored
+                        // payload corresponds 1:1 with PS's startTime.
                         let _ = a.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::Confusion,
                             turns_remaining: 0,
-                            payload: 4,
+                            payload: conf_dur_roll,
                         });
                     }
                 }
@@ -8347,6 +8359,45 @@ mod tests {
         // Engine consumed exactly the one Range event we queued.
         let (consumed, total) = b.oracle_pops().unwrap();
         assert_eq!((consumed, total), (1, 1));
+    }
+
+    #[test]
+    fn confusion_duration_roll_2_to_5_after_lockin() {
+        // PS data/conditions.ts:174 confusion.onStart rolls
+        // `random(2, 6)` -> 2/3/4/5 turns. Engine pre-rolls
+        // `2 + rng.range(4)` at the lock-in-end site so the draw
+        // count matches PS even when the lock ends mid-batch.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["outrage","earthquake","protect","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Sweep enough seeds to cover all 4 possible roll outcomes.
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..200u64 {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1.clone(), p2.clone());
+            let mut steps = 0;
+            while !b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion) && steps < 6 {
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+                );
+                steps += 1;
+            }
+            if let Some(v) = b.p1.team[0].volatiles.get(crate::pokemon::VolatileKind::Confusion) {
+                let dur = v.payload;
+                assert!(
+                    (2..=5).contains(&dur),
+                    "confusion duration {dur} outside PS [2,5]"
+                );
+                seen.insert(dur);
+            }
+        }
+        // Across 200 seeds we should see every outcome at least once.
+        assert!(seen.len() >= 3, "duration variety too low: {seen:?}");
     }
 
     #[test]
