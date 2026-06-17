@@ -544,8 +544,72 @@ async function runJob(job) {
   };
 }
 
+// --- Batch mode ----------------------------------------------------------
+//
+// Reads newline-delimited JSON jobs from stdin and emits one compact-JSON
+// result line per job on stdout. Boots PS once at startup so the dex load
+// (~60s) is amortized across the whole batch instead of being paid per
+// invocation. Errors in a single job are returned as `{ ok: false, errors }`
+// so one bad job doesn't kill the loop.
+async function runBatch() {
+  process.stdin.setEncoding('utf8');
+  let buf = '';
+  // We process jobs sequentially: PS's Battle global state (the prototype
+  // patch in patchRng + per-battle BattleStream) is not safe to run in
+  // parallel within one Node process.
+  const jobQueue = [];
+  let stdinDone = false;
+  let resolveNext = null;
+
+  const waitForJob = () => new Promise((res) => {
+    if (jobQueue.length || stdinDone) return res();
+    resolveNext = res;
+  });
+
+  process.stdin.on('data', (chunk) => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx);
+      buf = buf.slice(idx + 1);
+      if (line.trim()) jobQueue.push(line);
+    }
+    if (resolveNext) { const r = resolveNext; resolveNext = null; r(); }
+  });
+  process.stdin.on('end', () => {
+    if (buf.trim()) jobQueue.push(buf);
+    buf = '';
+    stdinDone = true;
+    if (resolveNext) { const r = resolveNext; resolveNext = null; r(); }
+  });
+
+  while (true) {
+    if (!jobQueue.length) {
+      if (stdinDone) break;
+      await waitForJob();
+      continue;
+    }
+    const line = jobQueue.shift();
+    let result;
+    try {
+      const job = JSON.parse(line);
+      result = await runJob(job);
+    } catch (err) {
+      result = {
+        ok: false,
+        errors: [String((err && err.message) || err)],
+      };
+    }
+    process.stdout.write(JSON.stringify(result) + '\n');
+  }
+}
+
 (async () => {
   try {
+    if (process.argv.includes('--batch')) {
+      await runBatch();
+      return;
+    }
     let raw;
     if (process.argv[2]) {
       raw = fs.readFileSync(process.argv[2], 'utf8');

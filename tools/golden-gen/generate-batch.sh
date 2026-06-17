@@ -35,6 +35,8 @@ ps_failed=0
 
 START=$(date +%s)
 
+# Step 1: build per-seed team pairs + input JSON files (cheap; team-gen is fast).
+declare -a SEEDS_OK
 for seed in $(seq 0 $((N - 1))); do
   attempted=$((attempted + 1))
   t1_seed=$((seed * 2 + 1000))
@@ -70,28 +72,81 @@ for seed in $(seq 0 $((N - 1))); do
   ' <(echo "$team1") <(echo "$team2") "$seed")"
 
   input_path="${OUT_DIR}/seed-${seed}.input.json"
-  ps_path="${OUT_DIR}/seed-${seed}.ps.json"
   echo "$job_json" > "$input_path"
-
-  if ! node "$DRIVER" "$input_path" > "$ps_path" 2>/dev/null; then
-    echo "seed=$seed: driver crashed" >&2
-    rm -f "$input_path" "$ps_path"
-    ps_failed=$((ps_failed + 1))
-    continue
-  fi
-  # Sanity-check ok flag.
-  if ! node -e '
-    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    process.exit(r.ok ? 0 : 1);
-  ' "$ps_path" 2>/dev/null; then
-    echo "seed=$seed: PS reported errors" >&2
-    rm -f "$input_path" "$ps_path"
-    ps_failed=$((ps_failed + 1))
-    continue
-  fi
-  succeeded=$((succeeded + 1))
-  printf "."
+  SEEDS_OK+=("$seed")
 done
+
+# Step 2: run the driver. For N>10, boot PS once via --batch and stream all
+# jobs through one Node process (saves ~60s/seed dex load). For small N
+# the per-job overhead is fine and keeps the codepath dead-simple.
+if [[ ${#SEEDS_OK[@]} -gt 10 ]]; then
+  # Build NDJSON: one compact-JSON job per line on stdin to the driver.
+  BATCH_IN="${OUT_DIR}/.batch.in.ndjson"
+  BATCH_OUT="${OUT_DIR}/.batch.out.ndjson"
+  : > "$BATCH_IN"
+  for seed in "${SEEDS_OK[@]}"; do
+    input_path="${OUT_DIR}/seed-${seed}.input.json"
+    # Compact (one-line) JSON so each job is a single NDJSON record.
+    node -e '
+      const j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      process.stdout.write(JSON.stringify(j) + "\n");
+    ' "$input_path" >> "$BATCH_IN"
+  done
+
+  if ! node "$DRIVER" --batch < "$BATCH_IN" > "$BATCH_OUT" 2>/dev/null; then
+    echo "batch driver crashed" >&2
+    rm -f "$BATCH_IN" "$BATCH_OUT"
+    for seed in "${SEEDS_OK[@]}"; do
+      rm -f "${OUT_DIR}/seed-${seed}.input.json"
+      ps_failed=$((ps_failed + 1))
+    done
+  else
+    # Split NDJSON output back into per-seed .ps.json files. Order matches
+    # SEEDS_OK because the driver processes jobs sequentially.
+    i=0
+    while IFS= read -r line; do
+      seed="${SEEDS_OK[$i]}"
+      ps_path="${OUT_DIR}/seed-${seed}.ps.json"
+      input_path="${OUT_DIR}/seed-${seed}.input.json"
+      echo "$line" > "$ps_path"
+      if ! node -e '
+        const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+        process.exit(r.ok ? 0 : 1);
+      ' "$ps_path" 2>/dev/null; then
+        echo "seed=$seed: PS reported errors" >&2
+        rm -f "$input_path" "$ps_path"
+        ps_failed=$((ps_failed + 1))
+      else
+        succeeded=$((succeeded + 1))
+        printf "."
+      fi
+      i=$((i + 1))
+    done < "$BATCH_OUT"
+    rm -f "$BATCH_IN" "$BATCH_OUT"
+  fi
+else
+  for seed in "${SEEDS_OK[@]}"; do
+    input_path="${OUT_DIR}/seed-${seed}.input.json"
+    ps_path="${OUT_DIR}/seed-${seed}.ps.json"
+    if ! node "$DRIVER" "$input_path" > "$ps_path" 2>/dev/null; then
+      echo "seed=$seed: driver crashed" >&2
+      rm -f "$input_path" "$ps_path"
+      ps_failed=$((ps_failed + 1))
+      continue
+    fi
+    if ! node -e '
+      const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      process.exit(r.ok ? 0 : 1);
+    ' "$ps_path" 2>/dev/null; then
+      echo "seed=$seed: PS reported errors" >&2
+      rm -f "$input_path" "$ps_path"
+      ps_failed=$((ps_failed + 1))
+      continue
+    fi
+    succeeded=$((succeeded + 1))
+    printf "."
+  done
+fi
 echo
 
 END=$(date +%s)
