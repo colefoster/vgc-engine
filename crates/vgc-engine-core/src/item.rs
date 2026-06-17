@@ -301,6 +301,28 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
+    // Flame Orb — PS `data/items.ts:flameorb`
+    // `onResidualOrder: 28, onResidualSubOrder: 4,
+    //  onResidual(pokemon) { pokemon.trySetStatus('brn', pokemon); }`
+    // Suborder 4 fires AFTER Sticky Barb (suborder 3), so a holder
+    // KO'd by Sticky Barb never reaches the burn-set step. Fire-type
+    // immunity is handled inside `try_set_status` (the type-immunity
+    // table). Magic Guard / status guards block ONLY damage, not the
+    // status set itself — PS's `trySetStatus` runs the normal status
+    // pipeline regardless.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flame_Orb>.
+    if slug == "flameorb" {
+        // Re-check the slot is alive after the Sticky Barb arm above —
+        // PS's residual scheduler skips KO'd mons within the same
+        // suborder boundary.
+        let still_alive = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.is_alive());
+        if still_alive {
+            battle.try_set_status(side, slot, crate::pokemon::Status::Burn);
+        }
+    }
     // (one-shot on ≤50% HP — handled in damage-side hook), focussash
     // (one-shot — handled on fatal hit, not residual), lifeorb (handled
     // on attack hit, not residual), choice items (modify A/D), etc.
