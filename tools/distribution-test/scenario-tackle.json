@@ -1,0 +1,11 @@
+{
+  "name": "snorlax_bodyslam_into_alakazam_no_item",
+  "format": "gen9customgame",
+  "p1_team": "Snorlax @ Leftovers\nAbility: Thick Fat\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 252 Atk / 4 Def\nAdamant Nature\n- Body Slam\n- Earthquake\n- Crunch\n- Rest\n",
+  "p2_team": "Alakazam @ Leftovers\nAbility: Synchronize\nLevel: 50\nTera Type: Psychic\nEVs: 4 HP / 252 Def / 252 SpD\nCalm Nature\n- Psychic\n- Shadow Ball\n- Focus Blast\n- Dazzling Gleam\n",
+  "p1_action": "move 1",
+  "p2_action": "move 1",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}
