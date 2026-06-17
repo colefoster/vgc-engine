@@ -2327,6 +2327,48 @@ impl Battle {
         // window). No alive bench mon = silent fail (matches PS
         // `canSwitch`). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
+        // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
+        // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
+        // Thunder Cage). PS data/conditions.ts:partiallytrapped —
+        // attached to the target after the initial hit; lasts
+        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
+        // residual order 13. Single-target moves; we apply to the
+        // first alive opposing slot the engine actually dealt damage
+        // to (mirrors PS's "applied to the hit target").
+        if any_damage_dealt > 0
+            && matches!(
+                m.slug,
+                "whirlpool" | "wrap" | "bind" | "firespin" | "sandtomb"
+                    | "magmastorm" | "infestation" | "clamp" | "snaptrap"
+                    | "thundercage"
+            )
+        {
+            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+            let opp = actor_side.opposing();
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let alive = self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.is_alive());
+                if !alive { continue; }
+                if self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
+                {
+                    break; // already trapped, PS no-ops
+                }
+                let payload = dur
+                    | ((actor_side as u8 as u32) << 8)
+                    | ((actor_slot as u32) << 16);
+                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::PartialTrap,
+                        turns_remaining: 0,
+                        payload,
+                    });
+                }
+                break; // single-target
+            }
+        }
+
         if matches!(m.slug, "uturn" | "voltswitch" | "flipturn") && any_damage_dealt > 0 {
             let still_alive = self
                 .side(actor_side)
@@ -2635,6 +2677,57 @@ impl Battle {
                     if matches!(m.status, Status::Toxic) {
                         let next = m.toxic_counter().saturating_add(1).min(15);
                         m.set_toxic_counter(next);
+                    }
+                }
+            }
+        }
+
+        // 13. Partial-trap residual. PS data/conditions.ts:partiallytrapped
+        //     onResidualOrder 13. Chip holder 1/8 max HP; decrement
+        //     payload counter; remove volatile when it hits 0. Magic
+        //     Guard blocks the chip but the duration still ticks
+        //     (PS: `damage` returns 0 under MG but the volatile
+        //     persists until its own duration expires).
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let (chip, magic_guard, expires) = match self
+                    .side(side)
+                    .active_mon(slot as usize)
+                {
+                    Some(m) if m.is_alive() => match m
+                        .volatiles
+                        .get(crate::pokemon::VolatileKind::PartialTrap)
+                    {
+                        Some(v) => {
+                            let chip = (m.stats.hp / 8).max(1);
+                            let remaining = (v.payload & 0xFF) as u8;
+                            let expires = remaining <= 1;
+                            (chip, crate::ability::has_magic_guard(m), expires)
+                        }
+                        None => (0, false, false),
+                    },
+                    _ => (0, false, false),
+                };
+                if chip == 0 {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if !magic_guard {
+                        m.current_hp = m.current_hp.saturating_sub(chip);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
+                    }
+                    if expires {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                    } else if let Some(pos) = m
+                        .volatiles
+                        .position(crate::pokemon::VolatileKind::PartialTrap)
+                    {
+                        let v = &mut m.volatiles.items[pos];
+                        let remaining = (v.payload & 0xFF).saturating_sub(1);
+                        v.payload = (v.payload & !0xFF) | remaining;
                     }
                 }
             }
@@ -4650,6 +4743,48 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, max - chip,
                    "Black Sludge should chip non-Poison 1/8 max HP");
+    }
+
+    #[test]
+    fn whirlpool_traps_and_chips_target_per_turn() {
+        // PS data/conditions.ts:partiallytrapped — Whirlpool /
+        // Wrap / Bind etc. attach this volatile; 1/8 max HP per
+        // turn for 5-6 turns.
+        let p1_json = r#"[
+            {"species":"milotic","level":50,"ability":"marvelscale","item":"","nature":"calm","moves":["whirlpool","scald","recover","icebeam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let snorlax_max = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Snorlax should now have the partial-trap volatile.
+        assert!(
+            b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap),
+            "Whirlpool should attach partial-trap volatile"
+        );
+        // Whirlpool dealt some damage AND end-of-turn chip applied.
+        let hp_after = b.p2.team[0].current_hp;
+        assert!(
+            hp_after < snorlax_max,
+            "Snorlax took Whirlpool damage + residual chip"
+        );
+        // Track volatile payload duration is 5 or 6 - 1 after the turn.
+        let v = b.p2.team[0]
+            .volatiles
+            .get(crate::pokemon::VolatileKind::PartialTrap)
+            .unwrap();
+        let remaining = v.payload & 0xFF;
+        assert!(
+            (4..=5).contains(&remaining),
+            "remaining turns after first chip should be 4 or 5; got {remaining}"
+        );
     }
 
     #[test]

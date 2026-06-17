@@ -255,6 +255,20 @@ pub enum VolatileKind {
     /// site for the powder-gate check. Cleared at the per-turn volatile
     /// reset / on switch-out.
     Redirect,
+    /// Partial-trap volatile (PS `data/conditions.ts:partiallytrapped`).
+    /// Set by Whirlpool / Wrap / Bind / Fire Spin / Sand Tomb /
+    /// Magma Storm / Infestation / Clamp / Snap Trap / Thunder Cage.
+    /// Indefinite duration semantics (we use `payload` to encode both
+    /// remaining turns and the source slot):
+    ///   bits 0..7 → remaining turns (1..=6, decremented each end of
+    ///               turn; volatile drops at 0)
+    ///   bits 8..15 → source side (0 = P1, 1 = P2)
+    ///   bits 16..23 → source slot (0 or 1)
+    /// Each end of turn (PS onResidualOrder 13) the holder takes
+    /// 1/8 max HP damage; Magic Guard blocks. Binding Band held by
+    /// the source bumps the chip to 1/6 — deferred (no consumer in
+    /// items.rs yet).
+    PartialTrap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
