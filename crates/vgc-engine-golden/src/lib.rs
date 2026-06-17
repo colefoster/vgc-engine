@@ -311,7 +311,14 @@ fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
     for e in events {
         match *e {
             PsRngEvent::Crit { value } => out.push(RngEvent::Crit(value)),
-            PsRngEvent::DamageRoll { value } => out.push(RngEvent::DamageRoll(value)),
+            PsRngEvent::DamageRoll { value } => {
+                // PS computes `damage * (100 - random(16)) / 100` —
+                // record `random(16) = v` means damage roll = 100 - v.
+                // Engine uses `(85 + roll) / 100`, so roll = 15 - v
+                // makes `(85 + (15 - v)) = (100 - v)` match PS.
+                // sim/battle.ts:2406.
+                out.push(RngEvent::DamageRoll(15u8.saturating_sub(value.min(15))));
+            }
             PsRngEvent::PercentRoll { value, threshold } => {
                 // PS asks randomChance(threshold, 100) and returns true
                 // when roll <= threshold. Encode as the smallest passing
@@ -326,7 +333,8 @@ fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
             }
             PsRngEvent::Range { value, bound } => {
                 if bound == 16 {
-                    out.push(RngEvent::DamageRoll(value as u8));
+                    // Same mirror-image translation as PsRngEvent::DamageRoll above.
+                    out.push(RngEvent::DamageRoll(15u8.saturating_sub((value as u8).min(15))));
                 } else {
                     out.push(RngEvent::Range(value));
                 }
@@ -640,6 +648,35 @@ mod tests {
         let evs = vec![PsRngEvent::PercentRoll { value: false, threshold: 30 }];
         let out = lower_rng_events(&evs);
         assert!(matches!(out[0], RngEvent::PercentRoll(31)));
+    }
+
+    #[test]
+    fn lower_rng_damage_roll_mirrors_ps() {
+        // PS: damage * (100 - random(16)) / 100
+        // Engine: damage * (85 + roll) / 100
+        // To match PS roll r, engine roll = 15 - r so (85 + 15 - r) = 100 - r.
+        // sim/battle.ts:2406.
+        let evs = vec![PsRngEvent::DamageRoll { value: 0 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::DamageRoll(15)), "PS roll 0 = max damage → engine roll 15");
+
+        let evs = vec![PsRngEvent::DamageRoll { value: 15 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::DamageRoll(0)), "PS roll 15 = min damage → engine roll 0");
+
+        let evs = vec![PsRngEvent::DamageRoll { value: 13 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::DamageRoll(2)), "PS roll 13 → engine roll 2");
+    }
+
+    #[test]
+    fn lower_rng_range_bound_16_uses_damage_roll_mirror() {
+        // Same mirror-image translation applies to Range events with bound=16
+        // (which the driver records when it can't statically tell the call was
+        // for a damage roll).
+        let evs = vec![PsRngEvent::Range { value: 13, bound: 16 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::DamageRoll(2)));
     }
 }
 
