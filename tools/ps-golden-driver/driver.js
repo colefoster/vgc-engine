@@ -174,12 +174,24 @@ function parseHpString(s) {
 }
 
 function parseFromTag(parts) {
-  // PS frequently appends `|[from] <cause>` to events. Returns the
-  // cause string or null. Used to tell direct damage from indirect
-  // (residual / item / ability / status / weather).
-  const idx = parts.indexOf('[from]', 3);
-  if (idx < 0) return null;
-  return parts[idx + 1] || null;
+  // PS appends `|[from] <cause>` to events as a SINGLE pipe-separated
+  // token — e.g. `|-damage|p2a: Foo|154/176|[from] item: Sticky Barb`.
+  // The token is `[from] item: Sticky Barb` (one part), NOT two parts
+  // with `[from]` standalone followed by `item: Sticky Barb`.
+  //
+  // Older code searched `parts.indexOf('[from]', 3)` for an exact
+  // `[from]` element — never matched, so every event had `from: null`,
+  // silently dropping attribution for held-item residuals
+  // (Sticky Barb, Black Sludge, Toxic Orb, Life Orb), ability
+  // residuals (Rough Skin, Iron Barbs), weather damage, etc.
+  // PR-214 fix: prefix-match the token.
+  for (let i = 3; i < parts.length; i++) {
+    const p = parts[i];
+    if (p && p.startsWith('[from] ')) {
+      return p.slice(7); // strip "[from] " prefix
+    }
+  }
+  return null;
 }
 
 function parseLog(log) {
