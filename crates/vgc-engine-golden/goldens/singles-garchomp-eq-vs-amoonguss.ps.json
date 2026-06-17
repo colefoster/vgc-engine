@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "name": "singles-garchomp-eq-vs-amoonguss",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Amoonguss",
+      "hp": 220,
+      "max": 220
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Earthquake",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 76,
+      "max": 220,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 131,
+      "max": 220,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Spore",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "status",
+      "actor": "p1a",
+      "status": "slp",
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Range",
+      "value": 2,
+      "bound": 3
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1781654410\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Garchomp, L50, M|\n|poke|p2|Amoonguss, L50, F|\n|teampreview|\n|t:|1781654410\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Garchomp|Garchomp, L50, M|183/183\n|switch|p2a: Amoonguss|Amoonguss, L50, F|220/220\n|turn|1|\n|t:|1781654410\n|move|p1a: Garchomp|Earthquake|p2a: Amoonguss\n|-damage|p2a: Amoonguss|76/220\n|-enditem|p2a: Amoonguss|Sitrus Berry|[eat]\n|-heal|p2a: Amoonguss|131/220|[from] item: Sitrus Berry\n|move|p2a: Amoonguss|Spore|p1a: Garchomp\n|-status|p1a: Garchomp|slp|[from] move: Spore\n|\n|upkeep\n|turn|2"
+}

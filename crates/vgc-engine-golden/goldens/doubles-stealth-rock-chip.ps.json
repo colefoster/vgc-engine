@@ -1,0 +1,275 @@
+{
+  "ok": true,
+  "name": "doubles-stealth-rock-chip",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Hatterene",
+      "hp": 164,
+      "max": 164
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Amoonguss",
+      "hp": 220,
+      "max": 220
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Flutter Mane",
+      "hp": 131,
+      "max": 131
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Protect",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Protect",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Earthquake",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 95,
+      "max": 164,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Stealth Rock",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Iron Hands",
+      "hp": 257,
+      "max": 257
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 241,
+      "max": 257,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Protect",
+      "target": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Earthquake",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 28,
+      "max": 164,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 103,
+      "max": 257,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 11,
+      "max": 131,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Dazzling Gleam",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 12,
+      "max": 164,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 3
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 4
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 1
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 0
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1781654441\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Hatterene, L50, F|\n|poke|p1|Garchomp, L50, M|\n|poke|p2|Amoonguss, L50, F|\n|poke|p2|Flutter Mane, L50|\n|poke|p2|Iron Hands, L50|\n|teampreview|\n|t:|1781654441\n|teamsize|p1|2\n|teamsize|p2|3\n|start\n|switch|p1a: Hatterene|Hatterene, L50, F|164/164\n|switch|p1b: Garchomp|Garchomp, L50, M|183/183\n|switch|p2a: Amoonguss|Amoonguss, L50, F|220/220\n|switch|p2b: Flutter Mane|Flutter Mane, L50|131/131\n|-enditem|p2b: Flutter Mane|Booster Energy\n|-activate|p2b: Flutter Mane|ability: Protosynthesis|[fromitem]\n|-start|p2b: Flutter Mane|protosynthesisspe\n|turn|1|debug|Protosynthesis spe boost\n|debug|Protosynthesis spe boost\n|\n|t:|1781654441\n|debug|Protosynthesis spe boost\n|debug|Protosynthesis spe boost\n|move|p2b: Flutter Mane|Protect|p2b: Flutter Mane\n|-singleturn|p2b: Flutter Mane|Protect\n|debug|Protosynthesis spe boost\n|move|p2a: Amoonguss|Protect|p2a: Amoonguss\n|-singleturn|p2a: Amoonguss|Protect\n|debug|Protosynthesis spe boost\n|move|p1b: Garchomp|Earthquake|p2a: Amoonguss|[spread] p1a\n|-activate|p2a: Amoonguss|move: Protect\n|-activate|p2b: Flutter Mane|move: Protect\n|debug|Spread modifier: 0.75\n|-damage|p1a: Hatterene|95/164\n|debug|Protosynthesis spe boost\n|move|p1a: Hatterene|Stealth Rock|p2b: Flutter Mane\n|-sidestart|p2: P2|move: Stealth Rock\n|\n|debug|Protosynthesis spe boost\n|upkeep\n|turn|2|debug|Protosynthesis spe boost\n|debug|Protosynthesis spe boost\n|\n|t:|1781654441\n|switch|p2a: Iron Hands|Iron Hands, L50|257/257\n|-damage|p2a: Iron Hands|241/257|[from] Stealth Rock\n|debug|Protosynthesis spe boost\n|debug|Protosynthesis spe boost\n|move|p2b: Flutter Mane|Protect||[still]\n|debug|Success chance: 33%\n|-fail|p2b: Flutter Mane\n|debug|Protosynthesis spe boost\n|move|p1b: Garchomp|Earthquake|p2a: Iron Hands|[spread] p1a,p2a,p2b\n|debug|Spread modifier: 0.75\n|debug|Spread modifier: 0.75\n|-supereffective|p2a: Iron Hands\n|debug|Spread modifier: 0.75\n|-damage|p1a: Hatterene|28/164\n|-damage|p2a: Iron Hands|103/257\n|-damage|p2b: Flutter Mane|11/131\n|debug|Protosynthesis spe boost\n|move|p1a: Hatterene|Dazzling Gleam|p2b: Flutter Mane|[spread] p2a,p2b\n|debug|Spread modifier: 0.75\n|-supereffective|p2a: Iron Hands\n|debug|Spread modifier: 0.75\n|-damage|p2a: Iron Hands|0 fnt\n|-damage|p2b: Flutter Mane|0 fnt\n|faint|p2a: Iron Hands\n|-end|p2a: Iron Hands|Quark Drive|[silent]\n|faint|p2b: Flutter Mane\n|-end|p2b: Flutter Mane|Protosynthesis|[silent]\n|-damage|p1a: Hatterene|12/164|[from] item: Life Orb\n|\n|upkeep"
+}
