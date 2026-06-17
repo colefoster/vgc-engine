@@ -163,8 +163,26 @@ impl Rng {
     }
 
     /// Uniform integer in `0..n`. `n == 0` returns 0.
+    ///
+    /// `n == 1` is a special case: the only possible return is 0, so PS
+    /// elides the draw entirely (e.g. the `stall` volatile only calls
+    /// `randomChance(1, counter)` when `counter > 1`). Oracle paths
+    /// mirror that and skip popping; Splitmix still steps to keep
+    /// stand-alone (non-oracle) battles deterministic w.r.t. existing
+    /// tests that assume every site advances the PRNG.
     pub fn range(&mut self, n: u32) -> u32 {
         if n == 0 {
+            return 0;
+        }
+        if n == 1 {
+            match self {
+                Rng::Splitmix(_) => {
+                    let _ = self.next_u64();
+                }
+                Rng::Oracle(_) | Rng::OraclePartial { .. } => {
+                    // PS doesn't draw at `randomChance(1, 1)` sites.
+                }
+            }
             return 0;
         }
         match self {
@@ -671,6 +689,31 @@ mod tests {
         for _ in 0..20 {
             assert_eq!(r1.damage_roll(), r2.damage_roll_hint(85, 100));
         }
+    }
+
+    #[test]
+    fn range_n1_does_not_consume_oracle_queue() {
+        // PS elides `randomChance(1, 1)` — it never draws when the only
+        // outcome is 0. Oracle paths must mirror that so subsequent
+        // `range(n)` calls see the queue PS actually populated.
+        let events = vec![RngEvent::Range(2)];
+        let mut r = Rng::oracle_partial(events, 0);
+        // First call: range(1) → 0 without popping.
+        assert_eq!(r.range(1), 0);
+        // Second call: range(3) pops the queued Range(2).
+        assert_eq!(r.range(3), 2);
+    }
+
+    #[test]
+    fn range_n1_splitmix_still_advances_state() {
+        // Splitmix battles (no oracle) advance the PRNG on every range
+        // site so stand-alone test seeds stay deterministic.
+        let mut r1 = Rng::new(42);
+        let _ = r1.range(1);
+        let after_range1 = r1.next_u64();
+        let mut r2 = Rng::new(42);
+        let _ = r2.next_u64(); // simulate the range(1) bump
+        assert_eq!(r2.next_u64(), after_range1);
     }
 
     #[test]
