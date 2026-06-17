@@ -810,6 +810,24 @@ impl Battle {
             }
         }
 
+        // 1c. Paralysis full-skip. PS data/conditions.ts:par
+        //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
+        //     skip the move entirely (no PP, no effect). Matches PS
+        //     exactly via `rng.range(4) == 0`: oracle-pinned RngEvent
+        //     `Chance(num=1, denom=4)` lowers to `Range(0)` on true
+        //     and `Range(1)` on false (see lib.rs:389 in the golden
+        //     harness), so the engine consumes the same draw at the
+        //     same site as PS.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~3x per battle
+        //     across the random-golden corpus and is the largest
+        //     single draw-site gap in the oracle alignment count.
+        if matches!(attacker.status, Status::Paralysis) {
+            if self.rng.range(4) == 0 {
+                return;
+            }
+        }
+
         // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
         //     fails unless the target is still queued to use a
         //     damaging (non-Status) move this turn. Approximation:
@@ -8165,6 +8183,90 @@ mod tests {
             rate >= 15 && rate <= 45,
             "Static paralysis rate {rate}% (expected ≈30% over 200 trials)"
         );
+    }
+
+    #[test]
+    fn paralysis_full_skip_fires_25pct() {
+        // PS data/conditions.ts:par onBeforeMove — `randomChance(1, 4)`
+        // = 25% chance to be fully paralyzed (skip the move entirely).
+        // Run 400 trials with a pre-paralyzed Snorlax attacking a
+        // Snorlax and count the skipped turns.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 400u32;
+        let mut skips = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.p1.team[0].status = Status::Paralysis;
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            // If full-skip fired, no damage landed; if the move went
+            // through, Snorlax took some damage.
+            if b.p2.team[0].current_hp == hp_before {
+                skips += 1;
+            }
+        }
+        let rate = skips * 100 / trials;
+        assert!(
+            rate >= 15 && rate <= 35,
+            "Paralysis full-skip rate {rate}% (expected ≈25% over 400 trials)"
+        );
+    }
+
+    #[test]
+    fn paralysis_skip_consumes_one_range4_oracle_event() {
+        // Oracle-pinned: PS recorded `randomChance(1, 4)`; lib.rs:389
+        // lowers `Chance(true,1,4)` -> RngEvent::Range(0) (skip) and
+        // `Chance(false,1,4)` -> Range(1) (move). Both must fully
+        // consume one Range event at the paralysis site.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        // Oracle queue: a single Range(0) — paralysis fires, attacker
+        // skips. OraclePartial so non-Range draws (Tiebreak, etc.)
+        // fall through to Splitmix without polluting the queue.
+        let rng = crate::rng::Rng::oracle_partial(
+            vec![crate::rng::RngEvent::Range(0)],
+            0,
+        );
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            p1.clone(),
+            p2.clone(),
+        );
+        b.p1.team[0].status = Status::Paralysis;
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, hp_before,
+            "Range(0) at par site must cause a full-skip with no damage"
+        );
+        // Engine consumed exactly the one Range event we queued.
+        let (consumed, total) = b.oracle_pops().unwrap();
+        assert_eq!((consumed, total), (1, 1));
     }
 
     #[test]
