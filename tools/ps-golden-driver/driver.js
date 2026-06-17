@@ -81,30 +81,62 @@ async function readStdin() {
 
 // --- RNG capture (matches tools/ps-rng-dump/dump.js semantics) -----------
 
+// Walk the stack and return the first frame outside this patch + PS
+// PRNG internals. Used to label each RNG event by its calling site
+// so a downstream survey can tell which mechanics are eating draws
+// the engine doesn't replicate yet (PR-208 diagnostic for the
+// random-golden RNG balance gap).
+function captureSite() {
+  const raw = new Error().stack || '';
+  const lines = raw.split('\n');
+  for (const line of lines) {
+    if (!line.includes(' at ')) continue;
+    if (line.includes('captureSite')) continue;
+    if (line.includes('Battle.random')) continue;
+    if (line.includes('Battle.randomChance')) continue;
+    if (line.includes('prng.ts')) continue;
+    if (line.includes('prng.js')) continue;
+    // Strip leading whitespace + "at " and trailing file location.
+    // `    at Battle.runMove (/path/to/battle-actions.ts:1761:42)` ->
+    // `Battle.runMove (battle-actions.ts:1761)`
+    const m = line.match(/at\s+([^\s(]+)(?:\s+\(([^)]+)\))?/);
+    if (!m) continue;
+    const fn = m[1];
+    let loc = m[2] || '';
+    loc = loc.replace(/^.*?\/(?:dist\/)?sim\//, 'sim/')
+             .replace(/^.*?\/(?:dist\/)?data\//, 'data/')
+             .replace(/:[0-9]+$/, '');
+    return loc ? `${fn} (${loc})` : fn;
+  }
+  return '<unknown>';
+}
+
 function patchRng(events) {
   const origRandom = Battle.prototype.random;
   const origRandomChance = Battle.prototype.randomChance;
   Battle.prototype.random = function (m, n) {
     const v = origRandom.call(this, m, n);
+    const site = captureSite();
     if (m === undefined && n === undefined) {
-      events.push({ kind: 'Tiebreak', value: '0x' + v.toString(16) });
+      events.push({ kind: 'Tiebreak', value: '0x' + v.toString(16), site });
     } else if (m === 16 && n === undefined) {
-      events.push({ kind: 'DamageRoll', value: v });
+      events.push({ kind: 'DamageRoll', value: v, site });
     } else if (n === undefined) {
-      events.push({ kind: 'Range', value: v, bound: m });
+      events.push({ kind: 'Range', value: v, bound: m, site });
     } else {
-      events.push({ kind: 'Range', value: v - m, bound: n - m });
+      events.push({ kind: 'Range', value: v - m, bound: n - m, site });
     }
     return v;
   };
   Battle.prototype.randomChance = function (numerator, denominator) {
     const v = origRandomChance.call(this, numerator, denominator);
+    const site = captureSite();
     if (numerator === 1 && denominator === 24) {
-      events.push({ kind: 'Crit', value: v });
+      events.push({ kind: 'Crit', value: v, site });
     } else if (denominator === 100) {
-      events.push({ kind: 'PercentRoll', value: v, threshold: numerator });
+      events.push({ kind: 'PercentRoll', value: v, threshold: numerator, site });
     } else {
-      events.push({ kind: 'Chance', value: v, num: numerator, denom: denominator });
+      events.push({ kind: 'Chance', value: v, num: numerator, denom: denominator, site });
     }
     return v;
   };
