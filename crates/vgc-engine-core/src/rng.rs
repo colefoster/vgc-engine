@@ -42,6 +42,73 @@ pub enum RngEvent {
     Crit(bool),
 }
 
+/// Bit-exact port of Pokémon Showdown's `sim/prng.ts:Gen5RNG` — the
+/// in-cartridge LCG used by every numeric-seeded PS battle.
+///
+/// State is a 64-bit integer advanced by `seed = a * seed + c (mod 2^64)`
+/// with the documented constants. `next()` returns the upper 32 bits.
+/// `random_n` / `random_range` mirror PS's `random(from, to)` API:
+/// `floor(result * range / 2^32) + from`.
+///
+/// Validated against PS reference vectors generated from
+/// `/tmp/pokemon-showdown-research/dist/sim/prng` — see the tests
+/// at the bottom of this module.
+///
+/// PR-209 ships this as a standalone struct so it can be unit-tested
+/// against PS without invasive changes to the `Rng` enum's many match
+/// arms. Wiring it into `Rng::PsGen5(...)` as a first-class variant is
+/// a follow-up; the immediate goal here is the bit-exact LCG and a
+/// known-good correspondence to PS's `random()` semantics.
+///
+/// PS reference: `sim/prng.ts:235-300` (Gen5RNG class).
+#[derive(Debug, Clone, Copy)]
+pub struct PsGen5Rng {
+    state: u64,
+}
+
+impl PsGen5Rng {
+    /// LCG multiplier. PS `sim/prng.ts:286`.
+    const A: u64 = 0x5D58_8B65_6C07_8965;
+    /// LCG increment. PS `sim/prng.ts:287` — `[0, 0, 0x26, 0x9EC3]`
+    /// as a 16-bit-chunked u64 is `0x0000_0000_0026_9EC3`.
+    const C: u64 = 0x0000_0000_0026_9EC3;
+
+    /// Construct from a PS-style `[u16; 4]` seed array. The PS
+    /// representation is big-endian: `[hi, hi_mid, lo_mid, lo]`.
+    pub fn new(seed: [u16; 4]) -> Self {
+        let state = ((seed[0] as u64) << 48)
+            | ((seed[1] as u64) << 32)
+            | ((seed[2] as u64) << 16)
+            | (seed[3] as u64);
+        Self { state }
+    }
+
+    /// One LCG step. Returns the next 32-bit draw (upper half of the
+    /// advanced state). Matches PS `Gen5RNG::next` exactly.
+    pub fn next(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(Self::A).wrapping_add(Self::C);
+        (self.state >> 32) as u32
+    }
+
+    /// `random(n)`: uniform integer in `[0, n)`. Mirrors PS
+    /// `floor(result * n / 2^32)`.
+    pub fn random_n(&mut self, n: u32) -> u32 {
+        let r = self.next() as u64;
+        ((r * n as u64) >> 32) as u32
+    }
+
+    /// `random(m, n)`: uniform integer in `[m, n)`. Mirrors PS
+    /// `floor(result * (n - m) / 2^32) + m`.
+    pub fn random_range(&mut self, m: u32, n: u32) -> u32 {
+        self.random_n(n - m) + m
+    }
+
+    /// `randomChance(num, denom)`: PS `random(denom) < num`.
+    pub fn random_chance(&mut self, num: u32, denom: u32) -> bool {
+        self.random_n(denom) < num
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OracleState {
     events: Vec<RngEvent>,
@@ -731,6 +798,63 @@ mod tests {
         let mut r2 = Rng::new(42);
         let _ = r2.next_u64(); // simulate the range(1) bump
         assert_eq!(r2.next_u64(), after_range1);
+    }
+
+    // Reference vectors generated from PS `dist/sim/prng` —
+    // see PR-209 commit body for the exact node one-liner.
+    #[test]
+    fn ps_gen5_next_seed_0() {
+        let mut r = PsGen5Rng::new([0, 0, 0, 0]);
+        let got: Vec<u32> = (0..10).map(|_| r.next()).collect();
+        assert_eq!(
+            got,
+            vec![
+                0, 1904791564, 183838931, 176901684, 3359619440,
+                205866298, 3425238665, 580285797, 952588127, 1736004865,
+            ],
+        );
+    }
+
+    #[test]
+    fn ps_gen5_next_seed_42() {
+        let mut r = PsGen5Rng::new([42, 0, 0, 0]);
+        let got: Vec<u32> = (0..10).map(|_| r.next()).collect();
+        assert_eq!(
+            got,
+            vec![
+                2324824064, 1059246092, 2461477075, 1813335604, 498186608,
+                3292480826, 734723721, 2407560549, 1796822879, 601052417,
+            ],
+        );
+    }
+
+    #[test]
+    fn ps_gen5_random_n_16_seed_0() {
+        let mut r = PsGen5Rng::new([0, 0, 0, 0]);
+        let got: Vec<u32> = (0..4).map(|_| r.random_n(16)).collect();
+        assert_eq!(got, vec![0, 7, 0, 0]);
+    }
+
+    #[test]
+    fn ps_gen5_random_range_damage_roll_seed_0() {
+        // PS damage-roll uses `random(85, 101)` — 16 buckets [85, 101).
+        let mut r = PsGen5Rng::new([0, 0, 0, 0]);
+        let got: Vec<u32> = (0..3).map(|_| r.random_range(85, 101)).collect();
+        assert_eq!(got, vec![85, 92, 85]);
+    }
+
+    #[test]
+    fn ps_gen5_random_chance_uses_random_n() {
+        // randomChance(num, denom) ≡ random_n(denom) < num. Smoke-test
+        // the wrapper produces the same bit-exact answer for a few
+        // representative crit-rate denominators.
+        let mut r1 = PsGen5Rng::new([12345, 0, 0, 0]);
+        let mut r2 = PsGen5Rng::new([12345, 0, 0, 0]);
+        for _ in 0..50 {
+            let a = r1.random_chance(1, 24);
+            let b = r2.random_n(24) < 1;
+            assert_eq!(a, b);
+        }
     }
 
     #[test]
