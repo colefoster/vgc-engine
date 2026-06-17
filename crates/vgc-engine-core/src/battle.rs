@@ -4541,6 +4541,49 @@ mod tests {
     }
 
     #[test]
+    fn sticky_barb_chips_holder_eighth_per_turn() {
+        // PS data/items.ts:stickybarb onResidual — damage(maxhp / 8)
+        // regardless of holder type.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"stickybarb","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        let chip = (max / 8).max(1);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max - chip,
+                   "Sticky Barb should chip holder 1/8 max HP per turn");
+    }
+
+    #[test]
+    fn sticky_barb_magic_guard_blocks_chip() {
+        let p1_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"stickybarb","nature":"bold","moves":["moonblast","softboiled","calmmind","flamethrower"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, max,
+                   "Magic Guard should block Sticky Barb chip");
+    }
+
+    #[test]
     fn black_sludge_magic_guard_blocks_chip() {
         // Clefable (Magic Guard) — non-Poison holder, but MG blocks
         // the residual damage. Stays at full HP.

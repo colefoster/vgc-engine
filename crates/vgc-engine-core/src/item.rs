@@ -190,6 +190,35 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
+    // Sticky Barb — PS `data/items.ts:stickybarb`:
+    //   onResidual(pokemon) { this.damage(pokemon.baseMaxhp / 8); }
+    // Damages the holder by 1/8 max HP each turn, blocked by Magic
+    // Guard. No type gate (Black Sludge's poison-heal does not apply).
+    // PS residual order 28, sub-order 3 (later than Leftovers /
+    // Black Sludge — irrelevant here since we don't yet enforce
+    // per-item sub-ordering).
+    //
+    // Contact-swap arm (onHit) deferred to a follow-up — that's a
+    // separate mechanic involving item transfer to a contact attacker
+    // with no item, and only matters in the rare 1-in-N battles
+    // where a Sticky Barb holder gets contact-hit by an itemless mon.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Barb>.
+    if slug == "stickybarb" {
+        let mon = match battle.side(side).active_mon(slot as usize) {
+            Some(m) => m,
+            None => return,
+        };
+        let magic_guard = crate::ability::has_magic_guard(mon);
+        if !magic_guard {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                let chip = (m.stats.hp / 8).max(1);
+                m.current_hp = m.current_hp.saturating_sub(chip);
+                if m.current_hp == 0 {
+                    m.fainted = true;
+                }
+            }
+        }
+    }
     // Future: sitrusberry
     // (one-shot on ≤50% HP — handled in damage-side hook), focussash
     // (one-shot — handled on fatal hit, not residual), lifeorb (handled
