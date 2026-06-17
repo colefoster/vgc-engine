@@ -828,6 +828,73 @@ impl Battle {
             }
         }
 
+        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
+        //     decrements the confusion counter; when it hits 0 the
+        //     volatile is removed and the move proceeds normally.
+        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
+        //     to hit self for 40-BP typeless physical damage with the
+        //     standard damage roll, no PP consumed.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~9x per
+        //     battle (PercentRoll gate) + the inner damage roll
+        //     (~4x). Both sites are now wired here so the oracle
+        //     stays balanced when confusion is in play.
+        {
+            let conf_pos = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
+            if let Some(pos) = conf_pos {
+                let remaining = {
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    let v = &mut m.volatiles.items[pos];
+                    v.payload = v.payload.saturating_sub(1);
+                    v.payload
+                };
+                if remaining == 0 {
+                    self.side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap()
+                        .volatiles
+                        .remove(crate::pokemon::VolatileKind::Confusion);
+                } else if self.rng.percent_1_100() <= 33 {
+                    // Self-hit: 40-BP typeless physical confusion damage.
+                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
+                    let (level, atk_base, atk_boost, def_base, def_boost) = {
+                        let m = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .unwrap();
+                        (
+                            m.level as u32,
+                            m.stats.atk as u32,
+                            m.boosts[0],
+                            m.stats.def as u32,
+                            m.boosts[1],
+                        )
+                    };
+                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
+                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
+                    let lvl_factor = 2 * level / 5 + 2;
+                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
+                    let roll = self.rng.damage_roll() as u32;
+                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    m.current_hp = m.current_hp.saturating_sub(dmg);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                    return;
+                }
+            }
+        }
+
         // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
         //     fails unless the target is still queued to use a
         //     damaging (non-Status) move this turn. Approximation:
@@ -2111,10 +2178,16 @@ impl Battle {
                     if a.lockin_turns == 0 {
                         // Lock ended — confuse the user, clear slot.
                         a.lockin_move_slot = 255;
+                        // payload = remaining confusion turns. PS rolls
+                        // `random(2, 6)` (2-5 turns); we pick 4 (mode of
+                        // PS distribution) until the duration random
+                        // call lands as its own PR. The Confusion
+                        // onBeforeMove gate consumes payload-1 per
+                        // attempt — see resolve_move_with_pending.
                         let _ = a.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::Confusion,
                             turns_remaining: 0,
-                            payload: 0,
+                            payload: 4,
                         });
                     }
                 }
@@ -8267,6 +8340,139 @@ mod tests {
         // Engine consumed exactly the one Range event we queued.
         let (consumed, total) = b.oracle_pops().unwrap();
         assert_eq!((consumed, total), (1, 1));
+    }
+
+    #[test]
+    fn confusion_self_hit_consumes_percent_and_damage_roll() {
+        // PS data/conditions.ts:180 — randomChance(33, 100) gate +
+        // 40-BP typeless physical self-hit via getConfusionDamage.
+        // Oracle-pinned: a PercentRoll(<= 33) at the gate triggers
+        // the self-hit; the self-hit consumes one DamageRoll(_).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        let rng = crate::rng::Rng::oracle_partial(
+            vec![
+                crate::rng::RngEvent::PercentRoll(1), // <= 33 → self-hit
+                crate::rng::RngEvent::DamageRoll(0),  // max damage roll
+            ],
+            0,
+        );
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            p1.clone(),
+            p2.clone(),
+        );
+        // Confuse the attacker with payload=4 (matches lock-in default).
+        let m = b.p1.active_mon_mut(0).unwrap();
+        let _ = m.volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Confusion,
+            turns_remaining: 0,
+            payload: 4,
+        });
+        let self_hp_before = b.p1.team[0].current_hp;
+        let opp_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            b.p1.team[0].current_hp < self_hp_before,
+            "confusion self-hit must reduce attacker HP"
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, opp_hp_before,
+            "opponent unscathed: the move never resolved"
+        );
+        // Engine consumed: 1 PercentRoll (gate) + 1 DamageRoll (self-dmg).
+        let (consumed, _) = b.oracle_pops().unwrap();
+        assert_eq!(consumed, 2, "expected 2 oracle pops (percent + damage)");
+        // Confusion counter dropped to 3.
+        let v = b.p1.team[0]
+            .volatiles
+            .get(crate::pokemon::VolatileKind::Confusion)
+            .unwrap();
+        assert_eq!(v.payload, 3);
+    }
+
+    #[test]
+    fn confusion_gate_proceeds_on_high_percent() {
+        // PercentRoll(34) > 33 → move proceeds normally, no self-hit.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let rng = crate::rng::Rng::oracle_partial(
+            vec![crate::rng::RngEvent::PercentRoll(34)], // > 33 → proceed
+            0,
+        );
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            p1.clone(),
+            p2.clone(),
+        );
+        let m = b.p1.active_mon_mut(0).unwrap();
+        let _ = m.volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Confusion,
+            turns_remaining: 0,
+            payload: 4,
+        });
+        let opp_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            b.p2.team[0].current_hp < opp_hp_before,
+            "move proceeds: opponent took damage"
+        );
+    }
+
+    #[test]
+    fn confusion_counter_expires_and_removes_volatile() {
+        // payload=1 → onBeforeMove decrements to 0 → volatile removed,
+        // move proceeds. No RNG draws at the gate (early return).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 7 },
+            p1,
+            p2,
+        );
+        let m = b.p1.active_mon_mut(0).unwrap();
+        let _ = m.volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Confusion,
+            turns_remaining: 0,
+            payload: 1,
+        });
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            !b.p1.team[0]
+                .volatiles
+                .has(crate::pokemon::VolatileKind::Confusion),
+            "Confusion volatile should be removed once counter hits 0"
+        );
     }
 
     #[test]
