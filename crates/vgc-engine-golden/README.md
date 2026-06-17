@@ -23,12 +23,13 @@ Engine RNG is pinned to PS's recorded draw stream via
 
 ## Test gates
 
-* `corpus_loads_and_runs` — runs by default. Fails on IO / parse /
-  driver errors. Always-green: this is the workspace-level gate.
-* `corpus_zero_divergences` — `#[ignore]`d by default. Fails on any
-  HP / status / faint mismatch. Run with
-  `cargo test -p vgc-engine-golden -- --ignored`. Flip to default-on
-  once the existing divergence list is triaged into mechanic PRs.
+Both gates run by default on every `cargo test --workspace
+--exclude vgc-engine-py` invocation:
+
+* `corpus_loads_and_runs` — fails on IO / parse / driver errors.
+* `corpus_zero_divergences` — strict mechanic gate. Fails on any
+  HP / status / faint mismatch against PS. Every new mechanic PR is
+  expected to keep this gate green.
 
 ## Adding a new golden
 
