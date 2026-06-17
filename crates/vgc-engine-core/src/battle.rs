@@ -1578,6 +1578,26 @@ impl Battle {
                         .min(u16::MAX as u32)) as u16;
                 }
             }
+            // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
+            // is the active weather. PS `data/conditions.ts:sandstorm`
+            // `onModifySpD` priority 10:
+            //   if (pokemon.hasType('Rock') && pokemon.effectiveWeather() === 'sandstorm')
+            //     return this.modify(spd, 1.5);
+            // Applied to the defender's *effective* types (post-Tera) so
+            // a Tera-Rock mon also gets the boost; PS reads `hasType`
+            // which follows the same convention.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
+            if matches!(self.weather, crate::weather::Weather::Sand)
+                && m.category == 1
+            {
+                let (eff_types, eff_num) = boosted_defender.effective_types();
+                let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
+                if is_rock {
+                    boosted_defender.stats.spd =
+                        ((boosted_defender.stats.spd as u32 * 3 / 2)
+                            .min(u16::MAX as u32)) as u16;
+                }
+            }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
             if boosted_defender.boosted_stat == 1 && m.category == 0 {
@@ -10218,5 +10238,47 @@ mod tests {
         );
         assert!(b.p1.team[0].current_hp < chomp_hp, "EQ hits through Dig");
         assert_eq!(b.p1.team[0].semi_invuln, 1, "Dig state still set (charge turn)");
+    }
+
+    #[test]
+    fn sandstorm_boosts_rock_spd_by_15x_on_special_hits() {
+        // Tyranitar (Rock/Dark) takes a Special hit from Dragapult while
+        // Sand is up — the Rock SpD ×1.5 boost should make the hit deal
+        // ~1/3 less damage than the same hit with weather cleared.
+        // PS data/conditions.ts:sandstorm onModifySpD.
+        let p1_json = r#"[
+            {"species":"dragapult","level":50,"ability":"clearbody","item":"choicespecs","nature":"timid","moves":["shadowball","dracometeor","uturn","flamethrower"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"leftovers","nature":"careful","moves":["crunch","substitute","protect","rockslide"],"evs":{"hp":252,"spd":252,"atk":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sand, "Sand Stream sets Sand on switch-in");
+        let tt_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 2, move_slot: 0, target: None }], // Protect
+        );
+        let dmg_with_sand = tt_hp_before - b.p2.team[0].current_hp;
+
+        // Rerun with no weather — same setup but clear Sand right after
+        // Tyranitar sets it. Damage should be measurably higher.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        b2.weather = crate::weather::Weather::None;
+        let tt_hp_before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 2, move_slot: 0, target: None }],
+        );
+        let dmg_no_sand = tt_hp_before2 - b2.p2.team[0].current_hp;
+
+        assert!(
+            dmg_with_sand < dmg_no_sand,
+            "Sand should reduce Special damage on Rock-types: with_sand={dmg_with_sand} no_sand={dmg_no_sand}",
+        );
     }
 }
