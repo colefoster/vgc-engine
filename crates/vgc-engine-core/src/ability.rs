@@ -501,4 +501,54 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Effect Spore — PS data/abilities.ts:effectspore. On contact hit
+    // (and attacker passes powder-immunity gates), single `random(100)`
+    // roll: 0-10 → sleep, 11-20 → par, 21-29 → poison, 30+ → nothing.
+    // The draw fires regardless of outcome (load-bearing for PsGen5
+    // PRNG alignment).
+    //
+    // Powder immunity gates: Grass-types, Overcoat, Safety Goggles.
+    // PS source uses `runStatusImmunity('powder')` — we approximate by
+    // skipping Grass-type attackers. Overcoat/Safety Goggles deferred.
+    if slug == "effectspore" {
+        let m = &data::MOVES[move_id as usize];
+        if m.makes_contact {
+            let attacker_alive = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            let attacker_grass = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|a| {
+                    let s = a.species();
+                    (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass
+                })
+                .unwrap_or(false);
+            let attacker_already_statused = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|a| !matches!(a.status, crate::pokemon::Status::None))
+                .unwrap_or(true);
+            if attacker_alive && !attacker_grass && !attacker_already_statused {
+                // PS uses `random(100)` returning 0..=99. Our percent_1_100
+                // returns 1..=100. Translate: r in 1..=11 → slp, 12..=21
+                // → par, 22..=30 → psn (matches PS's `< 11`, `< 21`, `< 30`
+                // boundaries plus the +1 offset).
+                let r = rng.percent_1_100();
+                let to_apply = if r <= 11 {
+                    Some(crate::pokemon::Status::Sleep)
+                } else if r <= 21 {
+                    Some(crate::pokemon::Status::Paralysis)
+                } else if r <= 30 {
+                    Some(crate::pokemon::Status::Poison)
+                } else {
+                    None
+                };
+                if let Some(s) = to_apply {
+                    battle.try_set_status(attacker_side, attacker_slot, s);
+                }
+            }
+        }
+    }
 }
