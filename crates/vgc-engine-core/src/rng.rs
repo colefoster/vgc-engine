@@ -121,6 +121,23 @@ impl Rng {
         }
     }
 
+    /// For Oracle / OraclePartial variants, return `(consumed, total)` —
+    /// how many events the engine has popped from the queue vs. how
+    /// many PS originally recorded. Splitmix returns `None`.
+    ///
+    /// Used by the golden harness to assert per-call balance: if PS
+    /// recorded N draws and the engine consumed M ≠ N, the per-call
+    /// queue is silently misaligned and every downstream divergence
+    /// is unreliable signal.
+    pub fn oracle_pops(&self) -> Option<(usize, usize)> {
+        match self {
+            Rng::Splitmix(_) => None,
+            Rng::Oracle(state) | Rng::OraclePartial { state, .. } => {
+                Some((state.pos, state.events.len()))
+            }
+        }
+    }
+
     /// Advance a raw Splitmix64 state in place and return the drawn u64.
     /// Shared by all `OraclePartial` fallback arms below so the fallback
     /// stream is byte-identical to a same-seeded `Splitmix` Rng.
