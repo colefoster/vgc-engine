@@ -857,6 +857,9 @@ pub(crate) fn derive_turns_from_events(
         .unwrap_or(u32::MAX)
         .min(max_turns);
     let mut out = Vec::new();
+    if cutoff == 0 {
+        return out;
+    }
     for (_turn_no, bucket) in turn_choices.range(1..=cutoff) {
         let p1_slot_a = bucket.get(&(1, 'a')).cloned().unwrap_or_else(|| "pass".into());
         let p2_slot_a = bucket.get(&(2, 'a')).cloned().unwrap_or_else(|| "pass".into());
