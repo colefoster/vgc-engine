@@ -143,7 +143,31 @@ pub fn action_order(
                             } else {
                                 base_pri
                             };
-                            (pri_after_ability, effective_speed(m, tailwind, battle.weather) as i64)
+                            // Quick Claw: PS data/items.ts:4984
+                            // onFractionalPriority — when the holder has a
+                            // priority-≤0 move queued, `randomChance(1, 5)`
+                            // (20%) bumps priority by +0.1. We approximate
+                            // with a +1 integer bump; the draw fires every
+                            // turn the move qualifies regardless of outcome,
+                            // so PsGen5 oracle stays aligned with PS's
+                            // recorded `Chance(1, 5)` events.
+                            //
+                            // PS also gates Mycelium Might + Status moves
+                            // out of the bonus, but the draw still happens
+                            // — we skip the gate for simplicity since
+                            // Mycelium Might + Quick Claw is vanishingly
+                            // rare in the corpus.
+                            let item_slug = if m.item_id == u16::MAX {
+                                ""
+                            } else {
+                                data::ITEMS[m.item_id as usize].slug
+                            };
+                            let pri_after_item = if item_slug == "quickclaw" && pri_after_ability <= 0 {
+                                if rng.range(5) == 0 { pri_after_ability + 1 } else { pri_after_ability }
+                            } else {
+                                pri_after_ability
+                            };
+                            (pri_after_item, effective_speed(m, tailwind, battle.weather) as i64)
                         }
                         None => (0, 0),
                     };
@@ -316,6 +340,52 @@ mod tests {
         let dry = effective_speed(&mon, false, crate::weather::Weather::None);
         let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
         assert_eq!(sun, dry * 2);
+    }
+
+    #[test]
+    fn quick_claw_consumes_range5_draw_each_eligible_turn() {
+        // PR-222 oracle alignment check: holders of `quickclaw` with a
+        // priority-≤0 move must consume one `rng.range(5)` call per
+        // turn. Oracle queue with a single Range(0) → priority bumps,
+        // mon outspeeds where it shouldn't otherwise. Range(1) → no
+        // bump but draw still consumed.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"quickclaw","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","extremespeed","protect","ironhead"],"evs":{"spe":252,"atk":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Both sides queue priority-0 damaging moves. Snorlax holds
+        // Quick Claw — one Range(5) draw per turn at order time.
+        let mut rng = Rng::oracle_partial(
+            vec![crate::rng::RngEvent::Range(0)], // Quick Claw fires
+            0,
+        );
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let order = action_order(&b, &p1c, &p2c, &mut rng);
+        // First move action belongs to Snorlax (P1 slot 0) because
+        // Quick Claw bumped priority to 1.
+        let first_move = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_move.side, SideRef::P1);
+        assert_eq!(first_move.actor_slot, 0);
+        // Oracle pop count: Range(0) consumed for Quick Claw + a
+        // Tiebreak each per move action (2 actions, but tiebreaks
+        // pop only if Tiebreak event available — none queued, so
+        // they fall through to Splitmix). Range count = 1.
+        let (consumed, _) = rng.oracle_pops().unwrap();
+        assert_eq!(consumed, 1);
     }
 
     #[test]
