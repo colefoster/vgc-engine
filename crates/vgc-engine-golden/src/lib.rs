@@ -35,6 +35,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub mod explore;
+pub use explore::{run_explore, run_explore_in_memory, ExploreDivergence, ExploreReport};
+
 use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
     Target, TeamBuilder,
@@ -121,6 +124,11 @@ pub struct PsEvent {
     /// targeting token.
     #[serde(default)]
     pub target: Option<String>,
+    /// PS `|-miss|<source>|<target>` source actor. The driver emits
+    /// `source` (not `actor`) on miss events; this field captures it
+    /// for the exploratory comparison harness (PR-203).
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -323,7 +331,7 @@ pub fn run_golden_in_memory(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn parse_format(s: &str) -> Result<Format, GoldenError> {
+pub(crate) fn parse_format(s: &str) -> Result<Format, GoldenError> {
     // `gen9customgame` / `gen9` → Singles (PS default for these formats
     // unless gametype overridden); `gen9doublescustomgame`,
     // `gen9vgc2024regg`, anything with "doubles" or "vgc" → Doubles.
@@ -339,7 +347,7 @@ fn parse_format(s: &str) -> Result<Format, GoldenError> {
     }
 }
 
-fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
+pub(crate) fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
     let mut out = Vec::with_capacity(events.len());
     for e in events {
         match *e {
@@ -397,7 +405,7 @@ fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
     out
 }
 
-fn parse_turn_actions(
+pub(crate) fn parse_turn_actions(
     raw: &serde_json::Value,
     side: SideRef,
     active_count: usize,
@@ -594,7 +602,7 @@ fn engine_snapshots(battle: &Battle, active_count: usize) -> Vec<SlotSnapshot> {
     out
 }
 
-fn status_str(s: Status) -> String {
+pub(crate) fn status_str(s: Status) -> String {
     match s {
         Status::None => "none",
         Status::Burn => "brn",
@@ -709,7 +717,7 @@ fn ps_target_to_relative(actor: &str, target: &str, active_count: usize) -> Stri
     }
 }
 
-fn derive_turns_from_events(
+pub(crate) fn derive_turns_from_events(
     events: &[PsEvent],
     p1_team: &[Pokemon],
     p2_team: &[Pokemon],
