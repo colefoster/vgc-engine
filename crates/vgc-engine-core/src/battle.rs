@@ -1290,10 +1290,17 @@ impl Battle {
         } else {
             data::ITEMS[attacker.item_id as usize].slug
         };
-        let (item_mul_n, item_mul_d) = match attacker_item_slug {
-            "lifeorb" => (13u32, 10u32),
-            _ => (1, 1),
-        };
+        // Life Orb — PS `data/items.ts:lifeorb` applies
+        // `chainModify([5324, 4096])` via `modify`, which is *not* equal
+        // to a plain ×1.3 truncate. PS form (sim/battle.ts:2345
+        // `modify`):
+        //   tr((tr(value * 5324) + 2048 - 1) / 4096)
+        //   = floor((v * 5324 + 2047) / 4096)
+        // The `13/10` approximation used previously consistently
+        // truncated 1 lower than PS at ~40% of damage values — the
+        // distribution-test harness (PR-229) caught it as a +0.4 HP
+        // mean delta vs PS on a Lucario CC scenario.
+        let life_orb = attacker_item_slug == "lifeorb";
         // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
         // by cloning the attacker snapshot and scaling the stat in
         // place before passing to calculate_damage.
@@ -1309,12 +1316,18 @@ impl Battle {
                 .min(u16::MAX as u32)) as u16;
         }
         // Paradox booster (Protosynthesis / Quark Drive): attacker's
-        // boosted_stat (if 0=atk or 2=spa) gets ×1.3 to the offensive
-        // stat used by this move. PS chainModify [5325, 4096] ≈ ×1.3007;
-        // 13/10 is the standard integer approximation. Defender-side
-        // boost (1=def, 3=spd) applied per-target below.
+        // boosted_stat (if 0=atk or 2=spa) gets ×1.3007 to the offensive
+        // stat used by this move. PS `chainModify([5325, 4096])` with
+        // `modify` round-half-down rather than the engine's previous
+        // `13/10` truncate — the rounding differs on ~40% of stat
+        // values and the off-by-one propagates into base damage. PS
+        // `sim/battle.ts:modify` (line 2345):
+        //   return tr((tr(value * modifier) + 2048 - 1) / 4096)
+        // i.e. floor((v * 5325 + 2047) / 4096). Apply that exact form
+        // here so paradox-boosted damage matches PS bit-for-bit.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protosynthesis_(Ability)>.
         let scale_off_13 = |v: u16| -> u16 {
-            ((v as u32 * 13 / 10).min(u16::MAX as u32)) as u16
+            (((v as u32 * 5325 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
         if boosted_attacker.boosted_stat == 0 && physical_move {
             boosted_attacker.stats.atk = scale_off_13(boosted_attacker.stats.atk);
@@ -1787,9 +1800,12 @@ impl Battle {
                     attacker_total_fainted_allies,
                 },
             );
-            // Apply attacker item multiplier (Life Orb).
-            if item_mul_n != item_mul_d && dmg > 0 {
-                dmg = ((dmg as u32) * item_mul_n / item_mul_d).min(u16::MAX as u32) as u16;
+            // Apply attacker item multiplier (Life Orb). See declaration
+            // above for the pokeRound formula derived from PS's
+            // `modify(chainModify([5324, 4096]))`.
+            if life_orb && dmg > 0 {
+                dmg = (((dmg as u32) * 5324 + 2047) / 4096)
+                    .min(u16::MAX as u32) as u16;
             }
             // Expert Belt — ×1.2 BP on super-effective hits (PS
             // chainModify([4915, 4096]) ≈ ×1.2). PS
