@@ -714,20 +714,16 @@ mod corpus_tests {
     //! a golden requires zero Rust glue — drop the two files in and they
     //! get picked up.
     //!
-    //! Two gates:
-    //!   * `corpus_loads_and_runs` — always-on. Verifies every golden
-    //!     parses, the PS ground truth loads, and the engine completes
-    //!     every turn without panicking. Fails on IO / driver / parse
-    //!     errors. This is the gate enforced by `cargo test --workspace`.
-    //!   * `corpus_zero_divergences` — opt-in (#[ignore]). Strict
-    //!     mechanic gate: fails if ANY golden has a HP / status / faint
-    //!     mismatch against PS. Run via
-    //!     `cargo test -p vgc-engine-golden -- --ignored`.
+    //! Two gates, both default-on:
+    //!   * `corpus_loads_and_runs` — verifies every golden parses, the
+    //!     PS ground truth loads, and the engine completes every turn
+    //!     without panicking. Fails on IO / driver / parse errors.
+    //!   * `corpus_zero_divergences` — strict mechanic gate. Fails if
+    //!     ANY golden has a HP / status / faint mismatch against PS.
     //!
-    //! The two-gate split lets the harness ship today and start
-    //! generating signal while existing divergences are triaged into
-    //! individual mechanic PRs; flipping the strict gate to default-on
-    //! is a one-line follow-up once the divergence count hits zero.
+    //! Both gates run on every `cargo test --workspace --exclude
+    //! vgc-engine-py` invocation, so the workspace CI enforces full
+    //! HP-level PS parity on every mechanic PR.
 
     use super::*;
 
@@ -778,7 +774,6 @@ mod corpus_tests {
     }
 
     #[test]
-    #[ignore = "strict mechanic gate — opt-in via `cargo test -- --ignored`. Fails on any HP/status divergence against PS."]
     fn corpus_zero_divergences() {
         let goldens = collect_goldens();
         let mut failures: Vec<String> = Vec::new();
