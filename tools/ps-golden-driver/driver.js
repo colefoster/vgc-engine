@@ -499,6 +499,15 @@ async function runJob(job) {
     const driveP1 = driveSide(sides.p1, p1Actions, team1.length, 'p1', debug, sideErrors, p1Picker);
     const driveP2 = driveSide(sides.p2, p2Actions, team2.length, 'p2', debug, sideErrors, p2Picker);
 
+    // gen9customgame ruleset (PS `config/formats.ts:149`):
+    //   ['Team Preview', 'Cancel Mod', 'Max Team Size = 24',
+    //    'Max Move Count = 24', 'Max Level = 9999', 'Default Level = 100']
+    // No Sleep Clause Mod, Species Clause, Item Clause, Evasion Clause,
+    // or OHKO Clause are active — so sleep/species/item divergences in
+    // the random-golden survey reflect real engine behavior, not
+    // PS-side rule enforcement that our engine doesn't replicate.
+    // Team Preview is benign: handled by `if (req.teamPreview) ...`
+    // above, no RNG draws involved.
     sides.omniscient.write('>start ' + JSON.stringify({ formatid: format, seed }));
     sides.omniscient.write('>player p1 ' + JSON.stringify({
       name: 'P1', team: Teams.pack(team1),

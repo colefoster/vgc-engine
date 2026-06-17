@@ -185,6 +185,14 @@ impl Battle {
         self.config.seed
     }
 
+    /// `(consumed, total)` for the underlying Oracle / OraclePartial
+    /// queue, or `None` for plain Splitmix. Used by the golden harness
+    /// to check that the engine's draw-site count matches what PS
+    /// recorded — see `Rng::oracle_pops`.
+    pub fn oracle_pops(&self) -> Option<(usize, usize)> {
+        self.rng.oracle_pops()
+    }
+
     pub fn format(&self) -> Format {
         self.config.format
     }

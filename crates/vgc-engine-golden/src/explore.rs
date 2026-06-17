@@ -256,6 +256,25 @@ pub fn run_explore_in_memory(
         prev = after;
     }
 
+    // RNG draw-balance check. The oracle harness silently lets per-call
+    // misalignment compound: PS recorded N draws, engine consumed M ≠ N,
+    // and every site after the first mismatch read the wrong value.
+    // Surface that explicitly so misaligned goldens don't pollute the
+    // damage / status frequency map with downstream noise.
+    if let Some((engine_pops, _)) = battle.oracle_pops() {
+        let ps_draws = ps.rng.len();
+        if engine_pops != ps_draws {
+            report.divergences.push(ExploreDivergence {
+                turn: 0,
+                kind: "rng-balance".into(),
+                actor: "battle".into(),
+                label: format!("delta={}", engine_pops as i64 - ps_draws as i64),
+                ps_value: format!("ps_drew={ps_draws}"),
+                engine_value: format!("engine_popped={engine_pops}"),
+            });
+        }
+    }
+
     report.structural_match = report.divergences.is_empty();
     Ok(report)
 }
