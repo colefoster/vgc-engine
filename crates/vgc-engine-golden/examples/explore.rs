@@ -62,6 +62,12 @@ fn main() {
     let mut by_label: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     // For abilities/items hint: which goldens diverged most?
     let mut worst_goldens: Vec<(String, usize)> = Vec::new();
+    // PR-224 leverage diagnostic: the FIRST divergence per battle is the
+    // one that gates the rest — closing it is the only PR that can move
+    // that battle into `clean`. Bucket by `(kind, label)` and sort by
+    // frequency to order the mechanic backlog by "battles unblocked".
+    let mut first_div_by_kind: BTreeMap<String, usize> = BTreeMap::new();
+    let mut first_div_by_kind_label: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
 
     for (name, input, ps_path) in &pairs {
         total += 1;
@@ -80,6 +86,26 @@ fn main() {
                 } else {
                     diverged += 1;
                     worst_goldens.push((name.clone(), report.divergences.len()));
+                    // First-divergence picked by earliest turn, then by
+                    // position in the report (the order divergences were
+                    // appended). The `rng-balance` synthetic event uses
+                    // turn=0 — exclude it when picking "first real" so a
+                    // misaligned battle still gets credited to the
+                    // mechanic that caused the misalignment, not to the
+                    // generic balance summary.
+                    if let Some(first) = report
+                        .divergences
+                        .iter()
+                        .find(|d| d.kind != "rng-balance")
+                        .or_else(|| report.divergences.first())
+                    {
+                        *first_div_by_kind.entry(first.kind.clone()).or_insert(0) += 1;
+                        *first_div_by_kind_label
+                            .entry(first.kind.clone())
+                            .or_default()
+                            .entry(first.label.clone())
+                            .or_insert(0) += 1;
+                    }
                     for d in &report.divergences {
                         bump_divergence(&mut by_kind, &mut by_label, d);
                     }
@@ -97,6 +123,28 @@ fn main() {
         println!("{kind}-divergence: {count}");
         if let Some(labels) = by_label.get(kind) {
             let mut lvec: Vec<(String, usize)> = labels.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            lvec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            for (label, c) in lvec.iter().take(12) {
+                let label_disp = if label.is_empty() { "<unknown>" } else { label.as_str() };
+                println!("    - {label_disp} x {c}");
+            }
+        }
+    }
+
+    println!();
+    println!("===== first-divergence leverage (battles blocked) =====");
+    // Each battle counted once, by the kind+label of its FIRST diverging
+    // event. This is the upper bound on how many `diverged` battles a
+    // single mechanic PR could promote to `clean` — anything past the
+    // first divergence is dead code until upstream sites align.
+    let mut first_ordered: Vec<(String, usize)> =
+        first_div_by_kind.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    first_ordered.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (kind, count) in &first_ordered {
+        println!("{kind}-first: {count}");
+        if let Some(labels) = first_div_by_kind_label.get(kind) {
+            let mut lvec: Vec<(String, usize)> =
+                labels.iter().map(|(k, v)| (k.clone(), *v)).collect();
             lvec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             for (label, c) in lvec.iter().take(12) {
                 let label_disp = if label.is_empty() { "<unknown>" } else { label.as_str() };
