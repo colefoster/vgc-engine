@@ -58,7 +58,33 @@ pub struct ExploreReport {
     pub divergences: Vec<ExploreDivergence>,
 }
 
+/// Which RNG strategy the engine uses for the differential run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExploreMode {
+    /// Consume PS's recorded RNG queue via `Rng::oracle_partial`.
+    /// Unmatched variants fall through to a Splitmix fallback seeded
+    /// from `input.seed[0]`. This is the default — it lets the engine
+    /// piggy-back on PS's draws without needing every draw site
+    /// implemented.
+    OraclePartial,
+    /// Use the bit-exact PS Gen5 LCG (PR-209 / PR-220), constructed
+    /// from `input.seed`. Engine and PS draw the same values at the
+    /// same sites — no oracle queue. Surfaces draw-site MISALIGNMENT
+    /// as direct divergence (engine consumes value X for site A, PS
+    /// consumed value X for a different site, etc.). The goal state
+    /// once all engine draw sites match PS.
+    PsGen5,
+}
+
 pub fn run_explore(input_path: &Path, ps_path: &Path) -> Result<ExploreReport, GoldenError> {
+    run_explore_with_mode(input_path, ps_path, ExploreMode::OraclePartial)
+}
+
+pub fn run_explore_with_mode(
+    input_path: &Path,
+    ps_path: &Path,
+    mode: ExploreMode,
+) -> Result<ExploreReport, GoldenError> {
     let input_bytes = std::fs::read(input_path).map_err(GoldenError::Io)?;
     let input: GoldenInput =
         serde_json::from_slice(&input_bytes).map_err(GoldenError::Json)?;
@@ -67,12 +93,20 @@ pub fn run_explore(input_path: &Path, ps_path: &Path) -> Result<ExploreReport, G
     if !ps.ok {
         return Err(GoldenError::PsNotOk);
     }
-    run_explore_in_memory(&input, &ps)
+    run_explore_in_memory_with_mode(&input, &ps, mode)
 }
 
 pub fn run_explore_in_memory(
     input: &GoldenInput,
     ps: &PsOutput,
+) -> Result<ExploreReport, GoldenError> {
+    run_explore_in_memory_with_mode(input, ps, ExploreMode::OraclePartial)
+}
+
+pub fn run_explore_in_memory_with_mode(
+    input: &GoldenInput,
+    ps: &PsOutput,
+    mode: ExploreMode,
 ) -> Result<ExploreReport, GoldenError> {
     let format = parse_format(&input.format)?;
     let p1_team = TeamBuilder::from_showdown_text(&input.p1.team)
@@ -95,12 +129,17 @@ pub fn run_explore_in_memory(
         &input.turns
     };
 
-    let events = lower_rng_events(&ps.rng);
     let fallback_seed = u64::from(input.seed[0])
         | (u64::from(input.seed[1]) << 16)
         | (u64::from(input.seed[2]) << 32)
         | (u64::from(input.seed[3]) << 48);
-    let rng = Rng::oracle_partial(events, fallback_seed);
+    let rng = match mode {
+        ExploreMode::OraclePartial => {
+            let events = lower_rng_events(&ps.rng);
+            Rng::oracle_partial(events, fallback_seed)
+        }
+        ExploreMode::PsGen5 => Rng::ps_gen5(input.seed),
+    };
     let cfg = BattleConfig { format, seed: fallback_seed };
     let mut battle = Battle::with_rng(cfg, rng, p1_team, p2_team);
 

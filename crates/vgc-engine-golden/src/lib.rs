@@ -36,7 +36,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub mod explore;
-pub use explore::{run_explore, run_explore_in_memory, ExploreDivergence, ExploreReport};
+pub use explore::{
+    run_explore, run_explore_in_memory, run_explore_in_memory_with_mode,
+    run_explore_with_mode, ExploreDivergence, ExploreMode, ExploreReport,
+};
 
 use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
