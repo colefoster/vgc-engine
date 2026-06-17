@@ -190,19 +190,36 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
-    // Sticky Barb — PS `data/items.ts:stickybarb`:
-    //   onResidual(pokemon) { this.damage(pokemon.baseMaxhp / 8); }
-    // Damages the holder by 1/8 max HP each turn, blocked by Magic
-    // Guard. No type gate (Black Sludge's poison-heal does not apply).
-    // PS residual order 28, sub-order 3 (later than Leftovers /
-    // Black Sludge — irrelevant here since we don't yet enforce
-    // per-item sub-ordering).
+    // Sticky Barb is PS order 28 — fires AFTER status DOT (9-10), not
+    // alongside Leftovers / Black Sludge. See `on_residual_late`
+    // below; the dispatcher in battle.rs calls it in the correct slot
+    // of resolve_end_of_turn.
     //
-    // Contact-swap arm (onHit) deferred to a follow-up — that's a
-    // separate mechanic involving item transfer to a contact attacker
-    // with no item, and only matters in the rare 1-in-N battles
-    // where a Sticky Barb holder gets contact-hit by an itemless mon.
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Barb>.
+    // Future: sitrusberry
+    // (one-shot on ≤50% HP — handled in damage-side hook), focussash
+    // (one-shot — handled on fatal hit, not residual), lifeorb (handled
+    // on attack hit, not residual), choice items (modify A/D), etc.
+}
+
+/// Late item residuals (PS onResidualOrder ≥ 25). Currently:
+/// Sticky Barb (order 28, sub-order 3 — chip holder 1/8 max HP).
+///
+/// Called from `Battle::resolve_end_of_turn` AFTER status DOT and
+/// Leech Seed, just before the ability residual phase. Splitting
+/// early/late lets us match PS ordering when a holder has BOTH burn
+/// and Sticky Barb: PS chips burn first (order 10) then Sticky Barb
+/// (order 28), so a fatal burn shadows the Sticky Barb tick.
+pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
+        _ => return,
+    };
+    let slug = item_slug(item_id);
+    // Sticky Barb — PS `data/items.ts:stickybarb` onResidual:
+    //   this.damage(pokemon.baseMaxhp / 8);
+    // No type gate; Magic Guard blocks. PR-216 mechanic; PR-218
+    // moves to the correct PS order. Contact-swap arm (`onHit`)
+    // deferred to a follow-up.
     if slug == "stickybarb" {
         let mon = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m,
@@ -219,7 +236,6 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
-    // Future: sitrusberry
     // (one-shot on ≤50% HP — handled in damage-side hook), focussash
     // (one-shot — handled on fatal hit, not residual), lifeorb (handled
     // on attack hit, not residual), choice items (modify A/D), etc.
