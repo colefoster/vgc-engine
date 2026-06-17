@@ -2067,6 +2067,13 @@ impl Battle {
                         self, tside, tslot, actor_side, actor_slot,
                     );
                 }
+                // Defender items with non-contact onDamagingHit triggers
+                // (Jaboca Berry — physical category gate). Runs on every
+                // damaging hit regardless of contact. PS
+                // `data/items.ts:jabocaberry`.
+                crate::item::on_damaging_hit(
+                    self, tside, tslot, actor_side, actor_slot, move_id,
+                );
             }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
@@ -7612,6 +7619,61 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, kro_before,
                    "Rocky Helmet must NOT proc on non-contact move");
+    }
+
+    #[test]
+    fn jaboca_berry_chips_physical_attacker_and_consumes() {
+        // Lucario @ Close Combat (physical, contact) into Garchomp @
+        // Jaboca Berry. PS: 1/8 attacker max HP recoil, berry consumed.
+        // Note: Rocky Helmet is *not* on the defender, so this isolates
+        // the Jaboca path. Close Combat is physical → Jaboca fires.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"focussash","nature":"adamant","moves":["closecombat","extremespeed","crunch","bulletpunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"jabocaberry","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let luc_full = b.p1.team[0].stats.hp;
+        let luc_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let lost = luc_before - b.p1.team[0].current_hp;
+        assert!(lost >= (luc_full / 8).max(1),
+                "Jaboca Berry should chip >= 1/8 max HP ({} lost, expected >= {})",
+                lost, luc_full / 8);
+        // Berry consumed.
+        assert_eq!(b.p2.team[0].item_id, u16::MAX,
+                   "Jaboca Berry must be consumed after firing");
+    }
+
+    #[test]
+    fn jaboca_berry_does_not_proc_on_special_attacker() {
+        // Alakazam @ Shadow Ball (special) into Garchomp @ Jaboca Berry.
+        // Jaboca's category gate is physical-only → must not fire.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["shadowball","focusblast","psychic","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"jabocaberry","nature":"impish","moves":["dragontail","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        let zam_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, zam_before,
+                   "Jaboca Berry must NOT fire against a special attacker");
+        // Berry remains on the holder.
+        assert_ne!(b.p2.team[0].item_id, u16::MAX,
+                   "Jaboca Berry must NOT be consumed by a special hit");
     }
 
     #[test]

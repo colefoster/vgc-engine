@@ -117,6 +117,71 @@ pub fn on_attacker_contact_hit(
     }
 }
 
+/// Defender's held item reacts to an incoming damaging hit that *isn't*
+/// gated on contact. Mirrors PS's `onDamagingHit` for berries that
+/// trigger on category alone (Jaboca → physical, Rowap → special). The
+/// contact-gated bucket (Rocky Helmet) still lives in
+/// `on_attacker_contact_hit`.
+///
+/// Jaboca Berry — PS `data/items.ts:jabocaberry`
+/// `onDamagingHit(damage, target, source, move)`:
+///   `if (move.category === 'Physical' && source.hp && source.isActive &&
+///        !source.hasAbility('magicguard')) {
+///      if (target.eatItem()) {
+///        this.damage(source.baseMaxhp / (target.hasAbility('ripen') ? 4 : 8),
+///                    source, target);
+///      }
+///    }`
+/// Ripen (Tropius/Bounsweet/etc.) isn't wired yet — Jaboca always uses
+/// the /8 branch here. Magic Guard on the attacker blocks the recoil.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Jaboca_Berry>.
+pub fn on_damaging_hit(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+    move_id: u16,
+) {
+    let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
+        _ => return,
+    };
+    let slug = item_slug(item_id);
+    if slug == "jabocaberry" {
+        // Physical-only gate. PS reads `move.category === 'Physical'`.
+        let category = data::MOVES[move_id as usize].category;
+        if category != 0 {
+            return;
+        }
+        let attacker_alive_and_no_mg = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
+        if !attacker_alive_and_no_mg {
+            return;
+        }
+        // Consume the berry first (PS `target.eatItem()` returns true
+        // before the damage line runs).
+        if let Some(t) = battle
+            .side_mut(target_side)
+            .active_mon_mut(target_slot as usize)
+        {
+            t.item_id = u16::MAX;
+        }
+        if let Some(a) = battle
+            .side_mut(attacker_side)
+            .active_mon_mut(attacker_slot as usize)
+        {
+            let recoil = (a.stats.hp / 8).max(1);
+            a.current_hp = a.current_hp.saturating_sub(recoil);
+            if a.current_hp == 0 {
+                a.fainted = true;
+            }
+        }
+    }
+}
+
 /// On-switch-in hook for held items. PS canonical order on a
 /// switch-in: hazards damage → Heavy Boots gate → Air Balloon
 /// announce → ability `onStart` → item `onStart` → forme change.
