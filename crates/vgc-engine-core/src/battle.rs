@@ -2414,12 +2414,19 @@ impl Battle {
         if immune || terrain_blocks_sleep {
             return;
         }
-        // Sleep duration roll: gen 5+ uses 1..=3 turns. `rng.range(3)`
-        // returns 0..=2; +1 gives the inclusive 1..=3 range. PS
-        // `data/conditions.ts:slp duration: this.random(2, 5)` in gen 4,
-        // tightened to 1..=3 in gen 5+ (PS `sim/pokemon.ts setStatus`).
+        // Sleep duration roll. PS `data/conditions.ts:59` slp.onStart:
+        //   `this.effectState.startTime = this.random(2, 5);`
+        // = uniform integer in [2, 5) = 2/3/4 turns. PS records this
+        // as `Range { value: v - m = 0..3, bound: n - m = 3 }` (driver
+        // mapping in tools/ps-golden-driver/driver.js patchRng); our
+        // engine consumes the matching `rng.range(3)` and offsets by 2.
+        //
+        // The previous offset (+1, giving 1..=3 turns) was off by one
+        // versus current PS: the engine's onBeforeMove decrements
+        // FIRST and wakes on 0, so 2→3→4 starting values correspond to
+        // 1/2/3 effective asleep turns — matching PS exactly.
         let sleep_turns = if matches!(status, Status::Sleep) {
-            (self.rng.range(3) as u8) + 1
+            (self.rng.range(3) as u8) + 2
         } else {
             0
         };
@@ -6084,7 +6091,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert!(matches!(b.p2.team[0].status, Status::Sleep), "Pikachu asleep after turn 1");
-        assert!((1..=3).contains(&b.p2.team[0].sleep_turns()), "1..=3 sleep_turns");
+        assert!((2..=4).contains(&b.p2.team[0].sleep_turns()), "2..=4 sleep_turns");
         let amoonguss_hp_after_t1 = b.p1.team[0].current_hp;
         assert!(amoonguss_hp_after_t1 < amoonguss_start_hp, "T-bolt hit on turn 1");
 
