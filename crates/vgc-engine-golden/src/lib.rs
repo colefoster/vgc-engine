@@ -838,9 +838,16 @@ fn derive_turns_from_events(
         }
     }
 
-    // Cut off at the faint turn — include it (the moves before the faint
-    // are valid choices) but stop derivation immediately after.
-    let cutoff = faint_turn.unwrap_or(u32::MAX).min(max_turns);
+    // Cut off STRICTLY BEFORE the faint turn. PS's snapshot for that
+    // turn includes the post-faint replacement (different mon, different
+    // max HP) — comparing it against the engine's still-fainted slot
+    // would always look like a divergence even when the mechanics are
+    // correct. By stopping the turn before, both sides remain aligned
+    // and any reported divergence reflects an actual mechanic bug.
+    let cutoff = faint_turn
+        .map(|t| t.saturating_sub(1))
+        .unwrap_or(u32::MAX)
+        .min(max_turns);
     let mut out = Vec::new();
     for (_turn_no, bucket) in turn_choices.range(1..=cutoff) {
         let p1_slot_a = bucket.get(&(1, 'a')).cloned().unwrap_or_else(|| "pass".into());
@@ -999,19 +1006,39 @@ mod corpus_tests {
             return Vec::new();
         }
         let mut out = Vec::new();
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)
-            .expect("read goldens/")
-            .filter_map(|e| e.ok())
-            .collect();
-        entries.sort_by_key(|e| e.path());
+        walk_goldens(&dir, &mut out);
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    fn walk_goldens(
+        dir: &std::path::Path,
+        out: &mut Vec<(String, std::path::PathBuf, std::path::PathBuf)>,
+    ) {
+        let entries: Vec<_> = match std::fs::read_dir(dir) {
+            Ok(it) => it.filter_map(|e| e.ok()).collect(),
+            Err(_) => return,
+        };
         for entry in entries {
             let p = entry.path();
+            if p.is_dir() {
+                walk_goldens(&p, out);
+                continue;
+            }
             let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let Some(stem) = name.strip_suffix(".input.json") else { continue };
-            let ps_path = dir.join(format!("{stem}.ps.json"));
-            out.push((stem.to_string(), p, ps_path));
+            let ps_path = p.with_file_name(format!("{stem}.ps.json"));
+            // Stem includes the subdir for uniqueness (e.g. "random/seed-0").
+            let rel = p
+                .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("goldens"))
+                .unwrap_or(&p);
+            let qualified = rel
+                .to_string_lossy()
+                .trim_end_matches(".input.json")
+                .to_string();
+            out.push((qualified, p, ps_path));
+            let _ = stem;
         }
-        out
     }
 
     #[test]
