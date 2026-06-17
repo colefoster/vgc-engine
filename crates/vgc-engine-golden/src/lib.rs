@@ -112,11 +112,7 @@ pub enum PsRngEvent {
     PercentRoll { value: bool, threshold: u8 },
     Range { value: u32, bound: u32 },
     Tiebreak { value: String },
-    Chance {
-        #[allow(dead_code)] value: bool,
-        #[allow(dead_code)] num: u32,
-        #[allow(dead_code)] denom: u32,
-    },
+    Chance { value: bool, num: u32, denom: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -345,8 +341,19 @@ fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
                     .unwrap_or(0);
                 out.push(RngEvent::Tiebreak(v));
             }
-            PsRngEvent::Chance { .. } => {
-                // No engine draw site for arbitrary randomChance yet — skip.
+            PsRngEvent::Chance { value, num, denom } => {
+                // PS `randomChance(num, denom)` returns true when
+                // `random(denom) < num`. Engine consumes a `range(denom)`
+                // call at the same site. Pick the smallest value that
+                // reproduces PS's outcome: 0 for true (always satisfies
+                // `< num` when num >= 1), or `num` for false (smallest
+                // `>= num`). Clamped into `[0, denom)`.
+                let v = if value {
+                    0u32
+                } else {
+                    num.min(denom.saturating_sub(1))
+                };
+                out.push(RngEvent::Range(v));
             }
         }
     }
@@ -677,6 +684,25 @@ mod tests {
         let evs = vec![PsRngEvent::Range { value: 13, bound: 16 }];
         let out = lower_rng_events(&evs);
         assert!(matches!(out[0], RngEvent::DamageRoll(2)));
+    }
+
+    #[test]
+    fn lower_rng_chance_true_maps_to_range_zero() {
+        // PS `randomChance(1, 3)` returning true means PS drew 0
+        // (only value < 1 in [0,3) is 0). Engine should pop Range(0)
+        // at the matching `range(3)` call to reproduce success.
+        let evs = vec![PsRngEvent::Chance { value: true, num: 1, denom: 3 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::Range(0)));
+    }
+
+    #[test]
+    fn lower_rng_chance_false_maps_to_range_num() {
+        // PS `randomChance(1, 3)` returning false means PS drew 1 or 2.
+        // Pick the smallest value that fails the `< num` check (num).
+        let evs = vec![PsRngEvent::Chance { value: false, num: 1, denom: 3 }];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[0], RngEvent::Range(1)));
     }
 }
 
