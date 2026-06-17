@@ -3459,11 +3459,12 @@ fn scan_aura_field(b: &Battle) -> (bool, bool, bool) {
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
 /// self, and side-targeted moves are not blocked by Protect.
 fn is_targeting_move(target_code: u8) -> bool {
-    matches!(target_code, 0 | 2 | 3 | 4 | 10)
     // 0 normal, 2 adjacentAlly, 3 adjacentAllyOrSelf, 4 adjacentFoe, 10 any.
-    // 5 allAdjacent and 6 allAdjacentFoes are spread — they still hit but
-    // Protect intercepts each individual target. We can refine in the
-    // spread-move PR; for now treat spread as bypassing.
+    // 5 allAdjacent and 6 allAdjacentFoes are spread — PS's Protect
+    // condition.onTryHit (data/moves.ts:protect → conditions.ts) fires
+    // per target, so the protected slot is shielded from the spread
+    // hit while siblings still take damage.
+    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10)
 }
 
 #[cfg(test)]
@@ -10279,6 +10280,46 @@ mod tests {
         assert!(
             dmg_with_sand < dmg_no_sand,
             "Sand should reduce Special damage on Rock-types: with_sand={dmg_with_sand} no_sand={dmg_no_sand}",
+        );
+    }
+
+    #[test]
+    fn protect_blocks_spread_move_on_protected_slot_only() {
+        // Doubles: P1 slot 0 uses Earthquake (allAdjacent), P2 slot 1
+        // uses Protect. EQ should hit P2 slot 0 (Calyrex partner) but
+        // be blocked on P2 slot 1 (the protected slot). Both partners
+        // pass on the P1 side. PS condition.onTryHit fires per target,
+        // so the protected slot is shielded.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","crunch","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}},
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"focussash","nature":"jolly","moves":["wickedblow","closecombat","suckerpunch","protect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let snorlax_hp = b.p2.team[0].current_hp;
+        let urshifu_hp = b.p2.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // EQ (spread)
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Move { actor_slot: 1, move_slot: 3, target: None }, // Protect
+            ],
+        );
+        assert!(
+            b.p2.team[0].current_hp < snorlax_hp,
+            "Snorlax (unprotected partner) should take EQ damage",
+        );
+        assert_eq!(
+            b.p2.team[1].current_hp, urshifu_hp,
+            "Urshifu (protected) should not take EQ damage",
         );
     }
 }
