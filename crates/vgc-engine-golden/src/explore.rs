@@ -242,11 +242,24 @@ pub fn run_explore_in_memory(
                 continue;
             }
             if eng_dmg != *ps_dmg {
+                // Prefer the PS `[from]` attribution as the label
+                // (e.g. `"item: Sticky Barb"`, `"confusion"`) so the
+                // aggregator bucket-sorts by the missing mechanic, not
+                // by which mon happened to be in the slot. Fall back
+                // to species when the damage was a direct move hit
+                // (no `[from]` tag) — there the species frequency
+                // tells us whose damage-roll path diverged.
+                let label = ps_turn
+                    .damaged_from
+                    .get(key)
+                    .and_then(|x| x.clone())
+                    .or_else(|| ps_turn.species.get(key).cloned())
+                    .unwrap_or_default();
                 report.divergences.push(ExploreDivergence {
                     turn: turn_no,
                     kind: "damage".into(),
                     actor: format!("p{}{}", key.0, key.1),
-                    label: ps_turn.species.get(key).cloned().unwrap_or_default(),
+                    label,
                     ps_value: if *ps_dmg { "took_damage".into() } else { "no_damage".into() },
                     engine_value: if eng_dmg { "took_damage".into() } else { "no_damage".into() },
                 });
@@ -318,6 +331,13 @@ struct PsTurnDeltas {
     statuses: BTreeMap<(u8, char), String>,
     /// (side, slot) → took damage this turn
     damaged: BTreeMap<(u8, char), bool>,
+    /// (side, slot) → PS `[from]` attribution for the damage event
+    /// (e.g. `"item: Sticky Barb"`, `"move: Steel Beam"`, `"confusion"`,
+    /// `"psn"`). `None` when PS attributed the damage directly to a
+    /// move (the normal `|-damage|` line has no `[from]`). Populated
+    /// after PR-214 fixed the protocol parser to recognize `[from] X`
+    /// as a single token.
+    damaged_from: BTreeMap<(u8, char), Option<String>>,
     /// (source_actor, target_actor, move_name) tuples for `-miss` events
     misses: Vec<(String, String, String)>,
     /// (side, slot) → species name of the mon in that slot
@@ -377,6 +397,14 @@ fn ps_turn_deltas(events: &[PsEvent], turn: u32) -> PsTurnDeltas {
             "damage" => {
                 if let Some(key) = ev.actor.as_deref().and_then(parse_actor) {
                     out.damaged.insert(key, true);
+                    // Last writer wins — if multiple damage events hit
+                    // the same slot in a turn, keep the most recent
+                    // attribution. Usually only one event per slot per
+                    // turn except for multi-hit moves (where all hits
+                    // share the same source) and chained residuals
+                    // (e.g. Sticky Barb + Burn — keeping the later one
+                    // is fine for triage).
+                    out.damaged_from.insert(key, ev.from.clone());
                 }
             }
             "miss" => {
