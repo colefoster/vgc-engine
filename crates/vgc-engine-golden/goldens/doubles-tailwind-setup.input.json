@@ -1,0 +1,15 @@
+{
+  "name": "doubles-tailwind-setup",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Tornadus @ Covert Cloak\nAbility: Prankster\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 SpA / 252 Spe\nTimid Nature\nIVs: 0 Atk\n- Tailwind\n- Bleakwind Storm\n- Protect\n- Taunt\n\nCalyrex-Shadow @ Life Orb\nAbility: As One (Spectrier)\nLevel: 50\nTera Type: Psychic\nEVs: 4 HP / 252 SpA / 252 Spe\nTimid Nature\nIVs: 0 Atk\n- Astral Barrage\n- Psychic\n- Nasty Plot\n- Protect\n"
+  },
+  "p2": {
+    "team": "Incineroar @ Safety Goggles\nAbility: Intimidate\nLevel: 50\nTera Type: Ghost\nEVs: 244 HP / 4 Atk / 4 Def / 4 SpD / 252 Spe\nJolly Nature\n- Fake Out\n- Flare Blitz\n- Knock Off\n- Parting Shot\n\nUrshifu @ Focus Sash\nAbility: Unseen Fist\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 Atk / 252 Spe\nJolly Nature\n- Wicked Blow\n- Close Combat\n- Sucker Punch\n- Protect\n"
+  },
+  "turns": [
+    { "p1": "move 1, move 4", "p2": "move 1 1, move 4" },
+    { "p1": "move 3, move 1", "p2": "move 2 1, move 4" }
+  ]
+}

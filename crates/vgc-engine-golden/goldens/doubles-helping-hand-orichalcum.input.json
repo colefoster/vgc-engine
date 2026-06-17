@@ -1,0 +1,14 @@
+{
+  "name": "doubles-helping-hand-orichalcum",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Koraidon @ Clear Amulet\nAbility: Orichalcum Pulse\nLevel: 50\nTera Type: Fire\nEVs: 252 Atk / 4 SpD / 252 Spe\nJolly Nature\n- Flare Blitz\n- Collision Course\n- U-turn\n- Protect\n\nFarigiraf @ Throat Spray\nAbility: Armor Tail\nLevel: 50\nTera Type: Water\nEVs: 244 HP / 4 Def / 252 SpA / 4 SpD / 4 Spe\nModest Nature\nIVs: 0 Atk\n- Hyper Voice\n- Psychic\n- Helping Hand\n- Trick Room\n"
+  },
+  "p2": {
+    "team": "Amoonguss @ Sitrus Berry\nAbility: Regenerator\nLevel: 50\nTera Type: Water\nEVs: 244 HP / 156 Def / 100 SpD\nBold Nature\nIVs: 0 Atk\n- Spore\n- Rage Powder\n- Pollen Puff\n- Protect\n\nGarchomp @ Yache Berry\nAbility: Rough Skin\nLevel: 50\nTera Type: Steel\nEVs: 252 Atk / 4 SpD / 252 Spe\nJolly Nature\n- Earthquake\n- Dragon Claw\n- Stone Edge\n- Protect\n"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 3 -1", "p2": "move 4, move 4" }
+  ]
+}

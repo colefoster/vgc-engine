@@ -1,0 +1,15 @@
+{
+  "name": "singles-substitute-and-protect",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Dragapult @ Choice Specs\nAbility: Clear Body\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 SpA / 252 Spe\nTimid Nature\nIVs: 0 Atk\n- Shadow Ball\n- Draco Meteor\n- U-turn\n- Flamethrower\n"
+  },
+  "p2": {
+    "team": "Tyranitar @ Leftovers\nAbility: Sand Stream\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 Atk / 252 SpD\nCareful Nature\n- Crunch\n- Substitute\n- Protect\n- Rock Slide\n"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 2" },
+    { "p1": "move 1", "p2": "move 3" }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "doubles-stealth-rock-chip",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Hatterene @ Life Orb\nAbility: Magic Bounce\nLevel: 50\nTera Type: Water\nEVs: 252 HP / 252 SpA / 4 SpD\nQuiet Nature\nIVs: 0 Atk / 0 Spe\n- Stealth Rock\n- Dazzling Gleam\n- Psychic\n- Protect\n\nGarchomp @ Choice Scarf\nAbility: Rough Skin\nLevel: 50\nTera Type: Steel\nEVs: 252 Atk / 4 SpD / 252 Spe\nJolly Nature\n- Earthquake\n- Dragon Claw\n- Stone Edge\n- Iron Head\n"
+  },
+  "p2": {
+    "team": "Amoonguss @ Rocky Helmet\nAbility: Regenerator\nLevel: 50\nTera Type: Water\nEVs: 244 HP / 156 Def / 100 SpD\nBold Nature\nIVs: 0 Atk\n- Spore\n- Rage Powder\n- Pollen Puff\n- Protect\n\nFlutter Mane @ Booster Energy\nAbility: Protosynthesis\nLevel: 50\nTera Type: Fairy\nEVs: 4 HP / 252 SpA / 252 Spe\nTimid Nature\nIVs: 0 Atk\n- Moonblast\n- Shadow Ball\n- Dazzling Gleam\n- Protect\n\nIron Hands @ Assault Vest\nAbility: Quark Drive\nLevel: 50\nTera Type: Grass\nEVs: 220 HP / 252 Atk / 4 Def / 28 SpD / 4 Spe\nAdamant Nature\n- Drain Punch\n- Wild Charge\n- Heavy Slam\n- Fake Out\n"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 4, move 4" },
+    { "p1": "move 2, move 1", "p2": "switch 3, move 4" }
+  ]
+}

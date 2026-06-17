@@ -1,0 +1,133 @@
+{
+  "ok": true,
+  "name": "singles-substitute-and-protect",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 2,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Dragapult",
+      "hp": 164,
+      "max": 164
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Tyranitar",
+      "hp": 207,
+      "max": 207
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Shadow Ball",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 186,
+      "max": 207,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Substitute",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 135,
+      "max": 207,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 154,
+      "max": 164,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 147,
+      "max": 207,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Protect",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Shadow Ball",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 144,
+      "max": 164,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 159,
+      "max": 207,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13
+    },
+    {
+      "kind": "Range",
+      "value": 57,
+      "bound": 100
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1781654421\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Dragapult, L50, M|\n|poke|p2|Tyranitar, L50, F|\n|teampreview|\n|t:|1781654421\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Dragapult|Dragapult, L50, M|164/164\n|switch|p2a: Tyranitar|Tyranitar, L50, F|207/207\n|-weather|Sandstorm|[from] ability: Sand Stream|[of] p2a: Tyranitar\n|turn|1|\n|t:|1781654421\n|move|p1a: Dragapult|Shadow Ball|p2a: Tyranitar\n|-resisted|p2a: Tyranitar\n|-damage|p2a: Tyranitar|186/207\n|move|p2a: Tyranitar|Substitute|p2a: Tyranitar\n|-start|p2a: Tyranitar|Substitute\n|-damage|p2a: Tyranitar|135/207\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p1a: Dragapult|154/164|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|-heal|p2a: Tyranitar|147/207|[from] item: Leftovers\n|upkeep\n|turn|2|\n|t:|1781654421\n|move|p2a: Tyranitar|Protect|p2a: Tyranitar\n|-singleturn|p2a: Tyranitar|Protect\n|move|p1a: Dragapult|Shadow Ball|p2a: Tyranitar\n|-activate|p2a: Tyranitar|move: Protect\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p1a: Dragapult|144/164|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|-heal|p2a: Tyranitar|159/207|[from] item: Leftovers\n|upkeep\n|turn|3"
+}

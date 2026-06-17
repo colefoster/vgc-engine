@@ -268,10 +268,13 @@ function parseLog(log) {
 // Handles team preview and forceSwitch automatically (sends a default
 // team order; uses the next turn entry for forceSwitch).
 
-async function driveSide(playerStream, actions, teamLen, sideTag, debug) {
+async function driveSide(playerStream, actions, teamLen, sideTag, debug, errorsOut) {
   let idx = 0;
   for await (const chunk of playerStream) {
     if (debug) process.stderr.write(`[${sideTag}] ${chunk.slice(0, 200).replace(/\n/g, ' | ')}\n`);
+    for (const l of chunk.split('\n')) {
+      if (l.startsWith('|error|')) errorsOut.push(`[${sideTag}] ${l}`);
+    }
     const reqLine = chunk.split('\n').find((l) => l.startsWith('|request|'));
     if (!reqLine) continue;
     let req;
@@ -316,6 +319,7 @@ async function runJob(job) {
 
   const rng = [];
   const restore = patchRng(rng);
+  const sideErrors = [];
 
   const stream = new BattleStream();
   const sides = getPlayerStreams(stream);
@@ -327,8 +331,8 @@ async function runJob(job) {
   const debug = process.env.PS_GOLDEN_DEBUG === '1';
 
   try {
-    const driveP1 = driveSide(sides.p1, p1Actions, team1.length, 'p1', debug);
-    const driveP2 = driveSide(sides.p2, p2Actions, team2.length, 'p2', debug);
+    const driveP1 = driveSide(sides.p1, p1Actions, team1.length, 'p1', debug, sideErrors);
+    const driveP2 = driveSide(sides.p2, p2Actions, team2.length, 'p2', debug, sideErrors);
 
     sides.omniscient.write('>start ' + JSON.stringify({ formatid: format, seed }));
     sides.omniscient.write('>player p1 ' + JSON.stringify({
@@ -360,13 +364,14 @@ async function runJob(job) {
   const log = logChunks.join('');
   const events = parseLog(log);
   return {
-    ok: true,
+    ok: sideErrors.length === 0,
     name: job.name || null,
     seed,
     format,
     turns: (job.turns || []).length,
     events,
     rng,
+    errors: sideErrors,
     log,
   };
 }

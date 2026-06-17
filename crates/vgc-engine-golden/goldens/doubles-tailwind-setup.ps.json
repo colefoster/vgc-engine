@@ -1,0 +1,181 @@
+{
+  "ok": true,
+  "name": "doubles-tailwind-setup",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Tornadus",
+      "hp": 186,
+      "max": 186
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Calyrex-Shadow",
+      "hp": 176,
+      "max": 176
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Incineroar",
+      "hp": 201,
+      "max": 201
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Urshifu",
+      "hp": 176,
+      "max": 176
+    },
+    {
+      "turn": 0,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 0,
+      "kind": "unboost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Protect",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Protect",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Fake Out",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 162,
+      "max": 186,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tailwind",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Protect",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Protect",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Astral Barrage",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 127,
+      "max": 201,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 159,
+      "max": 176,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Flare Blitz",
+      "target": "p1a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13
+    },
+    {
+      "kind": "Chance",
+      "value": true,
+      "num": 1,
+      "denom": 3
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100
+    },
+    {
+      "kind": "Crit",
+      "value": false
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1781654400\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Tornadus, L50, M|\n|poke|p1|Calyrex-Shadow, L50|\n|poke|p2|Incineroar, L50, M|\n|poke|p2|Urshifu-*, L50, F|\n|teampreview|\n|t:|1781654400\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Tornadus|Tornadus, L50, M|186/186\n|switch|p1b: Calyrex|Calyrex-Shadow, L50|176/176\n|switch|p2a: Incineroar|Incineroar, L50, M|201/201\n|switch|p2b: Urshifu|Urshifu, L50, F|176/176\n|-ability|p1b: Calyrex|As One\n|-ability|p1b: Calyrex|Unnerve\n|-ability|p2a: Incineroar|Intimidate|boost\n|-unboost|p1a: Tornadus|atk|1\n|-unboost|p1b: Calyrex|atk|1\n|turn|1|\n|t:|1781654400\n|move|p1b: Calyrex|Protect|p1b: Calyrex\n|-singleturn|p1b: Calyrex|Protect\n|move|p2b: Urshifu|Protect|p2b: Urshifu\n|-singleturn|p2b: Urshifu|Protect\n|move|p2a: Incineroar|Fake Out|p1a: Tornadus\n|-damage|p1a: Tornadus|162/186\n|debug|Covert Cloak prevent secondary\n|move|p1a: Tornadus|Tailwind|p1a: Tornadus\n|-sidestart|p1: P1|move: Tailwind\n|\n|upkeep\n|turn|2|\n|t:|1781654400\n|move|p1a: Tornadus|Protect|p1a: Tornadus\n|-singleturn|p1a: Tornadus|Protect\n|move|p2b: Urshifu|Protect|p2b: Urshifu\n|debug|Success chance: 33%\n|-singleturn|p2b: Urshifu|Protect\n|move|p1b: Calyrex|Astral Barrage|p2b: Urshifu|[spread] p2a\n|-activate|p2b: Urshifu|move: Protect\n|debug|Spread modifier: 0.75\n|-resisted|p2a: Incineroar\n|-damage|p2a: Incineroar|127/201\n|-damage|p1b: Calyrex|159/176|[from] item: Life Orb\n|move|p2a: Incineroar|Flare Blitz|p1a: Tornadus\n|-activate|p1a: Tornadus|move: Protect\n|\n|upkeep\n|turn|3"
+}

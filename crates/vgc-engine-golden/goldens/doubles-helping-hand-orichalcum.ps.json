@@ -1,0 +1,77 @@
+{
+  "ok": true,
+  "name": "doubles-helping-hand-orichalcum",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 1,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Koraidon",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Farigiraf",
+      "hp": 226,
+      "max": 226
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Amoonguss",
+      "hp": 220,
+      "max": 220
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Helping Hand",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Protect",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Protect",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Flare Blitz",
+      "target": "p2a"
+    }
+  ],
+  "rng": [],
+  "errors": [],
+  "log": "|t:|1781654378\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Koraidon, L50|\n|poke|p1|Farigiraf, L50, M|\n|poke|p2|Amoonguss, L50, F|\n|poke|p2|Garchomp, L50, F|\n|teampreview|\n|t:|1781654378\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Koraidon|Koraidon, L50|175/175\n|switch|p1b: Farigiraf|Farigiraf, L50, M|226/226\n|switch|p2a: Amoonguss|Amoonguss, L50, F|220/220\n|switch|p2b: Garchomp|Garchomp, L50, F|183/183\n|-weather|SunnyDay|[from] ability: Orichalcum Pulse|[of] p1a: Koraidon\n|-activate|p1a: Koraidon|Orichalcum Pulse|[source]\n|turn|1|\n|t:|1781654378\n|move|p1b: Farigiraf|Helping Hand|p1a: Koraidon\n|-singleturn|p1a: Koraidon|Helping Hand|[of] p1b: Farigiraf\n|move|p2b: Garchomp|Protect|p2b: Garchomp\n|-singleturn|p2b: Garchomp|Protect\n|move|p2a: Amoonguss|Protect|p2a: Amoonguss\n|-singleturn|p2a: Amoonguss|Protect\n|move|p1a: Koraidon|Flare Blitz|p2a: Amoonguss\n|-activate|p2a: Amoonguss|move: Protect\n|\n|-weather|SunnyDay|[upkeep]\n|upkeep\n|turn|2"
+}

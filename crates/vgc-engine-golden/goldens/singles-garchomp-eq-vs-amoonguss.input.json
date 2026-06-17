@@ -1,0 +1,14 @@
+{
+  "name": "singles-garchomp-eq-vs-amoonguss",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Garchomp @ Choice Band\nAbility: Rough Skin\nLevel: 50\nTera Type: Steel\nEVs: 252 Atk / 4 SpD / 252 Spe\nAdamant Nature\n- Earthquake\n- Dragon Claw\n- Stone Edge\n- Iron Head\n"
+  },
+  "p2": {
+    "team": "Amoonguss @ Sitrus Berry\nAbility: Regenerator\nLevel: 50\nTera Type: Water\nEVs: 244 HP / 156 Def / 100 SpD\nBold Nature\n- Spore\n- Rage Powder\n- Pollen Puff\n- Clear Smog\n"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" }
+  ]
+}
