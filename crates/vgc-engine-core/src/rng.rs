@@ -165,6 +165,11 @@ pub enum Rng {
     /// this for the corpus harness when only some draw sites are
     /// recorded.
     OraclePartial { state: OracleState, fallback: u64 },
+    /// Bit-exact PS Gen5 LCG (PR-209's `PsGen5Rng`). Engine and PS
+    /// from the same `[u16; 4]` seed produce identical PRNG values at
+    /// every site — the corpus harness can ditch the oracle queue and
+    /// score against the engine's own deterministic playthrough.
+    PsGen5(PsGen5Rng),
 }
 
 impl Rng {
@@ -188,6 +193,14 @@ impl Rng {
         }
     }
 
+    /// Construct a PS-Gen5-compatible RNG from a `[u16; 4]` seed —
+    /// the same big-endian-quartet format PS accepts as a numeric
+    /// `PRNGSeed`. Engine + PS from the same seed produce
+    /// bit-identical PRNG sequences at every draw site.
+    pub fn ps_gen5(seed: [u16; 4]) -> Self {
+        Self::PsGen5(PsGen5Rng::new(seed))
+    }
+
     /// For Oracle / OraclePartial variants, return `(consumed, total)` —
     /// how many events the engine has popped from the queue vs. how
     /// many PS originally recorded. Splitmix returns `None`.
@@ -198,7 +211,7 @@ impl Rng {
     /// is unreliable signal.
     pub fn oracle_pops(&self) -> Option<(usize, usize)> {
         match self {
-            Rng::Splitmix(_) => None,
+            Rng::Splitmix(_) | Rng::PsGen5(_) => None,
             Rng::Oracle(state) | Rng::OraclePartial { state, .. } => {
                 Some((state.pos, state.events.len()))
             }
@@ -238,6 +251,9 @@ impl Rng {
                     Self::splitmix_step(fallback)
                 }
             }
+            // PS is 32-bit; widen to u64 for next_u64 callers (mostly
+            // tiebreak / coin_flip / range fallbacks).
+            Rng::PsGen5(rng) => rng.next() as u64,
         }
     }
 
@@ -265,6 +281,9 @@ impl Rng {
                 }
                 Rng::Oracle(_) | Rng::OraclePartial { .. } => {
                     // PS doesn't draw at `randomChance(1, 1)` sites.
+                }
+                Rng::PsGen5(_) => {
+                    // Mirror Oracle: PS elides the draw at denom=1.
                 }
             }
             return 0;
@@ -295,6 +314,8 @@ impl Rng {
                     (Self::splitmix_step(fallback) as u32) % n
                 }
             }
+            // Bit-exact PS `random(n)` semantics from PR-209's port.
+            Rng::PsGen5(rng) => rng.random_n(n),
         }
     }
 
@@ -365,7 +386,7 @@ impl Rng {
     /// draw rather than forcing an out-of-range bucket.
     pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
         match self {
-            Rng::Splitmix(_) => self.damage_roll(),
+            Rng::Splitmix(_) | Rng::PsGen5(_) => self.damage_roll(),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -415,6 +436,8 @@ impl Rng {
                     (Self::splitmix_step(fallback) & 0xF) as u8
                 }
             }
+            // PS `random(16)` returns 0..=15 — bit-exact.
+            Rng::PsGen5(rng) => rng.random_n(16) as u8,
         }
     }
 
@@ -438,6 +461,12 @@ impl Rng {
                     ((Self::splitmix_step(fallback) % 100) as u8) + 1
                 }
             }
+            // PS `random(100)` returns 0..=99; engine's percent_1_100
+            // is 1..=100. Map by +1 so PS-recorded `randomChance(N, 100)`
+            // semantics line up (engine checks `roll <= N`, PS computes
+            // `random(100) < N` — adding 1 to the PS draw makes both
+            // sides land on the same hit threshold).
+            Rng::PsGen5(rng) => (rng.random_n(100) as u8) + 1,
         }
     }
 
@@ -452,7 +481,7 @@ impl Rng {
     /// (the source sim already applied the stage).
     pub fn crit_with_stage(&mut self, stage: u8) -> bool {
         match self {
-            Rng::Splitmix(_) => match stage {
+            Rng::Splitmix(_) | Rng::PsGen5(_) => match stage {
                 0 => self.range(24) == 0,
                 1 => self.range(8) == 0,
                 2 => self.range(2) == 0,
@@ -482,7 +511,7 @@ impl Rng {
     /// for existing call sites; new code should prefer the staged form.
     pub fn crit(&mut self) -> bool {
         match self {
-            Rng::Splitmix(_) => self.range(24) == 0,
+            Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(24) == 0,
             Rng::Oracle(state) => match state.pop() {
                 RngEvent::Crit(v) => v,
                 other => panic!("OracleRng: expected Crit, got {other:?}"),
@@ -855,6 +884,37 @@ mod tests {
             let b = r2.random_n(24) < 1;
             assert_eq!(a, b);
         }
+    }
+
+    #[test]
+    fn ps_gen5_rng_variant_methods_route_to_lcg() {
+        // Same seed → same sequence via the Rng wrapper as via the
+        // underlying PsGen5Rng directly. Verifies all the variant
+        // arms route through the LCG (not to Splitmix or oracle).
+        let mut wrapped = Rng::ps_gen5([0, 0, 0, 0]);
+        let mut bare = PsGen5Rng::new([0, 0, 0, 0]);
+
+        // range(16) → random_n(16) bit-exact
+        for _ in 0..4 {
+            assert_eq!(wrapped.range(16), bare.random_n(16));
+        }
+
+        // damage_roll → random_n(16) bit-exact
+        let mut wrapped2 = Rng::ps_gen5([42, 7, 0, 0]);
+        let mut bare2 = PsGen5Rng::new([42, 7, 0, 0]);
+        for _ in 0..8 {
+            assert_eq!(wrapped2.damage_roll() as u32, bare2.random_n(16));
+        }
+
+        // percent_1_100 → random_n(100) + 1
+        let mut wrapped3 = Rng::ps_gen5([1234, 0, 0, 0]);
+        let mut bare3 = PsGen5Rng::new([1234, 0, 0, 0]);
+        for _ in 0..8 {
+            assert_eq!(wrapped3.percent_1_100() as u32, bare3.random_n(100) + 1);
+        }
+
+        // No oracle pops on PsGen5.
+        assert!(Rng::ps_gen5([0, 0, 0, 0]).oracle_pops().is_none());
     }
 
     #[test]
