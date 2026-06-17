@@ -259,6 +259,7 @@ dependencies = [
  "serde",
  "serde_json",
  "vgc-engine-core",
+ "vgc-engine-data",
 ]
 
 [[package]]
