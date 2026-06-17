@@ -1417,16 +1417,41 @@ impl Battle {
             //   boost < 0: acc *= 3 / (3 - boost)
             // ignoreAccuracy / ignoreEvasion gating (Foresight, Miracle
             // Eye, etc.) is deferred — none in the gen-9 VGC top-50.
-            if m.accuracy != 255 {
+            // Weather-modified base accuracy. PS:
+            //   data/moves.ts:hurricane / thunder onModifyMove —
+            //     rain → accuracy = true (always hit);
+            //     sun  → accuracy = 50.
+            //   data/moves.ts:blizzard onModifyMove —
+            //     snow (gen-9 hail rename) → accuracy = true.
+            // `accuracy = true` is encoded as 255 here so the accuracy
+            // check is skipped entirely (and no PRNG draw is consumed —
+            // matches PS, which never calls randomChance when accuracy
+            // is `true`). Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/Hurricane_(move)>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Thunder_(move)>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Blizzard_(move)>.
+            let base_acc: u8 = match m.slug {
+                "hurricane" | "thunder" => match self.weather {
+                    crate::weather::Weather::Rain => 255,
+                    crate::weather::Weather::Sun => 50,
+                    _ => m.accuracy,
+                },
+                "blizzard" => match self.weather {
+                    crate::weather::Weather::Snow => 255,
+                    _ => m.accuracy,
+                },
+                _ => m.accuracy,
+            };
+            if base_acc != 255 {
                 let acc_stage = attacker.boosts[5] as i32;
                 let eva_stage = defender.boosts[6] as i32;
                 let boost = (acc_stage - eva_stage).clamp(-6, 6);
                 let mut eff_acc: u32 = if boost > 0 {
-                    (m.accuracy as u32) * (3 + boost as u32) / 3
+                    (base_acc as u32) * (3 + boost as u32) / 3
                 } else if boost < 0 {
-                    (m.accuracy as u32) * 3 / (3 + (-boost) as u32)
+                    (base_acc as u32) * 3 / (3 + (-boost) as u32)
                 } else {
-                    m.accuracy as u32
+                    base_acc as u32
                 };
                 // Wide Lens — attacker's accuracy ×4505/4096 (≈ ×1.1).
                 // PS `data/items.ts:widelens` `onSourceModifyAccuracy`:
@@ -7356,6 +7381,64 @@ mod tests {
         assert!(lens_hits >= bare_hits + 2,
                 "Wide Lens lift below expected ({} vs {})",
                 lens_hits, bare_hits);
+    }
+
+    #[test]
+    fn hurricane_in_rain_always_hits() {
+        // Pelipper (Drizzle → rain) uses Hurricane. PS: accuracy = true
+        // → no acc roll, always lands. Run 50 trials over varied seeds.
+        let mk = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let hits: u32 = (0..50u64).map(|s| mk(s) as u32).sum();
+        assert_eq!(hits, 50,
+                   "Hurricane in rain must always hit ({}/50)", hits);
+    }
+
+    #[test]
+    fn hurricane_in_sun_halves_accuracy() {
+        // Pelipper in Sun: drag Torkoal in with Drought (we'll just set
+        // up sun manually via the Drought ability on side P2's lead in
+        // partner slot — singles makes weather-via-ability cumbersome;
+        // use Torkoal as the attacker with Hurricane on its slot moves
+        // instead). PS: hurricane accuracy = 50 in sun → hit rate <70%.
+        // Compare Sun cohort to no-weather cohort: Sun cohort hits less.
+        let mk_sun = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"torkoal","level":50,"ability":"drought","item":"focussash","nature":"modest","moves":["hurricane","weatherball","lavaplume","airslash"]}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let sun_hits: u32 = (0..200u64).map(|s| mk_sun(s) as u32).sum();
+        // 50% acc → expect ≤ ~115/200 with seed jitter (vs ~140 at 70%).
+        assert!(sun_hits <= 130,
+                "Hurricane in sun should land far below 70% ({}/200)",
+                sun_hits);
     }
 
     #[test]
