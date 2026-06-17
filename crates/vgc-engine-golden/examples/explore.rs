@@ -18,15 +18,27 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use vgc_engine_golden::{run_explore, ExploreDivergence};
+use vgc_engine_golden::{run_explore_with_mode, ExploreDivergence, ExploreMode};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let dir = if args.len() >= 2 {
-        PathBuf::from(&args[1])
+    // Parse a single optional `--psgen5` flag plus an optional path arg.
+    // Default mode: OraclePartial (the historical behavior).
+    let mut mode = ExploreMode::OraclePartial;
+    let mut path_arg: Option<String> = None;
+    for a in args.iter().skip(1) {
+        if a == "--psgen5" {
+            mode = ExploreMode::PsGen5;
+        } else if !a.starts_with('-') {
+            path_arg = Some(a.clone());
+        }
+    }
+    let dir = if let Some(p) = path_arg {
+        PathBuf::from(p)
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("goldens").join("random")
     };
+    eprintln!("explore mode: {mode:?}");
 
     if !dir.exists() {
         eprintln!("dir not found: {}", dir.display());
@@ -57,7 +69,7 @@ fn main() {
             errored += 1;
             continue;
         }
-        match run_explore(input, ps_path) {
+        match run_explore_with_mode(input, ps_path, mode) {
             Err(e) => {
                 eprintln!("{name}: error {e}");
                 errored += 1;
