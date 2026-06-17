@@ -1,0 +1,11 @@
+{
+  "name": "lucario_cc_into_garchomp",
+  "format": "gen9customgame",
+  "p1_team": "Lucario @ Life Orb\nAbility: Inner Focus\nLevel: 50\nTera Type: Steel\nEVs: 4 HP / 252 Atk / 252 Spe\nAdamant Nature\n- Close Combat\n- Extreme Speed\n- Crunch\n- Bullet Punch\n",
+  "p2_team": "Garchomp @ Leftovers\nAbility: Sand Veil\nLevel: 50\nTera Type: Steel\nEVs: 252 HP / 252 Def / 4 SpD\nImpish Nature\n- Dragon Tail\n- Earthquake\n- Rock Slide\n- Iron Head\n",
+  "p1_action": "move 1",
+  "p2_action": "move 1",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}
