@@ -8916,6 +8916,78 @@ mod tests {
     }
 
     #[test]
+    fn effect_spore_oracle_pinned_each_status_outcome() {
+        // PS data/abilities.ts:effectspore — single `random(100)` on
+        // contact hit. 0..10 → slp, 11..20 → par, 21..29 → psn, 30+ → none.
+        // Engine maps via percent_1_100 (1..=100): 1..=11 → slp,
+        // 12..=21 → par, 22..=30 → psn.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","item":"","nature":"calm","moves":["spore","gigadrain","ragepowder","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["crunch","earthquake","sleeptalk","return"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Crunch (contact) into Amoonguss. Two oracle PercentRolls:
+        // the first for Crunch's 20% def-drop secondary (fail with
+        // 100 so no def drop), the second for Effect Spore (5 → sleep).
+        let rng = crate::rng::Rng::oracle_partial(
+            vec![
+                crate::rng::RngEvent::PercentRoll(100), // Crunch secondary: 100 > 20 → no def drop
+                crate::rng::RngEvent::PercentRoll(5),   // Effect Spore: 5 ≤ 11 → sleep
+            ],
+            0,
+        );
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            p1.clone(),
+            p2.clone(),
+        );
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            matches!(b.p2.team[0].status, Status::Sleep),
+            "PercentRoll 5 should sleep the contact attacker"
+        );
+    }
+
+    #[test]
+    fn effect_spore_no_op_on_grass_attacker() {
+        // PS gates on `runStatusImmunity('powder')` — Grass-types
+        // immune to all powder/spore effects.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","item":"","nature":"calm","moves":["spore","gigadrain","ragepowder","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"overgrow","item":"","nature":"adamant","moves":["bodyslam","gigadrain","sleeppowder","earthpower"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Body Slam (contact) — Effect Spore should NOT fire on a Grass
+        // attacker. Oracle queue gets no PercentRoll consumed at the
+        // ability hook.
+        let rng = crate::rng::Rng::oracle_partial(vec![], 0);
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            p1.clone(),
+            p2.clone(),
+        );
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            matches!(b.p2.team[0].status, Status::None),
+            "Grass attacker immune to Effect Spore"
+        );
+    }
+
+    #[test]
     fn static_does_not_trigger_on_non_contact_move() {
         // Thunderbolt is non-contact (PS data/moves.ts:thunderbolt has
         // no `flags.contact`). Pikachu hits Pikachu (Static both sides)
