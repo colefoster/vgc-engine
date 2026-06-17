@@ -4899,6 +4899,51 @@ mod tests {
     }
 
     #[test]
+    fn flame_orb_burns_holder_at_end_of_turn() {
+        // PS `data/items.ts:flameorb` residualOrder 28 / sub-order 4:
+        // sets brn on holder. Snorlax is Normal — burnable. After one
+        // turn the status should be Burn.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"flameorb","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::Burn),
+                "Flame Orb must burn its holder at end of turn (got {:?})",
+                b.p1.team[0].status);
+    }
+
+    #[test]
+    fn flame_orb_does_not_burn_fire_type_holder() {
+        // Fire-type immunity to brn. Charizard holding Flame Orb stays
+        // statusless — `try_set_status` short-circuits on type immunity.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"flameorb","nature":"timid","moves":["flamethrower","airslash","focusblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
+                "Flame Orb must NOT burn a Fire-type holder (got {:?})",
+                b.p1.team[0].status);
+    }
+
+    #[test]
     fn sticky_barb_fires_after_burn_dot() {
         // PR-218 ordering check: PS residual order has burn (10)
         // before Sticky Barb (28). When a holder is burned + low HP,
