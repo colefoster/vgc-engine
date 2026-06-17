@@ -323,6 +323,25 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
             battle.try_set_status(side, slot, crate::pokemon::Status::Burn);
         }
     }
+    // Toxic Orb — PS `data/items.ts:toxicorb`
+    // `onResidualOrder: 28, onResidualSubOrder: 4,
+    //  onResidual(pokemon) { pokemon.trySetStatus('tox', pokemon); }`
+    // Same residual slot as Flame Orb (mutually-exclusive in practice
+    // — a mon holds one item — but kept as sibling arms for parity).
+    // Poison/Steel-type immunity is handled by `try_set_status`'s
+    // type-immunity table; tox upgrades to plain psn for Poison-types
+    // (PS routes through the same trySetStatus path, our impl checks
+    // both psn and tox in `is_type_immune_to_status`).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Orb>.
+    if slug == "toxicorb" {
+        let still_alive = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.is_alive());
+        if still_alive {
+            battle.try_set_status(side, slot, crate::pokemon::Status::Toxic);
+        }
+    }
     // (one-shot on ≤50% HP — handled in damage-side hook), focussash
     // (one-shot — handled on fatal hit, not residual), lifeorb (handled
     // on attack hit, not residual), choice items (modify A/D), etc.

@@ -164,7 +164,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Self-inflicts Toxic / Burn at end of turn while held. Synergizes with Guts / Quick Feet / Flare Boost / Toxic Boost / Poison Heal.
 
-**Status**: partial — Flame Orb shipped (PR-227); Toxic Orb pending.
+**Status**: shipped — Flame Orb (PR-227), Toxic Orb (PR-228).
 
 ### Black Sludge
 
