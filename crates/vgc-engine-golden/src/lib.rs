@@ -36,9 +36,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use vgc_engine_core::{
-    Battle, BattleConfig, Choice, Format, Rng, RngEvent, SideRef, Status, StepResult, Target,
-    TeamBuilder,
+    Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
+    Target, TeamBuilder,
 };
+use vgc_engine_data as data;
 
 // ---------------------------------------------------------------------------
 // Input / PS-output JSON schemas (mirrors tools/ps-golden-driver/driver.js)
@@ -53,7 +54,20 @@ pub struct GoldenInput {
     pub seed: [u16; 4],
     pub p1: GoldenSide,
     pub p2: GoldenSide,
+    #[serde(default)]
     pub turns: Vec<GoldenTurn>,
+    /// When true, `turns` may be empty — the harness derives per-turn
+    /// actions from the PS event log instead (mirrors the random_play
+    /// mode in tools/ps-golden-driver/driver.js, PR-200).
+    #[serde(default)]
+    pub random_play: bool,
+    /// Maximum number of turns to compare under random_play; defaults
+    /// to 30 (mirrors the driver's default). The derivation also stops
+    /// at the first PS turn where either side fainted, because the
+    /// engine has no auto-replacement step and post-faint replacements
+    /// would desync the per-side action streams.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +116,11 @@ pub struct PsEvent {
     pub species: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// PS `|move|<actor>|<name>|<target>` target slot, e.g. `"p2a"`.
+    /// Used in random-play action derivation to recover the doubles
+    /// targeting token.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -214,6 +233,24 @@ pub fn run_golden_in_memory(
 
     let active_count = format.active_count();
 
+    // Random-play mode: synthesize `turns` from the PS event stream so the
+    // rest of the harness runs unchanged. Stops at first PS turn where
+    // either side fainted (post-faint replacement isn't modeled in the
+    // engine's step shape — see PR-201 commit message for the why).
+    let derived_turns: Vec<GoldenTurn>;
+    let turns_ref: &[GoldenTurn] = if input.random_play && input.turns.is_empty() {
+        derived_turns = derive_turns_from_events(
+            &ps.events,
+            &p1_team,
+            &p2_team,
+            active_count,
+            input.max_turns.unwrap_or(30),
+        );
+        &derived_turns
+    } else {
+        &input.turns
+    };
+
     // Seed the engine RNG from PS's recorded draws. Splitmix fallback
     // uses seed[0] so unmapped engine-only draws are still deterministic.
     let events = lower_rng_events(&ps.rng);
@@ -234,7 +271,7 @@ pub fn run_golden_in_memory(
     };
 
     let mut ended = false;
-    for (i, turn) in input.turns.iter().enumerate() {
+    for (i, turn) in turns_ref.iter().enumerate() {
         let turn_no = (i + 1) as u32;
         if ended {
             break;
@@ -592,6 +629,235 @@ fn describe_snapshot_diff(ps: &SlotSnapshot, eng: &SlotSnapshot) -> String {
         bits.push(format!("status: ps {} vs engine {}", ps.status, eng.status));
     }
     bits.join("; ")
+}
+
+// ---------------------------------------------------------------------------
+// Random-play action derivation (PR-201)
+// ---------------------------------------------------------------------------
+//
+// When `input.random_play == true` and `input.turns` is empty, walk the
+// PS event log and synthesize the same `GoldenTurn` list a hand-authored
+// fixture would have. Each per-side action is a PS-formatted command
+// string (`"move N"`, `"switch N"`, `"move N target"`) so the existing
+// `parse_one_action` consumes it unchanged.
+//
+// Stops at the first PS turn where either side fainted. The engine's
+// `step()` does not auto-replace a fainted slot, so any later turn would
+// require a Switch on the fainted side that the OTHER side didn't make
+// — desyncing the per-side action streams. (This is the same wall the
+// scripted-driver attempt hit; see PR-200 commit message.) Cutting off
+// at the first faint is enough to surface mechanic divergences in the
+// HP / status / boost trajectory before any side falls.
+//
+// PS refs:
+//   * sim/side.ts `chooseMove` / `chooseSwitch` — action string shape
+//   * sim/battle.ts `nextTurn` — turn boundary emission
+
+fn slugify_simple(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+fn move_slot_for(mon: &Pokemon, move_name: &str) -> Option<u8> {
+    let want = slugify_simple(move_name);
+    for (i, &mid) in mon.moves.iter().enumerate() {
+        if mid == u16::MAX {
+            continue;
+        }
+        let def = &data::MOVES[mid as usize];
+        if def.slug == want {
+            return Some(i as u8);
+        }
+    }
+    None
+}
+
+fn team_index_for_species(team: &[Pokemon], species_name: &str) -> Option<u8> {
+    let want = slugify_simple(species_name);
+    for (i, mon) in team.iter().enumerate() {
+        let sp = &data::SPECIES[mon.species_id as usize];
+        if sp.slug == want {
+            return Some(i as u8);
+        }
+    }
+    None
+}
+
+fn ps_target_to_relative(actor: &str, target: &str, active_count: usize) -> String {
+    // Singles: no explicit target token (engine ignores it).
+    if active_count <= 1 {
+        return String::new();
+    }
+    // Doubles relative targeting (PS-style):
+    //   positive N = foe-side slot N (1 = foe slot 0, 2 = foe slot 1)
+    //   negative N = self-side slot N (-1 = self slot 0, -2 = self slot 1)
+    let (asid, _) = match ps_actor_to_side_slot(actor) {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    let (tsid, tslot) = match ps_actor_to_side_slot(target) {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    let slot_num = match tslot { 'a' => 1, 'b' => 2, _ => return String::new() };
+    if tsid == asid {
+        format!(" -{slot_num}")
+    } else {
+        format!(" {slot_num}")
+    }
+}
+
+fn derive_turns_from_events(
+    events: &[PsEvent],
+    p1_team: &[Pokemon],
+    p2_team: &[Pokemon],
+    active_count: usize,
+    max_turns: u32,
+) -> Vec<GoldenTurn> {
+    // First pass: scan events into per-PS-turn buckets keyed by turn number.
+    // We care about the FIRST move/switch event per (side, slot) per turn —
+    // that's the player's choice for that step.
+    use std::collections::BTreeMap;
+
+    // Track which mon currently occupies each (side, slot) so we can resolve
+    // move name → move-slot index. Start from team-preview defaults: slot
+    // 'a' = team[0], slot 'b' = team[1].
+    let mut p1_active: [u8; 2] = [0, 1];
+    let mut p2_active: [u8; 2] = [0, 1];
+
+    // (side, slot_char) -> chosen action string (per turn).
+    // turn_choices[turn][(side, slot)] = String
+    let mut turn_choices: BTreeMap<u32, BTreeMap<(u8, char), String>> = BTreeMap::new();
+    // Turns where someone fainted — bail at the first one.
+    let mut faint_turn: Option<u32> = None;
+
+    for ev in events {
+        if ev.turn == 0 {
+            // Pre-turn-1 events (initial switches from team preview); use
+            // them to seed active-slot indices but don't emit choices.
+            if ev.kind == "switch" {
+                if let (Some((side, slot)), Some(species)) =
+                    (ev.actor.as_deref().and_then(ps_actor_to_side_slot), ev.species.as_deref())
+                {
+                    let team = if side == 1 { p1_team } else { p2_team };
+                    if let Some(idx) = team_index_for_species(team, species) {
+                        let slot_i = if slot == 'a' { 0 } else { 1 };
+                        if side == 1 {
+                            p1_active[slot_i] = idx;
+                        } else {
+                            p2_active[slot_i] = idx;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if faint_turn.is_some() && ev.turn > faint_turn.unwrap() {
+            // We already saw a faint in an earlier turn — don't process
+            // anything past it. (We DO let `ev.turn == faint_turn` events
+            // through so we can capture the choices that were made BEFORE
+            // the faint occurred.)
+            break;
+        }
+
+        if ev.turn > max_turns {
+            break;
+        }
+
+        match ev.kind.as_str() {
+            "move" => {
+                let Some((side, slot)) = ev.actor.as_deref().and_then(ps_actor_to_side_slot) else {
+                    continue;
+                };
+                let key = (side, slot);
+                let bucket = turn_choices.entry(ev.turn).or_default();
+                if bucket.contains_key(&key) {
+                    continue;
+                }
+                let slot_i = if slot == 'a' { 0 } else { 1 };
+                let active_idx = if side == 1 { p1_active[slot_i] } else { p2_active[slot_i] };
+                let team = if side == 1 { p1_team } else { p2_team };
+                let mon = match team.get(active_idx as usize) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let name = ev.name.as_deref().unwrap_or("");
+                let Some(move_slot) = move_slot_for(mon, name) else {
+                    // Move not in known move list (Struggle, Sleep Talk
+                    // calls, etc.). Skip — engine will Pass this slot,
+                    // and the divergence will surface naturally.
+                    continue;
+                };
+                let target_token = ev
+                    .target
+                    .as_deref()
+                    .map(|t| ps_target_to_relative(ev.actor.as_deref().unwrap_or(""), t, active_count))
+                    .unwrap_or_default();
+                bucket.insert(key, format!("move {}{}", move_slot + 1, target_token));
+            }
+            "switch" => {
+                let Some((side, slot)) = ev.actor.as_deref().and_then(ps_actor_to_side_slot) else {
+                    continue;
+                };
+                let key = (side, slot);
+                let species = ev.species.as_deref().unwrap_or("");
+                let team = if side == 1 { p1_team } else { p2_team };
+                let Some(new_idx) = team_index_for_species(team, species) else {
+                    continue;
+                };
+                // Update active-slot bookkeeping (next move on this slot
+                // resolves against the new mon).
+                let slot_i = if slot == 'a' { 0 } else { 1 };
+                if side == 1 {
+                    p1_active[slot_i] = new_idx;
+                } else {
+                    p2_active[slot_i] = new_idx;
+                }
+                let bucket = turn_choices.entry(ev.turn).or_default();
+                if bucket.contains_key(&key) {
+                    // Already had a move/switch this turn — this is a
+                    // post-faint replacement. Don't emit a choice for
+                    // this turn (the faint stops derivation anyway).
+                    continue;
+                }
+                bucket.insert(key, format!("switch {}", new_idx + 1));
+            }
+            "faint" => {
+                let Some((_side, _slot)) = ev.actor.as_deref().and_then(ps_actor_to_side_slot)
+                else {
+                    continue;
+                };
+                if faint_turn.is_none() {
+                    faint_turn = Some(ev.turn);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Cut off at the faint turn — include it (the moves before the faint
+    // are valid choices) but stop derivation immediately after.
+    let cutoff = faint_turn.unwrap_or(u32::MAX).min(max_turns);
+    let mut out = Vec::new();
+    for (_turn_no, bucket) in turn_choices.range(1..=cutoff) {
+        let p1_slot_a = bucket.get(&(1, 'a')).cloned().unwrap_or_else(|| "pass".into());
+        let p2_slot_a = bucket.get(&(2, 'a')).cloned().unwrap_or_else(|| "pass".into());
+        let (p1_str, p2_str) = if active_count >= 2 {
+            let p1_slot_b = bucket.get(&(1, 'b')).cloned().unwrap_or_else(|| "pass".into());
+            let p2_slot_b = bucket.get(&(2, 'b')).cloned().unwrap_or_else(|| "pass".into());
+            (format!("{p1_slot_a}, {p1_slot_b}"), format!("{p2_slot_a}, {p2_slot_b}"))
+        } else {
+            (p1_slot_a, p2_slot_a)
+        };
+        out.push(GoldenTurn {
+            p1: serde_json::Value::String(p1_str),
+            p2: serde_json::Value::String(p2_str),
+        });
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -9,5 +9,6 @@ description = "Synthetic golden-master differential harness — replays a script
 
 [dependencies]
 vgc-engine-core = { workspace = true }
+vgc-engine-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
