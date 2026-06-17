@@ -4944,6 +4944,50 @@ mod tests {
     }
 
     #[test]
+    fn toxic_orb_badly_poisons_holder_at_end_of_turn() {
+        // PS `data/items.ts:toxicorb` residualOrder 28 / sub-order 4:
+        // sets tox on holder. Snorlax (Normal) is susceptible to tox.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"toxicorb","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::Toxic),
+                "Toxic Orb must badly-poison its holder (got {:?})",
+                b.p1.team[0].status);
+    }
+
+    #[test]
+    fn toxic_orb_does_not_poison_steel_holder() {
+        // Steel-type immunity to psn/tox. Lucario holding Toxic Orb
+        // stays statusless.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"toxicorb","nature":"adamant","moves":["closecombat","extremespeed","crunch","bulletpunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
+                "Toxic Orb must NOT poison a Steel-type holder (got {:?})",
+                b.p1.team[0].status);
+    }
+
+    #[test]
     fn sticky_barb_fires_after_burn_dot() {
         // PR-218 ordering check: PS residual order has burn (10)
         // before Sticky Barb (28). When a holder is burned + low HP,
