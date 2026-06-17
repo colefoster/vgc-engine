@@ -2540,6 +2540,67 @@ impl Battle {
             }
         }
 
+        // 8. Leech Seed residual. PS data/moves.ts:leechseed condition
+        //    onResidualOrder 8. Target loses 1/8 max HP; seeder heals by
+        //    the actual amount dealt (capped at seeder's missing HP).
+        //    Magic Guard blocks the chip; the heal still fires (seeder
+        //    receives whatever PS would have dealt — for simplicity we
+        //    skip the entire pair when MG blocks since `damage` returns
+        //    0 in that case). Seeder's slot encoded in payload as
+        //    `(side << 8) | slot`.
+        for target_side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for target_slot in 0..n {
+                let (chip, source_side, source_slot, magic_guard) = match self
+                    .side(target_side)
+                    .active_mon(target_slot as usize)
+                {
+                    Some(m) if m.is_alive() => {
+                        match m.volatiles.get(crate::pokemon::VolatileKind::LeechSeed) {
+                            Some(v) => {
+                                let chip = (m.stats.hp / 8).max(1);
+                                let ss = ((v.payload >> 8) & 0xFF) as u8;
+                                let sl = (v.payload & 0xFF) as u8;
+                                let source = if ss == 0 { SideRef::P1 } else { SideRef::P2 };
+                                (chip, source, sl, crate::ability::has_magic_guard(m))
+                            }
+                            None => (0, SideRef::P1, 0, false),
+                        }
+                    }
+                    _ => (0, SideRef::P1, 0, false),
+                };
+                if chip == 0 || magic_guard {
+                    continue;
+                }
+                // Damage target.
+                let actual = if let Some(m) =
+                    self.side_mut(target_side).active_mon_mut(target_slot as usize)
+                {
+                    let before = m.current_hp;
+                    m.current_hp = m.current_hp.saturating_sub(chip);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                    before - m.current_hp
+                } else {
+                    0
+                };
+                // Heal source by the actual damage dealt (capped at
+                // missing HP). If source fainted or isn't in the same
+                // active slot anymore (switch), PS skips the heal too.
+                if actual > 0 {
+                    if let Some(s) = self
+                        .side_mut(source_side)
+                        .active_mon_mut(source_slot as usize)
+                    {
+                        if s.is_alive() {
+                            s.current_hp = s.current_hp.saturating_add(actual).min(s.stats.hp);
+                        }
+                    }
+                }
+            }
+        }
+
         // 6. Status DOT (burn 1/16, poison 1/8, toxic counter/16).
         // Gen 7+ burn rate; PS data/conditions.ts. Magic Guard blocks
         // the HP loss but the toxic counter still ticks unconditionally.
@@ -2887,6 +2948,47 @@ impl Battle {
             "toxic" => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 self.apply_status_to_opposing(actor_side, Status::Toxic);
+            }
+            "leechseed" => {
+                // PS data/moves.ts:10204 leechseed. 90% accuracy,
+                // single-target status, Grass-type immunity, applies
+                // a `leechseed` volatile to the target tracking the
+                // seeder's slot (`sourceSlot`). End-of-turn residual:
+                // target loses 1/8 max HP, seeder heals the same.
+                if !self.rolled_accuracy_passed(m) { return; }
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                for slot in 0..n {
+                    let alive = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.is_alive());
+                    if !alive { continue; }
+                    // Grass-type immunity: PS `onTryImmunity` returns
+                    // false when target has Grass.
+                    let is_grass = self.side(opp).active_mon(slot as usize)
+                        .map(|t| {
+                            let s = t.species();
+                            (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
+                        })
+                        .unwrap_or(false);
+                    if is_grass { break; }
+                    // Already seeded — PS volatileStatus add is a no-op.
+                    if self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::LeechSeed))
+                    {
+                        break;
+                    }
+                    // payload encoding: (source_side << 8) | source_slot.
+                    // SideRef as u8: P1=0, P2=1.
+                    let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
+                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                        let _ = t.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::LeechSeed,
+                            turns_remaining: 0,
+                            payload: source_payload,
+                        });
+                    }
+                    break; // single-target
+                }
             }
             "poisonpowder" => {
                 if !self.rolled_accuracy_passed(m) { return; }
@@ -4538,6 +4640,62 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, max - chip,
                    "Black Sludge should chip non-Poison 1/8 max HP");
+    }
+
+    #[test]
+    fn leech_seed_chips_target_heals_seeder() {
+        // PS data/moves.ts:10204 — target loses 1/8 max HP per end of
+        // turn, seeder heals by the same amount.
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","item":"","nature":"relaxed","moves":["leechseed","powerwhip","gyroball","spikes"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Use seed=0 so accuracy rolls land predictably; Leech Seed is 90 acc.
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let snorlax_max = b.p2.team[0].stats.hp;
+        let ferrothorn_max = b.p1.team[0].stats.hp;
+        // Knock Ferrothorn off full HP so the heal is observable.
+        b.p1.team[0].current_hp = ferrothorn_max / 2;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let expected_chip = (snorlax_max / 8).max(1);
+        assert_eq!(
+            b.p2.team[0].current_hp, snorlax_max - expected_chip,
+            "Snorlax should lose 1/8 max HP to Leech Seed"
+        );
+        assert_eq!(
+            b.p1.team[0].current_hp, ferrothorn_max / 2 + expected_chip,
+            "Ferrothorn should heal by the seeded amount"
+        );
+        // Volatile persists across turns.
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
+    }
+
+    #[test]
+    fn leech_seed_grass_immunity() {
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","item":"","nature":"relaxed","moves":["leechseed","powerwhip","gyroball","spikes"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"venusaur","level":50,"ability":"overgrow","item":"","nature":"timid","moves":["sleeppowder","gigadrain","sludgebomb","earthpower"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            !b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed),
+            "Venusaur (Grass) should be immune to Leech Seed"
+        );
     }
 
     #[test]
