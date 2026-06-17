@@ -408,7 +408,7 @@ pub(crate) fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
     out
 }
 
-pub(crate) fn parse_turn_actions(
+pub fn parse_turn_actions(
     raw: &serde_json::Value,
     side: SideRef,
     active_count: usize,
