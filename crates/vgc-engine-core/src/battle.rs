@@ -13000,6 +13000,31 @@ mod tests {
     }
 
     #[test]
+    fn imposter_copies_opposing_species_and_ability() {
+        // Ditto with Imposter against Garchomp — Ditto's species_id
+        // becomes Garchomp's; ability becomes Rough Skin.
+        let p1_json = r#"[
+            {"species":"ditto","level":50,"ability":"imposter","item":"choicescarf","nature":"hardy","moves":["transform","transform","transform","transform"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let ditto_species = b.p1.team[0].species().slug;
+        let garchomp_species = b.p2.team[0].species().slug;
+        assert_eq!(ditto_species, "garchomp",
+            "Imposter should change Ditto's species to the opposing mon's");
+        assert_eq!(garchomp_species, "garchomp");
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "roughskin");
+        // Stats (atk/def/spa/spd/spe) should match Garchomp; HP should
+        // stay at Ditto's HP.
+        assert_eq!(b.p1.team[0].stats.atk, b.p2.team[0].stats.atk);
+        assert_eq!(b.p1.team[0].stats.spe, b.p2.team[0].stats.spe);
+    }
+
+    #[test]
     fn trace_copies_opposing_ability_on_switch_in() {
         // Gardevoir has Trace as ability slug 'trace'. Send it in
         // against Garchomp (Rough Skin); Gardevoir should now have
