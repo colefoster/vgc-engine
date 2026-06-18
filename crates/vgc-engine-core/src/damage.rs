@@ -1659,6 +1659,7 @@ mod tests {
             volatiles: crate::pokemon::VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
+            type_override: [255, 255],
         }
     }
 
@@ -1994,6 +1995,56 @@ mod tests {
         // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
         // × 100/100 × 1.0 STAB × 1.0 type = 60.
         assert_eq!(dmg, 60);
+    }
+
+    #[test]
+    fn type_override_changes_stab_and_defensive_matchup() {
+        // Plumbing test for the runtime type-override slot (Protean /
+        // Color Change / ...). Snorlax (Normal) using Flamethrower
+        // (Fire) has no STAB; overriding its type to Fire must grant
+        // ×1.5 STAB. On the defensive side, overriding the target's
+        // type flips Fire's effectiveness.
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let flamethrower = move_id("flamethrower");
+
+        // --- Offensive STAB.
+        let mut attacker = make_mon("snorlax", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let neutral_def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let base = calculate_damage(&attacker, &neutral_def, flamethrower, ctx);
+        attacker.set_type_override(1 /* Fire */, None);
+        let with_stab = calculate_damage(&attacker, &neutral_def, flamethrower, ctx);
+        // ×1.5 STAB.
+        assert_eq!(with_stab, base * 3 / 2,
+            "Fire override grants STAB (base={base}, stab={with_stab})");
+
+        // --- Defensive matchup. Plain Snorlax attacker (no STAB) to
+        // isolate the defender's typing.
+        let attacker = make_mon("snorlax", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let mut grass = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        grass.set_type_override(4 /* Grass */, None);
+        let vs_grass = calculate_damage(&attacker, &grass, flamethrower, ctx);
+        let mut water = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        water.set_type_override(2 /* Water */, None);
+        let vs_water = calculate_damage(&attacker, &water, flamethrower, ctx);
+        // Fire is 2× vs Grass, 0.5× vs Water → 4× ratio.
+        assert!(vs_grass > vs_water * 3,
+            "Grass override → SE, Water override → resisted (grass={vs_grass}, water={vs_water})");
+
+        // --- Clearing reverts to species typing.
+        let mut reverted = make_mon("snorlax", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        reverted.set_type_override(1, None);
+        reverted.clear_type_override();
+        let after_clear = calculate_damage(&reverted, &neutral_def, flamethrower, ctx);
+        assert_eq!(after_clear, base, "clearing override restores no-STAB damage");
     }
 
     #[test]

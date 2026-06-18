@@ -213,6 +213,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         volatiles: crate::pokemon::VolatileSet::default(),
         slow_start_active_turns: 0,
         truant_loafing: false,
+        type_override: [255, 255],
     })
 }
 
