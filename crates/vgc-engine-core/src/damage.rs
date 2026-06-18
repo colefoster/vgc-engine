@@ -417,6 +417,23 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Expanding Force — PS data/moves.ts:expandingforce
+    //   onBasePower(basePower, source) {
+    //     if (this.field.isTerrain('psychicterrain') && source.isGrounded())
+    //       return this.chainModify(1.5);
+    //   }
+    // BP ×1.5 (= 6144/4096, exact in pokeRound space — plain `*3/2`) when
+    // the user is grounded and Psychic Terrain is active. The spread
+    // target-change is doubles-only and not modelled here. Indeedee /
+    // Espathra / Lugia (Hidden Power era) signature in PT-stacked teams.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Expanding_Force_(move)>.
+    if m.slug == "expandingforce"
+        && matches!(ctx.terrain, crate::terrain::Terrain::Psychic)
+        && attacker.is_grounded()
+    {
+        bp = bp * 3 / 2;
+    }
+
     // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
     // `chainModify([5325, 4096])` (×1.3) on Rock/Ground/Steel moves while
     // Sand is up. Move-type codes: Ground=8, Rock=12, Steel=16. Damage

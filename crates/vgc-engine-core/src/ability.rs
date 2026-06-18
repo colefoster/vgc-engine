@@ -249,8 +249,19 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 
     // Terrain-setting abilities (gen 7+). Same 5-turn default duration;
     // Terrain Extender holds → 8 deferred.
+    // Terrain-setting abilities. PS data/abilities.ts entries:
+    //   electricsurge: Electric Terrain (gen 7+, 5-turn default)
+    //   hadronengine:  Electric Terrain (Iron Crown / Iron Boulder)
+    //   psychicsurge:  Psychic Terrain (Indeedee, Tatsugiri)
+    //   grassysurge:   Grassy Terrain (Rillaboom)
+    //   mistysurge:    Misty Terrain (Tapu Fini)
+    // All share the standard onStart `this.field.setTerrain(...)` shape;
+    // duration follows the held-item extender via on_switch_in_item.
     let new_terrain = match slug {
         "electricsurge" | "hadronengine" => Some(crate::terrain::Terrain::Electric),
+        "psychicsurge" => Some(crate::terrain::Terrain::Psychic),
+        "grassysurge" => Some(crate::terrain::Terrain::Grassy),
+        "mistysurge" => Some(crate::terrain::Terrain::Misty),
         _ => None,
     };
     if let Some(t) = new_terrain {
