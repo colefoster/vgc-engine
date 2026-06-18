@@ -6,7 +6,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 67 |
+| shipped | 70 |
 | partial | 1 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
@@ -446,3 +446,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Other type-resist berries: Occa / Passho / Wacan / Rindo / Yache / Kebia / Shuca / Coba / Payapa / Tanga / Charti / Kasib / Haban / Colbur / Babiri / Roseli / Chilan (PR-289)
 - Ogerpon masks (Wellspring / Hearthflame / Cornerstone) BP arm (PR-295)
 - Arceus type-boost plates + Fairy Feather (Draco / Dread / Earth / Fist / Flame / Icicle / Insect / Iron / Meadow / Mind / Sky / Splash / Spooky / Stone / Toxic / Zap + Fairy Feather, 17 slugs total) (PR-299)
+- PLA carrier-locked crystal trio: Adamant Crystal (Dialga-Origin) / Lustrous Globe (Palkia-Origin) / Griseous Core (Giratina-Origin) (PR-300)

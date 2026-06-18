@@ -838,6 +838,23 @@ pub fn calculate_damage(
             "souldew"     => (species_slug.starts_with("latias")
                               || species_slug.starts_with("latios"))
                               && (move_type == 14 || move_type == 10),
+            // PLA crystal trio — carrier-locked Origin-Forme equivalents
+            // of the three orbs. PS data/items.ts:
+            //   adamantcrystal  (line 75)   → Dialga,   Dragon + Steel
+            //   lustrousglobe   (line 3591) → Palkia,   Dragon + Water
+            //   griseouscore    (line 2655) → Giratina, Dragon + Ghost
+            // Each `onBasePower` gates on species number (483/484/487) and
+            // returns chainModify([4915, 4096]). Same ×1.2 numerics as the
+            // orbs above; we mirror the orb arm's species-prefix match
+            // (covers the Origin formes). The crystals also force the
+            // Origin Forme (PS `forcedForme`); that's a team-build concern
+            // handled outside the BP block. Not breakable. Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/Adamant_Crystal>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Lustrous_Globe>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Griseous_Core>
+            "adamantcrystal" => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
+            "lustrousglobe"  => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
+            "griseouscore"   => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
             _ => false,
         };
         if orb_match {

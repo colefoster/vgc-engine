@@ -10,22 +10,19 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **118**
-- Missing: **131** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **121**
+- Missing: **128** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~33 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~30 competitively relevant**
 
 ## Missing by category
 
 ### Offensive damage modifiers (type-boost plates + carrier orbs)
 
 All 17 Arceus type-boost plates plus Fairy Feather are shipped (PR-299).
-Adamant Crystal / Lustrous Globe / Griseous Core (PLA carrier-locked
-equivalents of the three orbs) and Normal Gem remain.
+Adamant Crystal / Lustrous Globe / Griseous Core shipped (PR-300). Normal
+Gem remains.
 
-- `adamantcrystal` — Adamant Crystal — Dialga Steel/Dragon ×1.2 (PLA equivalent of Adamant Orb).
-- `lustrousglobe` — Lustrous Globe — Palkia Water/Dragon ×1.2 (PLA equivalent of Lustrous Orb).
-- `griseouscore` — Griseous Core — Giratina Ghost/Dragon ×1.2 (PLA equivalent of Griseous Orb).
 - `normalgem` — Normal Gem — Holder's first successful Normal-type attack will have 1.3x power. Single use.
 
 ### Defensive damage reducers
