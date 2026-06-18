@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 41 |
+| shipped | 42 |
 | partial | 1 |
-| not implemented | 7 |
+| not implemented | 6 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -135,7 +135,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Holder's contact moves do not trigger the target's contact-triggered effects (Rough Skin, Static, etc.).
 
-**Status**: not implemented.
+**Status**: shipped — PR-291. Extends `move_makes_contact` to return `false` when the attacker holds Protective Pads.
 
 ## Type-resist berries (damage-reduction)
 
@@ -411,6 +411,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Eviolite (PR-148)
 - Power Herb (PR-160)
 - Sticky Barb (PR-216 / PR-218 residual chip + PR-290 contact transfer)
+- Protective Pads (PR-291)
 - Quick Claw (PR-222)
 - Jaboca Berry (PR-225)
 - Flame Orb (PR-227)

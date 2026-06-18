@@ -13502,6 +13502,50 @@ mod tests {
     }
 
     #[test]
+    fn protective_pads_blocks_rocky_helmet_recoil() {
+        // Garchomp @ Protective Pads contact-hits Snorlax @ Rocky Helmet.
+        // Without pads, Garchomp would take 1/6 max HP. With pads, no
+        // recoil should fire (move_makes_contact returns false → Rocky
+        // Helmet skipped).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"protectivepads","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"rockyhelmet","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let atk_pre = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, atk_pre,
+                   "Protective Pads must block Rocky Helmet recoil");
+    }
+
+    #[test]
+    fn protective_pads_baseline_still_takes_helmet_recoil_without_pads() {
+        // Sanity: same setup, no Pads — Garchomp should take 1/6 chip.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"rockyhelmet","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let atk_pre = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.team[0].current_hp < atk_pre, "without pads, recoil should hit");
+    }
+
+    #[test]
     fn weakness_policy_does_not_fire_on_neutral_hit() {
         // Garchomp @ Weakness Policy hit by Body Slam (Normal vs
         // Dragon/Ground = neutral). No boost, item retained.

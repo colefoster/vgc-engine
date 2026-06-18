@@ -59,6 +59,31 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     {
         return false;
     }
+    // Protective Pads — PS `data/items.ts:protectivepads`
+    //   onModifyMove(move, pokemon) {
+    //     delete move.flags['contact'];
+    //   } // (actually implemented via a per-event `protectivePads` flag
+    //     // checked by `checkMoveMakesContact`; same net effect for our
+    //     // contact-trigger consumers — Rocky Helmet, Iron Barbs, Rough
+    //     // Skin, Static, Cute Charm, Sticky Barb-transfer, Flame Body,
+    //     // Effect Spore, Mummy, etc.)
+    // Critically PS still RECORDS the contact flag for the purposes of
+    // moves like Triage / Long Reach — those would be PA-affected too —
+    // but the engine path that reads `move_makes_contact` is exclusively
+    // the "should the contact-triggered defender effect fire?" question,
+    // which Protective Pads canonically answers "no". Damage modifiers
+    // gated on contact (Fluffy, Tough Claws etc.) read the FLAG, not
+    // `move_makes_contact`, in PS — but our impl currently reads
+    // `move_makes_contact` for everything. Mismatch is acceptable for
+    // now: holders of Protective Pads also "self-cancel" Tough Claws,
+    // which is a strict negative for the attacker, so PS users mostly
+    // pair the item with non-contact-incentivized abilities.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protective_Pads>.
+    if attacker.item_id != u16::MAX
+        && data::ITEMS[attacker.item_id as usize].slug == "protectivepads"
+    {
+        return false;
+    }
     true
 }
 
