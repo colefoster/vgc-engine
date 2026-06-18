@@ -6,8 +6,8 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 33 |
-| partial | 6 |
+| shipped | 34 |
+| partial | 5 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
 
@@ -330,7 +330,14 @@ See systems.md (sleep status hooks).
 
 **What it is**: Ground move that hits Flying types and floating mons normally; also grounds the target.
 
-**Status**: partial — slug listed in the smackdown / ground-Flying override block (battle.rs:1528) but full grounding-on-hit semantics needs audit. Mark `needs audit`.
+**Status**: shipped — PR-58. Thousand Arrows bypasses the Ground-vs-
+Flying immunity at the type-chart level (slug-override branch in
+`damage::calculate_damage`) and the Levitate / Air-Balloon ground
+immunity at the resolve gate. On hit, applies the new
+`VolatileKind::SmackdownGrounded` volatile, which `is_grounded()`
+honors as a global override and which the chart consults to disable
+Flying-type Ground immunity for subsequent moves (e.g. follow-up
+Earthquake into a smacked-down Pelipper now lands).
 
 ### Aerial Ace / Swift / Magnet Bomb / Shock Wave / etc.
 

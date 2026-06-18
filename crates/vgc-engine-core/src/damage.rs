@@ -1132,6 +1132,35 @@ pub fn calculate_damage(
                 _ => TypeEff::QuadrupleX,
             }
         }
+    } else if m.slug == "thousandarrows" {
+        // PS data/moves.ts:thousandarrows onEffectiveness — Flying-type
+        // slot is overridden to 0 (Ground vs Flying = 1× instead of 0).
+        // Levitate / Air Balloon grounding is handled separately by the
+        // damage path (move bypasses the ungrounded-immunity gate); this
+        // branch handles the chart-side Flying-type immunity only.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
+        let mut net = 0i32;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            if def_type == 9 {
+                // Flying slot: override to 0 (neutral contribution).
+            } else {
+                match data::TYPE_CHART[def_type][move_type as usize] {
+                    0 => {}
+                    1 => net += 1,
+                    2 => net -= 1,
+                    3 => return 0, // Other immunity (no candidates in gen-9)
+                    other => unreachable!("bad type-chart code {other}"),
+                }
+            }
+        }
+        match net.clamp(-2, 2) {
+            -2 => TypeEff::QuarterX,
+            -1 => TypeEff::HalfX,
+            0 => TypeEff::Neutral,
+            1 => TypeEff::DoubleX,
+            _ => TypeEff::QuadrupleX,
+        }
     } else if m.slug == "flyingpress" {
         // PS data/moves.ts:flyingpress onEffectiveness adds the Flying
         // type-chart row to the move's own (Fighting) effectiveness.
@@ -1183,11 +1212,27 @@ pub fn calculate_damage(
     } else {
         // Iterate Tera-effective types; same logic as `type_effectiveness`
         // but on the post-Tera type list.
+        //
+        // Smack Down / Thousand Arrows volatile bypass — when the
+        // defender carries SmackdownGrounded, the chart's Flying-type
+        // immunity to Ground moves is removed (PS gates this through
+        // `runImmunity('Ground')` returning true for smackdown'd mons).
+        // Same skip applies for any other Ground move while the
+        // volatile is up — Earthquake into a smacked-down Pelipper
+        // becomes a neutral hit instead of a 0×. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>.
+        let smackdown_active = defender
+            .volatiles
+            .has(crate::pokemon::VolatileKind::SmackdownGrounded);
         let mut weak = 0i32;
         let mut resist = 0i32;
         let mut immune = false;
         for i in 0..def_eff_num as usize {
             let def_type = def_eff_types[i] as usize;
+            if smackdown_active && move_type == 8 && def_type == 9 {
+                // Skip Flying-type contribution to Ground immunity.
+                continue;
+            }
             match data::TYPE_CHART[def_type][move_type as usize] {
                 0 => {}
                 1 => weak += 1,

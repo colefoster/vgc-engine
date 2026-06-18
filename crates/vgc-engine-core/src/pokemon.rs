@@ -275,6 +275,13 @@ pub enum VolatileKind {
     /// outgoing Fire-type damaging moves get x1.5 BP (damage.rs reads
     /// this flag). Payload unused.
     FlashFire,
+    /// Smack Down / Thousand Arrows grounding (PS
+    /// `data/conditions.ts:smackdown` / `data/moves.ts:thousandarrows`
+    /// `volatileStatus: 'smackdown'`). Indefinite duration; cleared on
+    /// switch-out. While set, the holder counts as grounded — Flying
+    /// type, Levitate, Air Balloon, and Magnet Rise are all overridden.
+    /// Payload unused.
+    SmackdownGrounded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -985,6 +992,13 @@ impl Pokemon {
             data::ITEMS[self.item_id as usize].slug
         };
         if item == "ironball" {
+            return true;
+        }
+        // Smack Down / Thousand Arrows grounding — PS
+        // `data/conditions.ts:smackdown` checked early in PS's
+        // `Pokemon.isGrounded()`. Overrides Flying type, Levitate,
+        // Air Balloon, and Magnet Rise.
+        if self.volatiles.has(VolatileKind::SmackdownGrounded) {
             return true;
         }
         let s = self.species();

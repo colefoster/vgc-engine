@@ -2090,7 +2090,20 @@ impl Battle {
             } else {
                 defender.is_grounded()
             };
-            if m.type_ == 8 && !defender_grounded {
+            // Thousand Arrows — PS data/moves.ts:thousandarrows
+            //   onEffectiveness(typeMod, target, type, move) {
+            //     if (move.type !== 'Ground') return;
+            //     if (!target.runImmunity('Ground')) return 0;
+            //   }
+            // i.e. Ground-type immunity is bypassed for Flying / Levitate
+            // / Air Balloon — the move treats those defenders as neutral
+            // (1×) and STILL deals damage. We skip the `continue` here
+            // for thousandarrows so the damage path proceeds; the type
+            // chart already returns 1 for Ground vs non-Flying, but
+            // for Flying-type defenders the chart returns 0 — that's
+            // handled by a slug-override on the type chart side (added
+            // alongside this PR, below).
+            if m.type_ == 8 && !defender_grounded && m.slug != "thousandarrows" {
                 continue;
             }
 
@@ -2544,6 +2557,29 @@ impl Battle {
                 if can_knock {
                     if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         t.item_id = u16::MAX;
+                    }
+                }
+            }
+
+            // Smack Down / Thousand Arrows — grounding side effect.
+            // PS data/moves.ts:smackdown / :thousandarrows both apply
+            // `volatileStatus: 'smackdown'` after the hit lands. The
+            // volatile overrides Flying type, Levitate, Air Balloon,
+            // and Magnet Rise grounding for the remainder of the battle
+            // (until switch-out). PS gates the apply on a successful
+            // hit only, which we mirror by checking that the target is
+            // still alive AND was not absorbed by a Substitute.
+            // Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
+            //   <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
+            if matches!(m.slug, "smackdown" | "thousandarrows") && !hit_sub {
+                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    if t.is_alive() {
+                        let _ = t.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::SmackdownGrounded,
+                            turns_remaining: 0, // indefinite, cleared on switch-out
+                            payload: 0,
+                        });
                     }
                 }
             }
@@ -13931,6 +13967,58 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
         assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
+
+    #[test]
+    fn thousand_arrows_grounds_target_for_followup_earthquake() {
+        // Zygarde uses Thousand Arrows on Flying-type Pelipper (turn 1),
+        // then Garchomp follows with Earthquake (turn 2). After the
+        // grounding volatile, Earthquake must land.
+        let p1_json = r#"[
+            {"species":"zygarde","level":50,"ability":"aurabreak","item":"choiceband","nature":"adamant","moves":["thousandarrows","dragonclaw","extremespeed","outrage"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["protect","weatherball","tailwind","roost"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["protect","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Turn 1: Zygarde fires Thousand Arrows at Pelipper. Both foes
+        // pass / Roost. Garchomp passes.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }, // Roost (self-targeted - target ignored)
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        // Pelipper must be marked grounded now.
+        let pelipper = b.p2.team[0].clone();
+        assert!(pelipper.volatiles.has(crate::pokemon::VolatileKind::SmackdownGrounded),
+                "Pelipper should be marked SmackdownGrounded after Thousand Arrows");
+        assert!(pelipper.is_grounded(),
+                "Pelipper should count as grounded after Thousand Arrows");
+
+        // Turn 2: Garchomp Earthquakes — Pelipper should take damage
+        // despite being Flying-type.
+        let pelipper_hp_pre = b.p2.team[0].current_hp;
+        b.step(
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(b.p2.team[0].current_hp < pelipper_hp_pre,
+                "Earthquake should hit grounded Pelipper");
     }
 
     #[test]
