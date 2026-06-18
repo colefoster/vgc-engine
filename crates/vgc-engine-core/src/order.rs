@@ -192,6 +192,31 @@ pub fn action_order(
                             } else {
                                 pri_after_ability
                             };
+                            // Grassy Glide — PS data/moves.ts:grassyglide
+                            //   onModifyPriority(priority, source, target, move) {
+                            //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
+                            //       return priority + 1;
+                            //     }
+                            //   }
+                            // +1 priority bump when the USER is grounded under
+                            // Grassy Terrain. PR-275 left this branch unwired
+                            // (gap doc: "grassyglide priority-bump branch not
+                            // yet wired"). Bulbapedia:
+                            // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
+                            let move_slug_for_pri = if mid == u16::MAX {
+                                ""
+                            } else {
+                                data::MOVES[mid as usize].slug
+                            };
+                            let pri_after_terrain = if move_slug_for_pri == "grassyglide"
+                                && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
+                                && m.is_grounded()
+                            {
+                                pri_after_item + 1
+                            } else {
+                                pri_after_item
+                            };
+                            let pri_after_item = pri_after_terrain;
                             // Fractional-priority items:
                             //   Custap Berry — PS `data/items.ts:custapberry`
                             //   `onFractionalPriority(priority, pokemon) {
@@ -571,5 +596,54 @@ mod tests {
         mon.status = Status::Paralysis;
         let para = effective_speed(&mon, false, crate::weather::Weather::None);
         assert!(para >= healthy, "Quick Feet should ignore paralysis halve (h={healthy}, p={para})");
+    }
+
+    #[test]
+    fn grassy_glide_priority_bump_in_grassy_terrain() {
+        // P1 Rillaboom-style replacement: use Garchomp with Grassy Glide in
+        // move slot 0, vs P2 Iron Hands with Drain Punch (priority 0).
+        // Under Grassy Terrain (user grounded), Grassy Glide should jump
+        // to +1 priority and resolve before Iron Hands.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["grassyglide","earthquake","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        // Baseline (no terrain): both at priority 0; faster Garchomp wins
+        // on speed anyway — use Iron Hands' Drain Punch on a SLOWER mon
+        // to isolate the priority bump. Switch P1 to a slow user instead:
+        // simpler — swap Garchomp out for Iron Hands speed comparison.
+        // Quick approach: just confirm Grassy Terrain flips order vs no
+        // terrain when Garchomp uses Grassy Glide and a faster foe (Flutter
+        // Mane) uses a priority-0 move.
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Pass { actor_slot: 0 },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+        ];
+        // No terrain: Flutter Mane (timid 252) is faster than Garchomp;
+        // priority equal, Flutter Mane moves first.
+        let mut rng = Rng::new(0);
+        let order_no = action_order(&b, &p1c, &p2c, &mut rng);
+        let first_no = order_no.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_no.side, SideRef::P2, "no terrain: Flutter Mane outspeeds");
+
+        // Grassy Terrain: Garchomp's Grassy Glide gains +1 priority.
+        b.terrain = crate::terrain::Terrain::Grassy;
+        b.terrain_turns = 5;
+        let mut rng2 = Rng::new(0);
+        let order_g = action_order(&b, &p1c, &p2c, &mut rng2);
+        let first_g = order_g.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_g.side, SideRef::P1,
+                   "Grassy Terrain: Grassy Glide should out-prioritize Flutter Mane");
     }
 }

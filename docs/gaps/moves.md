@@ -6,8 +6,8 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 28 |
-| partial | 6 |
+| shipped | 29 |
+| partial | 5 |
 | not implemented | 5 |
 | deferred / no-effect | 0 |
 
@@ -39,7 +39,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Electric Terrain is shipped (PR-31); Grassy / Misty / Psychic Terrain are not (only the field flag would be added).
 
-**Status**: partial — PR-241 / PR-275. Misty Explosion / Expanding Force / Rising Voltage / Psyblade / Terrain Pulse shipped; Grassy Glide priority-bump branch not yet wired (grassyglide slug absent).
+**Status**: shipped — PR-241 / PR-275 / PR-295 (Grassy Glide priority-bump branch). Misty Explosion / Expanding Force / Rising Voltage / Psyblade / Terrain Pulse / Grassy Glide all wired.
 
 ### Triple Kick / Triple Axel
 
