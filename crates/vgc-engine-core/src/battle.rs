@@ -2249,7 +2249,7 @@ impl Battle {
                 // relevant (Stamina only boosts a live target).
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::ability::on_damaging_hit(
-                    self, tside, tslot, move_id, actor_side, actor_slot, &mut rng,
+                    self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
                 );
                 self.rng = rng;
                 // Defender's held item reacts to the contact hit —
