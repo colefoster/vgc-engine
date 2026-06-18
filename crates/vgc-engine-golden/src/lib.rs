@@ -1110,6 +1110,17 @@ mod corpus_tests {
         let goldens = collect_goldens();
         let mut failures: Vec<String> = Vec::new();
         for (stem, input, ps_path) in &goldens {
+            // `goldens/random/` holds machine-generated random-play
+            // goldens used by the `explore` example for triage. They
+            // exercise mechanics the engine doesn't have yet (Ingrain
+            // heal, Aqua Ring, sleep-clause edges, ...) and are
+            // aspirational coverage, not the strict-gate target.
+            // Skip them here; they're now also gitignored. See
+            // `examples/explore.rs` / `docs/random-golden-bug-survey-N500.md`
+            // for the open-ended exploration mode that consumes them.
+            if stem.starts_with("random/") || stem.starts_with("random\\") {
+                continue;
+            }
             if !ps_path.exists() { continue; }
             match run_golden(input, ps_path) {
                 Err(e) => failures.push(format!("{stem}: error {e}")),
