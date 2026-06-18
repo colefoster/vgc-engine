@@ -2,6 +2,15 @@
 
 Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
+## Headline counts (post PR-276)
+
+| Status | Count |
+| --- | --- |
+| shipped | 36 |
+| partial | 3 |
+| not implemented | 10 |
+| deferred / no-effect | 0 |
+
 ## Damage modifiers
 
 ### Life Orb
@@ -32,7 +41,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **PS reference**: `data/items.ts:mysticwater,etc.`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-250.
 
 ### Punching Glove
 
@@ -40,7 +49,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **Depends on**: `flags.punch`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-267.
 
 ### Wise Glasses
 
@@ -76,7 +85,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 **Depends on**: Species-evolution-stage flag in the build dump.
 
-**Status**: not implemented.
+**Status**: shipped — PR-148.
 
 ### Assault Vest
 
@@ -88,7 +97,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Hazards (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — PR-246.
 
 ### Air Balloon
 
@@ -100,7 +109,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Immune to powder moves and to Sand / Hail chip.
 
-**Status**: not implemented. (Safety Goggles appears in team JSON fixtures on Incineroar but has no handler — powder gate is currently only "is Grass type".)
+**Status**: shipped — PR-268.
 
 ### Ability Shield
 
@@ -114,13 +123,13 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Holder is immune to additional effects (status secondaries, stat-drop secondaries, flinch).
 
-**Status**: not implemented.
+**Status**: shipped — PR-266.
 
 ### Clear Amulet
 
 **What it is**: Holder's stats cannot be lowered by other Pokémon.
 
-**Status**: not implemented.
+**Status**: shipped — PR-269.
 
 ### Protective Pads
 
@@ -144,6 +153,7 @@ Already covered — shipped PR-19/20.
 
 ### Other type-resist berries
 
+
 **What it is**: Occa (Fire), Passho (Water), Wacan (Electric), Rindo (Grass), Yache (Ice), Chople (Fighting), Kebia (Poison), Shuca (Ground), Coba (Flying), Payapa (Psychic), Tanga (Bug), Charti (Rock), Kasib (Ghost), Haban (Dragon), Colbur (Dark), Babiri (Steel), Roseli (Fairy), Chilan (Normal-only, halves any Normal hit).
 
 **Why it matters**: Kasib Berry on Basculegion **3.9%** (anti-Ghost coverage); Yache / Roseli appear on Dragon-types.
@@ -158,7 +168,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: On-status-set hook (currently no on-set callback for items).
 
-**Status**: not implemented.
+**Status**: shipped — Cheri/Chesto/Pecha/Rawst/Aspear PR-248, Lum PR-249.
 
 ### Toxic Orb / Flame Orb
 
@@ -176,13 +186,13 @@ Already covered — shipped PR-19/20.
 
 **What it is**: 1/8 damage per turn; on contact hit received, transfers to attacker.
 
-**Status**: not implemented.
+**Status**: partial — PR-216 / PR-218. 1/8 residual chip shipped; contact-transfer-to-attacker branch not yet implemented.
 
 ### Iron Ball
 
 **What it is**: Spe ×0.5 + grounds the holder (negates Levitate / Flying immunity).
 
-**Status**: not implemented.
+**Status**: shipped — PR-273.
 
 ## One-shot consumables
 
@@ -192,7 +202,7 @@ Already covered — shipped PR-19/20.
 
 **Why it matters**: Pairs with Close Combat / Superpower / Overheat / Draco Meteor / Leaf Storm to negate the self-drop.
 
-**Status**: not implemented.
+**Status**: shipped — PR-270.
 
 ### Mental Herb
 
@@ -202,7 +212,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Taunt / Disable / etc. (systems.md).
 
-**Status**: not implemented.
+**Status**: partial — PR-272. Encore branch shipped; Taunt / Torment / Disable / Heal Block / Attract branches not yet wired.
 
 ### Power Herb
 
@@ -210,7 +220,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Charge-move system (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — PR-160 (consumed when charging Solar Beam / Sky Attack / Meteor Beam / etc. via battle.rs:1097).
 
 ### Throat Spray
 
@@ -220,11 +230,11 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Sound-move table (PR-51).
 
-**Status**: not implemented.
+**Status**: shipped — PR-271.
 
 ### Weakness Policy
 
-**Status**: partial — referenced in PRs but not verified as fully wired; not confirmed shipped. Cross-check.
+**Status**: not implemented. (Slug only appears in test fixtures; no handler in damage.rs / item.rs / battle.rs.)
 
 ### Eject Button / Eject Pack / Red Card
 
@@ -254,7 +264,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Screens shipped (PR-22 / PR-23 / PR-24); just extends the duration.
 
-**Status**: not implemented.
+**Status**: shipped — PR-264.
 
 ### Damp Rock / Heat Rock / Smooth Rock / Icy Rock
 
@@ -262,7 +272,7 @@ Already covered — shipped PR-19/20.
 
 **Why it matters**: Smooth Rock appears on Tyranitar in engine fixture teams (data only, no handler effect).
 
-**Status**: not implemented.
+**Status**: shipped — PR-265.
 
 ### Terrain Extender
 
@@ -296,13 +306,13 @@ See type-boost items above.
 
 **What it is**: +1 crit stage to the holder.
 
-**Status**: not implemented.
+**Status**: shipped — PR-263.
 
 ### Razor Claw
 
 **What it is**: +1 crit stage to the holder.
 
-**Status**: not implemented.
+**Status**: shipped — PR-263.
 
 ## Accuracy / evasion items
 
@@ -324,7 +334,7 @@ See type-boost items above.
 
 **What it is**: 20% chance to move first regardless of speed.
 
-**Status**: not implemented.
+**Status**: shipped — PR-222.
 
 ### Custap Berry
 
@@ -370,13 +380,13 @@ See above.
 
 **What it is**: Origin-Pulse / Spacial Rend boost (×1.2) for the matching legendary trio. Niche.
 
-**Status**: not implemented.
+**Status**: shipped — PR-274.
 
 ### Soul Dew
 
 **What it is**: Latios/Latias: Dragon/Psychic moves ×1.2 BP.
 
-**Status**: not implemented.
+**Status**: shipped — PR-274.
 
 ## Shipped items — for cross-reference
 
@@ -398,3 +408,26 @@ The following are implemented (Phase 2 PRs 1-98):
 - Shell Bell (PR-105)
 - Wide Lens (PR-106)
 - Bright Powder / Lax Incense (PR-107)
+- Eviolite (PR-148)
+- Power Herb (PR-160)
+- Sticky Barb residual chip (PR-216 / PR-218; contact transfer deferred)
+- Quick Claw (PR-222)
+- Jaboca Berry (PR-225)
+- Flame Orb (PR-227)
+- Toxic Orb (PR-228)
+- Heavy-Duty Boots (PR-246)
+- Cheri / Chesto / Pecha / Rawst / Aspear (PR-248)
+- Lum Berry (PR-249)
+- Type-boost held items x1.2 BP (PR-250)
+- Scope Lens / Razor Claw (PR-263)
+- Light Clay (PR-264)
+- Damp / Heat / Smooth / Icy Rock (PR-265)
+- Covert Cloak (PR-266)
+- Punching Glove (PR-267)
+- Safety Goggles (PR-268)
+- Clear Amulet (PR-269)
+- White Herb (PR-270)
+- Throat Spray (PR-271)
+- Mental Herb (Encore branch) (PR-272)
+- Iron Ball (PR-273)
+- Adamant / Lustrous / Griseous Orb / Soul Dew (PR-274)

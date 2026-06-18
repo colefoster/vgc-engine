@@ -2,6 +2,15 @@
 
 Per-slug mechanics where the engine's structural support exists but the slug-specific arm is missing or partial. Moves that depend on whole missing systems (charge, hazards, Tera, confusion, force-switch, self-boost, healing, etc.) are listed in `systems.md`.
 
+## Headline counts (post PR-276)
+
+| Status | Count |
+| --- | --- |
+| shipped | 28 |
+| partial | 6 |
+| not implemented | 5 |
+| deferred / no-effect | 0 |
+
 ## Conditional BP
 
 ### Tera Blast
@@ -12,7 +21,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:terablast`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-163 (Tera Blast + Tera Starstorm + Stellar STAB).
 
 ### Round
 
@@ -30,7 +39,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Electric Terrain is shipped (PR-31); Grassy / Misty / Psychic Terrain are not (only the field flag would be added).
 
-**Status**: not implemented. (Engine has Electric Terrain state but no terrain-conditional BP modifiers.)
+**Status**: partial — PR-241 / PR-275. Misty Explosion / Expanding Force / Rising Voltage / Psyblade / Terrain Pulse shipped; Grassy Glide priority-bump branch not yet wired (grassyglide slug absent).
 
 ### Triple Kick / Triple Axel
 
@@ -122,7 +131,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Pre-roll comparative damage calc.
 
-**Status**: not implemented.
+**Status**: not implemented. (Slug absent from engine.)
 
 ## Drain / heal variants
 
@@ -130,7 +139,7 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **What it is**: Damaging move against a foe; on an ally it heals 50% max HP. Listed under healing in systems.md but flagged here for slug-level dispatch.
 
-**Status**: not implemented.
+**Status**: not implemented. (Slug absent from engine.)
 
 ### Strength Sap, Pain Split, Endeavor
 
@@ -150,7 +159,7 @@ Most are shipped via the secondary table. Specific ones to verify:
 
 **What it is**: 65-BP physical with 10% chance to apply the corresponding status AND 10% chance to flinch (independent rolls).
 
-**Status**: not implemented as such — flinch table covers some but the secondary-status branch is generic via `MoveDef::secondaries`; needs spot-check per slug.
+**Status**: shipped — PR-256 (dual-secondary table at battle.rs:3989, 4014).
 
 ### Scald / Steam Eruption / Matcha Gotcha / Scorching Sands
 
@@ -206,7 +215,7 @@ Knock Off shipped (PR-17). Trick / Switcheroo / Bestow — see systems.md (item 
 
 **What it is**: Gyro Ball: BP = floor(25 × target_spe / user_spe), capped 150. Electro Ball: BP from speed ratio table (1, 1.5, 2, 3, 4+).
 
-**Status**: not implemented (Gyro Ball appears in fixture moves; no handler).
+**Status**: shipped — PR-276.
 
 ### Low Kick / Grass Knot
 
@@ -246,7 +255,7 @@ See systems.md (delayed moves).
 
 **What it is**: OHKO moves. 30% accuracy (Sheer Cold: 20% on Ice users vs Ice targets). Fail vs higher-level targets, immune-type targets, Sturdy.
 
-**Status**: not implemented.
+**Status**: not implemented. (All four slugs absent from engine.)
 
 ### Encore
 
@@ -264,7 +273,7 @@ See systems.md (lock volatiles).
 
 **Depends on**: Action-queue access to detect "got hit before my turn".
 
-**Status**: not implemented.
+**Status**: not implemented. (Appears only in test fixtures.)
 
 ### Sleep Talk / Snore
 
@@ -304,7 +313,7 @@ See systems.md (sleep status hooks).
 
 **What it is**: Ground move that hits Flying types and floating mons normally; also grounds the target.
 
-**Status**: not implemented.
+**Status**: partial — slug listed in the smackdown / ground-Flying override block (battle.rs:1528) but full grounding-on-hit semantics needs audit. Mark `needs audit`.
 
 ### Aerial Ace / Swift / Magnet Bomb / Shock Wave / etc.
 
