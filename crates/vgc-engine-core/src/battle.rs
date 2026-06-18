@@ -12128,6 +12128,44 @@ mod tests {
     }
 
     #[test]
+    fn justified_boosts_atk_on_dark_hit() {
+        let p1_json = r#"[
+            {"species":"hydreigon","level":50,"ability":"levitate","item":"leftovers","nature":"timid","moves":["darkpulse","dragonpulse","flamethrower","fireblast"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"leftovers","nature":"adamant","moves":["closecombat","extremespeed","crunch","protect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_alive());
+        assert_eq!(b.p2.team[0].boosts[0], 1, "Justified +1 Atk on Dark Pulse");
+    }
+
+    #[test]
+    fn rattled_boosts_spe_on_bug_ghost_dark_hit() {
+        let p1_json = r#"[
+            {"species":"hydreigon","level":50,"ability":"levitate","item":"leftovers","nature":"timid","moves":["darkpulse","dragonpulse","flamethrower","fireblast"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"sableye","level":50,"ability":"rattled","item":"leftovers","nature":"impish","moves":["foulplay","recover","willowisp","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_alive());
+        assert_eq!(b.p2.team[0].boosts[4], 1, "Rattled +1 Spe on Dark hit");
+    }
+
+    #[test]
     fn anger_shell_triggers_on_crossing_half_hp() {
         // Tatsugiri (Anger Shell) takes a hit that drops it through 50%.
         // Expect +1 Atk/SpA/Spe and -1 Def/SpD.
