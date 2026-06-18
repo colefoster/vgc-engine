@@ -13456,6 +13456,52 @@ mod tests {
     }
 
     #[test]
+    fn sticky_barb_transfers_to_contact_attacker_with_no_item() {
+        // Garchomp (no item) contact-hits Pikachu @ Sticky Barb. Barb
+        // should transfer; defender now holds nothing, attacker holds
+        // the Barb id.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"stickybarb","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre_barb = b.p2.team[0].item_id;
+        assert_ne!(pre_barb, u16::MAX, "snorlax starts with sticky barb");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Sticky Barb moved off defender");
+        assert_eq!(b.p1.team[0].item_id, pre_barb, "Sticky Barb landed on attacker");
+    }
+
+    #[test]
+    fn sticky_barb_does_not_transfer_when_attacker_holds_item() {
+        // Same setup but Garchomp already holds Focus Sash — no transfer.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"stickybarb","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre_barb = b.p2.team[0].item_id;
+        let pre_atk_item = b.p1.team[0].item_id;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].item_id, pre_barb, "Barb stays on defender");
+        assert_eq!(b.p1.team[0].item_id, pre_atk_item, "Attacker still holds Focus Sash");
+    }
+
+    #[test]
     fn weakness_policy_does_not_fire_on_neutral_hit() {
         // Garchomp @ Weakness Policy hit by Body Slam (Normal vs
         // Dragon/Ground = neutral). No boost, item retained.

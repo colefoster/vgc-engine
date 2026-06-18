@@ -6,8 +6,8 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 40 |
-| partial | 2 |
+| shipped | 41 |
+| partial | 1 |
 | not implemented | 7 |
 | deferred / no-effect | 0 |
 
@@ -186,7 +186,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: 1/8 damage per turn; on contact hit received, transfers to attacker.
 
-**Status**: partial — PR-216 / PR-218. 1/8 residual chip shipped; contact-transfer-to-attacker branch not yet implemented.
+**Status**: shipped — residual chip PR-216 / PR-218; contact-transfer-to-attacker PR-290.
 
 ### Iron Ball
 
@@ -410,7 +410,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Bright Powder / Lax Incense (PR-107)
 - Eviolite (PR-148)
 - Power Herb (PR-160)
-- Sticky Barb residual chip (PR-216 / PR-218; contact transfer deferred)
+- Sticky Barb (PR-216 / PR-218 residual chip + PR-290 contact transfer)
 - Quick Claw (PR-222)
 - Jaboca Berry (PR-225)
 - Flame Orb (PR-227)

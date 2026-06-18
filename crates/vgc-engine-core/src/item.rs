@@ -182,6 +182,44 @@ pub fn on_attacker_contact_hit(
         None => return,
     };
     let slug = item_slug(item_id);
+    // Sticky Barb — PS `data/items.ts:stickybarb`
+    //   onHit(target, source, move) {
+    //     if (source && source !== target && !source.item && this.checkMoveMakesContact(move, source, target)) {
+    //       const barb = target.takeItem();
+    //       source.setItem(barb);
+    //     }
+    //   }
+    // On contact hit received, if the attacker holds no item, the Barb
+    // transfers from defender to attacker. Magic Guard doesn't matter
+    // (this isn't damage); but a target that fainted from the same hit
+    // CAN'T transfer in PS (`target.takeItem()` fails on fainted holders
+    // in the contact path). We gate on `is_alive` as the function does
+    // overall. Both sides must still be holding/having-no-item — i.e.
+    // the attacker must hold nothing, otherwise the swap doesn't happen.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Barb>.
+    if slug == "stickybarb" {
+        let attacker_holds_nothing = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive() && a.item_id == u16::MAX);
+        if attacker_holds_nothing {
+            // Move the Barb item id from defender to attacker. Read the
+            // numeric id once to avoid a double-borrow.
+            let barb_id = item_id;
+            if let Some(t) = battle
+                .side_mut(target_side)
+                .active_mon_mut(target_slot as usize)
+            {
+                t.item_id = u16::MAX;
+            }
+            if let Some(a) = battle
+                .side_mut(attacker_side)
+                .active_mon_mut(attacker_slot as usize)
+            {
+                a.item_id = barb_id;
+            }
+        }
+    }
     if slug == "rockyhelmet" {
         let attacker_alive_and_no_mg = battle
             .side(attacker_side)
