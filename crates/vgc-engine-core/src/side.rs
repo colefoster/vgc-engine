@@ -69,6 +69,14 @@ pub struct SideConditions {
     /// Sucker Punch on its own user — gated check happens at
     /// per-target resolution.
     pub quick_guard_this_turn: bool,
+    /// Round chain marker — set when any mon on this side resolves a
+    /// Round move this turn. PS data/moves.ts:round `onBasePower` reads
+    /// `this.queue.willMove(ally) && ally.willMove === round` to detect
+    /// allies already-queued-with-round; in our linear resolver we
+    /// instead set this flag on the FIRST use of Round and double BP
+    /// on every subsequent same-turn Round. PS also reorders subsequent
+    /// Rounds to fire immediately after the first — deferred.
+    pub round_used_this_turn: bool,
     /// Stealth Rock hazard on this side. PS data/moves.ts:stealthrock
     /// sets a `foeSide` `sideCondition: 'stealthrock'`. Damages each
     /// non-immune switch-in for `maxhp * 2^typeMod / 8`, where typeMod

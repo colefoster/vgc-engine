@@ -7,8 +7,8 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 | Status | Count |
 | --- | --- |
 | shipped | 33 |
-| partial | 5 |
-| not implemented | 1 |
+| partial | 6 |
+| not implemented | 0 |
 | deferred / no-effect | 0 |
 
 ## Conditional BP
@@ -31,7 +31,11 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **PS reference**: `data/moves.ts:round`.
 
-**Status**: not implemented. (Listed only in the sound-move table from PR-51.)
+**Status**: partial — PR-57. BP-doubling arm wired via a per-side
+`round_used_this_turn` flag set on the first Round and read on every
+subsequent same-turn Round (BP × 2). Speed-reorder branch (pull-up
+subsequent Rounds to the front of the queue) deferred — the BP arm
+is the load-bearing one for damage corpus alignment.
 
 ### Misty Explosion / Expanding Force / Rising Voltage / Psyblade / Grassy Glide / Terrain Pulse
 
