@@ -11422,6 +11422,29 @@ mod tests {
     }
 
     #[test]
+    fn lum_berry_cures_any_status() {
+        // Lum Berry cures any non-volatile status. Test against
+        // paralysis (which a single-status berry like Cheri also
+        // covers) and burn — confirm one berry handles both.
+        let p1_par = r#"[
+            {"species":"jolteon","level":50,"ability":"voltabsorb","item":"focussash","nature":"timid","moves":["thunderwave","thunderbolt","shadowball","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_lum = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"lumberry","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_par).unwrap();
+        let p2 = TeamBuilder::from_json(p2_lum).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None),
+                "Lum cures paralysis on apply: status={:?}", b.p2.team[0].status);
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Lum Berry consumed on cure");
+    }
+
+    #[test]
     fn rawst_berry_cures_burn_on_apply() {
         // Charizard fires Will-O-Wisp on a Rawst-holding Snorlax.
         // Will-O-Wisp lands burn; Rawst Berry's onUpdate cures it the
