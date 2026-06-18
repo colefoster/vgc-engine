@@ -410,6 +410,31 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
             m.boosts[4] = (m.boosts[4] + 1).clamp(-6, 6);
         }
     }
+
+    // Solar Power — PS `data/abilities.ts:solarpower`:
+    //   onWeather(target, source, effect) {
+    //     if (effect.id === 'sunnyday' || effect.id === 'desolateland')
+    //       this.damage(target.baseMaxhp / 8, target, target);
+    //   }
+    // 1/8 max HP chip at end of turn while Sun is up. Routed through PS
+    // `damage()` → Magic Guard's `onDamage` returns false → MG blocks it.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
+    if slug == "solarpower" && matches!(battle.weather, crate::weather::Weather::Sun) {
+        let mg = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .map(has_magic_guard)
+            .unwrap_or(false);
+        if !mg {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                let chip = (m.stats.hp / 8).max(1);
+                m.current_hp = m.current_hp.saturating_sub(chip);
+                if m.current_hp == 0 {
+                    m.fainted = true;
+                }
+            }
+        }
+    }
 }
 
 /// Defender ability `onDamagingHit` — runs after a damaging move has
