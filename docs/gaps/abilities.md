@@ -409,13 +409,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Def cannot be lowered by foe.
 
-**Status**: not implemented.
+**Status**: shipped — PR-299. `blocks_opposing_stat_drop_for` in ability.rs gates per-stat.
 
 ### Keen Eye
 
 **What it is**: Acc cannot be lowered by foe. Also ignores target Eva.
 
-**Status**: partial — Intimidate-immune list covers Keen Eye? No — only Acc-drop block missing; Eva ignore not wired. Mark as not implemented for the specific Acc/Eva mechanics; needs audit.
+**Status**: partial — Acc-drop block shipped PR-299 (`blocks_opposing_stat_drop_for`); Eva-ignore branch (accuracy calc) still not implemented.
 
 ### Clear Body / White Smoke / Full Metal Body
 

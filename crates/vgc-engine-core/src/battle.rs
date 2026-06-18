@@ -4571,9 +4571,11 @@ fn apply_secondary_effect(
     if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
         if rng.percent_1_100() <= chance {
             // Clear Body / White Smoke / Full Metal Body / Clear Amulet
-            // veto any opposing stat drop.
+            // veto any opposing stat drop. Per-stat blockers (Hyper
+            // Cutter / Big Pecks / Keen Eye) gate on the specific stat
+            // being dropped.
             let blocked = battle.side(target_side).active_mon(target_slot as usize)
-                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop(m));
+                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, idx));
             if !blocked {
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
                     // PS clamps each stage to [-6, 6]. -1 from -6 stays at
@@ -14599,6 +14601,65 @@ mod tests {
         b.p1.active[0] = 1;
         b.try_set_status(SideRef::P1, 0, Status::Sleep);
         assert!(matches!(b.p1.team[1].status, Status::None), "Insomnia blocks slp");
+    }
+
+    #[test]
+    fn big_pecks_blocks_def_drop_secondary() {
+        // Corviknight @ Big Pecks vs Crunch's 20% Def drop. Average
+        // Acc Crunch hits; over many seeds the Big Pecks user must
+        // never lose Def stages. Compare to a baseline (no ability
+        // blocker) for sanity.
+        let mk = |ab: &str, seed: u64| -> i8 {
+            let p1_json = format!(r#"[
+                {{"species":"tyranitar","level":50,"ability":"sandstream","item":"","nature":"adamant","moves":["crunch","crunch","crunch","crunch"],"evs":{{"atk":252,"hp":4,"spe":252}}}}
+            ]"#);
+            let p2_json = format!(r#"[
+                {{"species":"corviknight","level":50,"ability":"{ab}","item":"","nature":"impish","moves":["bravebird","roost","uturn","tailwind"],"evs":{{"hp":252,"def":252,"atk":4}}}}
+            ]"#);
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            );
+            b.p2.team[0].boosts[1]
+        };
+        // With Big Pecks: NEVER a Def drop, regardless of seed.
+        for s in 0..50u64 {
+            assert_eq!(mk("bigpecks", s), 0, "Big Pecks must block all Crunch Def drops (seed={s})");
+        }
+        // Baseline (Pressure): at least one drop across many seeds.
+        let any_drop = (0..50u64).any(|s| mk("pressure", s) < 0);
+        assert!(any_drop, "Baseline ability must allow at least one Crunch Def drop");
+    }
+
+    #[test]
+    fn keen_eye_blocks_acc_drop_secondary() {
+        // Hitmonchan @ Keen Eye vs Mud-Slap's 100% Acc drop. Always
+        // blocked when Keen Eye holds; baseline ability allows the drop.
+        let mk = |ab: &str, seed: u64| -> i8 {
+            let p1_json = r#"[
+                {"species":"diglett","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["mudslap","mudslap","mudslap","mudslap"]}
+            ]"#;
+            let p2_json = format!(r#"[
+                {{"species":"hitmonchan","level":50,"ability":"{ab}","item":"","nature":"adamant","moves":["machpunch","machpunch","machpunch","machpunch"]}}
+            ]"#);
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            b.p2.team[0].boosts[5]
+        };
+        for s in 0..5u64 {
+            assert_eq!(mk("keeneye", s), 0, "Keen Eye must block Acc drop (seed={s})");
+        }
+        // Baseline (non-blocker): at least one seed must register a drop.
+        let any_drop = (0..20u64).any(|s| mk("ironfist", s) < 0);
+        assert!(any_drop, "Baseline ability must let at least one Mud-Slap drop Acc");
     }
 
     #[test]

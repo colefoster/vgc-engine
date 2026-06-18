@@ -96,6 +96,34 @@ pub(crate) fn blocks_opposing_stat_drop(mon: &crate::pokemon::Pokemon) -> bool {
     item_slug == "clearamulet"
 }
 
+/// Per-stat extension of `blocks_opposing_stat_drop`. Covers the
+/// "all stats blocked" abilities (Clear Body family + Clear Amulet)
+/// AND the single-stat-specific gates:
+///
+///   - Hyper Cutter:  blocks Atk drops only.  PS data/abilities.ts:hypercutter.
+///   - Big Pecks:     blocks Def drops only.  PS data/abilities.ts:bigpecks.
+///   - Keen Eye:      blocks Acc drops only.  PS data/abilities.ts:keeneye.
+///
+/// `stat_idx` is the engine boost-array index: 0=Atk, 1=Def, 2=SpA,
+/// 3=SpD, 4=Spe, 5=Acc, 6=Eva. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Big_Pecks_(Ability)>,
+/// <https://bulbapedia.bulbagarden.net/wiki/Keen_Eye_(Ability)>.
+pub(crate) fn blocks_opposing_stat_drop_for(
+    mon: &crate::pokemon::Pokemon,
+    stat_idx: u8,
+) -> bool {
+    if blocks_opposing_stat_drop(mon) {
+        return true;
+    }
+    let ab = mon.effective_ability_slug();
+    match (ab, stat_idx) {
+        ("hypercutter", 0) => true, // Atk
+        ("bigpecks", 1) => true,    // Def
+        ("keeneye", 5) => true,     // Acc
+        _ => false,
+    }
+}
+
 /// Returns true if the target's ability blocks Intimidate.
 ///
 /// PS data/abilities.ts: each blocker has an onTryBoost / onTryHit hook
