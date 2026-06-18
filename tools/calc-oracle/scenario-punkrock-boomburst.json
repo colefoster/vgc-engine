@@ -1,0 +1,19 @@
+{
+  "name": "punkrock_boomburst_toxtricity_into_garchomp",
+  "attacker": {
+    "species": "Toxtricity",
+    "level": 50,
+    "ability": "Punk Rock",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Garchomp",
+    "level": 50,
+    "ability": "Rough Skin",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Boomburst",
+  "trials": 500
+}

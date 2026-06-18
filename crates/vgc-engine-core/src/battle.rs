@@ -4011,7 +4011,7 @@ fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
-fn is_sound_move(slug: &str) -> bool {
+pub(crate) fn is_sound_move(slug: &str) -> bool {
     matches!(
         slug,
         "alluringvoice"
