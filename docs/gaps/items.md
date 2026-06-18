@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 45 |
+| shipped | 46 |
 | partial | 1 |
-| not implemented | 3 |
+| not implemented | 2 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -280,7 +280,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Electric Terrain shipped (PR-31); other terrains not.
 
-**Status**: not implemented.
+**Status**: shipped — PR-294. Bumps Electric Terrain duration to 8 for ability-set (Hadron Engine / Electric Surge) and move-set (`electricterrain`). Other terrains pick this up automatically when their setters land.
 
 ### Booster Energy
 
@@ -414,6 +414,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Protective Pads (PR-291)
 - Ability Shield (PR-292)
 - Custap Berry / Lagging Tail / Full Incense (PR-293)
+- Terrain Extender (PR-294)
 - Quick Claw (PR-222)
 - Jaboca Berry (PR-225)
 - Flame Orb (PR-227)
