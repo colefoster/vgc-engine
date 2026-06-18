@@ -1,11 +1,12 @@
-# Items — implementation plan (post PR-298 audit)
+# Items — citation catalog
 
-Derived from `docs/gaps/items-missing-audit.md`. PS handler line numbers are
-from `/tmp/pokemon-showdown-research/data/items.ts` (gen-9 head).
-
-This is a **planning doc only**. No engine code changes implied. Each entry
-names the likely engine hook point — implementers should still verify against
-PS at PR time.
+> **This is a citation catalog, not a progress tracker.** The per-entry PS
+> `file:line` refs, hook pointers, complexity, and deps are stable. Any
+> "shipped / missing" *counts* go stale the moment a PR lands — **do not trust
+> the summary table; regenerate status with an audit pass** (grep `item.rs`
+> against the slug list) before relying on it. PS line numbers are from
+> `/tmp/pokemon-showdown-research/data/items.ts` (gen-9 head). No status
+> snapshot here yet — run an items audit when you need current counts.
 
 ## Summary table
 
