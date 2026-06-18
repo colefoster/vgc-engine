@@ -12128,6 +12128,28 @@ mod tests {
     }
 
     #[test]
+    fn scope_lens_razor_claw_bump_effective_crit_stage() {
+        // Both items raise the effective crit stage by +1. Verify via the
+        // public `effective_crit_stage` helper. Empirical crit-rate tests
+        // are too noisy at +1 (1/24 → 1/8) for a small trial budget.
+        let mk = |item: &str| -> u8 {
+            let p1_json = format!(r#"[
+                {{"species":"alakazam","level":50,"ability":"synchronize","item":"{item}","nature":"timid","moves":["psychic","dazzlinggleam","focusblast","shadowball"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","crunch","sleeptalk","rest"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+            b.p1.team[0].effective_crit_stage()
+        };
+        let baseline = mk("leftovers");
+        assert_eq!(mk("scopelens"), baseline + 1, "Scope Lens +1 crit stage");
+        assert_eq!(mk("razorclaw"), baseline + 1, "Razor Claw +1 crit stage");
+    }
+
+    #[test]
     fn justified_boosts_atk_on_dark_hit() {
         let p1_json = r#"[
             {"species":"hydreigon","level":50,"ability":"levitate","item":"leftovers","nature":"timid","moves":["darkpulse","dragonpulse","flamethrower","fireblast"]}
