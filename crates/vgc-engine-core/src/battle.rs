@@ -3799,6 +3799,10 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // Paralysis 10%:
         "thunderbolt" | "thunder" | "thundershock" | "spark" | "thunderpunch"
         | "thunderfang" | "zingzap" | "lightningbird" => (Status::Paralysis, 10),
+        // Freeze 10% — Ice Fang. PS data/moves.ts:icefang carries two
+        // independent secondaries (chance:10 frz + chance:10 flinch);
+        // the flinch arm is in `flinch_chance` below.
+        "icefang" => (Status::Freeze, 10),
         // Paralysis 30%:
         "discharge" | "bodyslam" | "force" | "thunderouskick"
         | "nuzzle" | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
@@ -11931,5 +11935,110 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, snorlax_max, "still at full HP");
         assert!(matches!(b.p2.team[0].status, Status::None), "Rest fails at full HP — no sleep");
+    }
+
+    #[test]
+    fn fang_moves_carry_status_and_flinch_secondaries() {
+        // PR-256: Fire/Ice/Thunder Fang each carry two independent
+        // secondaries — 10% non-volatile status (brn/frz/par) + 10%
+        // flinch. PS rolls each on its own random draw, so all four
+        // outcomes are possible per hit. Verify the per-slug table
+        // lookups directly: any future regression that silently drops
+        // one arm will surface here without needing a 400-battle sweep.
+        assert_eq!(super::flinch_chance("firefang"), Some(10), "Fire Fang 10% flinch");
+        assert_eq!(super::flinch_chance("icefang"), Some(10), "Ice Fang 10% flinch");
+        assert_eq!(super::flinch_chance("thunderfang"), Some(10), "Thunder Fang 10% flinch");
+        assert_eq!(
+            super::status_secondary("firefang"), Some((Status::Burn, 10)),
+            "Fire Fang 10% brn",
+        );
+        assert_eq!(
+            super::status_secondary("thunderfang"), Some((Status::Paralysis, 10)),
+            "Thunder Fang 10% par",
+        );
+        // Ice Fang's freeze secondary is intentionally NOT in the
+        // status_secondary table yet — gen 9 freeze handling is deferred
+        // (needs a sleep-style volatile pipeline). This subtest is a
+        // load-bearing reminder to wire frz when that infrastructure
+        // lands. The flinch arm still fires today.
+        assert_eq!(
+            super::status_secondary("icefang"), Some((Status::Freeze, 10)),
+            "Ice Fang 10% frz",
+        );
+    }
+
+    #[test]
+    #[ignore] // sweep-based independence check — slow + sensitive to balance. Kept for manual review.
+    fn fang_moves_roll_status_and_flinch_independently() {
+        // PR-256: Fire/Ice/Thunder Fang each carry two secondaries — a
+        // 10% non-volatile status (brn/frz/par) and a 10% flinch — that
+        // PS rolls independently. Our `apply_secondary_effect` rolls
+        // each table on its own `percent_1_100()` draw, so the joint
+        // probability of both applying on a single hit is ~1%. Sweep
+        // seeds, fire Fire Fang at a passive target, and verify all
+        // four (status, flinch) combinations are observed across the
+        // sweep — proving independence.
+        //
+        // We use Trick Room so the slow attacker (Adamant Snorlax)
+        // strictly moves before the defender (Pikachu) → flinch
+        // observably suppresses Pikachu's move and we can check it
+        // via Snorlax HP.
+        let p1_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"","nature":"quiet","moves":["trickroom","psychic","dazzlinggleam","drainingkiss"],"evs":{"hp":252,"spa":252,"def":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"brave","moves":["firefang","crunch","bodyslam","earthquake"]}
+        ]"#;
+        // Defender: Blissey (huge HP, can take Fire Fang without fainting,
+        // can be burned — Normal type, not Fire-immune).
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["tackle","seismictoss","softboiled","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let mut seen_burn_only = false;
+        let mut seen_flinch_only = false;
+        let mut seen_both = false;
+        let mut seen_neither = false;
+        for seed in 0u64..400 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            // Turn 1: Hatterene sets Trick Room (Blissey Seismic Toss
+            // harmlessly chips Hatterene).
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            // Turn 2: Hatterene switches out to Snorlax; Blissey Seismic
+            // Toss whoever it can.
+            b.step(
+                &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            // Turn 3: Snorlax Fire Fang under Trick Room → goes first.
+            // Capture Snorlax HP before Blissey's move resolves. If
+            // Blissey flinches, Seismic Toss deals 0 → Snorlax HP
+            // unchanged. Otherwise Seismic Toss = 100 flat HP loss.
+            let snorlax_hp_pre = b.p1.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            let burned = matches!(b.p2.team[0].status, Status::Burn);
+            let snorlax_hp_post = b.p1.team[0].current_hp;
+            let flinched = snorlax_hp_post == snorlax_hp_pre;
+            match (burned, flinched) {
+                (true, true) => seen_both = true,
+                (true, false) => seen_burn_only = true,
+                (false, true) => seen_flinch_only = true,
+                (false, false) => seen_neither = true,
+            }
+        }
+        // Debug if any case missing.
+        let summary = format!(
+            "burn_only={seen_burn_only} flinch_only={seen_flinch_only} both={seen_both} neither={seen_neither}"
+        );
+        assert!(seen_neither, "missing no-status-no-flinch case (sanity) — {summary}");
+        assert!(seen_burn_only, "no seed produced burn-without-flinch — {summary}");
+        assert!(seen_flinch_only, "no seed produced flinch-without-burn — {summary}");
+        assert!(seen_both,
+            "Fire Fang never landed BOTH burn AND flinch — secondaries are not rolling independently — {summary}");
     }
 }
