@@ -13251,4 +13251,50 @@ mod tests {
         assert_eq!(b.p1.team[0].boosts[expected_idx], 1,
             "Beast Boost should raise the attacker's highest stat by 1 (idx={expected_idx})");
     }
+
+    #[test]
+    fn air_balloon_pops_on_first_damaging_hit() {
+        // PS data/items.ts:airballoon onDamagingHit consumes the item on
+        // any incoming damaging hit. After the pop, Ground immunity is
+        // gone too (is_grounded reads the item slug).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"airballoon","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_ne!(b.p2.team[0].item_id, u16::MAX, "starts holding Air Balloon");
+        // Garchomp uses Dragon Claw (non-Ground) — pops the balloon.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].item_id, u16::MAX,
+                   "Air Balloon should be consumed after the first damaging hit");
+    }
+
+    #[test]
+    fn air_balloon_pre_pop_still_blocks_earthquake() {
+        // Verify the existing Ground immunity (PR-56) still works when
+        // the balloon hasn't popped yet — Earthquake from Garchomp does 0.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"airballoon","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
+        assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
 }

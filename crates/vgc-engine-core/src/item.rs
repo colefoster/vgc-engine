@@ -143,11 +143,33 @@ pub fn on_damaging_hit(
     attacker_slot: u8,
     move_id: u16,
 ) {
+    // Air Balloon pops even when the hit KO'd the holder — PS announces
+    // `-enditem ... [silent]` then proceeds. We mirror by consuming
+    // regardless of `is_alive`; the rest of the function still gates on
+    // alive (Jaboca recoil into a fainted defender's attacker would be
+    // wrong-headed).
+    let raw_item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => m.item_id,
+        None => return,
+    };
+    if item_slug(raw_item_id) == "airballoon" {
+        if let Some(t) = battle
+            .side_mut(target_side)
+            .active_mon_mut(target_slot as usize)
+        {
+            t.item_id = u16::MAX;
+        }
+    }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
     let slug = item_slug(item_id);
+    // Air Balloon pop: handled above the alive-gate. PS
+    // `data/items.ts:airballoon onDamagingHit` consumes the item on every
+    // damaging hit; Ground immunity in `Pokemon::is_grounded` reads the
+    // slug, so the sentinel `u16::MAX` immediately drops the immunity.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Air_Balloon>.
     if slug == "jabocaberry" {
         // Physical-only gate. PS reads `move.category === 'Physical'`.
         let category = data::MOVES[move_id as usize].category;

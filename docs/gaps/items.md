@@ -6,8 +6,8 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 36 |
-| partial | 3 |
+| shipped | 37 |
+| partial | 2 |
 | not implemented | 10 |
 | deferred / no-effect | 0 |
 
@@ -103,7 +103,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Holder is Ground-immune until hit. Pops on first damage taken.
 
-**Status**: partial — Ground immunity shipped in PR-56; "pops on first hit" not implemented (the balloon is treated as permanent).
+**Status**: shipped — Ground immunity PR-56; pop-on-first-damaging-hit PR-286.
 
 ### Safety Goggles
 
@@ -399,7 +399,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Knock Off item-removal (PR-17)
 - Booster Energy (PR-48)
 - Big Root (PR-86)
-- Air Balloon — Ground immunity only (PR-56; pop-on-hit deferred)
+- Air Balloon (PR-56 Ground immunity + PR-286 pop-on-hit)
 - Rocky Helmet (PR-100)
 - Expert Belt (PR-101)
 - Wise Glasses (PR-102)
