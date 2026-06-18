@@ -13390,6 +13390,72 @@ mod tests {
     }
 
     #[test]
+    fn yache_berry_halves_se_ice_hit() {
+        // 0-Atk attacker so the hit doesn't KO. Mamoswine Ice Shard
+        // (Ice, SE ×4 vs Dragon/Ground Garchomp) should be halved when
+        // Garchomp holds Yache Berry; berry consumed.
+        let p1_json = r#"[
+            {"species":"mamoswine","level":50,"ability":"thickfat","item":"","nature":"hardy","moves":["iceshard","earthquake","stoneedge","iciclecrash"],"ivs":{"atk":0,"hp":31,"def":31,"spa":31,"spd":31,"spe":31},"evs":{"hp":4}}
+        ]"#;
+        let p2_no = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"impish","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let p2_yes = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"yacheberry","nature":"impish","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let mut run = |p2j: &str| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2j).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            (pre - b.p2.team[0].current_hp, b.p2.team[0].item_id)
+        };
+        let (dmg_no, _) = run(p2_no);
+        let (dmg_yes, item_yes) = run(p2_yes);
+        assert!(dmg_no > 0);
+        assert!(dmg_yes <= dmg_no / 2 + 1 && dmg_yes >= dmg_no / 2 - 1,
+                "Yache should halve Ice SE damage: no={dmg_no} yes={dmg_yes}");
+        assert_eq!(item_yes, u16::MAX, "Yache Berry consumed");
+    }
+
+    #[test]
+    fn chilan_berry_halves_any_normal_hit() {
+        // Chilan halves Normal hits regardless of effectiveness. Snorlax
+        // Body Slam (Normal, neutral vs Garchomp Dragon/Ground) should be
+        // halved when Garchomp holds Chilan Berry.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"hardy","moves":["bodyslam","crunch","sleeptalk","earthquake"],"ivs":{"atk":0,"hp":31,"def":31,"spa":31,"spd":31,"spe":31},"evs":{"hp":4}}
+        ]"#;
+        let p2_no = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"impish","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let p2_yes = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"chilanberry","nature":"impish","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let mut run = |p2j: &str| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2j).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            (pre - b.p2.team[0].current_hp, b.p2.team[0].item_id)
+        };
+        let (dmg_no, _) = run(p2_no);
+        let (dmg_yes, item_yes) = run(p2_yes);
+        assert!(dmg_no > 0);
+        assert!(dmg_yes <= dmg_no / 2 + 1 && dmg_yes >= dmg_no / 2 - 1,
+                "Chilan should halve any Normal damage: no={dmg_no} yes={dmg_yes}");
+        assert_eq!(item_yes, u16::MAX, "Chilan Berry consumed even on neutral Normal hit");
+    }
+
+    #[test]
     fn weakness_policy_does_not_fire_on_neutral_hit() {
         // Garchomp @ Weakness Policy hit by Body Slam (Normal vs
         // Dragon/Ground = neutral). No boost, item retained.

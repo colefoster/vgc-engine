@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 39 |
+| shipped | 40 |
 | partial | 2 |
-| not implemented | 8 |
+| not implemented | 7 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -158,7 +158,7 @@ Already covered — shipped PR-19/20.
 
 **Why it matters**: Kasib Berry on Basculegion **3.9%** (anti-Ghost coverage); Yache / Roseli appear on Dragon-types.
 
-**Status**: not implemented.
+**Status**: shipped — PR-289 (table-driven extension of PR-288). All 17 type-resist berries (Occa…Roseli) plus Chilan-Normal-no-SE wired through `try_consume_type_resist_berry`.
 
 ## Status-cure / status-related berries and orbs
 
@@ -434,3 +434,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Air Balloon pop (PR-286)
 - Weakness Policy (PR-287)
 - Chople Berry (PR-288)
+- Other type-resist berries: Occa / Passho / Wacan / Rindo / Yache / Kebia / Shuca / Coba / Payapa / Tanga / Charti / Kasib / Haban / Colbur / Babiri / Roseli / Chilan (PR-289)

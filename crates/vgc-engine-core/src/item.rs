@@ -55,8 +55,29 @@ pub fn try_consume_type_resist_berry(
     // `vgc-engine-data` TYPE_NAMES — 0=Normal, 1=Fire, 2=Water, 3=Electric,
     // 4=Grass, 5=Ice, 6=Fighting, 7=Poison, 8=Ground, 9=Flying, 10=Psychic,
     // 11=Bug, 12=Rock, 13=Ghost, 14=Dragon, 15=Dark, 16=Steel, 17=Fairy.
+    // Table covers every gen-9 type-resist berry. Chilan halves any
+    // Normal hit regardless of effectiveness (the `requires_se = false`
+    // entry); every other berry requires the hit to be super-effective.
+    // Type codes match `vgc-engine-data` TYPE_NAMES.
     let table = [
-        ("chopleberry", 6u8, true),
+        ("occaberry",    1u8,  true),  // Fire
+        ("passhoberry",  2u8,  true),  // Water
+        ("wacanberry",   3u8,  true),  // Electric
+        ("rindoberry",   4u8,  true),  // Grass
+        ("yacheberry",   5u8,  true),  // Ice
+        ("chopleberry",  6u8,  true),  // Fighting
+        ("kebiaberry",   7u8,  true),  // Poison
+        ("shucaberry",   8u8,  true),  // Ground
+        ("cobaberry",    9u8,  true),  // Flying
+        ("payapaberry",  10u8, true),  // Psychic
+        ("tangaberry",   11u8, true),  // Bug
+        ("chartiberry",  12u8, true),  // Rock
+        ("kasibberry",   13u8, true),  // Ghost
+        ("habanberry",   14u8, true),  // Dragon
+        ("colburberry",  15u8, true),  // Dark
+        ("babiriberry",  16u8, true),  // Steel
+        ("roseliberry",  17u8, true),  // Fairy
+        ("chilanberry",  0u8,  false), // Normal — fires regardless of SE
     ];
     let entry = table.iter().find(|(s, _, _)| *s == slug);
     let (_, type_code, requires_se) = match entry {
