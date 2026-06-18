@@ -1,0 +1,20 @@
+{
+  "name": "chople_berry_lucario_cc_into_kingambit",
+  "attacker": {
+    "species": "Lucario",
+    "level": 50,
+    "ability": "Inner Focus",
+    "nature": "Adamant",
+    "evs": { "atk": 252, "hp": 4, "spe": 252 }
+  },
+  "defender": {
+    "species": "Kingambit",
+    "level": 50,
+    "item": "Chople Berry",
+    "ability": "Defiant",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Close Combat",
+  "trials": 500
+}

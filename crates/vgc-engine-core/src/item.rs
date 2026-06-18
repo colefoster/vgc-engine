@@ -16,6 +16,70 @@ fn item_slug(id: u16) -> &'static str {
     data::ITEMS.get(id as usize).map(|i| i.slug).unwrap_or("")
 }
 
+/// Type-resist berries — halve incoming damage of a specific type when the
+/// hit is super-effective (Chilan halves any Normal hit regardless of
+/// effectiveness). PS handler shape (one entry per berry):
+///
+/// ```text
+/// chopleberry: onSourceModifyDamage(damage, source, target, move) {
+///   if (move.type === 'Fighting' && target.getMoveHitData(move).typeMod > 0) {
+///     if (target.eatItem()) return this.chainModify(0.5);
+///   }
+/// }
+/// chilanberry: same shape, no SE gate.
+/// ```
+///
+/// Consumed on use (item set to `u16::MAX`). Berry-resist halving applies
+/// once per hit and runs before Substitute interception so the sub sees
+/// the halved value too — matching PS's `onSourceModifyDamage`.
+///
+/// Returns `true` if a berry fired (caller should halve the damage value).
+///
+/// Currently only Chople Berry is wired (Fighting / SE). Other type-resist
+/// berries follow in PR-289 via the same table.
+///
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Type-resist_Berry>.
+pub fn try_consume_type_resist_berry(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_type: u8,
+    defender_species: &data::SpeciesDef,
+) -> bool {
+    let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
+        _ => return false,
+    };
+    let slug = item_slug(item_id);
+    // (slug, type_code, requires_se). Type codes match
+    // `vgc-engine-data` TYPE_NAMES — 0=Normal, 1=Fire, 2=Water, 3=Electric,
+    // 4=Grass, 5=Ice, 6=Fighting, 7=Poison, 8=Ground, 9=Flying, 10=Psychic,
+    // 11=Bug, 12=Rock, 13=Ghost, 14=Dragon, 15=Dark, 16=Steel, 17=Fairy.
+    let table = [
+        ("chopleberry", 6u8, true),
+    ];
+    let entry = table.iter().find(|(s, _, _)| *s == slug);
+    let (_, type_code, requires_se) = match entry {
+        Some(e) => *e,
+        None => return false,
+    };
+    if move_type != type_code {
+        return false;
+    }
+    if requires_se {
+        use crate::damage::TypeEff;
+        let eff = crate::damage::type_effectiveness(move_type, defender_species);
+        if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+            return false;
+        }
+    }
+    // Consume the berry.
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.item_id = u16::MAX;
+    }
+    true
+}
+
 /// Called on the *defender* immediately before a damaging hit's HP is
 /// applied. Returning a damage override (`Some(new_dmg)`) replaces the
 /// caller's damage value; returning `None` leaves it unchanged.
