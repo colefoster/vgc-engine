@@ -564,6 +564,16 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Charge — ×2 BP on the holder's next Electric move. PS
+    // data/conditions.ts:charge `onBasePower` priority 9:
+    // `if (move.type === 'Electric') return this.chainModify(2);`
+    // The volatile is set by the Charge move / Wind Power and removed
+    // once the Electric move resolves (battle.rs onAfterMove analog).
+    // Electric type index = 3.
+    if move_type == 3 && attacker.is_charged() {
+        bp = bp * 2;
+    }
+
     // Expanding Force — PS data/moves.ts:expandingforce
     //   onBasePower(basePower, source) {
     //     if (this.field.isTerrain('psychicterrain') && source.isGrounded())
@@ -2045,6 +2055,42 @@ mod tests {
         reverted.clear_type_override();
         let after_clear = calculate_damage(&reverted, &neutral_def, flamethrower, ctx);
         assert_eq!(after_clear, base, "clearing override restores no-STAB damage");
+    }
+
+    #[test]
+    fn charge_doubles_electric_move_base_power() {
+        // PS data/conditions.ts:charge — the holder's next Electric move
+        // gets ×2 BP; non-Electric moves are unaffected.
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let defender = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+
+        // Electric move: ×2 with Charge.
+        let mut zapdos = make_mon("zapdos", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let tbolt = move_id("thunderbolt");
+        let base = calculate_damage(&zapdos, &defender, tbolt, ctx);
+        zapdos.set_charged(true);
+        let charged = calculate_damage(&zapdos, &defender, tbolt, ctx);
+        // BP is doubled pre-formula, so the final damage is ~2× (exact
+        // ratio drifts a hair from integer truncation through the calc).
+        assert!(charged * 100 >= base * 195 && charged <= base * 2,
+            "Charge ~doubles Electric BP (base={base}, charged={charged})");
+
+        // Non-Electric move: unchanged by Charge. Zapdos's Hurricane
+        // (Flying) should be identical with/without the volatile.
+        let mut zapdos2 = make_mon("zapdos", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let hurricane = move_id("hurricane");
+        let base_fly = calculate_damage(&zapdos2, &defender, hurricane, ctx);
+        zapdos2.set_charged(true);
+        let charged_fly = calculate_damage(&zapdos2, &defender, hurricane, ctx);
+        assert_eq!(charged_fly, base_fly, "Charge does not touch non-Electric moves");
     }
 
     #[test]

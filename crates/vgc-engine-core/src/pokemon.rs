@@ -169,6 +169,13 @@ pub enum VolatileKind {
     PowderShield,
     FocusEnergy,
     LaserFocus,
+    /// Charge (PS `data/conditions.ts:charge`). Set by the Charge move
+    /// or Wind Power; while present, the holder's next Electric move
+    /// gets ×2 BP (`damage.rs` reads it) and the volatile is removed
+    /// once that Electric move resolves (`battle.rs`). Indefinite here
+    /// (PS's native `duration: 2` self-expiry is deferred — the primary
+    /// clear is the post-Electric-move removal). Cleared on switch-out.
+    /// Payload unused.
     Charge,
     Stockpile,
     Roost,
@@ -936,6 +943,27 @@ impl Pokemon {
     #[inline]
     pub fn clear_disable(&mut self) {
         self.volatiles.remove(VolatileKind::Disable);
+    }
+
+    /// `true` while the Charge volatile is up — the holder's next
+    /// Electric move gets ×2 BP. PS `data/conditions.ts:charge`.
+    #[inline]
+    pub fn is_charged(&self) -> bool {
+        self.volatiles.has(VolatileKind::Charge)
+    }
+
+    /// Set / clear the Charge volatile (Charge move / Wind Power).
+    #[inline]
+    pub fn set_charged(&mut self, on: bool) {
+        if on {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Charge,
+                turns_remaining: 0,
+                payload: 0,
+            });
+        } else {
+            self.volatiles.remove(VolatileKind::Charge);
+        }
     }
 
     /// End-of-turn Disable countdown. Decrements the remaining turns and

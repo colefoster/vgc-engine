@@ -348,6 +348,12 @@ fn main() {
     writeln!(f, "    pub is_bullet: bool,").unwrap();
     writeln!(f, "    /// PS `flags.dance = 1`. Re-triggers Dancer abilities.").unwrap();
     writeln!(f, "    pub is_dance: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.wind = 1`. Triggers Wind Power (charge) / Wind Rider").unwrap();
+    writeln!(f, "    /// (+1 Atk, immunity) and is redirected by Storm Drain-style hooks.").unwrap();
+    writeln!(f, "    /// Gen-9 set: Gust, Whirlwind, Twister, Aeroblast, Air Cutter,").unwrap();
+    writeln!(f, "    /// Hurricane, Fairy Wind, Heat Wave, Icy Wind, Blizzard, Petal").unwrap();
+    writeln!(f, "    /// Blizzard, Sandstorm, Tailwind, and the four Storm moves.").unwrap();
+    writeln!(f, "    pub is_wind: bool,").unwrap();
     writeln!(f, "    /// PS `flags.powder = 1`. Grass types / Safety Goggles / Overcoat").unwrap();
     writeln!(f, "    /// immune. Currently approximated inline; this flag is the").unwrap();
     writeln!(f, "    /// canonical source.").unwrap();
@@ -395,7 +401,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -414,6 +420,7 @@ fn main() {
             m.flags.contains_key("pulse"),
             m.flags.contains_key("bullet"),
             m.flags.contains_key("dance"),
+            m.flags.contains_key("wind"),
             m.flags.contains_key("powder"),
             m.flags.contains_key("heal"),
             m.flags.contains_key("cantusetwice"),
