@@ -334,6 +334,39 @@ pub fn on_damaging_hit(
     // damaging hit; Ground immunity in `Pokemon::is_grounded` reads the
     // slug, so the sentinel `u16::MAX` immediately drops the immunity.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Air_Balloon>.
+    // Booster orbs — type-match hit consumes for +1 stat:
+    //   absorbbulb   Water →  +1 SpA (PS data/items.ts:58)
+    //   cellbattery  Electric → +1 Atk (PS data/items.ts:744)
+    //   snowball     Ice → +1 Atk (PS data/items.ts:5835)
+    //   luminousmoss Water →  +1 SpD (PS data/items.ts:3556)
+    // Each `onDamagingHit(damage, target, source, move)` checks
+    // `move.type === '<Type>'` then `target.useItem()` followed by
+    // `boost({stat: 1})`. The hit's category (Phys/Spec) doesn't matter
+    // for these — only the move type. No Magic Guard gate; the boost is
+    // a self-boost so Clear Body / Clear Amulet don't block (those gate
+    // OPPOSING boosts). Bulbapedia hub:
+    // <https://bulbapedia.bulbagarden.net/wiki/Absorb_Bulb>.
+    let move_type = data::MOVES[move_id as usize].type_;
+    // (slug, required type, stat index — 0=Atk, 2=SpA, 3=SpD).
+    let booster_entry = match slug {
+        "absorbbulb"   => Some((2u8, 2usize)), // Water → SpA
+        "cellbattery"  => Some((3u8, 0usize)), // Electric → Atk
+        "snowball"     => Some((5u8, 0usize)), // Ice → Atk
+        "luminousmoss" => Some((2u8, 3usize)), // Water → SpD
+        _ => None,
+    };
+    if let Some((req_type, stat_idx)) = booster_entry {
+        if move_type == req_type {
+            if let Some(t) = battle
+                .side_mut(target_side)
+                .active_mon_mut(target_slot as usize)
+            {
+                t.boosts[stat_idx] = (t.boosts[stat_idx] + 1).clamp(-6, 6);
+                t.item_id = u16::MAX;
+            }
+        }
+        let _ = attacker_side; let _ = attacker_slot;
+    }
     if slug == "jabocaberry" {
         // Physical-only gate. PS reads `move.category === 'Physical'`.
         let category = data::MOVES[move_id as usize].category;

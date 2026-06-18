@@ -6,7 +6,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 74 |
+| shipped | 78 |
 | partial | 1 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
@@ -448,3 +448,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Arceus type-boost plates + Fairy Feather (Draco / Dread / Earth / Fist / Flame / Icicle / Insect / Iron / Meadow / Mind / Sky / Splash / Spooky / Stone / Toxic / Zap + Fairy Feather, 17 slugs total) (PR-299)
 - PLA carrier-locked crystal trio: Adamant Crystal (Dialga-Origin) / Lustrous Globe (Palkia-Origin) / Griseous Core (Giratina-Origin) (PR-300)
 - Terrain seeds: Electric Seed / Grassy Seed (+1 Def) / Misty Seed / Psychic Seed (+1 SpD) (PR-301)
+- Booster orbs: Absorb Bulb (Water → +1 SpA) / Cell Battery (Electric → +1 Atk) / Snowball (Ice → +1 Atk) / Luminous Moss (Water → +1 SpD) (PR-302)

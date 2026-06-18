@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **125**
-- Missing: **124** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **129**
+- Missing: **120** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~26 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~22 competitively relevant**
 
 ## Missing by category
 
@@ -63,10 +63,7 @@ These activate at <=1/4 HP and matter in VGC for Salac/Petaya sweepers and Sitru
 
 These are first-class VGC items — Booster Energy interactions, Cell Battery/Snowball Tatsugiri, etc.
 
-- `absorbbulb` — Absorb Bulb — +1 Sp. Atk if hit by Water. Single use.
-- `cellbattery` — Cell Battery — +1 Atk if hit by Electric. Single use.
-- `snowball` — Snowball — +1 Atk if hit by Ice. Single use.
-- `luminousmoss` — Luminous Moss — +1 Sp. Def if hit by Water. Single use.
+- Booster orbs (Absorb Bulb / Cell Battery / Snowball / Luminous Moss) — shipped (PR-302).
 - `adrenalineorb` — Adrenaline Orb — +1 Speed if affected by Intimidate. Single use.
 - `weaknesspolicy` — (handled) — noted; cross-check passed.
 - `blunderpolicy` — Blunder Policy — +2 Speed on accuracy miss. Single use.
