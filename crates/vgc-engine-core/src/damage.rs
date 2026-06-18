@@ -997,6 +997,28 @@ pub fn calculate_damage(
         dmg = dmg * 3072 / 4096;
     }
 
+    // Fluffy — PS `data/abilities.ts:fluffy`:
+    //   onSourceModifyDamage(damage, source, target, move) {
+    //     let mod = 1;
+    //     if (move.type === 'Fire') mod *= 2;
+    //     if (move.flags['contact']) mod /= 2;
+    //     return this.chainModify(mod);
+    //   }
+    // Stacking: Fire+contact = x1.0 (mods cancel). Flagged `breakable: 1`
+    // → Mold Breaker / Teravolt / Turboblaze bypass the whole effect.
+    // Long Reach (contact negator) deferred. Stufful / Bewear.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fluffy_(Ability)>.
+    if def_ab == "fluffy" && !attacker_breaks_mold {
+        let fire = move_type == 1;
+        let contact = m.makes_contact;
+        if fire && !contact {
+            dmg *= 2;
+        } else if contact && !fire {
+            dmg /= 2;
+        }
+        // fire && contact → mods cancel; neither → no-op.
+    }
+
     // Burn: physical attackers with burn deal halved damage. Guts/Facade
     // gating lands in their respective PRs.
     if physical && attacker.status == Status::Burn {
