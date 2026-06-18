@@ -269,6 +269,12 @@ pub enum VolatileKind {
     /// the source bumps the chip to 1/6 — deferred (no consumer in
     /// items.rs yet).
     PartialTrap,
+    /// Flash Fire activation marker (PS `data/abilities.ts:flashfire`
+    /// `onTryHit` adds the volatile when the holder absorbs a Fire move).
+    /// Indefinite duration; cleared on switch-out. While set, the holder's
+    /// outgoing Fire-type damaging moves get x1.5 BP (damage.rs reads
+    /// this flag). Payload unused.
+    FlashFire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

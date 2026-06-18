@@ -1577,6 +1577,31 @@ impl Battle {
                 }
             }
 
+            // Flash Fire — PS `data/abilities.ts:flashfire` `onTryHit`
+            // returns null on Fire-type damaging moves and adds the
+            // `flashfire` volatile to the holder. Fire-type immunity +
+            // x1.5 BP on outgoing Fire moves while the volatile is set
+            // (boost applied in damage.rs). Fire type code = 1. Carries
+            // `flags: { breakable: 1 }` — Mold Breaker bypasses.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
+            if m.type_ == 1 {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "flashfire" && !attacker_breaks_mold {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        d.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::FlashFire,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
+                    continue;
+                }
+            }
+
             // Earth Eater — PS `data/abilities.ts:eartheater` onTryHit
             // returns null and heals target.baseMaxhp / 4 on Ground-type
             // moves. Ground type code = 8. Great Tusk (Paradox), Orthworm
@@ -8076,6 +8101,60 @@ mod tests {
                    "Sap Sipper absorbs Energy Ball");
         assert_eq!(b.p2.team[0].boosts[0], azu_atk_before + 1,
                    "Sap Sipper grants +1 Atk");
+    }
+
+    #[test]
+    fn flash_fire_absorbs_fire_and_boosts_outgoing_fire() {
+        // Heatran (Flash Fire) absorbs an incoming Flamethrower (0 damage,
+        // activates flashfire volatile). Then a follow-up Flamethrower
+        // hits harder than the same move from a Flash-Fire-less attacker.
+        // PS data/abilities.ts:flashfire.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"focussash","nature":"modest","moves":["flamethrower","airslash","dragonpulse","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"heatran","level":50,"ability":"flashfire","item":"focussash","nature":"calm","moves":["flamethrower","earthpower","magmastorm","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Charizard fires Flamethrower at Heatran — Flash Fire absorbs.
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "Flash Fire absorbs Fire damage");
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::FlashFire),
+                "Flash Fire volatile is set after absorbing a Fire move");
+        // Now compare Heatran's outgoing Flamethrower vs a non-Flash-Fire Heatran.
+        let p1_atk_json = r#"[
+            {"species":"heatran","level":50,"ability":"flashfire","item":"focussash","nature":"modest","moves":["flamethrower","earthpower","magmastorm","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_def_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"focussash","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let mut on = Battle::new(BattleConfig { format: Format::Singles, seed: 9 },
+            TeamBuilder::from_json(p1_atk_json).unwrap(), TeamBuilder::from_json(p2_def_json).unwrap());
+        // Manually activate Flash Fire on the attacker.
+        on.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::FlashFire, turns_remaining: 0, payload: 0,
+        });
+        let mut off = Battle::new(BattleConfig { format: Format::Singles, seed: 9 },
+            TeamBuilder::from_json(p1_atk_json).unwrap(), TeamBuilder::from_json(p2_def_json).unwrap());
+        let snor_full = on.p2.team[0].current_hp;
+        on.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        off.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dmg_on = snor_full - on.p2.team[0].current_hp;
+        let dmg_off = snor_full - off.p2.team[0].current_hp;
+        assert!(dmg_on > dmg_off,
+                "Flash-Fire-boosted Flamethrower hits harder ({} > {})", dmg_on, dmg_off);
     }
 
     #[test]
