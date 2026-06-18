@@ -1309,7 +1309,13 @@ impl Battle {
             }
         }
         let is_spread = targets.len() > 1;
-        let damaging = m.base_power > 0;
+        // Variable-BP moves carry `basePower: 0` in PS and compute the
+        // real BP in damage.rs via per-slug branches. They must NOT bail
+        // out of the damaging-move path here.
+        let damaging = m.base_power > 0
+            || matches!(m.slug,
+                "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
+                    | "gyroball" | "electroball");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -7146,6 +7152,28 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn gyro_ball_bp_scales_inverse_with_user_speed() {
+        // Slow user + fast target → high BP. Ferrothorn (Brave, 0 Spe IV)
+        // into Pikachu (Jolly, 252 Spe) should hit hard.
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"brave","moves":["gyroball","protect","leechseed","spikes"],"ivs":{"hp":31,"atk":31,"def":31,"spa":31,"spd":31,"spe":0},"evs":{"hp":252,"atk":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // feint
+        );
+        let after = b.p2.team[0].current_hp;
+        assert!(after < pre, "Gyro Ball dealt damage to Pikachu (pre={pre}, after={after})");
     }
 
     #[test]

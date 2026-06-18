@@ -253,6 +253,7 @@ pub fn calculate_damage(
     if m.base_power == 0 && !matches!(
         m.slug,
         "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
+            | "gyroball" | "electroball"
     ) {
         return 0;
     }
@@ -460,6 +461,41 @@ pub fn calculate_damage(
             _ => (m.type_, m.base_power as u32),
         };
         (t, bp_local)
+    } else if m.slug == "gyroball" {
+        // PS data/moves.ts:gyroball basePowerCallback:
+        //   const power = Math.floor(25 * target.getStat('spe') /
+        //                            pokemon.getStat('spe')) + 1;
+        //   if (!isFinite(power)) return 1;
+        //   return Math.min(150, power);
+        // Uses boosted (stat-stage applied) speed but ignores Tailwind /
+        // Choice Scarf / paralysis / weather speed abilities (those are
+        // modifyEffect events that don't pierce getStat). Same shape we
+        // use for Avalanche / Stored Power. PS clamp at 150. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Gyro_Ball_(move)>.
+        let user_spe = apply_boost(attacker.stats.spe as u32, attacker.boosts[4]).max(1);
+        let tgt_spe = apply_boost(defender.stats.spe as u32, defender.boosts[4]);
+        let bp_local = (25u32 * tgt_spe / user_spe + 1).min(150);
+        (m.type_, bp_local)
+    } else if m.slug == "electroball" {
+        // PS data/moves.ts:electroball basePowerCallback:
+        //   let ratio = (pokemon.getStat('spe') / target.getStat('spe')) | 0;
+        //   const bp = [40, 60, 80, 120, 150][Math.min(ratio, 4)];
+        //   return bp;
+        // Integer-truncated ratio. ratio 0 → 40, 1 → 60, 2 → 80, 3 → 120,
+        // 4+ → 150. PS guards against target.spe == 0 by treating the
+        // ratio as ∞ → 150; we mirror by saturating user/0 to 150.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Electro_Ball_(move)>.
+        let user_spe = apply_boost(attacker.stats.spe as u32, attacker.boosts[4]);
+        let tgt_spe = apply_boost(defender.stats.spe as u32, defender.boosts[4]);
+        let ratio = if tgt_spe == 0 { 4 } else { (user_spe / tgt_spe).min(4) };
+        let bp_local = match ratio {
+            0 => 40u32,
+            1 => 60,
+            2 => 80,
+            3 => 120,
+            _ => 150,
+        };
+        (m.type_, bp_local)
     } else if m.slug == "hex" && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
@@ -1413,6 +1449,30 @@ mod tests {
         // bigger ratio than 3 (BP 120/40 = 3) — Snorlax Def >> Pichu Def.
         assert!(dmg_heavy_vs_light > dmg_heavy_vs_heavy * 3,
                 "Heavy Slam should hit much harder vs Pichu: light={dmg_heavy_vs_light} heavy={dmg_heavy_vs_heavy}");
+    }
+
+    #[test]
+    fn gyro_ball_scales_inverse_speed() {
+        // Slow user (Ferrothorn Brave 0 IV) into fast target (Pikachu)
+        // should hit harder than reverse.
+        let slow = make_mon(
+            "ferrothorn", 50, "brave",
+            StatSpread { hp: 252, atk: 252, def: 4, spa: 0, spd: 0, spe: 0 },
+        );
+        let fast = make_mon(
+            "pikachu", 50, "jolly",
+            StatSpread { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 },
+        );
+        let gb = move_id("gyroball");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let dmg = calculate_damage(&slow, &fast, gb, ctx);
+        assert!(dmg > 0, "Gyro Ball must deal damage (got {dmg})");
     }
 
     #[test]

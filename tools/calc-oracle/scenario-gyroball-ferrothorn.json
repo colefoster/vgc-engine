@@ -1,0 +1,20 @@
+{
+  "name": "gyroball_ferrothorn_into_pikachu",
+  "attacker": {
+    "species": "Shuckle",
+    "level": 50,
+    "ability": "Sturdy",
+    "item": "",
+    "nature": "Brave",
+    "evs": { "hp": 252, "atk": 252, "def": 4 }
+  },
+  "defender": {
+    "species": "Regieleki",
+    "level": 50,
+    "ability": "Transistor",
+    "nature": "Jolly",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "move": "Gyro Ball",
+  "trials": 500
+}
