@@ -393,6 +393,73 @@ pub fn calculate_damage(
             else if user_w >= tgt_w * 2 { 60 }
             else { 40 };
         (m.type_, bp as u32)
+    } else if m.slug == "risingvoltage" {
+        // PS data/moves.ts:risingvoltage
+        //   onBasePower(basePower, source, target) {
+        //     if (this.field.isTerrain('electricterrain') && target.isGrounded())
+        //       return this.chainModify(2);
+        //   }
+        // 70 → 140 BP when the TARGET is grounded under Electric Terrain.
+        // Type stays Electric. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Rising_Voltage_(move)>.
+        let boost = matches!(ctx.terrain, crate::terrain::Terrain::Electric)
+            && defender.is_grounded();
+        let bp_local = if boost { (m.base_power as u32) * 2 } else { m.base_power as u32 };
+        (m.type_, bp_local)
+    } else if m.slug == "mistyexplosion" {
+        // PS data/moves.ts:mistyexplosion
+        //   onBasePower(bp, source) {
+        //     if (this.field.isTerrain('mistyterrain') && source.isGrounded())
+        //       return this.chainModify(1.5);
+        //   }
+        // 100 → 150 BP when the USER is grounded under Misty Terrain.
+        // Self-faint after damage is handled by the Explosion family;
+        // not modelled here. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Misty_Explosion_(move)>.
+        let boost = matches!(ctx.terrain, crate::terrain::Terrain::Misty)
+            && attacker.is_grounded();
+        let bp_local = if boost { (m.base_power as u32) * 3 / 2 } else { m.base_power as u32 };
+        (m.type_, bp_local)
+    } else if m.slug == "psyblade" {
+        // PS data/moves.ts:psyblade
+        //   onBasePower(bp, source) {
+        //     if (this.field.isTerrain('electricterrain') && source.isGrounded())
+        //       return this.chainModify(1.5);
+        //   }
+        // 80 → 120 BP under Electric Terrain (user grounded). Type stays
+        // Psychic. Iron Leaves signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Psyblade_(move)>.
+        let boost = matches!(ctx.terrain, crate::terrain::Terrain::Electric)
+            && attacker.is_grounded();
+        let bp_local = if boost { (m.base_power as u32) * 3 / 2 } else { m.base_power as u32 };
+        (m.type_, bp_local)
+    } else if m.slug == "terrainpulse" {
+        // PS data/moves.ts:terrainpulse
+        //   onModifyType(move, pokemon) {
+        //     if (!pokemon.isGrounded()) return;
+        //     switch (this.field.terrain) {
+        //       case 'electricterrain': move.type = 'Electric'; break;
+        //       case 'grassyterrain':   move.type = 'Grass'; break;
+        //       case 'mistyterrain':    move.type = 'Fairy'; break;
+        //       case 'psychicterrain':  move.type = 'Psychic'; break;
+        //     }
+        //   }
+        //   onModifyMove(move, pokemon) {
+        //     if (this.field.terrain && pokemon.isGrounded()) move.basePower *= 2;
+        //   }
+        // BP 50 → 100 AND type changes to the terrain's type when the
+        // user is grounded under any terrain. None = Normal/50 BP.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Terrain_Pulse_(move)>.
+        use crate::terrain::Terrain;
+        let grounded = attacker.is_grounded();
+        let (t, bp_local) = match (grounded, ctx.terrain) {
+            (true, Terrain::Electric) => (3u8,  (m.base_power as u32) * 2),
+            (true, Terrain::Grassy)   => (4,    (m.base_power as u32) * 2),
+            (true, Terrain::Misty)    => (17,   (m.base_power as u32) * 2),
+            (true, Terrain::Psychic)  => (10,   (m.base_power as u32) * 2),
+            _ => (m.type_, m.base_power as u32),
+        };
+        (t, bp_local)
     } else if m.slug == "hex" && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
