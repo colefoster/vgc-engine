@@ -1,0 +1,11 @@
+{
+  "name": "gengar_shadowball_into_alakazam_calmmind",
+  "format": "gen9customgame",
+  "p1_team": "Gengar @ Leftovers\nAbility: Cursed Body\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 SpA / 252 Spe\nTimid Nature\nIVs: 0 Atk\n- Shadow Ball\n- Sludge Bomb\n- Thunderbolt\n- Focus Blast\n",
+  "p2_team": "Alakazam @ Leftovers\nAbility: Synchronize\nLevel: 50\nTera Type: Psychic\nEVs: 4 HP / 252 Def / 252 SpD\nCalm Nature\n- Calm Mind\n- Psychic\n- Shadow Ball\n- Recover\n",
+  "p1_action": "move 1",
+  "p2_action": "move 1",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}

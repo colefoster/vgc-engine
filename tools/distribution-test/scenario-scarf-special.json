@@ -1,0 +1,11 @@
+{
+  "name": "scarf_modest_specs_special_into_blissey",
+  "format": "gen9customgame",
+  "p1_team": "Latios @ Choice Scarf\nAbility: Levitate\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 SpA / 252 Spe\nModest Nature\nIVs: 0 Atk\n- Draco Meteor\n- Psychic\n- Surf\n- Ice Beam\n",
+  "p2_team": "Blissey @ Leftovers\nAbility: Natural Cure\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Def / 252 SpD\nCalm Nature\nIVs: 0 Atk\n- Soft-Boiled\n- Seismic Toss\n- Toxic\n- Protect\n",
+  "p1_action": "move 1",
+  "p2_action": "move 2",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}
