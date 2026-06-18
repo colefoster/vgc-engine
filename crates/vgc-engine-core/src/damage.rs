@@ -853,6 +853,40 @@ pub fn calculate_damage(
     }
     dmg = eff.apply(dmg);
 
+    // Multiscale — PS `data/abilities.ts:multiscale`
+    //   onSourceModifyDamage(damage, source, target, move) {
+    //     if (target.hp >= target.maxhp) return this.chainModify(0.5);
+    //   }
+    // Halves incoming damage when defender is at full HP. Multiscale is
+    // flagged `breakable: 1` (Mold Breaker bypasses it) — that gate is
+    // applied below via `attacker_breaks_mold`. ×0.5 = mod 2048/4096
+    // (exact, no pokeRound divergence). Dragonite signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multiscale_(Ability)>.
+    let attacker_breaks_mold = matches!(
+        attacker.effective_ability_slug(),
+        "moldbreaker" | "teravolt" | "turboblaze"
+    );
+    if defender.effective_ability_slug() == "multiscale"
+        && defender.current_hp >= defender.stats.hp
+        && !attacker_breaks_mold
+    {
+        dmg /= 2;
+    }
+
+    // Tinted Lens — PS `data/abilities.ts:tintedlens`
+    //   onModifyDamage(damage, source, target, move) {
+    //     if (target.getMoveHitData(move).typeMod < 0) return this.chainModify(2);
+    //   }
+    // Doubles damage when the move was Not Very Effective (×0.5 or ×0.25
+    // after the type chart). ×2 = mod 8192/4096 (exact). Venomoth,
+    // Sigilyph carry it. Bulbapedia:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Tinted_Lens_(Ability)>.
+    if attacker.effective_ability_slug() == "tintedlens"
+        && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
+    {
+        dmg *= 2;
+    }
+
     // Burn: physical attackers with burn deal halved damage. Guts/Facade
     // gating lands in their respective PRs.
     if physical && attacker.status == Status::Burn {
