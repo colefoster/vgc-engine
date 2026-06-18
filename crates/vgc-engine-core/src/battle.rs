@@ -1452,6 +1452,32 @@ impl Battle {
                     ((boosted_attacker.stats.spa as u32 * 2).min(u16::MAX as u32)) as u16;
             }
         }
+        // Toxic Boost / Flare Boost — PS `data/abilities.ts:toxicboost`
+        // and `:flareboost`. Toxic Boost: `onBasePower` returns
+        // `chainModify(1.5)` on physical moves while the holder has psn
+        // or tox status. Flare Boost: same on special moves while the
+        // holder has brn status. Both are flagged `breakable: 0` (not
+        // on PS's breakable list), so Mold Breaker does NOT bypass.
+        // Implemented as an Atk/SpA ×1.5 here (same path Choice Band
+        // uses) — equivalent to a BP ×1.5 in pokeRound space because the
+        // final base-damage formula is multiplicative in Atk.
+        // Conkeldurr / Zangoose / Swellow signature.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Boost_(Ability)>
+        //             <https://bulbapedia.bulbagarden.net/wiki/Flare_Boost_(Ability)>.
+        if attacker_ability_slug == "toxicboost"
+            && physical_move
+            && matches!(attacker.status, Status::Poison | Status::Toxic)
+        {
+            boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
+        if attacker_ability_slug == "flareboost"
+            && special_move
+            && matches!(attacker.status, Status::Burn)
+        {
+            boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
@@ -12040,5 +12066,104 @@ mod tests {
         assert!(seen_flinch_only, "no seed produced flinch-without-burn — {summary}");
         assert!(seen_both,
             "Fire Fang never landed BOTH burn AND flinch — secondaries are not rolling independently — {summary}");
+    }
+
+    #[test]
+    fn toxic_boost_x15_atk_on_poisoned_attacker() {
+        // Conkeldurr with Toxic Orb + Toxic Boost: once Toxic Orb fires at
+        // end of turn 1, Conkeldurr is toxic-poisoned and gains ×1.5 Atk on
+        // physical moves. Compare DrainPunch damage on turn 2 against a
+        // baseline Conkeldurr without Toxic Orb (no status). The boosted
+        // hit must deal strictly more damage.
+        let p1_json = r#"[
+            {"species":"conkeldurr","level":50,"ability":"toxicboost","item":"toxicorb","nature":"adamant","moves":["drainpunch","machpunch","knockoff","protect"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["seismictoss","softboiled","protect","sing"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        // Turn 1: both Protect to advance to end-of-turn so Toxic Orb fires.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::Toxic, "Toxic Orb sets tox at end of turn 1");
+        let bliss_hp_pre = b.p2.team[0].current_hp;
+        // Turn 2: Conkeldurr uses Mach Punch (40 BP — won't OHKO Blissey);
+        // Blissey Softboiled.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        let boosted_dmg = bliss_hp_pre.saturating_sub(b.p2.team[0].current_hp);
+
+        // Baseline: Conkeldurr with Leftovers (no status). Same seed.
+        let p1b_json = r#"[
+            {"species":"conkeldurr","level":50,"ability":"toxicboost","item":"leftovers","nature":"adamant","moves":["drainpunch","machpunch","knockoff","protect"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p1b = TeamBuilder::from_json(p1b_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1b, p2b);
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b2.p1.team[0].status, Status::None, "no Toxic Orb → no status");
+        let bliss_hp_pre2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        let baseline_dmg = bliss_hp_pre2.saturating_sub(b2.p2.team[0].current_hp);
+
+        assert!(
+            boosted_dmg > baseline_dmg,
+            "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
+        );
+    }
+
+    #[test]
+    fn flare_boost_x15_spa_on_burned_attacker() {
+        // Heatran (Fire/Steel — burn-immune wouldn't apply but we don't
+        // need self-burn here; we use a non-Fire SpA attacker that PS
+        // allows to carry Flare Boost via ability override). Choose
+        // Drifblim (HA = Flare Boost) and confirm the multiplier triggers
+        // on a Shadow Ball into Snorlax. Manually set Burn so the test
+        // isn't gated on Flame Orb timing.
+        let p1_json = r#"[
+            {"species":"drifblim","level":50,"ability":"flareboost","item":"leftovers","nature":"modest","moves":["shadowball","airslash","substitute","protect"],"evs":{"spa":252,"hp":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"leftovers","nature":"careful","moves":["earthquake","dragonclaw","stoneedge","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        b.p1.team[0].status = Status::Burn;
+        let hp_pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let boosted_dmg = hp_pre.saturating_sub(b.p2.team[0].current_hp);
+
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1b, p2b);
+        // No status set → no Flare Boost.
+        let hp_pre2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let baseline_dmg = hp_pre2.saturating_sub(b2.p2.team[0].current_hp);
+
+        assert!(boosted_dmg > 0, "Shadow Ball must land (boosted={boosted_dmg})");
+        assert!(
+            boosted_dmg > baseline_dmg,
+            "Flare Boost should raise Shadow Ball damage: boosted={boosted_dmg} baseline={baseline_dmg}",
+        );
     }
 }
