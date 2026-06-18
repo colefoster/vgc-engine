@@ -622,6 +622,41 @@ pub fn calculate_damage(
         }
     }
 
+    // Carrier-locked orbs. PS `data/items.ts`:
+    //   adamantorb  → Dialga,  boosts Dragon + Steel
+    //   lustrousorb → Palkia,  boosts Dragon + Water
+    //   griseousorb → Giratina, boosts Dragon + Ghost (any forme)
+    //   souldew (gen 7+) → Latias / Latios, boosts Dragon + Psychic
+    // Each handler:
+    //   onBasePower(bp, user, target, move) {
+    //     if (user.baseSpecies.name === '<Carrier>' &&
+    //         (move.type === 'Dragon' || move.type === '<OtherType>'))
+    //       return this.chainModify([4915, 4096]);
+    //   }
+    // ×1.2 BP, same shape as the type plates above. Carrier check uses
+    // PS's `baseSpecies.name`, which for orbs is the dex species — for
+    // Giratina that covers both Altered and Origin formes. We approximate
+    // by matching the species slug prefix. None of these orbs is
+    // breakable; Mold Breaker does NOT bypass. Bulbapedia hub:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Adamant_Orb>.
+    if attacker.item_id != u16::MAX {
+        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
+        let species_slug = attacker.species().slug;
+        // (item, carrier prefix, secondary boosted type — Dragon=14 is always one).
+        let orb_match = match item_slug {
+            "adamantorb"  => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
+            "lustrousorb" => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
+            "griseousorb" => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
+            "souldew"     => (species_slug.starts_with("latias")
+                              || species_slug.starts_with("latios"))
+                              && (move_type == 14 || move_type == 10),
+            _ => false,
+        };
+        if orb_match {
+            bp = (bp * 4915 + 2047) / 4096;
+        }
+    }
+
     // Punk Rock — PS `data/abilities.ts:punkrock`:
     //   onBasePower(basePower, attacker, defender, move) {
     //     if (move.flags['sound']) return this.chainModify([5325, 4096]);
