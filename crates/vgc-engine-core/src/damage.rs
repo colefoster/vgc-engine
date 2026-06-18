@@ -739,6 +739,23 @@ pub fn calculate_damage(
         a = (a / 2).max(1);
     }
 
+    // Dry Skin — PS data/abilities.ts:dryskin:
+    //   onSourceBasePower(basePower, attacker, defender, move) {
+    //     if (move.type === 'Fire') return this.chainModify([5120, 4096]);
+    //   }
+    // ×1.25 incoming damage from Fire moves. Flagged `breakable: 1` so
+    // Mold Breaker bypasses. We apply the bump on the attacker's
+    // effective stat (same path Heatproof uses for its ×0.5) which is
+    // mathematically equivalent — base-damage is linear in A. PokeRound
+    // 5120/4096 = 1.25 exactly.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
+    if move_type == 1
+        && !attacker_breaks_mold_for_offense
+        && defender.effective_ability_slug() == "dryskin"
+    {
+        a = (a * 5120 / 4096).max(1);
+    }
+
     let level = attacker.level as u32;
     // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2
     let level_factor = (2 * level / 5) + 2;

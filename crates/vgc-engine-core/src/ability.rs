@@ -435,6 +435,44 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
+
+    // Dry Skin — PS data/abilities.ts:dryskin onWeather:
+    //   if (effect.id === 'raindance' || effect.id === 'primordialsea')
+    //     this.heal(target.baseMaxhp / 8);
+    //   if (effect.id === 'sunnyday' || effect.id === 'desolateland')
+    //     this.damage(target.baseMaxhp / 8, target, target);
+    // 1/8 max HP heal under Rain, 1/8 chip under Sun. The Sun chip is
+    // routed through PS `damage()` → Magic Guard blocks it. The heal
+    // is unblockable (Magic Guard only affects damage). Toxicroak /
+    // Croagunk / Parasect.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
+    if slug == "dryskin" {
+        match battle.weather {
+            crate::weather::Weather::Rain => {
+                if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                    let heal = (m.stats.hp / 8).max(1);
+                    m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                }
+            }
+            crate::weather::Weather::Sun => {
+                let mg = battle
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .map(has_magic_guard)
+                    .unwrap_or(false);
+                if !mg {
+                    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                        let chip = (m.stats.hp / 8).max(1);
+                        m.current_hp = m.current_hp.saturating_sub(chip);
+                        if m.current_hp == 0 {
+                            m.fainted = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Defender ability `onDamagingHit` — runs after a damaging move has
