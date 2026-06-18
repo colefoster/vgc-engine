@@ -172,6 +172,10 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 crate::ability::on_switch_in(&mut b, side, slot);
+                // Item on-start hook (White Herb cleanup, ...). Runs
+                // after the ability so Intimidate's atk drop is seen
+                // and rebounded by White Herb in the SAME switch-in.
+                crate::item::on_switch_in(&mut b, side, slot);
             }
         }
         b
@@ -2365,6 +2369,8 @@ impl Battle {
                     a.boosts[idx as usize] = (a.boosts[idx as usize] + delta).clamp(-6, 6);
                 }
             }
+            // White Herb consumes itself to restore negative stages.
+            crate::item::try_consume_white_herb(self, actor_side, actor_slot);
         }
 
         // Move recoil — Flare Blitz / Wild Charge / Brave Bird /
@@ -3472,6 +3478,7 @@ impl Battle {
                         t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
                         t.boosts[2] = (t.boosts[2] - 1).clamp(-6, 6);
                     }
+                    crate::item::try_consume_white_herb(self, opp, slot);
                     crate::ability::react_to_opposing_stat_drop(self, opp, slot);
                     dropped_any = true;
                     // PS targets a single mon ("normal"); pick the first
@@ -3653,6 +3660,7 @@ impl Battle {
                     if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
                         t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
                     }
+                    crate::item::try_consume_white_herb(self, opp, ts);
                 }
             }
             "rest" => {
@@ -4050,6 +4058,7 @@ fn apply_secondary_effect(
                     let stage = &mut t.boosts[idx as usize];
                     *stage = (*stage + delta).clamp(-6, 6);
                 }
+                crate::item::try_consume_white_herb(battle, target_side, target_slot);
             }
         }
     }
@@ -7092,6 +7101,45 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn white_herb_clears_intimidate_drop_on_switch_in() {
+        // PS data/items.ts:whiteherb — onUpdate after Intimidate's atk
+        // drop. Holder restores Atk to 0 and consumes the herb (sentinel
+        // u16::MAX).
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"whiteherb","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], 0, "White Herb restored Atk to 0");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_clears_self_drop_overheat() {
+        // Overheat self-drops SpA -2. White Herb on the user consumes
+        // and restores to 0.
+        let p1_json = r#"[
+            {"species":"heatran","level":50,"ability":"flashfire","item":"whiteherb","nature":"modest","moves":["overheat","earthpower","flashcannon","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Pikachu uses feint
+        );
+        assert_eq!(b.p1.team[0].boosts[2], 0, "White Herb restored SpA after Overheat");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "White Herb consumed");
     }
 
     #[test]

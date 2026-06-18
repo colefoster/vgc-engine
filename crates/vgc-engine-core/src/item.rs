@@ -202,9 +202,47 @@ pub fn on_damaging_hit(
 ///
 /// Currently a no-op stub so callers wire correctly. Per-item arms
 /// land additively.
-pub fn on_switch_in(_battle: &mut Battle, _side: SideRef, _slot: u8) {
-    // Intentionally empty for now. See doc-comment for the PS-canonical
-    // item `onStart` set this hook will service.
+pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
+    // White Herb — PS `data/items.ts:whiteherb`
+    //   onUpdate(pokemon) {
+    //     let activate = false;
+    //     for (let i in pokemon.boosts) {
+    //       if (pokemon.boosts[i] < 0) { activate = true; pokemon.boosts[i] = 0; }
+    //     }
+    //     if (activate && pokemon.useItem()) { ... }
+    //   }
+    // PS runs this on every Update event (not just switch-in) — for the
+    // engine we land it on switch-in and after each stat-drop site
+    // (see `try_consume_white_herb` below). Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/White_Herb>.
+    try_consume_white_herb(battle, side, slot);
+}
+
+/// Run the White Herb check on a single active mon. If holder has
+/// `whiteherb` AND any of `boosts[0..7]` is negative, zero those entries
+/// and consume the item (sentinel `u16::MAX`). Idempotent if no negative
+/// stages are present. Should be called immediately AFTER any code path
+/// that lowers `boosts[i]`.
+pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
+    let holder_slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => item_slug(m.item_id),
+        _ => return,
+    };
+    if holder_slug != "whiteherb" {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        let mut any_neg = false;
+        for i in 0..m.boosts.len() {
+            if m.boosts[i] < 0 {
+                any_neg = true;
+                m.boosts[i] = 0;
+            }
+        }
+        if any_neg {
+            m.item_id = u16::MAX;
+        }
+    }
 }
 
 /// End-of-turn item residual: heals / damage from held items.
