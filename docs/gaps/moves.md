@@ -6,9 +6,9 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 30 |
+| shipped | 31 |
 | partial | 5 |
-| not implemented | 4 |
+| not implemented | 3 |
 | deferred / no-effect | 0 |
 
 ## Conditional BP
@@ -139,7 +139,9 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **What it is**: Damaging move against a foe; on an ally it heals 50% max HP. Listed under healing in systems.md but flagged here for slug-level dispatch.
 
-**Status**: not implemented. (Slug absent from engine.)
+**Status**: shipped — PR-54. Slug-keyed branch in the per-target
+resolution loop: ally target → heal 50% of ally's max HP and skip
+damage; foe target → standard damage path. Heal Block gate deferred.
 
 ### Strength Sap, Pain Split, Endeavor
 

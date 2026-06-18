@@ -1548,6 +1548,30 @@ impl Battle {
                 _ => continue,
             };
 
+            // Pollen Puff — PS data/moves.ts:pollenpuff.
+            //   onTryHit(target, source) {
+            //     if (source.isAlly(target)) {
+            //       move.basePower = 0;
+            //       move.heal = [1, 2];
+            //     }
+            //   }
+            // When the chosen target is an adjacent ally, the move
+            // heals 50% of the ally's max HP (rounded down) and deals
+            // no damage. We branch here as a slug-special-case to keep
+            // the per-target damage path untouched. Heal Block does
+            // NOT block this in our model (deferred); PS gates via
+            // `onTryHeal`.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pollen_Puff_(move)>.
+            if m.slug == "pollenpuff" && tside == actor_side && tslot != actor_slot {
+                if let Some(ally) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    if ally.is_alive() && ally.current_hp < ally.stats.hp {
+                        let heal = (ally.stats.hp / 2).max(1);
+                        ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
+                    }
+                }
+                continue;
+            }
+
             // Semi-invulnerable defender: dodge unless the incoming move
             // is in the per-state hit-through list. PS
             // `data/moves.ts:fly/dig/dive/bounce/phantomforce/shadowforce`
@@ -13746,6 +13770,61 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
         assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
+
+    #[test]
+    fn pollen_puff_heals_ally_in_doubles() {
+        // Doubles: P1 slot 0 uses Pollen Puff on its ally (P1 slot 1)
+        // which sits at half HP. Ally should heal 50% of max HP.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"leftovers","nature":"timid","moves":["pollenpuff","shadowball","focusblast","dazzlinggleam"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        let ally_max = b.p1.team[1].stats.hp;
+        b.p1.team[1].current_hp = ally_max / 2;
+        let before = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let expected_heal = (ally_max / 2).max(1);
+        assert_eq!(
+            b.p1.team[1].current_hp,
+            (before + expected_heal).min(ally_max),
+            "Pollen Puff must heal ally 50% of max HP"
+        );
+    }
+
+    #[test]
+    fn pollen_puff_damages_foe_normally() {
+        // Sanity: Pollen Puff aimed at a foe is a normal 90-BP Bug
+        // special move. Singles fixture is fine.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"leftovers","nature":"timid","moves":["pollenpuff","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"impish","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let chomp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < chomp_before,
+                "Pollen Puff must damage a foe");
     }
 
     #[test]
