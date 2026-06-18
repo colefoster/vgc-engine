@@ -2,6 +2,15 @@
 
 Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_switch_in`, `on_switch_out`, `on_damaging_hit`, `react_to_opposing_stat_drop`, BP-modifier scans in `damage.rs`). Most additions are a `match` arm.
 
+## Headline counts (post PR-276)
+
+| Status | Count |
+| --- | --- |
+| shipped | 45 |
+| partial | 5 |
+| not implemented | 43 |
+| deferred / no-effect | 1 (Frisk) |
+
 ## Damage modifiers (attacker side)
 
 ### Adaptability
@@ -80,7 +89,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: In Sun, SpA ×1.5 but takes 1/8 max HP per turn.
 
-**Status**: not implemented.
+**Status**: shipped — PR-251.
 
 ### Swift Swim / Chlorophyll / Sand Rush / Slush Rush
 
@@ -100,7 +109,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Atk ×1.5 while poisoned; SpA ×1.5 while burned.
 
-**Status**: not implemented.
+**Status**: shipped — PR-259.
 
 ### Reckless
 
@@ -118,7 +127,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Super-effective damage taken ×0.75. Prism Armor (Necrozma) additionally bypasses Mold Breaker.
 
-**Status**: not implemented.
+**Status**: shipped — PR-242.
 
 ### Multiscale / Shadow Shield
 
@@ -126,37 +135,37 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Multiscale Dragonite / Dragapult (uncommon but seen).
 
-**Status**: not implemented.
+**Status**: partial — PR-240. Multiscale damage halve shipped; Shadow Shield Mold-Breaker bypass not yet wired (shadowshield slug absent).
 
 ### Fluffy
 
 **What it is**: Contact damage taken ×0.5; Fire damage taken ×2.
 
-**Status**: not implemented.
+**Status**: shipped — PR-252.
 
 ### Heatproof / Water Bubble
 
 **What it is**: Heatproof: Fire damage ×0.5 AND burn damage ×0.5. Water Bubble: Water moves taken ×0.5 AND Water moves used ×2 AND burn immunity.
 
-**Status**: not implemented.
+**Status**: shipped — Heatproof PR-253, Water Bubble PR-245.
 
 ### Dry Skin
 
 **What it is**: Fire ×1.25 damage taken, Water immunity + 1/4 heal, Sun damage 1/8 per turn, Rain heal 1/8 per turn.
 
-**Status**: not implemented.
+**Status**: shipped — PR-260.
 
 ### Punk Rock
 
 **What it is**: Sound moves ×1.3 BP when used; sound moves taken ×0.5.
 
-**Status**: not implemented.
+**Status**: shipped — PR-255.
 
 ### Ice Scales
 
 **What it is**: Special damage taken ×0.5.
 
-**Status**: not implemented.
+**Status**: shipped — PR-254.
 
 ### Thick Fat
 
@@ -172,7 +181,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Fire-immune; on Fire hit, sets a flag that boosts the user's own Fire moves by ×1.5 thereafter.
 
-**Status**: not implemented.
+**Status**: shipped — PR-243.
 
 ### Lightning Rod / Storm Drain
 
@@ -182,7 +191,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Target redirection for doubles (PR-90 added Rage Powder / Follow Me redirect — generalize).
 
-**Status**: not implemented.
+**Status**: shipped — PR-244.
 
 ### Motor Drive
 
@@ -216,7 +225,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: `DamageContext` field added per PR-58 for Aura mons — same scan pattern.
 
-**Status**: not implemented.
+**Status**: shipped — PR-247.
 
 ### Embody Aspect (Ogerpon)
 
@@ -224,7 +233,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Tera system + Ogerpon-mask item taxonomy.
 
-**Status**: not implemented.
+**Status**: shipped — PR-186.
 
 ## On-hit / on-damage triggers
 
@@ -234,7 +243,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Klawf signature, niche corpus presence.
 
-**Status**: not implemented.
+**Status**: shipped — PR-261.
 
 ### Anger Point
 
@@ -242,25 +251,25 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Per-source crit tracking (currently `on_damaging_hit` doesn't pass crit flag).
 
-**Status**: not implemented.
+**Status**: shipped — PR-257.
 
 ### Berserk
 
 **What it is**: When current HP crosses below 50% from a hit, +1 SpA.
 
-**Status**: not implemented.
+**Status**: shipped — PR-258.
 
 ### Justified
 
 **What it is**: +1 Atk on Dark hit received.
 
-**Status**: not implemented.
+**Status**: shipped — PR-262.
 
 ### Rattled
 
 **What it is**: +1 Spe on Bug / Ghost / Dark hit received; also +1 Spe on Intimidate received.
 
-**Status**: not implemented.
+**Status**: partial — PR-262. Bug/Ghost/Dark hit branch shipped; Intimidate-trigger branch not yet wired.
 
 ### Steam Engine
 
@@ -388,7 +397,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Atk cannot be lowered by foe.
 
-**Status**: not implemented.
+**Status**: shipped — bundled in the Clear-Body family stat-drop block (ability.rs:84).
 
 ### Big Pecks
 
@@ -400,25 +409,25 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Acc cannot be lowered by foe. Also ignores target Eva.
 
-**Status**: not implemented.
+**Status**: partial — Intimidate-immune list covers Keen Eye? No — only Acc-drop block missing; Eva ignore not wired. Mark as not implemented for the specific Acc/Eva mechanics; needs audit.
 
 ### Clear Body / White Smoke / Full Metal Body
 
 **What it is**: All stats cannot be lowered by foe. Full Metal Body (Solgaleo) bypasses Mold Breaker.
 
-**Status**: not implemented.
+**Status**: shipped — ability.rs:66 / 84. Full Metal Body Mold-Breaker bypass implicit (slug listed in stat-drop block independently).
 
 ### Inner Focus / Vital Spirit / Insomnia
 
 **What it is**: Inner Focus: cannot be flinched + Intimidate immune. Vital Spirit: cannot be put to sleep + Intimidate immune. Insomnia: cannot be put to sleep.
 
-**Status**: not implemented.
+**Status**: partial — Intimidate-immunity branch shipped for Inner Focus / Own Tempo / Oblivious / Scrappy (ability.rs:84-92); Vital Spirit / Insomnia sleep-immune and Inner Focus flinch-immune still not implemented.
 
 ### Own Tempo
 
 **What it is**: Cannot be confused + Intimidate immune.
 
-**Status**: not implemented.
+**Status**: partial — Intimidate-immune branch shipped (ability.rs:89); confusion-immunity not yet implemented.
 
 ### Sweet Veil
 
@@ -592,7 +601,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: 30% chance on contact hit received to inflict random psn / par / slp.
 
-**Status**: not implemented.
+**Status**: shipped — PR-223.
 
 ### Poison Touch
 
@@ -641,3 +650,37 @@ For maintenance, the following abilities are implemented (Phase 2 PRs 1-98):
 - Prankster (PR-29)
 - Speed Boost (PR-21)
 - Reckless (PR-86)
+- Adaptability (PR-119)
+- Supreme Overlord (PR-120)
+- Tough Claws (PR-121)
+- Strong Jaw (PR-122)
+- Mega Launcher (PR-123)
+- Iron Fist (PR-124)
+- Sniper (PR-125)
+- Swift Swim / Chlorophyll / Sand Rush / Slush Rush (PR-126)
+- Sand Force (PR-127)
+- Sap Sipper (PR-128)
+- Motor Drive (PR-129)
+- Volt Absorb / Water Absorb / Earth Eater (PR-130 / PR-131 / PR-132)
+- Tera Shell (PR-185)
+- Embody Aspect / Ogerpon (PR-186)
+- Multiscale + Tinted Lens (PR-240)
+- Psychic / Grassy / Misty Surge (PR-241)
+- Filter / Solid Rock / Prism Armor (PR-242)
+- Flash Fire (PR-243)
+- Lightning Rod / Storm Drain (PR-244)
+- Water Bubble (PR-245)
+- Beads / Sword / Tablets / Vessel of Ruin (PR-247)
+- Solar Power (PR-251)
+- Fluffy (PR-252)
+- Heatproof (PR-253)
+- Ice Scales (PR-254)
+- Punk Rock (PR-255)
+- Anger Point (PR-257)
+- Berserk (PR-258)
+- Toxic Boost / Flare Boost (PR-259)
+- Dry Skin (PR-260)
+- Anger Shell (PR-261)
+- Justified / Rattled (Bug/Ghost/Dark branch) (PR-262)
+- Effect Spore (PR-223)
+- Clear Body / White Smoke / Full Metal Body / Hyper Cutter / Inner Focus (Intimidate-immune subset) / Own Tempo / Oblivious / Scrappy stat-drop block (ability.rs:66-92)
