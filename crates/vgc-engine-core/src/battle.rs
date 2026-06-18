@@ -732,6 +732,7 @@ impl Battle {
         // Guard is the only ability that blocks Stealth Rock and gets
         // checked at damage time.
         self.apply_stealth_rock_to(side, actor_slot);
+        self.apply_toxic_spikes_to(side, actor_slot);
         true
     }
 
@@ -795,6 +796,69 @@ impl Battle {
             if m.current_hp == 0 {
                 m.fainted = true;
             }
+        }
+    }
+
+    /// Toxic Spikes poison on switch-in. PS data/moves.ts:toxicspikes
+    /// `condition.onSwitchIn`:
+    ///   if (!pokemon.isGrounded()) return;        // airborne: no effect
+    ///   if (pokemon.hasType('Poison')) {          // absorb every layer
+    ///     pokemon.side.removeSideCondition('toxicspikes');
+    ///   } else if (pokemon.hasType('Steel') || pokemon.hasItem('heavydutyboots')) {
+    ///     // do nothing
+    ///   } else if (layers >= 2) {
+    ///     pokemon.trySetStatus('tox', ...);
+    ///   } else {
+    ///     pokemon.trySetStatus('psn', ...);
+    ///   }
+    /// The Poison-absorb check precedes the Steel / Boots / status
+    /// arms, so a grounded Poison-type clears the hazard even with
+    /// Heavy-Duty Boots; an airborne mon never absorbs. Type immunity /
+    /// ability blocks (Immunity, Safeguard) ride through `try_set_status`.
+    fn apply_toxic_spikes_to(&mut self, side: SideRef, slot: u8) {
+        if self.side(side).conditions.toxic_spikes_layers == 0 {
+            return;
+        }
+        // Poison index = 7, Steel index = 16 per build.rs TYPE_NAMES order.
+        enum Outcome {
+            None,
+            Absorb,
+            Poison,
+            Toxic,
+        }
+        let outcome = {
+            let mon = match self.side(side).active_mon(slot as usize) {
+                Some(m) if m.is_alive() => m,
+                _ => return,
+            };
+            if !mon.is_grounded() {
+                Outcome::None
+            } else {
+                let (types, num) = mon.effective_types();
+                let has_type = |t: u8| (0..num as usize).any(|i| types[i] == t);
+                let item_slug = if mon.item_id == u16::MAX {
+                    ""
+                } else {
+                    data::ITEMS[mon.item_id as usize].slug
+                };
+                if has_type(7) {
+                    Outcome::Absorb
+                } else if has_type(16) || item_slug == "heavydutyboots" {
+                    Outcome::None
+                } else if self.side(side).conditions.toxic_spikes_layers >= 2 {
+                    Outcome::Toxic
+                } else {
+                    Outcome::Poison
+                }
+            }
+        };
+        match outcome {
+            Outcome::None => {}
+            Outcome::Absorb => {
+                self.side_mut(side).conditions.toxic_spikes_layers = 0;
+            }
+            Outcome::Poison => self.try_set_status(side, slot, Status::Poison),
+            Outcome::Toxic => self.try_set_status(side, slot, Status::Toxic),
         }
     }
 
@@ -4077,6 +4141,19 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stealth_Rock_(move)>
                 let opp = actor_side.opposing();
                 self.side_mut(opp).conditions.stealth_rock = true;
+            }
+            "toxicspikes" => {
+                // PS data/moves.ts:toxicspikes — `sideCondition` on the
+                // foe side, `effectState.layers` caps at 2 (onSideRestart
+                // returns false once 2 layers are down). Poison-on-switch-in
+                // happens at `apply_toxic_spikes_to`, not here.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Spikes_(move)>
+                let opp = actor_side.opposing();
+                let layers = &mut self.side_mut(opp).conditions.toxic_spikes_layers;
+                if *layers < 2 {
+                    *layers += 1;
+                }
             }
             "encore" => {
                 // Locks the first alive opposing target into its last-
@@ -12831,6 +12908,113 @@ mod tests {
             charizard_max - expected_dmg,
             "Charizard takes 1/2 SR chip (4x weak)",
         );
+    }
+
+    #[test]
+    fn toxic_spikes_layers_poison_and_toxic_on_switchin() {
+        // PS data/moves.ts:toxicspikes — 1 layer poisons a grounded
+        // non-immune switch-in, 2 layers badly-poison it. Garchomp
+        // (Dragon/Ground) is grounded and neither Poison nor Steel.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["toxicspikes","scald","recover","haze"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        // --- 1 layer → regular poison.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 1, "1 layer down");
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(matches!(b.p2.team[1].status, Status::Poison), "1 layer → regular poison");
+
+        // --- 2 layers → badly poisoned (toxic).
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..2 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 2, "2 layers down (capped)");
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(matches!(b.p2.team[1].status, Status::Toxic), "2 layers → badly poisoned");
+        // Counter starts at 1 on apply, then the end-of-turn toxic DOT
+        // bumps it to 2 on the same switch-in turn.
+        assert!(b.p2.team[1].toxic_counter() >= 1, "toxic counter active");
+    }
+
+    #[test]
+    fn toxic_spikes_grounded_poison_type_absorbs() {
+        // A grounded Poison-type clears every layer and is not poisoned.
+        // Nidoking (Poison/Ground) is grounded.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["toxicspikes","scald","recover","haze"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]},
+            {"species":"nidoking","level":50,"ability":"sheerforce","nature":"timid","moves":["earthpower","sludgewave","icebeam","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..2 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 2, "2 layers down");
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 0, "Poison-type absorbed the hazard");
+        assert!(matches!(b.p2.team[1].status, Status::None), "absorber takes no status");
+    }
+
+    #[test]
+    fn toxic_spikes_steel_and_airborne_unaffected() {
+        // Steel-types ignore Toxic Spikes (no status, layers stay);
+        // airborne mons (Flying / Levitate) likewise take nothing and do
+        // NOT absorb. Corviknight (Flying/Steel) is both — it stays
+        // clean and leaves the hazard intact.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["toxicspikes","scald","recover","haze"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..2 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(matches!(b.p2.team[1].status, Status::None), "Steel/Flying mon takes no status");
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 2, "layers untouched (no absorb)");
     }
 
     #[test]

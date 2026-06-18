@@ -84,6 +84,15 @@ pub struct SideConditions {
     /// (-6..6). Cleared by Defog / Rapid Spin / Tidy Up / Court Change
     /// / Mortal Spin in later PRs.
     pub stealth_rock: bool,
+    /// Toxic Spikes hazard layer count on this side (0 = none, 1, 2).
+    /// PS data/moves.ts:toxicspikes sets a `foeSide` `sideCondition`
+    /// whose `effectState.layers` caps at 2. On switch-in a grounded
+    /// non-immune mon is poisoned (1 layer) or badly poisoned (2
+    /// layers); a grounded Poison-type absorbs and clears every layer;
+    /// Steel-types and Heavy-Duty Boots holders are unaffected.
+    /// Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
+    /// Mortal Spin in later PRs.
+    pub toxic_spikes_layers: u8,
     /// True once this side has used Terastallize this battle. Gen-9
     /// rule: at most one mon per side may Terastallize per battle.
     /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
