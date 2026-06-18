@@ -3941,6 +3941,27 @@ fn apply_secondary_effect(
     move_slug: &str,
     rng: &mut Rng,
 ) {
+    // Covert Cloak — PS `data/items.ts:covertcloak`:
+    //   onModifySecondaries(secondaries, target, source, move) {
+    //     return secondaries.filter(s => !!s.self);
+    //   }
+    // Strips every secondary that targets the defender (flinch, status,
+    // stat drops); self-targeted secondaries (e.g. Power-Up Punch's +1
+    // Atk on the user) pass through. All entries in our secondary tables
+    // (status_secondary / flinch_chance / stat_drop_secondary / Tri Attack
+    // / Dire Claw) target the defender, so the gate is total here.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Covert_Cloak>.
+    let defender_has_covert_cloak = battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .map(|m| {
+            m.is_alive() && m.item_id != u16::MAX
+                && data::ITEMS[m.item_id as usize].slug == "covertcloak"
+        })
+        .unwrap_or(false);
+    if defender_has_covert_cloak {
+        return;
+    }
     // PS rolls each secondary independently — a move can in principle
     // have multiple (none currently in our table, but the structure
     // tolerates it).
@@ -12161,6 +12182,41 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn covert_cloak_blocks_secondary_status() {
+        // Volcarona uses Flamethrower (10% burn) into a Covert Cloak holder.
+        // Across many trials with Covert Cloak, burn should NEVER land; the
+        // baseline (Leftovers) should land it at least once.
+        let mk = |item: &str| -> u32 {
+            let p1_json = r#"[
+                {"species":"volcarona","level":50,"ability":"flamebody","item":"choicespecs","nature":"timid","moves":["flamethrower","bugbuzz","quiverdance","protect"]}
+            ]"#;
+            let p2_json = format!(r#"[
+                {{"species":"chansey","level":50,"ability":"naturalcure","item":"{item}","nature":"calm","moves":["seismictoss","softboiled","protect","sing"]}}
+            ]"#);
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+            let mut burns = 0u32;
+            for seed in 0..200u64 {
+                let p1c = p1.clone();
+                let p2c = p2.clone();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1c, p2c);
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Pass { actor_slot: 0 }],
+                );
+                if matches!(b.p2.team[0].status, Status::Burn) {
+                    burns += 1;
+                }
+            }
+            burns
+        };
+        let baseline = mk("leftovers");
+        let cloaked = mk("covertcloak");
+        assert!(baseline > 0, "control: at least one burn must land across 200 trials (got {baseline})");
+        assert_eq!(cloaked, 0, "Covert Cloak must block every burn proc (got {cloaked})");
     }
 
     #[test]
