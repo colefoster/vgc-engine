@@ -2631,18 +2631,41 @@ impl Battle {
             let target_alive = self.side(opp).active_mon(slot as usize)
                 .is_some_and(|m| m.is_alive());
             if !target_alive { continue; }
-            if is_powder {
-                let grass = self.side(opp).active_mon(slot as usize)
-                    .map(|m| {
-                        let s = m.species();
-                        (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
-                    })
-                    .unwrap_or(false);
-                if grass { return; }
+            if is_powder && self.target_is_powder_immune(opp, slot) {
+                return;
             }
             self.try_set_status(opp, slot, Status::Sleep);
             return;
         }
+    }
+
+    /// Powder-move immunity gate. Mirrors PS's powder-move runtime check
+    /// (`data/moves.ts` `flags.powder`): Grass-type targets, Overcoat
+    /// holders, and Safety Goggles holders are immune. Used by powder
+    /// status moves (Spore, Sleep Powder, Poison Powder, Stun Spore,
+    /// Cotton Spore, Sweet Scent) — those that exist in the engine.
+    /// Safety Goggles — PS `data/items.ts:safetygoggles`:
+    ///   `onTryHit(pokemon, source, move) { if (move.flags['powder']) return null; }`
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
+    fn target_is_powder_immune(&self, side: SideRef, slot: u8) -> bool {
+        let m = match self.side(side).active_mon(slot as usize) {
+            Some(m) => m,
+            None => return false,
+        };
+        // Grass-type immunity (existing rule).
+        let s = m.species();
+        if (0..s.num_types as usize).any(|i| s.types[i] == 4) {
+            return true;
+        }
+        // Safety Goggles (held item) and Overcoat (ability) bypass.
+        let item_slug = if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug };
+        if item_slug == "safetygoggles" {
+            return true;
+        }
+        if m.effective_ability_slug() == "overcoat" {
+            return true;
+        }
+        false
     }
 
     /// Apply a status to the first alive opposing active mon, respecting
@@ -2816,8 +2839,20 @@ impl Battle {
                                 } else {
                                     data::ABILITIES[m.ability_id as usize].slug
                                 };
+                                let item_slug = if m.item_id == u16::MAX {
+                                    ""
+                                } else {
+                                    data::ITEMS[m.item_id as usize].slug
+                                };
+                                // Safety Goggles — PS `data/items.ts:safetygoggles`
+                                // `onImmunity('sandstorm')` returns false → no chip.
+                                // Overcoat — PS `data/abilities.ts:overcoat`
+                                // same `onImmunity` block. Bulbapedia:
+                                // <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
                                 if matches!(ability_slug,
-                                    "sandforce" | "sandrush" | "sandveil") {
+                                    "sandforce" | "sandrush" | "sandveil" | "overcoat")
+                                    || item_slug == "safetygoggles"
+                                {
                                     true
                                 } else {
                                     let species = m.species();
@@ -3387,7 +3422,17 @@ impl Battle {
             }
             "poisonpowder" => {
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_status_to_opposing(actor_side, Status::Poison);
+                // Powder gate: Grass / Overcoat / Safety Goggles.
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                for slot in 0..n {
+                    let alive = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.is_alive());
+                    if !alive { continue; }
+                    if self.target_is_powder_immune(opp, slot) { return; }
+                    self.try_set_status(opp, slot, Status::Poison);
+                    return;
+                }
             }
             "partingshot" => {
                 // Parting Shot — PS data/moves.ts:partingshot:13171.
@@ -7026,6 +7071,48 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn safety_goggles_blocks_spore() {
+        // PS data/items.ts:safetygoggles — onTryHit returns null for any
+        // move with flags.powder. Holder is non-Grass to isolate the item.
+        let p1_json = r#"[
+            {"species":"amoonguss","level":50,"ability":"effectspore","nature":"calm","moves":["spore","gigadrain","sludgebomb","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"safetygoggles","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None), "Safety Goggles blocks Spore");
+    }
+
+    #[test]
+    fn safety_goggles_blocks_sandstorm_chip() {
+        // PS data/items.ts:safetygoggles — onImmunity('sandstorm') returns
+        // false. Holder takes no Sand chip damage.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","nature":"adamant","moves":["crunch","stoneedge","earthquake","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"safetygoggles","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        let pre_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Protect
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Feint (irrelevant)
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre_hp, "Safety Goggles blocks Sand chip");
     }
 
     #[test]
