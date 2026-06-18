@@ -443,6 +443,16 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
         }
     }
+    // Natural Cure — PS `data/abilities.ts:naturalcure`:
+    //   onCheckShow / onSwitchOut(pokemon) { pokemon.setStatus(''); }
+    // Clears any persistent status on switch-out. Blissey / Stantler /
+    // Celebi signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Natural_Cure_(Ability)>.
+    if slug == "naturalcure" {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.status = crate::pokemon::Status::None;
+        }
+    }
 }
 
 /// Run end-of-turn ability residual hooks for one active slot.
@@ -451,11 +461,53 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
 /// from `Battle::resolve_end_of_turn` after item residuals, status DOT,
 /// and weather damage — the relative order matches PS (item order ≈ 5,
 /// status ≈ 9, speedboost = 28).
-pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
+pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
     let (slug, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn()),
         _ => return,
     };
+
+    // Shed Skin — PS `data/abilities.ts:shedskin`:
+    //   onResidualOrder: 5, onResidualSubOrder: 4,
+    //   onResidual(pokemon) {
+    //     if (pokemon.hp && pokemon.status && this.randomChance(33, 100))
+    //       pokemon.cureStatus();
+    //   }
+    // 33% chance per turn to cure persistent status. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Shed_Skin_(Ability)>.
+    if slug == "shedskin" {
+        let statused = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .map(|m| !matches!(m.status, crate::pokemon::Status::None))
+            .unwrap_or(false);
+        if statused {
+            // Use percent_1_100: 1..=33 → cure.
+            if rng.percent_1_100() <= 33 {
+                if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                    m.status = crate::pokemon::Status::None;
+                }
+            }
+        }
+    }
+
+    // Hydration — PS `data/abilities.ts:hydration`:
+    //   onResidualOrder: 5, onResidualSubOrder: 4,
+    //   onResidual(pokemon) {
+    //     if (pokemon.hp && pokemon.status &&
+    //         ['raindance','primordialsea'].includes(this.field.effectiveWeather()))
+    //       pokemon.cureStatus();
+    //   }
+    // Cures any persistent status at end-of-turn under Rain. Vaporeon /
+    // Manaphy / Goodra signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Hydration_(Ability)>.
+    if slug == "hydration" && matches!(battle.weather, crate::weather::Weather::Rain) {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if !matches!(m.status, crate::pokemon::Status::None) {
+                m.status = crate::pokemon::Status::None;
+            }
+        }
+    }
 
     // Speed Boost: +1 Spe at end of turn, except on the turn the mon
     // was switched in mid-battle. PS guards with `if (pokemon.activeTurns)`

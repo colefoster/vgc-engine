@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 51 |
+| shipped | 54 |
 | partial | 5 |
-| not implemented | 37 |
+| not implemented | 34 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -353,11 +353,11 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Status**: not implemented.
 
-### Natural Cure
+### Natural Cure / Shed Skin / Hydration
 
-**What it is**: On switch-out, cures the user's persistent status. Hooks into the same dispatcher Regenerator uses (PR-62).
+**What it is**: Natural Cure: cures status on switch-out. Shed Skin: 33% per end-of-turn chance to cure. Hydration: cures status in Rain at end-of-turn.
 
-**Status**: not implemented.
+**Status**: shipped — PR-281.
 
 ### Pickpocket
 
