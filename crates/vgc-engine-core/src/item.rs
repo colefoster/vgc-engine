@@ -617,11 +617,11 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
 ///       if (pokemon.volatiles[ailment]) { pokemon.removeVolatile(ailment); ... pokemon.useItem(); return; }
 ///     }
 ///   }
-/// In the engine, of the listed volatiles, only Encore / Taunt / Disable
-/// / Torment / HealBlock exist as `VolatileKind`s (no Attract yet).
-/// Currently only Encore is actually set by a move — the rest cure
-/// no-op until their setter moves land. Item is consumed only if a
-/// listed volatile was actually removed. Bulbapedia:
+/// In the engine, of the listed volatiles, Attract / Encore / Taunt /
+/// Disable / Torment / HealBlock exist as `VolatileKind`s. Encore and
+/// Attract are actually set by a move today (the rest cure no-op until
+/// their setter moves land). Item is consumed only if a listed volatile
+/// was actually removed. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Mental_Herb>.
 pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     let holder_slug = match battle.side(side).active_mon(slot as usize) {
@@ -632,7 +632,7 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
         return;
     }
     use crate::pokemon::VolatileKind as VK;
-    let kinds = [VK::Encore, VK::Taunt, VK::Disable, VK::Torment, VK::HealBlock];
+    let kinds = [VK::Attract, VK::Encore, VK::Taunt, VK::Disable, VK::Torment, VK::HealBlock];
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         let mut removed = false;
         for k in kinds {

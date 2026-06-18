@@ -1154,6 +1154,30 @@ impl Battle {
             }
         }
 
+        // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
+        //     `onUpdate` (which fires before `onBeforeMove`) clears the
+        //     volatile if the source has left the field — we fold that in
+        //     here so NO RNG is drawn once the source is gone. Otherwise the
+        //     `onBeforeMovePriority 2` handler rolls `randomChance(1, 2)` —
+        //     50% chance to be "immobilized by love" and skip the move (no
+        //     PP). Placed after the confusion block to match PS onBeforeMove
+        //     priority ordering (confusion 3 > attract 2). The draw only
+        //     fires when an infatuated mon with a live source acts, so it
+        //     cannot perturb battles where Attract is never applied.
+        if let Some((src_side, src_idx)) = self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .and_then(|mon| mon.attract_source())
+        {
+            if !self.attract_source_on_field(src_side, src_idx) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.clear_attract();
+                }
+            } else if self.rng.range(2) == 0 {
+                return;
+            }
+        }
+
         // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
         //     fails unless the target is still queued to use a
         //     damaging (non-Status) move this turn. Approximation:
@@ -1527,7 +1551,7 @@ impl Battle {
                     return;
                 }
             }
-            self.resolve_status_move(actor_side, actor_slot, m);
+            self.resolve_status_move(actor_side, actor_slot, m, target);
             // Throat Spray: sound-flag status moves (Sing, Heal Bell,
             // Roar of Time... Growl) trigger the +1 SpA on the user.
             self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
@@ -3945,13 +3969,62 @@ impl Battle {
                 self.rng = rng;
             }
         }
+
+        // Attract `onUpdate` sweep — lift infatuation on any mon whose
+        // source has left the field via switch / faint this turn (PS
+        // data/moves.ts:706 attract onUpdate). No RNG.
+        self.update_attract_sources();
+    }
+
+    /// True if the Attract source (recorded by side 0/1 + team roster
+    /// index) is currently on the field and alive. Mirrors PS's
+    /// `attract` `onUpdate` source check (`effectState.source.isActive`):
+    /// when the source faints or switches out, the infatuation lifts.
+    fn attract_source_on_field(&self, source_side: u8, source_team_index: u8) -> bool {
+        let side = if source_side == 0 { SideRef::P1 } else { SideRef::P2 };
+        let s = self.side(side);
+        let n = self.format().active_count();
+        let active_here = s.active.iter().take(n).any(|&i| i == source_team_index);
+        active_here
+            && s.team
+                .get(source_team_index as usize)
+                .is_some_and(|mon| mon.is_alive())
+    }
+
+    /// Clear infatuation on any active mon whose Attract source has left
+    /// the field. Mirrors PS `data/moves.ts:706` attract `onUpdate`. Drawn
+    /// no RNG; safe to call each end of turn after switches resolve.
+    fn update_attract_sources(&mut self) {
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let gone = match self.side(side).active_mon(slot) {
+                    Some(mon) => match mon.attract_source() {
+                        Some((ss, si)) => !self.attract_source_on_field(ss, si),
+                        None => continue,
+                    },
+                    None => continue,
+                };
+                if gone {
+                    if let Some(mon) = self.side_mut(side).active_mon_mut(slot) {
+                        mon.clear_attract();
+                    }
+                }
+            }
+        }
     }
 
     /// Status-move dispatch. Phase 2 PR-5 implements: Protect.
     ///
     /// Other status moves currently no-op (will be enabled per-move in
     /// subsequent PRs).
-    fn resolve_status_move(&mut self, actor_side: SideRef, actor_slot: u8, m: &data::MoveDef) {
+    fn resolve_status_move(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        m: &data::MoveDef,
+        target: Option<Target>,
+    ) {
         match m.slug {
             "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
             | "obstruct" | "burningbulwark" | "silktrap" => {
@@ -4322,6 +4395,85 @@ impl Battle {
                     }
                     break; // single-target
                 }
+            }
+            "attract" => {
+                // PS data/moves.ts:706 attract. Single-target status
+                // (target "normal"). Applies the `attract` volatile gated
+                // on opposite, non-genderless genders (move `onTryImmunity`
+                // + condition `onStart`), blocked by Oblivious (`onTryHit`
+                // -immune). The source mon is recorded for the 50%
+                // immobilize roll and the clear-on-source-leave check.
+                //
+                // PS step order: immunity events run before the accuracy
+                // roll, so a gender-incompatible / Oblivious target fails
+                // WITHOUT consuming the accuracy draw.
+                let opp = actor_side.opposing();
+                let target_slot = match target {
+                    Some(t) if t.side == opp => t.slot,
+                    _ => {
+                        // Singles / unspecified: first alive foe.
+                        let n = self.format().active_count() as u8;
+                        match (0..n).find(|&s| {
+                            self.side(opp)
+                                .active_mon(s as usize)
+                                .is_some_and(|mon| mon.is_alive())
+                        }) {
+                            Some(s) => s,
+                            None => return,
+                        }
+                    }
+                };
+                let src_gender = match self.side(actor_side).active_mon(actor_slot as usize) {
+                    Some(mon) => mon.gender,
+                    None => return,
+                };
+                let (tgt_gender, tgt_alive, tgt_oblivious) =
+                    match self.side(opp).active_mon(target_slot as usize) {
+                        Some(mon) => (
+                            mon.gender,
+                            mon.is_alive(),
+                            mon.effective_ability_slug() == "oblivious",
+                        ),
+                        None => return,
+                    };
+                if !tgt_alive {
+                    return;
+                }
+                // Oblivious immunity (PS abilities.ts:2979 onTryHit -immune).
+                // NOTE: Aroma Veil would also block here, but that ability
+                // is not yet implemented — deferred to the Aroma Veil PR.
+                if tgt_oblivious {
+                    return;
+                }
+                // Gender gate: opposite, non-genderless (M↔F). Genderless
+                // or same-gender on either side ⇒ fail. Gender is fully
+                // resolved at team build, so `Random` never reaches here.
+                let opposite = matches!(
+                    (src_gender, tgt_gender),
+                    (data::Gender::Male, data::Gender::Female)
+                        | (data::Gender::Female, data::Gender::Male)
+                );
+                if !opposite {
+                    return;
+                }
+                // Accuracy (100% — always passes, but draws at the PS site).
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                // Already infatuated — PS volatileStatus add is a no-op.
+                if self
+                    .side(opp)
+                    .active_mon(target_slot as usize)
+                    .is_some_and(|mon| mon.is_attracted())
+                {
+                    return;
+                }
+                let src_idx = self.side(actor_side).active[actor_slot as usize];
+                if let Some(t) = self.side_mut(opp).active_mon_mut(target_slot as usize) {
+                    t.set_attract(actor_side as u8, src_idx);
+                }
+                // Mental Herb cures Attract on application (PS onUpdate).
+                crate::item::try_consume_mental_herb(self, opp, target_slot);
             }
             "poisonpowder" => {
                 if !self.rolled_accuracy_passed(m) { return; }
@@ -10826,6 +10978,178 @@ mod tests {
         assert!(
             rate >= 15 && rate <= 35,
             "Paralysis full-skip rate {rate}% (expected ≈25% over 400 trials)"
+        );
+    }
+
+    #[test]
+    fn attract_applies_on_opposite_gender_then_clears_when_source_leaves() {
+        // Attract on an opposite-gender target sets the `attract`
+        // volatile recording the source slot; when the source switches
+        // out the infatuation lifts (PS data/moves.ts:706 onUpdate).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Pin genders: source (P1/0) Male, target (P2/0) Female.
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+
+        // Turn 1: P1 uses Attract on the foe.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_attracted(), "opposite-gender Attract applied");
+        // Source recorded as P1 (side 0), team index 0.
+        assert_eq!(b.p2.team[0].attract_source(), Some((0, 0)), "source slot tracked");
+
+        // Turn 2: the Attract source switches out → infatuation lifts.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            !b.p2.team[0].is_attracted(),
+            "Attract cleared once the source left the field",
+        );
+    }
+
+    #[test]
+    fn attract_fails_on_genderless_or_same_gender() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        // Same gender (M vs M) → fail.
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1.clone(), p2.clone());
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Male;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].is_attracted(), "same-gender Attract fails");
+
+        // Genderless target → fail.
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1.clone(), p2.clone());
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Genderless;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].is_attracted(), "genderless target immune to Attract");
+
+        // Genderless source → fail.
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Genderless;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].is_attracted(), "genderless source cannot Attract");
+    }
+
+    #[test]
+    fn attract_oblivious_blocks() {
+        // Oblivious is immune to Attract (PS abilities.ts:2979).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]}
+        ]"#;
+        // Lickitung legally carries Oblivious.
+        let p2_json = r#"[
+            {"species":"lickitung","level":50,"ability":"oblivious","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","wrap"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].is_attracted(), "Oblivious blocks Attract");
+    }
+
+    #[test]
+    fn attract_immobilize_fires_about_half() {
+        // PS data/moves.ts:706 attract onBeforeMove rolls randomChance(1,2)
+        // — 50% chance to be "immobilized by love" and skip the move.
+        // Directly infatuate the attacker (source = the foe, P2/0) and
+        // count skipped attacks over many seeds.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 400u32;
+        let mut skips = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            // Source = P2 (side 1), team index 0 — present and alive.
+            b.p1.team[0].set_attract(1, 0);
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp == hp_before {
+                skips += 1;
+            }
+        }
+        let rate = skips * 100 / trials;
+        assert!(
+            (35..=65).contains(&rate),
+            "Attract immobilize rate {rate}% (expected ≈50% over 400 trials)"
+        );
+    }
+
+    #[test]
+    fn attract_clears_when_source_faints() {
+        // When the source faints, the infatuation lifts (PS onUpdate).
+        // Directly infatuate P1/0 with source P2/0, then KO P2/0.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        b.p1.team[0].set_attract(1, 0);
+        assert!(b.p1.team[0].is_attracted());
+        // Faint the source and force a replacement switch-in.
+        b.p2.team[0].current_hp = 0;
+        b.p2.team[0].fainted = true;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(
+            !b.p1.team[0].is_attracted(),
+            "Attract cleared after the source fainted/left",
         );
     }
 
