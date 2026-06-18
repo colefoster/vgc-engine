@@ -339,6 +339,31 @@ impl Battle {
         let order: Vec<ScheduledAction> =
             action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
+        // Consume Custap Berry for any holder whose `onFractionalPriority`
+        // fired this turn. PS `data/items.ts:custapberry` consumes the
+        // item in the same evaluation that bumps priority (see PS
+        // `eatItem` chain inside `onFractionalPriority`). We mirror by
+        // walking active mons and consuming the berry on those at ≤25%
+        // HP that hold it; the order vec already used the bumped
+        // priority, so this is just the bookkeeping pass. Lagging Tail /
+        // Full Incense are NOT consumed.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count();
+            for slot in 0..n {
+                let (cur, max, slug) = match self.side(side).active_mon(slot) {
+                    Some(m) if m.is_alive() => {
+                        let s = if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug };
+                        (m.current_hp, m.stats.hp, s)
+                    }
+                    _ => continue,
+                };
+                if slug == "custapberry" && cur > 0 && cur * 4 <= max {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        m.item_id = u16::MAX;
+                    }
+                }
+            }
+        }
         // Typed `ActionQueue` view of every queued action on this turn,
         // indexed [side][slot]. Sucker Punch / Quick Guard read
         // `kind`; Me First reads `move_id` to copy BP; Pursuit /
@@ -13587,6 +13612,30 @@ mod tests {
         let slug = b.p1.team[0].effective_ability_slug();
         assert_eq!(slug, "trace",
                    "Ability Shield should block Trace from copying SwordOfRuin (got {slug})");
+    }
+
+    #[test]
+    fn custap_berry_is_consumed_when_it_fires() {
+        // Snorlax @ Custap at 1 HP. After `step` the berry must be
+        // sentinel u16::MAX. Garchomp KOs but the consume runs at queue
+        // build BEFORE the hit, so the item state will reflect the
+        // consume even though Snorlax fainted in the turn.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"custapberry","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop Snorlax to a sliver.
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Custap Berry consumed");
     }
 
     #[test]
