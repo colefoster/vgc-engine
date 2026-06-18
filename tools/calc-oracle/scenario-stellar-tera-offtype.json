@@ -1,0 +1,21 @@
+{
+  "name": "stellar_tera_starstorm_terapagos_into_dondozo",
+  "attacker": {
+    "species": "Terapagos-Terastal",
+    "level": 50,
+    "ability": "Tera Shell",
+    "nature": "Modest",
+    "tera_type": "Stellar",
+    "terastallized": true,
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Dondozo",
+    "level": 50,
+    "ability": "Oblivious",
+    "nature": "Calm",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Tera Starstorm",
+  "trials": 500
+}
