@@ -216,6 +216,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // (see `try_consume_white_herb` below). Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/White_Herb>.
     try_consume_white_herb(battle, side, slot);
+    // Mental Herb cleans up Encore / Taunt / etc carried across a switch.
+    try_consume_mental_herb(battle, side, slot);
 }
 
 /// Run the White Herb check on a single active mon. If holder has
@@ -223,6 +225,42 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 /// and consume the item (sentinel `u16::MAX`). Idempotent if no negative
 /// stages are present. Should be called immediately AFTER any code path
 /// that lowers `boosts[i]`.
+/// Mental Herb — PS `data/items.ts:mentalherb`
+///   onUpdate(pokemon) {
+///     for (const ailment of ['attract','taunt','encore','torment','disable','healblock']) {
+///       if (pokemon.volatiles[ailment]) { pokemon.removeVolatile(ailment); ... pokemon.useItem(); return; }
+///     }
+///   }
+/// In the engine, of the listed volatiles, only Encore / Taunt / Disable
+/// / Torment / HealBlock exist as `VolatileKind`s (no Attract yet).
+/// Currently only Encore is actually set by a move — the rest cure
+/// no-op until their setter moves land. Item is consumed only if a
+/// listed volatile was actually removed. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Mental_Herb>.
+pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: u8) {
+    let holder_slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => item_slug(m.item_id),
+        _ => return,
+    };
+    if holder_slug != "mentalherb" {
+        return;
+    }
+    use crate::pokemon::VolatileKind as VK;
+    let kinds = [VK::Encore, VK::Taunt, VK::Disable, VK::Torment, VK::HealBlock];
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        let mut removed = false;
+        for k in kinds {
+            if m.volatiles.has(k) {
+                m.volatiles.remove(k);
+                removed = true;
+            }
+        }
+        if removed {
+            m.item_id = u16::MAX;
+        }
+    }
+}
+
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     let holder_slug = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => item_slug(m.item_id),
