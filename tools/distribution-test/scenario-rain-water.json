@@ -1,0 +1,11 @@
+{
+  "name": "politoed_drizzle_hydropump_into_snorlax",
+  "format": "gen9customgame",
+  "p1_team": "Politoed @ Leftovers\nAbility: Drizzle\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 SpA / 252 Spe\nModest Nature\nIVs: 0 Atk\n- Hydro Pump\n- Scald\n- Ice Beam\n- Psychic\n",
+  "p2_team": "Snorlax @ Leftovers\nAbility: Immunity\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Def / 252 SpD\nCareful Nature\n- Body Slam\n- Earthquake\n- Crunch\n- Rest\n",
+  "p1_action": "move 1",
+  "p2_action": "move 3",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}

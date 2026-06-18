@@ -1,0 +1,11 @@
+{
+  "name": "porygonz_adaptability_triattack_into_blissey",
+  "format": "gen9customgame",
+  "p1_team": "Porygon-Z @ Leftovers\nAbility: Adaptability\nLevel: 50\nTera Type: Normal\nEVs: 4 HP / 252 SpA / 252 Spe\nModest Nature\nIVs: 0 Atk\n- Tri Attack\n- Thunderbolt\n- Ice Beam\n- Shadow Ball\n",
+  "p2_team": "Blissey @ Leftovers\nAbility: Natural Cure\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Def / 252 SpD\nCalm Nature\nIVs: 0 Atk\n- Soft-Boiled\n- Seismic Toss\n- Toxic\n- Protect\n",
+  "p1_action": "move 1",
+  "p2_action": "move 1",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}
