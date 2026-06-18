@@ -541,6 +541,47 @@ pub fn calculate_damage(
         bp = bp * 4915 / 4096;
     }
 
+    // Type-boost held items (Charcoal, Mystic Water, Magnet, ...).
+    // PS `data/items.ts` — each carries the same `onBasePower(basePower,
+    // user, target, move)` shape:
+    //   if (move.type === '<Type>') return this.chainModify([4915, 4096]);
+    // ×1.2 (= 4915/4096 in chainModify space, pokeRound rounding) on the
+    // holder's outgoing moves of the matching type. None are flagged
+    // `breakable`, so Mold Breaker does NOT skip them (Mold Breaker
+    // bypasses only defender-side breakables). Plates (Pixie Plate etc.)
+    // share the same multiplier — gen 9 keeps it at ×1.2, identical to
+    // the type-boost rocks. Bulbapedia hub:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Type-enhancing_item>.
+    if attacker.item_id != u16::MAX {
+        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
+        let item_type: i32 = match item_slug {
+            "silkscarf"     => 0,   // Normal
+            "charcoal"      => 1,   // Fire
+            "mysticwater"   => 2,   // Water
+            "magnet"        => 3,   // Electric
+            "miracleseed"   => 4,   // Grass
+            "nevermeltice"  => 5,   // Ice
+            "blackbelt"     => 6,   // Fighting
+            "poisonbarb"    => 7,   // Poison
+            "softsand"      => 8,   // Ground
+            "sharpbeak"     => 9,   // Flying
+            "twistedspoon"  => 10,  // Psychic
+            "silverpowder"  => 11,  // Bug
+            "hardstone"     => 12,  // Rock
+            "spelltag"      => 13,  // Ghost (not in list but parallel; harmless if unused)
+            "dragonfang"    => 14,  // Dragon
+            "blackglasses"  => 15,  // Dark
+            "metalcoat"     => 16,  // Steel
+            "pixieplate"    => 17,  // Fairy
+            _ => -1,
+        };
+        if item_type as i32 == move_type as i32 && item_type >= 0 {
+            // pokeRound: floor((v * 4915 + 2047) / 4096). PS's `chainModify`
+            // routes through `modify()` which is pokeRound-rounding.
+            bp = (bp * 4915 + 2047) / 4096;
+        }
+    }
+
     // Aura abilities — Fairy Aura on Fairy moves, Dark Aura on Dark
     // moves. PS chainModify([5448, 4096]) ≈ ×1.33; flipped to
     // chainModify([3072, 4096]) ≈ ×0.75 when Aura Break is on the
