@@ -1,0 +1,18 @@
+{
+  "name": "random-33",
+  "seed": [
+    33,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Sneasel @ Power Bracer\nAbility: Keen Eye\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 Atk / 252 SpD\nRelaxed Nature\n- Slash\n- Feint\n- Avalanche\n- Surf\n\nGastly @ Power Weight\nAbility: Levitate\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 Atk / 252 Spe\nLax Nature\n- Imprison\n- Taunt\n- Trick Room\n- Dark Pulse\n\nGirafarig @ Master Ball\nAbility: Sap Sipper\nLevel: 50\nTera Type: Fairy\nEVs: 4 HP / 252 SpD / 252 Spe\nHasty Nature\n- Calm Mind\n- Double-Edge\n- Guard Swap\n- Sunny Day\n\nKlawf @ Oval Stone\nAbility: Regenerator\nLevel: 50\nTera Type: Fire\nEVs: 4 HP / 252 Atk / 252 SpA\nMild Nature\n- Rock Blast\n- Facade\n- Hyper Beam\n- Tera Blast\n"
+  },
+  "p2": {
+    "team": "Haunter @ Love Ball\nAbility: Levitate\nLevel: 50\nTera Type: Dark\nEVs: 252 HP / 4 Atk / 252 SpD\nSassy Nature\n- Disable\n- Trick Room\n- Metronome\n- Facade\n\nWhimsicott @ Utility Umbrella\nAbility: Prankster\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 Def / 252 SpD\nCalm Nature\n- Misty Terrain\n- Helping Hand\n- Worry Seed\n- Psychic\n\nTrevenant @ Razor Claw\nAbility: Natural Cure\nLevel: 50\nTera Type: Grass\nEVs: 252 HP / 4 Atk / 252 SpA\nSerious Nature\n- Poison Jab\n- Growth\n- Night Shade\n- Drain Punch\n\nCorvisquire @ Jaboca Berry\nAbility: Big Pecks\nLevel: 50\nTera Type: Fire\nEVs: 4 HP / 252 Def / 252 Spe\nHardy Nature\n- Substitute\n- Fake Tears\n- Tera Blast\n- Sky Attack\n"
+  }
+}

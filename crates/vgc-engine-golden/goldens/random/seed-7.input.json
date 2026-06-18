@@ -1,0 +1,18 @@
+{
+  "name": "random-7",
+  "seed": [
+    7,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Ariados @ Electirizer\nAbility: Swarm\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 Def / 252 Spe\nJolly Nature\n- Hyper Beam\n- Giga Impact\n- String Shot\n- Solar Beam\n\nReshiram @ Chipped Pot\nAbility: Turboblaze\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 Def / 252 Spe\nQuirky Nature\n- Outrage\n- Fusion Flare\n- Protect\n- Swift\n\nLycanroc @ Metal Alloy\nAbility: Keen Eye\nLevel: 50\nTera Type: Fire\nEVs: 4 HP / 252 Atk / 252 SpD\nCareful Nature\n- Trailblaze\n- Taunt\n- Substitute\n- Hyper Voice\n\nPincurchin @ Shiny Stone\nAbility: Lightning Rod\nLevel: 50\nTera Type: Fire\nEVs: 4 HP / 252 SpD / 252 Spe\nHardy Nature\n- Electro Ball\n- Electric Terrain\n- Muddy Water\n- Fury Attack\n"
+  },
+  "p2": {
+    "team": "Treecko @ Eject Pack\nAbility: Unburden\nLevel: 50\nTera Type: Bug\nEVs: 4 HP / 252 SpA / 252 SpD\nNaive Nature\n- Endure\n- Acrobatics\n- Grassy Terrain\n- Rest\n\nDrednaw @ Oval Stone\nAbility: Swift Swim\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 Def / 252 SpA\nNaughty Nature\n- Stone Edge\n- Hydro Pump\n- Tackle\n- Rock Slide\n\nDolliv @ Quick Ball\nAbility: Early Bird\nLevel: 50\nTera Type: Dragon\nEVs: 252 HP / 4 Atk / 252 Def\nQuirky Nature\n- Growth\n- Solar Blade\n- Terrain Pulse\n- Substitute\n\nSpiritomb @ Eject Button\nAbility: Pressure\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 SpD / 252 Spe\nGentle Nature\n- Poltergeist\n- Destiny Bond\n- Taunt\n- Scary Face\n"
+  }
+}

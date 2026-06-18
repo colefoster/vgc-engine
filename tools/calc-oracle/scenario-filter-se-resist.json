@@ -1,0 +1,19 @@
+{
+  "name": "filter_thunderbolt_zapdos_into_mandibuzz",
+  "attacker": {
+    "species": "Zapdos",
+    "level": 50,
+    "ability": "Static",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Mandibuzz",
+    "level": 50,
+    "ability": "Filter",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Thunderbolt",
+  "trials": 500
+}

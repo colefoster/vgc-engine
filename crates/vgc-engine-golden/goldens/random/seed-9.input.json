@@ -1,0 +1,18 @@
+{
+  "name": "random-9",
+  "seed": [
+    9,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Comfey @ Quick Claw\nAbility: Triage\nLevel: 50\nTera Type: Rock\nEVs: 4 HP / 252 Atk / 252 SpD\nBold Nature\n- Substitute\n- Bullet Seed\n- Giga Drain\n- Helping Hand\n\nDiancie @ Adrenaline Orb\nAbility: Clear Body\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Atk / 252 Def\nQuirky Nature\n- Stone Edge\n- Amnesia\n- Bulldoze\n- Body Slam\n\nLudicolo @ Luminous Moss\nAbility: Swift Swim\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Atk / 252 SpD\nCalm Nature\n- Rain Dance\n- Flail\n- Zen Headbutt\n- Tickle\n\nBaxcalibur @ Light Clay\nAbility: Ice Body\nLevel: 50\nTera Type: Rock\nEVs: 4 HP / 252 Atk / 252 SpD\nHardy Nature\n- Icy Wind\n- Dig\n- Dragon Breath\n- Thunder Fang\n"
+  },
+  "p2": {
+    "team": "Victreebel @ Razor Claw\nAbility: Chlorophyll\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 Atk / 252 SpD\nSassy Nature\n- Sunny Day\n- Ingrain\n- Magical Leaf\n- Synthesis\n\nFalinks @ Mystic Water\nAbility: Defiant\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 SpA / 252 SpD\nHasty Nature\n- Coaching\n- Upper Hand\n- Focus Energy\n- Throat Chop\n\nClefable @ Pretty Feather\nAbility: Magic Guard\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 SpD / 252 Spe\nQuirky Nature\n- Meteor Beam\n- Tickle\n- Chilling Water\n- Rain Dance\n\nConkeldurr @ Safari Ball\nAbility: Sheer Force\nLevel: 50\nTera Type: Poison\nEVs: 252 HP / 4 Atk / 252 Spe\nBold Nature\n- Bulldoze\n- Low Sweep\n- Slam\n- Protect\n"
+  }
+}

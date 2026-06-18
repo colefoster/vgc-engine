@@ -904,6 +904,27 @@ pub fn calculate_damage(
         dmg *= 2;
     }
 
+    // Filter / Solid Rock / Prism Armor — PS `data/abilities.ts:filter`,
+    // `:solidrock`, `:prismarmor` all carry the same `onSourceModifyDamage`
+    //   if (target.getMoveHitData(move).typeMod > 0) return this.chainModify(0.75);
+    // ×0.75 (= 3072/4096, exact in pokeRound space) on super-effective
+    // hits. Filter (Mr. Mime / Magmortar) and Solid Rock (Rhyperior /
+    // Tyrantrum-line) are flagged `breakable: 1` — Mold Breaker / Teravolt
+    // / Turboblaze bypass. Prism Armor (Necrozma signature) is NOT
+    // breakable. Bulbapedia:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Filter_(Ability)>
+    //   <https://bulbapedia.bulbagarden.net/wiki/Solid_Rock_(Ability)>
+    //   <https://bulbapedia.bulbagarden.net/wiki/Prism_Armor_(Ability)>
+    let def_ab = defender.effective_ability_slug();
+    let se_reducer = match def_ab {
+        "filter" | "solidrock" => !attacker_breaks_mold,
+        "prismarmor" => true,
+        _ => false,
+    };
+    if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+        dmg = dmg * 3072 / 4096;
+    }
+
     // Burn: physical attackers with burn deal halved damage. Guts/Facade
     // gating lands in their respective PRs.
     if physical && attacker.status == Status::Burn {
