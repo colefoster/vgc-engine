@@ -6,7 +6,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 94 |
+| shipped | 95 |
 | partial | 1 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
@@ -454,3 +454,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Retaliate berries: Kee (+1 Def on physical hit) / Maranga (+1 SpD on special hit) / Rowap (1/8 max-HP recoil to special attacker) (PR-305)
 - Utility Umbrella — holder ignores Sun/Rain effects; routed via new `Battle::effective_weather_for(side, slot)` and `effective_weather_for_pair(...)` helpers wired into the damage formula, accuracy block (Hurricane / Thunder), Solar Beam charge skip, Orichalcum Pulse Atk boost, and Synthesis / Morning Sun / Moonlight / Shore Up heal factor (PR-306)
 - Adrenaline Orb — +1 Speed when Intimidate'd; fires regardless of whether the Atk drop landed (Hyper Cutter / Clear Body / Clear Amulet block the drop but not the Orb). Wired in `ability::on_switch_in` alongside Rattled (PR-307)
+- Mirror Herb — copies opposing self-boost moves (Dragon Dance / Swords Dance / Quiver Dance / Calm Mind / Iron Defense / etc.) to the holder; consumed on use. V1 wires the most common path (`self_boost_moves` resolve site); the accumulator-across-multiple-events form (PS `effectState`) is deferred — boosts that come from secondary effects, abilities, or items aren't yet mirrored (PR-308)

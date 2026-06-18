@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **145**
-- Missing: **104** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **146**
+- Missing: **103** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~6 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~5 competitively relevant**
 
 ## Missing by category
 
@@ -57,7 +57,7 @@ These are first-class VGC items — Booster Energy interactions, Cell Battery/Sn
 - `weaknesspolicy` — (handled) — noted; cross-check passed.
 - `blunderpolicy` — Blunder Policy — +2 Speed on accuracy miss. Single use.
 - `roomservice` — Room Service — -1 Speed if Trick Room is active. Single use.
-- `mirrorherb` — Mirror Herb — Copies an opposing stat raise. Single use.
+- Mirror Herb — shipped (PR-308). V1 wires self-boost moves only; abilities / secondaries deferred.
 
 ### Terrain seeds
 

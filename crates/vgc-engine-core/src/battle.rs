@@ -4546,6 +4546,14 @@ impl Battle {
                                 (a.boosts[idx as usize] + delta).clamp(-6, 6);
                         }
                     }
+                    // Mirror Herb — PS data/items.ts:mirrorherb fires on
+                    // `onFoeAfterBoost` whenever a foe's stat goes up.
+                    // Dispatch once with the full boost set so multi-stat
+                    // moves (Dragon Dance, Quiver Dance) copy all stats
+                    // before the Herb consumes.
+                    crate::item::try_consume_mirror_herb_on_foe_boost(
+                        self, actor_side, actor_slot, boosts,
+                    );
                     if m.slug == "howl" {
                         // PS target "allies" in doubles: also boost the
                         // adjacent ally's Atk. Singles → ally slot is
@@ -4561,6 +4569,11 @@ impl Battle {
                                     p.boosts[0] = (p.boosts[0] + 1).clamp(-6, 6);
                                 }
                             }
+                            // Howl also raises an ally's Atk — Mirror
+                            // Herb on a foe should copy.
+                            crate::item::try_consume_mirror_herb_on_foe_boost(
+                                self, actor_side, ally_slot, &[(0u8, 1i8)],
+                            );
                         }
                     }
                 }
@@ -7104,6 +7117,30 @@ mod tests {
         // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
         let diff = (dmg_with as i32 - dmg_no as i32).abs();
         assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+    }
+
+    #[test]
+    fn mirror_herb_copies_opposing_dragon_dance() {
+        // Garchomp Dragon Dances (+1 Atk, +1 Spe). Snorlax holds Mirror
+        // Herb — should mirror both boosts and consume.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragondance","dragonclaw","earthquake","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"mirrorherb","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 1, "Garchomp +1 Atk from DD");
+        assert_eq!(b.p1.team[0].boosts[4], 1, "Garchomp +1 Spe from DD");
+        assert_eq!(b.p2.team[0].boosts[0], 1, "Mirror Herb copied +1 Atk");
+        assert_eq!(b.p2.team[0].boosts[4], 1, "Mirror Herb copied +1 Spe");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Mirror Herb consumed");
     }
 
     #[test]
