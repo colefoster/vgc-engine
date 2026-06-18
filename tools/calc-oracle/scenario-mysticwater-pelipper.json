@@ -1,0 +1,21 @@
+{
+  "name": "mysticwater_hydropump_pelipper_into_garchomp",
+  "attacker": {
+    "species": "Pelipper",
+    "level": 50,
+    "ability": "Drizzle",
+    "item": "Mystic Water",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Garchomp",
+    "level": 50,
+    "ability": "Rough Skin",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Hydro Pump",
+  "field": { "weather": "Rain" },
+  "trials": 500
+}
