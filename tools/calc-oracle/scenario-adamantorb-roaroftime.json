@@ -1,0 +1,20 @@
+{
+  "name": "adamantorb_roaroftime_dialga_into_garchomp",
+  "attacker": {
+    "species": "Dialga",
+    "level": 50,
+    "ability": "Pressure",
+    "item": "Adamant Orb",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Blissey",
+    "level": 50,
+    "ability": "Natural Cure",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Roar of Time",
+  "trials": 500
+}
