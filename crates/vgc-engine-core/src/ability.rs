@@ -576,6 +576,19 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // `try_consume_eject_pack`.
             let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
             react_to_opposing_stat_drop(battle, opp, s);
+            // Rattled — PS `data/abilities.ts:3726` `onAfterBoost`:
+            //   if (effect && effect.name === 'Intimidate')
+            //     this.boost({spe: 1}, pokemon);
+            // +1 Spe on the Intimidate target if they have Rattled.
+            // This stacks WITH the Atk drop (Rattled does not block
+            // the drop). Triggers after the drop lands.
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
+            if target_ability == "rattled" {
+                if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
+                    t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
+                }
+            }
         }
     }
     // Future PRs add more arms: drizzle/drought/sandstream/snowwarning
