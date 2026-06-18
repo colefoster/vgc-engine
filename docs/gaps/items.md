@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 42 |
+| shipped | 43 |
 | partial | 1 |
-| not implemented | 6 |
+| not implemented | 5 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -117,7 +117,7 @@ Already covered — shipped PR-19/20.
 
 **Depends on**: Ability-swap moves (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — PR-292. Gates Trace (user + target), Mummy / Lingering Aroma (attacker), Wandering Spirit (both sides). Skill Swap / Worry Seed / Gastro Acid not yet wired in the engine; the gate is ready when they land.
 
 ### Covert Cloak
 
@@ -412,6 +412,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Power Herb (PR-160)
 - Sticky Barb (PR-216 / PR-218 residual chip + PR-290 contact transfer)
 - Protective Pads (PR-291)
+- Ability Shield (PR-292)
 - Quick Claw (PR-222)
 - Jaboca Berry (PR-225)
 - Flame Orb (PR-227)
