@@ -44,6 +44,36 @@ pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
     ability_slug(mon.ability_id) == "rockhead"
 }
 
+/// Returns true if `mon` cannot have its stats lowered by an OPPOSING
+/// source (move secondary, Parting Shot, Strength Sap, Intimidate, etc).
+/// Ally-cast drops (rare — e.g. Helping Hand doesn't drop) are unaffected.
+///
+/// Coverage:
+///   - Clear Body / White Smoke / Full Metal Body — PS `onTryBoost`
+///     (cancels any boost obj with a negative entry from a foe).
+///   - Clear Amulet — PS `data/items.ts:clearamulet` `onTryBoost` (same
+///     gate as Clear Body, but via held item).
+///
+/// PS routes single-stat-specific blockers (Hyper Cutter for Atk, Big
+/// Pecks for Def, Keen Eye for Acc, Mirror Armor for redirect-on-drop)
+/// separately — those aren't covered here. Caller is responsible for
+/// confirming the source is an opponent (PS: `target.isAlly(source)`
+/// check). Mold Breaker bypasses the ability arm; Clear Amulet is NOT
+/// breakable. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Clear_Amulet>.
+pub(crate) fn blocks_opposing_stat_drop(mon: &crate::pokemon::Pokemon) -> bool {
+    let ab = mon.effective_ability_slug();
+    if matches!(ab, "clearbody" | "whitesmoke" | "fullmetalbody") {
+        return true;
+    }
+    let item_slug = if mon.item_id == u16::MAX {
+        ""
+    } else {
+        data::ITEMS[mon.item_id as usize].slug
+    };
+    item_slug == "clearamulet"
+}
+
 /// Returns true if the target's ability blocks Intimidate.
 ///
 /// PS data/abilities.ts: each blocker has an onTryBoost / onTryHit hook
@@ -353,6 +383,15 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 _ => continue,
             };
             if blocks_intimidate(target_ability) {
+                continue;
+            }
+            // Clear Amulet (held item) ALSO vetoes Intimidate's atk drop
+            // (PS `data/items.ts:clearamulet` `onTryBoost`).
+            let amulet = battle.side(opp).active_mon(s as usize)
+                .map(|m| m.item_id != u16::MAX
+                    && data::ITEMS[m.item_id as usize].slug == "clearamulet")
+                .unwrap_or(false);
+            if amulet {
                 continue;
             }
             if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {

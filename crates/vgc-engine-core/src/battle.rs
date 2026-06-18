@@ -3458,6 +3458,16 @@ impl Battle {
                     let alive = self.side(opp).active_mon(slot as usize)
                         .is_some_and(|t| t.is_alive());
                     if !alive { continue; }
+                    let blocked = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
+                    if blocked {
+                        // PS Clear Body / Clear Amulet: drop is vetoed.
+                        // Parting Shot's self-switch hinges on whether ANY
+                        // boost call returned a success; a fully-blocked
+                        // target means no switch fires. Match PS by
+                        // skipping the dropped_any flip.
+                        break;
+                    }
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
                         t.boosts[2] = (t.boosts[2] - 1).clamp(-6, 6);
@@ -3635,9 +3645,14 @@ impl Battle {
                         a.current_hp = (a.current_hp as u32 + effective_atk).min(max) as u16;
                     }
                 }
-                // Drop target Atk by 1.
-                if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
-                    t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
+                // Drop target Atk by 1 (blocked by Clear Body / Clear
+                // Amulet / White Smoke / Full Metal Body).
+                let blocked = self.side(opp).active_mon(ts as usize)
+                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
+                if !blocked {
+                    if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
+                        t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
+                    }
                 }
             }
             "rest" => {
@@ -4024,11 +4039,17 @@ fn apply_secondary_effect(
     }
     if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
         if rng.percent_1_100() <= chance {
-            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                // PS clamps each stage to [-6, 6]. -1 from -6 stays at
-                // -6 (no extra fail signal needed here).
-                let stage = &mut t.boosts[idx as usize];
-                *stage = (*stage + delta).clamp(-6, 6);
+            // Clear Body / White Smoke / Full Metal Body / Clear Amulet
+            // veto any opposing stat drop.
+            let blocked = battle.side(target_side).active_mon(target_slot as usize)
+                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop(m));
+            if !blocked {
+                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    // PS clamps each stage to [-6, 6]. -1 from -6 stays at
+                    // -6 (no extra fail signal needed here).
+                    let stage = &mut t.boosts[idx as usize];
+                    *stage = (*stage + delta).clamp(-6, 6);
+                }
             }
         }
     }
@@ -7071,6 +7092,24 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn clear_amulet_blocks_intimidate() {
+        // PS data/items.ts:clearamulet — onTryBoost vetoes any negative
+        // boost from an opposing source. Incineroar's Intimidate must not
+        // drop Pikachu's Atk when Pikachu holds Clear Amulet.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"clearamulet","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Intimidate ran on switch-in (start-of-battle). Pikachu Atk stage stays 0.
+        assert_eq!(b.p2.team[0].boosts[0], 0, "Clear Amulet blocks Intimidate");
     }
 
     #[test]
