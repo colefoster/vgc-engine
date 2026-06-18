@@ -231,7 +231,7 @@ pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => return,
     };
     let trigger = match slug {
-        "protosynthesis" => matches!(battle.weather, crate::weather::Weather::Sun),
+        "protosynthesis" => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
         "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
         _ => return,
     };
@@ -279,7 +279,7 @@ fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
         return;
     }
     let trigger_active = match ability_slug_ {
-        "protosynthesis" => matches!(battle.weather, crate::weather::Weather::Sun),
+        "protosynthesis" => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
         "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
         _ => return,
     };
@@ -657,7 +657,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // Cures any persistent status at end-of-turn under Rain. Vaporeon /
     // Manaphy / Goodra signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hydration_(Ability)>.
-    if slug == "hydration" && matches!(battle.weather, crate::weather::Weather::Rain) {
+    if slug == "hydration" && matches!(battle.effective_weather(), crate::weather::Weather::Rain) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !matches!(m.status, crate::pokemon::Status::None) {
                 m.status = crate::pokemon::Status::None;
@@ -685,7 +685,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // 1/8 max HP chip at end of turn while Sun is up. Routed through PS
     // `damage()` → Magic Guard's `onDamage` returns false → MG blocks it.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
-    if slug == "solarpower" && matches!(battle.weather, crate::weather::Weather::Sun) {
+    if slug == "solarpower" && matches!(battle.effective_weather(), crate::weather::Weather::Sun) {
         let mg = battle
             .side(side)
             .active_mon(slot as usize)
@@ -713,7 +713,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // Croagunk / Parasect.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
     if slug == "dryskin" {
-        match battle.weather {
+        match battle.effective_weather() {
             crate::weather::Weather::Rain => {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     let heal = (m.stats.hp / 8).max(1);
