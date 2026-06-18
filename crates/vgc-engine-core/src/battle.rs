@@ -2679,6 +2679,29 @@ impl Battle {
         })
     }
 
+    /// Duration to set for a freshly-created screen (Reflect / Light Screen
+    /// / Aurora Veil) on `setter_side`. PS `data/items.ts:lightclay`
+    /// `onModifyDuration(duration, source, effect)`: when `effect.id` is
+    /// `reflect` / `lightscreen` / `auroraveil`, `duration = 8`. The check
+    /// reads the SETTER's held item — we approximate by accepting any
+    /// active slot on the setter's side that holds Light Clay (singles:
+    /// the active mon IS the setter; doubles: same — only one slot can
+    /// be the setter of a given screen, and we ignore the bench).
+    /// The item is NOT consumed.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Light_Clay>.
+    fn screen_duration(&self, setter_side: SideRef) -> u8 {
+        let n = self.format().active_count();
+        let any_light_clay = (0..n).any(|s| {
+            self.side(setter_side).active_mon(s)
+                .map(|m| {
+                    m.is_alive() && m.item_id != u16::MAX
+                        && data::ITEMS[m.item_id as usize].slug == "lightclay"
+                })
+                .unwrap_or(false)
+        });
+        if any_light_clay { 8 } else { 5 }
+    }
+
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
         let (immune, terrain_blocks_sleep, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
@@ -3164,20 +3187,24 @@ impl Battle {
                 }
             }
             "reflect" => {
-                // Side condition: 5-turn timer. Fails if already up.
-                // PS data/conditions.ts:reflect has duration 5 (8 with
-                // Light Clay; Light Clay deferred to its own PR).
+                // Side condition: 5-turn timer (8 with Light Clay). Fails
+                // if already up. PS data/conditions.ts:reflect — the
+                // ConditionData duration is 5; Light Clay's onModifyDuration
+                // (data/items.ts:lightclay) bumps to 8 when the SETTER
+                // holds it.
+                let dur = self.screen_duration(actor_side);
                 let s = self.side_mut(actor_side);
                 if s.conditions.reflect_turns == 0 {
-                    s.conditions.reflect_turns = 5;
+                    s.conditions.reflect_turns = dur;
                 }
             }
             "lightscreen" => {
-                // Mirror of Reflect for special damage. Duration 5; PS
-                // data/conditions.ts:lightscreen.
+                // Mirror of Reflect for special damage. Duration 5 (8 with
+                // Light Clay). PS data/conditions.ts:lightscreen.
+                let dur = self.screen_duration(actor_side);
                 let s = self.side_mut(actor_side);
                 if s.conditions.light_screen_turns == 0 {
-                    s.conditions.light_screen_turns = 5;
+                    s.conditions.light_screen_turns = dur;
                 }
             }
             "substitute" => {
@@ -3201,12 +3228,15 @@ impl Battle {
             "auroraveil" => {
                 // Reflect + Light Screen combined. PS data/moves.ts:auroraveil
                 // `onTry` fails unless the field weather is Hail or Snow.
+                // Light Clay also extends Aurora Veil 5 → 8 (PS
+                // data/items.ts:lightclay onModifyDuration covers all three).
                 if !matches!(self.weather, crate::weather::Weather::Snow) {
                     return;
                 }
+                let dur = self.screen_duration(actor_side);
                 let s = self.side_mut(actor_side);
                 if s.conditions.aurora_veil_turns == 0 {
-                    s.conditions.aurora_veil_turns = 5;
+                    s.conditions.aurora_veil_turns = dur;
                 }
             }
             // Status-inflicting status moves. PS data/moves.ts marks each
@@ -12125,6 +12155,41 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn light_clay_extends_screens_to_eight_turns() {
+        let mk = |item: &str, slot: u8| -> u8 {
+            let p1_json = format!(r#"[
+                {{"species":"blissey","level":50,"ability":"naturalcure","item":"{item}","nature":"bold","moves":["reflect","lightscreen","auroraveil","seismictoss"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","crunch","sleeptalk","rest"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            // Force Snow for Aurora Veil eligibility.
+            b.weather = crate::weather::Weather::Snow;
+            b.weather_turns = 5;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: slot, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            // End-of-turn tick decrements by 1, so 5 → 4 / 8 → 7.
+            match slot {
+                0 => b.p1.conditions.reflect_turns,
+                1 => b.p1.conditions.light_screen_turns,
+                2 => b.p1.conditions.aurora_veil_turns,
+                _ => 0,
+            }
+        };
+        assert_eq!(mk("leftovers", 0), 4, "Reflect 5→4 baseline");
+        assert_eq!(mk("lightclay", 0), 7, "Reflect 8→7 with Light Clay");
+        assert_eq!(mk("leftovers", 1), 4, "Light Screen 5→4 baseline");
+        assert_eq!(mk("lightclay", 1), 7, "Light Screen 8→7 with Light Clay");
+        assert_eq!(mk("leftovers", 2), 4, "Aurora Veil 5→4 baseline");
+        assert_eq!(mk("lightclay", 2), 7, "Aurora Veil 8→7 with Light Clay");
     }
 
     #[test]
