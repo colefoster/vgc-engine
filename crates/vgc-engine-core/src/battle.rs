@@ -1759,16 +1759,19 @@ impl Battle {
 
             // Water Absorb / Dry Skin heal — PS handlers absorb Water moves
             // and heal target.baseMaxhp / 4. Water type code = 2. Gastrodon
-            // is the corpus-relevant case. Dry Skin's Sun/Rain residuals
-            // and the ×1.25 Fire weakness aren't in this PR.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>.
+            // is the corpus-relevant case. Dry Skin: incoming Water absorbed
+            // and heals 1/4 (same shape as Water Absorb); incoming Fire takes
+            // ×1.25 (handled in damage.rs); Sun/Rain residuals handled in
+            // end-of-turn ability hook.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>,
+            //             <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
             if m.type_ == 2 {
                 let def_ability = if defender.ability_id == u16::MAX {
                     ""
                 } else {
                     data::ABILITIES[defender.ability_id as usize].slug
                 };
-                if def_ability == "waterabsorb" && !attacker_breaks_mold {
+                if matches!(def_ability, "waterabsorb" | "dryskin") && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         let heal = (d.stats.hp / 4).max(1);
                         d.current_hp = d.current_hp.saturating_add(heal).min(d.stats.hp);
@@ -12122,6 +12125,104 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn dry_skin_absorbs_water_and_heals_quarter() {
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["surf","psychic","dazzlinggleam","focusblast"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxicroak","level":50,"ability":"dryskin","item":"leftovers","nature":"adamant","moves":["drainpunch","suckerpunch","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Bring Toxicroak to half HP to leave room to heal.
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 2;
+        let hp_pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp > hp_pre,
+            "Dry Skin should heal on incoming Water (pre={hp_pre} post={})",
+            b.p2.team[0].current_hp);
+    }
+
+    #[test]
+    fn dry_skin_fire_takes_extra_damage() {
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["flamethrower","psychic","dazzlinggleam","focusblast"]}
+        ]"#;
+        let p2_dry = r#"[
+            {"species":"toxicroak","level":50,"ability":"dryskin","item":"leftovers","nature":"adamant","moves":["drainpunch","suckerpunch","earthquake","protect"]}
+        ]"#;
+        let p2_plain = r#"[
+            {"species":"toxicroak","level":50,"ability":"poisontouch","item":"leftovers","nature":"adamant","moves":["drainpunch","suckerpunch","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_dry).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let hp_pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dry_dmg = hp_pre - b.p2.team[0].current_hp;
+
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_plain).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        let hp_pre2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let plain_dmg = hp_pre2 - b2.p2.team[0].current_hp;
+        assert!(dry_dmg > plain_dmg,
+            "Dry Skin should take MORE Fire damage: dry={dry_dmg} plain={plain_dmg}");
+    }
+
+    #[test]
+    fn dry_skin_sun_chip_and_rain_heal_residual() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"leftovers","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxicroak","level":50,"ability":"dryskin","item":"leftovers","nature":"adamant","moves":["drainpunch","suckerpunch","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Rain);
+        // Halve toxicroak hp so heal is visible above leftovers chip.
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 2;
+        let hp_pre = b.p2.team[0].current_hp;
+        // Both protect — survive turn so residuals fire.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        // Heal: leftovers 1/16 + dry skin 1/8 = 3/16 max HP.
+        let expected_heal = (b.p2.team[0].stats.hp / 16).max(1) + (b.p2.team[0].stats.hp / 8).max(1);
+        assert_eq!(b.p2.team[0].current_hp - hp_pre, expected_heal,
+            "Rain + Dry Skin should heal 1/8 + 1/16 (leftovers) = {expected_heal}");
+
+        // Sun: chip 1/8. Use a fresh battle with Sun.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        b2.weather = crate::weather::Weather::Sun;
+        b2.weather_turns = 5;
+        b2.p2.team[0].current_hp = b2.p2.team[0].stats.hp;
+        let hp_pre2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert!(b2.p2.team[0].current_hp < hp_pre2,
+            "Sun + Dry Skin should chip: pre={hp_pre2} post={}", b2.p2.team[0].current_hp);
     }
 
     #[test]
