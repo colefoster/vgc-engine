@@ -1,12 +1,31 @@
-# Abilities — implementation plan (post PR-285)
+# Abilities — citation catalog
 
-Derived from `docs/gaps/abilities.md` (refreshed PR-276/PR-285 era). PS handler line numbers
-are from `/tmp/pokemon-showdown-research/data/abilities.ts` (gen-9 head).
+> **This is a citation catalog, not a progress tracker.** The per-entry PS
+> `file:line` refs, hook pointers, complexity, and deps below are stable and
+> trustworthy. Any "shipped / missing" *counts* go stale the moment a PR lands —
+> **do not trust the status snapshot; regenerate it with an audit pass** (grep
+> `ability.rs` + status/boost guards in `battle.rs` against the slug list).
+> Last audit: 2026-06-18. PS line numbers are from
+> `/tmp/pokemon-showdown-research/data/abilities.ts` (gen-9 head).
 
-This is a **planning doc only**. No engine code changes implied. Each entry names the
-likely engine hook point — implementers should still verify against PS at PR time.
+## Status snapshot (2026-06-18 audit — verify before trusting)
 
-## Summary table
+**SHIPPED:** bigpecks, keeneye (acc), vitalspirit, insomnia, limber, magmaarmor,
+immunity, waterveil, cloudnine, airlock, healer, cottondown, poisontouch,
+slowstart, truant, shadowshield, rattled (+ ~28 prior-round abilities).
+
+**MISSING — tractable now (Round 10 candidates):** owntempo (confusion), innerfocus
+(flinch), soundproof, bulletproof, damp, friendguard, telepathy, liquidooze,
+poisonheal, defeatist, pastelveil, sweetveil, moody, unaware.
+
+**MISSING — blocked on a system:** cutecharm (Attract volatile), cursedbody
+(Disable setter), aromaveil (six volatiles), toxicdebris (Toxic Spikes),
+colorchange/protean/libero (runtime type-override), windrider/windpower (wind-move
+flag + Charged volatile), magicbounce (reflectable predicate), disguise
+(forme-change), mirrorarmor (boost source threading), wonderguard (SE gate +
+Mold-Breaker matrix).
+
+## Original complexity tally (entry count, not status)
 
 | Complexity | Count |
 | --- | --- |
