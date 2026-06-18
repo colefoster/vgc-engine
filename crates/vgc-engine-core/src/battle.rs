@@ -3452,7 +3452,13 @@ impl Battle {
                 // gen-9 rename of Hail (same `Weather::Snow` here). The
                 // cosmetic `priorityChargeCallback` flavor is skipped.
                 self.weather = crate::weather::Weather::Snow;
-                self.weather_turns = 5;
+                // Icy Rock extends Snow 5 → 8 (PS data/items.ts:icyrock).
+                let user_item = if let Some(m) =
+                    self.side(actor_side).active_mon(actor_slot as usize)
+                {
+                    if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
+                } else { "" };
+                self.weather_turns = if user_item == "icyrock" { 8 } else { 5 };
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
@@ -12155,6 +12161,34 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn weather_rocks_extend_ability_set_weather_to_eight_turns() {
+        let mk = |species: &str, ability: &str, item: &str| -> u8 {
+            let p1_json = format!(r#"[
+                {{"species":"{species}","level":50,"ability":"{ability}","item":"{item}","nature":"hardy","moves":["tackle","tackle","tackle","tackle"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","crunch","sleeptalk","rest"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.weather_turns
+        };
+        // Politoed Drizzle + Damp Rock → 8.
+        assert_eq!(mk("politoed", "drizzle", "leftovers"), 5);
+        assert_eq!(mk("politoed", "drizzle", "damprock"), 8);
+        // Torkoal Drought + Heat Rock → 8.
+        assert_eq!(mk("torkoal", "drought", "leftovers"), 5);
+        assert_eq!(mk("torkoal", "drought", "heatrock"), 8);
+        // Tyranitar Sand Stream + Smooth Rock → 8.
+        assert_eq!(mk("tyranitar", "sandstream", "leftovers"), 5);
+        assert_eq!(mk("tyranitar", "sandstream", "smoothrock"), 8);
+        // Abomasnow Snow Warning + Icy Rock → 8.
+        assert_eq!(mk("abomasnow", "snowwarning", "leftovers"), 5);
+        assert_eq!(mk("abomasnow", "snowwarning", "icyrock"), 8);
     }
 
     #[test]
