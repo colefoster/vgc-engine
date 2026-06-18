@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **121**
-- Missing: **128** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **125**
+- Missing: **124** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~30 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~26 competitively relevant**
 
 ## Missing by category
 
@@ -75,12 +75,8 @@ These are first-class VGC items — Booster Energy interactions, Cell Battery/Sn
 
 ### Terrain seeds
 
-All four are missing — high-leverage in Grassy/Electric Terrain teams.
-
-- `electricseed` — Electric Seed — +1 Def in Electric Terrain. Single use.
-- `grassyseed` — Grassy Seed — +1 Def in Grassy Terrain. Single use.
-- `mistyseed` — Misty Seed — +1 Sp. Def in Misty Terrain. Single use.
-- `psychicseed` — Psychic Seed — +1 Sp. Def in Psychic Terrain. Single use.
+All four shipped (PR-301): Electric Seed, Grassy Seed, Misty Seed,
+Psychic Seed. Fire on switch-in and on terrain change.
 
 ### Utility / on-switch / movement modifiers
 

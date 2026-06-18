@@ -374,6 +374,14 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
             } else { "" };
             battle.terrain_turns = if item_slug == "terrainextender" { 8 } else { 5 };
+            // PS `onTerrainChange` dispatch for terrain seeds — fires on
+            // BOTH actives (any side) when the field's terrain changes.
+            let n = battle.format().active_count() as u8;
+            for s in [SideRef::P1, SideRef::P2] {
+                for slot_idx in 0..n {
+                    crate::item::try_consume_terrain_seed(battle, s, slot_idx);
+                }
+            }
         }
     }
 
