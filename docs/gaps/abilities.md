@@ -491,13 +491,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Sound-move table is already maintained.
 
-**Status**: not implemented.
+**Status**: shipped — PR-301. `onTryHit` arm in battle.rs move-immunity block. Mold Breaker bypasses.
 
 ### Bulletproof
 
 **What it is**: Immune to ballistic moves (Aura Sphere, Shadow Ball, Sludge Bomb, Pyro Ball, etc.).
 
-**Status**: not implemented.
+**Status**: shipped — PR-301. `onTryHit` arm gating on `MoveDef.is_bullet`. Mold Breaker bypasses.
 
 ## Doubles / field support
 
