@@ -484,6 +484,9 @@ impl Battle {
             // turn's spread / priority moves go through normally.
             side.conditions.wide_guard_this_turn = false;
             side.conditions.quick_guard_this_turn = false;
+            // Round chain marker — also 1-turn. PS clears at end of
+            // turn so the next turn's first Round is back to 60 BP.
+            side.conditions.round_used_this_turn = false;
         }
         // 5. Weather + Trick Room timers (battle-wide).
         if self.weather_turns > 0 {
@@ -1083,6 +1086,28 @@ impl Battle {
         // and the FIRST listed target. Ties default to Special (PS rolls
         // a 50/50; deferred — keeps RNG draw count stable). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Shell_Side_Arm_(move)>.
+        // Round — PS data/moves.ts:round.
+        //   onBasePower(bp, source) {
+        //     if (source.side.active.some(a => a !== source
+        //                                  && a.willMove === 'round')) {
+        //       ...
+        //     }
+        //     if (source.side.sideConditions['round']) return bp * 2;
+        //   }
+        // PS sets a side condition when a Round resolves, and the
+        // sideCondition's `onModifyPriority` pulls subsequent same-side
+        // Rounds to the front of the queue. We model only the BP-double
+        // arm (deferred: priority pull-up). Sound flag (defrost-on-use
+        // / bypass-Substitute) is wired via the move's existing sound
+        // flag list (PR-51). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Round_(move)>.
+        if m_owned.slug == "round" {
+            if self.side(actor_side).conditions.round_used_this_turn {
+                m_owned.base_power = m_owned.base_power.saturating_mul(2);
+            }
+            // Mark for subsequent same-turn Rounds on this side.
+            self.side_mut(actor_side).conditions.round_used_this_turn = true;
+        }
         if m_owned.slug == "shellsidearm" {
             let opp = actor_side.opposing();
             let primary_target = match target {
@@ -13906,6 +13931,60 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
         assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
+
+    #[test]
+    fn round_doubles_bp_when_ally_used_round_this_turn() {
+        // Doubles: both P1 mons fire Round at the same foe slot. The
+        // second Round of the turn should deal materially more damage
+        // than the first thanks to BP doubling (60 -> 120).
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["round","weatherball","tailwind","protect"]},
+            {"species":"alakazam","level":50,"ability":"magicguard","item":"leftovers","nature":"modest","moves":["round","shadowball","focusblast","dazzlinggleam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"impish","moves":["swordsdance","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["protect","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        // Run scenario A: only Pelipper uses Round (Alakazam Protects).
+        let p1a = TeamBuilder::from_json(p1_json).unwrap();
+        let p2a = TeamBuilder::from_json(p2_json).unwrap();
+        let mut ba = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1a, p2a);
+        let chomp_hp_a_before = ba.p2.team[0].current_hp;
+        ba.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        let dmg_single = chomp_hp_a_before - ba.p2.team[0].current_hp;
+
+        // Run scenario B: BOTH allies use Round at Garchomp. The second
+        // Round in the turn should add roughly 2x the BP of a baseline
+        // Round, so combined damage >> single Round.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut bb = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1b, p2b);
+        let chomp_hp_b_before = bb.p2.team[0].current_hp;
+        bb.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        let dmg_chain = chomp_hp_b_before - bb.p2.team[0].current_hp;
+        // The two-Round damage must exceed 2x the single-Round baseline
+        // (1x Round + 2x Round = 3x baseline minus stochasticity).
+        assert!(dmg_chain > dmg_single * 2,
+                "Round chain dmg {dmg_chain} must exceed 2x single-Round dmg {dmg_single}");
     }
 
     #[test]
