@@ -613,9 +613,14 @@ pub fn calculate_damage(
     let level_factor = (2 * level / 5) + 2;
     let mut dmg: u32 = level_factor * bp * a / d / 50 + 2;
 
-    // Spread (×0.75) — PS step 2, before crit.
+    // Spread (×0.75) — PS step 2, before crit. PS
+    // `sim/battle-actions.ts:1741`:
+    //   baseDamage = this.battle.modify(baseDamage, spreadModifier);
+    // where spreadModifier = 0.75. `modify` is pokeRound (×3072/4096
+    // round-half-down), NOT plain `* 3 / 4`. They disagree on 25% of
+    // values (every dmg where `dmg * 3 mod 4 == 3`).
     if ctx.is_spread {
-        dmg = dmg * 3 / 4;
+        dmg = (dmg * 3072 + 2047) / 4096;
     }
 
     // Weather — PS step 3. ×1.5 / ×0.5 for water/fire under Rain/Sun.
@@ -855,15 +860,20 @@ pub fn calculate_damage(
     }
 
     // Screens: Reflect halves physical damage, Light Screen halves
-    // special damage (×0.5 Singles, ×2/3 Doubles). Skipped under crit
-    // (PS sim/battle-actions.ts ignoresScreens). Future: Infiltrator
-    // bypass, Aurora Veil (both categories at once).
+    // special damage. Singles = ×0.5 (exact), Doubles = PS
+    // `chainModify([2732, 4096])` (= 0.6669921875), NOT ×2/3 (= 0.6666…).
+    // PS `data/moves.ts:reflect / lightscreen / auroraveil`. Apply via
+    // pokeRound: `floor((v * 2732 + 2047) / 4096)`. Plain `*2/3`
+    // truncate disagrees with PS on 83% of values (different ratio AND
+    // wrong rounding). Skipped under crit (PS
+    // sim/battle-actions.ts ignoresScreens). Future: Infiltrator
+    // bypass, Aurora Veil currently treated identically to screens.
     let screen_applies = ctx.defender_has_aurora_veil
         || (ctx.defender_has_reflect && physical)
         || (ctx.defender_has_light_screen && !physical);
     if screen_applies && !ctx.crit {
         if ctx.is_doubles {
-            dmg = dmg * 2 / 3;
+            dmg = (dmg * 2732 + 2047) / 4096;
         } else {
             dmg /= 2;
         }
