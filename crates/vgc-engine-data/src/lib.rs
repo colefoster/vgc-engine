@@ -51,6 +51,14 @@ mod tests {
         let swordsdance = move_by_slug("swordsdance").unwrap();
         assert!(swordsdance.is_dance);
 
+        // Wind flag (PS `flags.wind`): Gust, Hurricane, Tailwind, the
+        // Storm moves, etc. drive Wind Power / Wind Rider.
+        assert!(move_by_slug("gust").unwrap().is_wind);
+        assert!(move_by_slug("hurricane").unwrap().is_wind);
+        assert!(move_by_slug("tailwind").unwrap().is_wind);
+        assert!(move_by_slug("bleakwindstorm").unwrap().is_wind);
+        assert!(!move_by_slug("tackle").unwrap().is_wind);
+
         let spore = move_by_slug("spore").unwrap();
         assert!(spore.is_powder);
 

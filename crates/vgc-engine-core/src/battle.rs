@@ -3320,6 +3320,18 @@ impl Battle {
         // missed; PS still fires on miss because onAfterMove runs).
         self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
 
+        // Charge consume — PS data/conditions.ts:charge `onAfterMove`
+        // removes the volatile once the holder fires an Electric move
+        // (the ×2 BP was already read in calculate_damage). Electric
+        // type index = 3. Status Electric moves (Thunder Wave) route
+        // through resolve_status_move and clear it there is deferred —
+        // the BP-relevant consumer is the damaging path.
+        if m.type_ == 3 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.set_charged(false);
+            }
+        }
+
         if matches!(m.slug, "uturn" | "voltswitch" | "flipturn") && any_damage_dealt > 0 {
             let still_alive = self
                 .side(actor_side)
@@ -13094,6 +13106,42 @@ mod tests {
             lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
             "slot 0 selectable after Disable clears",
         );
+    }
+
+    #[test]
+    fn charge_volatile_clears_after_electric_move() {
+        // The Charge volatile (set here directly, as Wind Power / the
+        // Charge move will later) survives until the holder fires an
+        // Electric move, then is removed.
+        let p1_json = r#"[
+            {"species":"zapdos","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","roost","heatwave","uturn"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        b.p1.team[0].set_charged(true);
+        assert!(b.p1.team[0].is_charged(), "Charge applied");
+
+        // Use Thunderbolt (Electric, slot 0): the ×2 lands and the
+        // volatile is consumed.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert!(!b.p1.team[0].is_charged(), "Charge consumed after Electric move");
+
+        // Re-apply, then use a non-Electric move (Heat Wave, slot 2):
+        // the volatile must persist.
+        b.p1.team[0].set_charged(true);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert!(b.p1.team[0].is_charged(), "Charge persists through a non-Electric move");
     }
 
     #[test]
