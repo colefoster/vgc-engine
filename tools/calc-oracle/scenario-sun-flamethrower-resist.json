@@ -1,0 +1,20 @@
+{
+  "name": "sun_flamethrower_torkoal_into_heatran",
+  "attacker": {
+    "species": "Torkoal",
+    "level": 50,
+    "ability": "Drought",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Heatran",
+    "level": 50,
+    "ability": "Inner Focus",
+    "nature": "Calm",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Flamethrower",
+  "field": { "weather": "Sun" },
+  "trials": 500
+}

@@ -1,0 +1,19 @@
+{
+  "name": "adaptability_shadowball_dragapult_into_clefable",
+  "attacker": {
+    "species": "Dragapult",
+    "level": 50,
+    "ability": "Adaptability",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Clefable",
+    "level": 50,
+    "ability": "Unaware",
+    "nature": "Calm",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Shadow Ball",
+  "trials": 500
+}

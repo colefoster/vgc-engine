@@ -1,0 +1,20 @@
+{
+  "name": "psyterrain_expandingforce_indeedeef_into_snorlax",
+  "attacker": {
+    "species": "Indeedee-F",
+    "level": 50,
+    "ability": "Psychic Surge",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Snorlax",
+    "level": 50,
+    "ability": "Thick Fat",
+    "nature": "Careful",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Expanding Force",
+  "field": { "terrain": "Psychic" },
+  "trials": 500
+}

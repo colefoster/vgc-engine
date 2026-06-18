@@ -1,0 +1,19 @@
+{
+  "name": "tintedlens_bugbuzz_venomoth_into_heatran",
+  "attacker": {
+    "species": "Venomoth",
+    "level": 50,
+    "ability": "Tinted Lens",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Heatran",
+    "level": 50,
+    "ability": "Flash Fire",
+    "nature": "Calm",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Bug Buzz",
+  "trials": 500
+}

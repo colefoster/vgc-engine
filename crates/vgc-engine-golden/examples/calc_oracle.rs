@@ -78,9 +78,11 @@ struct Output {
     #[serde(rename = "move")]
     move_name: String,
     trials: u32,
+    target_max_hp: u16,
     observed_damage: Vec<u16>,
     observed_unique: Vec<u16>,
     fainted_count: u32,
+    missed_count: u32,
     errors: Vec<String>,
 }
 
@@ -180,22 +182,44 @@ fn main() {
 
     let mut observed = Vec::with_capacity(sc.trials as usize);
     let mut fainted = 0u32;
+    let mut missed = 0u32;
+    let mut target_max: u16 = 0;
     let mut errors = Vec::new();
 
     for i in 0..sc.trials {
         let cfg = BattleConfig { format: Format::Singles, seed: i as u64 };
         let mut battle = Battle::new(cfg, p1_team.clone(), p2_team.clone());
+        // Pre-terastallize the attacker if the scenario requests it.
+        // This is how calc-oracle simulates a Tera-active attacker
+        // without needing the "move N terastallize" action plumbing.
+        if sc.attacker.terastallized {
+            battle.p1.team[0].terastallized = true;
+        }
+        if sc.defender.terastallized {
+            battle.p2.team[0].terastallized = true;
+        }
         let max = max_hp(&battle.p2.team[0]);
+        target_max = max;
         let _ = battle.step(&p1_choices, &p2_choices);
         let Some(mon) = battle.p2.active_mon(0) else {
             errors.push(format!("trial {i}: defender slot empty"));
             continue;
         };
         let dmg = max.saturating_sub(mon.current_hp);
-        observed.push(dmg);
         if mon.fainted {
             fainted += 1;
+            // OHKO clamps `dmg = max`; the real damage value is unknown
+            // (somewhere ≥ remaining HP at hit time). Exclude from the
+            // observed set so the comparator can't false-fail when calc
+            // predicts a damage value above max.
+            continue;
         }
+        if dmg == 0 {
+            missed += 1;
+            // Misses produce dmg=0; not a damage observation.
+            continue;
+        }
+        observed.push(dmg);
     }
 
     let mut unique: Vec<u16> = observed.clone();
@@ -209,9 +233,11 @@ fn main() {
         name: sc.name,
         move_name: sc.move_name,
         trials: sc.trials,
+        target_max_hp: target_max,
         observed_damage: observed_sorted,
         observed_unique: unique,
         fainted_count: fainted,
+        missed_count: missed,
         errors,
     };
     println!("{}", serde_json::to_string_pretty(&out).expect("json"));

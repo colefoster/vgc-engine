@@ -123,7 +123,7 @@ function main() {
     damage_union: union,
     range: [dmg[0], dmg[dmg.length - 1]],
     range_crit: [dmgCrit[0], dmgCrit[dmgCrit.length - 1]],
-    desc: r1.fullDesc(),
+    desc: (() => { try { return r1.fullDesc(); } catch (e) { return '(fullDesc unavailable: ' + e.message + ')'; } })(),
   };
   process.stdout.write(JSON.stringify(out, null, 2));
 }

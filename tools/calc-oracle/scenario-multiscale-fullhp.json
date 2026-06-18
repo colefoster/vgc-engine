@@ -1,0 +1,19 @@
+{
+  "name": "multiscale_earthquake_garchomp_into_dragonite",
+  "attacker": {
+    "species": "Garchomp",
+    "level": 50,
+    "ability": "Rough Skin",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Dragonite",
+    "level": 50,
+    "ability": "Multiscale",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Outrage",
+  "trials": 500
+}
