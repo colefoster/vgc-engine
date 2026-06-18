@@ -13546,6 +13546,50 @@ mod tests {
     }
 
     #[test]
+    fn ability_shield_blocks_mummy_contact_rewrite() {
+        // Garchomp @ Ability Shield contact-hits Cofagrigus @ Mummy.
+        // Without the shield Garchomp's roughskin would be overwritten;
+        // with the shield it must persist.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"abilityshield","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"cofagrigus","level":50,"ability":"mummy","item":"leftovers","nature":"bold","moves":["shadowball","willowisp","painsplit","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let after = b.p1.team[0].effective_ability_slug();
+        assert_eq!(after, "roughskin",
+                   "Ability Shield must prevent Mummy from overwriting (got {after})");
+    }
+
+    #[test]
+    fn ability_shield_blocks_trace_on_user() {
+        // Trace-Gardevoir holding Ability Shield should NOT copy.
+        let p1_json = r#"[
+            {"species":"gardevoir","level":50,"ability":"trace","item":"abilityshield","nature":"timid","moves":["moonblast","psychic","focusblast","shadowball"]},
+            {"species":"flutter mane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"chien-pao","level":50,"ability":"swordofruin","item":"focussash","nature":"jolly","moves":["iceshard","sucker punch","crunch","sacredsword"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Battle::new runs on_switch_in including Trace; with Ability
+        // Shield, Gardevoir's `effective_ability_slug` should still
+        // read "trace".
+        let slug = b.p1.team[0].effective_ability_slug();
+        assert_eq!(slug, "trace",
+                   "Ability Shield should block Trace from copying SwordOfRuin (got {slug})");
+    }
+
+    #[test]
     fn weakness_policy_does_not_fire_on_neutral_hit() {
         // Garchomp @ Weakness Policy hit by Body Slam (Normal vs
         // Dragon/Ground = neutral). No boost, item retained.

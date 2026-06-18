@@ -44,6 +44,28 @@ pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
     ability_slug(mon.ability_id) == "rockhead"
 }
 
+/// Ability Shield — PS `data/items.ts:abilityshield` registers a fleet of
+/// `onSetAbility` / `onCopyAbility` / `onSuppressAbility` / `onTryBoost?`
+/// handlers that all early-return when the holder carries it. Net effect:
+/// the holder's ability cannot be changed, suppressed, copied off, or
+/// replaced by Trace / Skill Swap / Worry Seed / Gastro Acid / Mummy /
+/// Lingering Aroma / Wandering Spirit / etc. Stays equipped (NOT
+/// consumed); persists across the battle once held.
+///
+/// We expose this as a single helper read from every ability-change site
+/// — Trace's source AND target, Mummy/Lingering Aroma's attacker side,
+/// Wandering Spirit's swap, and Imposter's caster. Symmetric reads keep
+/// PS's semantics: if either party in a swap holds the shield, the swap
+/// is cancelled.
+///
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ability_Shield>.
+pub(crate) fn has_ability_shield(mon: &crate::pokemon::Pokemon) -> bool {
+    if mon.item_id == u16::MAX {
+        return false;
+    }
+    data::ITEMS[mon.item_id as usize].slug == "abilityshield"
+}
+
 /// Returns true if `mon` cannot have its stats lowered by an OPPOSING
 /// source (move secondary, Parting Shot, Strength Sap, Intimidate, etc).
 /// Ally-cast drops (rare — e.g. Helping Hand doesn't drop) are unaffected.
@@ -380,23 +402,38 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // top-100 mons don't run those.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
     if slug == "trace" {
-        let opp = side.opposing();
-        let n = battle.format().active_count() as u8;
-        let mut found: Option<u16> = None;
-        for s in 0..n {
-            let candidate = match battle.side(opp).active_mon(s as usize) {
-                Some(m) if m.is_alive() => m.ability_id,
-                _ => continue,
-            };
-            if candidate == u16::MAX { continue; }
-            let cslug = ability_slug(candidate);
-            if cslug.is_empty() || cslug == "trace" { continue; }
-            found = Some(candidate);
-            break;
-        }
-        if let Some(new_id) = found {
-            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.ability_id = new_id;
+        // Ability Shield on the Trace user blocks the change to its own
+        // ability — PS `onSetAbility` returns false.
+        let user_shielded = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(has_ability_shield);
+        if !user_shielded {
+            let opp = side.opposing();
+            let n = battle.format().active_count() as u8;
+            let mut found: Option<u16> = None;
+            for s in 0..n {
+                let candidate = match battle.side(opp).active_mon(s as usize) {
+                    Some(m) if m.is_alive() => m.ability_id,
+                    _ => continue,
+                };
+                if candidate == u16::MAX { continue; }
+                let cslug = ability_slug(candidate);
+                if cslug.is_empty() || cslug == "trace" { continue; }
+                // Ability Shield on the target blocks Trace from copying
+                // off it — PS `onCopyAbility` returns false on the target.
+                let target_shielded = battle
+                    .side(opp)
+                    .active_mon(s as usize)
+                    .is_some_and(has_ability_shield);
+                if target_shielded { continue; }
+                found = Some(candidate);
+                break;
+            }
+            if let Some(new_id) = found {
+                if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                    m.ability_id = new_id;
+                }
             }
         }
     }
@@ -983,7 +1020,13 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
-            if attacker_alive && !attacker_curr_slug.is_empty() && attacker_curr_slug != rep {
+            // Ability Shield on the attacker blocks Mummy / Lingering
+            // Aroma from rewriting their ability — PS `onSetAbility`.
+            let attacker_shielded = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(has_ability_shield);
+            if attacker_alive && !attacker_curr_slug.is_empty() && attacker_curr_slug != rep && !attacker_shielded {
                 if let Some(new_id) = data::ABILITIES.iter().position(|a| a.slug == rep) {
                     if let Some(a) = battle
                         .side_mut(attacker_side)
@@ -1017,10 +1060,23 @@ pub fn on_damaging_hit(
             .active_mon(target_slot as usize)
             .map(|m| m.ability_id)
             .unwrap_or(u16::MAX);
+        // Ability Shield on either side cancels the swap — PS gates the
+        // swap on both `onSetAbility` (attacker) and `onCopyAbility`
+        // (target self).
+        let attacker_shielded = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(has_ability_shield);
+        let target_shielded = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(has_ability_shield);
         if attacker_alive
             && attacker_id != u16::MAX
             && target_id != u16::MAX
             && attacker_id != target_id
+            && !attacker_shielded
+            && !target_shielded
         {
             if let Some(a) = battle
                 .side_mut(attacker_side)
