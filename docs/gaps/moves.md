@@ -6,9 +6,9 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 29 |
+| shipped | 30 |
 | partial | 5 |
-| not implemented | 5 |
+| not implemented | 4 |
 | deferred / no-effect | 0 |
 
 ## Conditional BP
@@ -273,7 +273,8 @@ See systems.md (lock volatiles).
 
 **Depends on**: Action-queue access to detect "got hit before my turn".
 
-**Status**: not implemented. (Appears only in test fixtures.)
+**Status**: shipped — PR-53. `damaged_this_turn` on the attacker is
+checked at resolve time; failing PS-style with PP deducted.
 
 ### Sleep Talk / Snore
 

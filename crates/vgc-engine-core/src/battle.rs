@@ -983,6 +983,27 @@ impl Battle {
             }
         }
 
+        // 2a'. Focus Punch — PS data/moves.ts:focuspunch.
+        //      `onTry(pokemon)` checks `pokemon.volatiles['focuspunch']`
+        //      which is set turn-start via `onBeforeTurn` and cleared if
+        //      the user took damage before its action via `onHit` on the
+        //      `focuspunch` volatile (PS clears it on any move that
+        //      `damage > 0`). Our engine collapses this to: fail if
+        //      `damaged_this_turn` is set when resolution starts. PP is
+        //      still ticked (PS "Lost focus!" message — move fails after
+        //      PP deduct in PS's flow, but the gen-9 outcome is the same:
+        //      the move slot pays PP, no damage is dealt).
+        //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
+        if m.slug == "focuspunch" && attacker.damaged_this_turn() {
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1);
+                }
+                mon.last_used_move_slot = move_slot;
+            }
+            return;
+        }
+
         // 1b. Gigaton Hammer / Blood Moon — `flags: { cantusetwice: 1 }`.
         // PS sim/battle.ts:1692 disables the move at choice-selection
         // time when the user's lastMove id matches the slot. We model
@@ -13725,5 +13746,71 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
         assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
+
+    #[test]
+    fn focus_punch_fails_if_user_was_hit_this_turn() {
+        // P1 Iron Hands (adamant) at -3 priority Focus Punch.
+        // P2 Garchomp Dragon Claw at +0 priority. Garchomp outspeeds and
+        // hits Iron Hands; the Focus Punch then resolves and must fail —
+        // Iron Hands' HP should not change due to recoil and Garchomp
+        // should NOT take Focus-Punch damage.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["focuspunch","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"jolly","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{"spe":252,"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Garchomp at full HP so we can detect any damage to it. We
+        // compare to max_hp - leftovers (1/16 max). Iron Hands also
+        // holds Assault Vest, no recoil sources on Garchomp.
+        let chomp_max = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Garchomp moves first (Dragon Claw, priority 0 > -3), damages
+        // Iron Hands; Iron Hands' Focus Punch must then fail and NOT
+        // damage Garchomp. Garchomp ends at max_hp (Leftovers heal
+        // no-ops at full HP).
+        assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp,
+                "Iron Hands took Dragon Claw damage");
+        assert_eq!(b.p2.team[0].current_hp, chomp_max,
+                   "Focus Punch must fail when user was hit this turn");
+        // PP was deducted on the failed Focus Punch (PS behavior).
+        assert_eq!(b.p1.team[0].pp[0], 19, "Focus Punch PP ticked on failure");
+    }
+
+    #[test]
+    fn focus_punch_succeeds_if_user_untouched() {
+        // Iron Hands uses Focus Punch vs Garchomp who Protects this turn
+        // — Iron Hands is not damaged, so Focus Punch resolves through
+        // Protect failure ... actually Protect blocks it. Use a setup
+        // where the opponent passes / heals so the user takes no damage.
+        // Simplest: opponent uses Protect — Focus Punch should HIT
+        // Protect (intercept counts as no damage to the user) and deal
+        // 0 damage but the failure is on Protect not on Focus Punch.
+        // Cleanest: opponent uses a self-targeted status move.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["focuspunch","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"jolly","moves":["swordsdance","earthquake","protect","ironhead"],"evs":{"spe":252,"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let chomp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Garchomp Swords Dances (no damage to Iron Hands); Iron Hands'
+        // Focus Punch resolves and damages Garchomp.
+        assert!(b.p2.team[0].current_hp < chomp_before,
+                "Focus Punch must land when user was not damaged");
     }
 }
