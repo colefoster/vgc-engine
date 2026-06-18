@@ -7053,6 +7053,29 @@ mod tests {
     }
 
     #[test]
+    fn cell_battery_consumes_on_electric_hit_for_plus_one_atk() {
+        // PS data/items.ts:cellbattery — when the holder is hit by an
+        // Electric move, consume for +1 Atk.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"cellbattery","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre_atk = b.p2.team[0].boosts[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_alive(), "snorlax survives one thunderbolt");
+        assert_eq!(b.p2.team[0].boosts[0], pre_atk + 1, "Cell Battery gave +1 Atk");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Cell Battery consumed");
+    }
+
+    #[test]
     fn electric_seed_consumes_in_electric_terrain_for_plus_one_def() {
         // PS data/items.ts:electricseed onStart — when Electric Terrain
         // is active on switch-in, consume for +1 Def. Verify the seed
