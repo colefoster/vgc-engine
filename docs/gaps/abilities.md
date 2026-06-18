@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 54 |
+| shipped | 56 |
 | partial | 5 |
-| not implemented | 34 |
+| not implemented | 32 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -587,7 +587,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Mummy: contact attacker's ability becomes Mummy. Wandering Spirit: contact attacker swaps abilities with the user.
 
-**Status**: not implemented.
+**Status**: shipped — PR-282. Lingering Aroma covered by the same arm. Ability-Shield / permanent-ability list deferred.
 
 ### Mirror Armor
 

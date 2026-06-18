@@ -878,4 +878,86 @@ pub fn on_damaging_hit(
             }
         }
     }
+
+    // Mummy / Lingering Aroma — PS data/abilities.ts:
+    //   mummy:          on contact hit, source.setAbility('mummy')
+    //   lingeringaroma: on contact hit, source.setAbility('lingeringaroma')
+    // PS guards on: source !== target, source.ability !== replacement,
+    // and source ability not in the un-replaceable list (Ability Shield,
+    // Multitype, Disguise, Ice Face, Comatose, As One, Battle Bond, Gulp
+    // Missile, Power Construct, RKS System, Schooling, Shields Down,
+    // Stance Change, Zen Mode, Zero to Hero, plus mummy/lingeringaroma).
+    // Coverage cut: we check alive + contact + "not already the same".
+    // The permanent-ability list + Ability Shield gate are deferred.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mummy_(Ability)>
+    //             <https://bulbapedia.bulbagarden.net/wiki/Lingering_Aroma_(Ability)>.
+    let mummy_replacement = match slug {
+        "mummy" => Some("mummy"),
+        "lingeringaroma" => Some("lingeringaroma"),
+        _ => None,
+    };
+    if let Some(rep) = mummy_replacement {
+        if move_makes_contact_from_attacker {
+            let attacker_curr_slug = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|a| ability_slug(a.ability_id))
+                .unwrap_or("");
+            let attacker_alive = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if attacker_alive && !attacker_curr_slug.is_empty() && attacker_curr_slug != rep {
+                if let Some(new_id) = data::ABILITIES.iter().position(|a| a.slug == rep) {
+                    if let Some(a) = battle
+                        .side_mut(attacker_side)
+                        .active_mon_mut(attacker_slot as usize)
+                    {
+                        a.ability_id = new_id as u16;
+                    }
+                }
+            }
+        }
+    }
+
+    // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a
+    // contact hit, swap abilities between holder and attacker (unless
+    // the attacker's ability is in the un-swappable list). Coverage
+    // cut matches Mummy: alive + contact + ids both real + ids differ;
+    // permanent-ability gate deferred. Runerigus signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wandering_Spirit_(Ability)>.
+    if slug == "wanderingspirit" && move_makes_contact_from_attacker {
+        let attacker_alive = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive());
+        let attacker_id = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .map(|a| a.ability_id)
+            .unwrap_or(u16::MAX);
+        let target_id = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .map(|m| m.ability_id)
+            .unwrap_or(u16::MAX);
+        if attacker_alive
+            && attacker_id != u16::MAX
+            && target_id != u16::MAX
+            && attacker_id != target_id
+        {
+            if let Some(a) = battle
+                .side_mut(attacker_side)
+                .active_mon_mut(attacker_slot as usize)
+            {
+                a.ability_id = target_id;
+            }
+            if let Some(t) = battle
+                .side_mut(target_side)
+                .active_mon_mut(target_slot as usize)
+            {
+                t.ability_id = attacker_id;
+            }
+        }
+    }
 }

@@ -13000,6 +13000,53 @@ mod tests {
     }
 
     #[test]
+    fn mummy_replaces_attacker_ability_on_contact() {
+        // Garchomp (Rough Skin) contact-hits a Mummy holder → its
+        // ability becomes Mummy.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        // Cofagrigus has Mummy.
+        let p2_json = r#"[
+            {"species":"cofagrigus","level":50,"ability":"mummy","item":"leftovers","nature":"bold","moves":["shadowball","willowisp","painsplit","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Force max HP so defender survives.
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp;
+        let before = b.p1.team[0].effective_ability_slug();
+        assert_eq!(before, "roughskin");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let after = b.p1.team[0].effective_ability_slug();
+        assert_eq!(after, "mummy",
+            "Garchomp's ability should be replaced with Mummy after a contact hit");
+    }
+
+    #[test]
+    fn wandering_spirit_swaps_abilities_on_contact() {
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"runerigus","level":50,"ability":"wanderingspirit","item":"leftovers","nature":"impish","moves":["shadowclaw","earthquake","willowisp","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "wanderingspirit");
+        assert_eq!(b.p2.team[0].effective_ability_slug(), "roughskin");
+    }
+
+    #[test]
     fn natural_cure_clears_status_on_switch_out() {
         // Blissey with Natural Cure, burned, switches out → status clears.
         let p1_json = r#"[
