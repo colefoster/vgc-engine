@@ -214,6 +214,8 @@ fn make_pokemon(
         must_recharge: false,
         lockin_turns: 0,
         lockin_move_slot: 255,
+        slow_start_active_turns: 0,
+        truant_loafing: false,
         volatiles: VolatileSet::default(),
     }
 }
