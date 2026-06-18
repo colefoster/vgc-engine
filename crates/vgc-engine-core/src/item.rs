@@ -426,6 +426,68 @@ pub fn on_damaging_hit(
         }
         let _ = attacker_side; let _ = attacker_slot;
     }
+    // Kee Berry — PS data/items.ts:keeberry (line 3172). onAfterMoveSecondary:
+    // if hit category was Physical, +1 Def, consume. Self-boost — Clear
+    // Body / Clear Amulet don't block. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Kee_Berry>.
+    if slug == "keeberry" {
+        let category = data::MOVES[move_id as usize].category;
+        if category == 0 {
+            if let Some(t) = battle
+                .side_mut(target_side)
+                .active_mon_mut(target_slot as usize)
+            {
+                t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6); // Def
+                t.item_id = u16::MAX;
+            }
+        }
+    }
+    // Maranga Berry — PS data/items.ts:marangaberry (line 3782). Mirror
+    // of Kee for SpD on Special hit. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Maranga_Berry>.
+    if slug == "marangaberry" {
+        let category = data::MOVES[move_id as usize].category;
+        if category == 1 {
+            if let Some(t) = battle
+                .side_mut(target_side)
+                .active_mon_mut(target_slot as usize)
+            {
+                t.boosts[3] = (t.boosts[3] + 1).clamp(-6, 6); // SpD
+                t.item_id = u16::MAX;
+            }
+        }
+    }
+    // Rowap Berry — PS data/items.ts:rowapberry (line 5379). Mirror of
+    // Jaboca for Special category: damage special attacker 1/8 max HP
+    // (Ripen ×2 deferred). Magic Guard on attacker blocks. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Rowap_Berry>.
+    if slug == "rowapberry" {
+        let category = data::MOVES[move_id as usize].category;
+        if category == 1 {
+            let attacker_alive_and_no_mg = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| a.is_alive() && !crate::ability::has_magic_guard(a));
+            if attacker_alive_and_no_mg {
+                if let Some(t) = battle
+                    .side_mut(target_side)
+                    .active_mon_mut(target_slot as usize)
+                {
+                    t.item_id = u16::MAX;
+                }
+                if let Some(a) = battle
+                    .side_mut(attacker_side)
+                    .active_mon_mut(attacker_slot as usize)
+                {
+                    let recoil = (a.stats.hp / 8).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(recoil);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
+        }
+    }
     if slug == "jabocaberry" {
         // Physical-only gate. PS reads `move.category === 'Physical'`.
         let category = data::MOVES[move_id as usize].category;

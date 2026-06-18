@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **140**
-- Missing: **109** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **143**
+- Missing: **106** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~11 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~8 competitively relevant**
 
 ## Missing by category
 
@@ -37,9 +37,7 @@ These activate at <=1/4 HP and matter in VGC for Salac/Petaya sweepers and Sitru
 - `starfberry` — Starf Berry — Random +2 at <=1/4 HP. Single use.
 - `micleberry` — Micle Berry — Next move 1.2x accuracy at <=1/4 HP. Single use.
 - `lansatberry` — Lansat Berry — Focus Energy at <=1/4 HP. Single use.
-- `keeberry` — Kee Berry — +1 Def after physical hit. Single use.
-- `marangaberry` — Maranga Berry — +1 Sp. Def after special hit. Single use.
-- `rowapberry` — Rowap Berry — Damages special attacker for 1/8 max HP. Single use.
+- Retaliate berries (Kee / Maranga / Rowap) — shipped (PR-305).
 
 ### HP-restoring berries
 
