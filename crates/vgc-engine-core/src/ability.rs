@@ -492,6 +492,38 @@ pub fn on_damaging_hit(
             t.boosts[0] = 6;
         }
     }
+    // Berserk — PS `data/abilities.ts:berserk`:
+    //   onDamage(damage, target, source, effect) {
+    //     if (effect.effectType !== 'Move') return;
+    //     if (!damage || !target.hp) return;
+    //     if (target.hp <= target.maxhp / 2 && target.hp + damage > target.maxhp / 2) {
+    //       this.boost({spa: 1}, target, target);
+    //     }
+    //   }
+    // +1 SpA when a damaging move drops the holder THROUGH 50% (started
+    // above ½ HP, ends at ≤½). One-shot per crossing — if already below
+    // 50%, doesn't re-fire. KO hits don't trigger (`!target.hp` gate).
+    // PS `last_damage_taken` is the damage just applied, so pre-HP =
+    // current + last_damage_taken. Drampa / Kommo-o signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Berserk_(Ability)>.
+    if slug == "berserk" && target_alive {
+        if let Some(t) = battle.side(target_side).active_mon(target_slot as usize) {
+            let max = t.stats.hp as u32;
+            let post = t.current_hp as u32;
+            let dmg = t.last_damage_taken as u32;
+            let pre = post + dmg;
+            let half = max / 2;
+            // Crossed the half line: pre > half AND post <= half.
+            if pre > half && post <= half && dmg > 0 {
+                if let Some(tm) = battle
+                    .side_mut(target_side)
+                    .active_mon_mut(target_slot as usize)
+                {
+                    tm.boosts[2] = (tm.boosts[2] + 1).clamp(-6, 6);
+                }
+            }
+        }
+    }
     // Rough Skin (Garchomp/Carvanha) and Iron Barbs (Ferrothorn): 1/8
     // max HP recoil to any contact attacker. PS handlers are functionally
     // identical — `checkMoveMakesContact(move, source, target, true)` gate
