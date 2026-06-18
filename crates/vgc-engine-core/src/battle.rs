@@ -2623,6 +2623,31 @@ impl Battle {
                 crate::item::on_damaging_hit(
                     self, tside, tslot, actor_side, actor_slot, move_id,
                 );
+                // Reactive-switch items — PS `onAfterDamage` slot.
+                //   Red Card (forces ATTACKER out) runs BEFORE Eject
+                //   Button (forces holder out) in PS handler order:
+                //   PS `data/items.ts:redcard.onAfterMoveSecondary` vs
+                //   `ejectbutton.onAfterMoveSecondarySelf`. Both fire on
+                //   the same `tside/tslot` holder; only one card type
+                //   can be held at a time so the order is observable
+                //   only in cross-mon interactions. We gate Eject Button
+                //   on the holder still being alive AND still on the
+                //   field (Red Card might have force-switched the
+                //   attacker but the holder is still in slot tslot).
+                if self.side(tside).active_mon(tslot as usize)
+                    .is_some_and(|m| m.is_alive())
+                {
+                    let _ = crate::item::try_consume_red_card(
+                        self, tside, tslot, actor_side, actor_slot,
+                    );
+                }
+                if self.side(tside).active_mon(tslot as usize)
+                    .is_some_and(|m| m.is_alive())
+                {
+                    let _ = crate::item::try_consume_eject_button(
+                        self, tside, tslot,
+                    );
+                }
             }
             // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
             // attacker-side KO triggers. PS data/abilities.ts:
@@ -2732,6 +2757,19 @@ impl Battle {
             }
             // White Herb consumes itself to restore negative stages.
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+            // Eject Pack reacts to the self-drop. PS
+            // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
+            // negative stage change regardless of source; self-drop
+            // moves (Overheat, Leaf Storm, Draco Meteor, Close Combat
+            // etc.) qualify. White Herb runs first per PS handler
+            // order (item priority) — if it cleared the drop, Eject
+            // Pack still fires (PS triggers on the boost CALL, not on
+            // the surviving stage), but the holder is the same mon and
+            // can't hold both items, so the ordering is moot in
+            // practice.
+            let _ = crate::item::try_consume_eject_pack(
+                self, actor_side, actor_slot, true,
+            );
         }
 
         // Move recoil — Flare Blitz / Wild Charge / Brave Bird /
@@ -3107,6 +3145,52 @@ impl Battle {
             }
             true
         })
+    }
+
+    /// Pick the lowest-index alive bench Pokemon on `side` not already in an
+    /// active slot. Used by the reactive-switch items (Eject Button / Eject
+    /// Pack / Red Card) as a deterministic auto-replacement chooser in
+    /// lieu of a full caller-supplied prompt API. Returns `None` if no
+    /// such bench mon exists.
+    pub(crate) fn first_bench_index(&self, side: SideRef) -> Option<u8> {
+        let s = self.side(side);
+        let n = self.format().active_count();
+        for (idx, mon) in s.team.iter().enumerate() {
+            if !mon.is_alive() {
+                continue;
+            }
+            let mut is_active = false;
+            for &a in s.active.iter().take(n) {
+                if a as usize == idx {
+                    is_active = true;
+                    break;
+                }
+            }
+            if !is_active {
+                return Some(idx as u8);
+            }
+        }
+        None
+    }
+
+    /// Reactive force-switch: yank `slot` on `side` off the field and pull
+    /// in the first eligible bench Pokemon as a deterministic replacement.
+    /// Returns true if a swap actually fired. Runs the standard
+    /// `do_switch` machinery (on_switch_out → swap → hazards →
+    /// ability/item on_switch_in), matching PS's "switchFlag" path. This
+    /// is the v1 of the reactive-switch API: caller-supplied replacements
+    /// are a follow-up.
+    pub(crate) fn force_switch_auto(&mut self, side: SideRef, slot: u8) -> bool {
+        let team_index = match self.first_bench_index(side) {
+            Some(i) => i,
+            None => return false,
+        };
+        if !self.do_switch(side, slot, team_index) {
+            return false;
+        }
+        crate::ability::on_switch_in(self, side, slot);
+        crate::item::on_switch_in(self, side, slot);
+        true
     }
 
     /// Duration to set for a freshly-created screen (Reflect / Light Screen
@@ -3890,6 +3974,13 @@ impl Battle {
                         t.boosts[2] = (t.boosts[2] - 1).clamp(-6, 6);
                     }
                     crate::item::try_consume_white_herb(self, opp, slot);
+                    // Eject Pack: opposing-source stat drop triggers a
+                    // reactive switch on the target. PS handler order:
+                    // useItem fires after Defiant/Competitive
+                    // reactions (see `react_to_opposing_stat_drop`),
+                    // since onAfterEachBoost runs after the boost call
+                    // returns control.
+                    let _ = crate::item::try_consume_eject_pack(self, opp, slot, true);
                     crate::ability::react_to_opposing_stat_drop(self, opp, slot);
                     dropped_any = true;
                     // PS targets a single mon ("normal"); pick the first
@@ -4072,6 +4163,7 @@ impl Battle {
                         t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
                     }
                     crate::item::try_consume_white_herb(self, opp, ts);
+                    let _ = crate::item::try_consume_eject_pack(self, opp, ts, true);
                 }
             }
             "rest" => {
@@ -4470,6 +4562,12 @@ fn apply_secondary_effect(
                     *stage = (*stage + delta).clamp(-6, 6);
                 }
                 crate::item::try_consume_white_herb(battle, target_side, target_slot);
+                // Eject Pack: secondary-effect stat drop (move-secondary
+                // path, e.g. Crunch's 20% Def drop) triggers a reactive
+                // switch on the target.
+                let _ = crate::item::try_consume_eject_pack(
+                    battle, target_side, target_slot, true,
+                );
             }
         }
     }
@@ -14313,5 +14411,110 @@ mod tests {
         // Focus Punch resolves and damages Garchomp.
         assert!(b.p2.team[0].current_hp < chomp_before,
                 "Focus Punch must land when user was not damaged");
+    }
+
+    // ------------------------------------------------------------------
+    // Reactive-switch items — Eject Button / Eject Pack / Red Card.
+    // V1 uses a deterministic auto-replacement chooser (first eligible
+    // bench mon) in lieu of a caller-supplied prompt. See
+    // `Battle::force_switch_auto` and `item::try_consume_*` for the
+    // PS citations.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn eject_button_switches_holder_after_taking_damage() {
+        // Holder (Snorlax @ Eject Button) takes a damaging hit from
+        // Pikachu's Quick Attack, survives, and switches out to the
+        // first bench mon (Pichu). Item consumed (u16::MAX).
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["quickattack","thunderbolt","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"ejectbutton","nature":"careful","moves":["bodyslam","rest","protect","crunch"]},
+            {"species":"pichu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snorlax_team_idx = b.p2.active[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], // Snorlax Rest
+        );
+        // Eject Button: Pichu (index 1) is now active.
+        assert_eq!(b.p2.active[0], 1, "Eject Button switched Snorlax → Pichu");
+        // Item consumed on the OUTGOING Snorlax (still on team at its slot).
+        assert_eq!(b.p2.team[snorlax_team_idx as usize].item_id, u16::MAX,
+                   "Eject Button consumed");
+    }
+
+    #[test]
+    fn eject_button_no_swap_when_no_bench() {
+        // Single-mon team: Eject Button has no eligible replacement and
+        // must NOT consume itself (PS's switchFlag short-circuit).
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["quickattack","thunderbolt","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"ejectbutton","nature":"careful","moves":["bodyslam","rest","protect","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], // Snorlax Rest
+        );
+        // Snorlax still active and still holding the item.
+        assert_eq!(b.p2.active[0], 0, "no bench → no swap");
+        let slug = data::ITEMS[b.p2.team[0].item_id as usize].slug;
+        assert_eq!(slug, "ejectbutton", "no bench → item not consumed");
+    }
+
+    #[test]
+    fn eject_pack_switches_holder_after_intimidate_drop() {
+        // Incineroar's Intimidate lowers Pikachu's Atk → Pikachu's
+        // Eject Pack triggers, pulling in Pichu.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"ejectpack","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"pichu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Intimidate ran at battle start → Eject Pack triggered → Pichu
+        // is now active in slot 0.
+        assert_eq!(b.p2.active[0], 1, "Eject Pack switched Pikachu → Pichu");
+        // Pikachu (team[0]) consumed the pack.
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Eject Pack consumed");
+    }
+
+    #[test]
+    fn red_card_switches_attacker_not_holder() {
+        // Pikachu (Quick Attack) hits Snorlax @ Red Card. Pikachu has a
+        // bench (Pichu). The ATTACKER (Pikachu) must be force-switched,
+        // not the holder. The card is consumed on Snorlax.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["quickattack","thunderbolt","grassknot","feint"]},
+            {"species":"pichu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"redcard","nature":"careful","moves":["bodyslam","rest","protect","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], // Snorlax Rest
+        );
+        // ATTACKER side swapped (Pichu is now active in p1 slot 0).
+        assert_eq!(b.p1.active[0], 1, "Red Card switched attacker Pikachu → Pichu");
+        // Holder still active, no longer holds the card.
+        assert_eq!(b.p2.active[0], 0, "Red Card holder stays in");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Red Card consumed");
     }
 }

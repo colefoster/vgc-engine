@@ -2,14 +2,14 @@
 
 Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
-## Headline counts (post PR-296)
+## Headline counts (post PR-298)
 
 | Status | Count |
 | --- | --- |
-| shipped | 47 |
+| shipped | 50 |
 | partial | 1 |
 | not implemented | 0 |
-| deferred / no-effect | 1 |
+| deferred / no-effect | 0 |
 
 ## Damage modifiers
 
@@ -240,7 +240,12 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Eject Button: holder forces own switch on taking direct damage. Eject Pack: holder forces own switch when its stat is lowered. Red Card: forces attacker to switch on contact hit received.
 
-**Status**: deferred — needs reactive-switch plumbing the engine does not yet have. The existing self-switch primitive (`Pokemon::set_pending_self_switch`) only consumes a Switch choice the player pre-queued in `step()`'s `p1_choices` / `p2_choices` (see `Battle::apply_self_switches` in `battle.rs:724`). That works for U-turn / Volt Switch / Parting Shot because the player commits to a switch up front when they pick the move. Eject Button / Eject Pack / Red Card fire reactively mid-turn in response to the OPPONENT's action, so the player has no opportunity to pre-queue a replacement and `apply_self_switches` would no-op. Implementing these properly requires either (a) a new `Side::pending_replacement[slot]: Option<u8>` slot that the harness fills via a follow-up `step_replacement()` call, or (b) some auto-pick policy (PS lets the player choose). Cross-side switch (Red Card → attacker) also needs the same reactive prompt. None of this exists; the three items are deferred until the replacement-prompt API lands.
+**Status**: shipped — PR-298. Reactive-switch infrastructure added via `Battle::force_switch_auto`: when an item sets the holder's (or attacker's) switch flag mid-turn, the engine deterministically pulls in the first eligible bench mon (lowest-index alive non-active) as the replacement and runs the full `do_switch` / ability+item `on_switch_in` pipeline. This is v1; caller-supplied replacements (PS-style: pause the turn, prompt the player, resume) is a follow-up via a `StepResult::PendingReplacement` round-trip. Three triggers wired against the same plumbing:
+- **Eject Button** — `item::try_consume_eject_button` fires from the damaging-hit pipeline (`onAfterDamage` slot, after `on_damaging_hit`) when holder survives. PS `data/items.ts:ejectbutton`.
+- **Eject Pack** — `item::try_consume_eject_pack` fires at every stat-drop site (self-drop after move resolve, Intimidate, opposing-move stat-drop, secondary-effect stat-drop, Parting Shot, Strength Sap). PS `data/items.ts:ejectpack onAfterEachBoost`.
+- **Red Card** — `item::try_consume_red_card` fires from the same damaging-hit pipeline as Eject Button and force-switches the ATTACKER. PS `data/items.ts:redcard`.
+
+Item is consumed only when a swap actually fires (no bench → no consume, matching PS's `switchFlag` short-circuit).
 
 ### Custap Berry
 
