@@ -562,6 +562,39 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Justified — PS `data/abilities.ts:justified`:
+    //   onDamagingHit(damage, target, source, move) {
+    //     if (move.type === 'Dark') this.boost({atk: 1});
+    //   }
+    // +1 Atk on incoming Dark move. Lucario / Arcanine / Gallade etc.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Justified_(Ability)>.
+    if slug == "justified" && target_alive {
+        let move_type = data::MOVES[move_id as usize].type_;
+        if move_type == 15 {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                t.boosts[0] = (t.boosts[0] + 1).clamp(-6, 6);
+            }
+        }
+    }
+    // Rattled — PS `data/abilities.ts:rattled`:
+    //   onDamagingHit(damage, target, source, move) {
+    //     if (['Bug','Ghost','Dark'].includes(move.type)) this.boost({spe: 1});
+    //   }
+    //   onAfterBoost(boost, target, source, effect) {
+    //     if (effect && effect.name === 'Intimidate') this.boost({spe: 1});
+    //   }
+    // +1 Spe on Bug/Ghost/Dark incoming move; also +1 Spe when
+    // Intimidate'd (Intimidate trigger handled at the Intimidate site
+    // — TODO when Rattled holders see Intimidate). Gumshoos / Sableye HA.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
+    if slug == "rattled" && target_alive {
+        let move_type = data::MOVES[move_id as usize].type_;
+        if matches!(move_type, 6 | 13 | 15) {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
+            }
+        }
+    }
     // Anger Shell — PS `data/abilities.ts:angershell`:
     //   onDamage(damage, target, source, effect) {
     //     if (effect.effectType !== 'Move') return;
