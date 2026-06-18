@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 57 |
+| shipped | 58 |
 | partial | 5 |
-| not implemented | 31 |
+| not implemented | 30 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -345,7 +345,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Ditto signature; on switch-in, transforms into the opposing mon (copies stats, moves, ability, types).
 
-**Status**: not implemented.
+**Status**: shipped (scope-limited) — PR-284. Copies species_id, ability_id, and non-HP stats. Moves / PP / boosts / forme bookkeeping NOT cloned. Types come for free via species_id.
 
 ### Disguise
 

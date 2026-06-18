@@ -401,6 +401,45 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Imposter — PS `data/abilities.ts:imposter`:
+    //   onSwitchIn(pokemon) {
+    //     this.effectState.switchIn = true;
+    //   }
+    //   onStart(pokemon) {
+    //     if (!this.effectState.switchIn) return;
+    //     this.effectState.switchIn = false;
+    //     const target = pokemon.side.foe.active[...index resolution...];
+    //     if (!target || target.fainted || target.illusion ...) return;
+    //     pokemon.transformInto(target, this.dex.abilities.get('imposter'));
+    //   }
+    // Ditto signature. Scope-limited per PR plan: we copy species + the
+    // five non-HP stats + the ability slug. Moveset / PP / forme
+    // bookkeeping / boosts / types are NOT cloned here — moves are still
+    // the original Ditto's set, boosts stay at 0 (PS copies them but we
+    // skip for now), and types are derived from the cloned species_id so
+    // they update for free. HP and max HP are preserved per PS Transform.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Imposter_(Ability)>.
+    if slug == "imposter" {
+        let opp = side.opposing();
+        let target_payload = battle
+            .side(opp)
+            .active_mon(slot as usize)
+            .filter(|m| m.is_alive())
+            .map(|m| (m.species_id, m.ability_id, m.stats));
+        if let Some((sp, ab, st)) = target_payload {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.species_id = sp;
+                m.ability_id = ab;
+                // Preserve HP per PS Transform; clone other stats.
+                let hp = m.stats.hp;
+                let cur = m.current_hp;
+                m.stats = st;
+                m.stats.hp = hp;
+                m.current_hp = cur;
+            }
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
