@@ -984,6 +984,34 @@ pub fn calculate_damage(
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let mut d = apply_boost(def_stat, eff_def_stage).max(1);
 
+    // Defeatist — PS `data/abilities.ts:873`:
+    //   onModifyAtk(atk, pokemon) {
+    //     if (pokemon.hp <= pokemon.maxhp / 2) return this.chainModify(0.5);
+    //   }
+    //   onModifySpA(spa, pokemon) { ... }
+    // Atk + SpA halved while user HP ≤ 50%. NOT in PS's breakable
+    // list — Mold Breaker does NOT bypass. Archen/Archeops signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Defeatist_(Ability)>.
+    if attacker.effective_ability_slug() == "defeatist"
+        && (attacker.current_hp as u32) * 2 <= attacker.stats.hp as u32
+    {
+        a = (a / 2).max(1);
+    }
+
+    // Slow Start — PS `data/abilities.ts:4266`:
+    //   onStart: adds slowstart volatile lasting 5 turns
+    //   onModifyAtk/onModifySpe: while volatile up, chainModify(0.5)
+    // Atk + Spe halved for first 5 turns after switch-in (Regigigas
+    // signature). We use `slow_start_active_turns` on the active mon
+    // (set on switch-in, decremented end-of-turn).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Slow_Start_(Ability)>.
+    if attacker.effective_ability_slug() == "slowstart"
+        && attacker.slow_start_active_turns > 0
+        && physical
+    {
+        a = (a / 2).max(1);
+    }
+
     // Guts — PS `data/abilities.ts:guts`:
     //   onModifyAtk(atk, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -1580,6 +1608,8 @@ mod tests {
             lockin_turns: 0,
             lockin_move_slot: 255,
             volatiles: crate::pokemon::VolatileSet::default(),
+            slow_start_active_turns: 0,
+            truant_loafing: false,
         }
     }
 

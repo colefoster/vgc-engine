@@ -545,19 +545,19 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Atk and SpA ×0.5 while user has <= 50% HP.
 
-**Status**: not implemented.
+**Status**: shipped — PR-304. Atk + SpA halved in damage.rs when `current_hp * 2 <= max`.
 
 ### Slow Start
 
 **What it is**: First 5 turns after switch-in, Atk and Spe ×0.5.
 
-**Status**: not implemented.
+**Status**: shipped — PR-304. Per-mon `slow_start_active_turns` counter set to 5 in `on_switch_in`, decremented end-of-turn; damage.rs halves Atk and order.rs halves Spe while > 0.
 
 ### Truant
 
 **What it is**: Skip every other turn.
 
-**Status**: not implemented.
+**Status**: shipped — PR-304. Per-mon `truant_loafing` flag flipped each turn in the before-move arm; when set, the move is skipped.
 
 ### Color Change
 

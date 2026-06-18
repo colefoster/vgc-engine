@@ -211,6 +211,8 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         lockin_turns: 0,
         lockin_move_slot: 255,
         volatiles: crate::pokemon::VolatileSet::default(),
+        slow_start_active_turns: 0,
+        truant_loafing: false,
     })
 }
 
