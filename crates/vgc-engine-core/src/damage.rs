@@ -903,6 +903,20 @@ pub fn calculate_damage(
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let mut d = apply_boost(def_stat, eff_def_stage).max(1);
 
+    // Guts — PS `data/abilities.ts:guts`:
+    //   onModifyAtk(atk, pokemon) {
+    //     if (pokemon.status) return this.chainModify(1.5);
+    //   }
+    // ×1.5 Atk while statused (any status). Physical reads only. Conkeldurr /
+    // Heracross / Ursaring signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Guts_(Ability)>.
+    if physical
+        && attacker.effective_ability_slug() == "guts"
+        && !matches!(attacker.status, crate::pokemon::Status::None)
+    {
+        a = (a * 6144 / 4096).max(1);
+    }
+
     // Marvel Scale — PS `data/abilities.ts:marvelscale`:
     //   onModifyDef(def, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -1294,9 +1308,22 @@ pub fn calculate_damage(
         // fire && contact → mods cancel; neither → no-op.
     }
 
-    // Burn: physical attackers with burn deal halved damage. Guts/Facade
-    // gating lands in their respective PRs.
-    if physical && attacker.status == Status::Burn {
+    // Burn: physical attackers with burn deal halved damage. Skipped
+    // when the attacker has Guts — PS `data/abilities.ts:guts`:
+    //   onModifyAtk(atk, pokemon) {
+    //     if (pokemon.status) return this.chainModify(1.5);
+    //   }
+    //   onDamage(damage, pokemon, source, effect) {
+    //     // Status-DoT immunity not here; instead PS uses
+    //     // sim/battle.ts: ignoreBurnHalving = (atk modifier) and the
+    //     // burn-halving step bails on Guts.
+    //   }
+    // Facade also bypasses the burn halving (and gets ×2 BP when
+    // statused) — Facade BP handling is in the move-BP block; the
+    // burn-halve skip belongs here.
+    let attacker_ability = attacker.effective_ability_slug();
+    let attacker_has_guts = attacker_ability == "guts";
+    if physical && attacker.status == Status::Burn && !attacker_has_guts && m.slug != "facade" {
         dmg /= 2;
     }
 
@@ -2312,6 +2339,30 @@ mod tests {
         // Shell-on should be ~×0.25 of shell-off (×0.5 vs ×2).
         assert!(shell_on * 3 < shell_off,
             "Tera Shell must downgrade super-effective to ×0.5 (shell_on={shell_on}, shell_off={shell_off})");
+    }
+
+    #[test]
+    fn guts_boosts_atk_and_skips_burn_halve() {
+        // Garchomp with Guts, burned → Atk ×1.5 AND burn doesn't halve
+        // physical damage. Net effect: same or more damage than a
+        // healthy Garchomp at the same Atk.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let guts = data::ABILITIES.iter().position(|a| a.slug == "guts").expect("guts") as u16;
+        atk.ability_id = guts;
+        let def = make_mon("pikachu", 50, "hardy", StatSpread::ZERO);
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let healthy = calculate_damage(&atk, &def, move_id("earthquake"), ctx);
+        atk.status = Status::Burn;
+        let burned = calculate_damage(&atk, &def, move_id("earthquake"), ctx);
+        assert!(burned > healthy,
+            "Guts should yield MORE damage when burned (healthy={healthy}, burned={burned})");
     }
 
     #[test]
