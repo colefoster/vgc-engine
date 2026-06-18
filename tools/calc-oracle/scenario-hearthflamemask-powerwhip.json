@@ -1,0 +1,20 @@
+{
+  "name": "hearthflamemask_powerwhip_ogerponhearthflame_into_garchomp",
+  "attacker": {
+    "species": "Ogerpon-Hearthflame",
+    "level": 50,
+    "ability": "Mold Breaker",
+    "item": "Hearthflame Mask",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Garchomp",
+    "level": 50,
+    "ability": "Sand Veil",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Power Whip",
+  "trials": 500
+}
