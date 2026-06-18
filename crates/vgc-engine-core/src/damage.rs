@@ -684,6 +684,20 @@ pub fn calculate_damage(
         atk_stat = atk_stat * 3 / 2;
     }
 
+    // Heatproof — PS `data/abilities.ts:heatproof`:
+    //   onSourceModifyAtk / onSourceModifySpA(atk, attacker, defender, move) {
+    //     if (move.type === 'Fire') return this.chainModify(0.5);
+    //   }
+    // Halves the attacker's effective offensive stat on Fire moves
+    // (= ×0.5 = 2048/4096 exact in pokeRound). Flagged `breakable: 1` —
+    // Mold Breaker bypasses. Companion burn-DOT half lives in battle.rs.
+    // Bronzong / Numel-Camerupt signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
+    let attacker_breaks_mold_for_offense = matches!(
+        attacker.effective_ability_slug(),
+        "moldbreaker" | "teravolt" | "turboblaze"
+    );
+
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
     // Routed through `BoostIgnore` so future Unaware (Negative on the
@@ -694,8 +708,22 @@ pub fn calculate_damage(
     let def_policy = if ctx.crit { BoostIgnore::Positive } else { BoostIgnore::None };
     let eff_atk_stage = atk_policy.project(atk_stage);
     let eff_def_stage = def_policy.project(def_stage);
-    let a = apply_boost(atk_stat, eff_atk_stage).max(1);
+    let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
     let d = apply_boost(def_stat, eff_def_stage).max(1);
+
+    // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
+    // onSourceModifySpA: chainModify(0.5) on Fire moves. PS applies
+    // this AFTER the stage boost (the chain runs on the post-stage stat
+    // via getStat → ModifyAtk events). pokeRound: ×2048/4096.
+    // Flagged `breakable: 1` so Mold Breaker bypasses. Bronzong /
+    // Numel-Camerupt signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
+    if move_type == 1
+        && !attacker_breaks_mold_for_offense
+        && defender.effective_ability_slug() == "heatproof"
+    {
+        a = (a / 2).max(1);
+    }
 
     let level = attacker.level as u32;
     // base = floor( floor( floor(2L/5+2) * BP * A / D ) / 50 ) + 2

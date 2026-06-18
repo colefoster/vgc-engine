@@ -1,0 +1,19 @@
+{
+  "name": "heatproof_overheat_chandelure_into_bronzong",
+  "attacker": {
+    "species": "Chandelure",
+    "level": 50,
+    "ability": "Flash Fire",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Bronzong",
+    "level": 50,
+    "ability": "Heatproof",
+    "nature": "Calm",
+    "evs": { "hp": 252, "spd": 252, "def": 4 }
+  },
+  "move": "Overheat",
+  "trials": 500
+}
