@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 48 |
+| shipped | 50 |
 | partial | 5 |
-| not implemented | 40 |
+| not implemented | 38 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -103,7 +103,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Eva +20% in Sand / Snow.
 
-**Status**: not implemented.
+**Status**: shipped — PR-279.
 
 ### Toxic Boost / Flare Boost
 
