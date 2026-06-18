@@ -750,6 +750,39 @@ pub fn calculate_damage(
         }
     }
 
+    // Ogerpon masks (Wellspring / Hearthflame / Cornerstone). PS
+    // `data/items.ts:wellspringmask` / `hearthflamemask` / `cornerstonemask`:
+    //   onBasePowerPriority: 15,
+    //   onBasePower(basePower, user, target, move) {
+    //     if (user.baseSpecies.name.startsWith('Ogerpon-<Mask>')) {
+    //       return this.chainModify([4915, 4096]);
+    //     }
+    //   }
+    // ×1.2 BP on EVERY outgoing move (not just Ivy Cudgel and not gated on
+    // Terastallization — PS's `startsWith` matches both the non-Tera and
+    // Tera formes, e.g. `Ogerpon-Wellspring` and `Ogerpon-Wellspring-Tera`,
+    // and any move type). The mask is locked to its Ogerpon forme via
+    // `onTakeItem` and a forme-binding item; we approximate by matching the
+    // forme's species slug prefix so both pre-Tera (`ogerponwellspring`)
+    // and post-Tera (`ogerponwellspringtera`) carriers are covered. Not
+    // breakable, so Mold Breaker does NOT bypass. Bulbapedia:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Wellspring_Mask>
+    //   <https://bulbapedia.bulbagarden.net/wiki/Hearthflame_Mask>
+    //   <https://bulbapedia.bulbagarden.net/wiki/Cornerstone_Mask>
+    if attacker.item_id != u16::MAX {
+        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
+        let species_slug = attacker.species().slug;
+        let mask_match = match item_slug {
+            "wellspringmask"  => species_slug.starts_with("ogerponwellspring"),
+            "hearthflamemask" => species_slug.starts_with("ogerponhearthflame"),
+            "cornerstonemask" => species_slug.starts_with("ogerponcornerstone"),
+            _ => false,
+        };
+        if mask_match {
+            bp = (bp * 4915 + 2047) / 4096;
+        }
+    }
+
     // Carrier-locked orbs. PS `data/items.ts`:
     //   adamantorb  → Dialga,  boosts Dragon + Steel
     //   lustrousorb → Palkia,  boosts Dragon + Water
@@ -2023,6 +2056,43 @@ mod tests {
         let if_tackle = mk(&atk, tackle);
         assert!(if_punch > no_punch, "Iron Fist boosts Drain Punch");
         assert_eq!(if_tackle, no_tackle, "Iron Fist must NOT boost Tackle");
+    }
+
+    #[test]
+    fn ogerpon_mask_boosts_holder_when_forme_matches() {
+        // Hearthflame Mask on Ogerpon-Hearthflame should ×1.2 BP on
+        // any outgoing move (PS gates on baseSpecies.name.startsWith,
+        // not on move type). Same mask on a non-Ogerpon (or wrong
+        // forme) holder is a no-op. PS data/items.ts:hearthflamemask.
+        let mut atk = make_mon("ogerponhearthflame", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let tackle = move_id("tackle");
+        let base = mk(&atk, tackle);
+        let mask_id = data::ITEMS.iter()
+            .position(|i| i.slug == "hearthflamemask").unwrap() as u16;
+        atk.item_id = mask_id;
+        let with_mask = mk(&atk, tackle);
+        assert!(with_mask > base, "Hearthflame Mask boosts the matching Ogerpon forme");
+
+        // Wrong forme: base Ogerpon (slug "ogerpon") must NOT get the
+        // boost — PS startsWith('Ogerpon-Hearthflame') fails on plain
+        // 'Ogerpon'.
+        let mut wrong = make_mon("ogerpon", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let no_mask = mk(&wrong, tackle);
+        wrong.item_id = mask_id;
+        let with_mask_wrong = mk(&wrong, tackle);
+        assert_eq!(no_mask, with_mask_wrong,
+            "Hearthflame Mask must not boost a non-Hearthflame Ogerpon");
     }
 
     #[test]

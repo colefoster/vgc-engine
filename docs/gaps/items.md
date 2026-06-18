@@ -2,13 +2,13 @@
 
 Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
-## Headline counts (post PR-276)
+## Headline counts (post PR-295)
 
 | Status | Count |
 | --- | --- |
-| shipped | 46 |
+| shipped | 47 |
 | partial | 1 |
-| not implemented | 2 |
+| not implemented | 1 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -370,11 +370,11 @@ See above.
 
 ### Ogerpon masks (Wellspring / Hearthflame / Cornerstone)
 
-**What it is**: Held only by Ogerpon; sets Tera-form and type override (Wellspring → Water, Hearthflame → Fire, Cornerstone → Rock) and triggers Embody Aspect on Tera.
+**What it is**: Held only by Ogerpon; sets Tera-form and type override (Wellspring → Water, Hearthflame → Fire, Cornerstone → Rock) and triggers Embody Aspect on Tera. ×1.2 BP boost on all the holder's outgoing moves when the holder is the matching Ogerpon forme.
 
 **Depends on**: Tera system + Embody Aspect ability.
 
-**Status**: not implemented.
+**Status**: shipped (BP arm) — PR-295. Wires the ×1.2 `onBasePower` for all three masks in `damage.rs`, matching PS `data/items.ts` (`startsWith('Ogerpon-Wellspring')` etc., which catches both the non-Tera and `-Tera` formes). Embody Aspect already lives in `ability.rs` / `battle.rs`. The Tera-form + type override side of the mask (forme swap on Terastallization) is handled by the Tera system. Calc-oracle scenario `scenario-hearthflamemask-powerwhip.json` (Hearthflame Mask + Power Whip into Garchomp) PASSes.
 
 ### Adamant / Lustrous / Griseous Orb
 
@@ -439,3 +439,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Weakness Policy (PR-287)
 - Chople Berry (PR-288)
 - Other type-resist berries: Occa / Passho / Wacan / Rindo / Yache / Kebia / Shuca / Coba / Payapa / Tanga / Charti / Kasib / Haban / Colbur / Babiri / Roseli / Chilan (PR-289)
+- Ogerpon masks (Wellspring / Hearthflame / Cornerstone) BP arm (PR-295)
