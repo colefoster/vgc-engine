@@ -14811,6 +14811,57 @@ mod tests {
     }
 
     #[test]
+    fn shadow_shield_ignores_mold_breaker() {
+        // Lunala @ Shadow Shield vs Mold-Breaker attacker. Damage at
+        // full HP should still be halved (Shadow Shield is the
+        // unbreakable Multiscale clone). PS data/abilities.ts:shadowshield.
+        let p1_json = r#"[
+            {"species":"haxorus","level":50,"ability":"moldbreaker","item":"","nature":"adamant","moves":["dragonclaw","earthquake","crunch","ironhead"],"evs":{"atk":252,"hp":4,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"lunala","level":50,"ability":"shadowshield","item":"","nature":"modest","moves":["moongeistbeam","psyshock","calmmind","wideguard"],"evs":{"spa":252,"hp":252,"def":4}}
+        ]"#;
+        let run = |def_ability: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let ab_id = data::ABILITIES.iter().position(|a| a.slug == def_ability).unwrap() as u16;
+            b.p2.team[0].ability_id = ab_id;
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], // calm mind
+            );
+            pre - b.p2.team[0].current_hp
+        };
+        let dmg_ss = run("shadowshield"); // unbreakable — should halve
+        let dmg_ms = run("multiscale");   // breakable by Mold Breaker — no halve
+        // Shadow Shield damage should be ~half of Multiscale-broken damage.
+        assert!(dmg_ss > 0 && dmg_ms > 0);
+        assert!(dmg_ss * 2 <= dmg_ms + 4 && dmg_ss * 2 + 4 >= dmg_ms,
+            "Shadow Shield halves despite Mold Breaker: ss={dmg_ss} ms-broken={dmg_ms}");
+    }
+
+    #[test]
+    fn rattled_gets_speed_boost_from_intimidate() {
+        // Mr. Rime @ Rattled is intimidated by Incineroar. Atk -1 lands,
+        // and Rattled also adds +1 Spe.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["flareblitz","darkestlariat","uturn","fakeout"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"sableye","level":50,"ability":"rattled","item":"","nature":"hardy","moves":["foulplay","recover","willowisp","quash"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // After Battle::new, both sides' on_switch_in have fired —
+        // Intimidate on Sableye should land Atk-1 AND Rattled Spe+1.
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drops Atk");
+        assert_eq!(b.p2.team[0].boosts[4], 1, "Rattled grants +1 Spe");
+    }
+
+    #[test]
     fn defeatist_halves_damage_at_half_hp() {
         // Archen @ Defeatist runs Crunch at full HP vs half HP. The
         // half-HP run should deal roughly half the damage.

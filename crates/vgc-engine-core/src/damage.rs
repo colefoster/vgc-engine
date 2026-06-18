@@ -1364,23 +1364,28 @@ pub fn calculate_damage(
     }
     dmg = eff.apply(dmg);
 
-    // Multiscale — PS `data/abilities.ts:multiscale`
+    // Multiscale / Shadow Shield — PS `data/abilities.ts:multiscale`
+    // (~line 2738) and `data/abilities.ts:shadowshield` (~line 4099).
     //   onSourceModifyDamage(damage, source, target, move) {
     //     if (target.hp >= target.maxhp) return this.chainModify(0.5);
     //   }
-    // Halves incoming damage when defender is at full HP. Multiscale is
-    // flagged `breakable: 1` (Mold Breaker bypasses it) — that gate is
-    // applied below via `attacker_breaks_mold`. ×0.5 = mod 2048/4096
-    // (exact, no pokeRound divergence). Dragonite signature.
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multiscale_(Ability)>.
+    // Halves incoming damage when defender is at full HP. Multiscale
+    // carries `flags: { breakable: 1 }` (Mold Breaker bypasses);
+    // Shadow Shield is the Lunala signature clone with
+    // `flags: {}` — Mold Breaker does NOT bypass. We honor that by
+    // dropping the mold-break gate when the defender's slug is
+    // `shadowshield`. ×0.5 = mod 2048/4096 (exact, no pokeRound
+    // divergence).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multiscale_(Ability)>
+    //             <https://bulbapedia.bulbagarden.net/wiki/Shadow_Shield_(Ability)>.
     let attacker_breaks_mold = matches!(
         attacker.effective_ability_slug(),
         "moldbreaker" | "teravolt" | "turboblaze"
     );
-    if defender.effective_ability_slug() == "multiscale"
-        && defender.current_hp >= defender.stats.hp
-        && !attacker_breaks_mold
-    {
+    let def_ab = defender.effective_ability_slug();
+    let multiscale_active = (def_ab == "multiscale" && !attacker_breaks_mold)
+        || def_ab == "shadowshield";
+    if multiscale_active && defender.current_hp >= defender.stats.hp {
         dmg /= 2;
     }
 

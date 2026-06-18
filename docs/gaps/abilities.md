@@ -135,7 +135,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Multiscale Dragonite / Dragapult (uncommon but seen).
 
-**Status**: partial — PR-240. Multiscale damage halve shipped; Shadow Shield Mold-Breaker bypass not yet wired (shadowshield slug absent).
+**Status**: shipped — PR-240 (Multiscale halve) + PR-305 (Shadow Shield slug + Mold-Breaker bypass: Shadow Shield matches the same condition but does NOT gate on Mold Breaker, per PS `flags: {}` on shadowshield).
 
 ### Fluffy
 
@@ -269,7 +269,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: +1 Spe on Bug / Ghost / Dark hit received; also +1 Spe on Intimidate received.
 
-**Status**: partial — PR-262. Bug/Ghost/Dark hit branch shipped; Intimidate-trigger branch not yet wired.
+**Status**: shipped — PR-262 (Bug/Ghost/Dark hit branch) + PR-305 (Intimidate-trigger branch: +1 Spe fires after Intimidate Atk drop lands).
 
 ### Steam Engine
 
