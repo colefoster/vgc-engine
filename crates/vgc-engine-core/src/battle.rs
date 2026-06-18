@@ -3186,7 +3186,9 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
             for slot in 0..n {
-                crate::ability::on_residual(self, side, slot);
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::ability::on_residual(self, side, slot, &mut rng);
+                self.rng = rng;
             }
         }
     }
@@ -12995,6 +12997,77 @@ mod tests {
         );
         assert!(b.p2.team[0].fainted, "pikachu must faint");
         assert_eq!(b.p1.team[0].boosts[0], 1, "Moxie should leave Garchomp at +1 Atk");
+    }
+
+    #[test]
+    fn natural_cure_clears_status_on_switch_out() {
+        // Blissey with Natural Cure, burned, switches out → status clears.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"]},
+            {"species":"chansey","level":50,"ability":"naturalcure","item":"eviolite","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].status = crate::pokemon::Status::Burn;
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None,
+            "Natural Cure should clear burn on switch-out");
+    }
+
+    #[test]
+    fn hydration_clears_status_at_end_of_turn_in_rain() {
+        // Vaporeon with Hydration, burned, in Rain → cured at end of turn.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"leftovers","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"vaporeon","level":50,"ability":"hydration","item":"leftovers","nature":"calm","moves":["scald","wish","protect","icebeam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Rain);
+        b.p2.team[0].status = crate::pokemon::Status::Burn;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p2.team[0].status, crate::pokemon::Status::None,
+            "Hydration should cure burn in Rain end-of-turn");
+    }
+
+    #[test]
+    fn shed_skin_eventually_cures_status() {
+        // Run many trials; with a 33% per-turn cure, status should clear
+        // in some seeds within a small window.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"leftovers","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"dragonite","level":50,"ability":"shedskin","item":"leftovers","nature":"adamant","moves":["dragonclaw","earthquake","extremespeed","protect"]}
+        ]"#;
+        let cures = (0..30u64)
+            .filter(|&seed| {
+                let p1 = TeamBuilder::from_json(p1_json).unwrap();
+                let p2 = TeamBuilder::from_json(p2_json).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+                b.p2.team[0].status = crate::pokemon::Status::Burn;
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+                );
+                matches!(b.p2.team[0].status, crate::pokemon::Status::None)
+            })
+            .count();
+        assert!(cures > 0 && cures < 30,
+            "Shed Skin should sometimes (not always) cure: cures={cures}/30");
     }
 
     #[test]
