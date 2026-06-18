@@ -1612,6 +1612,30 @@ impl Battle {
                 if def_item_for_acc == "brightpowder" || def_item_for_acc == "laxincense" {
                     eff_acc = eff_acc * 3686 / 4096;
                 }
+                // Sand Veil / Snow Cloak — PS data/abilities.ts:
+                //   sandveil:  if (effectiveWeather === 'sandstorm')
+                //                return this.chainModify([3277, 4096]); // ≈0.8
+                //   snowcloak: if (effectiveWeather === 'snow' || 'hail')
+                //                return this.chainModify([3277, 4096]);
+                // Defender's incoming accuracy ×0.8 (= 3277/4096) while the
+                // matching weather is up. Flagged `breakable: 1` so Mold
+                // Breaker bypasses. Sand Veil mons (Garchomp HA, Gliscor,
+                // Sandslash); Snow Cloak mons (Glaliе, Beartic).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Veil_(Ability)>
+                //             <https://bulbapedia.bulbagarden.net/wiki/Snow_Cloak_(Ability)>.
+                let def_ability = defender.effective_ability_slug();
+                let weather_veil = match (def_ability, self.weather) {
+                    ("sandveil", crate::weather::Weather::Sand) => true,
+                    ("snowcloak", crate::weather::Weather::Snow) => true,
+                    _ => false,
+                };
+                let attacker_breaks_mold = matches!(
+                    attacker.effective_ability_slug(),
+                    "moldbreaker" | "teravolt" | "turboblaze"
+                );
+                if weather_veil && !attacker_breaks_mold {
+                    eff_acc = eff_acc * 3277 / 4096;
+                }
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
                     continue;
@@ -12971,6 +12995,40 @@ mod tests {
         );
         assert!(b.p2.team[0].fainted, "pikachu must faint");
         assert_eq!(b.p1.team[0].boosts[0], 1, "Moxie should leave Garchomp at +1 Atk");
+    }
+
+    #[test]
+    fn sand_veil_reduces_hit_rate_in_sand() {
+        // Hippowdon firing Stone Edge (acc 80) at a Sand-Veil Garchomp.
+        // With Sand active, accuracy ×0.8; without Sand, regular 80.
+        // Stochastic over 200 trials per cohort — Sand cohort hits less.
+        let p1_json = r#"[
+            {"species":"hippowdon","level":50,"ability":"sandstream","item":"leftovers","nature":"adamant","moves":["stoneedge","earthquake","slackoff","whirlwind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"leftovers","nature":"jolly","moves":["dragonclaw","aerialace","stoneedge","ironhead"]}
+        ]"#;
+        let mk = |sand_on: bool, seed: u64| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            if !sand_on {
+                // Override the ability-set Sand back to None for control.
+                b.weather = crate::weather::Weather::None;
+                b.weather_turns = 0;
+            }
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let trials = 200u64;
+        let in_sand: u32 = (0..trials).map(|s| mk(true, s) as u32).sum();
+        let no_sand: u32 = (0..trials).map(|s| mk(false, s) as u32).sum();
+        assert!(in_sand < no_sand,
+            "Sand Veil should reduce incoming hit rate in Sand (in_sand={in_sand}, no_sand={no_sand})");
     }
 
     #[test]
