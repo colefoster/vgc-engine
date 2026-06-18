@@ -1,0 +1,18 @@
+{
+  "name": "random-12",
+  "seed": [
+    12,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Jirachi @ Dawn Stone\nAbility: Serene Grace\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 SpD / 252 Spe\nNaive Nature\n- Mud-Slap\n- Skill Swap\n- Meteor Beam\n- Imprison\n\nPawmot @ Enigma Berry\nAbility: Iron Fist\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 Def / 252 Spe\nRash Nature\n- Play Rough\n- Double-Edge\n- Dig\n- Helping Hand\n\nStaravia @ Moon Stone\nAbility: Intimidate\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 Atk / 252 Def\nLonely Nature\n- Air Slash\n- Tackle\n- Dual Wingbeat\n- Final Gambit\n\nDolliv @ Custap Berry\nAbility: Early Bird\nLevel: 50\nTera Type: Steel\nEVs: 252 HP / 4 Atk / 252 SpA\nGentle Nature\n- Swift\n- Strength Sap\n- Grass Knot\n- Trailblaze\n"
+  },
+  "p2": {
+    "team": "Chi-Yu @ Safari Ball\nAbility: Beads of Ruin\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 Atk / 252 SpD\nNaughty Nature\n- Taunt\n- Reflect\n- Inferno\n- Substitute\n\nIron Boulder @ Ribbon Sweet\nAbility: Quark Drive\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 Def / 252 SpD\nSerious Nature\n- Leer\n- Iron Defense\n- Psycho Cut\n- Psyshock\n\nDewgong @ Heat Rock\nAbility: Ice Body\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 Def / 252 Spe\nQuirky Nature\n- Take Down\n- Curse\n- Facade\n- Knock Off\n\nGligar @ Heavy-Duty Boots\nAbility: Hyper Cutter\nLevel: 50\nTera Type: Steel\nEVs: 252 HP / 4 Atk / 252 Def\nLonely Nature\n- Rock Slide\n- Sand Attack\n- Thunder Fang\n- Wing Attack\n"
+  }
+}

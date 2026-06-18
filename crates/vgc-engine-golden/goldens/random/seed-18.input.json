@@ -1,0 +1,18 @@
+{
+  "name": "random-18",
+  "seed": [
+    18,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Bombirdier @ Wiki Berry\nAbility: Rocky Payload\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 Atk / 252 SpA\nRash Nature\n- Pluck\n- Aerial Ace\n- Foul Play\n- Endeavor\n\nAzelf @ Zap Plate\nAbility: Levitate\nLevel: 50\nTera Type: Grass\nEVs: 4 HP / 252 Atk / 252 Spe\nNaive Nature\n- Endeavor\n- Light Screen\n- Sleep Talk\n- Nasty Plot\n\nAnnihilape @ Clear Amulet\nAbility: Vital Spirit\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 Def / 252 Spe\nNaughty Nature\n- Protect\n- Seed Bomb\n- Curse\n- Endeavor\n\nWartortle @ Flower Sweet\nAbility: Torrent\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 SpA / 252 SpD\nCareful Nature\n- Muddy Water\n- Ice Spinner\n- Life Dew\n- Brick Break\n"
+  },
+  "p2": {
+    "team": "Cryogonal @ Booster Energy\nAbility: Levitate\nLevel: 50\nTera Type: Ground\nEVs: 252 HP / 4 Atk / 252 Spe\nBashful Nature\n- Poison Jab\n- Slash\n- Light Screen\n- Blizzard\n\nFraxure @ Galarica Wreath\nAbility: Unnerve\nLevel: 50\nTera Type: Ground\nEVs: 252 HP / 4 Atk / 252 Def\nHasty Nature\n- Giga Impact\n- Surf\n- Aerial Ace\n- Night Slash\n\nSobble @ Snowball\nAbility: Sniper\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 SpA / 252 SpD\nBrave Nature\n- Endure\n- Surf\n- Facade\n- Tearful Look\n\nScatterbug @ Normal Gem\nAbility: Shield Dust\nLevel: 50\nTera Type: Electric\nEVs: 252 HP / 4 Atk / 252 SpA\nNaughty Nature\n- String Shot\n- Struggle Bug\n- Poison Powder\n- Bug Bite\n"
+  }
+}

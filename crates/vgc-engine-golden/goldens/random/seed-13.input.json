@@ -1,0 +1,18 @@
+{
+  "name": "random-13",
+  "seed": [
+    13,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Snubbull @ Up-Grade\nAbility: Run Away\nLevel: 50\nTera Type: Fire\nEVs: 252 HP / 4 Atk / 252 Def\nBrave Nature\n- Uproar\n- Substitute\n- Close Combat\n- Brick Break\n\nMeditite @ Tanga Berry\nAbility: Pure Power\nLevel: 50\nTera Type: Fairy\nEVs: 4 HP / 252 Def / 252 SpA\nCalm Nature\n- Reversal\n- Aerial Ace\n- Light Screen\n- Thief\n\nWingull @ Power Lens\nAbility: Hydration\nLevel: 50\nTera Type: Rock\nEVs: 252 HP / 4 Atk / 252 SpA\nMild Nature\n- Substitute\n- Whirlpool\n- Wing Attack\n- Roost\n\nOinkologne @ Splash Plate\nAbility: Gluttony\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 SpA / 252 SpD\nBashful Nature\n- Take Down\n- Giga Impact\n- Echoed Voice\n- Energy Ball\n"
+  },
+  "p2": {
+    "team": "Floatzel @ Grepa Berry\nAbility: Water Veil\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 Def / 252 SpD\nNaughty Nature\n- Focus Punch\n- Helping Hand\n- Mud-Slap\n- Dig\n\nShiftry @ Dubious Disc\nAbility: Pickpocket\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 Atk / 252 SpD\nLax Nature\n- Endeavor\n- Vacuum Wave\n- Rock Tomb\n- Uproar\n\nLugia @ Haban Berry\nAbility: Pressure\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 Atk / 252 SpD\nCalm Nature\n- Hyper Beam\n- Scary Face\n- Air Cutter\n- Whirlwind\n\nIron Hands @ Psychic Seed\nAbility: Quark Drive\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 SpD / 252 Spe\nBrave Nature\n- Fire Punch\n- Endure\n- Bulldoze\n- Earthquake\n"
+  }
+}

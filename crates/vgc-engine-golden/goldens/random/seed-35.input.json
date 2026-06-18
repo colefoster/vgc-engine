@@ -1,0 +1,18 @@
+{
+  "name": "random-35",
+  "seed": [
+    35,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Quaxwell @ Rowap Berry\nAbility: Torrent\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 Atk / 252 Def\nModest Nature\n- Disarming Voice\n- Sleep Talk\n- Chilling Water\n- Growl\n\nTurtwig @ Dragon Scale\nAbility: Overgrow\nLevel: 50\nTera Type: Ice\nEVs: 252 HP / 4 Atk / 252 Spe\nImpish Nature\n- Take Down\n- Trailblaze\n- Swords Dance\n- Endure\n\nScrafty @ Red Card\nAbility: Moxie\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 SpA / 252 SpD\nRash Nature\n- Fake Out\n- Snarl\n- Helping Hand\n- Grass Knot\n\nGumshoos @ Great Ball\nAbility: Stakeout\nLevel: 50\nTera Type: Normal\nEVs: 4 HP / 252 Atk / 252 SpA\nSerious Nature\n- Scary Face\n- Stomping Tantrum\n- Low Sweep\n- Tackle\n"
+  },
+  "p2": {
+    "team": "Pikipek @ Sticky Barb\nAbility: Keen Eye\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 Def / 252 Spe\nHardy Nature\n- Aerial Ace\n- Fly\n- Screech\n- Flame Charge\n\nUrshifu @ Binding Band\nAbility: Unseen Fist\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 Atk / 252 Def\nBashful Nature\n- Rock Tomb\n- Facade\n- Aerial Ace\n- Wicked Blow\n\nFennekin @ Syrupy Apple\nAbility: Blaze\nLevel: 50\nTera Type: Ghost\nEVs: 4 HP / 252 SpD / 252 Spe\nGentle Nature\n- Overheat\n- Helping Hand\n- Howl\n- Endure\n\nLapras @ Quick Ball\nAbility: Shell Armor\nLevel: 50\nTera Type: Dark\nEVs: 252 HP / 252 Atk / 4 Def\nLonely Nature\n- Haze\n- Surf\n- Perish Song\n- Thunder\n"
+  }
+}

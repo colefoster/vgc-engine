@@ -1,0 +1,18 @@
+{
+  "name": "random-8",
+  "seed": [
+    8,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Munkidori @ Destiny Knot\nAbility: Frisk\nLevel: 50\nTera Type: Fairy\nEVs: 252 HP / 4 Atk / 252 Spe\nBold Nature\n- Taunt\n- Hex\n- Sludge Bomb\n- Psych Up\n\nCottonee @ Dubious Disc\nAbility: Infiltrator\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 SpA / 252 Spe\nQuiet Nature\n- Endeavor\n- Taunt\n- Fairy Wind\n- Sleep Talk\n\nMeowth @ Lansat Berry\nAbility: Unnerve\nLevel: 50\nTera Type: Psychic\nEVs: 4 HP / 252 SpD / 252 Spe\nBrave Nature\n- Pay Day\n- Fake Out\n- Shadow Ball\n- Screech\n\nTinkatink @ Power Belt\nAbility: Pickpocket\nLevel: 50\nTera Type: Dark\nEVs: 252 HP / 4 Atk / 252 SpD\nHasty Nature\n- Flash Cannon\n- Rock Slide\n- Fairy Wind\n- Reflect\n"
+  },
+  "p2": {
+    "team": "Houndoom @ Twisted Spoon\nAbility: Early Bird\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 Atk / 252 SpA\nBrave Nature\n- Pain Split\n- Helping Hand\n- Snarl\n- Heat Wave\n\nKingdra @ Lure Ball\nAbility: Sniper\nLevel: 50\nTera Type: Ice\nEVs: 4 HP / 252 SpA / 252 Spe\nNaive Nature\n- Aurora Beam\n- Dragon Breath\n- Hydro Pump\n- Iron Head\n\nTornadus @ Heat Rock\nAbility: Defiant\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 SpA / 252 SpD\nMild Nature\n- Sludge Wave\n- Air Slash\n- Metronome\n- Substitute\n\nArbok @ Twisted Spoon\nAbility: Shed Skin\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 SpD / 252 Spe\nBashful Nature\n- Trailblaze\n- Rock Tomb\n- Throat Chop\n- Glare\n"
+  }
+}

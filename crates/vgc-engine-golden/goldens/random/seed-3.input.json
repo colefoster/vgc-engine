@@ -1,0 +1,18 @@
+{
+  "name": "random-3",
+  "seed": [
+    3,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Salamence @ Timer Ball\nAbility: Intimidate\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 Atk / 252 Spe\nNaive Nature\n- Iron Defense\n- Substitute\n- Sunny Day\n- Hydro Pump\n\nTimburr @ Focus Band\nAbility: Iron Fist\nLevel: 50\nTera Type: Ghost\nEVs: 252 HP / 4 Atk / 252 SpA\nSerious Nature\n- Sleep Talk\n- Facade\n- Curse\n- Double-Edge\n\nEiscue @ Power Weight\nAbility: Ice Face\nLevel: 50\nTera Type: Grass\nEVs: 4 HP / 252 Atk / 252 SpD\nQuirky Nature\n- Avalanche\n- Ice Beam\n- Double-Edge\n- Amnesia\n\nIllumise @ Reaper Cloth\nAbility: Tinted Lens\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 SpA / 252 SpD\nSerious Nature\n- Charge Beam\n- Draining Kiss\n- Air Slash\n- Encore\n"
+  },
+  "p2": {
+    "team": "Nacli @ Sharp Beak\nAbility: Purifying Salt\nLevel: 50\nTera Type: Ground\nEVs: 252 HP / 4 Atk / 252 SpD\nAdamant Nature\n- Sleep Talk\n- Tera Blast\n- Flash Cannon\n- Heavy Slam\n\nFrogadier @ Rowap Berry\nAbility: Torrent\nLevel: 50\nTera Type: Grass\nEVs: 252 HP / 4 Atk / 252 SpA\nSerious Nature\n- Rock Tomb\n- Toxic Spikes\n- Blizzard\n- Rest\n\nMimikyu @ Wacan Berry\nAbility: Disguise\nLevel: 50\nTera Type: Ice\nEVs: 252 HP / 252 Atk / 4 Def\nGentle Nature\n- Rain Dance\n- Misty Terrain\n- Slash\n- Splash\n\nTorkoal @ Charcoal\nAbility: White Smoke\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 Atk / 252 SpD\nGentle Nature\n- Flame Charge\n- Rock Slide\n- Ember\n- Helping Hand\n"
+  }
+}

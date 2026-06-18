@@ -1,0 +1,18 @@
+{
+  "name": "random-20",
+  "seed": [
+    20,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Flareon @ Air Balloon\nAbility: Flash Fire\nLevel: 50\nTera Type: Water\nEVs: 4 HP / 252 Def / 252 Spe\nMild Nature\n- Dig\n- Roar\n- Bite\n- Charm\n\nRegice @ Silk Scarf\nAbility: Ice Body\nLevel: 50\nTera Type: Dragon\nEVs: 4 HP / 252 Def / 252 Spe\nCalm Nature\n- Giga Impact\n- Icicle Spear\n- Zap Cannon\n- Superpower\n\nSeadra @ Quick Ball\nAbility: Damp\nLevel: 50\nTera Type: Water\nEVs: 252 HP / 4 Atk / 252 SpD\nGentle Nature\n- Outrage\n- Weather Ball\n- Water Pulse\n- Agility\n\nTinkatink @ Berry Sweet\nAbility: Own Tempo\nLevel: 50\nTera Type: Psychic\nEVs: 252 HP / 252 Atk / 4 Def\nQuirky Nature\n- Fake Tears\n- Metal Sound\n- Fairy Wind\n- Skitter Smack\n"
+  },
+  "p2": {
+    "team": "Leafeon @ Blunder Policy\nAbility: Leaf Guard\nLevel: 50\nTera Type: Flying\nEVs: 252 HP / 4 Atk / 252 SpD\nBashful Nature\n- Rain Dance\n- Endure\n- Razor Leaf\n- Sand Attack\n\nBraixen @ Electric Seed\nAbility: Blaze\nLevel: 50\nTera Type: Ground\nEVs: 4 HP / 252 Def / 252 Spe\nModest Nature\n- Burning Jealousy\n- Charm\n- Scratch\n- Psychic Terrain\n\nBrute Bonnet @ Unremarkable Teacup\nAbility: Protosynthesis\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 SpD / 252 Spe\nImpish Nature\n- Hyper Beam\n- Trailblaze\n- Mega Drain\n- Solar Beam\n\nScream Tail @ Draco Plate\nAbility: Protosynthesis\nLevel: 50\nTera Type: Flying\nEVs: 4 HP / 252 Atk / 252 SpA\nTimid Nature\n- Sunny Day\n- Ice Fang\n- Amnesia\n- Perish Song\n"
+  }
+}

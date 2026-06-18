@@ -1,0 +1,18 @@
+{
+  "name": "random-27",
+  "seed": [
+    27,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Zamazenta @ Safari Ball\nAbility: Dauntless Shield\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 SpD / 252 Spe\nDocile Nature\n- Reversal\n- Iron Head\n- Sandstorm\n- Imprison\n\nKilowattrel @ King's Rock\nAbility: Volt Absorb\nLevel: 50\nTera Type: Rock\nEVs: 4 HP / 252 Def / 252 SpD\nDocile Nature\n- Supercell Slam\n- Electro Ball\n- Charge Beam\n- Thunder Wave\n\nEmboar @ Liechi Berry\nAbility: Reckless\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 SpA / 252 SpD\nCareful Nature\n- Blast Burn\n- Trailblaze\n- Thrash\n- Brick Break\n\nSmeargle @ Eviolite\nAbility: Technician\nLevel: 50\nTera Type: Rock\nEVs: 4 HP / 252 Atk / 252 SpA\nJolly Nature\n- Muddy Water\n- Water Gun\n- Rock Wrecker\n- X-Scissor\n"
+  },
+  "p2": {
+    "team": "Noctowl @ Magmarizer\nAbility: Tinted Lens\nLevel: 50\nTera Type: Rock\nEVs: 252 HP / 4 Atk / 252 Spe\nDocile Nature\n- Sunny Day\n- Hyper Voice\n- Take Down\n- Supersonic\n\nSnom @ Enigma Berry\nAbility: Shield Dust\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 SpD / 252 Spe\nQuiet Nature\n- Struggle Bug\n- Mirror Coat\n- Protect\n- Substitute\n\nNoivern @ Snowball\nAbility: Telepathy\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 SpA / 252 Spe\nLonely Nature\n- Wild Charge\n- Substitute\n- Agility\n- Hyper Beam\n\nMudsdale @ Rowap Berry\nAbility: Stamina\nLevel: 50\nTera Type: Steel\nEVs: 252 HP / 252 Atk / 4 Def\nBashful Nature\n- Strength\n- Mud-Slap\n- Stomp\n- Body Press\n"
+  }
+}

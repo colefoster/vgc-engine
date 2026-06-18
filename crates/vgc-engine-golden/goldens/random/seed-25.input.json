@@ -1,0 +1,18 @@
+{
+  "name": "random-25",
+  "seed": [
+    25,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Rockruff @ Smooth Rock\nAbility: Vital Spirit\nLevel: 50\nTera Type: Electric\nEVs: 252 HP / 4 Atk / 252 SpD\nTimid Nature\n- Play Rough\n- Rest\n- Crunch\n- Dig\n\nMabosstiff @ Insect Plate\nAbility: Stakeout\nLevel: 50\nTera Type: Ice\nEVs: 252 HP / 252 Atk / 4 Def\nCalm Nature\n- Hone Claws\n- Helping Hand\n- Reversal\n- Dig\n\nMedicham @ Salac Berry\nAbility: Pure Power\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Atk / 252 Def\nLonely Nature\n- Swift\n- Focus Blast\n- Sleep Talk\n- Rock Slide\n\nMetagross @ Maranga Berry\nAbility: Clear Body\nLevel: 50\nTera Type: Steel\nEVs: 4 HP / 252 SpA / 252 SpD\nCalm Nature\n- Meteor Beam\n- Hone Claws\n- Sunny Day\n- Grass Knot\n"
+  },
+  "p2": {
+    "team": "Seedot @ Shiny Stone\nAbility: Early Bird\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 Def / 252 Spe\nJolly Nature\n- Tera Blast\n- Absorb\n- Endeavor\n- Protect\n\nFlapple @ Power Bracer\nAbility: Gluttony\nLevel: 50\nTera Type: Rock\nEVs: 252 HP / 4 Atk / 252 Spe\nSassy Nature\n- Grass Knot\n- Sleep Talk\n- Acid Spray\n- Take Down\n\nKricketot @ Leftovers\nAbility: Run Away\nLevel: 50\nTera Type: Dark\nEVs: 252 HP / 4 Atk / 252 Spe\nSassy Nature\n- Lunge\n- Endeavor\n- Skitter Smack\n- Tackle\n\nDragonair @ Flame Orb\nAbility: Marvel Scale\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 Def / 252 SpD\nCalm Nature\n- Iron Head\n- Leer\n- Thunderbolt\n- Protect\n"
+  }
+}

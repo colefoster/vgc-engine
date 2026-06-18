@@ -1,0 +1,18 @@
+{
+  "name": "random-14",
+  "seed": [
+    14,
+    0,
+    0,
+    0
+  ],
+  "format": "gen9customgame",
+  "random_play": true,
+  "max_turns": 30,
+  "p1": {
+    "team": "Dodrio @ Cheri Berry\nAbility: Tangled Feet\nLevel: 50\nTera Type: Dragon\nEVs: 252 HP / 4 Atk / 252 SpD\nCalm Nature\n- Growl\n- Stomping Tantrum\n- Thrash\n- Quick Attack\n\nMalamar @ Protective Pads\nAbility: Infiltrator\nLevel: 50\nTera Type: Poison\nEVs: 4 HP / 252 SpD / 252 Spe\nHasty Nature\n- Calm Mind\n- Fake Tears\n- Tackle\n- Switcheroo\n\nSandslash @ Splash Plate\nAbility: Sand Rush\nLevel: 50\nTera Type: Psychic\nEVs: 252 HP / 4 Atk / 252 Def\nNaughty Nature\n- Gyro Ball\n- Night Slash\n- Mud Shot\n- Drill Run\n\nDrilbur @ Quick Ball\nAbility: Mold Breaker\nLevel: 50\nTera Type: Fighting\nEVs: 4 HP / 252 SpA / 252 SpD\nDocile Nature\n- Double-Edge\n- Poison Jab\n- Metal Sound\n- Drill Run\n"
+  },
+  "p2": {
+    "team": "Vaporeon @ Toxic Orb\nAbility: Water Absorb\nLevel: 50\nTera Type: Rock\nEVs: 252 HP / 252 Atk / 4 Def\nRelaxed Nature\n- Shadow Ball\n- Covet\n- Yawn\n- Hyper Voice\n\nVeluza @ Oran Berry\nAbility: Sharpness\nLevel: 50\nTera Type: Ground\nEVs: 4 HP / 252 SpD / 252 Spe\nLax Nature\n- Expanding Force\n- Zen Headbutt\n- Thrash\n- Crunch\n\nScorbunny @ Haban Berry\nAbility: Blaze\nLevel: 50\nTera Type: Steel\nEVs: 4 HP / 252 SpA / 252 Spe\nRelaxed Nature\n- Acrobatics\n- Sunny Day\n- Sucker Punch\n- Fire Fang\n\nChimecho @ Chipped Pot\nAbility: Levitate\nLevel: 50\nTera Type: Psychic\nEVs: 4 HP / 252 SpA / 252 Spe\nBrave Nature\n- Charge Beam\n- Helping Hand\n- Confusion\n- Taunt\n"
+  }
+}
