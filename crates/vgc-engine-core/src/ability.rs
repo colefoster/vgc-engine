@@ -519,6 +519,13 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 drop_atk(t);
             }
             crate::item::try_consume_white_herb(battle, opp, s);
+            // Eject Pack on the intimidated target — PS
+            // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
+            // stat drop regardless of source. Common Eject Pack play:
+            // pivot into Incineroar's Intimidate, get the Atk drop, eat
+            // the pack, and pivot to a counter. Bulbapedia link in
+            // `try_consume_eject_pack`.
+            let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
             react_to_opposing_stat_drop(battle, opp, s);
         }
     }

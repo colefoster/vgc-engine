@@ -447,6 +447,156 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
     }
 }
 
+/// Reactive switch trigger — Eject Button.
+///
+/// PS `data/items.ts:ejectbutton`
+///   `onAfterDamage(damage, target, source, move)`:
+///     `if (source && source !== target && move && move.category !== 'Status') {
+///        if (target.hp && !target.forceSwitchFlag) {
+///          if (target.useItem()) target.switchFlag = true;
+///        }
+///      }`
+/// Fires AFTER a damaging hit when the holder survives, the move was
+/// non-Status, and the holder has at least one eligible bench mon (PS
+/// gates implicitly via `canSwitch` inside the switchFlag resolver — a
+/// holder with no bench just consumes the item and stays in, which
+/// matches `force_switch_auto` returning false here). We consume the
+/// item regardless of whether a swap actually happens (PS's `useItem`
+/// runs before the switchFlag resolver), matching the announce-then-
+/// resolve order.
+///
+/// V1 simplification: caller does not supply the replacement; we
+/// auto-pick the first eligible bench mon via
+/// `Battle::force_switch_auto`. Caller-supplied replacements via a
+/// `StepResult::PendingReplacement` round-trip are a follow-up PR.
+///
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eject_Button>.
+///
+/// Returns true if the holder was switched out (caller may want to
+/// short-circuit follow-on per-hit effects on that target — currently
+/// we just return the bool so callers can stop iterating attacker hits
+/// against this slot if desired).
+pub(crate) fn try_consume_eject_button(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+) -> bool {
+    let (alive, slug) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+        None => return false,
+    };
+    if !alive || slug != "ejectbutton" {
+        return false;
+    }
+    if battle.first_bench_index(target_side).is_none() {
+        return false;
+    }
+    // Consume the item, then force-switch.
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.item_id = u16::MAX;
+    }
+    battle.force_switch_auto(target_side, target_slot)
+}
+
+/// Reactive switch trigger — Red Card.
+///
+/// PS `data/items.ts:redcard`
+///   `onAfterDamagingHit(damage, target, source, move)`:
+///     if source is alive, not the target, move is damaging, and the
+///     attacker can be force-switched: consume the card and switch the
+///     ATTACKER out (a random eligible replacement on the attacker's
+///     side). Red Card does NOT fire if the move broke the holder's
+///     substitute (PS's `target.hp && target.isActive` check), and does
+///     not fire if the attacker has Suction Cups / Guard Dog / is
+///     dynamaxed — the latter two aren't modelled yet, so we approximate
+///     by checking only that the attacker is alive and has an eligible
+///     bench. We consume the card whenever the swap would actually
+///     occur (matching the "useItem on success" path).
+///
+/// V1 simplification: deterministic first-bench-index replacement
+/// (vs PS's random pick). Caller-supplied prompts are a follow-up.
+///
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Red_Card>.
+pub(crate) fn try_consume_red_card(
+    battle: &mut Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+) -> bool {
+    let (alive, slug) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+        None => return false,
+    };
+    if !alive || slug != "redcard" {
+        return false;
+    }
+    let attacker_alive = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .is_some_and(|a| a.is_alive());
+    if !attacker_alive {
+        return false;
+    }
+    if battle.first_bench_index(attacker_side).is_none() {
+        return false;
+    }
+    // Consume the card on the holder, then force-switch the attacker.
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.item_id = u16::MAX;
+    }
+    battle.force_switch_auto(attacker_side, attacker_slot)
+}
+
+/// Reactive switch trigger — Eject Pack.
+///
+/// PS `data/items.ts:ejectpack`
+///   `onAfterEachBoost(boost, target, source, effect)`:
+///     `let activated = false;
+///      for (let i in boost) { if (boost[i] < 0) activated = true; }
+///      if (activated && target.useItem()) target.switchFlag = true;`
+/// Fires on any stat drop on the holder, regardless of source (opposing
+/// move secondary, Intimidate, self-drop from a move like Overheat,
+/// etc). Consumed on trigger; auto-replaces with the first eligible
+/// bench mon. If no bench mon is available, the item is NOT consumed
+/// (PS's `useItem` short-circuits when the switchFlag resolver can't
+/// find a target — verified in `onAfterEachBoost`).
+///
+/// Call this AFTER any code that lowers `boosts[i]` on the holder.
+/// The caller is responsible for tracking whether a drop actually
+/// happened; this function reads the holder's slug and only fires if
+/// `ejectpack` is held. The boolean parameter `dropped` lets callers
+/// gate on "this code path actually lowered a stat" so a no-op clamp
+/// from -6 doesn't spuriously trigger.
+///
+/// V1 simplification: deterministic first-bench-index replacement.
+///
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eject_Pack>.
+pub(crate) fn try_consume_eject_pack(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    dropped: bool,
+) -> bool {
+    if !dropped {
+        return false;
+    }
+    let (alive, slug) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+        None => return false,
+    };
+    if !alive || slug != "ejectpack" {
+        return false;
+    }
+    if battle.first_bench_index(side).is_none() {
+        return false;
+    }
+    if let Some(t) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        t.item_id = u16::MAX;
+    }
+    battle.force_switch_auto(side, slot)
+}
+
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     let holder_slug = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => item_slug(m.item_id),
