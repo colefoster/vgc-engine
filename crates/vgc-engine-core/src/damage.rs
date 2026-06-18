@@ -434,6 +434,20 @@ pub fn calculate_damage(
         bp = bp * 3 / 2;
     }
 
+    // Flash Fire — PS `data/abilities.ts:flashfire` adds the
+    // `flashfire` volatile on Fire-immunity absorb (battle.rs). The
+    // companion `onBasePower` returns chainModify([6144, 4096]) (x1.5)
+    // on the holder's outgoing Fire-type damaging moves while the
+    // volatile is active. Fire type code = 1. PS does not gate on the
+    // ability still being present at the BP step — the volatile is the
+    // source of truth — but consumers like Gastro Acid trigger
+    // `onEnd` to drop the volatile in PS; we approximate by reading the
+    // volatile directly. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
+    if move_type == 1 && attacker.volatiles.has(crate::pokemon::VolatileKind::FlashFire) {
+        bp = bp * 6144 / 4096;
+    }
+
     // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
     // `chainModify([5325, 4096])` (×1.3) on Rock/Ground/Steel moves while
     // Sand is up. Move-type codes: Ground=8, Rock=12, Steel=16. Damage
