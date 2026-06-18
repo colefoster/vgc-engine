@@ -289,6 +289,19 @@ pub enum VolatileKind {
     /// type, Levitate, Air Balloon, and Magnet Rise are all overridden.
     /// Payload unused.
     SmackdownGrounded,
+    /// Infatuation (PS `data/moves.ts:706` attract `condition`). Set by the
+    /// move Attract (and later Cute Charm / Destiny Knot) on a target whose
+    /// gender is opposite and non-genderless relative to the source (M↔F).
+    /// Indefinite duration. Cleared on switch-out (blanket reset), when the
+    /// source leaves the field (PS `onUpdate`), by Oblivious (`onUpdate` /
+    /// `onTryHit`), or by Mental Herb. `payload` records the source mon so
+    /// the clear-on-source-leave check can find it after switches:
+    ///   bits 0..7 → source team roster index (0..=5)
+    ///   bit 8     → source side (0 = P1, 1 = P2)
+    /// Each turn the infatuated mon acts there is a 50% chance it is
+    /// "immobilized by love" and skips the move (PS `onBeforeMovePriority 2`,
+    /// `randomChance(1, 2)`; no PP consumed).
+    Attract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -952,6 +965,45 @@ impl Pokemon {
     #[inline]
     pub fn clear_disable(&mut self) {
         self.volatiles.remove(VolatileKind::Disable);
+    }
+
+    /// `true` while infatuated (the Attract volatile is present).
+    #[inline]
+    pub fn is_attracted(&self) -> bool {
+        self.volatiles.has(VolatileKind::Attract)
+    }
+
+    /// The Attract source as `(source_side, source_team_index)` where
+    /// `source_side` is 0 (P1) / 1 (P2) and `source_team_index` is the
+    /// source mon's roster slot. `None` when not infatuated. See the
+    /// `Attract` `VolatileKind` doc for the payload encoding.
+    #[inline]
+    pub fn attract_source(&self) -> Option<(u8, u8)> {
+        self.volatiles.get(VolatileKind::Attract).map(|v| {
+            let side = ((v.payload >> 8) & 1) as u8;
+            let idx = (v.payload & 0xFF) as u8;
+            (side, idx)
+        })
+    }
+
+    /// Apply the Attract (infatuation) volatile, recording the source mon
+    /// by side (0 = P1, 1 = P2) + team roster index. Re-application
+    /// replaces (PS `volatileStatus` add is idempotent; callers gate the
+    /// already-attracted no-op themselves).
+    #[inline]
+    pub fn set_attract(&mut self, source_side: u8, source_team_index: u8) {
+        let payload = (((source_side & 1) as u32) << 8) | (source_team_index as u32 & 0xFF);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::Attract,
+            turns_remaining: 0,
+            payload,
+        });
+    }
+
+    /// Clear the Attract volatile.
+    #[inline]
+    pub fn clear_attract(&mut self) {
+        self.volatiles.remove(VolatileKind::Attract);
     }
 
     /// `true` while the Charge volatile is up — the holder's next
