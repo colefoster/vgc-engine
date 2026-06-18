@@ -10,40 +10,22 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **101**
-- Missing: **148** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **118**
+- Missing: **131** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~50 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~33 competitively relevant**
 
 ## Missing by category
 
 ### Offensive damage modifiers (type-boost plates + carrier orbs)
 
-The engine implements `pixieplate` (Fairy) and the three Ogerpon masks,
-but the rest of the Arceus plates and the Dialga/Palkia/Giratina
-crystals are not handled. Each is a flat ×1.2 BP on the matching type
-(plates) or carrier-locked (crystals).
+All 17 Arceus type-boost plates plus Fairy Feather are shipped (PR-299).
+Adamant Crystal / Lustrous Globe / Griseous Core (PLA carrier-locked
+equivalents of the three orbs) and Normal Gem remain.
 
-- `dracoplate` — Draco Plate — Holder's Dragon-type attacks have 1.2x power.
-- `dreadplate` — Dread Plate — Holder's Dark-type attacks have 1.2x power.
-- `earthplate` — Earth Plate — Holder's Ground-type attacks have 1.2x power.
-- `fistplate` — Fist Plate — Holder's Fighting-type attacks have 1.2x power.
-- `flameplate` — Flame Plate — Holder's Fire-type attacks have 1.2x power.
-- `icicleplate` — Icicle Plate — Holder's Ice-type attacks have 1.2x power.
-- `insectplate` — Insect Plate — Holder's Bug-type attacks have 1.2x power.
-- `ironplate` — Iron Plate — Holder's Steel-type attacks have 1.2x power.
-- `meadowplate` — Meadow Plate — Holder's Grass-type attacks have 1.2x power.
-- `mindplate` — Mind Plate — Holder's Psychic-type attacks have 1.2x power.
-- `skyplate` — Sky Plate — Holder's Flying-type attacks have 1.2x power.
-- `splashplate` — Splash Plate — Holder's Water-type attacks have 1.2x power.
-- `spookyplate` — Spooky Plate — Holder's Ghost-type attacks have 1.2x power.
-- `stoneplate` — Stone Plate — Holder's Rock-type attacks have 1.2x power.
-- `toxicplate` — Toxic Plate — Holder's Poison-type attacks have 1.2x power.
-- `zapplate` — Zap Plate — Holder's Electric-type attacks have 1.2x power.
 - `adamantcrystal` — Adamant Crystal — Dialga Steel/Dragon ×1.2 (PLA equivalent of Adamant Orb).
 - `lustrousglobe` — Lustrous Globe — Palkia Water/Dragon ×1.2 (PLA equivalent of Lustrous Orb).
 - `griseouscore` — Griseous Core — Giratina Ghost/Dragon ×1.2 (PLA equivalent of Griseous Orb).
-- `fairyfeather` — Fairy Feather — Holder's Fairy-type attacks have 1.2x power.
 - `normalgem` — Normal Gem — Holder's first successful Normal-type attack will have 1.3x power. Single use.
 
 ### Defensive damage reducers

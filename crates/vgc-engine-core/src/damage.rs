@@ -741,6 +741,33 @@ pub fn calculate_damage(
             "blackglasses"  => 15,  // Dark
             "metalcoat"     => 16,  // Steel
             "pixieplate"    => 17,  // Fairy
+            // Arceus type-boost plates — PS data/items.ts each
+            // `onBasePower` returns `chainModify([4915, 4096])` when
+            // `move.type` matches the plate. Identical numerics to the
+            // rocks above; the plate also forces Arceus's type when
+            // used by Arceus, but that team-build concern is handled
+            // outside the BP block. Bulbapedia hub:
+            // <https://bulbapedia.bulbagarden.net/wiki/Arceus_(Pok%C3%A9mon)#Plates>.
+            "flameplate"    => 1,   // Fire — PS data/items.ts:2152
+            "splashplate"   => 2,   // Water — PS data/items.ts:5925
+            "zapplate"      => 3,   // Electric — PS data/items.ts:7788
+            "meadowplate"   => 4,   // Grass — PS data/items.ts:3840
+            "icicleplate"   => 5,   // Ice — PS data/items.ts:2973
+            "fistplate"     => 6,   // Fighting — PS data/items.ts:2117
+            "toxicplate"    => 7,   // Poison — PS data/items.ts:6352
+            "earthplate"    => 8,   // Ground — PS data/items.ts:1636
+            "skyplate"      => 9,   // Flying — PS data/items.ts:5783
+            "mindplate"     => 10,  // Psychic — PS data/items.ts:4110
+            "insectplate"   => 11,  // Bug — PS data/items.ts:3025
+            "stoneplate"    => 12,  // Rock — PS data/items.ts:6129
+            "spookyplate"   => 13,  // Ghost — PS data/items.ts:5945
+            "dracoplate"    => 14,  // Dragon — PS data/items.ts:1449
+            "dreadplate"    => 15,  // Dark — PS data/items.ts:1571
+            "ironplate"     => 16,  // Steel — PS data/items.ts:3063
+            // Fairy Feather — Fairy-type ×1.2 BP, non-plate variant.
+            // PS data/items.ts:1922 — same numerics as the plates.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fairy_Feather>.
+            "fairyfeather"  => 17,  // Fairy
             _ => -1,
         };
         if item_type as i32 == move_type as i32 && item_type >= 0 {
@@ -2151,6 +2178,34 @@ mod tests {
         let with_mask_wrong = mk(&wrong, tackle);
         assert_eq!(no_mask, with_mask_wrong,
             "Hearthflame Mask must not boost a non-Hearthflame Ogerpon");
+    }
+
+    #[test]
+    fn flame_plate_boosts_fire_moves_only() {
+        // Flame Plate is a type-boost plate: ×1.2 BP on the holder's
+        // Fire-type moves; no effect on other types. PS data/items.ts:flameplate.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let firepunch = move_id("firepunch");
+        let tackle = move_id("tackle");
+        let base_fire = mk(&atk, firepunch);
+        let base_tackle = mk(&atk, tackle);
+        let plate = data::ITEMS.iter()
+            .position(|i| i.slug == "flameplate").unwrap() as u16;
+        atk.item_id = plate;
+        let with_fire = mk(&atk, firepunch);
+        let with_tackle = mk(&atk, tackle);
+        assert!(with_fire > base_fire, "Flame Plate boosts Fire moves");
+        assert_eq!(with_tackle, base_tackle, "Flame Plate must NOT boost non-Fire moves");
     }
 
     #[test]
