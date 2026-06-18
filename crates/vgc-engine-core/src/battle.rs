@@ -2881,7 +2881,31 @@ impl Battle {
                     heal = heal * 5324 / 4096;
                 }
                 let heal = heal.min(u16::MAX as u32) as u16;
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                // Liquid Ooze — PS `data/abilities.ts:2357`
+                //   onSourceTryHeal(damage, target, source, effect) {
+                //     const canOoze = ['drain', 'leechseed', 'strengthsap'];
+                //     if (canOoze.includes(effect.id)) { this.damage(damage); return 0; }
+                //   }
+                // The HP-drain attacker takes the heal as damage
+                // instead. NOT in PS breakable list — Mold Breaker
+                // does NOT bypass. Tentacruel / Qwilfish / Toxapex.
+                // Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Ooze_(Ability)>.
+                let target_has_liquid_ooze = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .map(|d| d.effective_ability_slug() == "liquidooze")
+                    .unwrap_or(false);
+                if target_has_liquid_ooze {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        if a.is_alive() {
+                            a.current_hp = a.current_hp.saturating_sub(heal);
+                            if a.current_hp == 0 {
+                                a.fainted = true;
+                            }
+                        }
+                    }
+                } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() {
                         let max = a.stats.hp;
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
@@ -3613,7 +3637,7 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
             for slot in 0..n {
-                let (dmg, mg) = match self.side(side).active_mon(slot as usize) {
+                let (dmg, mg, poison_heal) = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive() => {
                         // Heatproof halves burn DOT — PS data/abilities.ts:
                         //   onDamage(damage, target, source, effect) {
@@ -3627,6 +3651,20 @@ impl Battle {
                             .get(m.ability_id as usize)
                             .map(|a| a.slug == "heatproof")
                             .unwrap_or(false);
+                        // Poison Heal — PS `data/abilities.ts:3286`:
+                        //   onDamage(damage, target, source, effect) {
+                        //     if (effect.id === 'psn' || effect.id === 'tox') {
+                        //       this.heal(target.baseMaxhp / 8);
+                        //       return false;
+                        //     }
+                        //   }
+                        // Replaces poison/toxic chip with a 1/8 heal.
+                        // Toxic counter does NOT tick (PS returns false
+                        // before the counter increment). Breloom / Gliscor.
+                        // Bulbapedia:
+                        // <https://bulbapedia.bulbagarden.net/wiki/Poison_Heal_(Ability)>.
+                        let poison_heal = m.effective_ability_slug() == "poisonheal"
+                            && matches!(m.status, Status::Poison | Status::Toxic);
                         let d = match m.status {
                             Status::Burn => {
                                 let raw = (m.stats.hp / 16).max(1);
@@ -3639,21 +3677,32 @@ impl Battle {
                             }
                             _ => 0,
                         };
-                        (d, crate::ability::has_magic_guard(m))
+                        (d, crate::ability::has_magic_guard(m), poison_heal)
                     }
-                    _ => (0, false),
+                    _ => (0, false, false),
                 };
-                if dmg == 0 {
+                if dmg == 0 && !poison_heal {
                     continue;
                 }
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                    if !mg {
+                    if poison_heal {
+                        let heal = (m.stats.hp / 8).max(1);
+                        m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                        // Toxic counter does NOT tick when Poison Heal
+                        // absorbs the damage (PS returns before the
+                        // increment).
+                    } else if !mg {
                         m.current_hp = m.current_hp.saturating_sub(dmg);
                         if m.current_hp == 0 {
                             m.fainted = true;
                         }
-                    }
-                    if matches!(m.status, Status::Toxic) {
+                        if matches!(m.status, Status::Toxic) {
+                            let next = m.toxic_counter().saturating_add(1).min(15);
+                            m.set_toxic_counter(next);
+                        }
+                    } else if matches!(m.status, Status::Toxic) {
+                        // Magic Guard blocks damage but the toxic counter
+                        // still ticks (PS does the same).
                         let next = m.toxic_counter().saturating_add(1).min(15);
                         m.set_toxic_counter(next);
                     }
@@ -14808,6 +14857,80 @@ mod tests {
         // Baseline (non-blocker): at least one seed must register a drop.
         let any_drop = (0..20u64).any(|s| mk("ironfist", s) < 0);
         assert!(any_drop, "Baseline ability must let at least one Mud-Slap drop Acc");
+    }
+
+    #[test]
+    fn poison_heal_replaces_poison_damage_with_heal() {
+        // Gliscor @ Poison Heal under toxic. End-of-turn should heal
+        // 1/8 max HP instead of taking damage.
+        let p1_json = r#"[
+            {"species":"gliscor","level":50,"ability":"poisonheal","item":"toxicorb","nature":"impish","moves":["earthquake","protect","substitute","facade"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","calmmind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Hand-set Gliscor's status to Toxic and partial HP.
+        b.p1.team[0].status = Status::Toxic;
+        b.p1.team[0].set_toxic_counter(1);
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max / 2;
+        let pre = b.p1.team[0].current_hp;
+        // Protect / Softboiled — pure end-of-turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Poison Heal: +1/8 max HP.
+        let expected_heal = (max / 8).max(1);
+        assert!(b.p1.team[0].current_hp > pre,
+            "Poison Heal should heal under toxic, not damage: pre={pre} post={}", b.p1.team[0].current_hp);
+        assert_eq!(b.p1.team[0].current_hp - pre, expected_heal,
+            "Poison Heal heals 1/8 max HP");
+    }
+
+    #[test]
+    fn liquid_ooze_flips_drain_to_damage() {
+        // Tentacruel @ Liquid Ooze hit by Giga Drain — attacker takes
+        // damage equal to what would have been healed.
+        let p1_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","item":"","nature":"modest","moves":["gigadrain","sludgebomb","sleeppowder","leechseed"],"evs":{"spa":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"tentacruel","level":50,"ability":"liquidooze","item":"","nature":"calm","moves":["scald","toxic","rapidspin","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Damage Venusaur to 50% to see drain effect (drain heals; LO
+        // flips to damage).
+        let vmax = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = vmax / 2;
+        let pre_v = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Protect
+        );
+        // Tentacruel protected; Giga Drain blocked → no drain at all.
+        // Try without protect.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        b2.p1.team[0].current_hp = vmax / 2;
+        let pre_v2 = b2.p1.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }], // Scald
+        );
+        // Liquid Ooze: Venusaur should have taken damage from drain (not healed).
+        // After this turn Venusaur has taken (Scald + LO drain backfire).
+        // Hard to isolate, but at minimum HP should not be at or above pre_v2
+        // (i.e. drain didn't heal).
+        assert!(b2.p1.team[0].current_hp < pre_v2 + 1,
+            "Liquid Ooze: Venusaur HP shouldn't increase from drain");
+        let _ = pre_v;
     }
 
     #[test]

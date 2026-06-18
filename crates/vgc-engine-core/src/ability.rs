@@ -715,6 +715,35 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         }
     }
 
+    // Healer — PS `data/abilities.ts:1772`:
+    //   onResidualOrder: 5, onResidualSubOrder: 4,
+    //   onResidual(pokemon) {
+    //     if (pokemon.side.active.length === 1) return;
+    //     for (const allyActive of pokemon.adjacentAllies()) {
+    //       if (allyActive.status && this.randomChance(3, 10)) {
+    //         allyActive.cureStatus();
+    //       }
+    //     }
+    //   }
+    // Doubles-only — 30% chance per turn to cure each adjacent ally's
+    // major status. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Healer_(Ability)>.
+    if slug == "healer" && battle.format().active_count() > 1 {
+        let n = battle.format().active_count() as u8;
+        for s in 0..n {
+            if s == slot { continue; }
+            let ally_statused = battle.side(side).active_mon(s as usize)
+                .map(|m| m.is_alive() && !matches!(m.status, crate::pokemon::Status::None))
+                .unwrap_or(false);
+            if !ally_statused { continue; }
+            if rng.percent_1_100() <= 30 {
+                if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
+                    ally.status = crate::pokemon::Status::None;
+                }
+            }
+        }
+    }
+
     // Speed Boost: +1 Spe at end of turn, except on the turn the mon
     // was switched in mid-battle. PS guards with `if (pokemon.activeTurns)`
     // — activeTurns is incremented at turn-start in nextTurn(), so it's
@@ -818,6 +847,39 @@ pub fn on_damaging_hit(
         Some(m) => (ability_slug(m.ability_id), m.is_alive()),
         None => return,
     };
+    // Cotton Down — PS `data/abilities.ts:715` `onDamagingHit`:
+    //   this.boost({spe: -1}, source, target, null, false, true);
+    //   for (const pokemon of this.getAllActive()) {
+    //     if (pokemon !== target) this.boost({spe: -1}, pokemon, target);
+    //   }
+    // On a hit received, lower the Spe of every other active mon by 1.
+    // Eiscue / Whimsicott signature. Carries no breakable flag — Mold
+    // Breaker does NOT bypass. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Cotton_Down_(Ability)>.
+    if slug == "cottondown" && target_alive {
+        let n = battle.format().active_count() as u8;
+        for sd in [SideRef::P1, SideRef::P2] {
+            for s in 0..n {
+                if sd == target_side && s == target_slot { continue; }
+                let alive = battle.side(sd).active_mon(s as usize)
+                    .is_some_and(|m| m.is_alive());
+                if !alive { continue; }
+                // Cross-side drops respect blocks_opposing_stat_drop_for(spe);
+                // ally drops (own side) are NOT blocked by Clear Body — PS
+                // gates `target.isAlly(source)` separately. Cotton Down's
+                // source is the Cotton Down holder; allies on its side
+                // get the drop too.
+                let cross_side = sd != target_side;
+                let blocked = cross_side && battle.side(sd).active_mon(s as usize)
+                    .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 4));
+                if blocked { continue; }
+                if let Some(t) = battle.side_mut(sd).active_mon_mut(s as usize) {
+                    t.boosts[4] = (t.boosts[4] - 1).clamp(-6, 6);
+                }
+            }
+        }
+    }
+
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
@@ -1130,6 +1192,29 @@ pub fn on_damaging_hit(
                 }
             }
         }
+    }
+
+    // Poison Touch — PS `data/abilities.ts:3325`:
+    //   onSourceDamagingHit(damage, target, source, move) {
+    //     if (this.checkMoveMakesContact(move, source, target)) {
+    //       if (this.randomChance(3, 10)) target.trySetStatus('psn', source);
+    //     }
+    //   }
+    // The ATTACKER holds Poison Touch and poisons the target on contact.
+    // 30% chance. Mirror of Static's shape. Toxicroak signature.
+    // Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Poison_Touch_(Ability)>.
+    let attacker_slug = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| ability_slug(a.ability_id))
+        .unwrap_or("");
+    if attacker_slug == "poisontouch"
+        && move_makes_contact_from_attacker
+        && target_alive
+        && rng.percent_1_100() <= 30
+    {
+        battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Poison);
     }
 
     // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a

@@ -2,13 +2,13 @@
 
 Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_switch_in`, `on_switch_out`, `on_damaging_hit`, `react_to_opposing_stat_drop`, BP-modifier scans in `damage.rs`). Most additions are a `match` arm.
 
-## Headline counts (post PR-276)
+## Headline counts (post PR-306)
 
 | Status | Count |
 | --- | --- |
-| shipped | 60 |
-| partial | 5 |
-| not implemented | 28 |
+| shipped | 78 |
+| partial | 4 |
+| not implemented | 12 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -287,7 +287,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: On hit, -1 Spe to all opposing mons.
 
-**Status**: not implemented.
+**Status**: shipped — PR-306. Fires in `on_damaging_hit` from defender side; cross-side drops respect `blocks_opposing_stat_drop_for(spe)`.
 
 ### Wind Power
 
@@ -481,7 +481,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Poison heals 1/8 max HP per turn instead of damaging. Stacks with Toxic Orb.
 
-**Status**: not implemented.
+**Status**: shipped — PR-306. Branch in status-DOT residual: when poisoned holder has `poisonheal`, heal 1/8 max HP and skip the toxic-counter tick (per PS return-false).
 
 ## Sound / contact / projectile blockers
 
@@ -513,7 +513,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: 30% end-of-turn chance to cure partner's status.
 
-**Status**: not implemented.
+**Status**: shipped — PR-306. Doubles-only residual arm in `on_residual`; 30% per ally per turn.
 
 ### Symbiosis
 
@@ -613,13 +613,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: 30% chance on contact attack to poison target.
 
-**Status**: not implemented.
+**Status**: shipped — PR-306. Attacker-side arm in `on_damaging_hit` mirroring Static's shape; uses `try_set_status` for type/ability immunity gating.
 
 ### Liquid Ooze
 
 **What it is**: Drain moves used against the user damage the attacker instead of healing.
 
-**Status**: not implemented.
+**Status**: shipped — PR-306. Defender check at the drain-heal application site; flips the heal into damage.
 
 ### Skill Link
 
