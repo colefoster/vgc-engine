@@ -667,6 +667,23 @@ pub fn calculate_damage(
         atk_stage = defender.boosts[0];
     }
 
+    // Solar Power — PS `data/abilities.ts:solarpower`:
+    //   onModifySpA(spa, pokemon) {
+    //     if (['sunnyday','desolateland'].includes(pokemon.effectiveWeather()))
+    //       return this.chainModify(1.5);
+    //   }
+    // Boosts the holder's effective SpA by ×1.5 on special moves while
+    // Sun is up. Companion `onWeather` end-of-turn chip (1/8 max HP, MG-
+    // blocked) lives in battle.rs. ×1.5 = 6144/4096 (exact in pokeRound).
+    // Charizard / Heliolisk / Sunkern signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
+    if !physical
+        && matches!(ctx.weather, crate::weather::Weather::Sun)
+        && attacker.effective_ability_slug() == "solarpower"
+    {
+        atk_stat = atk_stat * 3 / 2;
+    }
+
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
     // Routed through `BoostIgnore` so future Unaware (Negative on the
