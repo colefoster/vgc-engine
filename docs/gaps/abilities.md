@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 46 |
+| shipped | 48 |
 | partial | 5 |
-| not implemented | 42 |
+| not implemented | 40 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -276,6 +276,12 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 **What it is**: +6 Spe on Fire / Water hit received.
 
 **Status**: not implemented.
+
+### Moxie / Beast Boost
+
+**What it is**: Moxie: +1 Atk after KOing a foe. Beast Boost: +1 to the highest-stat-stage stat after KOing.
+
+**Status**: shipped — PR-278.
 
 ### Cotton Down
 

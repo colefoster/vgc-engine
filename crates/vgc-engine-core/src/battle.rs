@@ -2311,6 +2311,45 @@ impl Battle {
                     self, tside, tslot, actor_side, actor_slot, move_id,
                 );
             }
+            // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
+            // attacker-side KO triggers. PS data/abilities.ts:
+            //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
+            //   beastboost:   onSourceAfterFaint { boost({<best>: 1}) }
+            // Fires once per fainted target on a damaging move. PS gates
+            // on `move && source && source !== target` (attacker still
+            // exists + cross-side) + the target actually fainting from
+            // this hit. We approximate by detecting the alive→fainted
+            // transition (`!alive_post && effective_dmg > 0`).
+            // `best_stat_index` already mirrors PS `getBestStat(false, true)`.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moxie_(Ability)>
+            //             <https://bulbapedia.bulbagarden.net/wiki/Beast_Boost_(Ability)>.
+            if !alive_post && effective_dmg > 0 && !hit_sub {
+                let attacker_ability = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
+                    .unwrap_or("");
+                match attacker_ability {
+                    "moxie" => {
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            a.boosts[0] = (a.boosts[0] + 1).clamp(-6, 6);
+                        }
+                    }
+                    "beastboost" => {
+                        // PS reads the attacker's current stats / stages
+                        // at faint time (PS `getBestStat(false, true)`).
+                        let idx = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .map(crate::ability::best_stat_index)
+                            .unwrap_or(0);
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            a.boosts[idx as usize] = (a.boosts[idx as usize] + 1).clamp(-6, 6);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // Sheer Force strips secondaries entirely — flinch, stat
             // drops, burn chance etc. are deleted before they roll. PS
             // `data/abilities.ts:sheerforce` `onModifyMove` clears
@@ -12903,5 +12942,61 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Flare Boost should raise Shadow Ball damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn moxie_boosts_attack_after_ko() {
+        // Garchomp KOes a 1-HP pikachu with Earthquake. With Moxie,
+        // its Atk stage should go from 0 to +1.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"moxie","item":"choiceband","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Strip pikachu's Focus Sash so the OHKO actually lands.
+        b.p2.team[0].item_id = u16::MAX;
+        b.p2.team[0].current_hp = 1;
+        // Pre-Intimidate adjustment: Incineroar isn't on the field here
+        // (singles), so Garchomp's Atk stays 0 before the KO.
+        assert_eq!(b.p1.team[0].boosts[0], 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted, "pikachu must faint");
+        assert_eq!(b.p1.team[0].boosts[0], 1, "Moxie should leave Garchomp at +1 Atk");
+    }
+
+    #[test]
+    fn beast_boost_picks_highest_stat_after_ko() {
+        // Iron Valiant has SpA as highest stat; KOing should raise SpA.
+        let p1_json = r#"[
+            {"species":"ironvaliant","level":50,"ability":"beastboost","item":"choicespecs","nature":"timid","moves":["moonblast","psyshock","aurasphere","thunderbolt"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p2.team[0].item_id = u16::MAX;
+        b.p2.team[0].current_hp = 1;
+        // Find which stat is highest pre-KO; that's the index expected to
+        // get +1 (best_stat_index is the exact PS getBestStat ordering).
+        let expected_idx = crate::ability::best_stat_index(&b.p1.team[0]) as usize;
+        assert_eq!(b.p1.team[0].boosts[expected_idx], 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted);
+        assert_eq!(b.p1.team[0].boosts[expected_idx], 1,
+            "Beast Boost should raise the attacker's highest stat by 1 (idx={expected_idx})");
     }
 }
