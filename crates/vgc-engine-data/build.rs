@@ -314,6 +314,7 @@ fn main() {
 
     // --- Moves
     let moves_keep = keep_gen9(&moves, |m| m.gen_, |m| m.is_nonstandard.as_deref());
+    writeln!(f, "#[derive(Clone, Copy)]").unwrap();
     writeln!(f, "pub struct MoveDef {{").unwrap();
     writeln!(f, "    pub num: u16,").unwrap();
     writeln!(f, "    pub name: &'static str,").unwrap();

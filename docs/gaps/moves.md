@@ -6,9 +6,9 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 32 |
+| shipped | 33 |
 | partial | 5 |
-| not implemented | 2 |
+| not implemented | 1 |
 | deferred / no-effect | 0 |
 
 ## Conditional BP
@@ -131,7 +131,12 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 **Depends on**: Pre-roll comparative damage calc.
 
-**Status**: not implemented. (Slug absent from engine.)
+**Status**: shipped — PR-56. `onModifyMove`-style category swap
+applied to a locally-owned MoveDef copy at resolve time, before per-
+target damage / stat-mod hooks fire. Comparison uses cross-multiplied
+boosted Atk×SpD vs SpA×Def of the attacker and the primary target,
+matching PS's `atk/def vs spa/spd` ratio. Ties default to Special
+(50/50 RNG roll deferred). Physical branch also sets contact.
 
 ## Drain / heal variants
 
