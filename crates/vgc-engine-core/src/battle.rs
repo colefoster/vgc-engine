@@ -2061,6 +2061,48 @@ impl Battle {
                 }
             }
 
+            // Soundproof — PS `data/abilities.ts:soundproof`:
+            //   onTryHit(target, source, move) {
+            //     if (target !== source && move.flags['sound']) return null;
+            //   }
+            // Immunity to sound moves (status or damaging). Carries
+            // `flags: { breakable: 1 }` — Mold Breaker bypasses. Use the
+            // pre-existing `is_sound_move` table (PR-51). Self-targeting
+            // sound (e.g. Boomburst as a self target) doesn't trigger,
+            // but our resolution only iterates real targets so the
+            // self-check is implicit. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Soundproof_(Ability)>.
+            if is_sound_move(m.slug) {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "soundproof" && !attacker_breaks_mold {
+                    continue;
+                }
+            }
+
+            // Bulletproof — PS `data/abilities.ts:bulletproof`:
+            //   onTryHit(pokemon, target, move) {
+            //     if (move.flags['bullet']) return null;
+            //   }
+            // Immunity to ballistic moves (Shadow Ball, Sludge Bomb,
+            // Focus Blast, etc.). `flags: { breakable: 1 }` — Mold
+            // Breaker bypasses. `MoveDef.is_bullet` is populated from
+            // PS `flags.bullet`. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Bulletproof_(Ability)>.
+            if m.is_bullet {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "bulletproof" && !attacker_breaks_mold {
+                    continue;
+                }
+            }
+
             // Water Absorb / Dry Skin heal — PS handlers absorb Water moves
             // and heal target.baseMaxhp / 4. Water type code = 2. Gastrodon
             // is the corpus-relevant case. Dry Skin: incoming Water absorbed
@@ -14696,6 +14738,49 @@ mod tests {
         // Baseline (non-blocker): at least one seed must register a drop.
         let any_drop = (0..20u64).any(|s| mk("ironfist", s) < 0);
         assert!(any_drop, "Baseline ability must let at least one Mud-Slap drop Acc");
+    }
+
+    #[test]
+    fn soundproof_blocks_sound_damaging_move() {
+        // Pikachu uses Hyper Voice (sound) into Voltorb @ Soundproof.
+        // Sound is type Normal; Voltorb is Electric and would take a
+        // chunk of damage. Soundproof should null the hit.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["hypervoice","thunderbolt","quickattack","grassknot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"voltorb","level":50,"ability":"soundproof","item":"","nature":"hardy","moves":["spark","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre, "Soundproof blocks Hyper Voice");
+    }
+
+    #[test]
+    fn bulletproof_blocks_shadow_ball() {
+        // Gengar Shadow Ball (is_bullet) vs Chesnaught @ Bulletproof —
+        // hit should be nulled (no HP loss).
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"hardy","moves":["shadowball","sludgebomb","thunderbolt","focusblast"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"chesnaught","level":50,"ability":"bulletproof","item":"","nature":"hardy","moves":["spikyshield","ironhead","drainpunch","leechseed"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre, "Bulletproof blocks Shadow Ball");
     }
 
     #[test]
