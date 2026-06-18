@@ -7053,6 +7053,25 @@ mod tests {
     }
 
     #[test]
+    fn kee_berry_consumes_after_physical_hit_for_plus_one_def() {
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["quickattack","thunderbolt","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"keeberry","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[1], 1, "Kee Berry gives +1 Def on physical hit");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Kee Berry consumed");
+    }
+
+    #[test]
     fn oran_berry_heals_ten_at_half_hp() {
         // PS data/items.ts:oranberry — eats at <=50% HP, heals 10.
         let p1_json = r#"[
