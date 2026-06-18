@@ -94,6 +94,12 @@ impl SmogonStatsRecon {
             ivs: StatSpread::MAX_IV,
             evs,
             teratype: None,
+            gender: match obs.gender {
+                'M' => Some("M".to_string()),
+                'F' => Some("F".to_string()),
+                'N' => Some("N".to_string()),
+                _ => None,
+            },
         })
     }
 }
@@ -568,7 +574,8 @@ mod tests {
                 &StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 }, nature);
             let mk = |species_id: u16, level: u8, stats: vgc_engine_core::FinalStats| -> Pokemon {
                 Pokemon {
-                    species_id, level, moves: [u16::MAX; 4], pp: [0; 4],
+                    species_id, level, gender: data::Gender::Male,
+                    moves: [u16::MAX; 4], pp: [0; 4],
                     ability_id: u16::MAX, item_id: u16::MAX,
                     current_hp: stats.hp, stats, status: Status::None,
                     boosts: [0; 7], fainted: false,

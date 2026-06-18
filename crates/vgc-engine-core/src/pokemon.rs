@@ -396,6 +396,15 @@ impl VolatileSet {
 pub struct Pokemon {
     pub species_id: u16,
     pub level: u8,
+    /// This individual's gender. Resolved at team build via PS precedence
+    /// (explicit set gender → species fixed gender → ratio'd). For a
+    /// ratio'd species with no explicit gender this is `Gender::Random`
+    /// until the battle constructor rolls it 50/50 (PS rolls unspecified
+    /// gender at `>player` with `sample(['M','F'])`); a fully built
+    /// battle never leaves a mon `Random`. Currently informational — the
+    /// gender-reading mechanics (Attract / Cute Charm / Rivalry) land in
+    /// later PRs. PS `sim/pokemon.ts:339-341`.
+    pub gender: data::Gender,
     pub moves: [u16; 4],
     pub pp: [u8; 4],
     pub ability_id: u16,
@@ -1246,7 +1255,8 @@ mod tests {
         let species_idx = data::SPECIES.iter().position(|s| s.slug == "garchomp").unwrap() as u16;
         let species = &data::SPECIES[species_idx as usize];
         let mut mon = Pokemon {
-            species_id: species_idx, level: 50, moves: [u16::MAX; 4], pp: [0; 4],
+            species_id: species_idx, level: 50, gender: data::Gender::Male,
+            moves: [u16::MAX; 4], pp: [0; 4],
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
             turns_active: 0,
@@ -1278,6 +1288,7 @@ mod tests {
         let mon = Pokemon {
             species_id: species.num,
             level: 50,
+            gender: data::Gender::Male,
             moves: [u16::MAX; 4],
             pp: [0; 4],
             ability_id: ab_id,

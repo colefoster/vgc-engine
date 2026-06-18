@@ -76,9 +76,14 @@ fn parse_header(line: &str) -> Result<TeamMember, TeamLoadError> {
 
     let mut species_token = left;
 
-    for tag in [" (M)", " (F)"] {
+    // Capture the PS gender tag (` (M)` / ` (F)` / ` (N)`) that follows
+    // the species/nickname, then strip it off the species token. PS
+    // export format: `Nickname (Species) (M) @ Item`.
+    let mut gender: Option<String> = None;
+    for (tag, g) in [(" (M)", "M"), (" (F)", "F"), (" (N)", "N")] {
         if let Some(stripped) = species_token.strip_suffix(tag) {
             species_token = stripped;
+            gender = Some(g.to_string());
         }
     }
 
@@ -102,6 +107,7 @@ fn parse_header(line: &str) -> Result<TeamMember, TeamLoadError> {
         ivs: StatSpread::MAX_IV,
         evs: StatSpread::default(),
         teratype: None,
+        gender,
     })
 }
 

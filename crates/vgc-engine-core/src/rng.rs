@@ -319,6 +319,40 @@ impl Rng {
         }
     }
 
+    /// Gender roll for a ratio'd species at battle construction.
+    /// Returns `0` for male, `1` for female. Mirrors PS's
+    /// `this.battle.sample(['M', 'F'])` → `prng.random(2)` (a flat 50/50
+    /// draw; PS ignores the numeric `genderRatio`). PS `sim/pokemon.ts:340`,
+    /// `sim/prng.ts:132` (`sample` → `random(items.length)`).
+    ///
+    /// Critically, this draw is variant-sensitive to keep both golden
+    /// modes bit-exact:
+    ///
+    /// * **`PsGen5`** — draws `random(2)` from the bit-exact LCG, so the
+    ///   engine consumes the same construction-time draws PS does and the
+    ///   downstream mechanic stream stays aligned (PsGen5 is the only mode
+    ///   that mirrors PS's actual LCG).
+    /// * **`Oracle` / `OraclePartial`** — does NOT pop the queue or touch
+    ///   the Splitmix fallback. PS's gender draws go through `prng.sample`,
+    ///   which bypasses the `Battle.random` patch the golden driver hooks,
+    ///   so they are absent from the recorded oracle queue. Consuming an
+    ///   event here would desync the replay. Returns `0` (male) without
+    ///   advancing anything, leaving the recorded mechanic stream byte-
+    ///   identical.
+    /// * **`Splitmix`** — also a non-advancing `0`. Standalone battles
+    ///   roll no gender draw at construction so that every existing
+    ///   seed-pinned unit test keeps its exact downstream stream. Gender
+    ///   gates no implemented mechanic yet, so a deterministic default is
+    ///   harmless; revisit when Attract / Cute Charm land.
+    pub fn gender_roll(&mut self) -> u8 {
+        match self {
+            Rng::PsGen5(rng) => rng.random_n(2) as u8,
+            Rng::Splitmix(_)
+            | Rng::Oracle(_)
+            | Rng::OraclePartial { .. } => 0,
+        }
+    }
+
     /// Back-solve a damage-roll bucket from an observed damage value.
     /// Given a candidate `(dmg_min, dmg_max)` range (the 16-bucket span
     /// from `damage::damage_range` for a specific attacker/defender/move)
@@ -915,6 +949,50 @@ mod tests {
 
         // No oracle pops on PsGen5.
         assert!(Rng::ps_gen5([0, 0, 0, 0]).oracle_pops().is_none());
+    }
+
+    #[test]
+    fn gender_roll_psgen5_is_bit_exact_random2() {
+        // PsGen5 gender_roll == random_n(2) on the same LCG. Cross-checked
+        // against PS: a `gen9customgame` battle on seed [1,2,3,4] rolls the
+        // first ratio'd mon (p1 slot 0) male (random(2)=0) and the second
+        // (p2 slot 0) female (random(2)=1). See the PR's gender_probe.
+        let mut g = Rng::ps_gen5([1, 2, 3, 4]);
+        assert_eq!(g.gender_roll(), 0, "first roll male (PS random(2)=0)");
+        assert_eq!(g.gender_roll(), 1, "second roll female (PS random(2)=1)");
+        // And it really is `random_n(2)` bit-for-bit.
+        let mut a = Rng::ps_gen5([7, 8, 9, 10]);
+        let mut b = PsGen5Rng::new([7, 8, 9, 10]);
+        for _ in 0..16 {
+            assert_eq!(a.gender_roll() as u32, b.random_n(2));
+        }
+    }
+
+    #[test]
+    fn gender_roll_non_psgen5_does_not_advance_stream() {
+        // Splitmix / Oracle / OraclePartial must NOT consume a draw for
+        // gender: PS's gender roll bypasses the recorded oracle queue, and
+        // existing seed-pinned tests must keep their exact streams. The
+        // method returns a deterministic 0 and leaves the stream untouched.
+        let mut rolled = Rng::new(0xFEED);
+        assert_eq!(rolled.gender_roll(), 0);
+        assert_eq!(rolled.gender_roll(), 0);
+        let mut fresh = Rng::new(0xFEED);
+        // Two gender_rolls did not move the Splitmix stream at all.
+        for _ in 0..8 {
+            assert_eq!(rolled.next_u64(), fresh.next_u64());
+        }
+
+        // OraclePartial: gender_roll pops nothing and doesn't touch the
+        // fallback — the queued mechanic events stay in place.
+        let mut op = Rng::oracle_partial(
+            vec![RngEvent::PercentRoll(50), RngEvent::DamageRoll(9)],
+            0xABCD,
+        );
+        assert_eq!(op.gender_roll(), 0);
+        assert_eq!(op.oracle_pops(), Some((0, 2)), "no queue consumed");
+        assert_eq!(op.percent_1_100(), 50);
+        assert_eq!(op.damage_roll(), 9);
     }
 
     #[test]

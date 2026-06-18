@@ -6,6 +6,30 @@
 
 #![forbid(unsafe_code)]
 
+/// A Pokémon's gender, doubling as a species' innate gender category.
+///
+/// As a **species** category (`SpeciesDef::gender`): `Male`/`Female` =
+/// always that gender, `Genderless` = no gender (PS `"N"`), `Random` =
+/// the species has a gender ratio and each individual rolls a gender.
+///
+/// As an **individual's** gender (`Pokemon::gender`): `Male`/`Female`/
+/// `Genderless` are the resolved values. `Random` is the transient
+/// "ratio'd but not yet rolled" state set at team build; the battle
+/// constructor resolves every `Random` to `Male`/`Female` before turn 1
+/// (PS rolls it at `>player` via `sample(['M','F'])`). A fully built
+/// battle never leaves a Pokémon `Random`.
+///
+/// PS reference: `sim/pokemon.ts:339-341` (gender assignment),
+/// `sim/dex-species.ts:313-316` (`species.gender`). Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Gender>.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Gender {
+    Male,
+    Female,
+    Genderless,
+    Random,
+}
+
 include!(concat!(env!("OUT_DIR"), "/data_tables.rs"));
 
 #[cfg(test)]
@@ -106,6 +130,24 @@ mod tests {
         // Pikachu evolves to Raichu → NFE (yes, even though it's the
         // mascot — Eviolite Pikachu is legal, however unwise).
         assert!(species_by_slug("pikachu").unwrap().is_nfe);
+    }
+
+    /// Gender category sourced from PS `species.gender` / absence.
+    /// Verified against `~/Dev/localdex/data/pokedex.json`.
+    #[test]
+    fn species_gender_populated() {
+        // Ratio'd (no `gender` key) → Random (rolled per individual).
+        assert_eq!(species_by_slug("garchomp").unwrap().gender, Gender::Random);
+        assert_eq!(species_by_slug("pikachu").unwrap().gender, Gender::Random);
+        // Skewed ratio (M:0.875) is still just Random — PS rolls 50/50.
+        assert_eq!(species_by_slug("combee").unwrap().gender, Gender::Random);
+        // Always-male / always-female.
+        assert_eq!(species_by_slug("tauros").unwrap().gender, Gender::Male);
+        assert_eq!(species_by_slug("nidoking").unwrap().gender, Gender::Male);
+        assert_eq!(species_by_slug("nidoqueen").unwrap().gender, Gender::Female);
+        // Genderless (`"N"`).
+        assert_eq!(species_by_slug("magnemite").unwrap().gender, Gender::Genderless);
+        assert_eq!(species_by_slug("tandemaus").unwrap().gender, Gender::Genderless);
     }
 
     /// Weights round-trip from `@pkmn/dex` `weightkg` into decigrams.

@@ -1639,6 +1639,7 @@ mod tests {
         Pokemon {
             species_id,
             level,
+            gender: data::Gender::Male,
             moves: [u16::MAX; 4],
             pp: [0; 4],
             ability_id: u16::MAX,

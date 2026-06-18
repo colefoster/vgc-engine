@@ -165,6 +165,15 @@ struct SpeciesJson {
     /// multiplier reads this. Defaults to empty when absent.
     #[serde(default)]
     evos: Vec<String>,
+    /// PS `gender` (`sim/dex-species.ts`): `"M"` = always male,
+    /// `"F"` = always female, `"N"` = genderless, absent = the species
+    /// has a (possibly skewed) gender ratio and gender is rolled per
+    /// individual. PS rolls unspecified gender with `sample(['M','F'])`
+    /// — a flat 50/50 `random(2)`, ignoring the numeric `genderRatio`
+    /// (which exists only for in-game flavor). We therefore collapse the
+    /// ratio to a single `Random` category; the numerator is not stored.
+    #[serde(default)]
+    gender: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -504,6 +513,10 @@ fn main() {
     writeln!(f, "    /// Evolved). Read by Eviolite to apply its 1.5× Def/SpD multiplier.").unwrap();
     writeln!(f, "    /// Sourced from PS `evos` array being non-empty.").unwrap();
     writeln!(f, "    pub is_nfe: bool,").unwrap();
+    writeln!(f, "    /// Innate gender category (PS `species.gender`). `Random` means").unwrap();
+    writeln!(f, "    /// the species has a gender ratio and an individual's gender is").unwrap();
+    writeln!(f, "    /// rolled 50/50 at battle construction (PS `sample(['M','F'])`).").unwrap();
+    writeln!(f, "    pub gender: Gender,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
@@ -522,9 +535,17 @@ fn main() {
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
         let is_nfe = !s.evos.is_empty();
+        // PS `species.gender`: "M"/"F"/"N" are fixed; absent ⇒ ratio'd
+        // (rolled per individual). Unknown values fall back to Random.
+        let gender = match s.gender.as_deref() {
+            Some("M") => "Gender::Male",
+            Some("F") => "Gender::Female",
+            Some("N") => "Gender::Genderless",
+            _ => "Gender::Random",
+        };
         writeln!(
             f,
-            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {}, is_nfe: {} }},",
+            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {}, is_nfe: {}, gender: {} }},",
             s.num.max(0) as u16,
             rust_str_lit(&s.name),
             rust_str_lit(slug),
@@ -532,6 +553,7 @@ fn main() {
             clamp(bs.hp), clamp(bs.atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
             weight_dg,
             is_nfe,
+            gender,
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

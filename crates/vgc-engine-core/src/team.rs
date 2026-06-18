@@ -77,6 +77,14 @@ pub struct TeamMember {
     /// (Stellar deferred to its own PR). Case-insensitive.
     #[serde(default)]
     pub teratype: Option<String>,
+    /// Explicitly-set gender as a PS token: `"M"`, `"F"`, or `"N"`
+    /// (case-insensitive; also accepts `"male"`/`"female"`/`"genderless"`).
+    /// Populated by the Showdown-export parser from the `(M)` / `(F)`
+    /// tag after the species. When `None`, gender falls back to the
+    /// species' fixed gender or a roll (PS precedence). PS
+    /// `sim/pokemon.ts:340`.
+    #[serde(default)]
+    pub gender: Option<String>,
 }
 
 fn default_level() -> u8 { 50 }
@@ -131,6 +139,19 @@ fn lookup_nature(name: &str) -> Result<&'static Nature, TeamLoadError> {
     nature_by_slug(&slug).ok_or_else(|| TeamLoadError::UnknownNature(name.to_string()))
 }
 
+/// Parse an explicit gender token (`M`/`F`/`N` or the long forms).
+/// `None` for unrecognized input — the caller falls back to species
+/// gender. PS precedence treats only `M`/`F`/`N` as overrides
+/// (`sim/pokemon.ts:339`).
+fn parse_gender_token(s: &str) -> Option<data::Gender> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "m" | "male" => Some(data::Gender::Male),
+        "f" | "female" => Some(data::Gender::Female),
+        "n" | "genderless" | "none" => Some(data::Gender::Genderless),
+        _ => None,
+    }
+}
+
 /// Build a single Pokémon from a team-member spec.
 pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
     let species_id = lookup_species(&m.species)?;
@@ -180,9 +201,21 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         .transpose()?
         .unwrap_or(u16::MAX);
 
+    // Gender precedence (PS `sim/pokemon.ts:340`):
+    //   explicit set gender → species fixed gender → ratio'd (rolled).
+    // A `Random` species inherits `Random` here; the battle constructor
+    // resolves it to Male/Female at `>player` time. An explicit gender on
+    // a ratio'd species locks it (no roll).
+    let gender = m
+        .gender
+        .as_deref()
+        .and_then(parse_gender_token)
+        .unwrap_or(species.gender);
+
     Ok(Pokemon {
         species_id,
         level: m.level,
+        gender,
         moves,
         pp,
         ability_id,
@@ -243,5 +276,97 @@ impl TeamBuilder {
             return Err(TeamLoadError::TooMany(specs.len()));
         }
         specs.iter().map(build_member).collect()
+    }
+}
+
+#[cfg(test)]
+mod gender_tests {
+    use super::*;
+    use crate::battle::{Battle, BattleConfig};
+    use crate::format::Format;
+    use crate::rng::Rng;
+
+    fn member(species: &str, gender: Option<&str>) -> TeamMember {
+        TeamMember {
+            species: species.into(),
+            level: 50,
+            ability: None,
+            item: None,
+            nature: "serious".into(),
+            moves: vec!["tackle".into()],
+            ivs: StatSpread::MAX_IV,
+            evs: StatSpread::default(),
+            teratype: None,
+            gender: gender.map(|g| g.to_string()),
+        }
+    }
+
+    #[test]
+    fn build_member_gender_precedence() {
+        // Genderless species → Genderless (PS species.gender = "N").
+        assert_eq!(
+            build_member(&member("Magnemite", None)).unwrap().gender,
+            data::Gender::Genderless
+        );
+        // Always-male / always-female species.
+        assert_eq!(build_member(&member("Tauros", None)).unwrap().gender, data::Gender::Male);
+        assert_eq!(
+            build_member(&member("Nidoqueen", None)).unwrap().gender,
+            data::Gender::Female
+        );
+        // Ratio'd species, gender unspecified → Random (rolled later at
+        // battle construction, NOT in build_member which has no RNG).
+        assert_eq!(build_member(&member("Garchomp", None)).unwrap().gender, data::Gender::Random);
+        // Explicit set gender overrides everything, including a ratio'd
+        // species — no roll happens for it.
+        assert_eq!(build_member(&member("Garchomp", Some("F"))).unwrap().gender, data::Gender::Female);
+        assert_eq!(build_member(&member("Garchomp", Some("M"))).unwrap().gender, data::Gender::Male);
+    }
+
+    #[test]
+    fn showdown_export_gender_tag_is_parsed() {
+        // PS export gender tag `(F)` after the species locks the gender.
+        let team = TeamBuilder::from_showdown_text(
+            "Garchomp (F) @ Life Orb\nAbility: Rough Skin\n- Earthquake\n",
+        )
+        .unwrap();
+        assert_eq!(team[0].gender, data::Gender::Female);
+    }
+
+    #[test]
+    fn gender_rolled_at_construction_psgen5_matches_ps() {
+        // PsGen5 mirrors PS's LCG: on seed [1,2,3,4] a `gen9customgame`
+        // battle rolls the first ratio'd mon (p1 slot 0) male and the
+        // second (p2 slot 0) female — verified against the PS sim. Fixed
+        // and genderless mons in between consume NO draw, so a genderless
+        // mon ahead of a ratio'd one on the same side does not shift the
+        // ratio'd mon's roll.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"magnemite","moves":["tackle"]},
+                {"species":"garchomp","moves":["tackle"]}]"#,
+        )
+        .unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"amoonguss","moves":["tackle"]}]"#).unwrap();
+        let cfg = BattleConfig { format: Format::Singles, seed: 0 };
+        let battle = Battle::with_rng(cfg, Rng::ps_gen5([1, 2, 3, 4]), p1, p2);
+
+        // Magnemite: genderless, no draw.
+        assert_eq!(battle.p1.team[0].gender, data::Gender::Genderless);
+        // Garchomp consumes the FIRST gender draw (random(2)=0 → male).
+        assert_eq!(battle.p1.team[1].gender, data::Gender::Male);
+        // Amoonguss (p2) consumes the SECOND gender draw (random(2)=1 → female).
+        assert_eq!(battle.p2.team[0].gender, data::Gender::Female);
+    }
+
+    #[test]
+    fn ratio_gender_defaults_male_without_psgen5() {
+        // Splitmix battles draw no gender at construction (to keep
+        // seed-pinned tests stable); ratio'd mons default to male.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","moves":["tackle"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"amoonguss","moves":["tackle"]}]"#).unwrap();
+        let cfg = BattleConfig { format: Format::Singles, seed: 42 };
+        let battle = Battle::new(cfg, p1, p2);
+        assert_eq!(battle.p1.team[0].gender, data::Gender::Male);
+        assert_eq!(battle.p2.team[0].gender, data::Gender::Male);
     }
 }
