@@ -1208,6 +1208,9 @@ impl Battle {
                 }
             }
             self.resolve_status_move(actor_side, actor_slot, m);
+            // Throat Spray: sound-flag status moves (Sing, Heal Bell,
+            // Roar of Time... Growl) trigger the +1 SpA on the user.
+            self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
             return;
         }
 
@@ -2605,6 +2608,15 @@ impl Battle {
             }
         }
 
+        // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
+        // Overdrive...) trigger +1 SpA on the user after the hit. PS
+        // gates on the move actually being USED (not on damage > 0), so
+        // a fully-Protected sound move would still trigger; we
+        // approximate by firing whenever resolve_move_with_pending
+        // reaches this point (move chose a target, accuracy may have
+        // missed; PS still fires on miss because onAfterMove runs).
+        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
+
         if matches!(m.slug, "uturn" | "voltswitch" | "flipturn") && any_damage_dealt > 0 {
             let still_alive = self
                 .side(actor_side)
@@ -2642,6 +2654,37 @@ impl Battle {
             }
             self.try_set_status(opp, slot, Status::Sleep);
             return;
+        }
+    }
+
+    /// Throat Spray — PS `data/items.ts:throatspray`
+    ///   onAfterMove(source, target, move) {
+    ///     if (move.flags['sound'] && source.useItem()) {
+    ///       this.boost({spa: 1}, source);
+    ///     }
+    ///   }
+    /// Fires once per move use (not per target). The boost ignores Clear
+    /// Body etc. (self-boost, not opposing). If the user is at SpA +6 the
+    /// item is STILL consumed in PS — `useItem()` runs before the boost
+    /// no-op. We mirror that. Bulbapedia:
+    /// <https://bulbapedia.bulbagarden.net/wiki/Throat_Spray>.
+    fn try_consume_throat_spray(&mut self, side: SideRef, slot: u8, move_slug: &str) {
+        if !is_sound_move(move_slug) {
+            return;
+        }
+        let holder_slug = match self.side(side).active_mon(slot as usize) {
+            Some(m) if m.is_alive() => {
+                if m.item_id == u16::MAX { "" }
+                else { data::ITEMS[m.item_id as usize].slug }
+            }
+            _ => return,
+        };
+        if holder_slug != "throatspray" {
+            return;
+        }
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.item_id = u16::MAX;
+            a.boosts[2] = (a.boosts[2] + 1).clamp(-6, 6);
         }
     }
 
@@ -7101,6 +7144,46 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn throat_spray_boosts_spa_after_sound_move() {
+        // PS data/items.ts:throatspray — onAfterMove with sound flag.
+        // Use Hyper Voice (sound damaging) on a target.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","item":"throatspray","nature":"modest","moves":["hypervoice","protect","calmmind","shadowball"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[2], 1, "SpA +1 after sound move");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Throat Spray consumed");
+    }
+
+    #[test]
+    fn throat_spray_does_not_trigger_on_nonsound_move() {
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","item":"throatspray","nature":"modest","moves":["shadowball","protect","calmmind","hypervoice"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[2], 0, "no SpA boost from non-sound move");
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Throat Spray retained");
     }
 
     #[test]
