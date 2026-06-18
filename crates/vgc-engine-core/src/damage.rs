@@ -901,7 +901,24 @@ pub fn calculate_damage(
     let eff_atk_stage = atk_policy.project(atk_stage);
     let eff_def_stage = def_policy.project(def_stage);
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
-    let d = apply_boost(def_stat, eff_def_stage).max(1);
+    let mut d = apply_boost(def_stat, eff_def_stage).max(1);
+
+    // Marvel Scale — PS `data/abilities.ts:marvelscale`:
+    //   onModifyDef(def, pokemon) {
+    //     if (pokemon.status) return this.chainModify(1.5);
+    //   }
+    // Defender's Def stat ×1.5 while statused. Physical moves only
+    // (PS hook is `onModifyDef`, called only on the physical defensive
+    // read). Flagged `breakable: 1` → Mold Breaker bypasses. Milotic
+    // signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Marvel_Scale_(Ability)>.
+    if physical
+        && defender.effective_ability_slug() == "marvelscale"
+        && !matches!(defender.status, crate::pokemon::Status::None)
+        && !attacker_breaks_mold_for_offense
+    {
+        d = (d * 6144 / 4096).max(1);
+    }
 
     // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
     // onSourceModifySpA: chainModify(0.5) on Fire moves. PS applies
@@ -2295,5 +2312,51 @@ mod tests {
         // Shell-on should be ~×0.25 of shell-off (×0.5 vs ×2).
         assert!(shell_on * 3 < shell_off,
             "Tera Shell must downgrade super-effective to ×0.5 (shell_on={shell_on}, shell_off={shell_off})");
+    }
+
+    #[test]
+    fn marvel_scale_halves_incoming_physical_when_statused() {
+        // Milotic with Marvel Scale takes ×0.667 damage on a physical
+        // hit (Def ×1.5) while statused. Special hits unaffected.
+        let atk = make_mon(
+            "garchomp",
+            50,
+            "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let mut def = make_mon("milotic", 50, "bold",
+            StatSpread { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 });
+        let ab = data::ABILITIES.iter().position(|a| a.slug == "marvelscale").expect("marvelscale") as u16;
+        def.ability_id = ab;
+        let eq = move_id("earthquake");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        // Unstatused — no boost.
+        let baseline = calculate_damage(&atk, &def, eq, ctx);
+        // Burn the defender — Marvel Scale fires.
+        def.status = Status::Burn;
+        let with_marvel = calculate_damage(&atk, &def, eq, ctx);
+        assert!(with_marvel < baseline,
+            "Marvel Scale should reduce physical damage while statused (baseline={baseline}, marvel={with_marvel})");
+        // Roughly ×2/3 — allow ±2 for integer rounding.
+        let expected = baseline * 2 / 3;
+        let diff = (with_marvel as i32 - expected as i32).abs();
+        assert!(diff <= 3, "Marvel Scale damage off (baseline={baseline}, with_marvel={with_marvel}, expected~{expected})");
+
+        // Special move — Marvel Scale should NOT apply (it's onModifyDef).
+        let surf = move_id("surf");
+        let special_baseline = {
+            let mut def_clean = def.clone();
+            def_clean.status = Status::None;
+            calculate_damage(&atk, &def_clean, surf, ctx)
+        };
+        let special_marvel = calculate_damage(&atk, &def, surf, ctx);
+        assert_eq!(special_baseline, special_marvel,
+            "Marvel Scale must not affect special-move damage");
     }
 }

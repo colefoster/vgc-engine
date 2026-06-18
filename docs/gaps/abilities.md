@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 45 |
+| shipped | 46 |
 | partial | 5 |
-| not implemented | 43 |
+| not implemented | 42 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -469,7 +469,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Def ×1.5 while statused.
 
-**Status**: not implemented.
+**Status**: shipped — PR-277.
 
 ### Poison Heal
 
