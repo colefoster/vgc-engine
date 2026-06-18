@@ -427,7 +427,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Inner Focus: cannot be flinched + Intimidate immune. Vital Spirit: cannot be put to sleep + Intimidate immune. Insomnia: cannot be put to sleep.
 
-**Status**: partial — Intimidate-immunity branch shipped for Inner Focus / Own Tempo / Oblivious / Scrappy (ability.rs:84-92); Vital Spirit / Insomnia sleep-immune and Inner Focus flinch-immune still not implemented.
+**Status**: partial — Intimidate-immunity branch shipped for Inner Focus / Own Tempo / Oblivious / Scrappy (ability.rs:84-92); Vital Spirit + Insomnia sleep-immune shipped PR-299 (battle.rs `try_set_status`); Inner Focus flinch-immune still not implemented.
 
 ### Own Tempo
 
@@ -445,7 +445,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Status-specific immunity per ability (paralysis / freeze / poison / poison-for-partners-too / burn / attract-and-Taunt / Taunt-Disable-Encore-Heal-Block-for-partners).
 
-**Status**: not implemented.
+**Status**: partial — Limber (par), Magma Armor (frz), Immunity (psn/tox), Water Veil (brn) shipped PR-298 (battle.rs `try_set_status`). Pastel Veil / Oblivious volatile / Aroma Veil still not implemented.
 
 ### Unaware
 

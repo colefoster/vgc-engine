@@ -3234,9 +3234,29 @@ impl Battle {
                 // The holder cannot be burned. NOT in PS's breakable list
                 // — Mold Breaker does NOT bypass. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-                let burn_immune = m.effective_ability_slug() == "waterbubble"
-                    && matches!(status, Status::Burn);
-                (is_type_immune_to_status(m.species(), status), e_terrain_blocks, burn_immune)
+                //
+                // Status-immune slug arms — flat ability gates against
+                // specific persistent statuses. All share the same shape:
+                // `onSetStatus` returns false if `status.id === <slug>`.
+                //   - Limber:      par.  PS data/abilities.ts:limber
+                //   - Magma Armor: frz.  PS data/abilities.ts:magmaarmor
+                //   - Immunity:    psn/tox. PS data/abilities.ts:immunity
+                //   - Water Veil:  brn.  PS data/abilities.ts:waterveil
+                //   - Vital Spirit:slp.  PS data/abilities.ts:vitalspirit
+                //   - Insomnia:    slp.  PS data/abilities.ts:insomnia
+                // None of these are in PS's breakable list — Mold Breaker
+                // does NOT bypass. Bulbapedia: e.g.
+                // <https://bulbapedia.bulbagarden.net/wiki/Limber_(Ability)>.
+                let ab = m.effective_ability_slug();
+                let ability_status_block = match status {
+                    Status::Burn => ab == "waterbubble" || ab == "waterveil",
+                    Status::Paralysis => ab == "limber",
+                    Status::Freeze => ab == "magmaarmor",
+                    Status::Poison | Status::Toxic => ab == "immunity",
+                    Status::Sleep => ab == "vitalspirit" || ab == "insomnia",
+                    Status::None => false,
+                };
+                (is_type_immune_to_status(m.species(), status), e_terrain_blocks, ability_status_block)
             }
             _ => return,
         };
@@ -14516,5 +14536,85 @@ mod tests {
         // Holder still active, no longer holds the card.
         assert_eq!(b.p2.active[0], 0, "Red Card holder stays in");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Red Card consumed");
+    }
+
+    #[test]
+    fn status_immune_abilities_block_their_status() {
+        // Status-immune slug arms — direct call to `try_set_status`
+        // confirms each ability vetoes its matching status.
+        // PS data/abilities.ts:{limber,magmaarmor,immunity,waterveil}.
+        let p1_json = r#"[
+            {"species":"persian","level":50,"ability":"limber","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]},
+            {"species":"slugma","level":50,"ability":"magmaarmor","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]},
+            {"species":"snorlax","level":50,"ability":"immunity","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]},
+            {"species":"goldeen","level":50,"ability":"waterveil","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Limber blocks paralysis.
+        b.try_set_status(SideRef::P1, 0, Status::Paralysis);
+        assert!(matches!(b.p1.team[0].status, Status::None), "Limber blocks par");
+
+        // Swap in slot 0 to test Magma Armor against freeze.
+        b.p1.active[0] = 1;
+        b.try_set_status(SideRef::P1, 0, Status::Freeze);
+        assert!(matches!(b.p1.team[1].status, Status::None), "Magma Armor blocks frz");
+
+        // Immunity blocks both poison and toxic.
+        b.p1.active[0] = 2;
+        b.try_set_status(SideRef::P1, 0, Status::Poison);
+        assert!(matches!(b.p1.team[2].status, Status::None), "Immunity blocks psn");
+        b.try_set_status(SideRef::P1, 0, Status::Toxic);
+        assert!(matches!(b.p1.team[2].status, Status::None), "Immunity blocks tox");
+
+        // Water Veil blocks burn.
+        b.p1.active[0] = 3;
+        b.try_set_status(SideRef::P1, 0, Status::Burn);
+        assert!(matches!(b.p1.team[3].status, Status::None), "Water Veil blocks brn");
+    }
+
+    #[test]
+    fn sleep_immune_abilities_block_sleep() {
+        // Vital Spirit + Insomnia both block sleep.
+        // PS data/abilities.ts:{vitalspirit,insomnia}.
+        let p1_json = r#"[
+            {"species":"primeape","level":50,"ability":"vitalspirit","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]},
+            {"species":"hypno","level":50,"ability":"insomnia","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        b.try_set_status(SideRef::P1, 0, Status::Sleep);
+        assert!(matches!(b.p1.team[0].status, Status::None), "Vital Spirit blocks slp");
+
+        b.p1.active[0] = 1;
+        b.try_set_status(SideRef::P1, 0, Status::Sleep);
+        assert!(matches!(b.p1.team[1].status, Status::None), "Insomnia blocks slp");
+    }
+
+    #[test]
+    fn status_immune_abilities_pass_through_other_statuses() {
+        // Sanity: Limber lets a Persian still get burned; not over-broad.
+        let p1_json = r#"[
+            {"species":"persian","level":50,"ability":"limber","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.try_set_status(SideRef::P1, 0, Status::Burn);
+        assert!(matches!(b.p1.team[0].status, Status::Burn),
+            "Limber should not block burn (only par)");
     }
 }
