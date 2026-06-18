@@ -451,7 +451,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: User ignores target's stat-stage changes on both offense and defense.
 
-**Status**: not implemented.
+**Status**: shipped — PR-302. Unaware attacker uses `BoostIgnore::All` on defender's def stage; Unaware defender uses `BoostIgnore::All` on attacker's atk stage. Mold Breaker on the opposing side bypasses.
 
 ### Aura Break
 

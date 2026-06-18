@@ -14741,6 +14741,76 @@ mod tests {
     }
 
     #[test]
+    fn unaware_ignores_attacker_offensive_boosts() {
+        // Garchomp +6 Atk Earthquake vs Quagsire @ Unaware. With
+        // Unaware, the +6 should be zeroed → damage equal to neutral
+        // boost. Compare to defender NOT Unaware (control: water absorb).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","ironhead","scaleshot"],"evs":{"atk":252,"hp":4}}
+        ]"#;
+        let p2_unaware = r#"[
+            {"species":"quagsire","level":50,"ability":"unaware","item":"","nature":"impish","moves":["recover","scald","earthquake","toxic"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let p2_baseline = r#"[
+            {"species":"quagsire","level":50,"ability":"waterabsorb","item":"","nature":"impish","moves":["recover","scald","earthquake","toxic"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let run = |p2j: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2j).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            // Pump Garchomp to +6 Atk pre-hit.
+            b.p1.team[0].boosts[0] = 6;
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            pre - b.p2.team[0].current_hp
+        };
+        let dmg_unaware = run(p2_unaware);
+        let dmg_baseline = run(p2_baseline);
+        // Baseline takes ×4 the damage (+6 = 4×) — Unaware should be
+        // much less than baseline. Use a generous bound: Unaware damage
+        // should be at most ½ of baseline.
+        assert!(dmg_unaware * 2 <= dmg_baseline,
+            "Unaware should ignore +6 Atk: unaware={dmg_unaware} baseline={dmg_baseline}");
+    }
+
+    #[test]
+    fn unaware_attacker_ignores_defender_defensive_boosts() {
+        // Quagsire @ Unaware uses Earthquake into Garchomp +6 Def.
+        // The +6 Def should be ignored.
+        let p1_json = r#"[
+            {"species":"quagsire","level":50,"ability":"unaware","item":"","nature":"adamant","moves":["earthquake","recover","scald","toxic"],"evs":{"atk":252,"hp":4}}
+        ]"#;
+        let p1_baseline_json = r#"[
+            {"species":"quagsire","level":50,"ability":"waterabsorb","item":"","nature":"adamant","moves":["earthquake","recover","scald","toxic"],"evs":{"atk":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"impish","moves":["dragonclaw","earthquake","ironhead","scaleshot"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let run = |p1j: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(p1j).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            // Pump Garchomp to +6 Def pre-hit.
+            b.p2.team[0].boosts[1] = 6;
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            pre - b.p2.team[0].current_hp
+        };
+        let dmg_unaware = run(p1_json);
+        let dmg_baseline = run(p1_baseline_json);
+        // Baseline (no Unaware) sees the +6 Def → damage ×1/4. Unaware
+        // ignores → at least 2× baseline.
+        assert!(dmg_unaware >= dmg_baseline * 2,
+            "Unaware attacker should ignore +6 Def: unaware={dmg_unaware} baseline={dmg_baseline}");
+    }
+
+    #[test]
     fn soundproof_blocks_sound_damaging_move() {
         // Pikachu uses Hyper Voice (sound) into Voltorb @ Soundproof.
         // Sound is type Normal; Voltorb is Electric and would take a

@@ -950,12 +950,35 @@ pub fn calculate_damage(
 
     // Crit ignores attacker's negative offensive boosts and defender's
     // positive defensive boosts. PS sim/battle-actions.ts:getDamage.
-    // Routed through `BoostIgnore` so future Unaware (Negative on the
-    // attacker's defensive read / Positive on the attacker's offensive
-    // read when defender has Unaware), Sacred Sword / Chip Away (All
-    // on defender's defensive read), and crit compose cleanly.
-    let atk_policy = if ctx.crit { BoostIgnore::Negative } else { BoostIgnore::None };
-    let def_policy = if ctx.crit { BoostIgnore::Positive } else { BoostIgnore::None };
+    // Routed through `BoostIgnore` so future Unaware, Sacred Sword /
+    // Chip Away, and crit compose cleanly.
+    //
+    // Unaware — PS data/abilities.ts:5171
+    //   `onAnyModifyBoost` zeros both signs of the OTHER side's atk/def
+    //   /spa boosts (eva/acc too). When the Unaware user is on offense,
+    //   it ignores the defender's def/spd boosts. When on defense, it
+    //   ignores the attacker's atk/spa boosts. `flags: { breakable: 1 }`
+    //   — Mold Breaker on the OPPOSING side bypasses. Clodsire /
+    //   Quagsire signature. Bulbapedia:
+    //   <https://bulbapedia.bulbagarden.net/wiki/Unaware_(Ability)>.
+    let attacker_unaware = attacker.effective_ability_slug() == "unaware";
+    let defender_unaware = defender.effective_ability_slug() == "unaware";
+    let attacker_breaks_mold = matches!(
+        attacker.effective_ability_slug(),
+        "moldbreaker" | "teravolt" | "turboblaze"
+    );
+    let defender_breaks_mold = matches!(
+        defender.effective_ability_slug(),
+        "moldbreaker" | "teravolt" | "turboblaze"
+    );
+    let mut atk_policy = if ctx.crit { BoostIgnore::Negative } else { BoostIgnore::None };
+    let mut def_policy = if ctx.crit { BoostIgnore::Positive } else { BoostIgnore::None };
+    if defender_unaware && !attacker_breaks_mold {
+        atk_policy = BoostIgnore::All;
+    }
+    if attacker_unaware && !defender_breaks_mold {
+        def_policy = BoostIgnore::All;
+    }
     let eff_atk_stage = atk_policy.project(atk_stage);
     let eff_def_stage = def_policy.project(def_stage);
     let mut a = apply_boost(atk_stat, eff_atk_stage).max(1);
