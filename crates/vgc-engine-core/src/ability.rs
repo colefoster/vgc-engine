@@ -454,6 +454,7 @@ pub fn on_damaging_hit(
     attacker_side: SideRef,
     attacker_slot: u8,
     rng: &mut crate::rng::Rng,
+    crit: bool,
 ) {
     // Read ability slug + alive flag; the hook fires on a KO hit too
     // (PS contact-status abilities like Static still paralyze the
@@ -473,6 +474,22 @@ pub fn on_damaging_hit(
     if slug == "stamina" && target_alive {
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6);
+        }
+    }
+    // Anger Point — PS `data/abilities.ts:angerpoint`:
+    //   onHit(target, source, move) {
+    //     if (!target.hp) return;
+    //     if (move && move.effectType === 'Move' && target.getMoveHitData(move).crit) {
+    //       this.boost({atk: 12}, target, target);  // = max stage (+6)
+    //     }
+    //   }
+    // On any crit hit that doesn't KO, the target's Atk maxes to +6.
+    // Substitute-absorbed hits don't reach the holder (caller gates on
+    // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
+    if slug == "angerpoint" && target_alive && crit {
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            t.boosts[0] = 6;
         }
     }
     // Rough Skin (Garchomp/Carvanha) and Iron Barbs (Ferrothorn): 1/8
