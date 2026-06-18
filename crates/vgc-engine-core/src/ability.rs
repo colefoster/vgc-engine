@@ -562,6 +562,47 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Anger Shell — PS `data/abilities.ts:angershell`:
+    //   onDamage(damage, target, source, effect) {
+    //     if (effect.effectType !== 'Move') return;
+    //     if (!damage || !target.hp) return;
+    //     if (target.hp <= target.maxhp / 2 && target.hp + damage > target.maxhp / 2) {
+    //       this.boost({atk: 1, spa: 1, spe: 1, def: -1, spd: -1}, target, target);
+    //     }
+    //   }
+    // Same crossed-50% detection as Berserk. Sheer-Force gating: if the
+    // attacker's move had its secondary stripped, the PS handler doesn't
+    // fire (sheerforce sets `move.hasSheerForce` which the damage event
+    // suppresses). Tatsugiri signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Shell_(Ability)>.
+    if slug == "angershell" && target_alive {
+        let sheer_force_strip = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(crate::damage::attacker_has_sheer_force)
+            && crate::damage::move_is_sheer_force_boosted(&data::MOVES[move_id as usize]);
+        if !sheer_force_strip {
+            if let Some(t) = battle.side(target_side).active_mon(target_slot as usize) {
+                let max = t.stats.hp as u32;
+                let post = t.current_hp as u32;
+                let dmg = t.last_damage_taken as u32;
+                let pre = post + dmg;
+                let half = max / 2;
+                if pre > half && post <= half && dmg > 0 {
+                    if let Some(tm) = battle
+                        .side_mut(target_side)
+                        .active_mon_mut(target_slot as usize)
+                    {
+                        tm.boosts[0] = (tm.boosts[0] + 1).clamp(-6, 6); // Atk
+                        tm.boosts[2] = (tm.boosts[2] + 1).clamp(-6, 6); // SpA
+                        tm.boosts[4] = (tm.boosts[4] + 1).clamp(-6, 6); // Spe
+                        tm.boosts[1] = (tm.boosts[1] - 1).clamp(-6, 6); // Def
+                        tm.boosts[3] = (tm.boosts[3] - 1).clamp(-6, 6); // SpD
+                    }
+                }
+            }
+        }
+    }
     // Rough Skin (Garchomp/Carvanha) and Iron Barbs (Ferrothorn): 1/8
     // max HP recoil to any contact attacker. PS handlers are functionally
     // identical — `checkMoveMakesContact(move, source, target, true)` gate

@@ -12128,6 +12128,36 @@ mod tests {
     }
 
     #[test]
+    fn anger_shell_triggers_on_crossing_half_hp() {
+        // Tatsugiri (Anger Shell) takes a hit that drops it through 50%.
+        // Expect +1 Atk/SpA/Spe and -1 Def/SpD.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"leftovers","nature":"hardy","moves":["tackle","thunderbolt","quickattack","substitute"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"tatsugiri","level":50,"ability":"angershell","item":"leftovers","nature":"calm","moves":["surf","dracometeor","mudshot","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Bring Tatsugiri to just above 50% HP so Tackle drops it through.
+        let max = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = (max / 2) + 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let m = &b.p2.team[0];
+        assert!(m.is_alive(), "test setup: tatsu must survive");
+        assert!(m.current_hp <= max / 2, "must end below half HP for trigger");
+        assert_eq!(m.boosts[0], 1, "Atk +1");
+        assert_eq!(m.boosts[2], 1, "SpA +1");
+        assert_eq!(m.boosts[4], 1, "Spe +1");
+        assert_eq!(m.boosts[1], -1, "Def -1");
+        assert_eq!(m.boosts[3], -1, "SpD -1");
+    }
+
+    #[test]
     fn dry_skin_absorbs_water_and_heals_quarter() {
         let p1_json = r#"[
             {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["surf","psychic","dazzlinggleam","focusblast"]}
