@@ -1,0 +1,20 @@
+{
+  "name": "lucario_cc_lifeorb_into_garchomp",
+  "attacker": {
+    "species": "Lucario",
+    "level": 50,
+    "item": "Life Orb",
+    "ability": "Inner Focus",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Garchomp",
+    "level": 50,
+    "ability": "Sand Veil",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Close Combat",
+  "trials": 500
+}
