@@ -1572,8 +1572,40 @@ impl Battle {
                             }
                             continue;
                         }
+                        "lightningrod" => {
+                            // PS `data/abilities.ts:lightningrod` —
+                            // `onTryHit` returns null on Electric moves
+                            // and applies `this.boost({spa: 1}, target)`.
+                            // Doubles redirection is deferred (PS
+                            // `onAnyRedirectTarget`). Pikachu / Marowak-
+                            // Alola / Rhyperior. Bulbapedia:
+                            // <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>.
+                            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                                d.boosts[2] = (d.boosts[2] + 1).clamp(-6, 6);
+                            }
+                            continue;
+                        }
                         _ => {}
                     }
+                }
+            }
+
+            // Storm Drain — Water-type immunity + SpA +1 on absorb. PS
+            // `data/abilities.ts:stormdrain` mirrors Lightning Rod with
+            // Water type (= 2). Doubles redirection deferred. Gastrodon /
+            // Lanturn / Lumineon. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
+            if m.type_ == 2 {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "stormdrain" && !attacker_breaks_mold {
+                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        d.boosts[2] = (d.boosts[2] + 1).clamp(-6, 6);
+                    }
+                    continue;
                 }
             }
 
@@ -8076,6 +8108,48 @@ mod tests {
                    "Motor Drive absorbs Electric move");
         assert_eq!(b.p2.team[0].boosts[4], spe_before + 1,
                    "Motor Drive grants +1 Spe");
+    }
+
+    #[test]
+    fn lightning_rod_absorbs_electric_and_boosts_spa() {
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["thunderbolt","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"lightningrod","item":"sitrusberry","nature":"timid","moves":["thunderbolt","irontail","quickattack","substitute"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        let spa_before = b.p2.team[0].boosts[2];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "Lightning Rod absorbs Electric");
+        assert_eq!(b.p2.team[0].boosts[2], spa_before + 1, "Lightning Rod grants +1 SpA");
+    }
+
+    #[test]
+    fn storm_drain_absorbs_water_and_boosts_spa() {
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["surf","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"gastrodon","level":50,"ability":"stormdrain","item":"sitrusberry","nature":"calm","moves":["earthpower","icebeam","recover","stockpile"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        let spa_before = b.p2.team[0].boosts[2];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "Storm Drain absorbs Water");
+        assert_eq!(b.p2.team[0].boosts[2], spa_before + 1, "Storm Drain grants +1 SpA");
     }
 
     #[test]
