@@ -665,9 +665,15 @@ pub fn on_damaging_hit(
     // `onDamage` event, so Magic Guard on the attacker blocks it.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rough_Skin_(Ability)>,
     //             <https://bulbapedia.bulbagarden.net/wiki/Iron_Barbs_(Ability)>.
+    // Compute contact-vs-attacker once, accounting for Punching Glove's
+    // contact-strip on punch moves.
+    let move_makes_contact_from_attacker = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a))
+        .unwrap_or(false);
     if slug == "roughskin" || slug == "ironbarbs" {
-        let m = &data::MOVES[move_id as usize];
-        if m.makes_contact {
+        if move_makes_contact_from_attacker {
             let attacker_alive_and_no_mg = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
@@ -705,8 +711,7 @@ pub fn on_damaging_hit(
         _ => None,
     };
     if let Some(status) = contact_status {
-        let m = &data::MOVES[move_id as usize];
-        if m.makes_contact {
+        if move_makes_contact_from_attacker {
             let attacker_alive = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
@@ -726,8 +731,7 @@ pub fn on_damaging_hit(
     // PS source uses `runStatusImmunity('powder')` — we approximate by
     // skipping Grass-type attackers. Overcoat/Safety Goggles deferred.
     if slug == "effectspore" {
-        let m = &data::MOVES[move_id as usize];
-        if m.makes_contact {
+        if move_makes_contact_from_attacker {
             let attacker_alive = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
