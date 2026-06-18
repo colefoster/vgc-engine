@@ -165,6 +165,47 @@ pub fn on_damaging_hit(
         _ => return,
     };
     let slug = item_slug(item_id);
+    // Weakness Policy — PS `data/items.ts:weaknesspolicy`
+    //   onHit(target, source, move) {
+    //     if (target.runEffectiveness(move) > 0) {
+    //       target.useItem();
+    //     }
+    //   }
+    //   onAfterUseItem(item, pokemon) {
+    //     this.boost({atk: 2, spa: 2});
+    //   }
+    // Fires when the holder takes a super-effective damaging hit (×2 or
+    // ×4 after the type chart). +2 Atk and +2 SpA, consumed. Self-boost
+    // → Clear Amulet / Clear Body / White Smoke don't gate it (those
+    // block boosts from OTHER mons; Weakness Policy is target-on-self).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Weakness_Policy>.
+    if slug == "weaknesspolicy" {
+        // Read effectiveness against the defender's species (post-Tera
+        // would matter — Weakness Policy on a Terastallized Garchomp
+        // reads its Tera type — but `effective_types_for_move` belongs
+        // in damage.rs and is gated on the defender mon's full state,
+        // not just species. For now we use the species-level chart, which
+        // matches the non-Tera case and is the common one for WP holders
+        // (Kyogre, Heracross, etc).
+        let mv = &data::MOVES[move_id as usize];
+        let move_type = mv.type_;
+        if mv.category != 2 {
+            let species = match battle.side(target_side).active_mon(target_slot as usize) {
+                Some(m) => m.species(),
+                None => return,
+            };
+            let eff = crate::damage::type_effectiveness(move_type, species);
+            use crate::damage::TypeEff;
+            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    t.boosts[0] = (t.boosts[0] + 2).clamp(-6, 6); // Atk
+                    t.boosts[2] = (t.boosts[2] + 2).clamp(-6, 6); // SpA
+                    t.item_id = u16::MAX;
+                }
+            }
+        }
+        let _ = attacker_side; let _ = attacker_slot;
+    }
     // Air Balloon pop: handled above the alive-gate. PS
     // `data/items.ts:airballoon onDamagingHit` consumes the item on every
     // damaging hit; Ground immunity in `Pokemon::is_grounded` reads the

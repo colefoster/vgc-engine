@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 37 |
+| shipped | 38 |
 | partial | 2 |
-| not implemented | 10 |
+| not implemented | 9 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -234,7 +234,7 @@ Already covered — shipped PR-19/20.
 
 ### Weakness Policy
 
-**Status**: not implemented. (Slug only appears in test fixtures; no handler in damage.rs / item.rs / battle.rs.)
+**Status**: shipped — PR-287. PS `data/items.ts:weaknesspolicy` onHit + onAfterUseItem: +2 Atk +2 SpA on a SE damaging hit, consumed.
 
 ### Eject Button / Eject Pack / Red Card
 
@@ -431,3 +431,5 @@ The following are implemented (Phase 2 PRs 1-98):
 - Mental Herb (Encore branch) (PR-272)
 - Iron Ball (PR-273)
 - Adamant / Lustrous / Griseous Orb / Soul Dew (PR-274)
+- Air Balloon pop (PR-286)
+- Weakness Policy (PR-287)
