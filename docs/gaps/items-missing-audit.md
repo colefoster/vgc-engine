@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **134**
-- Missing: **115** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **140**
+- Missing: **109** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~17 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~11 competitively relevant**
 
 ## Missing by category
 
@@ -43,12 +43,7 @@ These activate at <=1/4 HP and matter in VGC for Salac/Petaya sweepers and Sitru
 
 ### HP-restoring berries
 
-- `oranberry` — Oran Berry — Restores 10 HP at <=1/2 HP. Single use.
-- `aguavberry` — Aguav Berry — Restores 1/3 HP at <=1/4 HP; confuses if -SpD nature.
-- `figyberry` — Figy Berry — Restores 1/3 HP at <=1/4 HP; confuses if -Atk nature.
-- `iapapaberry` — Iapapa Berry — Restores 1/3 HP at <=1/4 HP; confuses if -Def nature.
-- `magoberry` — Mago Berry — Restores 1/3 HP at <=1/4 HP; confuses if -Spe nature.
-- `wikiberry` — Wiki Berry — Restores 1/3 HP at <=1/4 HP; confuses if -SpA nature.
+- Heal berries (Oran / Figy / Wiki / Mago / Aguav / Iapapa) — shipped (PR-304). Figy-family confuse-on-disliked-nature deferred.
 - `leppaberry` — Leppa Berry — Restores 10 PP to a depleted move. Single use.
 
 ### Status & status-cure

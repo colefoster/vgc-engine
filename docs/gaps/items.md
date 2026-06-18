@@ -6,7 +6,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 83 |
+| shipped | 89 |
 | partial | 1 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
@@ -450,3 +450,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Terrain seeds: Electric Seed / Grassy Seed (+1 Def) / Misty Seed / Psychic Seed (+1 SpD) (PR-301)
 - Booster orbs: Absorb Bulb (Water → +1 SpA) / Cell Battery (Electric → +1 Atk) / Snowball (Ice → +1 Atk) / Luminous Moss (Water → +1 SpD) (PR-302)
 - Pinch stat berries: Liechi (+1 Atk) / Ganlon (+1 Def) / Salac (+1 Spe) / Petaya (+1 SpA) / Apicot (+1 SpD) (PR-303). Gluttony tie-in (≤50%) deferred.
+- Heal berries: Oran (flat 10 at ≤50%) / Figy / Wiki / Mago / Aguav / Iapapa (heal 1/3 at ≤25%) (PR-304). Figy-family "confuse if disliked nature" branch deferred.

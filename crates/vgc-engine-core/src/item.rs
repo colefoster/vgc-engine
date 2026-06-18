@@ -181,6 +181,37 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
             }
         }
     }
+    // Oran Berry — PS data/items.ts:oranberry (line 4392): onUpdate eats
+    // at <=50% HP; onEat heals a flat 10 HP. Same shape as Sitrus but
+    // smaller heal. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Oran_Berry>.
+    if slug == "oranberry" && current * 2 <= max {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+            m.item_id = u16::MAX;
+        }
+    }
+    // Figy-family healing berries — PS data/items.ts:
+    //   figyberry  2040 (Atk-dislike → -Atk nature confuses)
+    //   wikiberry  7723 (SpA-dislike)
+    //   magoberry  3699 (Spe-dislike)
+    //   aguavberry  159 (SpD-dislike)
+    //   iapapaberry 2908 (Def-dislike)
+    // Each `onUpdate` eats at <=25% HP; `onEat` heals `baseMaxhp/3`. The
+    // disliked-nature branch (adds confusion) is deferred — the data
+    // table for nature-flavor preferences isn't wired yet.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Figy_Berry>.
+    let figy_family = matches!(
+        slug,
+        "figyberry" | "wikiberry" | "magoberry" | "aguavberry" | "iapapaberry"
+    );
+    if figy_family && current * 4 <= max {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            let heal = (m.stats.hp / 3).max(1);
+            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            m.item_id = u16::MAX;
+        }
+    }
 }
 
 /// Defender's held item reacts to an incoming contact hit. Mirrors PS's
