@@ -3345,6 +3345,46 @@ impl Battle {
                     t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
                 }
             }
+            "rest" => {
+                // PS data/moves.ts:14963 rest. onTry fails if user is
+                // already asleep / Comatose, at full HP, or has Insomnia
+                // or Vital Spirit. onHit calls setStatus('slp'), then
+                // hard-sets statusState.time = startTime = 3 (a forced
+                // 3-turn sleep regardless of the usual 1-3 roll) and
+                // heals the user to full HP. Electric Terrain on a
+                // grounded user also blocks the setStatus call.
+                //
+                // PS source: data/moves.ts:14963.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rest_(move)>
+                let (already_slp, full_hp, ability, grounded) =
+                    match self.side(actor_side).active_mon(actor_slot as usize) {
+                        Some(a) if a.is_alive() => (
+                            matches!(a.status, Status::Sleep),
+                            a.current_hp >= a.stats.hp,
+                            a.effective_ability_slug(),
+                            a.is_grounded(),
+                        ),
+                        _ => return,
+                    };
+                if already_slp || full_hp {
+                    return;
+                }
+                if matches!(ability, "insomnia" | "vitalspirit" | "comatose") {
+                    return;
+                }
+                if grounded && matches!(self.terrain, crate::terrain::Terrain::Electric) {
+                    return;
+                }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = a.stats.hp;
+                    a.status = Status::Sleep;
+                    // Forced 3-turn sleep: PS sets time=startTime=3 after
+                    // setStatus. Engine onBeforeMove decrements first +
+                    // wakes on 0 — value 3 yields two skipped turns then
+                    // wake on the third attempt, matching PS Rest cadence.
+                    a.set_sleep_turns(3);
+                }
+            }
             "recover" | "softboiled" | "slackoff" | "milkdrink" | "roost"
             | "synthesis" | "morningsun" | "moonlight" | "shoreup" => {
                 // Recover-class self heals. PS data/moves.ts: each entry
@@ -11399,5 +11439,53 @@ mod tests {
             b.p2.team[1].current_hp, urshifu_hp,
             "Urshifu (protected) should not take EQ damage",
         );
+    }
+
+    #[test]
+    fn rest_heals_to_full_and_forces_three_turn_sleep() {
+        // Snorlax takes a Thunderbolt to drop below full HP, then clicks
+        // Rest. PS Rest sets HP to max and statusState.time = 3 (forced
+        // sleep). Engine: post-turn HP == max, status == Sleep, sleep_turns == 3.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","bodyslam","crunch","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snorlax_max = b.p2.team[0].stats.hp;
+        // Pre-damage Snorlax so Rest can actually heal.
+        b.p2.team[0].current_hp = snorlax_max / 2;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, snorlax_max, "Rest heals Snorlax to full");
+        assert!(matches!(b.p2.team[0].status, Status::Sleep), "Rest puts Snorlax to sleep");
+        assert_eq!(b.p2.team[0].sleep_turns(), 3, "Rest forces a 3-turn sleep");
+    }
+
+    #[test]
+    fn rest_fails_when_already_at_full_hp() {
+        // Snorlax at full HP clicks Rest — PS onTry returns null and the
+        // move is a no-op (no heal, no sleep).
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","bodyslam","crunch","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let snorlax_max = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, snorlax_max, "still at full HP");
+        assert!(matches!(b.p2.team[0].status, Status::None), "Rest fails at full HP — no sleep");
     }
 }
