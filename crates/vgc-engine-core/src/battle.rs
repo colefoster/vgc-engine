@@ -345,6 +345,11 @@ impl Battle {
             {
                 continue;
             }
+            // Disable lock: the disabled slot is unselectable. PS
+            // data/moves.ts:disable condition onDisableMove.
+            if active.disabled_move_slot() != 255 && active.disabled_move_slot() as usize == i {
+                continue;
+            }
             let m = &data::MOVES[move_id as usize];
             // Assault Vest: status moves disallowed.
             if is_assault_vest && m.category == 2 {
@@ -554,6 +559,10 @@ impl Battle {
                             mon.set_encore(next, locked as u8);
                         }
                     }
+                    // Disable tick. PS data/moves.ts:disable condition,
+                    // onResidualOrder 17 — counts down each end of turn,
+                    // ends at 0.
+                    mon.tick_disable();
                 }
             }
             // Tailwind / future side-condition timers.
@@ -967,6 +976,16 @@ impl Battle {
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
         if attacker.flinched_this_turn() {
+            return;
+        }
+
+        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
+        // (priority 7): the disabled move cannot be used. Selection is
+        // already filtered in `legal_choices`, but a forced / locked
+        // dispatch (Encore, lock-in) could still route the disabled
+        // slot here. No PP is consumed (we return before the PP-spend
+        // site). PS `cant`.
+        if attacker.disabled_move_slot() == move_slot {
             return;
         }
 
@@ -13016,6 +13035,65 @@ mod tests {
         );
         assert!(matches!(b.p2.team[1].status, Status::None), "Steel/Flying mon takes no status");
         assert_eq!(b.p2.conditions.toxic_spikes_layers, 2, "layers untouched (no absorb)");
+    }
+
+    #[test]
+    fn disable_blocks_move_selection_and_use_then_clears() {
+        // Plumbing test for the Disable volatile: a disabled slot is
+        // filtered from legal_choices, a forced use of it does nothing
+        // (no damage), the counter decrements each turn, and the lock
+        // clears after its duration.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","protect","dragonclaw","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Disable Earthquake (slot 0) for 4 turns.
+        b.p1.team[0].set_disable(4, 0);
+        assert_eq!(b.p1.team[0].disable_turns(), 4);
+        assert_eq!(b.p1.team[0].disabled_move_slot(), 0);
+
+        // legal_choices must drop every Move on slot 0.
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(
+            lc.iter().all(|c| !matches!(c, Choice::Move { move_slot: 0, .. })),
+            "disabled slot 0 absent from legal_choices",
+        );
+
+        // Forcing the disabled move (slot 0) does no damage and does not
+        // consume PP.
+        let hp_before = b.p2.team[0].current_hp;
+        let pp_before = b.p1.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "disabled move dealt no damage");
+        assert_eq!(b.p1.team[0].pp[0], pp_before, "disabled move spent no PP");
+        // End-of-turn tick: 4 -> 3.
+        assert_eq!(b.p1.team[0].disable_turns(), 3, "disable counted down once");
+
+        // Spend the remaining duration using Protect (slot 1).
+        for _ in 0..3 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        assert_eq!(b.p1.team[0].disable_turns(), 0, "disable expired");
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Disable),
+            "Disable volatile removed");
+        // Slot 0 is selectable again.
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "slot 0 selectable after Disable clears",
+        );
     }
 
     #[test]

@@ -894,6 +894,70 @@ impl Pokemon {
         self.volatiles.remove(VolatileKind::Encore);
     }
 
+    /// Remaining Disable turns; `0` when not disabled. Stored in the
+    /// volatile's `turns_remaining`; the disabled move slot rides in
+    /// `payload` (see the `Disable` VolatileKind doc).
+    #[inline]
+    pub fn disable_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Disable)
+            .map(|v| v.turns_remaining)
+            .unwrap_or(0)
+    }
+
+    /// Disabled move slot (0..=3). 255 if not disabled.
+    #[inline]
+    pub fn disabled_move_slot(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Disable)
+            .map(|v| v.payload as u8)
+            .unwrap_or(255)
+    }
+
+    /// Apply a Disable lock for `turns` on move slot `slot`. `turns == 0`
+    /// clears the lock instead. PS data/moves.ts:disable `condition`
+    /// uses `duration: 5` with an `onStart` decrement when the target
+    /// still has its move queued — callers pass the already-resolved
+    /// effective duration (4 in the common case).
+    #[inline]
+    pub fn set_disable(&mut self, turns: u8, slot: u8) {
+        if turns == 0 {
+            self.volatiles.remove(VolatileKind::Disable);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Disable,
+                turns_remaining: turns,
+                payload: slot as u32 & 0xFF,
+            });
+        }
+    }
+
+    /// Clear the Disable volatile.
+    #[inline]
+    pub fn clear_disable(&mut self) {
+        self.volatiles.remove(VolatileKind::Disable);
+    }
+
+    /// End-of-turn Disable countdown. Decrements the remaining turns and
+    /// drops the volatile when it hits 0. Mirrors the Encore tick (the
+    /// battle loop manages durations explicitly rather than via
+    /// `VolatileSet::tick`). No-op when not disabled.
+    #[inline]
+    pub fn tick_disable(&mut self) {
+        let Some(pos) = self.volatiles.position(VolatileKind::Disable) else { return };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::Disable);
+        }
+    }
+
     /// Remaining sleep turns. `0` if not asleep.
     #[inline]
     pub fn sleep_turns(&self) -> u8 {
