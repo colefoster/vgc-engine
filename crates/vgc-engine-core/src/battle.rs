@@ -3393,6 +3393,8 @@ impl Battle {
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         t.set_encore(3, last);
                     }
+                    // Mental Herb cures Encore (PS onUpdate).
+                    crate::item::try_consume_mental_herb(self, opp, slot);
                     return;
                 }
             }
@@ -7144,6 +7146,35 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(matches!(b.p2.team[0].status, Status::None), "Grass immune to Spore (powder)");
+    }
+
+    #[test]
+    fn mental_herb_cures_encore() {
+        // PS data/items.ts:mentalherb — onUpdate removes Encore.
+        // Whimsicott Encores a target holding Mental Herb. Target's Encore
+        // volatile should be wiped and the herb consumed.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"mentalherb","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Pikachu attacks first turn so it has a "last move" for Encore.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], // tailwind
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // thunderbolt
+        );
+        // Turn 2: Whimsicott Encores Pikachu.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // encore
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Encore),
+            "Mental Herb cured Encore");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Mental Herb consumed");
     }
 
     #[test]
