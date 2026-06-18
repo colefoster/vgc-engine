@@ -1,0 +1,11 @@
+{
+  "name": "garchomp_tera_steel_ironhead_into_snorlax",
+  "format": "gen9customgame",
+  "p1_team": "Garchomp @ Leftovers\nAbility: Rough Skin\nLevel: 50\nTera Type: Steel\nEVs: 4 HP / 252 Atk / 252 Spe\nJolly Nature\n- Iron Head\n- Earthquake\n- Dragon Claw\n- Protect\n",
+  "p2_team": "Pikachu @ Leftovers\nAbility: Static\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 Atk / 252 Spe\nJolly Nature\n- Tackle\n- Thunderbolt\n- Quick Attack\n- Iron Tail\n",
+  "p1_action": "move 1 terastallize",
+  "p2_action": "move 1",
+  "target_side": "p2",
+  "target_slot": "a",
+  "trials": 1000
+}
