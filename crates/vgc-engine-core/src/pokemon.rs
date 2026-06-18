@@ -520,6 +520,19 @@ pub struct Pokemon {
     /// the bool tight for the moment and gate at the consumer when
     /// those abilities are added.
     pub ability_suppressed: bool,
+    /// Slow Start turn counter. PS `data/abilities.ts:slowstart` adds
+    /// a 5-turn `slowstart` volatile on switch-in; while the volatile
+    /// is alive the holder's Atk and Spe are halved. We model that as
+    /// a turn counter set to 5 on switch-in (in `on_switch_in`),
+    /// decremented at the end of each turn the holder remains on
+    /// field. 0 = inactive / expired. Reset on switch-out.
+    pub slow_start_active_turns: u8,
+    /// Truant flag — PS `data/abilities.ts:truant` flips a per-mon
+    /// boolean each turn; while `true`, the holder's move is skipped
+    /// ("loafing around"). Reset on switch-out. PS adds the volatile
+    /// on switch-in with `effectState.loafing = false`; we initialise
+    /// to false (uses move on turn 1) and flip in the before-move arm.
+    pub truant_loafing: bool,
 }
 
 impl Pokemon {
@@ -1120,6 +1133,7 @@ mod tests {
             semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
             must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
             volatiles: VolatileSet::default(),
+            slow_start_active_turns: 0, truant_loafing: false,
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -1165,6 +1179,8 @@ mod tests {
             lockin_turns: 0,
             lockin_move_slot: 255,
             volatiles: VolatileSet::default(),
+            slow_start_active_turns: 0,
+            truant_loafing: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

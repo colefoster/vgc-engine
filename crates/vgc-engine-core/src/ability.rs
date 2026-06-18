@@ -513,6 +513,27 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Slow Start — PS `data/abilities.ts:4266` `onStart` adds the
+    // `slowstart` volatile, lifetime 5 turns. We model the volatile
+    // as a turn counter on the mon. While > 0, damage.rs halves Atk
+    // and the Spe lookup (battle.rs order calc) halves Spe.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Slow_Start_(Ability)>.
+    if slug == "slowstart" {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.slow_start_active_turns = 5;
+        }
+    }
+
+    // Truant — PS `data/abilities.ts:5138` `onStart` adds the truant
+    // volatile with `effectState.loafing = false`. We initialise the
+    // flag to false (uses move turn 1) and flip in the before-move
+    // path. Reset on switch-out alongside the rest of per-mon state.
+    if slug == "truant" {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.truant_loafing = false;
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
@@ -609,6 +630,11 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             m.status = crate::pokemon::Status::None;
         }
     }
+    // Slow Start + Truant per-mon counters reset on switch-out.
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.slow_start_active_turns = 0;
+        m.truant_loafing = false;
+    }
 }
 
 /// Run end-of-turn ability residual hooks for one active slot.
@@ -622,6 +648,17 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn()),
         _ => return,
     };
+
+    // Slow Start counter — decrement at end of turn while > 0.
+    // PS keeps a turn counter on the slowstart volatile; we mirror
+    // the same lifetime here.
+    if slug == "slowstart" {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.slow_start_active_turns > 0 {
+                m.slow_start_active_turns -= 1;
+            }
+        }
+    }
 
     // Shed Skin — PS `data/abilities.ts:shedskin`:
     //   onResidualOrder: 5, onResidualSubOrder: 4,

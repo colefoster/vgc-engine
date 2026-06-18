@@ -107,7 +107,16 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
             | ("slushrush", Weather::Snow)
     );
     let after_weather = if weather_double { after_paradox * 2 } else { after_paradox };
-    after_weather.min(u16::MAX as u32) as u16
+    // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
+    // `onModifySpe` returns chainModify(0.5). Regigigas signature.
+    let after_slowstart = if ability_slug_for_spe == "slowstart"
+        && mon.slow_start_active_turns > 0
+    {
+        after_weather / 2
+    } else {
+        after_weather
+    };
+    after_slowstart.min(u16::MAX as u32) as u16
 }
 
 /// Resolve one turn's action order.
