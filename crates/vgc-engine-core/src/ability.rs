@@ -337,7 +337,15 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     if let Some(t) = new_terrain {
         if battle.terrain != t {
             battle.terrain = t;
-            battle.terrain_turns = 5;
+            // Terrain Extender — PS `data/items.ts:terrainextender`
+            //   onModifyDuration(duration, source, effect) {
+            //     if (effect && [...terrains].includes(effect.id)) return 8;
+            //   }
+            // Reads the SETTER's held item (not the field-owner's).
+            let item_slug = if let Some(m) = battle.side(side).active_mon(slot as usize) {
+                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
+            } else { "" };
+            battle.terrain_turns = if item_slug == "terrainextender" { 8 } else { 5 };
         }
     }
 

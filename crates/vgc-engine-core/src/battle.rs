@@ -3447,10 +3447,16 @@ impl Battle {
             // chosen target (or the actor for self-target moves).
             "electricterrain" => {
                 // PS data/moves.ts:electricterrain — sets terrain unless
-                // already Electric, duration 5.
+                // already Electric, duration 5 (or 8 with Terrain Extender
+                // on the setter, PS `data/items.ts:terrainextender`).
                 if self.terrain != crate::terrain::Terrain::Electric {
                     self.terrain = crate::terrain::Terrain::Electric;
-                    self.terrain_turns = 5;
+                    let user_item = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .map(|m| if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug })
+                        .unwrap_or("");
+                    self.terrain_turns = if user_item == "terrainextender" { 8 } else { 5 };
                     // Quark Drive users on either side may now flip on.
                     let n = self.format().active_count() as u8;
                     for s in [SideRef::P1, SideRef::P2] {
@@ -13612,6 +13618,44 @@ mod tests {
         let slug = b.p1.team[0].effective_ability_slug();
         assert_eq!(slug, "trace",
                    "Ability Shield should block Trace from copying SwordOfRuin (got {slug})");
+    }
+
+    #[test]
+    fn terrain_extender_lengthens_ability_set_terrain_to_eight_turns() {
+        // Iron Crown's Hadron Engine sets Electric Terrain on switch-in.
+        // With Terrain Extender held, the duration must be 8 not 5.
+        let p1_json = r#"[
+            {"species":"ironcrown","level":50,"ability":"hadronengine","item":"terrainextender","nature":"timid","moves":["tachyoncutter","voltswitch","focusblast","tera blast"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        assert_eq!(b.terrain_turns, 8, "Terrain Extender should bump 5 → 8");
+    }
+
+    #[test]
+    fn terrain_extender_lengthens_move_set_terrain_to_eight_turns() {
+        // Electric Terrain (move) set by a holder of Terrain Extender.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"terrainextender","nature":"timid","moves":["electricterrain","thunderbolt","grassknot","quickattack"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        // 8 set, then end-of-turn -1 → 7.
+        assert_eq!(b.terrain_turns, 7, "Terrain Extender should set 8, tick to 7 by end-of-turn");
     }
 
     #[test]
