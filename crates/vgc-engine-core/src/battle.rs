@@ -152,10 +152,27 @@ impl Battle {
     /// when an Oracle RNG is supplied.
     pub fn with_rng(
         config: BattleConfig,
-        rng: Rng,
-        p1_team: Vec<Pokemon>,
-        p2_team: Vec<Pokemon>,
+        mut rng: Rng,
+        mut p1_team: Vec<Pokemon>,
+        mut p2_team: Vec<Pokemon>,
     ) -> Self {
+        // Resolve unspecified gender exactly as PS does at `>player`
+        // (team construction): a flat 50/50 roll per ratio'd individual
+        // via `sample(['M','F'])`, walking the FULL team in slot order,
+        // p1's team before p2's, before any turn-1 mechanic draw. See
+        // `Rng::gender_roll` for the per-variant draw semantics that keep
+        // both golden harness modes bit-exact. PS `sim/pokemon.ts:340`.
+        for team in [&mut p1_team, &mut p2_team] {
+            for mon in team.iter_mut() {
+                if mon.gender == data::Gender::Random {
+                    mon.gender = if rng.gender_roll() == 0 {
+                        data::Gender::Male
+                    } else {
+                        data::Gender::Female
+                    };
+                }
+            }
+        }
         let p1 = Side::new(p1_team, config.format);
         let p2 = Side::new(p2_team, config.format);
         let mut b = Self {

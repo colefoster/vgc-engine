@@ -127,6 +127,14 @@ fn build_member_spec(obs: &PokeObservation) -> Result<TeamMember, ReconError> {
         ivs: StatSpread::MAX_IV,
         evs,
         teratype: None,
+        // Carry the replay-observed gender (`'\0'` = unknown → None,
+        // let species gender / roll decide).
+        gender: match obs.gender {
+            'M' => Some("M".to_string()),
+            'F' => Some("F".to_string()),
+            'N' => Some("N".to_string()),
+            _ => None,
+        },
     })
 }
 

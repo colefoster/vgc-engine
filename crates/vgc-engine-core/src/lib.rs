@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub use vgc_engine_data as data;
+pub use vgc_engine_data::Gender;
 
 mod choice;
 mod format;
