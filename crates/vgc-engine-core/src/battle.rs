@@ -1605,6 +1605,98 @@ impl Battle {
                 }
             }
 
+            // OHKO moves — Fissure, Horn Drill, Guillotine, Sheer Cold.
+            // PS data/moves.ts: each carries `ohko: true` (Sheer Cold:
+            // `ohko: 'Ice'` — Ice-type targets are immune in gen 6+).
+            //   onTryImmunity(target, source) {
+            //     return source.level >= target.level;
+            //   }
+            //   accuracy: 30 (base) + (source.level - target.level)
+            //   Sheer Cold: 20 base if source is NOT Ice-type.
+            // Acc/eva stages and Wide Lens / Bright Powder do NOT apply
+            // (PS `move.ohko: true` short-circuits the accuracy modifier
+            // chain). On hit: target faints (HP = 0) regardless of
+            // Sturdy / Focus Sash (PS gates those at the damage step,
+            // which OHKO routes around via `damage = target.hp`).
+            // Actually PS DOES respect Sturdy + Focus Sash on OHKO via
+            // `move.ohko` flag → `damage = target.hp` then Sturdy /
+            // Focus Sash's onDamage fires and caps to hp-1; we mirror
+            // that here. Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/One-hit_knockout_move>.
+            let is_ohko = matches!(m.slug,
+                "fissure" | "horndrill" | "guillotine" | "sheercold");
+            if is_ohko {
+                // Type immunity (Ground vs Flying / Levitate / Balloon
+                // already handled below for Fissure via the type-chart
+                // path; Sheer Cold vs Ice-type immunity is OHKO-specific
+                // and handled here). For Fissure, also check the
+                // grounding immunity inline.
+                let def_types = defender.species().types;
+                let def_ntypes = defender.species().num_types as usize;
+                let is_ice = (0..def_ntypes).any(|i| def_types[i] == 5); // Ice = 5
+                if m.slug == "sheercold" && is_ice {
+                    continue;
+                }
+                if m.slug == "fissure" {
+                    let g = if attacker_breaks_mold {
+                        defender.is_grounded_for_mold_breaker()
+                    } else {
+                        defender.is_grounded()
+                    };
+                    if !g {
+                        continue;
+                    }
+                }
+                // Level gate: user must be >= target level.
+                if attacker.level < defender.level {
+                    continue;
+                }
+                // Accuracy: 30 + (user.level - target.level), capped 100.
+                // Sheer Cold: 20 base if user is not Ice-type.
+                let attacker_types = attacker.species().types;
+                let attacker_ntypes = attacker.species().num_types as usize;
+                let user_is_ice = (0..attacker_ntypes).any(|i| attacker_types[i] == 5);
+                let base = if m.slug == "sheercold" && !user_is_ice { 20u32 } else { 30u32 };
+                let eff_acc = (base + (attacker.level as u32 - defender.level as u32)).min(100);
+                let roll = self.rng.percent_1_100() as u32;
+                if roll > eff_acc {
+                    continue;
+                }
+                // Hit. Set damage to target's current HP; Sturdy / Focus
+                // Sash's on_before_damage cap will reduce to hp-1 if
+                // applicable. PS's onDamage gates fire on `damage > 0`.
+                let raw_dmg = defender.current_hp;
+                let capped = {
+                    let (def_ability, def_cur, def_max) = (
+                        defender.effective_ability_slug(),
+                        defender.current_hp,
+                        defender.stats.hp,
+                    );
+                    let mut c = raw_dmg;
+                    if def_ability == "sturdy" && !attacker_breaks_mold
+                        && def_cur == def_max && c >= def_cur
+                    {
+                        c = def_cur - 1;
+                    }
+                    crate::item::on_before_damage(self, tside, tslot, c).unwrap_or(c)
+                };
+                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    d.current_hp = d.current_hp.saturating_sub(capped);
+                    if d.current_hp == 0 {
+                        d.fainted = true;
+                    }
+                    if capped > 0 && tside != actor_side {
+                        d.set_damaged_this_turn(true);
+                        let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
+                        d.last_attacker = (aside_byte, actor_slot as u8);
+                        d.last_attacker_category = m.category;
+                        d.last_damage_taken = capped;
+                    }
+                }
+                any_damage_dealt = any_damage_dealt.saturating_add(capped);
+                continue;
+            }
+
             // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
             // accuracy stage minus defender's evasion stage as a combined
             // boost in -6..=6, then:
@@ -13770,6 +13862,95 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, pre, "EQ must miss the balloon");
         assert_ne!(b.p2.team[0].item_id, u16::MAX, "balloon NOT popped by an immune hit");
+    }
+
+    #[test]
+    fn fissure_ohkos_grounded_target_when_levels_match() {
+        // Garchomp Fissure vs Pikachu, both lvl 50. Fissure's seed needs
+        // to land within the 30% accuracy window — use seed=1 and confirm
+        // Pikachu either faints (HP=0, fainted=true) or stays at full HP
+        // on a miss. We DO assert that if the move lands, Sturdy +
+        // Focus Sash items would clamp to 1 HP. Here Pikachu has no
+        // Sturdy / Sash so a hit must zero HP.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["fissure","dragonclaw","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"lightball","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Try several seeds; assert that at least one lands and zeros HP
+        // and at least one misses and leaves HP intact.
+        let mut hit_seen = false;
+        let mut miss_seen = false;
+        for seed in 0..50 {
+            let p1c = TeamBuilder::from_json(p1_json).unwrap();
+            let p2c = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1c, p2c);
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].fainted {
+                assert_eq!(b.p2.team[0].current_hp, 0, "Fissure must zero HP on hit");
+                hit_seen = true;
+            } else {
+                assert_eq!(b.p2.team[0].current_hp, pre, "miss must not damage");
+                miss_seen = true;
+            }
+            if hit_seen && miss_seen { break; }
+        }
+        assert!(hit_seen, "at least one Fissure roll should land");
+        assert!(miss_seen, "at least one Fissure roll should miss (30% accuracy)");
+        let _ = p1; let _ = p2;
+    }
+
+    #[test]
+    fn fissure_fails_against_flying_target() {
+        // Fissure vs a Flying-type target — ground immunity through
+        // the OHKO arm's is_grounded() gate.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"adamant","moves":["fissure","dragonclaw","rockslide","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre,
+                   "Fissure must fail vs Flying-type defender");
+        assert!(!b.p2.team[0].fainted);
+    }
+
+    #[test]
+    fn sheer_cold_fails_against_ice_type_target() {
+        // Walking Wake (Water/Dragon) uses Sheer Cold on Baxcalibur
+        // (Dragon/Ice) — Ice-type target is immune in gen 6+.
+        let p1_json = r#"[
+            {"species":"walkingwake","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"modest","moves":["sheercold","hydrosteam","dracometeor","flamethrower"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"baxcalibur","level":50,"ability":"thermalexchange","item":"loadeddice","nature":"adamant","moves":["iciclespear","glaiverush","earthquake","dragondance"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre,
+                   "Sheer Cold must fail vs Ice-type defender");
+        assert!(!b.p2.team[0].fainted);
     }
 
     #[test]

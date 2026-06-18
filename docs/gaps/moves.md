@@ -6,9 +6,9 @@ Per-slug mechanics where the engine's structural support exists but the slug-spe
 
 | Status | Count |
 | --- | --- |
-| shipped | 31 |
+| shipped | 32 |
 | partial | 5 |
-| not implemented | 3 |
+| not implemented | 2 |
 | deferred / no-effect | 0 |
 
 ## Conditional BP
@@ -255,9 +255,14 @@ See systems.md (delayed moves).
 
 ### Fissure / Horn Drill / Guillotine / Sheer Cold
 
-**What it is**: OHKO moves. 30% accuracy (Sheer Cold: 20% on Ice users vs Ice targets). Fail vs higher-level targets, immune-type targets, Sturdy.
+**What it is**: OHKO moves. 30% accuracy (Sheer Cold: 20% on non-Ice users). Fail vs higher-level targets, immune-type targets, Sturdy.
 
-**Status**: not implemented. (All four slugs absent from engine.)
+**Status**: shipped — PR-55. Slug-keyed pre-accuracy branch handles:
+level gate (`source.level >= target.level`), Sheer-Cold Ice-type
+immunity, Fissure ground-immunity (Levitate / Flying / Air Balloon),
+non-Ice Sheer Cold base accuracy 20, level-delta accuracy bonus, and
+Sturdy / Focus Sash clamping on the kill blow. Acc/eva stages bypassed
+per PS `move.ohko` short-circuit.
 
 ### Encore
 
