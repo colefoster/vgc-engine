@@ -397,6 +397,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
                 drop_atk(t);
             }
+            crate::item::try_consume_white_herb(battle, opp, s);
             react_to_opposing_stat_drop(battle, opp, s);
         }
     }
