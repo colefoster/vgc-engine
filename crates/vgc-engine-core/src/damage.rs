@@ -1036,6 +1036,17 @@ pub fn calculate_damage(
     // → Mold Breaker / Teravolt / Turboblaze bypass the whole effect.
     // Long Reach (contact negator) deferred. Stufful / Bewear.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fluffy_(Ability)>.
+    // Ice Scales — PS `data/abilities.ts:icescales`:
+    //   onSourceModifyDamage(damage, source, target, move) {
+    //     if (move.category === 'Special') return this.chainModify(0.5);
+    //   }
+    // ×0.5 incoming Special damage. NOT in PS's breakable list — Mold
+    // Breaker does NOT bypass. Frosmoth signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Ice_Scales_(Ability)>.
+    if def_ab == "icescales" && !physical {
+        dmg /= 2;
+    }
+
     if def_ab == "fluffy" && !attacker_breaks_mold {
         let fire = move_type == 1;
         let contact = m.makes_contact;
