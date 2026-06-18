@@ -153,6 +153,34 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
             m.item_id = u16::MAX;
         }
     }
+    // Pinch stat berries — fire at ≤25% HP (Gluttony ≤50%, deferred).
+    // Each consumes for a +1 stat boost. PS data/items.ts:
+    //   liechiberry  3379 — +1 Atk
+    //   ganlonberry  2381 — +1 Def
+    //   salacberry   5481 — +1 Spe
+    //   petayaberry  4532 — +1 SpA
+    //   apicotberry   262 — +1 SpD
+    // Each `onUpdate` eats if `pokemon.hp <= pokemon.maxhp / 4`, then
+    // `onEat` calls `this.boost({<stat>: 1})`. Self-boost — Clear Body /
+    // Clear Amulet don't block. Bulbapedia hub:
+    // <https://bulbapedia.bulbagarden.net/wiki/Liechi_Berry>.
+    // (slug, stat index — 0=Atk, 1=Def, 2=SpA, 3=SpD, 4=Spe).
+    let pinch_entry = match slug {
+        "liechiberry" => Some(0usize),
+        "ganlonberry" => Some(1),
+        "petayaberry" => Some(2),
+        "apicotberry" => Some(3),
+        "salacberry"  => Some(4),
+        _ => None,
+    };
+    if let Some(stat_idx) = pinch_entry {
+        if current * 4 <= max {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.boosts[stat_idx] = (m.boosts[stat_idx] + 1).clamp(-6, 6);
+                m.item_id = u16::MAX;
+            }
+        }
+    }
 }
 
 /// Defender's held item reacts to an incoming contact hit. Mirrors PS's

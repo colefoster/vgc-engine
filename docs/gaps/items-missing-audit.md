@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **129**
-- Missing: **120** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **134**
+- Missing: **115** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~22 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~17 competitively relevant**
 
 ## Missing by category
 
@@ -33,11 +33,7 @@ Gem remains.
 
 These activate at <=1/4 HP and matter in VGC for Salac/Petaya sweepers and Sitrus-cycling lines.
 
-- `apicotberry` — Apicot Berry — +1 Sp. Def at <=1/4 HP. Single use.
-- `ganlonberry` — Ganlon Berry — +1 Def at <=1/4 HP. Single use.
-- `liechiberry` — Liechi Berry — +1 Atk at <=1/4 HP. Single use.
-- `petayaberry` — Petaya Berry — +1 Sp. Atk at <=1/4 HP. Single use.
-- `salacberry` — Salac Berry — +1 Speed at <=1/4 HP. Single use.
+- Pinch stat berries (Apicot / Ganlon / Liechi / Petaya / Salac) — shipped (PR-303). Gluttony ≤50% gate deferred.
 - `starfberry` — Starf Berry — Random +2 at <=1/4 HP. Single use.
 - `micleberry` — Micle Berry — Next move 1.2x accuracy at <=1/4 HP. Single use.
 - `lansatberry` — Lansat Berry — Focus Energy at <=1/4 HP. Single use.
