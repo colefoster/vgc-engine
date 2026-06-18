@@ -1379,6 +1379,21 @@ impl Battle {
             boosted_attacker.stats.atk =
                 ((boosted_attacker.stats.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
         }
+        // Water Bubble — Araquanid signature. On the attacker side it
+        // doubles the offensive stat for Water-type moves (PS
+        // `onModifyAtk` and `onModifySpA`: `if (move.type === 'Water')
+        // return this.chainModify(2);`). PS data/abilities.ts:waterbubble.
+        // Water type code = 2. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+        if attacker_ability_slug == "waterbubble" && m.type_ == 2 {
+            if physical_move {
+                boosted_attacker.stats.atk =
+                    ((boosted_attacker.stats.atk as u32 * 2).min(u16::MAX as u32)) as u16;
+            } else if special_move {
+                boosted_attacker.stats.spa =
+                    ((boosted_attacker.stats.spa as u32 * 2).min(u16::MAX as u32)) as u16;
+            }
+        }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
 
@@ -1982,6 +1997,17 @@ impl Battle {
             {
                 dmg /= 2;
             }
+            // Water Bubble (defender side) — Fire-type incoming damage
+            // halved. PS `data/abilities.ts:waterbubble`
+            // `onSourceModifyAtk` / `onSourceModifySpA`:
+            //   if (move.type === 'Fire') return this.chainModify(0.5);
+            // Halving the offensive stat is mathematically equivalent to
+            // halving final damage. NOT in PS's breakable list — Mold
+            // Breaker does NOT bypass. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+            if defender_ability_slug == "waterbubble" && m.type_ == 1 && dmg > 0 {
+                dmg /= 2;
+            }
             // Knock Off: ×1.5 vs item holders. PS data/moves.ts:knockoff
             // onBasePower step — applied as a move-level mult here.
             let knockoff_boost = m.slug == "knockoff" && defender.item_id != u16::MAX;
@@ -2555,7 +2581,7 @@ impl Battle {
     }
 
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
-        let (immune, terrain_blocks_sleep) = match self.side(side).active_mon(slot as usize) {
+        let (immune, terrain_blocks_sleep, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
                     return;
@@ -2566,11 +2592,19 @@ impl Battle {
                 let e_terrain_blocks = matches!(self.terrain, crate::terrain::Terrain::Electric)
                     && matches!(status, Status::Sleep)
                     && m.is_grounded();
-                (is_type_immune_to_status(m.species(), status), e_terrain_blocks)
+                // Water Bubble — PS `data/abilities.ts:waterbubble`
+                // `onSetStatus(status, target, source, effect)`:
+                //   if (status.id === 'brn') return false;
+                // The holder cannot be burned. NOT in PS's breakable list
+                // — Mold Breaker does NOT bypass. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+                let burn_immune = m.effective_ability_slug() == "waterbubble"
+                    && matches!(status, Status::Burn);
+                (is_type_immune_to_status(m.species(), status), e_terrain_blocks, burn_immune)
             }
             _ => return,
         };
-        if immune || terrain_blocks_sleep {
+        if immune || terrain_blocks_sleep || ability_blocks {
             return;
         }
         // Sleep duration roll. PS `data/conditions.ts:59` slp.onStart:
