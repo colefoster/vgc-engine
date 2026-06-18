@@ -12998,6 +12998,34 @@ mod tests {
     }
 
     #[test]
+    fn steam_engine_maxes_speed_on_fire_hit() {
+        // A Steam-Engine holder taking a Fire move jumps Spe to +6.
+        // Use a bulky defender (Snorlax stand-in: Coalossal at boosted
+        // HP) so the hit doesn't KO. Garchomp uses Flamethrower? It
+        // doesn't have one — switch to Charizard learning Flamethrower
+        // for clarity.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"leftovers","nature":"timid","moves":["flamethrower","airslash","focusblast","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"coalossal","level":50,"ability":"steamengine","item":"leftovers","nature":"relaxed","moves":["rockslide","earthquake","heatcrash","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Force max HP to ensure survival (Coalossal resists Fire ×0.5).
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp;
+        assert_eq!(b.p2.team[0].boosts[4], 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].fainted, "Coalossal should survive resisted Flamethrower");
+        assert_eq!(b.p2.team[0].boosts[4], 6,
+            "Steam Engine should max Spe to +6 on Fire hit");
+    }
+
+    #[test]
     fn sand_veil_reduces_hit_rate_in_sand() {
         // Hippowdon firing Stone Edge (acc 80) at a Sand-Veil Garchomp.
         // With Sand active, accuracy ×0.8; without Sand, regular 80.

@@ -634,6 +634,22 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Steam Engine — PS `data/abilities.ts:steamengine`:
+    //   onDamagingHit(damage, target, source, move) {
+    //     if (['Water','Fire'].includes(move.type)) this.boost({spe: 6});
+    //   }
+    // Sets Spe straight to +6 (clamped) on any incoming Water or Fire
+    // move. Skipped on a KO hit — fainted mons can't carry stages.
+    // Iron Treads / Coalossal signature. Type codes: 1=Fire, 2=Water.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Steam_Engine_(Ability)>.
+    if slug == "steamengine" && target_alive {
+        let move_type = data::MOVES[move_id as usize].type_;
+        if move_type == 1 || move_type == 2 {
+            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                t.boosts[4] = (t.boosts[4] + 6).clamp(-6, 6);
+            }
+        }
+    }
     // Rattled — PS `data/abilities.ts:rattled`:
     //   onDamagingHit(damage, target, source, move) {
     //     if (['Bug','Ghost','Dark'].includes(move.type)) this.boost({spe: 1});

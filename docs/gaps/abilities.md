@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 50 |
+| shipped | 51 |
 | partial | 5 |
-| not implemented | 38 |
+| not implemented | 37 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -275,7 +275,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: +6 Spe on Fire / Water hit received.
 
-**Status**: not implemented.
+**Status**: shipped — PR-280.
 
 ### Moxie / Beast Boost
 
