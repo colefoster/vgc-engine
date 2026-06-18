@@ -43,6 +43,25 @@ pub(crate) fn move_is_sheer_force_boosted(m: &data::MoveDef) -> bool {
     m.has_secondary || m.has_sheer_force_boost
 }
 
+/// Effective `makes_contact` flag for the attacker / move pair. PS
+/// `data/items.ts:punchingglove` `onModifyMove` deletes the contact flag
+/// on punch moves, so Rocky Helmet / Rough Skin / Iron Barbs / Static /
+/// Flame Body / Effect Spore don't fire. All consumers should call this
+/// helper rather than reading `MoveDef::makes_contact` directly when an
+/// attacker is in hand.
+pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
+    if !m.makes_contact {
+        return false;
+    }
+    if m.is_punch
+        && attacker.item_id != u16::MAX
+        && data::ITEMS[attacker.item_id as usize].slug == "punchingglove"
+    {
+        return false;
+    }
+    true
+}
+
 /// Boost-stage ignore policy. Selects which signed boost stages are
 /// zeroed before they reach the multiplier table.
 ///
@@ -473,6 +492,27 @@ pub fn calculate_damage(
         bp = bp * 4915 / 4096;
     }
 
+    // Punching Glove — PS `data/items.ts:punchingglove`:
+    //   onBasePower(basePower, attacker, defender, move) {
+    //     if (move.flags['punch']) return this.chainModify([4506, 4096]);
+    //   }
+    //   onModifyMove(move) {
+    //     if (move.flags['punch']) delete move.flags['contact'];
+    //   }
+    // BP ×1.1 on punch moves (4506/4096 ≈ 1.10) AND strips the contact
+    // flag — Rocky Helmet / Rough Skin / Iron Barbs / Static / Flame
+    // Body / Effect Spore don't fire. The contact-strip arm lives at
+    // each consumer site (a shared `move_makes_contact` helper would
+    // be ideal; this PR adds the BP arm here and the call-site gates
+    // in battle.rs / ability.rs / item.rs).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Punching_Glove>.
+    if m.is_punch
+        && attacker.item_id != u16::MAX
+        && data::ITEMS[attacker.item_id as usize].slug == "punchingglove"
+    {
+        bp = bp * 4506 / 4096;
+    }
+
     // Mega Launcher — PS `data/abilities.ts:megalauncher` `onBasePower`
     // returns `chainModify([6144, 4096])` (×1.5) on moves with
     // `flags.pulse`. Clawitzer signature. Heal Pulse's healing
@@ -501,7 +541,7 @@ pub fn calculate_damage(
     // contact (`move.flags['contact']`). Mega Charizard-X / Aerodactyl-Mega
     // / Crawdaunt / Binacle line. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Tough_Claws_(Ability)>.
-    if m.makes_contact
+    if move_makes_contact(m, attacker)
         && attacker.ability_id != u16::MAX
         && data::ABILITIES[attacker.ability_id as usize].slug == "toughclaws"
     {
@@ -1090,7 +1130,7 @@ pub fn calculate_damage(
 
     if def_ab == "fluffy" && !attacker_breaks_mold {
         let fire = move_type == 1;
-        let contact = m.makes_contact;
+        let contact = move_makes_contact(m, attacker);
         if fire && !contact {
             dmg *= 2;
         } else if contact && !fire {

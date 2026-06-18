@@ -2285,7 +2285,7 @@ impl Battle {
                 // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
                 // Skin / Iron Barbs: contact-only, attacker not Magic-
                 // Guarded. PS `data/items.ts:rockyhelmet`.
-                if data::MOVES[move_id as usize].makes_contact {
+                if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], &attacker) {
                     crate::item::on_attacker_contact_hit(
                         self, tside, tslot, actor_side, actor_slot,
                     );
@@ -12182,6 +12182,47 @@ mod tests {
             boosted_dmg > baseline_dmg,
             "Toxic Boost should raise Drain Punch damage: boosted={boosted_dmg} baseline={baseline_dmg}",
         );
+    }
+
+    #[test]
+    fn punching_glove_boosts_punch_bp_and_strips_contact() {
+        // Iron Hands Drain Punch (punch + contact) vs Garchomp w/ Rocky Helmet.
+        // With Punching Glove: BP ×1.1 (more dmg) AND no Rocky Helmet recoil.
+        // Without: contact triggers Rocky Helmet's 1/6 chip on the attacker.
+        let mk = |attacker_item: &str| -> (u16, u16) {
+            let p1_json = format!(r#"[
+                {{"species":"ironhands","level":50,"ability":"quarkdrive","item":"{attacker_item}","nature":"adamant","moves":["drainpunch","wildcharge","fakeout","heavyslam"],"evs":{{"atk":252,"hp":252,"def":4}}}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"garchomp","level":50,"ability":"sandveil","item":"rockyhelmet","nature":"impish","moves":["earthquake","substitute","stoneedge","dragonclaw"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            // Pre-damage Iron Hands so drain heal can't cap and mask the
+            // Rocky Helmet recoil difference.
+            b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 4;
+            let atk_pre = b.p1.team[0].current_hp;
+            let def_pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            // Iron Hands HP delta accounts for: Drain Punch's drain heal
+            // (positive) minus Rocky Helmet recoil (negative when contact).
+            // We just compare across the two conditions: with glove, less
+            // recoil → higher final HP.
+            let dmg_dealt = def_pre.saturating_sub(b.p2.team[0].current_hp);
+            let attacker_hp = b.p1.team[0].current_hp;
+            let _ = atk_pre;
+            (dmg_dealt, attacker_hp)
+        };
+        let (no_glove_dmg, no_glove_hp) = mk("leftovers");
+        let (glove_dmg, glove_hp) = mk("punchingglove");
+        assert!(glove_dmg > no_glove_dmg,
+            "Punching Glove should raise Drain Punch damage: glove={glove_dmg} plain={no_glove_dmg}");
+        assert!(glove_hp > no_glove_hp,
+            "Punching Glove should strip contact → no Rocky Helmet recoil: glove_hp={glove_hp} plain_hp={no_glove_hp}");
     }
 
     #[test]
