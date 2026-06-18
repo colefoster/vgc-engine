@@ -229,8 +229,9 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     };
     let slug = ability_slug(ability_id);
 
-    // Weather-setting abilities. Gen 9: 5-turn duration (no item
-    // extensions yet — items PR adds Damp/Heat/Smooth/Icy Rock).
+    // Weather-setting abilities. Gen 9: 5-turn duration; weather rocks
+    // (Damp/Heat/Smooth/Icy Rock) extend to 8 when the setter holds the
+    // matching rock.
     let new_weather = match slug {
         "drizzle" => Some(crate::weather::Weather::Rain),
         "drought" | "orichalcumpulse" => Some(crate::weather::Weather::Sun),
@@ -243,7 +244,24 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         // (Primal Rain etc.) don't apply in this format.
         if battle.weather != w {
             battle.weather = w;
-            battle.weather_turns = 5;
+            // Weather rocks — PS `data/items.ts:{damp,heat,smooth,icy}rock`
+            // `onModifyDuration(duration, source, effect)` returns 8 when
+            // `effect.id` matches `raindance`/`sunnyday`/`sandstorm`/`snowscape`.
+            // Same shape for ability-set weather (PS routes both move and
+            // ability through `field.setWeather`).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_Rock>
+            //             etc.
+            let item_slug = if let Some(m) = battle.side(side).active_mon(slot as usize) {
+                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
+            } else { "" };
+            let extended = matches!(
+                (w, item_slug),
+                (crate::weather::Weather::Rain, "damprock")
+                | (crate::weather::Weather::Sun, "heatrock")
+                | (crate::weather::Weather::Sand, "smoothrock")
+                | (crate::weather::Weather::Snow, "icyrock")
+            );
+            battle.weather_turns = if extended { 8 } else { 5 };
         }
     }
 
