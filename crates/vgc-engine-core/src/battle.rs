@@ -2702,6 +2702,15 @@ impl Battle {
                 m.set_sleep_turns(sleep_turns);
             }
         }
+        // Status-cure berries (Cheri / Chesto / Pecha / Rawst / Aspear) —
+        // PS data/items.ts `<berry>` carry `onUpdate(pokemon)`:
+        //   if (pokemon.status === '<id>') pokemon.eatItem();
+        //   onEat(pokemon) { pokemon.cureStatus(); }
+        // The cure fires the same tick the status is applied (PS's
+        // `onUpdate` runs immediately). Lum Berry covers ANY non-volatile
+        // status the same way (separate PR). Berry is consumed on cure.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cheri_Berry> etc.
+        cure_status_berry_if_matching(self, side, slot);
     }
 
     /// End-of-turn residuals: damage / heal sources that fire each turn
@@ -3952,6 +3961,41 @@ fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool 
 ///
 /// Used for the gen-6+ "sound bypasses Substitute" rule and (when
 /// implemented) the Soundproof / Throat Spray / Punk Rock hooks.
+/// Cure a status-cure berry's matching status (or any status for Lum).
+/// Called from `try_set_status` immediately after the status is applied
+/// (PS's `onUpdate` runs the same tick). Consumes the berry on cure.
+fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
+    let (item_slug, status) = match b.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => {
+            let slug = if m.item_id == u16::MAX {
+                ""
+            } else {
+                data::ITEMS[m.item_id as usize].slug
+            };
+            (slug, m.status)
+        }
+        _ => return,
+    };
+    let cures = match item_slug {
+        "cheriberry" => matches!(status, Status::Paralysis),
+        "chestoberry" => matches!(status, Status::Sleep),
+        "pechaberry" => matches!(status, Status::Poison | Status::Toxic),
+        "rawstberry" => matches!(status, Status::Burn),
+        "aspearberry" => matches!(status, Status::Freeze),
+        "lumberry" => !matches!(status, Status::None),
+        _ => false,
+    };
+    if !cures {
+        return;
+    }
+    if let Some(m) = b.side_mut(side).active_mon_mut(slot as usize) {
+        m.status = Status::None;
+        m.set_toxic_counter(0);
+        m.set_sleep_turns(0);
+        m.item_id = u16::MAX;
+    }
+}
+
 fn is_sound_move(slug: &str) -> bool {
     matches!(
         slug,
@@ -11375,6 +11419,29 @@ mod tests {
             charizard_max - expected_dmg,
             "Charizard takes 1/2 SR chip (4x weak)",
         );
+    }
+
+    #[test]
+    fn rawst_berry_cures_burn_on_apply() {
+        // Charizard fires Will-O-Wisp on a Rawst-holding Snorlax.
+        // Will-O-Wisp lands burn; Rawst Berry's onUpdate cures it the
+        // same tick. Burn ends with status == None and item consumed.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"focussash","nature":"modest","moves":["willowisp","flamethrower","airslash","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"rawstberry","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None),
+                "Rawst Berry cures burn the same tick: status={:?}", b.p2.team[0].status);
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Rawst Berry is consumed on cure");
     }
 
     #[test]
