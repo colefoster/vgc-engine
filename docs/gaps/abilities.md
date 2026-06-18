@@ -507,7 +507,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Why it matters**: Clefairy is a doubles staple.
 
-**Status**: not implemented.
+**Status**: shipped — PR-303. Doubles-only scan in damage step; Mold Breaker bypasses.
 
 ### Healer
 
@@ -525,7 +525,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Immune to ally damaging moves (no friendly fire).
 
-**Status**: not implemented.
+**Status**: shipped — PR-303. `onTryHit`-equivalent gate in battle.rs when `tside == actor_side && tslot != actor_slot`. Mold Breaker on ally bypasses.
 
 ### Damp
 

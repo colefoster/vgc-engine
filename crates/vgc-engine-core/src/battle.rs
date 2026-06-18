@@ -1943,6 +1943,26 @@ impl Battle {
                 continue;
             }
 
+            // Telepathy — PS `data/abilities.ts:4888`:
+            //   onTryHit(target, source, move) {
+            //     if (target.isAlly(source) && move.category !== 'Status') return null;
+            //   }
+            // Holder is immune to ally damaging moves (no friendly fire).
+            // Doubles-only — singles never has an ally target. Carries
+            // `flags: { breakable: 1 }` — Mold Breaker on the ally
+            // attacker bypasses. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Telepathy_(Ability)>.
+            if tside == actor_side && tslot != actor_slot {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "telepathy" && !attacker_breaks_mold {
+                    continue;
+                }
+            }
+
             // Electric-immunity absorbing abilities — Motor Drive
             // (+1 Spe), Volt Absorb (heal 1/4 max HP), Lightning Rod
             // (deferred; needs redirect). PS handlers all `onTryHit`
@@ -2377,6 +2397,36 @@ impl Battle {
                 );
                 if se {
                     dmg = ((dmg as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+                }
+            }
+            // Friend Guard — PS `data/abilities.ts:1488`:
+            //   onAnyModifyDamage(damage, source, target, move) {
+            //     if (target !== this.effectState.target &&
+            //         target.isAlly(this.effectState.target))
+            //       return this.chainModify(0.75);
+            //   }
+            // The HOLDER's ALLY takes ×0.75 incoming damage. Doubles-
+            // only — singles has no ally so the helper short-circuits.
+            // Carries `flags: { breakable: 1 }` — Mold Breaker on the
+            // attacker bypasses. Clefable / Clefairy signature.
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Friend_Guard_(Ability)>.
+            if is_doubles && dmg > 0 && !attacker_breaks_mold {
+                // Look at every alive ally of the defender on `tside`
+                // OTHER than the defender itself for Friend Guard.
+                let n = self.format().active_count() as u8;
+                let mut friend_guarded = false;
+                for s in 0..n {
+                    if s == tslot { continue; }
+                    if let Some(ally) = self.side(tside).active_mon(s as usize) {
+                        if ally.is_alive() && ally.effective_ability_slug() == "friendguard" {
+                            friend_guarded = true;
+                            break;
+                        }
+                    }
+                }
+                if friend_guarded {
+                    dmg = ((dmg as u32) * 3072 / 4096).min(u16::MAX as u32) as u16;
                 }
             }
             // Multi-hit — Double Hit, Population Bomb, Bullet Seed,
@@ -14738,6 +14788,101 @@ mod tests {
         // Baseline (non-blocker): at least one seed must register a drop.
         let any_drop = (0..20u64).any(|s| mk("ironfist", s) < 0);
         assert!(any_drop, "Baseline ability must let at least one Mud-Slap drop Acc");
+    }
+
+    #[test]
+    fn telepathy_blocks_ally_damaging_move_in_doubles() {
+        // Doubles: p1 slot 0 (Garchomp) uses Earthquake — spread move.
+        // p1 slot 1 (Latios @ Telepathy, Levitate) is its ally. Earthquake
+        // (a ground spread move) normally hits both opposing slots AND
+        // grounded allies in doubles. Telepathy should null the friendly-
+        // fire hit on Latios; Levitate already covers Ground. Use Latias
+        // (Levitate too) but FORCE telepathy by setting ability_id.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","rockslide","ironhead"]},
+            {"species":"latias","level":50,"ability":"levitate","item":"","nature":"hardy","moves":["dragonpulse","recover","calmmind","mistball"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"hardy","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Swap Latias's ability to Telepathy.
+        let telepathy_id = data::ABILITIES.iter().position(|a| a.slug == "telepathy").unwrap() as u16;
+        b.p1.team[1].ability_id = telepathy_id;
+        let ally_pre = b.p1.team[1].current_hp;
+        // Garchomp Earthquake; partner does nothing; opponents do nothing.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 1, target: None },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 3, target: None },
+            ],
+        );
+        assert_eq!(b.p1.team[1].current_hp, ally_pre,
+            "Telepathy must null Earthquake friendly fire");
+    }
+
+    #[test]
+    fn friend_guard_reduces_ally_incoming_damage() {
+        // Doubles: 0-Atk Garchomp Dragon Claw vs Blissey. Bulky defender
+        // so the chunk doesn't saturate at 0 HP. Compare Clefable ally
+        // @ Friend Guard vs Pressure baseline (ability swap only).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"hardy","moves":["dragonclaw","earthquake","rockslide","ironhead"],"ivs":{"atk":0,"hp":31,"def":31,"spa":31,"spd":31,"spe":31}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","calmmind","protect"],"evs":{"hp":252,"def":252,"spd":4}},
+            {"species":"clefable","level":50,"ability":"cutecharm","item":"","nature":"hardy","moves":["moonblast","softboiled","calmmind","followme"]}
+        ]"#;
+        // Average over several seeds — single-seed variance can swamp
+        // the 0.75 signal because the RNG path for ally moves depends on
+        // ability-id (Cute Charm's on-hit roll path is consumed eagerly
+        // in some seeds). Mean ratio should land near 0.75.
+        let trials = 30u64;
+        let sum_fg: u32 = (0..trials).map(|s| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: s }, p1, p2);
+            let fg_id = data::ABILITIES.iter().position(|a| a.slug == "friendguard").unwrap() as u16;
+            b.p2.team[1].ability_id = fg_id;
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                  Choice::Pass { actor_slot: 1 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) },
+                  Choice::Move { actor_slot: 1, move_slot: 1, target: None }],
+            );
+            (pre - b.p2.team[0].current_hp) as u32
+        }).sum();
+        let sum_base: u32 = (0..trials).map(|s| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: s }, p1, p2);
+            let pressure_id = data::ABILITIES.iter().position(|a| a.slug == "pressure").unwrap() as u16;
+            b.p2.team[1].ability_id = pressure_id;
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                  Choice::Pass { actor_slot: 1 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) },
+                  Choice::Move { actor_slot: 1, move_slot: 1, target: None }],
+            );
+            (pre - b.p2.team[0].current_hp) as u32
+        }).sum();
+        assert!(sum_fg > 0 && sum_base > 0, "both runs should deal damage");
+        // FG should be < base × ~0.85 (allows for trial variance). True
+        // expected mean ratio is 0.75.
+        assert!(sum_fg * 100 <= sum_base * 85,
+            "FG mean should be <= 0.85x base: fg={sum_fg} base={sum_base}");
+        // And not absurdly low.
+        assert!(sum_fg * 100 >= sum_base * 65,
+            "FG mean should be >= 0.65x base: fg={sum_fg} base={sum_base}");
     }
 
     #[test]
