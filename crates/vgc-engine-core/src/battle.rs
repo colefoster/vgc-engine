@@ -7107,6 +7107,28 @@ mod tests {
     }
 
     #[test]
+    fn adrenaline_orb_fires_on_intimidate_switch_in() {
+        // PS data/items.ts:adrenalineorb — +1 Speed when Intimidate'd
+        // (fires even if drop was blocked, but here we just test the
+        // basic case: drop lands AND Speed goes up).
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"adrenalineorb","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Battle::new fires battle-start sendouts which run on_switch_in
+        // (Intimidate). After construction, Snorlax should be at +1 Spe
+        // and -1 Atk, item consumed.
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate dropped Atk");
+        assert_eq!(b.p2.team[0].boosts[4], 1, "Adrenaline Orb gave +1 Spe");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Adrenaline Orb consumed");
+    }
+
+    #[test]
     fn utility_umbrella_holder_ignores_sun_for_solar_beam_charge_skip() {
         // PS data/items.ts:utilityumbrella — holder reads Sun/Rain as
         // clear. Solar Beam under Sun normally skips the charge turn;

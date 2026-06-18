@@ -560,6 +560,28 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 Some(m) if m.is_alive() => ability_slug(m.ability_id),
                 _ => continue,
             };
+            // Adrenaline Orb — PS `data/items.ts:adrenalineorb` line 111
+            // fires on `onAfterBoost` when effect.name === 'Intimidate'.
+            // It triggers even if the Atk drop was blocked by Hyper Cutter
+            // / Clear Body / Full Metal Body / White Smoke / Clear Amulet
+            // — PS dispatches `onAfterBoost` regardless of whether the
+            // drop landed. We fire BEFORE the block / amulet gates so the
+            // +1 Spe is granted regardless. Consume on use. The Orb is
+            // gated on (1) the target being alive and (2) Speed not at
+            // +6. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Adrenaline_Orb>.
+            let adrenaline = battle.side(opp).active_mon(s as usize)
+                .map(|m| m.is_alive()
+                    && m.item_id != u16::MAX
+                    && data::ITEMS[m.item_id as usize].slug == "adrenalineorb"
+                    && m.boosts[4] < 6)
+                .unwrap_or(false);
+            if adrenaline {
+                if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
+                    t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
+                    t.item_id = u16::MAX;
+                }
+            }
             if blocks_intimidate(target_ability) {
                 continue;
             }
