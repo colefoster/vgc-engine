@@ -634,6 +634,28 @@ impl Battle {
                 Some(m) if m.is_alive() => m,
                 _ => return,
             };
+            // Heavy-Duty Boots — PS `data/items.ts:heavydutyboots`
+            //   onDamage(damage, target, source, effect) {
+            //     if (effect && ['stealthrock', 'spikes',
+            //                    'gmaxsteelsurge', 'stickyweb'].includes(effect.id))
+            //       return false;
+            //   }
+            // Bypasses all hazard chip on switch-in (Stealth Rock,
+            // Spikes, Sticky Web — currently only SR is modelled in
+            // side conditions; the rest are no-ops until those hazards
+            // ship, at which point the same gate covers them by virtue
+            // of HDB holders never entering the hazard loop). PS
+            // emits a quick `-enditem`-style log but no field-state
+            // change. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Heavy-Duty_Boots>.
+            let item_slug = if mon.item_id == u16::MAX {
+                ""
+            } else {
+                data::ITEMS[mon.item_id as usize].slug
+            };
+            if item_slug == "heavydutyboots" {
+                return;
+            }
             let mg = crate::ability::has_magic_guard(mon);
             // Rock type index = 12 per build.rs TYPE_NAMES order.
             let eff = crate::damage::type_effectiveness(12, mon.species());
@@ -11305,6 +11327,37 @@ mod tests {
             charizard_max - expected_dmg,
             "Charizard takes 1/2 SR chip (4x weak)",
         );
+    }
+
+    #[test]
+    fn heavy_duty_boots_blocks_stealth_rock() {
+        // Garchomp switches into Stealth Rock. With Heavy-Duty Boots
+        // it takes 0 damage; without the boots the standard 1/8 chip
+        // (Ground/Dragon, neutral vs Rock) would apply.
+        let p1_json = r#"[
+            {"species":"landorus_therian","level":50,"ability":"intimidate","nature":"jolly","moves":["stealthrock","earthquake","uturn","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"heavydutyboots","nature":"careful","moves":["crunch","earthquake","rockslide","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let ttar_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        // Tyranitar is Rock/Dark — Rock vs Rock 0.5x, Rock vs Dark 2x →
+        // net neutral, so SR would normally chip 1/8 (~12% of HP). With
+        // HDB the chip is bypassed entirely.
+        assert_eq!(b.p2.team[1].current_hp, ttar_max,
+                   "Heavy-Duty Boots blocks Stealth Rock");
     }
 
     #[test]
