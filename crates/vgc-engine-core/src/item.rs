@@ -404,6 +404,52 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     try_consume_white_herb(battle, side, slot);
     // Mental Herb cleans up Encore / Taunt / etc carried across a switch.
     try_consume_mental_herb(battle, side, slot);
+    // Terrain seeds — fire if the matching terrain is active when the
+    // holder switches in. Mirrors PS's `onStart` arm; the `onTerrainChange`
+    // arm is dispatched separately from the terrain-set sites.
+    try_consume_terrain_seed(battle, side, slot);
+}
+
+/// Terrain seed dispatch — consumes the holder's seed if it's currently
+/// holding one AND the matching terrain is active. +1 Def (electricseed /
+/// grassyseed) or +1 SpD (mistyseed / psychicseed). PS `data/items.ts`:
+///   electricseed (1794): onStart + onTerrainChange — boost def 1 when
+///                        Electric Terrain is active.
+///   grassyseed   (2590): same shape, Grassy Terrain.
+///   mistyseed    (4195): boost spd 1 when Misty Terrain is active.
+///   psychicseed  (4898): boost spd 1 when Psychic Terrain is active.
+///
+/// Each handler calls `pokemon.useItem()` and short-circuits if the
+/// terrain isn't active. Single use. Bulbapedia hub:
+/// <https://bulbapedia.bulbagarden.net/wiki/Electric_Seed>.
+///
+/// Called from `on_switch_in` (matches `onStart`) AND from the terrain-set
+/// sites in `battle.rs` / `ability.rs` (matches `onTerrainChange`).
+pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
+    let slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => item_slug(m.item_id),
+        _ => return,
+    };
+    use crate::terrain::Terrain;
+    // (slug, required terrain, stat index — 1 = Def, 3 = SpD).
+    let entry = match slug {
+        "electricseed" => Some((Terrain::Electric, 1usize)),
+        "grassyseed"   => Some((Terrain::Grassy,   1)),
+        "mistyseed"    => Some((Terrain::Misty,    3)),
+        "psychicseed"  => Some((Terrain::Psychic,  3)),
+        _ => None,
+    };
+    let (req_terrain, stat_idx) = match entry {
+        Some(e) => e,
+        None => return,
+    };
+    if battle.terrain != req_terrain {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.boosts[stat_idx] = (m.boosts[stat_idx] + 1).clamp(-6, 6);
+        m.item_id = u16::MAX;
+    }
 }
 
 /// Run the White Herb check on a single active mon. If holder has

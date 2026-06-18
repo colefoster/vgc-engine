@@ -4007,6 +4007,14 @@ impl Battle {
                             crate::ability::refresh_paradox_booster(self, s, slot);
                         }
                     }
+                    // Terrain seed dispatch — PS `onTerrainChange` arm
+                    // fires on both actives when the field's terrain
+                    // changes (Electric Seed will eat itself here).
+                    for s in [SideRef::P1, SideRef::P2] {
+                        for slot in 0..n {
+                            crate::item::try_consume_terrain_seed(self, s, slot);
+                        }
+                    }
                 }
             }
             "stealthrock" => {
@@ -7042,6 +7050,31 @@ mod tests {
         // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
         let diff = (dmg_with as i32 - dmg_no as i32).abs();
         assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+    }
+
+    #[test]
+    fn electric_seed_consumes_in_electric_terrain_for_plus_one_def() {
+        // PS data/items.ts:electricseed onStart — when Electric Terrain
+        // is active on switch-in, consume for +1 Def. Verify the seed
+        // fires AND the item slot is cleared.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"electricseed","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Pre-set E-Terrain so the on-switch-in arm fires when we send a
+        // mon "in". For battle-start sendouts the seed dispatches before
+        // terrain exists; here we re-call try_consume_terrain_seed
+        // explicitly to mimic an on_switch_in event after terrain is up.
+        b.terrain = crate::terrain::Terrain::Electric;
+        b.terrain_turns = 5;
+        crate::item::try_consume_terrain_seed(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].boosts[1], 1, "Electric Seed gives +1 Def");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Electric Seed consumed");
     }
 
     #[test]
