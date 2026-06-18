@@ -43,10 +43,31 @@ pub struct ScheduledAction {
 /// Rush). Trick Room is handled by the comparator at the call site.
 pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
     let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
-    let after_para = if matches!(mon.status, Status::Paralysis) {
+    let ability_slug_for_spe = if mon.ability_id == u16::MAX {
+        ""
+    } else {
+        data::ABILITIES[mon.ability_id as usize].slug
+    };
+    // Quick Feet — PS `data/abilities.ts:quickfeet`:
+    //   onModifySpe(spe, pokemon) {
+    //     if (pokemon.status) return this.chainModify(1.5);
+    //   }
+    //   (and PS skips the paralysis ×0.5 in sim/pokemon.ts when the holder
+    //    has Quick Feet)
+    // ×1.5 Spe while statused, and paralysis no longer halves. Jolteon /
+    // Linoone / Ursaring HA.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Quick_Feet_(Ability)>.
+    let statused = !matches!(mon.status, Status::None);
+    let has_quick_feet = ability_slug_for_spe == "quickfeet";
+    let after_para = if matches!(mon.status, Status::Paralysis) && !has_quick_feet {
         boosted / 2
     } else {
         boosted
+    };
+    let after_para = if has_quick_feet && statused {
+        after_para * 3 / 2
+    } else {
+        after_para
     };
     let after_tailwind = if tailwind_active { after_para * 2 } else { after_para };
     // Choice Scarf: ×1.5 to final speed.
@@ -78,13 +99,8 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     // Chlorophyll under Sun, Sand Rush under Sand, Slush Rush under Snow.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swift_Swim_(Ability)>.
     use crate::weather::Weather;
-    let ability_slug = if mon.ability_id == u16::MAX {
-        ""
-    } else {
-        data::ABILITIES[mon.ability_id as usize].slug
-    };
     let weather_double = matches!(
-        (ability_slug, weather),
+        (ability_slug_for_spe, weather),
         ("swiftswim", Weather::Rain)
             | ("chlorophyll", Weather::Sun)
             | ("sandrush", Weather::Sand)
@@ -409,5 +425,22 @@ mod tests {
         let a = action_order(&b, &p1, &p2, &mut Rng::new(123));
         let b2 = action_order(&b, &p1, &p2, &mut Rng::new(123));
         assert_eq!(a, b2);
+    }
+
+    #[test]
+    fn quick_feet_boosts_spe_and_skips_para_halve() {
+        let b = make_battle();
+        let mut mon = b.p1.team[0].clone();
+        let qf = data::ABILITIES.iter().position(|a| a.slug == "quickfeet").expect("quickfeet") as u16;
+        mon.ability_id = qf;
+        let healthy = effective_speed(&mon, false, crate::weather::Weather::None);
+        mon.status = Status::Burn; // statused but not paralyzed
+        let burned = effective_speed(&mon, false, crate::weather::Weather::None);
+        assert!(burned > healthy, "Quick Feet should raise Spe when statused (h={healthy}, b={burned})");
+
+        // Paralyzed Quick Feet user: no halve, and the ×1.5 still applies.
+        mon.status = Status::Paralysis;
+        let para = effective_speed(&mon, false, crate::weather::Weather::None);
+        assert!(para >= healthy, "Quick Feet should ignore paralysis halve (h={healthy}, p={para})");
     }
 }

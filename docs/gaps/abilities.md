@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 58 |
+| shipped | 60 |
 | partial | 5 |
-| not implemented | 30 |
+| not implemented | 28 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -463,13 +463,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Atk ×1.5 while statused; burn no longer halves physical damage.
 
-**Status**: not implemented.
+**Status**: shipped — PR-285.
 
 ### Quick Feet
 
 **What it is**: Spe ×1.5 while statused; paralysis no longer slows.
 
-**Status**: not implemented.
+**Status**: shipped — PR-285.
 
 ### Marvel Scale
 
