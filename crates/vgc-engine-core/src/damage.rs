@@ -383,14 +383,16 @@ pub fn calculate_damage(
         (m.type_, m.base_power as u32)
     };
     // Terrain BP modifier — PS data/conditions.ts:electricterrain et al.
-    // implement this via `onBasePower` (chainModify [5325, 4096] ≈ 1.3).
-    // We apply it here for the same effective order. Caller is
-    // responsible for passing Terrain::None when the defender isn't
-    // grounded (or, for gen 9 Misty/Psychic terrain that gates on
-    // the USER being grounded, see those terrain arms when shipped).
+    // implement this via `onBasePower` (chainModify [5325, 4096]). PS
+    // applies the chain through `modify()` (sim/battle.ts:2345) which is
+    // pokeRound, not plain truncate. Caller is responsible for passing
+    // Terrain::None when the defender isn't grounded (or, for gen 9
+    // Misty/Psychic terrain that gates on the USER being grounded, see
+    // those terrain arms when shipped).
     let (tn, td) = ctx.terrain.damage_mult(move_type);
     if tn != td {
-        bp = bp * tn / td;
+        // pokeRound: floor((v * n + d/2 - 1) / d). For d=4096 → +2047.
+        bp = (bp * tn + td / 2 - 1) / td;
     }
 
     // Sheer Force base-power boost — ×5325/4096 (≈1.3) on any move PS

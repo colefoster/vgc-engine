@@ -25,9 +25,15 @@ pub enum Terrain {
 
 impl Terrain {
     /// Damage multiplier on a damaging move of the given type when the
-    /// defender is grounded. Gen 8+ is ×1.3 (gen 7 was ×1.5). PS:
-    /// data/conditions.ts:electricterrain onBasePower 5325/4096 ≈ 1.3.
-    /// Returns (num, den) for integer math.
+    /// defender is grounded. Gen 8+ is ×1.3007 via PS
+    /// `chainModify([5325, 4096])` applied through `modify()` —
+    /// round-half-down, NOT plain `* 13 / 10` truncate. PS:
+    /// `data/conditions.ts:electricterrain onBasePower`,
+    /// `sim/battle.ts:2345 modify`.
+    ///
+    /// Returns (num, den) where the caller applies pokeRound:
+    ///   bp = (bp * num + den/2 - 1) / den
+    /// `(1, 1)` means no modifier — caller short-circuits.
     ///
     /// type codes per `data::TYPE_NAMES`: Electric = 3, Grass = 4,
     /// Psychic = 10.
@@ -36,9 +42,9 @@ impl Terrain {
         const GRASS: u8 = 4;
         const PSYCHIC: u8 = 10;
         match (self, move_type) {
-            (Terrain::Electric, ELECTRIC) => (13, 10),
-            (Terrain::Grassy, GRASS) => (13, 10),
-            (Terrain::Psychic, PSYCHIC) => (13, 10),
+            (Terrain::Electric, ELECTRIC) => (5325, 4096),
+            (Terrain::Grassy, GRASS) => (5325, 4096),
+            (Terrain::Psychic, PSYCHIC) => (5325, 4096),
             _ => (1, 1),
         }
     }
