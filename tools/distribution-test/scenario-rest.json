@@ -1,0 +1,11 @@
+{
+  "name": "snorlax_rest_into_pikachu_thunderbolt",
+  "format": "gen9customgame",
+  "p1_team": "Snorlax @ Leftovers\nAbility: Thick Fat\nLevel: 50\nTera Type: Normal\nEVs: 252 HP / 4 Def / 252 SpD\nCareful Nature\n- Rest\n- Body Slam\n- Crunch\n- Earthquake\n",
+  "p2_team": "Pikachu @ Light Ball\nAbility: Static\nLevel: 50\nTera Type: Electric\nEVs: 4 HP / 252 SpA / 252 Spe\nTimid Nature\n- Thunderbolt\n- Quick Attack\n- Grass Knot\n- Feint\n",
+  "p1_action": "move 1",
+  "p2_action": "move 1",
+  "target_side": "p1",
+  "target_slot": "a",
+  "trials": 500
+}
