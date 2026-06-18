@@ -2151,6 +2151,28 @@ impl Battle {
                 dmg = ((dmg as u32) * 3 / 2).min(u16::MAX as u32) as u16;
             }
 
+            // Type-resist berries — Chople (Fighting), Occa (Fire), ...
+            // halve damage from a SE hit of the matching type (Chilan
+            // halves any Normal hit, SE or not). PS handler shape (e.g.
+            // `data/items.ts:chopleberry`):
+            //   onSourceModifyDamage(damage, source, target, move) {
+            //     if (move.type === 'Fighting' && !target.runStatusImmunity('Fighting') ? false :
+            //         target.runEffectiveness(move) > 0) {
+            //       if (target.eatItem()) return this.chainModify(0.5);
+            //     }
+            //   }
+            // Consumed on use. Berry-resist is the FIRST non-Splash
+            // damage-modifier the holder's item can do — it runs before
+            // Sub interception so the sub sees the halved value too.
+            if dmg > 0 {
+                let halved = crate::item::try_consume_type_resist_berry(
+                    self, tside, tslot, m.type_, defender.species(),
+                );
+                if halved {
+                    dmg = (dmg / 2).max(1);
+                }
+            }
+
             // Substitute interception. If the defender has a sub up, the
             // sub absorbs the hit (capped at remaining sub HP) and the
             // damage doesn't reach the mon's HP. Item hooks (Focus Sash,
@@ -13301,6 +13323,70 @@ mod tests {
         assert_eq!(b.p2.team[0].boosts[0], 2, "+2 Atk");
         assert_eq!(b.p2.team[0].boosts[2], 2, "+2 SpA");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Weakness Policy consumed");
+    }
+
+    #[test]
+    fn chople_berry_halves_se_fighting_hit_and_is_consumed() {
+        // Lucario Close Combat into Kingambit @ Chople Berry. Kingambit
+        // is Dark/Steel — Fighting hits ×4. Chople should halve, and the
+        // berry is consumed. We probe by comparing damage with vs. without
+        // the berry; the chople run should land at half the no-berry run
+        // (modulo the same damage roll — Splitmix RNG with the same seed
+        // is deterministic).
+        // Use a 0-Atk Lucario so the SE Fighting hit chunks but doesn't
+        // KO Kingambit even in the no-berry run — that way we can read
+        // the actual HP delta on both sides rather than seeing the
+        // baseline saturate at `current_hp`.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"","nature":"hardy","moves":["closecombat","ironhead","extremespeed","bulletpunch"],"ivs":{"atk":0,"hp":31,"def":31,"spa":31,"spd":31,"spe":31},"evs":{"hp":4}}
+        ]"#;
+        let p2_no_berry = r#"[
+            {"species":"kingambit","level":50,"ability":"supremeoverlord","item":"","nature":"impish","moves":["kowtowcleave","ironhead","suckerpunch","protect"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let p2_berry = r#"[
+            {"species":"kingambit","level":50,"ability":"supremeoverlord","item":"chopleberry","nature":"impish","moves":["kowtowcleave","ironhead","suckerpunch","protect"],"evs":{"hp":252,"def":252,"atk":4}}
+        ]"#;
+        let mut run = |p2j: &str| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2j).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            (pre - b.p2.team[0].current_hp, b.p2.team[0].item_id)
+        };
+        let (dmg_no, item_no) = run(p2_no_berry);
+        let (dmg_yes, item_yes) = run(p2_berry);
+        assert!(dmg_no > 0, "baseline must do damage");
+        // Half ± 1 to allow integer-divide rounding.
+        assert!(dmg_yes <= dmg_no / 2 + 1 && dmg_yes >= dmg_no / 2 - 1,
+                "Chople should halve SE Fighting damage: no={dmg_no} yes={dmg_yes}");
+        let _ = item_no; // baseline holds no item — nothing to assert
+        assert_eq!(item_yes, u16::MAX, "Chople berry consumed on use");
+    }
+
+    #[test]
+    fn chople_berry_does_not_fire_on_non_fighting_hit() {
+        // Same Kingambit + Chople but Lucario uses Iron Head (Steel,
+        // resisted ×0.5 vs Kingambit Dark/Steel = ×0.25). Berry should
+        // NOT consume and damage should be unchanged vs. no-item.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"","nature":"adamant","moves":["ironhead","closecombat","extremespeed","bulletpunch"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"kingambit","level":50,"ability":"supremeoverlord","item":"chopleberry","nature":"adamant","moves":["kowtowcleave","ironhead","suckerpunch","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre_item = b.p2.team[0].item_id;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].item_id, pre_item, "Chople berry NOT consumed by non-Fighting hit");
     }
 
     #[test]

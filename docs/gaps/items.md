@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 38 |
+| shipped | 39 |
 | partial | 2 |
-| not implemented | 9 |
+| not implemented | 8 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -149,7 +149,7 @@ Already covered — shipped PR-19/20.
 
 **PS reference**: `data/items.ts:chopleberry`.
 
-**Status**: not implemented.
+**Status**: shipped — PR-288. Calc-oracle scenario `scenario-chople-cc.json` (Lucario CC into Kingambit @ Chople) PASSes.
 
 ### Other type-resist berries
 
@@ -433,3 +433,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Adamant / Lustrous / Griseous Orb / Soul Dew (PR-274)
 - Air Balloon pop (PR-286)
 - Weakness Policy (PR-287)
+- Chople Berry (PR-288)
