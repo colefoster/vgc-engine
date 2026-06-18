@@ -57,6 +57,12 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     };
     let after_item = if item_slug == "choicescarf" {
         after_tailwind * 3 / 2
+    } else if item_slug == "ironball" {
+        // Iron Ball — PS `data/items.ts:ironball` `onModifySpe`:
+        //   `return this.chainModify(0.5);`
+        // Halves the holder's speed unconditionally. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Iron_Ball>.
+        after_tailwind / 2
     } else {
         after_tailwind
     };

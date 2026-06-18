@@ -972,6 +972,21 @@ impl Pokemon {
     }
 
     fn is_grounded_internal(&self, ignore_levitate: bool) -> bool {
+        // Iron Ball — PS `data/items.ts:ironball` `onEffectiveness` and
+        // `gravity`-style ground override: the holder ALWAYS counts as
+        // grounded, suppressing Flying-type immunity, Levitate, Magnet
+        // Rise, and Air Balloon. Mirrored in PS's
+        // `sim/pokemon.ts:isGrounded()` which checks for `ironball` and
+        // returns true before the standard untrue-grounding checks.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Iron_Ball>.
+        let item = if self.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[self.item_id as usize].slug
+        };
+        if item == "ironball" {
+            return true;
+        }
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
         if flying {
@@ -981,11 +996,6 @@ impl Pokemon {
         if ability == "levitate" && !ignore_levitate {
             return false;
         }
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
-        };
         if item == "airballoon" {
             return false;
         }
