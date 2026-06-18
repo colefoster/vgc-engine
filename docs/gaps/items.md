@@ -2,14 +2,14 @@
 
 Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
-## Headline counts (post PR-295)
+## Headline counts (post PR-296)
 
 | Status | Count |
 | --- | --- |
 | shipped | 47 |
 | partial | 1 |
-| not implemented | 1 |
-| deferred / no-effect | 0 |
+| not implemented | 0 |
+| deferred / no-effect | 1 |
 
 ## Damage modifiers
 
@@ -240,7 +240,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: Eject Button: holder forces own switch on taking direct damage. Eject Pack: holder forces own switch when its stat is lowered. Red Card: forces attacker to switch on contact hit received.
 
-**Status**: not implemented.
+**Status**: deferred — needs reactive-switch plumbing the engine does not yet have. The existing self-switch primitive (`Pokemon::set_pending_self_switch`) only consumes a Switch choice the player pre-queued in `step()`'s `p1_choices` / `p2_choices` (see `Battle::apply_self_switches` in `battle.rs:724`). That works for U-turn / Volt Switch / Parting Shot because the player commits to a switch up front when they pick the move. Eject Button / Eject Pack / Red Card fire reactively mid-turn in response to the OPPONENT's action, so the player has no opportunity to pre-queue a replacement and `apply_self_switches` would no-op. Implementing these properly requires either (a) a new `Side::pending_replacement[slot]: Option<u8>` slot that the harness fills via a follow-up `step_replacement()` call, or (b) some auto-pick policy (PS lets the player choose). Cross-side switch (Red Card → attacker) also needs the same reactive prompt. None of this exists; the three items are deferred until the replacement-prompt API lands.
 
 ### Custap Berry
 
