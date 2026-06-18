@@ -7053,6 +7053,44 @@ mod tests {
     }
 
     #[test]
+    fn oran_berry_heals_ten_at_half_hp() {
+        // PS data/items.ts:oranberry — eats at <=50% HP, heals 10.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"oranberry","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2; // exactly 50%
+        let pre_hp = b.p1.team[0].current_hp;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].current_hp, pre_hp + 10, "Oran Berry heals 10 HP");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Oran Berry consumed");
+    }
+
+    #[test]
+    fn figy_berry_heals_one_third_at_quarter_hp() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"figyberry","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max_hp = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max_hp / 4; // exactly 25%
+        let expected_after = (max_hp / 4) + (max_hp / 3).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].current_hp, expected_after.min(max_hp), "Figy heals 1/3 max");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Figy consumed");
+    }
+
+    #[test]
     fn salac_berry_fires_at_or_below_quarter_hp() {
         // PS data/items.ts:salacberry onUpdate — eats at hp <= maxhp/4.
         let p1_json = r#"[
