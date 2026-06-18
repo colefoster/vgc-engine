@@ -2869,8 +2869,23 @@ impl Battle {
             for slot in 0..n {
                 let (dmg, mg) = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive() => {
+                        // Heatproof halves burn DOT — PS data/abilities.ts:
+                        //   onDamage(damage, target, source, effect) {
+                        //     if (effect && effect.id === 'brn')
+                        //       return this.chainModify(0.5);
+                        //   }
+                        // Bronzong / Camerupt. Mold-Breaker doesn't apply
+                        // here (no attacker on a residual). Bulbapedia:
+                        // <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
+                        let heatproof = data::ABILITIES
+                            .get(m.ability_id as usize)
+                            .map(|a| a.slug == "heatproof")
+                            .unwrap_or(false);
                         let d = match m.status {
-                            Status::Burn => (m.stats.hp / 16).max(1),
+                            Status::Burn => {
+                                let raw = (m.stats.hp / 16).max(1);
+                                if heatproof { (raw / 2).max(1) } else { raw }
+                            }
                             Status::Poison => (m.stats.hp / 8).max(1),
                             Status::Toxic => {
                                 let c = m.toxic_counter().max(1) as u32;
