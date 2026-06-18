@@ -216,6 +216,7 @@ fn make_pokemon(
         lockin_move_slot: 255,
         slow_start_active_turns: 0,
         truant_loafing: false,
+        type_override: [255, 255],
         volatiles: VolatileSet::default(),
     }
 }

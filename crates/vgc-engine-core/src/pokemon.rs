@@ -533,6 +533,16 @@ pub struct Pokemon {
     /// on switch-in with `effectState.loafing = false`; we initialise
     /// to false (uses move on turn 1) and flip in the before-move arm.
     pub truant_loafing: bool,
+    /// Runtime battle-type override (Protean / Libero / Color Change /
+    /// Reflect Type / Conversion). `[255, 255]` = no override (use the
+    /// species' innate types). Otherwise `type_override[0]` is the
+    /// primary type code (0..=17) and `type_override[1]` is the
+    /// secondary (255 = mono-type override). When set, this wins over
+    /// the species types in `effective_types` — driving both offensive
+    /// STAB and defensive type-effectiveness — but NOT over an active
+    /// Tera type (Tera locks typing in gen 9). Reset on switch-out.
+    /// PS analog: `Pokemon.setType` writing `pokemon.types`.
+    pub type_override: [u8; 2],
 }
 
 impl Pokemon {
@@ -572,9 +582,32 @@ impl Pokemon {
         let s = self.species();
         if self.terastallized && self.tera_type != 255 {
             ([self.tera_type, 0], 1)
+        } else if self.type_override[0] != 255 {
+            // Runtime type override (Protean / Color Change / ...).
+            if self.type_override[1] == 255 {
+                ([self.type_override[0], 0], 1)
+            } else {
+                (self.type_override, 2)
+            }
         } else {
             (s.types, s.num_types)
         }
+    }
+
+    /// Apply a runtime battle-type override (Protean / Libero / Color
+    /// Change / Reflect Type / Conversion). `secondary == None` makes
+    /// the mon mono-typed. Wins over the species types in
+    /// `effective_types`, but not over an active Tera type. Cleared on
+    /// switch-out. PS analog: `Pokemon.setType`.
+    #[inline]
+    pub fn set_type_override(&mut self, primary: u8, secondary: Option<u8>) {
+        self.type_override = [primary, secondary.unwrap_or(255)];
+    }
+
+    /// Remove any runtime type override, reverting to the species types.
+    #[inline]
+    pub fn clear_type_override(&mut self) {
+        self.type_override = [255, 255];
     }
 
     /// Effective crit stage from on-mon contributors (held item,
@@ -1134,6 +1167,7 @@ mod tests {
             must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0, truant_loafing: false,
+            type_override: [255, 255],
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -1181,6 +1215,7 @@ mod tests {
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
+            type_override: [255, 255],
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

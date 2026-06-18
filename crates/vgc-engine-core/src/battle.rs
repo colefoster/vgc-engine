@@ -707,6 +707,7 @@ impl Battle {
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.set_pending_self_switch(false);
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
+            incoming.clear_type_override(); // Protean / Color Change typing clears on switch-out.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
