@@ -629,7 +629,7 @@ See `moves.md` (Skill Link interactions).
 
 **What it is**: Suppresses weather effects while user is on the field. Damage formula still uses no weather; weather state itself persists.
 
-**Status**: not implemented.
+**Status**: shipped — PR-300. `Battle::effective_weather()` returns `Weather::None` when any active mon holds Cloud Nine / Air Lock; routed through every weather-effect read (sand chip, damage mods, accuracy modifiers, Aurora Veil set, Synthesis/Shore Up heal, Solar Beam charge skip, Orichalcum Pulse, paradox booster trigger).
 
 ## Shipped abilities — for cross-reference
 

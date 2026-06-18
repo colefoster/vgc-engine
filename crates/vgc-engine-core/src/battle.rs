@@ -201,6 +201,42 @@ impl Battle {
         self.config.format
     }
 
+    /// Effective weather as seen by damage formula and weather residuals.
+    /// Cloud Nine / Air Lock on ANY active mon suppresses weather for
+    /// effect lookups while the holder is on the field; the weather
+    /// state (`self.weather` + `self.weather_turns`) itself is not
+    /// cleared. PS data/abilities.ts:cloudnine (~line 533) and
+    /// data/abilities.ts:airlock (~line 90) both register an `onSwitchIn`
+    /// printing a notice and an internal `suppressedWeather()` flag the
+    /// field reads. Bulbapedia:
+    /// <https://bulbapedia.bulbagarden.net/wiki/Cloud_Nine_(Ability)>,
+    /// <https://bulbapedia.bulbagarden.net/wiki/Air_Lock_(Ability)>.
+    pub fn effective_weather(&self) -> crate::weather::Weather {
+        if self.weather_suppressed() {
+            crate::weather::Weather::None
+        } else {
+            self.weather
+        }
+    }
+
+    /// True if any active mon's ability suppresses weather.
+    pub(crate) fn weather_suppressed(&self) -> bool {
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                if let Some(m) = self.side(side).active_mon(slot) {
+                    if m.is_alive() {
+                        let ab = m.effective_ability_slug();
+                        if ab == "cloudnine" || ab == "airlock" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub fn side(&self, side: SideRef) -> &Side {
         match side {
             SideRef::P1 => &self.p1,
@@ -1203,7 +1239,7 @@ impl Battle {
                 // Skip-charge gates: Sun (Solar Beam / Solar Blade) or
                 // Power Herb consumption.
                 let sun_skip = matches!(m.slug, "solarbeam" | "solarblade")
-                    && matches!(self.weather, crate::weather::Weather::Sun);
+                    && matches!(self.effective_weather(), crate::weather::Weather::Sun);
                 let attacker_item_slug = if attacker.item_id == u16::MAX {
                     ""
                 } else {
@@ -1524,7 +1560,7 @@ impl Battle {
         // we only carry standard Sun (no Primal Sun yet).
         if attacker_ability_slug == "orichalcumpulse"
             && physical_move
-            && matches!(self.weather, crate::weather::Weather::Sun)
+            && matches!(self.effective_weather(), crate::weather::Weather::Sun)
         {
             boosted_attacker.stats.atk =
                 ((boosted_attacker.stats.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
@@ -1787,12 +1823,12 @@ impl Battle {
             //   <https://bulbapedia.bulbagarden.net/wiki/Thunder_(move)>
             //   <https://bulbapedia.bulbagarden.net/wiki/Blizzard_(move)>.
             let base_acc: u8 = match m.slug {
-                "hurricane" | "thunder" => match self.weather {
+                "hurricane" | "thunder" => match self.effective_weather() {
                     crate::weather::Weather::Rain => 255,
                     crate::weather::Weather::Sun => 50,
                     _ => m.accuracy,
                 },
-                "blizzard" => match self.weather {
+                "blizzard" => match self.effective_weather() {
                     crate::weather::Weather::Snow => 255,
                     _ => m.accuracy,
                 },
@@ -1855,7 +1891,7 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Veil_(Ability)>
                 //             <https://bulbapedia.bulbagarden.net/wiki/Snow_Cloak_(Ability)>.
                 let def_ability = defender.effective_ability_slug();
-                let weather_veil = match (def_ability, self.weather) {
+                let weather_veil = match (def_ability, self.effective_weather()) {
                     ("sandveil", crate::weather::Weather::Sand) => true,
                     ("snowcloak", crate::weather::Weather::Snow) => true,
                     _ => false,
@@ -2170,7 +2206,7 @@ impl Battle {
             // a Tera-Rock mon also gets the boost; PS reads `hasType`
             // which follows the same convention.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
-            if matches!(self.weather, crate::weather::Weather::Sand)
+            if matches!(self.effective_weather(), crate::weather::Weather::Sand)
                 && m.category == 1
             {
                 let (eff_types, eff_num) = boosted_defender.effective_types();
@@ -2226,7 +2262,7 @@ impl Battle {
                 Rng::Splitmix(_) => self.rng.damage_roll(),
                 _ => {
                     let stub_ctx = DamageContext {
-                        crit, roll: 0, is_spread, weather: self.weather,
+                        crit, roll: 0, is_spread, weather: self.effective_weather(),
                         terrain: active_terrain,
                         defender_has_reflect, defender_has_light_screen,
                         defender_has_aurora_veil, is_doubles,
@@ -2244,7 +2280,7 @@ impl Battle {
                 &boosted_defender,
                 move_id,
                 DamageContext {
-                    crit, roll, is_spread, weather: self.weather,
+                    crit, roll, is_spread, weather: self.effective_weather(),
                     terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
                     defender_has_aurora_veil, is_doubles,
@@ -3332,7 +3368,7 @@ impl Battle {
         // routes weather damage through `onDamage`). Sand Veil is evasion-
         // only (not damage immunity). Overcoat / Safety Goggles land in
         // their own PRs.
-        if self.weather == crate::weather::Weather::Sand {
+        if self.effective_weather() == crate::weather::Weather::Sand {
             for side in [SideRef::P1, SideRef::P2] {
                 let n = self.format().active_count();
                 for slot in 0..n {
@@ -3778,7 +3814,7 @@ impl Battle {
                 // `onTry` fails unless the field weather is Hail or Snow.
                 // Light Clay also extends Aurora Veil 5 → 8 (PS
                 // data/items.ts:lightclay onModifyDuration covers all three).
-                if !matches!(self.weather, crate::weather::Weather::Snow) {
+                if !matches!(self.effective_weather(), crate::weather::Weather::Snow) {
                     return;
                 }
                 let dur = self.screen_duration(actor_side);
@@ -4248,14 +4284,14 @@ impl Battle {
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recover_(move)>
                 let max_hp_factor: (u32, u32) = match m.slug {
-                    "synthesis" | "morningsun" | "moonlight" => match self.weather {
+                    "synthesis" | "morningsun" | "moonlight" => match self.effective_weather() {
                         crate::weather::Weather::Sun => (2, 3),
                         crate::weather::Weather::Rain
                         | crate::weather::Weather::Sand
                         | crate::weather::Weather::Snow => (1, 4),
                         _ => (1, 2),
                     },
-                    "shoreup" => match self.weather {
+                    "shoreup" => match self.effective_weather() {
                         crate::weather::Weather::Sand => (2, 3),
                         _ => (1, 2),
                     },
@@ -14660,6 +14696,56 @@ mod tests {
         // Baseline (non-blocker): at least one seed must register a drop.
         let any_drop = (0..20u64).any(|s| mk("ironfist", s) < 0);
         assert!(any_drop, "Baseline ability must let at least one Mud-Slap drop Acc");
+    }
+
+    #[test]
+    fn cloud_nine_suppresses_sand_residual_damage() {
+        // Tyranitar sets Sand on switch-in; Psyduck @ Cloud Nine on the
+        // other side suppresses weather. No Sand chip should land.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"psyduck","level":50,"ability":"cloudnine","item":"","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert!(matches!(b.weather, crate::weather::Weather::Sand),
+            "Tyranitar Sand Stream sets Sand");
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // No Sand chip (Psyduck would otherwise take 1/16).
+        assert_eq!(b.p2.team[0].current_hp, pre, "Cloud Nine suppresses Sand chip");
+    }
+
+    #[test]
+    fn air_lock_suppresses_sand_residual() {
+        // Air Lock = same mechanic as Cloud Nine. Use Rayquaza... but
+        // Rayquaza isn't in our top-100 likely. Use any mon with Air Lock.
+        // Psyduck/Golduck both have Cloud Nine; Air Lock is exclusive to
+        // Rayquaza. Fall back to a manual ability override.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"psyduck","level":50,"ability":"cloudnine","item":"","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Force airlock via the abilities table lookup.
+        let air_lock_id = data::ABILITIES.iter().position(|a| a.slug == "airlock").unwrap() as u16;
+        b.p2.team[0].ability_id = air_lock_id;
+        let pre = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, pre, "Air Lock suppresses Sand chip");
     }
 
     #[test]
