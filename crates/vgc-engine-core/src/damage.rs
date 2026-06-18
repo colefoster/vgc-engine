@@ -582,6 +582,20 @@ pub fn calculate_damage(
         }
     }
 
+    // Punk Rock — PS `data/abilities.ts:punkrock`:
+    //   onBasePower(basePower, attacker, defender, move) {
+    //     if (move.flags['sound']) return this.chainModify([5325, 4096]);
+    //   }
+    // ×1.3 BP on outgoing sound moves. Companion incoming arm
+    // (Special/sound ×0.5) lives below in the damage-modifier block.
+    // Toxtricity signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Punk_Rock_(Ability)>.
+    if crate::battle::is_sound_move(m.slug)
+        && attacker.effective_ability_slug() == "punkrock"
+    {
+        bp = (bp * 5325 + 2047) / 4096;
+    }
+
     // Aura abilities — Fairy Aura on Fairy moves, Dark Aura on Dark
     // moves. PS chainModify([5448, 4096]) ≈ ×1.33; flipped to
     // chainModify([3072, 4096]) ≈ ×0.75 when Aura Break is on the
@@ -1044,6 +1058,16 @@ pub fn calculate_damage(
     // Breaker does NOT bypass. Frosmoth signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Ice_Scales_(Ability)>.
     if def_ab == "icescales" && !physical {
+        dmg /= 2;
+    }
+
+    // Punk Rock — incoming sound damage halved. PS:
+    //   onSourceModifyDamage(damage, source, target, move) {
+    //     if (move.flags['sound']) return this.chainModify(0.5);
+    //   }
+    // Flagged `breakable: 1` — Mold Breaker / Teravolt / Turboblaze
+    // bypass. Toxtricity.
+    if def_ab == "punkrock" && crate::battle::is_sound_move(m.slug) && !attacker_breaks_mold {
         dmg /= 2;
     }
 
