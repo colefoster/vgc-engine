@@ -7053,6 +7053,34 @@ mod tests {
     }
 
     #[test]
+    fn salac_berry_fires_at_or_below_quarter_hp() {
+        // PS data/items.ts:salacberry onUpdate — eats at hp <= maxhp/4.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"salacberry","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Set Pikachu HP to exactly maxhp/4 (the upper edge of the eat band).
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].boosts[4], 1, "Salac Berry gives +1 Spe");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Salac Berry consumed");
+
+        // Now confirm it does NOT fire above 25%.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2; // 50%, above threshold
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].boosts[4], 0, "Salac Berry does NOT fire above 25%");
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Salac Berry NOT consumed");
+    }
+
+    #[test]
     fn cell_battery_consumes_on_electric_hit_for_plus_one_atk() {
         // PS data/items.ts:cellbattery — when the holder is hit by an
         // Electric move, consume for +1 Atk.
