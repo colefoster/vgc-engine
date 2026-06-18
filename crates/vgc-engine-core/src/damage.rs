@@ -776,12 +776,21 @@ pub fn calculate_damage(
                 _ => TypeEff::QuadrupleX,
             }
         }
-    } else if defender.terastallized && move_type == 255 {
-        // Stellar-type moves vs a Terastallized target: PS
-        // sim/pokemon.ts:2216 runEffectiveness sets totalTypeMod = 1
-        // (always SE) regardless of the defender's type. No immunities
-        // apply. Bulbapedia: Stellar tera type interactions.
-        TypeEff::DoubleX
+    } else if move_type == 255 {
+        // Stellar-type move. PS sim/pokemon.ts:2214 `runEffectiveness`:
+        //   if (this.terastallized && move.type === 'Stellar')
+        //     totalTypeMod = 1;  // SE
+        //   else
+        //     // falls through to per-type lookup; Stellar isn't in
+        //     // PS's type chart so each type returns 0 → neutral.
+        // The non-Tera branch previously fell into the per-type loop
+        // below, which OOB-indexed TYPE_CHART[def_type][255] — Stellar
+        // isn't a chart column. Resolve directly here.
+        if defender.terastallized {
+            TypeEff::DoubleX
+        } else {
+            TypeEff::Neutral
+        }
     } else {
         // Iterate Tera-effective types; same logic as `type_effectiveness`
         // but on the post-Tera type list.
