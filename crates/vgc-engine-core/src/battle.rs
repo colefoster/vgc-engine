@@ -13277,6 +13277,56 @@ mod tests {
     }
 
     #[test]
+    fn weakness_policy_grants_plus_two_atk_spa_on_se_hit() {
+        // Blissey @ Weakness Policy hit by Close Combat (Fighting SE vs
+        // Normal = ×2). Blissey's HP pool absorbs even a SE Close
+        // Combat at lvl 50 → observe boost + item consume.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"focussash","nature":"adamant","moves":["machpunch","ironhead","extremespeed","bulletpunch"],"evs":{"atk":4,"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"weaknesspolicy","nature":"bold","moves":["bodyslam","softboiled","calmmind","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Heracross survived (its bulk vs Corviknight Brave Bird; 4x but
+        // Heracross at level 50 is bulky enough). If it's KO'd, the test
+        // is invalid — bump HP EVs or use a different mon.
+        assert!(b.p2.team[0].is_alive(), "defender must survive to observe boost");
+        assert_eq!(b.p2.team[0].boosts[0], 2, "+2 Atk");
+        assert_eq!(b.p2.team[0].boosts[2], 2, "+2 SpA");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Weakness Policy consumed");
+    }
+
+    #[test]
+    fn weakness_policy_does_not_fire_on_neutral_hit() {
+        // Garchomp @ Weakness Policy hit by Body Slam (Normal vs
+        // Dragon/Ground = neutral). No boost, item retained.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"adamant","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"weaknesspolicy","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pre_item = b.p2.team[0].item_id;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 0);
+        assert_eq!(b.p2.team[0].boosts[2], 0);
+        assert_eq!(b.p2.team[0].item_id, pre_item, "Weakness Policy NOT consumed on neutral hit");
+    }
+
+    #[test]
     fn air_balloon_pre_pop_still_blocks_earthquake() {
         // Verify the existing Ground immunity (PR-56) still works when
         // the balloon hasn't popped yet — Earthquake from Garchomp does 0.
