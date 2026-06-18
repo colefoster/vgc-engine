@@ -219,6 +219,54 @@ impl Battle {
         }
     }
 
+    /// Effective weather as seen by an individual Pokémon. Same as
+    /// `effective_weather()` except that a holder of Utility Umbrella
+    /// ignores Sun / Rain (including their primal variants) for damage,
+    /// residual, and ability-trigger lookups. PS data/items.ts:7435
+    ///   the meaningful arm is in `Field#effectiveWeather` which returns
+    ///   '' to the holder when weather is sun/rain. Bulbapedia:
+    ///   <https://bulbapedia.bulbagarden.net/wiki/Utility_Umbrella>.
+    pub fn effective_weather_for(&self, side: SideRef, slot: u8) -> crate::weather::Weather {
+        let base = self.effective_weather();
+        let holder_umbrella = self
+            .side(side)
+            .active_mon(slot as usize)
+            .map(|m| m.item_id != u16::MAX
+                && data::ITEMS[m.item_id as usize].slug == "utilityumbrella")
+            .unwrap_or(false);
+        if holder_umbrella
+            && matches!(base, crate::weather::Weather::Sun | crate::weather::Weather::Rain)
+        {
+            crate::weather::Weather::None
+        } else {
+            base
+        }
+    }
+
+    /// Effective weather for a damage exchange — Utility Umbrella on
+    /// EITHER the attacker OR the defender suppresses Sun/Rain effects
+    /// in PS's damage formula (the field effectiveWeather is queried by
+    /// each side at calc time; an umbrella holder reads '' regardless of
+    /// orientation). Used by the damage calc + accuracy block.
+    pub fn effective_weather_for_pair(
+        &self,
+        attacker_side: SideRef,
+        attacker_slot: u8,
+        defender_side: SideRef,
+        defender_slot: u8,
+    ) -> crate::weather::Weather {
+        let a = self.effective_weather_for(attacker_side, attacker_slot);
+        if matches!(a, crate::weather::Weather::None) {
+            return a;
+        }
+        // If defender also holds umbrella, suppress.
+        let d = self.effective_weather_for(defender_side, defender_slot);
+        if matches!(d, crate::weather::Weather::None) {
+            return d;
+        }
+        a
+    }
+
     /// True if any active mon's ability suppresses weather.
     pub(crate) fn weather_suppressed(&self) -> bool {
         let n = self.format().active_count();
@@ -1259,7 +1307,7 @@ impl Battle {
                 // Skip-charge gates: Sun (Solar Beam / Solar Blade) or
                 // Power Herb consumption.
                 let sun_skip = matches!(m.slug, "solarbeam" | "solarblade")
-                    && matches!(self.effective_weather(), crate::weather::Weather::Sun);
+                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun);
                 let attacker_item_slug = if attacker.item_id == u16::MAX {
                     ""
                 } else {
@@ -1580,7 +1628,7 @@ impl Battle {
         // we only carry standard Sun (no Primal Sun yet).
         if attacker_ability_slug == "orichalcumpulse"
             && physical_move
-            && matches!(self.effective_weather(), crate::weather::Weather::Sun)
+            && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
         {
             boosted_attacker.stats.atk =
                 ((boosted_attacker.stats.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
@@ -1842,8 +1890,11 @@ impl Battle {
             //   <https://bulbapedia.bulbagarden.net/wiki/Hurricane_(move)>
             //   <https://bulbapedia.bulbagarden.net/wiki/Thunder_(move)>
             //   <https://bulbapedia.bulbagarden.net/wiki/Blizzard_(move)>.
+            // Weather is read by both sides; Utility Umbrella on either
+            // suppresses Sun/Rain (but not Snow, which is unaffected).
+            let weather_for_acc = self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot);
             let base_acc: u8 = match m.slug {
-                "hurricane" | "thunder" => match self.effective_weather() {
+                "hurricane" | "thunder" => match weather_for_acc {
                     crate::weather::Weather::Rain => 255,
                     crate::weather::Weather::Sun => 50,
                     _ => m.accuracy,
@@ -2344,7 +2395,7 @@ impl Battle {
                 Rng::Splitmix(_) => self.rng.damage_roll(),
                 _ => {
                     let stub_ctx = DamageContext {
-                        crit, roll: 0, is_spread, weather: self.effective_weather(),
+                        crit, roll: 0, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                         terrain: active_terrain,
                         defender_has_reflect, defender_has_light_screen,
                         defender_has_aurora_veil, is_doubles,
@@ -2362,7 +2413,7 @@ impl Battle {
                 &boosted_defender,
                 move_id,
                 DamageContext {
-                    crit, roll, is_spread, weather: self.effective_weather(),
+                    crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                     terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
                     defender_has_aurora_veil, is_doubles,
@@ -4452,15 +4503,18 @@ impl Battle {
                 // overrides. Heal floors at 1 HP per PS heal helper.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recover_(move)>
+                // Heal moves read weather from the USER's perspective —
+                // Utility Umbrella holders see Sun/Rain as clear.
+                let user_weather = self.effective_weather_for(actor_side, actor_slot);
                 let max_hp_factor: (u32, u32) = match m.slug {
-                    "synthesis" | "morningsun" | "moonlight" => match self.effective_weather() {
+                    "synthesis" | "morningsun" | "moonlight" => match user_weather {
                         crate::weather::Weather::Sun => (2, 3),
                         crate::weather::Weather::Rain
                         | crate::weather::Weather::Sand
                         | crate::weather::Weather::Snow => (1, 4),
                         _ => (1, 2),
                     },
-                    "shoreup" => match self.effective_weather() {
+                    "shoreup" => match user_weather {
                         crate::weather::Weather::Sand => (2, 3),
                         _ => (1, 2),
                     },
@@ -7050,6 +7104,31 @@ mod tests {
         // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
         let diff = (dmg_with as i32 - dmg_no as i32).abs();
         assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+    }
+
+    #[test]
+    fn utility_umbrella_holder_ignores_sun_for_solar_beam_charge_skip() {
+        // PS data/items.ts:utilityumbrella — holder reads Sun/Rain as
+        // clear. Solar Beam under Sun normally skips the charge turn;
+        // with Utility Umbrella, the holder must still charge.
+        let p1_json = r#"[
+            {"species":"venusaur","level":50,"ability":"chlorophyll","nature":"hardy","item":"utilityumbrella","moves":["solarbeam","tackle","gigadrain","sleeppowder"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.weather = crate::weather::Weather::Sun;
+        b.weather_turns = 5;
+        let snorlax_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, snorlax_hp_before,
+            "Utility Umbrella holder must charge Solar Beam even in Sun (no immediate damage turn 1)");
     }
 
     #[test]

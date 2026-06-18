@@ -10,10 +10,10 @@ as a string literal in the four engine source files above.
 ## Counts
 
 - Total gen-9 legal items in dex: **249**
-- Handled by engine: **143**
-- Missing: **106** (raw); after filtering pure-flavor (Poke Balls,
+- Handled by engine: **144**
+- Missing: **105** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~8 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~7 competitively relevant**
 
 ## Missing by category
 
@@ -66,7 +66,7 @@ Psychic Seed. Fire on switch-in and on terrain change.
 
 ### Utility / on-switch / movement modifiers
 
-- `utilityumbrella` — Utility Umbrella — Holder ignores rain/sun effects. **High-leverage VGC.**
+- Utility Umbrella — shipped (PR-306). Routed through new `effective_weather_for(side, slot)` and `effective_weather_for_pair(...)` helpers wired into damage formula / accuracy / Solar Beam / Orichalcum Pulse / heal factor.
 - `shedshell` — Shed Shell — Holder cannot be trap-blocked from switching out.
 - `destinyknot` — Destiny Knot — Mirrors infatuation.
 - `bindingband` — Binding Band — Partial-trapping damage 1/6 instead of 1/8.

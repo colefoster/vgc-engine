@@ -6,7 +6,7 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 92 |
+| shipped | 93 |
 | partial | 1 |
 | not implemented | 0 |
 | deferred / no-effect | 0 |
@@ -452,3 +452,4 @@ The following are implemented (Phase 2 PRs 1-98):
 - Pinch stat berries: Liechi (+1 Atk) / Ganlon (+1 Def) / Salac (+1 Spe) / Petaya (+1 SpA) / Apicot (+1 SpD) (PR-303). Gluttony tie-in (≤50%) deferred.
 - Heal berries: Oran (flat 10 at ≤50%) / Figy / Wiki / Mago / Aguav / Iapapa (heal 1/3 at ≤25%) (PR-304). Figy-family "confuse if disliked nature" branch deferred.
 - Retaliate berries: Kee (+1 Def on physical hit) / Maranga (+1 SpD on special hit) / Rowap (1/8 max-HP recoil to special attacker) (PR-305)
+- Utility Umbrella — holder ignores Sun/Rain effects; routed via new `Battle::effective_weather_for(side, slot)` and `effective_weather_for_pair(...)` helpers wired into the damage formula, accuracy block (Hurricane / Thunder), Solar Beam charge skip, Orichalcum Pulse Atk boost, and Synthesis / Morning Sun / Moonlight / Shore Up heal factor (PR-306)
