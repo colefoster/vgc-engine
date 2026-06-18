@@ -921,6 +921,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_move_with_terastallize_suffix() {
+        // PS protocol: "move N terastallize" → Choice::Terastallize.
+        let v = serde_json::json!("move 2 terastallize");
+        let cs = parse_turn_actions(&v, SideRef::P1, 1).unwrap();
+        match cs[0] {
+            Choice::Terastallize { move_slot, target, .. } => {
+                assert_eq!(move_slot, 1);
+                assert!(target.is_none());
+            }
+            ref other => panic!("expected Terastallize, got {:?}", other),
+        }
+        // Doubles flavor with a relative target slot before the suffix.
+        let v = serde_json::json!("move 1 1 terastallize");
+        let cs = parse_turn_actions(&v, SideRef::P2, 2).unwrap();
+        match cs[0] {
+            Choice::Terastallize { move_slot, target: Some(t), .. } => {
+                assert_eq!(move_slot, 0);
+                assert_eq!(t.side, SideRef::P1);
+                assert_eq!(t.slot, 0);
+            }
+            ref other => panic!("expected Terastallize w/ target, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parse_switch_action() {
         let v = serde_json::json!("switch 3");
         let cs = parse_turn_actions(&v, SideRef::P1, 1).unwrap();
