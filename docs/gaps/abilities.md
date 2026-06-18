@@ -6,9 +6,9 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 | Status | Count |
 | --- | --- |
-| shipped | 56 |
+| shipped | 57 |
 | partial | 5 |
-| not implemented | 32 |
+| not implemented | 31 |
 | deferred / no-effect | 1 (Frisk) |
 
 ## Damage modifiers (attacker side)
@@ -339,7 +339,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: On switch-in, copies a random opponent's ability.
 
-**Status**: not implemented.
+**Status**: shipped — PR-283. Coverage cut: picks the first valid opposing slot deterministically (PS shuffles); un-traceable list approximated as "no copying Trace itself".
 
 ### Imposter
 

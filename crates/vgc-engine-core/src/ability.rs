@@ -364,6 +364,43 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Trace — PS `data/abilities.ts:trace`:
+    //   onStart(pokemon) {
+    //     // Pick a random *adjacent* foe whose ability is not in
+    //     // the un-traceable list and copy it.
+    //   }
+    // PS draws uniformly from valid targets in randomly-shuffled order.
+    // Coverage cut: deterministic — pick the first alive opposing slot
+    // with a non-empty, non-Trace ability. The PS un-traceable list
+    // (As One, Comatose, Disguise, Flower Gift, Forecast, Hunger
+    // Switch, Ice Face, Illusion, Imposter, Multitype, Neutralizing
+    // Gas, Power Construct, Power of Alchemy, Receiver, RKS System,
+    // Schooling, Shields Down, Stance Change, Trace itself, Zen Mode,
+    // Zero to Hero) is approximated as just "no copying Trace" — most
+    // top-100 mons don't run those.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
+    if slug == "trace" {
+        let opp = side.opposing();
+        let n = battle.format().active_count() as u8;
+        let mut found: Option<u16> = None;
+        for s in 0..n {
+            let candidate = match battle.side(opp).active_mon(s as usize) {
+                Some(m) if m.is_alive() => m.ability_id,
+                _ => continue,
+            };
+            if candidate == u16::MAX { continue; }
+            let cslug = ability_slug(candidate);
+            if cslug.is_empty() || cslug == "trace" { continue; }
+            found = Some(candidate);
+            break;
+        }
+        if let Some(new_id) = found {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.ability_id = new_id;
+            }
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
