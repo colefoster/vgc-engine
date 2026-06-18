@@ -6,9 +6,9 @@ Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a 
 
 | Status | Count |
 | --- | --- |
-| shipped | 43 |
+| shipped | 45 |
 | partial | 1 |
-| not implemented | 5 |
+| not implemented | 3 |
 | deferred / no-effect | 0 |
 
 ## Damage modifiers
@@ -246,7 +246,7 @@ Already covered — shipped PR-19/20.
 
 **What it is**: At <= 25% HP, user moves first next turn (one-time priority boost).
 
-**Status**: not implemented.
+**Status**: shipped — PR-293. Adds a fractional-priority sub-bucket to `order::action_order`; Custap = -1 (first in bracket) at ≤25% HP and is consumed at queue build time.
 
 ### Focus Sash
 
@@ -350,7 +350,7 @@ See above.
 
 **What it is**: Holder moves last within its priority bracket.
 
-**Status**: not implemented.
+**Status**: shipped — PR-293 (shares the fractional-priority sub-bucket with Custap; both items map to a single i8 frac key on the order tuple).
 
 ## Recoil / drain modifiers
 
@@ -413,6 +413,7 @@ The following are implemented (Phase 2 PRs 1-98):
 - Sticky Barb (PR-216 / PR-218 residual chip + PR-290 contact transfer)
 - Protective Pads (PR-291)
 - Ability Shield (PR-292)
+- Custap Berry / Lagging Tail / Full Incense (PR-293)
 - Quick Claw (PR-222)
 - Jaboca Berry (PR-225)
 - Flame Orb (PR-227)

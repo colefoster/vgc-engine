@@ -121,8 +121,11 @@ pub fn action_order(
     rng: &mut Rng,
 ) -> Vec<ScheduledAction> {
     let mut switches: Vec<ScheduledAction> = Vec::with_capacity(4);
-    // (negative priority, signed speed key, nonce, action) — ascending.
-    let mut moves: Vec<(i32, i64, u64, ScheduledAction)> = Vec::with_capacity(4);
+    // (negative priority, fractional priority sub-bucket, signed speed key,
+    // nonce, action) — ascending. `frac_pri` resolves Custap Berry
+    // (= -1, "first in bracket") vs Lagging Tail / Full Incense (= +1,
+    // "last in bracket"); default 0. PS analog: `onFractionalPriority`.
+    let mut moves: Vec<(i32, i8, i64, u64, ScheduledAction)> = Vec::with_capacity(4);
     let trick_room = battle.trick_room_turns > 0;
 
     for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
@@ -136,7 +139,7 @@ pub fn action_order(
                 | Choice::Terastallize { actor_slot, move_slot, .. } => {
                     let tailwind = battle.side(side).conditions.tailwind_turns > 0;
                     let mon = battle.side(side).active_mon(actor_slot as usize);
-                    let (priority, speed) = match mon {
+                    let (priority, frac_pri, speed) = match mon {
                         Some(m) => {
                             let mid = m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX);
                             let (base_pri, category) = if mid == u16::MAX {
@@ -189,15 +192,48 @@ pub fn action_order(
                             } else {
                                 pri_after_ability
                             };
-                            (pri_after_item, effective_speed(m, tailwind, battle.weather) as i64)
+                            // Fractional-priority items:
+                            //   Custap Berry — PS `data/items.ts:custapberry`
+                            //   `onFractionalPriority(priority, pokemon) {
+                            //      if (pokemon.hp <= pokemon.maxhp / 4) {
+                            //        if (pokemon.eatItem()) return 0.1;
+                            //      }
+                            //   }`
+                            //   Lagging Tail / Full Incense — PS
+                            //   `data/items.ts:laggingtail`/`fullincense`
+                            //   `onFractionalPriority() { return -0.1; }`
+                            // Custap is consumed when it fires; the
+                            // consume happens at queue-build time in
+                            // `battle.rs:step` (`consume_fractional_pri_items`),
+                            // mirroring the way Quick Claw's RNG draw is
+                            // committed here even though the item is a
+                            // one-shot. We model the fractional bump as
+                            // an i8 sub-bucket: -1 = first in bracket
+                            // (Custap), +1 = last (Lagging Tail / Full
+                            // Incense), 0 = default. Bulbapedia:
+                            //   <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>
+                            //   <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>
+                            //   <https://bulbapedia.bulbagarden.net/wiki/Full_Incense>
+                            let frac = if item_slug == "custapberry"
+                                && m.current_hp > 0
+                                && m.current_hp * 4 <= m.stats.hp
+                            {
+                                -1i8
+                            } else if item_slug == "laggingtail" || item_slug == "fullincense" {
+                                1i8
+                            } else {
+                                0i8
+                            };
+                            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
                         }
-                        None => (0, 0),
+                        None => (0, 0, 0),
                     };
                     // Trick Room reverses speed sort within a priority
                     // bracket (priority itself is NOT reversed).
                     let speed_key = if trick_room { speed } else { -speed };
                     moves.push((
                         -priority,
+                        frac_pri,
                         speed_key,
                         rng.next_u64(),
                         ScheduledAction { side, actor_slot, choice: *c },
@@ -207,10 +243,10 @@ pub fn action_order(
         }
     }
 
-    moves.sort_by_key(|t| (t.0, t.1, t.2));
+    moves.sort_by_key(|t| (t.0, t.1, t.2, t.3));
     let mut out = switches;
     out.reserve(moves.len());
-    out.extend(moves.into_iter().map(|t| t.3));
+    out.extend(moves.into_iter().map(|t| t.4));
     out
 }
 
@@ -425,6 +461,99 @@ mod tests {
         let a = action_order(&b, &p1, &p2, &mut Rng::new(123));
         let b2 = action_order(&b, &p1, &p2, &mut Rng::new(123));
         assert_eq!(a, b2);
+    }
+
+    #[test]
+    fn custap_berry_bumps_low_hp_holder_first_in_bracket() {
+        // Snorlax (slow, base 30 spe) @ Custap at ≤25% HP must move
+        // before Garchomp (base 102) at the same priority bracket.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"custapberry","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"],"evs":{"spe":252,"atk":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        // Drop Snorlax to ≤25% HP.
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max / 5;
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let mut rng = Rng::new(0);
+        let order = action_order(&b, &p1c, &p2c, &mut rng);
+        // Snorlax goes first because Custap fires.
+        let first_move = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_move.side, SideRef::P1, "Custap holder Snorlax must move first");
+    }
+
+    #[test]
+    fn custap_berry_does_not_fire_above_25_pct_hp() {
+        // Same setup but at full HP — Custap NOT triggered, Garchomp
+        // outspeeds.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"custapberry","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"],"evs":{"spe":252,"atk":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let mut rng = Rng::new(0);
+        let order = action_order(&b, &p1c, &p2c, &mut rng);
+        let first_move = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_move.side, SideRef::P2,
+                   "Custap should NOT bump at full HP — Garchomp outspeeds");
+    }
+
+    #[test]
+    fn lagging_tail_holder_moves_last_in_bracket() {
+        // Flutter Mane (fastest) @ Lagging Tail should move AFTER
+        // Garchomp at the same priority bracket.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"],"evs":{"spe":252,"atk":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"laggingtail","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252}},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let mut rng = Rng::new(0);
+        let order = action_order(&b, &p1c, &p2c, &mut rng);
+        let first_move = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+        assert_eq!(first_move.side, SideRef::P1,
+                   "Garchomp must outpace Lagging-Tail Flutter Mane");
     }
 
     #[test]
