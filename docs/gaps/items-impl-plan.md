@@ -598,6 +598,13 @@ Caps, Power weights, EV-reduce berries with no in-battle handler)
 Per the audit's "filtered out as pure-flavor" section. No battle effect.
 **No PRs needed.**
 
+The zero-battle-effect subset (evolution stones, evo trade/use items,
+Alcremie sweets, Bottle Caps, EV-reducing berries, Big Nugget / Pretty
+Feather / Rare Bone) is now the canonical `vgc_engine_data::INERT_ITEMS`
+registry (49 slugs, PR-341) — query `is_inert_item(slug)` to bucket a slug
+as inert-by-design instead of "missing". **Power weights are NOT inert**
+(real `onModifySpe` halve-Speed hook in PS) — they stay deferred-impl.
+
 ---
 
 ## Items the audit listed that may already be partially handled

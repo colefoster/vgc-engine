@@ -16,6 +16,34 @@ as a string literal in the four engine source files above.
   Pretty Feather, Big Nugget, Rare Bone): **~20 competitively-meaningful**
   held items remaining (refreshed 2026-06-19 — see list at end).
 
+### Coverage accounting — exclude inert-by-design items (PR-341)
+
+The "missing" denominator above conflates two different things:
+**not-yet-implemented** vs. **inert-by-design** (items with zero in-battle
+effect — they can never have an engine arm because PS has none either).
+Those are now a machine-checkable registry:
+`vgc_engine_data::INERT_ITEMS` (49 slugs) + `is_inert_item(slug)`. The
+basis is PS `data/items.ts`: a slug is inert **iff** it carries no
+behavioral `on*` handler — only ordering/metadata keys, `onEat: false`
+(the EV-reducing berries), `naturalGift`, or nothing. Items whose effect
+PS reads from *outside* the item block (weather/terrain rocks,
+Heavy-Duty Boots, Protective Pads, Light Clay, Arceus plates) are **not**
+inert and stay in the denominator.
+
+Real coverage excludes the inert set from the denominator:
+
+```
+real coverage = handled / (relevant − inert)
+              = 146 / (249 − 49)
+              = 146 / 200
+              ≈ 73%
+```
+
+vs. the naïve **146 / 249 ≈ 59%** that mislabels inert flavor items as a
+coverage gap. A future audit/coverage pass should call
+`vgc_engine_data::is_inert_item(slug)` to bucket a slug as
+inert-by-design rather than counting it "missing".
+
 ## Missing by category
 
 ### Offensive damage modifiers (type-boost plates + carrier orbs)
@@ -94,7 +122,22 @@ runtime item handling. Tag for follow-up rather than treating as a battle bug.)
 
 ## Filtered out as pure-flavor (no in-battle effect)
 
-Not listed individually above; ~95 slugs total. Includes:
+**49 of these are now the canonical `INERT_ITEMS` registry** (PR-341) —
+evolution stones (11), evolution trade/use items (20), Alcremie sweets
+(7), Bottle Caps (2), EV-reducing berries (6), and trainer flavor (3:
+Big Nugget / Pretty Feather / Rare Bone). Each was verified entry-by-entry
+against PS `data/items.ts` to carry no behavioral `on*` handler, resolves
+to a real `ITEMS` row, and has no engine arm (both invariants are tested).
+**Safety check result:** none of the 49 turned out to have a real battle
+hook — the inert set is clean.
+
+Poke Balls and Power weights are NOT in the registry: Poke Balls aren't
+gen-9-legal held items in the competitive denominator, and Power weights
+carry a real `onModifySpe` hook (halve-Speed) in PS, so they are
+deferred-implementation, not inert.
+
+The remaining pure-flavor slugs not listed individually above; ~95 slugs
+total. Includes:
 
 - **Poke Balls** (Poke / Great / Ultra / Master / Premier / Beast / Heal /
   Dive / Dusk / Quick / Timer / Nest / Net / Repeat / Luxury / Friend /
