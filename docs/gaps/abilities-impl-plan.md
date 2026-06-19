@@ -5,25 +5,36 @@
 > trustworthy. Any "shipped / missing" *counts* go stale the moment a PR lands —
 > **do not trust the status snapshot; regenerate it with an audit pass** (grep
 > `ability.rs` + status/boost guards in `battle.rs` against the slug list).
-> Last audit: 2026-06-18. PS line numbers are from
+> Last audit: 2026-06-19. PS line numbers are from
 > `/tmp/pokemon-showdown-research/data/abilities.ts` (gen-9 head).
 
-## Status snapshot (2026-06-18 audit — verify before trusting)
+## Status snapshot (2026-06-19 audit — verified source-grep)
 
-**SHIPPED:** bigpecks, keeneye (acc), vitalspirit, insomnia, limber, magmaarmor,
-immunity, waterveil, cloudnine, airlock, healer, cottondown, poisontouch,
-slowstart, truant, shadowshield, rattled (+ ~28 prior-round abilities).
+Round 10 shipped almost everything. The short tail below is what is left.
 
-**MISSING — tractable now (Round 10 candidates):** owntempo (confusion), innerfocus
-(flinch), soundproof, bulletproof, damp, friendguard, telepathy, liquidooze,
-poisonheal, defeatist, pastelveil, sweetveil, moody, unaware.
+**SHIPPED this round (PRs 318–333):** Own Tempo, Inner Focus, Damp, Pastel
+Veil, Sweet Veil, Moody, Color Change, Protean, Libero, Toxic Debris, Wind
+Rider, Wind Power, Cute Charm, Cursed Body, Mirror Armor, Disguise — **plus the
+systems they depend on** (PRs 309–317: Toxic Spikes, runtime type-override,
+Disable full-apply, wind-move flag + Charge volatile, gender, Attract,
+reflectable flag, forme-change, source-threaded `apply_boosts`). These join the
+prior-round shipped set (bigpecks, keeneye-acc, vitalspirit, insomnia, limber,
+magmaarmor, immunity, waterveil, cloudnine, airlock, healer, cottondown,
+poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
 
-**MISSING — blocked on a system:** cutecharm (Attract volatile), cursedbody
-(Disable setter), aromaveil (six volatiles), toxicdebris (Toxic Spikes),
-colorchange/protean/libero (runtime type-override), windrider/windpower (wind-move
-flag + Charged volatile), magicbounce (reflectable predicate), disguise
-(forme-change), mirrorarmor (boost source threading), wonderguard (SE gate +
-Mold-Breaker matrix).
+**REMAINING — the short tail:**
+- **Wonder Guard** — not blocked structurally; deferred only for its wide
+  interaction matrix (Mold Breaker / Scrappy / Tinted Lens SE-gate).
+- **Aroma Veil (full)** — partial; needs Torment / Heal Block immunity wiring
+  to be complete.
+- **Magic Bounce** — **deferred**: needs a status-move target-slot refactor; a
+  Hatterene sits in a strict-gate doubles golden, so a naive implementation
+  risks regressing it.
+- **Pressure** + **Frisk** — deferred no-ops (no PP system / information-only).
+
+**Note:** Wind Rider / Wind Power are otherwise complete; only their
+**Tailwind-set triggers** are missing (the wind-move-hit paths are done — see
+`ability.rs:1081`).
 
 ## Original complexity tally (entry count, not status)
 

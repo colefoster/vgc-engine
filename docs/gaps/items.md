@@ -2,14 +2,19 @@
 
 Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
-## Headline counts (post PR-298)
+## Headline counts (refreshed 2026-06-19, post PR-308)
+
+At least **146 implemented** of ~223 gen-9-relevant held items (per the
+slug-grep audit in `items-missing-audit.md`). ~20 competitively-meaningful
+held items remain (see that file's refreshed remaining list). The per-mechanic
+catalog below is the citation body; its shipping-order entries are annotated
+DONE where landed.
 
 | Status | Count |
 | --- | --- |
-| shipped | 95 |
-| partial | 1 |
-| not implemented | 0 |
-| deferred / no-effect | 0 |
+| implemented (engine slug grep) | ~146 |
+| competitively-meaningful remaining | ~20 |
+| system-blocked (trapping / PP / forme-lock) | ~6 |
 
 ## Damage modifiers
 
