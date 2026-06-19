@@ -324,10 +324,15 @@ remaining work**; citation entries for each are below.
 - **slug:** `leppaberry`
 - **PS:** `data/items.ts:3347` — `onUpdate` eats if any move has 0 PP; restores
   10 PP.
-- **Behavior:** Restores 10 PP to a depleted move.
-- **Hook:** `item.rs::on_after_damage` + PP table.
-- **Complexity:** small in shape, **deferred** in engine (PP not tracked).
-- **Deps:** blocked: PP system (same as Pressure ability)
+- **Behavior:** Restores 10 PP to a depleted move (Ripen → 20), capped at the
+  move's max PP. Single use.
+- **Hook:** `item.rs::on_pp_depleted`, called from `battle.rs` after every
+  PP-decrement site.
+- **Complexity:** small — SHIPPED (PR-339). The engine DOES track PP (populated
+  at team-build, decremented on use, gates selection at 0), so this was never
+  blocked. Max-PP cap currently reads base move PP; revisit if PP-Up/Max
+  max-PP application lands.
+- **Deps:** none (the "blocked on PP system" claim was stale).
 - **Batch with:** none
 
 ### Absorb Bulb / Cell Battery / Snowball / Luminous Moss
@@ -553,12 +558,16 @@ guard, not after. **Same PR as Adrenaline Orb**.
   and the plates simultaneously. PS marks all of these unremovable from their
   carriers.
 
-### Leppa Berry (PP restore)
+### Leppa Berry (PP restore) — SHIPPED (PR-339)
 
 - **slug:** `leppaberry`
-- **PS:** `data/items.ts:3347` — restores 10 PP to a 0-PP move.
-- **Complexity:** hard — **deferred**, blocked on PP system.
-- **Deps:** blocked: PP tracking
+- **PS:** `data/items.ts:3347` — `onUpdate` eats once a move hits 0 PP; `onEat`
+  restores +10 (Ripen +20) capped at the move's max PP.
+- **Complexity:** small. NOT hard, NOT blocked — the engine already tracks PP.
+  `item.rs::on_pp_depleted` is invoked from every PP-decrement site in
+  `battle.rs`; restores to the first 0-PP slot. Max-PP cap reads base move PP
+  until PP-Up/Max max-PP application lands.
+- **Deps:** none (the "blocked on PP tracking" claim was stale).
 
 ### Mirror Herb cross-Pokémon `effectState`
 
