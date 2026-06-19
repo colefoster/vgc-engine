@@ -2225,7 +2225,7 @@ impl Battle {
                             }
                         }
                         if !blocked {
-                            targets = vec![(opp, rslot)];
+                            targets = TargetBuf::single((opp, rslot));
                         }
                     }
                 }
@@ -2419,7 +2419,7 @@ impl Battle {
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
-        for (tside, tslot) in targets {
+        for &(tside, tslot) in targets.iter() {
             let defender = match self.side(tside).active_mon(tslot as usize).cloned() {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
@@ -6329,13 +6329,55 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
 ///
 /// `chosen` is the explicit target supplied in the Choice (used for
 /// single-target moves). Spread / self / ally-side moves ignore it.
+/// Fixed-capacity, heap-free target list returned by [`enumerate_targets`].
+///
+/// The widest damage-resolved target set is `allAdjacent` (target code 5):
+/// at most 2 adjacent foes + 1 ally = 3 entries in doubles (active_count
+/// ≤ 2). Capacity 4 leaves headroom; the buffer never spills, so the move
+/// resolution hot path allocates nothing. Derefs to `&[(SideRef, u8)]`, so
+/// `.len()`, `.is_empty()`, `[0]`, and `.iter()` all work unchanged.
+#[derive(Debug, Clone, Copy)]
+pub struct TargetBuf {
+    buf: [(SideRef, u8); 4],
+    len: usize,
+}
+
+impl TargetBuf {
+    #[inline]
+    fn new() -> Self {
+        TargetBuf { buf: [(SideRef::P1, 0); 4], len: 0 }
+    }
+
+    #[inline]
+    fn push(&mut self, t: (SideRef, u8)) {
+        self.buf[self.len] = t;
+        self.len += 1;
+    }
+
+    /// A single-target list (used by redirection overrides).
+    #[inline]
+    fn single(t: (SideRef, u8)) -> Self {
+        let mut b = TargetBuf::new();
+        b.push(t);
+        b
+    }
+}
+
+impl core::ops::Deref for TargetBuf {
+    type Target = [(SideRef, u8)];
+    #[inline]
+    fn deref(&self) -> &[(SideRef, u8)] {
+        &self.buf[..self.len]
+    }
+}
+
 fn enumerate_targets(
     battle: &Battle,
     actor_side: SideRef,
     actor_slot: u8,
     m: &data::MoveDef,
     chosen: Option<Target>,
-) -> Vec<(SideRef, u8)> {
+) -> TargetBuf {
     let opp = actor_side.opposing();
     let active_n = battle.format().active_count() as u8;
     let alive = |side: SideRef, slot: u8| -> bool {
@@ -6346,36 +6388,36 @@ fn enumerate_targets(
         0 | 4 | 10 | 13 => {
             if let Some(t) = chosen {
                 if alive(t.side, t.slot) {
-                    return vec![(t.side, t.slot)];
+                    return TargetBuf::single((t.side, t.slot));
                 }
             }
             // Fallback: first alive opposing active slot.
             for slot in 0..active_n {
                 if alive(opp, slot) {
-                    return vec![(opp, slot)];
+                    return TargetBuf::single((opp, slot));
                 }
             }
-            vec![]
+            TargetBuf::new()
         }
         // 1 self
-        1 => vec![(actor_side, actor_slot)],
+        1 => TargetBuf::single((actor_side, actor_slot)),
         // 2 adjacentAlly | 3 adjacentAllyOrSelf — single target on own side.
         2 | 3 => {
             if let Some(t) = chosen {
                 if t.side == actor_side && alive(t.side, t.slot) {
-                    return vec![(t.side, t.slot)];
+                    return TargetBuf::single((t.side, t.slot));
                 }
             }
             for slot in 0..active_n {
                 if slot != actor_slot && alive(actor_side, slot) {
-                    return vec![(actor_side, slot)];
+                    return TargetBuf::single((actor_side, slot));
                 }
             }
-            vec![]
+            TargetBuf::new()
         }
         // 5 allAdjacent — all adjacent foes + ally (skip self).
         5 => {
-            let mut out = Vec::with_capacity(3);
+            let mut out = TargetBuf::new();
             for slot in 0..active_n {
                 if alive(opp, slot) {
                     out.push((opp, slot));
@@ -6390,7 +6432,7 @@ fn enumerate_targets(
         }
         // 6 allAdjacentFoes — both opposing actives.
         6 => {
-            let mut out = Vec::with_capacity(2);
+            let mut out = TargetBuf::new();
             for slot in 0..active_n {
                 if alive(opp, slot) {
                     out.push((opp, slot));
@@ -6399,7 +6441,7 @@ fn enumerate_targets(
             out
         }
         // Targets we don't damage-resolve here (allies / side / team / all / scripted).
-        _ => vec![],
+        _ => TargetBuf::new(),
     }
 }
 
