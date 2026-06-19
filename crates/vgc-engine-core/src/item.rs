@@ -9,13 +9,6 @@ use crate::battle::Battle;
 use crate::side::SideRef;
 use vgc_engine_data as data;
 
-fn item_slug(id: u16) -> &'static str {
-    if id == u16::MAX {
-        return "";
-    }
-    data::ITEMS.get(id as usize).map(|i| i.slug).unwrap_or("")
-}
-
 /// Type-resist berries — halve incoming damage of a specific type when the
 /// hit is super-effective (Chilan halves any Normal hit regardless of
 /// effectiveness). PS handler shape (one entry per berry):
@@ -50,8 +43,7 @@ pub fn try_consume_type_resist_berry(
         Some(m) if m.is_alive() => m.item_id,
         _ => return false,
     };
-    let slug = item_slug(item_id);
-    // (slug, type_code, requires_se). Type codes match
+    // (item id, type_code, requires_se). Type codes match
     // `vgc-engine-data` TYPE_NAMES — 0=Normal, 1=Fire, 2=Water, 3=Electric,
     // 4=Grass, 5=Ice, 6=Fighting, 7=Poison, 8=Ground, 9=Flying, 10=Psychic,
     // 11=Bug, 12=Rock, 13=Ghost, 14=Dragon, 15=Dark, 16=Steel, 17=Fairy.
@@ -60,26 +52,26 @@ pub fn try_consume_type_resist_berry(
     // entry); every other berry requires the hit to be super-effective.
     // Type codes match `vgc-engine-data` TYPE_NAMES.
     let table = [
-        ("occaberry",    1u8,  true),  // Fire
-        ("passhoberry",  2u8,  true),  // Water
-        ("wacanberry",   3u8,  true),  // Electric
-        ("rindoberry",   4u8,  true),  // Grass
-        ("yacheberry",   5u8,  true),  // Ice
-        ("chopleberry",  6u8,  true),  // Fighting
-        ("kebiaberry",   7u8,  true),  // Poison
-        ("shucaberry",   8u8,  true),  // Ground
-        ("cobaberry",    9u8,  true),  // Flying
-        ("payapaberry",  10u8, true),  // Psychic
-        ("tangaberry",   11u8, true),  // Bug
-        ("chartiberry",  12u8, true),  // Rock
-        ("kasibberry",   13u8, true),  // Ghost
-        ("habanberry",   14u8, true),  // Dragon
-        ("colburberry",  15u8, true),  // Dark
-        ("babiriberry",  16u8, true),  // Steel
-        ("roseliberry",  17u8, true),  // Fairy
-        ("chilanberry",  0u8,  false), // Normal — fires regardless of SE
+        (data::item_id::OCCABERRY,    1u8,  true),  // Fire
+        (data::item_id::PASSHOBERRY,  2u8,  true),  // Water
+        (data::item_id::WACANBERRY,   3u8,  true),  // Electric
+        (data::item_id::RINDOBERRY,   4u8,  true),  // Grass
+        (data::item_id::YACHEBERRY,   5u8,  true),  // Ice
+        (data::item_id::CHOPLEBERRY,  6u8,  true),  // Fighting
+        (data::item_id::KEBIABERRY,   7u8,  true),  // Poison
+        (data::item_id::SHUCABERRY,   8u8,  true),  // Ground
+        (data::item_id::COBABERRY,    9u8,  true),  // Flying
+        (data::item_id::PAYAPABERRY,  10u8, true),  // Psychic
+        (data::item_id::TANGABERRY,   11u8, true),  // Bug
+        (data::item_id::CHARTIBERRY,  12u8, true),  // Rock
+        (data::item_id::KASIBBERRY,   13u8, true),  // Ghost
+        (data::item_id::HABANBERRY,   14u8, true),  // Dragon
+        (data::item_id::COLBURBERRY,  15u8, true),  // Dark
+        (data::item_id::BABIRIBERRY,  16u8, true),  // Steel
+        (data::item_id::ROSELIBERRY,  17u8, true),  // Fairy
+        (data::item_id::CHILANBERRY,  0u8,  false), // Normal — fires regardless of SE
     ];
-    let entry = table.iter().find(|(s, _, _)| *s == slug);
+    let entry = table.iter().find(|(id, _, _)| *id == item_id);
     let (_, type_code, requires_se) = match entry {
         Some(e) => *e,
         None => return false,
@@ -126,8 +118,7 @@ pub fn on_before_damage(
         Some(m) if m.is_alive() => m.item_id,
         _ => return None,
     };
-    let slug = item_slug(item_id);
-    if slug == "focussash" {
+    if item_id == data::item_id::FOCUSSASH {
         let (max, current) = match battle.side(side).active_mon(slot as usize) {
             Some(m) => (m.stats.hp, m.current_hp),
             None => return None,
@@ -164,7 +155,7 @@ pub fn on_before_damage(
     // `randomChance(1, 10)` ≡ `random(10) < 1` ≡ `range(10) == 0` —
     // bit-exact under PsGen5.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Band>.
-    if slug == "focusband" {
+    if item_id == data::item_id::FOCUSBAND {
         let current = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m.current_hp,
             None => return None,
@@ -195,8 +186,7 @@ pub fn on_after_damage(
         Some(m) if m.is_alive() => (m.item_id, m.stats.hp, m.current_hp),
         _ => return,
     };
-    let slug = item_slug(item_id);
-    if slug == "sitrusberry" && current * 2 <= max {
+    if item_id == data::item_id::SITRUSBERRY && current * 2 <= max {
         // Heal 25% max HP, consume berry. PS data/items.ts:sitrusberry —
         // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -217,12 +207,12 @@ pub fn on_after_damage(
     // Clear Amulet don't block. Bulbapedia hub:
     // <https://bulbapedia.bulbagarden.net/wiki/Liechi_Berry>.
     // (slug, stat index — 0=Atk, 1=Def, 2=SpA, 3=SpD, 4=Spe).
-    let pinch_entry = match slug {
-        "liechiberry" => Some(0usize),
-        "ganlonberry" => Some(1),
-        "petayaberry" => Some(2),
-        "apicotberry" => Some(3),
-        "salacberry"  => Some(4),
+    let pinch_entry = match item_id {
+        data::item_id::LIECHIBERRY => Some(0usize),
+        data::item_id::GANLONBERRY => Some(1),
+        data::item_id::PETAYABERRY => Some(2),
+        data::item_id::APICOTBERRY => Some(3),
+        data::item_id::SALACBERRY  => Some(4),
         _ => None,
     };
     if let Some(stat_idx) = pinch_entry {
@@ -238,7 +228,7 @@ pub fn on_after_damage(
     // at <=50% HP; onEat heals a flat 10 HP. Same shape as Sitrus but
     // smaller heal. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Oran_Berry>.
-    if slug == "oranberry" && current * 2 <= max {
+    if item_id == data::item_id::ORANBERRY && current * 2 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
             m.item_id = u16::MAX;
@@ -255,8 +245,12 @@ pub fn on_after_damage(
     // table for nature-flavor preferences isn't wired yet.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Figy_Berry>.
     let figy_family = matches!(
-        slug,
-        "figyberry" | "wikiberry" | "magoberry" | "aguavberry" | "iapapaberry"
+        item_id,
+        data::item_id::FIGYBERRY
+            | data::item_id::WIKIBERRY
+            | data::item_id::MAGOBERRY
+            | data::item_id::AGUAVBERRY
+            | data::item_id::IAPAPABERRY
     );
     if figy_family && current * 4 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -290,7 +284,7 @@ pub fn on_after_damage(
     // damage.rs/battle.rs accuracy block on the next move. Deterministic
     // eat — no RNG; the boost scales an existing accuracy roll.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
-    if slug == "micleberry" && current * 4 <= max {
+    if item_id == data::item_id::MICLEBERRY && current * 4 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.item_id = u16::MAX;
             m.micle_next_move = true;
@@ -303,13 +297,13 @@ pub fn on_after_damage(
     // we set it to 2 — the Focus Energy / Laser Focus / Dire Hit value.
     // Deterministic. Cleared on switch-out alongside Focus Energy.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lansat_Berry>.
-    if slug == "lansatberry" && current * 4 <= max {
+    if item_id == data::item_id::LANSATBERRY && current * 4 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.item_id = u16::MAX;
             m.crit_stage_volatile = 2;
         }
     }
-    if slug == "starfberry" && current * 4 <= max {
+    if item_id == data::item_id::STARFBERRY && current * 4 <= max {
         let boosts = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m.boosts,
             None => return,
@@ -358,10 +352,10 @@ pub fn on_after_damage(
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Leppa_Berry>.
 pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
     let (item_id, ripen) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.item_id, m.effective_ability_slug() == "ripen"),
+        Some(m) if m.is_alive() => (m.item_id, m.effective_ability_id() == data::ability_id::RIPEN),
         _ => return,
     };
-    if item_slug(item_id) != "leppaberry" {
+    if item_id != data::item_id::LEPPABERRY {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -405,7 +399,6 @@ pub fn on_attacker_contact_hit(
         Some(m) => m.item_id,
         None => return,
     };
-    let slug = item_slug(item_id);
     // Sticky Barb — PS `data/items.ts:stickybarb`
     //   onHit(target, source, move) {
     //     if (source && source !== target && !source.item && this.checkMoveMakesContact(move, source, target)) {
@@ -421,7 +414,7 @@ pub fn on_attacker_contact_hit(
     // overall. Both sides must still be holding/having-no-item — i.e.
     // the attacker must hold nothing, otherwise the swap doesn't happen.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Barb>.
-    if slug == "stickybarb" {
+    if item_id == data::item_id::STICKYBARB {
         let attacker_holds_nothing = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -444,7 +437,7 @@ pub fn on_attacker_contact_hit(
             }
         }
     }
-    if slug == "rockyhelmet" {
+    if item_id == data::item_id::ROCKYHELMET {
         let attacker_alive_and_no_mg = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -499,7 +492,7 @@ pub fn on_damaging_hit(
         Some(m) => m.item_id,
         None => return,
     };
-    if item_slug(raw_item_id) == "airballoon" {
+    if raw_item_id == data::item_id::AIRBALLOON {
         if let Some(t) = battle
             .side_mut(target_side)
             .active_mon_mut(target_slot as usize)
@@ -511,7 +504,6 @@ pub fn on_damaging_hit(
         Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    let slug = item_slug(item_id);
     // Weakness Policy — PS `data/items.ts:weaknesspolicy`
     //   onHit(target, source, move) {
     //     if (target.runEffectiveness(move) > 0) {
@@ -526,7 +518,7 @@ pub fn on_damaging_hit(
     // → Clear Amulet / Clear Body / White Smoke don't gate it (those
     // block boosts from OTHER mons; Weakness Policy is target-on-self).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Weakness_Policy>.
-    if slug == "weaknesspolicy" {
+    if item_id == data::item_id::WEAKNESSPOLICY {
         // Read effectiveness against the defender's species (post-Tera
         // would matter — Weakness Policy on a Terastallized Garchomp
         // reads its Tera type — but `effective_types_for_move` belongs
@@ -564,7 +556,7 @@ pub fn on_damaging_hit(
     // Same species-level effectiveness read as Weakness Policy (Tera typing
     // deferred). No RNG. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Enigma_Berry>.
-    if slug == "enigmaberry" {
+    if item_id == data::item_id::ENIGMABERRY {
         let mv = &data::MOVES[move_id as usize];
         if mv.category != 2 {
             let species = match battle.side(target_side).active_mon(target_slot as usize) {
@@ -601,11 +593,11 @@ pub fn on_damaging_hit(
     // <https://bulbapedia.bulbagarden.net/wiki/Absorb_Bulb>.
     let move_type = data::MOVES[move_id as usize].type_;
     // (slug, required type, stat index — 0=Atk, 2=SpA, 3=SpD).
-    let booster_entry = match slug {
-        "absorbbulb"   => Some((2u8, 2usize)), // Water → SpA
-        "cellbattery"  => Some((3u8, 0usize)), // Electric → Atk
-        "snowball"     => Some((5u8, 0usize)), // Ice → Atk
-        "luminousmoss" => Some((2u8, 3usize)), // Water → SpD
+    let booster_entry = match item_id {
+        data::item_id::ABSORBBULB   => Some((2u8, 2usize)), // Water → SpA
+        data::item_id::CELLBATTERY  => Some((3u8, 0usize)), // Electric → Atk
+        data::item_id::SNOWBALL     => Some((5u8, 0usize)), // Ice → Atk
+        data::item_id::LUMINOUSMOSS => Some((2u8, 3usize)), // Water → SpD
         _ => None,
     };
     if let Some((req_type, stat_idx)) = booster_entry {
@@ -625,7 +617,7 @@ pub fn on_damaging_hit(
     // if hit category was Physical, +1 Def, consume. Self-boost — Clear
     // Body / Clear Amulet don't block. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Kee_Berry>.
-    if slug == "keeberry" {
+    if item_id == data::item_id::KEEBERRY {
         let category = data::MOVES[move_id as usize].category;
         if category == 0 {
             if let Some(t) = battle
@@ -641,7 +633,7 @@ pub fn on_damaging_hit(
     // Maranga Berry — PS data/items.ts:marangaberry (line 3782). Mirror
     // of Kee for SpD on Special hit. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Maranga_Berry>.
-    if slug == "marangaberry" {
+    if item_id == data::item_id::MARANGABERRY {
         let category = data::MOVES[move_id as usize].category;
         if category == 1 {
             if let Some(t) = battle
@@ -658,7 +650,7 @@ pub fn on_damaging_hit(
     // Jaboca for Special category: damage special attacker 1/8 max HP
     // (Ripen ×2 deferred). Magic Guard on attacker blocks. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Rowap_Berry>.
-    if slug == "rowapberry" {
+    if item_id == data::item_id::ROWAPBERRY {
         let category = data::MOVES[move_id as usize].category;
         if category == 1 {
             let attacker_alive_and_no_mg = battle
@@ -685,7 +677,7 @@ pub fn on_damaging_hit(
             }
         }
     }
-    if slug == "jabocaberry" {
+    if item_id == data::item_id::JABOCABERRY {
         // Physical-only gate. PS reads `move.category === 'Physical'`.
         let category = data::MOVES[move_id as usize].category;
         if category != 0 {
@@ -784,17 +776,17 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 /// Called from `on_switch_in` (matches `onStart`) AND from the terrain-set
 /// sites in `battle.rs` / `ability.rs` (matches `onTerrainChange`).
 pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
-    let slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => item_slug(m.item_id),
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
     use crate::terrain::Terrain;
-    // (slug, required terrain, stat index — 1 = Def, 3 = SpD).
-    let entry = match slug {
-        "electricseed" => Some((Terrain::Electric, 1usize)),
-        "grassyseed"   => Some((Terrain::Grassy,   1)),
-        "mistyseed"    => Some((Terrain::Misty,    3)),
-        "psychicseed"  => Some((Terrain::Psychic,  3)),
+    // (item id, required terrain, stat index — 1 = Def, 3 = SpD).
+    let entry = match item_id {
+        data::item_id::ELECTRICSEED => Some((Terrain::Electric, 1usize)),
+        data::item_id::GRASSYSEED   => Some((Terrain::Grassy,   1)),
+        data::item_id::MISTYSEED    => Some((Terrain::Misty,    3)),
+        data::item_id::PSYCHICSEED  => Some((Terrain::Psychic,  3)),
         _ => None,
     };
     let (req_terrain, stat_idx) = match entry {
@@ -825,11 +817,11 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Persim_Berry>.
 pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     use crate::pokemon::VolatileKind as VK;
-    let (slug, confused) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (item_slug(m.item_id), m.volatiles.has(VK::Confusion)),
+    let (item_id, confused) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (m.item_id, m.volatiles.has(VK::Confusion)),
         _ => return,
     };
-    if slug != "persimberry" || !confused {
+    if item_id != data::item_id::PERSIMBERRY || !confused {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -857,11 +849,11 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
     if battle.trick_room_turns == 0 {
         return;
     }
-    let slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => item_slug(m.item_id),
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    if slug != "roomservice" {
+    if item_id != data::item_id::ROOMSERVICE {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -883,11 +875,11 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
 /// already consumed its accuracy roll.
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Blunder_Policy>.
 pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) {
-    let slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => item_slug(m.item_id),
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    if slug != "blunderpolicy" {
+    if item_id != data::item_id::BLUNDERPOLICY {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -915,11 +907,11 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
 /// was actually removed. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Mental_Herb>.
 pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: u8) {
-    let holder_slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => item_slug(m.item_id),
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    if holder_slug != "mentalherb" {
+    if item_id != data::item_id::MENTALHERB {
         return;
     }
     use crate::pokemon::VolatileKind as VK;
@@ -972,11 +964,11 @@ pub(crate) fn try_consume_eject_button(
     target_side: SideRef,
     target_slot: u8,
 ) -> bool {
-    let (alive, slug) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+    let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (m.is_alive(), m.item_id),
         None => return false,
     };
-    if !alive || slug != "ejectbutton" {
+    if !alive || item_id != data::item_id::EJECTBUTTON {
         return false;
     }
     if battle.first_bench_index(target_side).is_none() {
@@ -1015,11 +1007,11 @@ pub(crate) fn try_consume_red_card(
     attacker_side: SideRef,
     attacker_slot: u8,
 ) -> bool {
-    let (alive, slug) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+    let (alive, item_id) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (m.is_alive(), m.item_id),
         None => return false,
     };
-    if !alive || slug != "redcard" {
+    if !alive || item_id != data::item_id::REDCARD {
         return false;
     }
     let attacker_alive = battle
@@ -1072,11 +1064,11 @@ pub(crate) fn try_consume_eject_pack(
     if !dropped {
         return false;
     }
-    let (alive, slug) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) => (m.is_alive(), item_slug(m.item_id)),
+    let (alive, item_id) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) => (m.is_alive(), m.item_id),
         None => return false,
     };
-    if !alive || slug != "ejectpack" {
+    if !alive || item_id != data::item_id::EJECTPACK {
         return false;
     }
     if battle.first_bench_index(side).is_none() {
@@ -1120,7 +1112,7 @@ pub fn try_consume_mirror_herb_on_foe_boost(
     let n = battle.format().active_count() as u8;
     for s in 0..n {
         let holder = battle.side(opp).active_mon(s as usize)
-            .map(|m| m.is_alive() && item_slug(m.item_id) == "mirrorherb")
+            .map(|m| m.is_alive() && m.item_id == data::item_id::MIRRORHERB)
             .unwrap_or(false);
         if !holder {
             continue;
@@ -1141,11 +1133,11 @@ pub fn try_consume_mirror_herb_on_foe_boost(
 }
 
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
-    let holder_slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => item_slug(m.item_id),
+    let item_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    if holder_slug != "whiteherb" {
+    if item_id != data::item_id::WHITEHERB {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -1170,8 +1162,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    let slug = item_slug(item_id);
-    if slug == "leftovers" {
+    if item_id == data::item_id::LEFTOVERS {
         // Heal 1/16 max HP, capped at max.
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             let heal = (m.stats.hp / 16).max(1);
@@ -1187,7 +1178,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     // false for any non-Move source, which Black Sludge's residual
     // ticks count as.) Poison type code = 7 per `data/build.rs` TYPE_NAMES.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Black_Sludge>.
-    if slug == "blacksludge" {
+    if item_id == data::item_id::BLACKSLUDGE {
         let mon = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m,
             None => return,
@@ -1234,13 +1225,12 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
-    let slug = item_slug(item_id);
     // Sticky Barb — PS `data/items.ts:stickybarb` onResidual:
     //   this.damage(pokemon.baseMaxhp / 8);
     // No type gate; Magic Guard blocks. PR-216 mechanic; PR-218
     // moves to the correct PS order. Contact-swap arm (`onHit`)
     // deferred to a follow-up.
-    if slug == "stickybarb" {
+    if item_id == data::item_id::STICKYBARB {
         let mon = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m,
             None => return,
@@ -1266,7 +1256,7 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
     // status set itself — PS's `trySetStatus` runs the normal status
     // pipeline regardless.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flame_Orb>.
-    if slug == "flameorb" {
+    if item_id == data::item_id::FLAMEORB {
         // Re-check the slot is alive after the Sticky Barb arm above —
         // PS's residual scheduler skips KO'd mons within the same
         // suborder boundary.
@@ -1288,7 +1278,7 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
     // (PS routes through the same trySetStatus path, our impl checks
     // both psn and tox in `is_type_immune_to_status`).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Orb>.
-    if slug == "toxicorb" {
+    if item_id == data::item_id::TOXICORB {
         let still_alive = battle
             .side(side)
             .active_mon(slot as usize)
