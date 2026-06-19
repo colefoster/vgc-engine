@@ -4518,6 +4518,26 @@ impl Battle {
                 .is_some_and(|mon| mon.is_alive())
     }
 
+    /// Aroma Veil — PS `data/abilities.ts:234` `onAllyTryAddVolatile`:
+    /// the holder AND every partner on its side are immune to Attract /
+    /// Disable / Encore / Heal Block / Taunt / Torment. We model that as
+    /// a side-scan: if any alive active mon on `side` has Aroma Veil, the
+    /// volatile is vetoed for everyone on that side. Aroma Veil carries
+    /// `flags: { breakable: 1 }`, so a move-source with Mold Breaker /
+    /// Teravolt / Turboblaze bypasses it — callers whose volatile is
+    /// applied by an opposing move pass `source_breaks_mold`.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aroma_Veil_(Ability)>.
+    pub(crate) fn side_has_aroma_veil(&self, side: SideRef, source_breaks_mold: bool) -> bool {
+        if source_breaks_mold {
+            return false;
+        }
+        (0..self.format().active_count()).any(|s| {
+            self.side(side)
+                .active_mon(s)
+                .is_some_and(|m| m.is_alive() && m.effective_ability_slug() == "aromaveil")
+        })
+    }
+
     /// Clear infatuation on any active mon whose Attract source has left
     /// the field. Mirrors PS `data/moves.ts:706` attract `onUpdate`. Drawn
     /// no RNG; safe to call each end of turn after switches resolve.
@@ -4873,6 +4893,21 @@ impl Battle {
                     if !ok {
                         continue;
                     }
+                    // Aroma Veil — holder/partner immunity to Encore
+                    // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
+                    // a Mold-Breaker Encore user bypasses it. Whimsicott /
+                    // Tornadus etc. PS still consumes the move (no re-target
+                    // to another slot), so we bail out of the handler.
+                    let encore_src_breaks_mold = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .is_some_and(|a| matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        ));
+                    if self.side_has_aroma_veil(opp, encore_src_breaks_mold) {
+                        return;
+                    }
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         t.set_encore(3, last);
                     }
@@ -5002,9 +5037,20 @@ impl Battle {
                     return;
                 }
                 // Oblivious immunity (PS abilities.ts:2979 onTryHit -immune).
-                // NOTE: Aroma Veil would also block here, but that ability
-                // is not yet implemented — deferred to the Aroma Veil PR.
                 if tgt_oblivious {
+                    return;
+                }
+                // Aroma Veil — holder/partner immunity to Attract
+                // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
+                // a Mold-Breaker Attract user bypasses it.
+                let attract_src_breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.effective_ability_slug(),
+                        "moldbreaker" | "teravolt" | "turboblaze"
+                    ));
+                if self.side_has_aroma_veil(opp, attract_src_breaks_mold) {
                     return;
                 }
                 // Gender gate: opposite, non-genderless (M↔F). Genderless
@@ -12353,6 +12399,172 @@ mod tests {
             assert_eq!(
                 b.p2.team[0].disabled_move_slot(), 1,
                 "already-disabled attacker keeps its existing Disable slot"
+            );
+        }
+    }
+
+    // ---- Aroma Veil (Spritzee / Aromatisse) -------------------------
+    // PS `data/abilities.ts:234` `onAllyTryAddVolatile`: the holder AND
+    // every partner on its side are immune to Attract / Disable / Encore /
+    // Heal Block / Taunt / Torment. Only Attract (move + Cute Charm),
+    // Disable (Cursed Body), and Encore (move) are reachable in the engine
+    // today; the other three volatiles have no setter yet, so their
+    // immunity is vacuous-pending.
+
+    #[test]
+    fn aroma_veil_blocks_attract_move_on_holder() {
+        // An Aroma Veil holder cannot be Attracted; a foe without it can.
+        let attacker = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]}
+        ]"#;
+        let av_holder = r#"[
+            {"species":"aromatisse","level":50,"ability":"aromaveil","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+        let plain = r#"[
+            {"species":"clefable","level":50,"ability":"unaware","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+
+        // Aroma Veil holder: immune.
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(av_holder).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].is_attracted(), "Aroma Veil holder immune to Attract");
+
+        // Plain foe (no Aroma Veil): Attracted.
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(plain).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_attracted(), "foe without Aroma Veil is Attracted");
+    }
+
+    #[test]
+    fn aroma_veil_protects_partner_from_attract() {
+        // Doubles: the Aroma Veil aura covers a partner too. P2 slot 0 is
+        // Aromatisse (Aroma Veil); slot 1 is a plain Snorlax. Attract aimed
+        // at the partner (slot 1) is vetoed by the aura.
+        let attacker = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]},
+            {"species":"clefable","level":50,"ability":"unaware","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"aromatisse","level":50,"ability":"aromaveil","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        // Pin genders so Attract on the partner would otherwise land.
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[1].gender = data::Gender::Female;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert!(
+            !b.p2.team[1].is_attracted(),
+            "Aroma Veil partner aura blocks Attract on the partner",
+        );
+    }
+
+    #[test]
+    fn aroma_veil_mold_breaker_attacker_bypasses_attract() {
+        // A Mold-Breaker Attract user breaks the breakable Aroma Veil, so
+        // the holder IS Attracted. Use a Mold Breaker Snorlax? Snorlax can't
+        // legally; use Sableye (Stall) — no. Pinsir (Mold Breaker) can run
+        // Attract.
+        let attacker = r#"[
+            {"species":"pinsir","level":50,"ability":"moldbreaker","item":"","nature":"adamant","moves":["attract","xscissor","closecombat","stoneedge"]}
+        ]"#;
+        let av_holder = r#"[
+            {"species":"aromatisse","level":50,"ability":"aromaveil","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(av_holder).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            b.p2.team[0].is_attracted(),
+            "Mold Breaker Attract user bypasses breakable Aroma Veil",
+        );
+    }
+
+    #[test]
+    fn aroma_veil_blocks_encore() {
+        // An Aroma Veil holder cannot be Encored. Whimsicott Encores the
+        // foe after it has used a move; Aromatisse's last move is locked-in
+        // only if Encore lands — it must not.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","item":"","nature":"timid","moves":["encore","tailwind","moonblast","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"aromatisse","level":50,"ability":"aromaveil","item":"","nature":"careful","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: Whimsicott passes, Aromatisse uses Moonblast (sets last).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Turn 2: Whimsicott (faster) Encores. Aroma Veil must veto it.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(
+            b.p2.team[0].encored_move_slot(), 255,
+            "Aroma Veil holder cannot be Encored",
+        );
+    }
+
+    #[test]
+    fn aroma_veil_blocks_cursed_body_disable() {
+        // Cursed Body Disable (an ability-sourced volatile) is also blocked
+        // by Aroma Veil on the would-be-disabled attacker. Aromatisse hits a
+        // Cursed Body Gengar; across many trials it must NEVER be Disabled.
+        let aroma_attacker = r#"[
+            {"species":"aromatisse","level":50,"ability":"aromaveil","item":"","nature":"modest","moves":["moonblast","calmmind","protect","wish"]}
+        ]"#;
+        let gengar = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["shadowball","sludgebomb","focusblast","thunderbolt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(aroma_attacker).unwrap();
+        let p2 = TeamBuilder::from_json(gengar).unwrap();
+        for seed in 0..100u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(),
+                p2.clone(),
+            );
+            // Aromatisse attacks Gengar; Gengar passes so the hit lands.
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(
+                b.p1.team[0].disabled_move_slot(), 255,
+                "Aroma Veil attacker is never Disabled by Cursed Body (seed {seed})",
             );
         }
     }

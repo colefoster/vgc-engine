@@ -1335,7 +1335,14 @@ pub fn on_damaging_hit(
                 .is_some_and(|a| {
                     a.effective_ability_slug() == "oblivious" || a.is_attracted()
                 });
-            if opposite && !attacker_immune {
+            // Aroma Veil — the would-be-infatuated attacker (or a partner on
+            // its side) being immune vetoes the Attract. PS
+            // `data/abilities.ts:234` `onAllyTryAddVolatile` blocks the
+            // `attract` volatile from any source, so a Cute Charm-induced
+            // infatuation is blocked too. The source is the holder's ability,
+            // not a move, so Mold Breaker is irrelevant (pass `false`).
+            let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
+            if opposite && !attacker_immune && !aroma_veil_protects {
                 let src_idx = battle.side(target_side).active[target_slot as usize];
                 if let Some(a) = battle
                     .side_mut(attacker_side)
@@ -1370,7 +1377,18 @@ pub fn on_damaging_hit(
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive() && a.disabled_move_slot() == 255);
-        if attacker_eligible && move_slug != "struggle" && rng.percent_1_100() <= 30 {
+        // Aroma Veil — the would-be-disabled attacker (or a partner on its
+        // side) being immune vetoes the Disable. PS `data/abilities.ts:234`
+        // `onAllyTryAddVolatile` returns null for any effect type, so
+        // Cursed Body (an ability, not a move) is blocked too; Mold Breaker
+        // is irrelevant here (the disable source is the *defender's*
+        // ability). The 30% RNG draw still fires for PsGen5 PRNG alignment.
+        let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
+        if attacker_eligible
+            && move_slug != "struggle"
+            && rng.percent_1_100() <= 30
+            && !aroma_veil_protects
+        {
             // The disabled slot is the attacker's move-array index that
             // holds the move that just hit (PS disables `lastMove.id`).
             let move_slot = battle
