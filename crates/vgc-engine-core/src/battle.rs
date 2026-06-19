@@ -2208,7 +2208,8 @@ impl Battle {
                     // `getDamage`. They must enter the damaging path.
                     | "seismictoss" | "nightshade"
                     | "dragonrage" | "sonicboom"
-                    | "superfang" | "ruination");
+                    | "superfang" | "ruination"
+                    | "endeavor");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2564,7 +2565,7 @@ impl Battle {
             let is_fixed_damage = matches!(
                 m.slug,
                 "seismictoss" | "nightshade" | "dragonrage" | "sonicboom"
-                    | "superfang" | "ruination"
+                    | "superfang" | "ruination" | "endeavor"
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -2576,6 +2577,15 @@ impl Battle {
                     move_id, m.type_, &defender,
                 );
                 if eff.is_immune() {
+                    continue;
+                }
+                // Endeavor `onTryImmunity` (PS data/moves.ts:4796):
+                //   `return pokemon.hp < target.hp;`
+                // The move FAILS (no accuracy draw) unless the USER's
+                // current HP is strictly LESS than the target's. This is
+                // a TryImmunity step (:560) — it runs before the accuracy
+                // roll, so a failed Endeavor draws nothing.
+                if m.slug == "endeavor" && attacker.current_hp >= defender.current_hp {
                     continue;
                 }
             }
@@ -3131,6 +3141,12 @@ impl Battle {
                 "dragonrage" => Some(40),
                 "sonicboom" => Some(20),
                 "superfang" | "ruination" => Some((defender.current_hp / 2).max(1)),
+                // Endeavor — PS data/moves.ts:4788 damageCallback:
+                //   `return target.getUndynamaxedHP() - pokemon.hp;`
+                // Brings the target down to the user's current HP. The
+                // onTryImmunity gate above guarantees target HP > user HP
+                // here, so the subtraction is non-negative and > 0.
+                "endeavor" => Some(defender.current_hp.saturating_sub(attacker.current_hp)),
                 _ => None,
             };
 
@@ -7148,6 +7164,44 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, remaining - (remaining / 2),
                    "Ruination removes floor(currentHP/2)");
+    }
+
+    #[test]
+    fn endeavor_sets_target_to_user_hp_and_fails_when_user_higher() {
+        // PS data/moves.ts:4788 endeavor damageCallback = target.hp -
+        // pokemon.hp; onTryImmunity (:4796) fails unless pokemon.hp <
+        // target.hp. Accuracy 100 (no acc draw).
+        let p1_json = r#"[
+            {"species":"qwilfish","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["endeavor","poisonjab","protect","painsplit"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","rest","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop Qwilfish low; Snorlax stays high. Qwilfish (jolly base 85
+        // spe) outspeeds Snorlax (base 30).
+        b.p1.team[0].current_hp = 7;
+        // Snorlax Crunch (slot 1) at Qwilfish — later action, doesn't
+        // change Snorlax HP before Endeavor lands (Qwilfish moves first).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 7, "Endeavor brings target down to user's current HP (7)");
+
+        // Failure: now both near-equal — set user HP >= target HP. Heal
+        // Snorlax to below Qwilfish so Endeavor fails (no damage to it).
+        b.p1.team[0].current_hp = 100;
+        b.p2.team[0].current_hp = 50;
+        let snorlax_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, snorlax_before,
+                   "Endeavor fails (no damage) when user HP >= target HP");
     }
 
     #[test]
