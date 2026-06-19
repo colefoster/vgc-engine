@@ -73,6 +73,12 @@ const NATURES: &[Nature] = &[
     Nature { slug: "quirky",  plus: None,             minus: None },
 ];
 
+impl Nature {
+    /// Neutral nature (no stat multipliers). Used as the spread default for
+    /// recon / test builders that construct `Pokemon` with precomputed stats.
+    pub const NEUTRAL: Self = Self { slug: "hardy", plus: None, minus: None };
+}
+
 pub fn nature_by_slug(slug: &str) -> Option<&'static Nature> {
     NATURES.iter().find(|n| n.slug == slug)
 }
@@ -424,6 +430,18 @@ pub struct Pokemon {
     pub item_id: u16,
     pub stats: FinalStats,
     pub current_hp: u16,
+    /// This individual's IV spread. Stored so a mid-battle forme change
+    /// (`Battle::set_forme` with `recompute_stats = true`) can recompute
+    /// the 5 non-HP stats from the new species' base stats — PS keeps the
+    /// `set` reference and recalculates `storedStats` on `formeChange`.
+    /// Set at team build from the `TeamMember`. Recon / test builders that
+    /// synthesize `stats` directly use canonical defaults here; the spread
+    /// is never read unless the mon actually forme-changes.
+    pub ivs: StatSpread,
+    /// This individual's EV spread. See `ivs`.
+    pub evs: StatSpread,
+    /// This individual's nature. See `ivs`.
+    pub nature: Nature,
     pub status: Status,
     /// Stat boost stages in -6..=6 for [atk, def, spa, spd, spe, acc, eva].
     pub boosts: [i8; 7],
@@ -1310,7 +1328,9 @@ mod tests {
             species_id: species_idx, level: 50, gender: data::Gender::Male,
             moves: [u16::MAX; 4], pp: [0; 4],
             ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
-            current_hp: 1, status: Status::None, boosts: [0; 7], fainted: false,
+            current_hp: 1,
+            ivs: StatSpread::MAX_IV, evs: StatSpread::default(), nature: Nature::NEUTRAL,
+            status: Status::None, boosts: [0; 7], fainted: false,
             turns_active: 0,
             last_used_move_slot: 255,
             boosted_stat: 255, booster_locked: false,
@@ -1347,6 +1367,9 @@ mod tests {
             item_id: u16::MAX,
             stats: FinalStats::default(),
             current_hp: 100,
+            ivs: StatSpread::MAX_IV,
+            evs: StatSpread::default(),
+            nature: Nature::NEUTRAL,
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
