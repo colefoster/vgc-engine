@@ -4008,18 +4008,22 @@ impl Battle {
             }
         }
 
-        // Rapid Spin — PS `data/moves.ts:rapidspin` `onAfterHit`. After a
-        // connecting hit (and `onAfterSubDamage` if it hit a Substitute),
-        // the user: frees itself from Leech Seed and partial-trap, clears
-        // every entry hazard on ITS OWN side (Spikes / Toxic Spikes /
-        // Stealth Rock / Sticky Web — `gmaxsteelsurge` not modelled), and
-        // gains +1 Spe via the move's 100% self-secondary. The whole
-        // `onAfterHit` body is gated on `!move.hasSheerForce` (a Sheer
-        // Force user skips both the clears AND the Spe boost). The Spe
-        // boost is routed through `apply_boosts` (Contrary inverts it,
-        // Clear Body does NOT block self-boosts). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>.
-        if m.slug == "rapidspin" && any_damage_dealt > 0 {
+        // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
+        // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
+        // hits). After a connecting hit, the user frees itself from Leech
+        // Seed and partial-trap and clears every entry hazard on ITS OWN
+        // side (Spikes / Toxic Spikes / Stealth Rock / Sticky Web —
+        // `gmaxsteelsurge` not modelled). Rapid Spin ALSO gains +1 Spe via
+        // its 100% self-secondary (Mortal Spin has no Spe boost — its
+        // secondary poisons the foes instead, handled by
+        // `apply_secondary_effect` per target). The whole `onAfterHit`
+        // body is gated on `!move.hasSheerForce` (a Sheer Force user skips
+        // the clears AND, for Rapid Spin, the Spe boost). The Spe boost is
+        // routed through `apply_boosts` (Contrary inverts it; Clear Body
+        // does NOT block self-boosts). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
+        // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
+        if matches!(m.slug, "rapidspin" | "mortalspin") && any_damage_dealt > 0 {
             let sheer_force = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
@@ -4037,7 +4041,9 @@ impl Battle {
                     a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
                 }
                 self.clear_entry_hazards(actor_side);
-                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+                if m.slug == "rapidspin" {
+                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+                }
             }
         }
 
@@ -5985,6 +5991,9 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         | "smog" => (Status::Poison, 30),
         // Poison 10%:
         "poisontail" | "crosspoison" | "poisonsting" => (Status::Poison, 10),
+        // Poison 100% (Mortal Spin — `secondary: { status: 'psn' }`,
+        // target allAdjacentFoes; fired per target by apply_secondary_effect):
+        "mortalspin" => (Status::Poison, 100),
         // Toxic 100% on hit: tox spikes etc. — special, handled elsewhere.
         _ => return None,
     })
@@ -8256,6 +8265,44 @@ mod tests {
         assert_eq!(b.p2.team[0].substitute_hp(), 0, "Tidy Up removes the foe's Substitute");
         assert_eq!(b.p1.team[0].boosts[0], atk_before + 1, "user gains +1 Atk");
         assert_eq!(b.p1.team[0].boosts[4], spe_before + 1, "user gains +1 Spe");
+    }
+
+    #[test]
+    fn mortal_spin_clears_own_hazards_and_poisons_foe_but_no_speed_boost() {
+        // PS data/moves.ts:mortalspin — clears the user's own hazards +
+        // Leech Seed + partial-trap, poisons the foe (100% secondary), and
+        // does NOT boost Speed (that's Rapid Spin only).
+        let p1_json = r#"[
+            {"species":"glimmora","level":50,"ability":"toxicdebris","item":"","nature":"timid","moves":["mortalspin","powergem","stealthrock","spikyshield"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","swordsdance","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.conditions.stealth_rock = true;
+        b.p1.conditions.spikes_layers = 2;
+        b.p1.conditions.sticky_web = true;
+        b.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::LeechSeed,
+            turns_remaining: 0,
+            payload: 0x0100,
+        });
+        let spe_before = b.p1.team[0].boosts[4];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p1.conditions.stealth_rock && b.p1.conditions.spikes_layers == 0
+                    && !b.p1.conditions.sticky_web,
+                "Mortal Spin clears the user's own hazards");
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed),
+                "frees user from Leech Seed");
+        assert_eq!(b.p1.team[0].boosts[4], spe_before, "Mortal Spin does NOT boost Speed");
+        // Garchomp (Ground/Dragon, not Poison/Steel) is now poisoned by
+        // the 100% secondary.
+        assert_eq!(b.p2.team[0].status, Status::Poison, "Mortal Spin poisons the foe");
     }
 
     #[test]
