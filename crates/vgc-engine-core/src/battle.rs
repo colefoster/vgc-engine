@@ -2291,7 +2291,10 @@ impl Battle {
                     {
                         c = def_cur - 1;
                     }
-                    crate::item::on_before_damage(self, tside, tslot, c).unwrap_or(c)
+                    let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                    let out = crate::item::on_before_damage(self, tside, tslot, c, &mut rng).unwrap_or(c);
+                    self.rng = rng;
+                    out
                 };
                 if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     d.current_hp = d.current_hp.saturating_sub(capped);
@@ -3227,8 +3230,13 @@ impl Battle {
                 {
                     capped = def_cur - 1;
                 }
-                // Pre-damage item hook (Focus Sash etc. may cap further).
-                crate::item::on_before_damage(self, tside, tslot, capped).unwrap_or(capped)
+                // Pre-damage item hook (Focus Sash / Focus Band may cap
+                // further). Focus Band draws RNG, so swap it out across
+                // the borrow (mirrors apply_secondary_effect's pattern).
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                let out = crate::item::on_before_damage(self, tside, tslot, capped, &mut rng).unwrap_or(capped);
+                self.rng = rng;
+                out
             };
 
             // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
@@ -7087,6 +7095,55 @@ mod tests {
         assert!(!b.p2.team[0].fainted);
         // Sash consumed.
         assert_eq!(b.p2.team[0].item_id, u16::MAX);
+    }
+
+    #[test]
+    fn focus_band_survives_lethal_hit_on_range0_proc() {
+        // Focus Band: 10% chance (range(10)==0) to survive an otherwise
+        // lethal Move hit at 1 HP, with NO full-HP gate and WITHOUT being
+        // consumed. Garchomp Earthquake OHKOs a frail Pikachu. Inject an
+        // oracle: Range(0) → Focus Band procs → survive at 1 HP, item kept.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focusband","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Proc case: Range(0) consumed at the Focus Band draw → survive.
+        {
+            let rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(0)], 0);
+            let mut b = Battle::with_rng(
+                BattleConfig { format: Format::Singles, seed: 0 },
+                rng, p1.clone(), p2.clone(),
+            );
+            // Not at full HP — Focus Band has no full-HP gate (unlike Sash).
+            let max = b.p2.team[0].stats.hp;
+            b.p2.team[0].current_hp = max - 1;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].current_hp, 1, "Focus Band survives at 1 HP on proc");
+            assert!(!b.p2.team[0].fainted, "holder must not faint on proc");
+            // Focus Band is NOT consumed (persists, unlike Focus Sash).
+            let fb_id = data::ITEMS.iter().position(|i| i.slug == "focusband").unwrap() as u16;
+            assert_eq!(b.p2.team[0].item_id, fb_id, "Focus Band is not consumed");
+        }
+        // No-proc case: Range(1) at the draw → range(10)==1 → no save → faint.
+        {
+            let rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(1)], 0);
+            let mut b = Battle::with_rng(
+                BattleConfig { format: Format::Singles, seed: 0 },
+                rng, p1.clone(), p2.clone(),
+            );
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].fainted, "no proc → Pikachu faints to the OHKO");
+        }
     }
 
     #[test]

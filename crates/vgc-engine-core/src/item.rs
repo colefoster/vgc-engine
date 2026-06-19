@@ -107,11 +107,20 @@ pub fn try_consume_type_resist_berry(
 ///
 /// Focus Sash: when a fatal hit would land on a full-HP holder, cap
 /// damage so the mon survives with 1 HP, and consume the item.
+///
+/// Focus Band: 10% chance to survive any otherwise-lethal hit at 1 HP —
+/// no full-HP gate, and the item is NOT consumed (persists across hits).
+///
+/// `rng` draws the Focus Band proc (PS `randomChance(1, 10)`). Both
+/// checks run on `Move`-source damage only; the engine's damage path
+/// only calls this hook for move damage, so the `effect.effectType ===
+/// 'Move'` gate is implicit.
 pub fn on_before_damage(
     battle: &mut Battle,
     side: SideRef,
     slot: u8,
     incoming: u16,
+    rng: &mut crate::rng::Rng,
 ) -> Option<u16> {
     let item_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => m.item_id,
@@ -129,6 +138,44 @@ pub fn on_before_damage(
                 m.item_id = u16::MAX;
             }
             return Some(current - 1);
+        }
+    }
+    // Focus Band — PS `data/items.ts:focusband` (line 2248):
+    //   onDamagePriority: -40,
+    //   onDamage(damage, target, source, effect) {
+    //     if (this.randomChance(1, 10) && damage >= target.hp &&
+    //         effect && effect.effectType === 'Move') {
+    //       this.add('-activate', target, 'item: Focus Band');
+    //       return target.hp - 1;
+    //     }
+    //   }
+    // 10% chance to survive an otherwise-lethal Move hit at 1 HP. No
+    // full-HP requirement (unlike Focus Sash) and NOT consumed — Focus
+    // Band can save the holder repeatedly. Priority -40 means it resolves
+    // after Sturdy and Focus Sash; the Sash branch above already returned
+    // when it fired, so Band only rolls when Sash didn't (PS's ordering).
+    // PS's `onDamage` fires on EVERY move-damage instance to the holder
+    // and evaluates `this.randomChance(1, 10) && damage >= target.hp`.
+    // Because `&&` short-circuits with the chance as the FIRST operand,
+    // PS draws `randomChance(1, 10)` once per damaging hit (lethal or
+    // not), THEN checks lethality. We mirror that draw order exactly:
+    // draw on any non-zero move-damage hit so the PsGen5 stream stays
+    // aligned, then apply the 1-HP save only when the hit is lethal.
+    // `randomChance(1, 10)` ≡ `random(10) < 1` ≡ `range(10) == 0` —
+    // bit-exact under PsGen5.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Band>.
+    if slug == "focusband" {
+        let current = match battle.side(side).active_mon(slot as usize) {
+            Some(m) => m.current_hp,
+            None => return None,
+        };
+        // Only meaningful on a damaging hit (PS `onDamage` runs when
+        // damage > 0). `incoming == 0` hits don't reach the draw.
+        if incoming > 0 && current > 0 {
+            let proc = rng.range(10) == 0;
+            if proc && incoming >= current {
+                return Some(current - 1);
+            }
         }
     }
     None
