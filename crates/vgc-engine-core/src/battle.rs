@@ -6935,6 +6935,37 @@ mod tests {
     }
 
     #[test]
+    fn toxic_debris_lays_toxic_spikes_on_physical_hit_only() {
+        // PS data/abilities.ts:5061. Glimmora (Toxic Debris) hit by a
+        // physical move lays one Toxic Spikes layer on the ATTACKER's side.
+        // A special hit lays nothing.
+        let p1_json = r#"[
+            {"species":"glimmora","level":50,"ability":"toxicdebris","item":"leftovers","nature":"bold","moves":["powergem","sludgewave","spikyshield","stealthrock"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        // P2 carries one physical and one special move.
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonpulse","stoneedge","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        // Special hit (Dragon Pulse, move_slot 1) — no Toxic Spikes laid.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 0,
+                   "special hit lays no Toxic Spikes");
+        // Physical hit (Earthquake, move_slot 0) — one layer on P2's side.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 1,
+                   "physical hit lays one Toxic Spikes layer on the attacker side");
+    }
+
+    #[test]
     fn color_change_retypes_holder_to_move_type_on_hit() {
         // PS data/abilities.ts:553. Kecleon (Normal) hit by a Water move
         // becomes mono-Water. Type code: Water = 2.
