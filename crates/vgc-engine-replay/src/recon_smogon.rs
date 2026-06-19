@@ -579,7 +579,7 @@ mod tests {
                     ability_id: u16::MAX, ability_override: u16::MAX, item_id: u16::MAX,
                     current_hp: stats.hp, stats,
                     ivs: StatSpread::MAX_IV, evs: StatSpread::default(),
-                    nature: vgc_engine_core::Nature::NEUTRAL,
+                    nature_id: vgc_engine_core::nature_id::NEUTRAL,
                     status: Status::None,
                     boosts: [0; 7], fainted: false,
                     turns_active: 0,

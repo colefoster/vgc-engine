@@ -183,6 +183,9 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
     let species_id = lookup_species(&m.species)?;
     let species = &data::SPECIES[species_id as usize];
     let nature = lookup_nature(&m.nature)?;
+    // `nature.slug` is guaranteed to be in NATURES (it came from there).
+    let nature_id = crate::pokemon::nature_id_by_slug(nature.slug)
+        .expect("nature from NATURES has a table id");
     let stats = compute_stats(species, m.level, &m.ivs, &m.evs, nature);
 
     let mut moves = [u16::MAX; 4];
@@ -253,7 +256,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         stats,
         ivs: m.ivs,
         evs: m.evs,
-        nature: *nature,
+        nature_id,
         status: Status::None,
         boosts: [0; 7],
         fainted: false,

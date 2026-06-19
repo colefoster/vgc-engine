@@ -83,6 +83,57 @@ pub fn nature_by_slug(slug: &str) -> Option<&'static Nature> {
     NATURES.iter().find(|n| n.slug == slug)
 }
 
+/// `Nature` for a stable table id (index into `NATURES`). Companion to the
+/// `nature_id::*` constants; lets `Pokemon::nature_id` (a `u8`) be resolved
+/// back to its multiplier table without storing an embedded `&'static str`.
+#[inline]
+pub fn nature_by_id(id: u8) -> &'static Nature {
+    &NATURES[id as usize]
+}
+
+/// Stable id (index into `NATURES`) for a nature slug, mirroring
+/// `nature_by_slug`. Used at team-build time to store the compact `u8` id
+/// on `Pokemon`.
+#[inline]
+pub fn nature_id_by_slug(slug: &str) -> Option<u8> {
+    NATURES.iter().position(|n| n.slug == slug).map(|i| i as u8)
+}
+
+/// Stable `NATURES` table indices, the nature analog of
+/// `data::ability_id::*`. Hand-written (the nature table lives in this
+/// crate, not the build.rs codegen) but kept in lockstep with `NATURES`
+/// by `nature_ids_match_table` in tests.
+pub mod nature_id {
+    pub const HARDY: u8 = 0;
+    pub const LONELY: u8 = 1;
+    pub const BRAVE: u8 = 2;
+    pub const ADAMANT: u8 = 3;
+    pub const NAUGHTY: u8 = 4;
+    pub const BOLD: u8 = 5;
+    pub const DOCILE: u8 = 6;
+    pub const RELAXED: u8 = 7;
+    pub const IMPISH: u8 = 8;
+    pub const LAX: u8 = 9;
+    pub const TIMID: u8 = 10;
+    pub const HASTY: u8 = 11;
+    pub const SERIOUS: u8 = 12;
+    pub const JOLLY: u8 = 13;
+    pub const NAIVE: u8 = 14;
+    pub const MODEST: u8 = 15;
+    pub const MILD: u8 = 16;
+    pub const QUIET: u8 = 17;
+    pub const BASHFUL: u8 = 18;
+    pub const RASH: u8 = 19;
+    pub const CALM: u8 = 20;
+    pub const GENTLE: u8 = 21;
+    pub const SASSY: u8 = 22;
+    pub const CAREFUL: u8 = 23;
+    pub const QUIRKY: u8 = 24;
+    /// Neutral default (Hardy) — the spread default for recon / test
+    /// builders that synthesize stats directly.
+    pub const NEUTRAL: u8 = HARDY;
+}
+
 /// EV/IV spread. Defaults: 0 EVs / 31 IVs are exposed as named constants
 /// for explicit construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -456,8 +507,11 @@ pub struct Pokemon {
     pub ivs: StatSpread,
     /// This individual's EV spread. See `ivs`.
     pub evs: StatSpread,
-    /// This individual's nature. See `ivs`.
-    pub nature: Nature,
+    /// This individual's nature, stored as a compact `u8` id (index into
+    /// `NATURES`). Resolve with `nature_by_id`. Stored as an id rather than
+    /// an embedded `&'static str`+two `Option<Stat>` to shrink the struct;
+    /// only read on forme-change recompute. See `ivs`.
+    pub nature_id: u8,
     pub status: Status,
     /// Stat boost stages in -6..=6 for [atk, def, spa, spd, spe, acc, eva].
     pub boosts: [i8; 7],
@@ -1457,7 +1511,7 @@ mod tests {
             moves: [u16::MAX; 4], pp: [0; 4],
             ability_id: u16::MAX, ability_override: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1,
-            ivs: StatSpread::MAX_IV, evs: StatSpread::default(), nature: Nature::NEUTRAL,
+            ivs: StatSpread::MAX_IV, evs: StatSpread::default(), nature_id: nature_id::NEUTRAL,
             status: Status::None, boosts: [0; 7], fainted: false,
             turns_active: 0,
             last_used_move_slot: 255,
@@ -1484,6 +1538,23 @@ mod tests {
         assert_eq!(types2[0], 1);
     }
 
+    /// The hand-written `nature_id::*` constants must match the `NATURES`
+    /// table positions they name — the contract `nature_by_id` relies on.
+    #[test]
+    fn nature_ids_match_table() {
+        assert_eq!(NATURES[nature_id::HARDY as usize].slug, "hardy");
+        assert_eq!(NATURES[nature_id::ADAMANT as usize].slug, "adamant");
+        assert_eq!(NATURES[nature_id::JOLLY as usize].slug, "jolly");
+        assert_eq!(NATURES[nature_id::CAREFUL as usize].slug, "careful");
+        assert_eq!(NATURES[nature_id::QUIRKY as usize].slug, "quirky");
+        assert_eq!(nature_id::NEUTRAL, nature_id::HARDY);
+        // Every constant resolves and round-trips through nature_id_by_slug.
+        for (i, n) in NATURES.iter().enumerate() {
+            assert_eq!(nature_id_by_slug(n.slug), Some(i as u8));
+            assert_eq!(nature_by_id(i as u8).slug, n.slug);
+        }
+    }
+
     #[test]
     fn effective_ability_slug_respects_suppression() {
         let species = data::species_by_slug("garchomp").expect("garchomp");
@@ -1501,7 +1572,7 @@ mod tests {
             current_hp: 100,
             ivs: StatSpread::MAX_IV,
             evs: StatSpread::default(),
-            nature: Nature::NEUTRAL,
+            nature_id: nature_id::NEUTRAL,
             status: Status::None,
             boosts: [0; 7],
             fainted: false,

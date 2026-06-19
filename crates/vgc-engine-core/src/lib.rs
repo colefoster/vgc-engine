@@ -33,8 +33,8 @@ pub use damage::{
 pub use format::Format;
 pub use order::{action_order, effective_speed, ScheduledAction};
 pub use pokemon::{
-    compute_stats, nature_by_slug, FinalStats, Nature, Pokemon, Stat, StatSpread, Status,
-    Volatile, VolatileKind, VolatileSet,
+    compute_stats, nature_by_id, nature_by_slug, nature_id, nature_id_by_slug, FinalStats,
+    Nature, Pokemon, Stat, StatSpread, Status, Volatile, VolatileKind, VolatileSet,
 };
 pub use rng::{Rng, RngEvent};
 pub use side::{Side, SideRef};

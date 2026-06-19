@@ -354,7 +354,8 @@ impl Battle {
         let recomputed = if recompute_stats {
             self.side(side).active_mon(slot as usize).map(|m| {
                 let species = &data::SPECIES[new_species_id as usize];
-                crate::pokemon::compute_stats(species, m.level, &m.ivs, &m.evs, &m.nature)
+                let nature = crate::pokemon::nature_by_id(m.nature_id);
+                crate::pokemon::compute_stats(species, m.level, &m.ivs, &m.evs, nature)
             })
         } else {
             None
@@ -7566,7 +7567,7 @@ mod tests {
         // Atk recomputed from the new, much higher base stat.
         assert!(m.stats.atk > zero_atk, "atk recomputed upward: {} vs {}", m.stats.atk, zero_atk);
         // Recompute is exactly compute_stats over the stored spread.
-        let expect = compute_stats(&data::SPECIES[hero_id as usize], m.level, &m.ivs, &m.evs, &m.nature);
+        let expect = compute_stats(&data::SPECIES[hero_id as usize], m.level, &m.ivs, &m.evs, crate::pokemon::nature_by_id(m.nature_id));
         assert_eq!(m.stats.atk, expect.atk, "atk matches spread recompute");
         assert_eq!(m.stats.spe, expect.spe, "spe matches spread recompute");
         // HP stat (max), current_hp, and boosts are all preserved.
