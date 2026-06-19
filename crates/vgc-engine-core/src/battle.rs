@@ -583,6 +583,11 @@ impl Battle {
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
                 m.set_pending_self_switch(false);
+                // Endure is a duration-1 volatile (PS `data/moves.ts:4823`
+                // `condition: { duration: 1 }`): it protects only on the
+                // turn it was used, then expires. Cleared at the same
+                // per-turn reset as Protect so it never carries over.
+                m.volatiles.remove(crate::pokemon::VolatileKind::Endure);
             }
         }
 
@@ -3449,6 +3454,27 @@ impl Battle {
                 {
                     capped = def_cur - 1;
                 }
+                // Endure — PS `data/moves.ts:4827` (the `endure` volatile's
+                //   onDamagePriority: -10,
+                //   onDamage(damage, target, source, effect) {
+                //     if (effect?.effectType === 'Move' && damage >= target.hp)
+                //       return target.hp - 1;
+                //   }
+                // Unlike Sturdy, Endure survives a lethal MOVE hit from ANY
+                // HP (not just full) and is NOT breakable by Mold Breaker.
+                // It only caps move damage; residual (poison / sand / etc.)
+                // can still KO afterward. Runs at priority -10 — after
+                // Sturdy and Focus Sash — but all three clamp to hp-1, so
+                // the relative order is immaterial here. `def_cur > 0`
+                // guards the `- 1`. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Endure_(move)>.
+                let target_endured = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
+                if target_endured && capped >= def_cur && def_cur > 0 {
+                    capped = def_cur - 1;
+                }
                 // Pre-damage item hook (Focus Sash / Focus Band may cap
                 // further). Focus Band draws RNG, so swap it out across
                 // the borrow (mirrors apply_secondary_effect's pattern).
@@ -4975,6 +5001,46 @@ impl Battle {
                 };
                 if success {
                     actor.set_protected(true);
+                    let c = actor.stall_counter().saturating_add(1).min(6);
+                    actor.set_stall(c, true);
+                } else {
+                    actor.set_stall(0, true);
+                }
+            }
+            "endure" => {
+                // Endure — PS `data/moves.ts:4805`. Same stall-counter
+                // family as Protect (`stallingMove: true`, `runEvent(
+                // 'StallMove')` → 1/3^n success), but on success it sets
+                // the `endure` volatile (duration 1) instead of Protect:
+                // the mon does NOT block the hit, it survives lethal MOVE
+                // damage at 1 HP (the clamp in the damage path above).
+                // PS draws the StallMove counter EXACTLY like Protect, so
+                // sharing this code keeps the LCG draw site/order aligned.
+                let stall_counter = {
+                    let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        Some(a) => a,
+                        None => return,
+                    };
+                    actor.mark_used_stall_this_turn();
+                    actor.stall_counter()
+                };
+                let denom: u32 = match stall_counter {
+                    0 => 1,
+                    n => 3u32.saturating_pow(n.min(6) as u32),
+                };
+                let success = self.rng.range(denom) == 0;
+                let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    Some(a) => a,
+                    None => return,
+                };
+                if success {
+                    // Endure volatile, duration 1 (cleared at the per-turn
+                    // volatile reset, same as Protect).
+                    let _ = actor.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::Endure,
+                        turns_remaining: 1,
+                        payload: 0,
+                    });
                     let c = actor.stall_counter().saturating_add(1).min(6);
                     actor.set_stall(c, true);
                 } else {
@@ -14496,6 +14562,78 @@ mod tests {
                 "Own Tempo must block confuse secondary (seed {seed})"
             );
         }
+    }
+
+    #[test]
+    fn endure_survives_lethal_move_at_one_hp() {
+        // PS data/moves.ts:4827 — the `endure` volatile's onDamage caps a
+        // lethal MOVE hit at `target.hp - 1`. A frail mon (Caterpie) that
+        // Endures a guaranteed-OHKO hit from a strong attacker must end
+        // the turn alive at exactly 1 HP. Endure is priority 4, so it
+        // resolves before the attacker's move every time.
+        let attacker = r#"[
+            {"species":"rayquaza","level":50,"ability":"airlock","item":"","nature":"adamant","moves":["dragonascent","extremespeed","earthquake","protect"]}
+        ]"#;
+        let endurer = r#"[
+            {"species":"caterpie","level":5,"ability":"shielddust","item":"","nature":"hardy","moves":["endure","tackle","stringshot","bugbite"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(endurer).unwrap();
+        for seed in 0..30u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(),
+                p2.clone(),
+            );
+            // P2 Endures (move 0), P1 attacks P2 with Extreme Speed (move 1).
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            );
+            assert!(
+                b.p2.team[0].is_alive() && b.p2.team[0].current_hp == 1,
+                "Endure must leave the target alive at 1 HP (seed {seed}, hp={})",
+                b.p2.team[0].current_hp,
+            );
+        }
+    }
+
+    #[test]
+    fn endure_expires_next_turn() {
+        // Endure is a duration-1 volatile: it protects only the turn it
+        // was used. Without re-using Endure, the next lethal hit KOs.
+        let attacker = r#"[
+            {"species":"rayquaza","level":50,"ability":"airlock","item":"","nature":"adamant","moves":["dragonascent","extremespeed","earthquake","protect"]}
+        ]"#;
+        let endurer = r#"[
+            {"species":"caterpie","level":5,"ability":"shielddust","item":"","nature":"hardy","moves":["endure","tackle","stringshot","bugbite"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(endurer).unwrap();
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            p1.clone(),
+            p2.clone(),
+        );
+        // Turn 1: Endure + lethal hit → survive at 1.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 1, "turn 1 endure should leave 1 HP");
+        // The Endure volatile is duration-1; it is cleared at the START of
+        // the next step's per-turn reset (same timing as the Protect flag),
+        // so the functional check is that turn 2 — without re-using Endure —
+        // no longer protects.
+        // Turn 2: NO Endure (use Tackle), same lethal hit → faints.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            b.p2.team[0].fainted,
+            "without Endure the next lethal hit must KO",
+        );
     }
 
     #[test]
