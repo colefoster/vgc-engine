@@ -32,7 +32,11 @@ poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
   (move + Cute Charm), Encore (move), Disable (Cursed Body). Taunt / Torment /
   Heal Block have no setter in the engine yet, so their Aroma Veil immunity is
   **vacuous-pending** — wire it when those volatiles first gain an applier.
-- **Pressure** + **Frisk** — deferred no-ops (no PP system / information-only).
+- **Pressure** — SHIPPED (PR-338): the engine tracks PP, so Pressure now
+  deducts +1 PP per foe target holding it (spread moves sum per Pressure
+  target). The switch-in `-ability` message is cosmetic and intentionally
+  skipped. Hooked at every PP-decrement site in `battle.rs`.
+- **Frisk** — deferred no-op (information-only; no battle effect to model).
 
 **Note:** Wind Rider / Wind Power are otherwise complete; only their
 **Tailwind-set triggers** are missing (the wind-move-hit paths are done — see
@@ -46,7 +50,7 @@ poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
 | Small | 14 |
 | Medium | 10 |
 | Hard | 8 |
-| Deferred (gen-9 N/A or non-effect) | 2 |
+| Deferred (gen-9 N/A or non-effect) | 1 (Frisk; Pressure shipped PR-338) |
 | **Total entries** | **45** |
 
 ## Suggested shipping order
@@ -96,7 +100,7 @@ labelled "batch".
 29. **Aromatherapy Veil (Aroma Veil)** — partners Taunt/Disable/Encore/Heal-Block-immune;
     blocked on those volatiles.
 30. **Pastel Veil** — partners poison-immune; small.
-31. **Pressure** — deferred (no PP tracking in engine).
+31. **Pressure** — SHIPPED (PR-338); engine tracks PP, +1 per foe target.
 32. **Frisk** — deferred (information-only, no battle effect).
 
 ---
@@ -590,14 +594,19 @@ labelled "batch".
 
 ---
 
-## Deferred (gen-9 N/A or no battle effect)
+## Shipped / Deferred (gen-9 N/A or no battle effect)
 
-### Pressure
+### Pressure — SHIPPED (PR-338)
 
 - **slug:** `pressure`
-- **PS:** `data/abilities.ts:3392` (consumes 2 PP per move targeting user)
-- **Behavior:** Foes use 2 PP per move targeting the user.
-- **Deferred:** PP not tracked in engine. Mark as no-op until PP system lands.
+- **PS:** `data/abilities.ts:3392` (`onDeductPP` returns 1 for a non-ally
+  source) applied via `sim/battle-actions.ts:467-484`.
+- **Behavior:** A foe move that targets the Pressure holder costs +1 PP (2
+  total). In doubles a spread move sums +1 per Pressure foe it targets.
+- **Shipped:** Engine DOES track PP (populated at team-build, decremented on
+  use, gates selection at 0). `pressure_extra_pp` in `battle.rs` counts foe
+  targets holding active Pressure and is added at every PP-decrement site.
+  The switch-in `-ability` message is cosmetic and skipped.
 
 ### Frisk
 
