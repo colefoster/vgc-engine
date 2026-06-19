@@ -10,17 +10,6 @@ use crate::battle::Battle;
 use crate::side::SideRef;
 use vgc_engine_data as data;
 
-/// Look up an ability slug by id. Returns `""` if id is the sentinel.
-fn ability_slug(id: u16) -> &'static str {
-    if id == u16::MAX {
-        return "";
-    }
-    data::ABILITIES
-        .get(id as usize)
-        .map(|a| a.slug)
-        .unwrap_or("")
-}
-
 /// Returns true if the mon has Magic Guard. Magic Guard's PS handler is
 /// an `onDamage` that returns `false` for any `effect.effectType !== 'Move'`
 /// — so it blocks every indirect-damage source: status DOT (brn/psn/tox),
@@ -30,7 +19,7 @@ fn ability_slug(id: u16) -> &'static str {
 /// still goes through. PS: `data/abilities.ts:2420-2430`.
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Guard_(Ability)>.
 pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
-    ability_slug(mon.ability_id) == "magicguard"
+    mon.ability_id == data::ability_id::MAGICGUARD
 }
 
 /// Rock Head — PS `data/abilities.ts:rockhead` `onDamage`:
@@ -41,7 +30,7 @@ pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
 /// users. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Rock_Head_(Ability)>.
 pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
-    ability_slug(mon.ability_id) == "rockhead"
+    mon.ability_id == data::ability_id::ROCKHEAD
 }
 
 /// Ability Shield — PS `data/items.ts:abilityshield` registers a fleet of
@@ -60,10 +49,7 @@ pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
 ///
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ability_Shield>.
 pub(crate) fn has_ability_shield(mon: &crate::pokemon::Pokemon) -> bool {
-    if mon.item_id == u16::MAX {
-        return false;
-    }
-    data::ITEMS[mon.item_id as usize].slug == "abilityshield"
+    mon.item_id == data::item_id::ABILITYSHIELD
 }
 
 /// Returns true if `mon` cannot have its stats lowered by an OPPOSING
@@ -84,16 +70,16 @@ pub(crate) fn has_ability_shield(mon: &crate::pokemon::Pokemon) -> bool {
 /// breakable. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Clear_Amulet>.
 pub(crate) fn blocks_opposing_stat_drop(mon: &crate::pokemon::Pokemon) -> bool {
-    let ab = mon.effective_ability_slug();
-    if matches!(ab, "clearbody" | "whitesmoke" | "fullmetalbody") {
+    let ab = mon.effective_ability_id();
+    if matches!(
+        ab,
+        data::ability_id::CLEARBODY
+            | data::ability_id::WHITESMOKE
+            | data::ability_id::FULLMETALBODY
+    ) {
         return true;
     }
-    let item_slug = if mon.item_id == u16::MAX {
-        ""
-    } else {
-        data::ITEMS[mon.item_id as usize].slug
-    };
-    item_slug == "clearamulet"
+    mon.item_id == data::item_id::CLEARAMULET
 }
 
 /// Per-stat extension of `blocks_opposing_stat_drop`. Covers the
@@ -115,11 +101,11 @@ pub(crate) fn blocks_opposing_stat_drop_for(
     if blocks_opposing_stat_drop(mon) {
         return true;
     }
-    let ab = mon.effective_ability_slug();
+    let ab = mon.effective_ability_id();
     match (ab, stat_idx) {
-        ("hypercutter", 0) => true, // Atk
-        ("bigpecks", 1) => true,    // Def
-        ("keeneye", 5) => true,     // Acc
+        (data::ability_id::HYPERCUTTER, 0) => true, // Atk
+        (data::ability_id::BIGPECKS, 1) => true,    // Def
+        (data::ability_id::KEENEYE, 5) => true,     // Acc
         _ => false,
     }
 }
@@ -128,18 +114,18 @@ pub(crate) fn blocks_opposing_stat_drop_for(
 ///
 /// PS data/abilities.ts: each blocker has an onTryBoost / onTryHit hook
 /// that vetoes the atk drop. Gen 9 list:
-fn blocks_intimidate(ability: &str) -> bool {
+fn blocks_intimidate(ability_id: u16) -> bool {
     matches!(
-        ability,
-        "clearbody"
-            | "fullmetalbody"
-            | "hypercutter"
-            | "whitesmoke"
-            | "innerfocus"
-            | "owntempo"
-            | "oblivious"
-            | "scrappy"
-            | "guarddog" // gen 9 Houndstone — actually atk +1 on intimidate (counter-trigger);
+        ability_id,
+        data::ability_id::CLEARBODY
+            | data::ability_id::FULLMETALBODY
+            | data::ability_id::HYPERCUTTER
+            | data::ability_id::WHITESMOKE
+            | data::ability_id::INNERFOCUS
+            | data::ability_id::OWNTEMPO
+            | data::ability_id::OBLIVIOUS
+            | data::ability_id::SCRAPPY
+            | data::ability_id::GUARDDOG // gen 9 Houndstone — actually atk +1 on intimidate (counter-trigger);
                         // including here as a blocker for the drop is correct, but the +1
                         // counter is deferred to its own PR.
     )
@@ -164,13 +150,13 @@ pub(crate) fn react_to_opposing_stat_drop(
     target_side: SideRef,
     target_slot: u8,
 ) {
-    let slug = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) if m.is_alive() => ability_slug(m.ability_id),
+    let ability_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) if m.is_alive() => m.ability_id,
         _ => return,
     };
-    let stat_index: usize = match slug {
-        "defiant" => 0,      // Atk
-        "competitive" => 2,  // SpA
+    let stat_index: usize = match ability_id {
+        data::ability_id::DEFIANT => 0,      // Atk
+        data::ability_id::COMPETITIVE => 2,  // SpA
         _ => return,
     };
     // Defiant / Competitive rebound is a self-boost (PS source = target).
@@ -218,15 +204,15 @@ pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
 /// Currently handles `protosynthesis` (trigger: Sun weather). Quark
 /// Drive (Electric Terrain) lands once terrain state is in.
 pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
-    let (slug, currently_active, locked) = match battle.side(side).active_mon(slot as usize) {
+    let (ability_id, currently_active, locked) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => {
-            (ability_slug(m.ability_id), m.boosted_stat != 255, m.booster_locked)
+            (m.ability_id, m.boosted_stat != 255, m.booster_locked)
         }
         _ => return,
     };
-    let trigger = match slug {
-        "protosynthesis" => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
-        "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
+    let trigger = match ability_id {
+        data::ability_id::PROTOSYNTHESIS => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
+        data::ability_id::QUARKDRIVE => matches!(battle.terrain, crate::terrain::Terrain::Electric),
         _ => return,
     };
     if trigger && !currently_active {
@@ -259,22 +245,22 @@ pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
 /// Energy, so Knock Off / Trick / Bug Bite can't strip it (deferred until
 /// those land).
 fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
-    let (ability_slug_, item_slug_, already_active, is_alive) =
+    let (ability_id, item_id, already_active, is_alive) =
         match battle.side(side).active_mon(slot as usize) {
             Some(m) => (
-                ability_slug(m.ability_id),
-                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug },
+                m.ability_id,
+                m.item_id,
                 m.boosted_stat != 255,
                 m.is_alive(),
             ),
             None => return,
         };
-    if !is_alive || already_active || item_slug_ != "boosterenergy" {
+    if !is_alive || already_active || item_id != data::item_id::BOOSTERENERGY {
         return;
     }
-    let trigger_active = match ability_slug_ {
-        "protosynthesis" => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
-        "quarkdrive" => matches!(battle.terrain, crate::terrain::Terrain::Electric),
+    let trigger_active = match ability_id {
+        data::ability_id::PROTOSYNTHESIS => matches!(battle.effective_weather(), crate::weather::Weather::Sun),
+        data::ability_id::QUARKDRIVE => matches!(battle.terrain, crate::terrain::Terrain::Electric),
         _ => return,
     };
     if trigger_active {
@@ -301,16 +287,14 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) => m.ability_id,
         None => return,
     };
-    let slug = ability_slug(ability_id);
-
     // Weather-setting abilities. Gen 9: 5-turn duration; weather rocks
     // (Damp/Heat/Smooth/Icy Rock) extend to 8 when the setter holds the
     // matching rock.
-    let new_weather = match slug {
-        "drizzle" => Some(crate::weather::Weather::Rain),
-        "drought" | "orichalcumpulse" => Some(crate::weather::Weather::Sun),
-        "sandstream" | "sandspit" => Some(crate::weather::Weather::Sand),
-        "snowwarning" => Some(crate::weather::Weather::Snow),
+    let new_weather = match ability_id {
+        data::ability_id::DRIZZLE => Some(crate::weather::Weather::Rain),
+        data::ability_id::DROUGHT | data::ability_id::ORICHALCUMPULSE => Some(crate::weather::Weather::Sun),
+        data::ability_id::SANDSTREAM | data::ability_id::SANDSPIT => Some(crate::weather::Weather::Sand),
+        data::ability_id::SNOWWARNING => Some(crate::weather::Weather::Snow),
         _ => None,
     };
     if let Some(w) = new_weather {
@@ -325,15 +309,17 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // ability through `field.setWeather`).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_Rock>
             //             etc.
-            let item_slug = if let Some(m) = battle.side(side).active_mon(slot as usize) {
-                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
-            } else { "" };
+            let item_id = battle
+                .side(side)
+                .active_mon(slot as usize)
+                .map(|m| m.item_id)
+                .unwrap_or(u16::MAX);
             let extended = matches!(
-                (w, item_slug),
-                (crate::weather::Weather::Rain, "damprock")
-                | (crate::weather::Weather::Sun, "heatrock")
-                | (crate::weather::Weather::Sand, "smoothrock")
-                | (crate::weather::Weather::Snow, "icyrock")
+                (w, item_id),
+                (crate::weather::Weather::Rain, data::item_id::DAMPROCK)
+                | (crate::weather::Weather::Sun, data::item_id::HEATROCK)
+                | (crate::weather::Weather::Sand, data::item_id::SMOOTHROCK)
+                | (crate::weather::Weather::Snow, data::item_id::ICYROCK)
             );
             battle.weather_turns = if extended { 8 } else { 5 };
         }
@@ -349,11 +335,11 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     //   mistysurge:    Misty Terrain (Tapu Fini)
     // All share the standard onStart `this.field.setTerrain(...)` shape;
     // duration follows the held-item extender via on_switch_in_item.
-    let new_terrain = match slug {
-        "electricsurge" | "hadronengine" => Some(crate::terrain::Terrain::Electric),
-        "psychicsurge" => Some(crate::terrain::Terrain::Psychic),
-        "grassysurge" => Some(crate::terrain::Terrain::Grassy),
-        "mistysurge" => Some(crate::terrain::Terrain::Misty),
+    let new_terrain = match ability_id {
+        data::ability_id::ELECTRICSURGE | data::ability_id::HADRONENGINE => Some(crate::terrain::Terrain::Electric),
+        data::ability_id::PSYCHICSURGE => Some(crate::terrain::Terrain::Psychic),
+        data::ability_id::GRASSYSURGE => Some(crate::terrain::Terrain::Grassy),
+        data::ability_id::MISTYSURGE => Some(crate::terrain::Terrain::Misty),
         _ => None,
     };
     if let Some(t) = new_terrain {
@@ -364,10 +350,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             //     if (effect && [...terrains].includes(effect.id)) return 8;
             //   }
             // Reads the SETTER's held item (not the field-owner's).
-            let item_slug = if let Some(m) = battle.side(side).active_mon(slot as usize) {
-                if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
-            } else { "" };
-            battle.terrain_turns = if item_slug == "terrainextender" { 8 } else { 5 };
+            let item_id = battle
+                .side(side)
+                .active_mon(slot as usize)
+                .map(|m| m.item_id)
+                .unwrap_or(u16::MAX);
+            battle.terrain_turns = if item_id == data::item_id::TERRAINEXTENDER { 8 } else { 5 };
             // PS `onTerrainChange` dispatch for terrain seeds — fires on
             // BOTH actives (any side) when the field's terrain changes.
             let n = battle.format().active_count() as u8;
@@ -387,7 +375,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // only adjacent ally is the partner slot. Capped at the ally's max
     // HP (PS `heal()` clamps). No effect if the ally is fainted.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Hospitality_(Ability)>.
-    if slug == "hospitality" && battle.format().active_count() > 1 {
+    if ability_id == data::ability_id::HOSPITALITY && battle.format().active_count() > 1 {
         let partner_slot = if slot == 0 { 1 } else { 0 };
         if let Some(ally) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
             if ally.is_alive() {
@@ -408,11 +396,11 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // the Tera-form species slugs (`ogerponXteratera`) only exist
     // post-Terastallize, so the gate is sufficient in practice.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Embody_Aspect_(Ability)>.
-    let embody_stat = match slug {
-        "embodyaspectteal" => Some((4u8, data::species_id::OGERPONTEALTERA)),
-        "embodyaspectwellspring" => Some((3, data::species_id::OGERPONWELLSPRINGTERA)),
-        "embodyaspecthearthflame" => Some((0, data::species_id::OGERPONHEARTHFLAMETERA)),
-        "embodyaspectcornerstone" => Some((1, data::species_id::OGERPONCORNERSTONETERA)),
+    let embody_stat = match ability_id {
+        data::ability_id::EMBODYASPECTTEAL => Some((4u8, data::species_id::OGERPONTEALTERA)),
+        data::ability_id::EMBODYASPECTWELLSPRING => Some((3, data::species_id::OGERPONWELLSPRINGTERA)),
+        data::ability_id::EMBODYASPECTHEARTHFLAME => Some((0, data::species_id::OGERPONHEARTHFLAMETERA)),
+        data::ability_id::EMBODYASPECTCORNERSTONE => Some((1, data::species_id::OGERPONCORNERSTONETERA)),
         _ => None,
     };
     if let Some((stat_idx, expected_id)) = embody_stat {
@@ -441,7 +429,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Zero to Hero) is approximated as just "no copying Trace" — most
     // top-100 mons don't run those.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
-    if slug == "trace" {
+    if ability_id == data::ability_id::TRACE {
         // Ability Shield on the Trace user blocks the change to its own
         // ability — PS `onSetAbility` returns false.
         let user_shielded = battle
@@ -457,9 +445,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                     Some(m) if m.is_alive() => m.ability_id,
                     _ => continue,
                 };
-                if candidate == u16::MAX { continue; }
-                let cslug = ability_slug(candidate);
-                if cslug.is_empty() || cslug == "trace" { continue; }
+                if candidate == u16::MAX || candidate == data::ability_id::TRACE { continue; }
                 // Ability Shield on the target blocks Trace from copying
                 // off it — PS `onCopyAbility` returns false on the target.
                 let target_shielded = battle
@@ -496,7 +482,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // skip for now), and types are derived from the cloned species_id so
     // they update for free. HP and max HP are preserved per PS Transform.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Imposter_(Ability)>.
-    if slug == "imposter" {
+    if ability_id == data::ability_id::IMPOSTER {
         let opp = side.opposing();
         let target_payload = battle
             .side(opp)
@@ -525,7 +511,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // as a turn counter on the mon. While > 0, damage.rs halves Atk
     // and the Spe lookup (battle.rs order calc) halves Spe.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Slow_Start_(Ability)>.
-    if slug == "slowstart" {
+    if ability_id == data::ability_id::SLOWSTART {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.slow_start_active_turns = 5;
         }
@@ -535,7 +521,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // volatile with `effectState.loafing = false`. We initialise the
     // flag to false (uses move turn 1) and flip in the before-move
     // path. Reset on switch-out alongside the rest of per-mon state.
-    if slug == "truant" {
+    if ability_id == data::ability_id::TRUANT {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.truant_loafing = false;
         }
@@ -551,7 +537,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // (psn/tox can't be applied to the holder or its allies) lives in
     // `Battle::try_set_status`. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Pastel_Veil_(Ability)>.
-    if slug == "pastelveil" {
+    if ability_id == data::ability_id::PASTELVEIL {
         let n = battle.format().active_count() as u8;
         for s in 0..n {
             if let Some(m) = battle.side_mut(side).active_mon_mut(s as usize) {
@@ -564,7 +550,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
-    if slug == "intimidate" {
+    if ability_id == data::ability_id::INTIMIDATE {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
         // drop, run the target's `onAfterEachBoost` — Defiant (+2 Atk)
@@ -579,7 +565,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         let n = battle.format().active_count() as u8;
         for s in 0..n {
             let target_ability = match battle.side(opp).active_mon(s as usize) {
-                Some(m) if m.is_alive() => ability_slug(m.ability_id),
+                Some(m) if m.is_alive() => m.ability_id,
                 _ => continue,
             };
             // Adrenaline Orb — PS `data/items.ts:adrenalineorb` line 111
@@ -594,8 +580,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // <https://bulbapedia.bulbagarden.net/wiki/Adrenaline_Orb>.
             let adrenaline = battle.side(opp).active_mon(s as usize)
                 .map(|m| m.is_alive()
-                    && m.item_id != u16::MAX
-                    && data::ITEMS[m.item_id as usize].slug == "adrenalineorb"
+                    && m.item_id == data::item_id::ADRENALINEORB
                     && m.boosts[4] < 6)
                 .unwrap_or(false);
             if adrenaline {
@@ -611,8 +596,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // Clear Amulet (held item) ALSO vetoes Intimidate's atk drop
             // (PS `data/items.ts:clearamulet` `onTryBoost`).
             let amulet = battle.side(opp).active_mon(s as usize)
-                .map(|m| m.item_id != u16::MAX
-                    && data::ITEMS[m.item_id as usize].slug == "clearamulet")
+                .map(|m| m.item_id == data::item_id::CLEARAMULET)
                 .unwrap_or(false);
             if amulet {
                 continue;
@@ -636,7 +620,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // the drop). Triggers after the drop lands.
             // Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
-            if target_ability == "rattled" {
+            if target_ability == data::ability_id::RATTLED {
                 // Self-boost (+1 Spe) on the intimidated Rattled holder.
                 battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
             }
@@ -674,11 +658,11 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 /// resolution. Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Regenerator_(Ability)>.
 pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
-    let slug = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => ability_slug(m.ability_id),
+    let ability_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.ability_id,
         _ => return,
     };
-    if slug == "regenerator" {
+    if ability_id == data::ability_id::REGENERATOR {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             let heal = (m.stats.hp / 3).max(1);
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
@@ -689,7 +673,7 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
     // Clears any persistent status on switch-out. Blissey / Stantler /
     // Celebi signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Natural_Cure_(Ability)>.
-    if slug == "naturalcure" {
+    if ability_id == data::ability_id::NATURALCURE {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.status = crate::pokemon::Status::None;
         }
@@ -708,15 +692,15 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
 /// and weather damage — the relative order matches PS (item order ≈ 5,
 /// status ≈ 9, speedboost = 28).
 pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
-    let (slug, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (ability_slug(m.ability_id), m.switched_in_this_turn()),
+    let (ability_id, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (m.ability_id, m.switched_in_this_turn()),
         _ => return,
     };
 
     // Slow Start counter — decrement at end of turn while > 0.
     // PS keeps a turn counter on the slowstart volatile; we mirror
     // the same lifetime here.
-    if slug == "slowstart" {
+    if ability_id == data::ability_id::SLOWSTART {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if m.slow_start_active_turns > 0 {
                 m.slow_start_active_turns -= 1;
@@ -732,7 +716,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     //   }
     // 33% chance per turn to cure persistent status. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Shed_Skin_(Ability)>.
-    if slug == "shedskin" {
+    if ability_id == data::ability_id::SHEDSKIN {
         let statused = battle
             .side(side)
             .active_mon(slot as usize)
@@ -758,7 +742,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // Cures any persistent status at end-of-turn under Rain. Vaporeon /
     // Manaphy / Goodra signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hydration_(Ability)>.
-    if slug == "hydration" && matches!(battle.effective_weather(), crate::weather::Weather::Rain) {
+    if ability_id == data::ability_id::HYDRATION && matches!(battle.effective_weather(), crate::weather::Weather::Rain) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !matches!(m.status, crate::pokemon::Status::None) {
                 m.status = crate::pokemon::Status::None;
@@ -779,7 +763,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // Doubles-only — 30% chance per turn to cure each adjacent ally's
     // major status. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Healer_(Ability)>.
-    if slug == "healer" && battle.format().active_count() > 1 {
+    if ability_id == data::ability_id::HEALER && battle.format().active_count() > 1 {
         let n = battle.format().active_count() as u8;
         for s in 0..n {
             if s == slot { continue; }
@@ -801,7 +785,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // truthy for any mon already on the field at turn-start (including
     // turn-1 starters) and 0 for mons brought in via this turn's switch
     // action. Our `switched_in_this_turn` flag is that exact bit.
-    if slug == "speedboost" && !switched_in_this_turn {
+    if ability_id == data::ability_id::SPEEDBOOST && !switched_in_this_turn {
         // Self-boost (+1 Spe) at end of turn.
         battle.apply_boosts(side, slot, &[(4, 1)], side, slot);
     }
@@ -833,7 +817,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // `range`). Both boosts are applied together via the apply_boosts
     // choke point. Octillery / Bidoof / Glalie line.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moody_(Ability)>.
-    if slug == "moody" {
+    if ability_id == data::ability_id::MOODY {
         let boosts = match battle.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => m.boosts,
             _ => return,
@@ -891,7 +875,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // 1/8 max HP chip at end of turn while Sun is up. Routed through PS
     // `damage()` → Magic Guard's `onDamage` returns false → MG blocks it.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
-    if slug == "solarpower" && matches!(battle.effective_weather(), crate::weather::Weather::Sun) {
+    if ability_id == data::ability_id::SOLARPOWER && matches!(battle.effective_weather(), crate::weather::Weather::Sun) {
         let mg = battle
             .side(side)
             .active_mon(slot as usize)
@@ -918,7 +902,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // is unblockable (Magic Guard only affects damage). Toxicroak /
     // Croagunk / Parasect.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
-    if slug == "dryskin" {
+    if ability_id == data::ability_id::DRYSKIN {
         match battle.effective_weather() {
             crate::weather::Weather::Rain => {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -970,8 +954,8 @@ pub fn on_damaging_hit(
     // (PS contact-status abilities like Static still paralyze the
     // attacker even if the target faints). Per-arm gates below decide
     // whether the target being alive is required.
-    let (slug, target_alive) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (ability_slug(m.ability_id), m.is_alive()),
+    let (ability_id, target_alive) = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => (m.ability_id, m.is_alive()),
         None => return,
     };
     // Cotton Down — PS `data/abilities.ts:715` `onDamagingHit`:
@@ -983,7 +967,7 @@ pub fn on_damaging_hit(
     // Eiscue / Whimsicott signature. Carries no breakable flag — Mold
     // Breaker does NOT bypass. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Cotton_Down_(Ability)>.
-    if slug == "cottondown" && target_alive {
+    if ability_id == data::ability_id::COTTONDOWN && target_alive {
         let n = battle.format().active_count() as u8;
         for sd in [SideRef::P1, SideRef::P2] {
             for s in 0..n {
@@ -1022,7 +1006,7 @@ pub fn on_damaging_hit(
     // holder surviving and not already carrying the type. Reset on
     // switch-out via `clear_type_override`. Kecleon signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Color_Change_(Ability)>.
-    if slug == "colorchange" && target_alive {
+    if ability_id == data::ability_id::COLORCHANGE && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type != u8::MAX {
             let already_has = battle
@@ -1059,7 +1043,7 @@ pub fn on_damaging_hit(
     // even on a KO hit (PS has no `!target.hp` gate) and regardless of
     // contact. `move.category` Physical = 0. Glimmora signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Debris_(Ability)>.
-    if slug == "toxicdebris" && data::MOVES[move_id as usize].category == 0 {
+    if ability_id == data::ability_id::TOXICDEBRIS && data::MOVES[move_id as usize].category == 0 {
         // The attacker is by definition a foe of the holder, so the layer
         // lands on the attacker's own side.
         let layers = &mut battle.side_mut(attacker_side).conditions.toxic_spikes_layers;
@@ -1078,7 +1062,7 @@ pub fn on_damaging_hit(
     // holder surviving (a fainted mon can't carry a volatile).
     // Wattrel / Kilowattrel signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Wind_Power_(Ability)>.
-    if slug == "windpower" && target_alive && data::MOVES[move_id as usize].is_wind {
+    if ability_id == data::ability_id::WINDPOWER && target_alive && data::MOVES[move_id as usize].is_wind {
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
@@ -1091,7 +1075,7 @@ pub fn on_damaging_hit(
     // on the handler). Skipped on a KO hit — a fainted mon can't carry
     // a stat boost. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
-    if slug == "stamina" && target_alive {
+    if ability_id == data::ability_id::STAMINA && target_alive {
         // Self-boost (+1 Def) on hit.
         battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
     }
@@ -1106,7 +1090,7 @@ pub fn on_damaging_hit(
     // Substitute-absorbed hits don't reach the holder (caller gates on
     // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
-    if slug == "angerpoint" && target_alive && crit {
+    if ability_id == data::ability_id::ANGERPOINT && target_alive && crit {
         // PS `boost({atk: 12})` — adding 12 to any in-range stage clamps to
         // +6, identical to the old absolute `= 6`. Self-boost.
         battle.apply_boosts(target_side, target_slot, &[(0, 12)], target_side, target_slot);
@@ -1125,7 +1109,7 @@ pub fn on_damaging_hit(
     // PS `last_damage_taken` is the damage just applied, so pre-HP =
     // current + last_damage_taken. Drampa / Kommo-o signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Berserk_(Ability)>.
-    if slug == "berserk" && target_alive {
+    if ability_id == data::ability_id::BERSERK && target_alive {
         if let Some(t) = battle.side(target_side).active_mon(target_slot as usize) {
             let max = t.stats.hp as u32;
             let post = t.current_hp as u32;
@@ -1145,7 +1129,7 @@ pub fn on_damaging_hit(
     //   }
     // +1 Atk on incoming Dark move. Lucario / Arcanine / Gallade etc.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Justified_(Ability)>.
-    if slug == "justified" && target_alive {
+    if ability_id == data::ability_id::JUSTIFIED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 15 {
             // Justified self-boost (+1 Atk) on incoming Dark move.
@@ -1160,7 +1144,7 @@ pub fn on_damaging_hit(
     // move. Skipped on a KO hit — fainted mons can't carry stages.
     // Iron Treads / Coalossal signature. Type codes: 1=Fire, 2=Water.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Steam_Engine_(Ability)>.
-    if slug == "steamengine" && target_alive {
+    if ability_id == data::ability_id::STEAMENGINE && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 1 || move_type == 2 {
             // Steam Engine self-boost — PS `boost({spe: 6})` (additive +6).
@@ -1178,7 +1162,7 @@ pub fn on_damaging_hit(
     // Intimidate'd (Intimidate trigger handled at the Intimidate site
     // — TODO when Rattled holders see Intimidate). Gumshoos / Sableye HA.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
-    if slug == "rattled" && target_alive {
+    if ability_id == data::ability_id::RATTLED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if matches!(move_type, 6 | 13 | 15) {
             // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
@@ -1198,7 +1182,7 @@ pub fn on_damaging_hit(
     // fire (sheerforce sets `move.hasSheerForce` which the damage event
     // suppresses). Tatsugiri signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Shell_(Ability)>.
-    if slug == "angershell" && target_alive {
+    if ability_id == data::ability_id::ANGERSHELL && target_alive {
         let sheer_force_strip = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -1242,7 +1226,7 @@ pub fn on_damaging_hit(
         .active_mon(attacker_slot as usize)
         .map(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a))
         .unwrap_or(false);
-    if slug == "roughskin" || slug == "ironbarbs" {
+    if ability_id == data::ability_id::ROUGHSKIN || ability_id == data::ability_id::IRONBARBS {
         if move_makes_contact_from_attacker {
             let attacker_alive_and_no_mg = battle
                 .side(attacker_side)
@@ -1274,10 +1258,10 @@ pub fn on_damaging_hit(
     // and Magic Guard / Substitute on the attacker block the status
     // landing for the same reasons damage doesn't tick. Cute Charm
     // (infatuate volatile) deferred — infatuation isn't modelled yet.
-    let contact_status = match slug {
-        "static" => Some(crate::pokemon::Status::Paralysis),
-        "flamebody" => Some(crate::pokemon::Status::Burn),
-        "poisonpoint" => Some(crate::pokemon::Status::Poison),
+    let contact_status = match ability_id {
+        data::ability_id::STATIC => Some(crate::pokemon::Status::Paralysis),
+        data::ability_id::FLAMEBODY => Some(crate::pokemon::Status::Burn),
+        data::ability_id::POISONPOINT => Some(crate::pokemon::Status::Poison),
         _ => None,
     };
     if let Some(status) = contact_status {
@@ -1306,7 +1290,7 @@ pub fn on_damaging_hit(
     // Oblivious-immune, not already attracted) exactly as the Attract move
     // applies them. Clefable / Wigglytuff signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Cute_Charm_(Ability)>.
-    if slug == "cutecharm" && move_makes_contact_from_attacker {
+    if ability_id == data::ability_id::CUTECHARM && move_makes_contact_from_attacker {
         let attacker_alive = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -1333,7 +1317,7 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| {
-                    a.effective_ability_slug() == "oblivious" || a.is_attracted()
+                    a.effective_ability_id() == data::ability_id::OBLIVIOUS || a.is_attracted()
                 });
             // Aroma Veil — the would-be-infatuated attacker (or a partner on
             // its side) being immune vetoes the Attract. PS
@@ -1371,8 +1355,7 @@ pub fn on_damaging_hit(
     // decrements its first turn because the attacker is the active mon
     // mid-move (`activeMove` set, not external). Gengar / Froslass HA.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cursed_Body_(Ability)>.
-    if slug == "cursedbody" {
-        let move_slug = data::MOVES[move_id as usize].slug;
+    if ability_id == data::ability_id::CURSEDBODY {
         let attacker_eligible = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
@@ -1385,7 +1368,7 @@ pub fn on_damaging_hit(
         // ability). The 30% RNG draw still fires for PsGen5 PRNG alignment.
         let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
         if attacker_eligible
-            && move_slug != "struggle"
+            && move_id != data::move_id::STRUGGLE
             && rng.percent_1_100() <= 30
             && !aroma_veil_protects
         {
@@ -1414,7 +1397,7 @@ pub fn on_damaging_hit(
     // Powder immunity gates: Grass-types, Overcoat, Safety Goggles.
     // PS source uses `runStatusImmunity('powder')` — we approximate by
     // skipping Grass-type attackers. Overcoat/Safety Goggles deferred.
-    if slug == "effectspore" {
+    if ability_id == data::ability_id::EFFECTSPORE {
         if move_makes_contact_from_attacker {
             let attacker_alive = battle
                 .side(attacker_side)
@@ -1467,18 +1450,18 @@ pub fn on_damaging_hit(
     // The permanent-ability list + Ability Shield gate are deferred.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mummy_(Ability)>
     //             <https://bulbapedia.bulbagarden.net/wiki/Lingering_Aroma_(Ability)>.
-    let mummy_replacement = match slug {
-        "mummy" => Some("mummy"),
-        "lingeringaroma" => Some("lingeringaroma"),
+    let mummy_replacement = match ability_id {
+        data::ability_id::MUMMY => Some(data::ability_id::MUMMY),
+        data::ability_id::LINGERINGAROMA => Some(data::ability_id::LINGERINGAROMA),
         _ => None,
     };
     if let Some(rep) = mummy_replacement {
         if move_makes_contact_from_attacker {
-            let attacker_curr_slug = battle
+            let attacker_curr_id = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
-                .map(|a| ability_slug(a.ability_id))
-                .unwrap_or("");
+                .map(|a| a.ability_id)
+                .unwrap_or(u16::MAX);
             let attacker_alive = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
@@ -1489,14 +1472,16 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(has_ability_shield);
-            if attacker_alive && !attacker_curr_slug.is_empty() && attacker_curr_slug != rep && !attacker_shielded {
-                if let Some(new_id) = data::ABILITIES.iter().position(|a| a.slug == rep) {
-                    if let Some(a) = battle
-                        .side_mut(attacker_side)
-                        .active_mon_mut(attacker_slot as usize)
-                    {
-                        a.ability_id = new_id as u16;
-                    }
+            if attacker_alive
+                && attacker_curr_id != u16::MAX
+                && attacker_curr_id != rep
+                && !attacker_shielded
+            {
+                if let Some(a) = battle
+                    .side_mut(attacker_side)
+                    .active_mon_mut(attacker_slot as usize)
+                {
+                    a.ability_id = rep;
                 }
             }
         }
@@ -1512,12 +1497,12 @@ pub fn on_damaging_hit(
     // 30% chance. Mirror of Static's shape. Toxicroak signature.
     // Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Poison_Touch_(Ability)>.
-    let attacker_slug = battle
+    let attacker_ability_id = battle
         .side(attacker_side)
         .active_mon(attacker_slot as usize)
-        .map(|a| ability_slug(a.ability_id))
-        .unwrap_or("");
-    if attacker_slug == "poisontouch"
+        .map(|a| a.ability_id)
+        .unwrap_or(u16::MAX);
+    if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
         && target_alive
         && rng.percent_1_100() <= 30
@@ -1531,7 +1516,7 @@ pub fn on_damaging_hit(
     // cut matches Mummy: alive + contact + ids both real + ids differ;
     // permanent-ability gate deferred. Runerigus signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wandering_Spirit_(Ability)>.
-    if slug == "wanderingspirit" && move_makes_contact_from_attacker {
+    if ability_id == data::ability_id::WANDERINGSPIRIT && move_makes_contact_from_attacker {
         let attacker_alive = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
