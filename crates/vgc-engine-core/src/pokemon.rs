@@ -703,12 +703,7 @@ impl Pokemon {
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
         let base = self.species().weight_dg as u32;
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
-        };
-        if item == "floatstone" {
+        if self.item_id == data::item_id::FLOATSTONE {
             (base / 2).max(1)
         } else {
             base
@@ -730,7 +725,7 @@ impl Pokemon {
     /// check — those are gated below in `is_grounded_internal`.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ring_Target>.
     pub fn negates_type_immunity(&self) -> bool {
-        self.item_id != u16::MAX && data::ITEMS[self.item_id as usize].slug == "ringtarget"
+        self.item_id == data::item_id::RINGTARGET
     }
 
     /// True if the mon is grounded — i.e. terrain effects, Earthquake,
@@ -1370,12 +1365,7 @@ impl Pokemon {
         // `sim/pokemon.ts:isGrounded()` which checks for `ironball` and
         // returns true before the standard untrue-grounding checks.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Iron_Ball>.
-        let item = if self.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[self.item_id as usize].slug
-        };
-        if item == "ironball" {
+        if self.item_id == data::item_id::IRONBALL {
             return true;
         }
         // Smack Down / Thousand Arrows grounding — PS
@@ -1399,17 +1389,16 @@ impl Pokemon {
         // Balloon — those are checked after the Flying branch in PS and are
         // unaffected. So a Flying-type Ring Target holder grounds out, while
         // a Levitate / Air Balloon Ring Target holder stays airborne.
-        let negate_type_immunity = item == "ringtarget";
+        let negate_type_immunity = self.item_id == data::item_id::RINGTARGET;
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
         if flying && !negate_type_immunity {
             return false;
         }
-        let ability = self.effective_ability_slug();
-        if ability == "levitate" && !ignore_levitate {
+        if self.effective_ability_id() == data::ability_id::LEVITATE && !ignore_levitate {
             return false;
         }
-        if item == "airballoon" {
+        if self.item_id == data::item_id::AIRBALLOON {
             return false;
         }
         true
