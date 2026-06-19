@@ -141,6 +141,16 @@ pub struct Battle {
     /// `gravity` flag (Fly, Bounce, Jump Kick, Splash, Magnet Rise,
     /// Telekinesis, …) are disabled / fail.
     pub gravity_turns: u8,
+    /// Transient within-turn action-queue reorder request set by After You /
+    /// Quash and consumed by the `step` action loop after each move
+    /// resolves. `Some((side, slot, to_front))` re-positions the pending
+    /// action of (side, slot) in the still-unprocessed tail of this turn's
+    /// queue: `to_front = true` (After You) moves it to act immediately
+    /// next, `false` (Quash) moves it to act last. Always `None` between
+    /// `step` calls. A plain Copy field — no heap, hot-loop safe.
+    /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
+    /// (`action.order = 201`).
+    pending_queue_reorder: Option<(SideRef, u8, bool)>,
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -189,6 +199,7 @@ impl Battle {
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
             gravity_turns: 0,
+            pending_queue_reorder: None,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -626,7 +637,7 @@ impl Battle {
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
         // placeholder for the duration of the call.
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-        let order = action_order(self, p1_choices, p2_choices, &mut rng);
+        let mut order = action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
         // Consume Custap Berry for any holder whose `onFractionalPriority`
         // fired this turn. PS `data/items.ts:custapberry` consumes the
@@ -694,9 +705,14 @@ impl Battle {
             [queue.entries[1][0].kind.as_byte(), queue.entries[1][1].kind.as_byte()],
         ];
 
-        for (idx, action) in order.iter().enumerate() {
-            let action = *action;
+        // Index-based walk (rather than `order.iter()`) so After You / Quash
+        // can re-position later actions in the still-unprocessed tail of
+        // `order` between resolutions — PS mutates `this.queue` mid-turn.
+        let mut idx = 0usize;
+        while idx < order.len() {
+            let action = order[idx];
             if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
+                idx += 1;
                 continue;
             }
             // Skip if the actor has fainted earlier this turn.
@@ -705,6 +721,7 @@ impl Battle {
                 .active_mon(action.actor_slot as usize)
                 .is_some_and(|m| m.is_alive());
             if !actor_alive {
+                idx += 1;
                 continue;
             }
             // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
@@ -733,6 +750,13 @@ impl Battle {
             let slot = (action.actor_slot as usize).min(1);
             pending_kind[s][slot] = 0;
             self.resolve_move_with_pending(action, &pending_kind, will_act);
+            // After You / Quash reorder the remaining queue. Apply the
+            // request (if any) to the unprocessed tail `(idx..]` before
+            // advancing — a no-op when the target already acted.
+            if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
+                order.reorder_remaining(idx, rside, rslot, to_front);
+            }
+            idx += 1;
         }
 
         // 2b. Self-switch sweep — U-turn / Volt Switch / Flip Turn /
@@ -5848,6 +5872,29 @@ impl Battle {
                     return;
                 }
             }
+            data::move_id::AFTERYOU => {
+                // After You — make the target act immediately next this turn.
+                // PS data/moves.ts:afteryou: fails in singles
+                // (`activePerHalf === 1`); otherwise grabs the target's
+                // pending move (`queue.willMove`) and `prioritizeAction`s it
+                // to the front of the remaining queue. We record the request
+                // and the `step` loop applies it to the unprocessed tail; a
+                // target that already moved (no pending action) makes it a
+                // no-op — exactly PS's `return false`. Accuracy is `true`
+                // (no roll). The chosen target may be an ally.
+                if self.format().active_count() < 2 {
+                    return;
+                }
+                if let Some(tg) = target {
+                    if self
+                        .side(tg.side)
+                        .active_mon(tg.slot as usize)
+                        .is_some_and(|m| m.is_alive())
+                    {
+                        self.pending_queue_reorder = Some((tg.side, tg.slot, true));
+                    }
+                }
+            }
             data::move_id::TRICK | data::move_id::SWITCHEROO => {
                 // Trick / Switcheroo — swap held items with the target.
                 // PS data/moves.ts:trick / switcheroo are byte-identical
@@ -9890,6 +9937,61 @@ mod tests {
             payload: 8,
         });
         assert_eq!(n_switch_choices(&b, SideRef::P1, 0), 0, "partial-trapped Garchomp cannot switch");
+    }
+
+    #[test]
+    fn after_you_lets_slow_ally_act_before_faster_foe() {
+        // Doubles. P1 Whimsicott (fastest) After-Yous its slow ally Iron
+        // Hands, which then KOs P2 Garchomp (HP set to 1) BEFORE Garchomp
+        // — normally faster than Iron Hands — can fire Earthquake. So
+        // Garchomp faints having dealt no damage and Whimsicott is untouched.
+        // PS data/moves.ts:afteryou.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"infiltrator","item":"","nature":"jolly","moves":["afteryou","moonblast","tailwind","protect"],"evs":{"spe":252,"spa":252}},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","fakeout","wildcharge","thunderpunch"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","protect"],"evs":{"atk":252,"spe":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["protect","surf","hurricane","tailwind"]}
+        ]"#;
+
+        // --- With After You: Iron Hands jumps ahead of Garchomp. ---
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        b.p2.team[0].current_hp = 1; // Garchomp dies to any chip
+        let whimsicott_max = b.p1.team[0].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // After You → ally
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Drain Punch → Garchomp
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, // Garchomp Earthquake
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },                   // Pelipper Protect
+            ],
+        );
+        assert!(b.p2.team[0].fainted, "Iron Hands KO'd Garchomp");
+        assert_eq!(b.p1.team[0].current_hp, whimsicott_max,
+                   "After You: Garchomp fainted before its Earthquake — Whimsicott untouched");
+
+        // --- Control (no After You): Whimsicott uses Moonblast instead, so
+        //     Iron Hands stays slow and Garchomp's Earthquake lands first. ---
+        let mut c = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        c.p2.team[0].current_hp = 1;
+        let whimsicott_max_c = c.p1.team[0].current_hp;
+        c.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 1)) }, // Moonblast (not After You)
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert!(c.p1.team[0].current_hp < whimsicott_max_c,
+                "Control: without After You, Garchomp's Earthquake hits Whimsicott");
     }
 
     #[test]
