@@ -15672,9 +15672,8 @@ mod tests {
 
     #[test]
     fn leppa_berry_caps_restore_at_move_max_pp() {
-        // Close Combat has base PP 5. With max-PP application not yet wired,
-        // the engine treats base PP as the cap, so a 0→+10 restore clamps to
-        // 5, not 10 (PS `Math.min(pp + 10, maxpp)`).
+        // Close Combat has base PP 5 → PP-maxed to 8. A 0→+10 restore must
+        // clamp to 8, not 10 (PS `Math.min(pp + 10, maxpp)`).
         let p1_json = r#"[
             {"species":"garchomp","level":50,"ability":"roughskin","item":"leppaberry","nature":"adamant","moves":["closecombat","earthquake","ironhead","protect"]}
         ]"#;
@@ -15684,13 +15683,13 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        assert_eq!(b.p1.team[0].pp[0], 5, "Close Combat base PP is 5");
+        assert_eq!(b.p1.team[0].pp[0], 8, "Close Combat PP-maxed to 8 (base 5)");
         b.p1.team[0].pp[0] = 1;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].pp[0], 5, "restore clamps to the move's max PP (5)");
+        assert_eq!(b.p1.team[0].pp[0], 8, "restore clamps to the move's max PP (8)");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Leppa berry consumed");
     }
 
@@ -17493,8 +17492,9 @@ mod tests {
                 "Iron Hands took Dragon Claw damage");
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Focus Punch must fail when user was hit this turn");
-        // PP was deducted on the failed Focus Punch (PS behavior).
-        assert_eq!(b.p1.team[0].pp[0], 19, "Focus Punch PP ticked on failure");
+        // PP was deducted on the failed Focus Punch (PS behavior). Focus
+        // Punch base PP 20 → PP-maxed to 32, so one use leaves 31.
+        assert_eq!(b.p1.team[0].pp[0], 31, "Focus Punch PP ticked on failure");
     }
 
     #[test]
