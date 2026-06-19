@@ -690,6 +690,80 @@ pub struct Pokemon {
 }
 
 impl Pokemon {
+    /// Construct a `Pokemon` from its identity fields, with every
+    /// volatile/runtime field initialised to its inert battle-start
+    /// default. This is the **single source of truth** for those defaults:
+    /// adding a new runtime field means giving it a default here only,
+    /// instead of touching every `Pokemon { .. }` literal across the
+    /// codebase (team / recon / damage builders).
+    ///
+    /// The inert defaults below are exactly what the old hand-written
+    /// literals set, so this is behavior-preserving. Callers that need a
+    /// non-default runtime field (a pre-statused test mon, etc.) construct
+    /// via this and then assign the field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_identity(
+        species_id: u16,
+        level: u8,
+        gender: data::Gender,
+        moves: [u16; 4],
+        pp: [u8; 4],
+        ability_id: u16,
+        item_id: u16,
+        stats: FinalStats,
+        current_hp: u16,
+        ivs: StatSpread,
+        evs: StatSpread,
+        nature_id: u8,
+        tera_type: u8,
+    ) -> Self {
+        Pokemon {
+            // ---- identity (from params) ----
+            species_id,
+            level,
+            gender,
+            moves,
+            pp,
+            ability_id,
+            item_id,
+            stats,
+            current_hp,
+            ivs,
+            evs,
+            nature_id,
+            tera_type,
+            // ---- inert runtime / volatile defaults (single source) ----
+            ability_override: u16::MAX,
+            status: Status::None,
+            boosts: [0; 7],
+            fainted: false,
+            turns_active: 0,
+            last_used_move_slot: 255,
+            boosted_stat: 255,
+            booster_locked: false,
+            ability_suppressed: false,
+            crit_stage_volatile: 0,
+            last_attacker: (255, 255),
+            last_attacker_category: 255,
+            last_damage_taken: 0,
+            terastallized: false,
+            stellar_boosted_types: 0,
+            semi_invuln: 0,
+            charging_turns: 0,
+            charging_move_slot: 255,
+            must_recharge: false,
+            lockin_turns: 0,
+            lockin_move_slot: 255,
+            volatiles: VolatileSet::default(),
+            slow_start_active_turns: 0,
+            truant_loafing: false,
+            type_override: [255, 255],
+            protean_used: false,
+            disguise_busted: false,
+            micle_next_move: false,
+        }
+    }
+
     pub fn species(&self) -> &'static data::SpeciesDef {
         &data::SPECIES[self.species_id as usize]
     }
@@ -1495,28 +1569,13 @@ mod tests {
     fn effective_types_pre_tera_matches_species() {
         let species_idx = data::SPECIES.iter().position(|s| s.slug == "garchomp").unwrap() as u16;
         let species = &data::SPECIES[species_idx as usize];
-        let mut mon = Pokemon {
-            species_id: species_idx, level: 50, gender: data::Gender::Male,
-            moves: [u16::MAX; 4], pp: [0; 4],
-            ability_id: u16::MAX, ability_override: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
-            current_hp: 1,
-            ivs: StatSpread::MAX_IV, evs: StatSpread::default(), nature_id: nature_id::NEUTRAL,
-            status: Status::None, boosts: [0; 7], fainted: false,
-            turns_active: 0,
-            last_used_move_slot: 255,
-            boosted_stat: 255, booster_locked: false,
-            ability_suppressed: false, crit_stage_volatile: 0,
-            last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
-            tera_type: 1 /* fire */, terastallized: false, stellar_boosted_types: 0,
-            semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
-            must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
-            volatiles: VolatileSet::default(),
-            slow_start_active_turns: 0, truant_loafing: false,
-            type_override: [255, 255],
-            protean_used: false,
-            disguise_busted: false,
-            micle_next_move: false,
-        };
+        let mut mon = Pokemon::with_identity(
+            species_idx, 50, data::Gender::Male,
+            [u16::MAX; 4], [0; 4],
+            u16::MAX, u16::MAX, FinalStats::default(), 1,
+            StatSpread::MAX_IV, StatSpread::default(), nature_id::NEUTRAL,
+            1, /* fire */
+        );
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
         assert_eq!(types, species.types);
@@ -1548,48 +1607,13 @@ mod tests {
     fn effective_ability_slug_respects_suppression() {
         let species = data::species_by_slug("garchomp").expect("garchomp");
         let ab_id = data::ABILITIES.iter().position(|a| a.slug == "roughskin").unwrap() as u16;
-        let mon = Pokemon {
-            species_id: species.num,
-            level: 50,
-            gender: data::Gender::Male,
-            moves: [u16::MAX; 4],
-            pp: [0; 4],
-            ability_id: ab_id,
-            ability_override: u16::MAX,
-            item_id: u16::MAX,
-            stats: FinalStats::default(),
-            current_hp: 100,
-            ivs: StatSpread::MAX_IV,
-            evs: StatSpread::default(),
-            nature_id: nature_id::NEUTRAL,
-            status: Status::None,
-            boosts: [0; 7],
-            fainted: false,
-            turns_active: 0,
-            last_used_move_slot: 255,
-            boosted_stat: 255,
-            booster_locked: false,
-            ability_suppressed: false,
-            crit_stage_volatile: 0,
-            last_attacker: (255, 255),
-            last_attacker_category: 255,
-            last_damage_taken: 0,
-            tera_type: 0,
-            terastallized: false, stellar_boosted_types: 0,
-            semi_invuln: 0,
-            charging_turns: 0,
-            charging_move_slot: 255,
-            must_recharge: false,
-            lockin_turns: 0,
-            lockin_move_slot: 255,
-            volatiles: VolatileSet::default(),
-            slow_start_active_turns: 0,
-            truant_loafing: false,
-            type_override: [255, 255],
-            protean_used: false,
-            disguise_busted: false,
-            micle_next_move: false,
-        };
+        let mon = Pokemon::with_identity(
+            species.num, 50, data::Gender::Male,
+            [u16::MAX; 4], [0; 4],
+            ab_id, u16::MAX, FinalStats::default(), 100,
+            StatSpread::MAX_IV, StatSpread::default(), nature_id::NEUTRAL,
+            0,
+        );
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         // Id accessor must stay in lockstep with the slug accessor.
         assert_eq!(mon.effective_ability_id(), ab_id);
