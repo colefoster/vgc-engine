@@ -6856,6 +6856,36 @@ mod tests {
     }
 
     #[test]
+    fn sweet_veil_blocks_sleep_on_self_and_ally() {
+        // PS data/abilities.ts:4743 `onAllySetStatus` — slp blocked on the
+        // holder's whole side. Swirlix/Slurpuff line carries Sweet Veil;
+        // we set the slug directly via the team JSON.
+        let p1_json = r#"[
+            {"species":"slurpuff","level":50,"ability":"sweetveil","item":"leftovers","nature":"bold","moves":["playrough","drainingkiss","calmmind","protect"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Holder itself is sleep-immune.
+        b.try_set_status(SideRef::P1, 0, crate::pokemon::Status::Sleep);
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
+                "Sweet Veil holder is sleep-immune");
+        // Ally aura: the partner can't be put to sleep while the veil is up.
+        b.try_set_status(SideRef::P1, 1, crate::pokemon::Status::Sleep);
+        assert!(matches!(b.p1.team[1].status, crate::pokemon::Status::None),
+                "Sweet Veil ally is sleep-immune");
+        // Control: a non-sleep status still lands (Sweet Veil is slp-only).
+        b.try_set_status(SideRef::P1, 1, crate::pokemon::Status::Burn);
+        assert!(matches!(b.p1.team[1].status, crate::pokemon::Status::Burn),
+                "Sweet Veil only blocks sleep, not burn");
+    }
+
+    #[test]
     fn sticky_barb_fires_after_burn_dot() {
         // PR-218 ordering check: PS residual order has burn (10)
         // before Sticky Barb (28). When a holder is burned + low HP,
