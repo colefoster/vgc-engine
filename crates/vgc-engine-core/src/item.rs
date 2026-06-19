@@ -176,9 +176,10 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
     if let Some(stat_idx) = pinch_entry {
         if current * 4 <= max {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.boosts[stat_idx] = (m.boosts[stat_idx] + 1).clamp(-6, 6);
                 m.item_id = u16::MAX;
             }
+            // Self-boost (+1) on the pinch-berry holder.
+            battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
         }
     }
     // Oran Berry — PS data/items.ts:oranberry (line 4392): onUpdate eats
@@ -380,10 +381,10 @@ pub fn on_damaging_hit(
             use crate::damage::TypeEff;
             if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                    t.boosts[0] = (t.boosts[0] + 2).clamp(-6, 6); // Atk
-                    t.boosts[2] = (t.boosts[2] + 2).clamp(-6, 6); // SpA
                     t.item_id = u16::MAX;
                 }
+                // Weakness Policy self-boost: +2 Atk, +2 SpA.
+                battle.apply_boosts(target_side, target_slot, &[(0, 2), (2, 2)], target_side, target_slot);
             }
         }
         let _ = attacker_side; let _ = attacker_slot;
@@ -420,9 +421,10 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.boosts[stat_idx] = (t.boosts[stat_idx] + 1).clamp(-6, 6);
                 t.item_id = u16::MAX;
             }
+            // Booster-orb self-boost (+1) on the type-matched hit.
+            battle.apply_boosts(target_side, target_slot, &[(stat_idx as u8, 1)], target_side, target_slot);
         }
         let _ = attacker_side; let _ = attacker_slot;
     }
@@ -437,9 +439,10 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6); // Def
                 t.item_id = u16::MAX;
             }
+            // Kee Berry self-boost (+1 Def) on a physical hit.
+            battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
         }
     }
     // Maranga Berry — PS data/items.ts:marangaberry (line 3782). Mirror
@@ -452,9 +455,10 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.boosts[3] = (t.boosts[3] + 1).clamp(-6, 6); // SpD
                 t.item_id = u16::MAX;
             }
+            // Maranga Berry self-boost (+1 SpD) on a special hit.
+            battle.apply_boosts(target_side, target_slot, &[(3, 1)], target_side, target_slot);
         }
     }
     // Rowap Berry — PS data/items.ts:rowapberry (line 5379). Mirror of
@@ -601,9 +605,10 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        m.boosts[stat_idx] = (m.boosts[stat_idx] + 1).clamp(-6, 6);
         m.item_id = u16::MAX;
     }
+    // Booster-energy terrain orb self-boost (+1).
+    battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
 }
 
 /// Run the White Herb check on a single active mon. If holder has

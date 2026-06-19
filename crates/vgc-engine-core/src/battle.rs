@@ -364,6 +364,44 @@ impl Battle {
         }
     }
 
+    /// Centralized stat-stage boost application — the single choke point
+    /// that every additive boost / drop now routes through.
+    ///
+    /// Applies each `(stat_idx, delta)` to the target's stage, clamped to
+    /// -6..=6, exactly reproducing the historical inline
+    /// `boosts[i] = (boosts[i] + delta).clamp(-6, 6)`. stat_idx encoding:
+    /// 0=atk 1=def 2=spa 3=spd 4=spe 5=acc 6=eva.
+    ///
+    /// `source_side` / `source_slot` identify who caused the change — the
+    /// attacker for an opposing drop (Intimidate / a move secondary /
+    /// Parting Shot / Strength Sap), or the target itself for a self-boost.
+    /// They are threaded but not yet read: this is the plumbing the future
+    /// Mirror Armor reflect hook lives in. Stat-drop veto abilities
+    /// (Clear Body / Hyper Cutter / Big Pecks / ...) and the item / ability
+    /// reactions (White Herb / Eject Pack / Defiant) stay at the call sites,
+    /// exactly as before — this helper performs ONLY the clamped arithmetic.
+    ///
+    /// No-op if the target slot is empty. Alloc-free: `deltas` is a borrowed
+    /// slice (call sites pass stack literals or existing static tables).
+    pub(crate) fn apply_boosts(
+        &mut self,
+        target_side: SideRef,
+        target_slot: u8,
+        deltas: &[(u8, i8)],
+        source_side: SideRef,
+        source_slot: u8,
+    ) {
+        // Source identity is threaded for the (future) Mirror Armor reflect
+        // hook; no behavior depends on it yet.
+        let _ = (source_side, source_slot);
+        if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            for &(idx, delta) in deltas {
+                let stage = &mut m.boosts[idx as usize];
+                *stage = (*stage + delta).clamp(-6, 6);
+            }
+        }
+    }
+
     /// Legal choices for one active slot on one side.
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let s = self.side(side);
@@ -2222,9 +2260,7 @@ impl Battle {
                     match def_ability {
                         "motordrive" => {
                             // <https://bulbapedia.bulbagarden.net/wiki/Motor_Drive_(Ability)>
-                            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                                d.boosts[4] = (d.boosts[4] + 1).clamp(-6, 6);
-                            }
+                            self.apply_boosts(tside, tslot, &[(4, 1)], tside, tslot);
                             continue;
                         }
                         "voltabsorb" => {
@@ -2247,9 +2283,7 @@ impl Battle {
                             // `onAnyRedirectTarget`). Pikachu / Marowak-
                             // Alola / Rhyperior. Bulbapedia:
                             // <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>.
-                            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                                d.boosts[2] = (d.boosts[2] + 1).clamp(-6, 6);
-                            }
+                            self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                             continue;
                         }
                         _ => {}
@@ -2269,9 +2303,7 @@ impl Battle {
                     data::ABILITIES[defender.ability_id as usize].slug
                 };
                 if def_ability == "stormdrain" && !attacker_breaks_mold {
-                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                        d.boosts[2] = (d.boosts[2] + 1).clamp(-6, 6);
-                    }
+                    self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                     continue;
                 }
             }
@@ -2402,9 +2434,7 @@ impl Battle {
                     data::ABILITIES[defender.ability_id as usize].slug
                 };
                 if def_ability == "sapsipper" && !attacker_breaks_mold {
-                    if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                        d.boosts[0] = (d.boosts[0] + 1).clamp(-6, 6);
-                    }
+                    self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
                     continue;
                 }
             }
@@ -3041,9 +3071,7 @@ impl Battle {
                     .unwrap_or("");
                 match attacker_ability {
                     "moxie" => {
-                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                            a.boosts[0] = (a.boosts[0] + 1).clamp(-6, 6);
-                        }
+                        self.apply_boosts(actor_side, actor_slot, &[(0, 1)], actor_side, actor_slot);
                     }
                     "beastboost" => {
                         // PS reads the attacker's current stats / stages
@@ -3053,9 +3081,7 @@ impl Battle {
                             .active_mon(actor_slot as usize)
                             .map(crate::ability::best_stat_index)
                             .unwrap_or(0);
-                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                            a.boosts[idx as usize] = (a.boosts[idx as usize] + 1).clamp(-6, 6);
-                        }
+                        self.apply_boosts(actor_side, actor_slot, &[(idx, 1)], actor_side, actor_slot);
                     }
                     _ => {}
                 }
@@ -3070,7 +3096,7 @@ impl Battle {
                 && crate::damage::move_is_sheer_force_boosted(m);
             if alive_post && !hit_sub && !sheer_force_strip {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                apply_secondary_effect(self, tside, tslot, m.slug, &mut rng);
+                apply_secondary_effect(self, tside, tslot, actor_side, actor_slot, m.slug, &mut rng);
                 self.rng = rng;
             }
 
@@ -3146,11 +3172,7 @@ impl Battle {
         // the drop. Phase-3 refinement for the Protect-blocks-self
         // edge case.
         if let Some(drops) = self_stat_drops(m.slug) {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                for &(idx, delta) in drops {
-                    a.boosts[idx as usize] = (a.boosts[idx as usize] + delta).clamp(-6, 6);
-                }
-            }
+            self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
             // White Herb consumes itself to restore negative stages.
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
             // Eject Pack reacts to the self-drop. PS
@@ -3488,8 +3510,9 @@ impl Battle {
         }
         if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
             a.item_id = u16::MAX;
-            a.boosts[2] = (a.boosts[2] + 1).clamp(-6, 6);
         }
+        // Self-boost: +1 SpA. Routed through the choke point (source = self).
+        self.apply_boosts(side, slot, &[(2, 1)], side, slot);
     }
 
     /// Powder-move immunity gate. Mirrors PS's powder-move runtime check
@@ -4571,10 +4594,8 @@ impl Battle {
                         // skipping the dropped_any flip.
                         break;
                     }
-                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                        t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
-                        t.boosts[2] = (t.boosts[2] - 1).clamp(-6, 6);
-                    }
+                    // Opposing drop — source is the Parting Shot user.
+                    self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
                     crate::item::try_consume_white_herb(self, opp, slot);
                     // Eject Pack: opposing-source stat drop triggers a
                     // reactive switch on the target. PS handler order:
@@ -4664,11 +4685,11 @@ impl Battle {
                     if a.current_hp <= cost { return; }
                     if m.slug == "bellydrum" && a.boosts[0] >= 6 { return; }
                     a.current_hp -= cost;
-                    for &(idx, delta) in boosts {
-                        a.boosts[idx as usize] =
-                            (a.boosts[idx as usize] + delta).clamp(-6, 6);
-                    }
                 }
+                // Self-boost after paying HP. The guards above `return`
+                // before reaching here when the move fails, so this runs on
+                // exactly the same paths as the old inline loop.
+                self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
             }
             "painsplit" => {
                 // PS data/moves.ts:painsplit onHit: averages user + target
@@ -4761,9 +4782,8 @@ impl Battle {
                 let blocked = self.side(opp).active_mon(ts as usize)
                     .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
                 if !blocked {
-                    if let Some(t) = self.side_mut(opp).active_mon_mut(ts as usize) {
-                        t.boosts[0] = (t.boosts[0] - 1).clamp(-6, 6);
-                    }
+                    // Opposing drop — source is the Strength Sap user.
+                    self.apply_boosts(opp, ts, &[(0, -1)], actor_side, actor_slot);
                     crate::item::try_consume_white_herb(self, opp, ts);
                     let _ = crate::item::try_consume_eject_pack(self, opp, ts, true);
                 }
@@ -4866,12 +4886,7 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swords_Dance_(move)>
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        for &(idx, delta) in boosts {
-                            a.boosts[idx as usize] =
-                                (a.boosts[idx as usize] + delta).clamp(-6, 6);
-                        }
-                    }
+                    self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                     // Mirror Herb — PS data/items.ts:mirrorherb fires on
                     // `onFoeAfterBoost` whenever a foe's stat goes up.
                     // Dispatch once with the full boost set so multi-stat
@@ -4887,13 +4902,13 @@ impl Battle {
                         let n = self.format().active_count() as u8;
                         if n >= 2 {
                             let ally_slot = actor_slot ^ 1;
-                            if let Some(p) = self
-                                .side_mut(actor_side)
-                                .active_mon_mut(ally_slot as usize)
-                            {
-                                if p.is_alive() {
-                                    p.boosts[0] = (p.boosts[0] + 1).clamp(-6, 6);
-                                }
+                            // Preserve the original alive gate; source is the
+                            // Howl user (the ally Atk boost shares its source).
+                            let ally_alive = self.side(actor_side)
+                                .active_mon(ally_slot as usize)
+                                .is_some_and(|p| p.is_alive());
+                            if ally_alive {
+                                self.apply_boosts(actor_side, ally_slot, &[(0, 1)], actor_side, actor_slot);
                             }
                             // Howl also raises an ally's Atk — Mirror
                             // Herb on a foe should copy.
@@ -5127,6 +5142,8 @@ fn apply_secondary_effect(
     battle: &mut Battle,
     target_side: SideRef,
     target_slot: u8,
+    attacker_side: SideRef,
+    attacker_slot: u8,
     move_slug: &str,
     rng: &mut Rng,
 ) {
@@ -5175,12 +5192,10 @@ fn apply_secondary_effect(
             let blocked = battle.side(target_side).active_mon(target_slot as usize)
                 .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, idx));
             if !blocked {
-                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                    // PS clamps each stage to [-6, 6]. -1 from -6 stays at
-                    // -6 (no extra fail signal needed here).
-                    let stage = &mut t.boosts[idx as usize];
-                    *stage = (*stage + delta).clamp(-6, 6);
-                }
+                // PS clamps each stage to [-6, 6]. Opposing drop — source is
+                // the attacker (move secondary). Mirror Armor reflect hook
+                // will read the threaded source here.
+                battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
                 crate::item::try_consume_white_herb(battle, target_side, target_slot);
                 // Eject Pack: secondary-effect stat drop (move-secondary
                 // path, e.g. Crunch's 20% Def drop) triggers a reactive
