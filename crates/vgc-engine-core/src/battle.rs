@@ -3657,6 +3657,11 @@ impl Battle {
                     }
                 }
             }
+            // Persim Berry — PS `onUpdate` cures confusion the same tick it
+            // is applied. The lock-in (Outrage / Petal Dance / Thrash) end
+            // is the only in-engine confusion source today; cure here if the
+            // user holds Persim and is now confused.
+            crate::item::try_consume_persim_berry(self, actor_side, actor_slot);
         }
 
         if any_damage_dealt > 0
@@ -8769,6 +8774,41 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].boosts[1], 1, "Kee Berry gives +1 Def on physical hit");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Kee Berry consumed");
+    }
+
+    #[test]
+    fn persim_berry_cures_own_confusion() {
+        // PS data/items.ts:persimberry — onUpdate eats if confused, onEat
+        // removes the confusion volatile. Consumed on cure.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"persimberry","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Confuse the holder, then run the Persim check.
+        let _ = b.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Confusion,
+            turns_remaining: 0,
+            payload: 3,
+        });
+        crate::item::try_consume_persim_berry(&mut b, SideRef::P1, 0);
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
+            "Persim Berry cures confusion");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Persim Berry consumed");
+
+        // Control: a confused mon WITHOUT Persim keeps the confusion.
+        let _ = b.p2.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Confusion,
+            turns_remaining: 0,
+            payload: 3,
+        });
+        crate::item::try_consume_persim_berry(&mut b, SideRef::P2, 0);
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
+            "no Persim → confusion stays");
     }
 
     #[test]
