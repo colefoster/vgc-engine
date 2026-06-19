@@ -2206,7 +2206,8 @@ impl Battle {
                     // basePower: 0 in PS but still deal damage via the
                     // `damage` / `damageCallback` early returns in
                     // `getDamage`. They must enter the damaging path.
-                    | "seismictoss" | "nightshade");
+                    | "seismictoss" | "nightshade"
+                    | "dragonrage" | "sonicboom");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2561,7 +2562,7 @@ impl Battle {
             // PS file:line: sim/battle-actions.ts:1606-1616.
             let is_fixed_damage = matches!(
                 m.slug,
-                "seismictoss" | "nightshade"
+                "seismictoss" | "nightshade" | "dragonrage" | "sonicboom"
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3117,8 +3118,12 @@ impl Battle {
             // (PS draws it the same as a normal move). See the
             // `is_fixed_damage` immunity gate above for the citation.
             //   Level-damage: Seismic Toss / Night Shade = source level.
+            //   Fixed-number: Dragon Rage = 40, Sonic Boom = 20 (PS
+            //   data/moves.ts:4180 / :17305, `damage: 40` / `damage: 20`).
             let fixed_damage: Option<u16> = match m.slug {
                 "seismictoss" | "nightshade" => Some(attacker.level as u16),
+                "dragonrage" => Some(40),
+                "sonicboom" => Some(20),
                 _ => None,
             };
 
@@ -7056,6 +7061,39 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b2.p2.team[0].current_hp, hp1, "Night Shade (Ghost) is immune vs Normal Blissey");
+    }
+
+    #[test]
+    fn dragon_rage_deals_40_sonic_boom_deals_20() {
+        // Fixed-number damage independent of level / stats / type mult.
+        // PS data/moves.ts:4180 Dragon Rage `damage: 40`; :17305 Sonic
+        // Boom `damage: 20`. Use a Steel/neutral target so neither is
+        // type-immune. Sonic Boom (Normal) vs Steel = neutral; Dragon
+        // Rage (Dragon) vs Steel = neutral. Both land for the flat amount.
+        let p1_json = r#"[
+            {"species":"dragapult","level":50,"ability":"clearbody","item":"","nature":"timid","moves":["dragonrage","sonicboom","protect","shadowball"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","item":"","nature":"impish","moves":["roost","bravebird","bulkup","uturn"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp0 = b.p2.team[0].current_hp;
+        // Dragapult is faster; Corviknight Bulk Up (slot 2) is a later
+        // self-target action that doesn't change its own HP.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert_eq!(hp0 - b.p2.team[0].current_hp, 40, "Dragon Rage deals exactly 40");
+
+        let hp1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert_eq!(hp1 - b.p2.team[0].current_hp, 20, "Sonic Boom deals exactly 20");
     }
 
     #[test]
