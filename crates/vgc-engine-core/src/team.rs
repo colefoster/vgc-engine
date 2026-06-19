@@ -250,6 +250,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         slow_start_active_turns: 0,
         truant_loafing: false,
         type_override: [255, 255],
+        protean_used: false,
     })
 }
 

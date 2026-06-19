@@ -820,6 +820,7 @@ impl Battle {
             incoming.set_pending_self_switch(false);
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
             incoming.clear_type_override(); // Protean / Color Change typing clears on switch-out.
+            incoming.protean_used = false; // Protean / Libero once-per-switch latch resets.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
@@ -1642,6 +1643,50 @@ impl Battle {
                 // it lands on a target. PS sim/pokemon.ts updates lastMove
                 // after PP deduction, regardless of accuracy outcome.
                 mon.last_used_move_slot = move_slot;
+            }
+        }
+
+        // Protean / Libero — PS `data/abilities.ts:3452` / `:2273`
+        // `onPrepareHit(source, target, move)`:
+        //   if (this.effectState.protean) return;            // once per switch-in
+        //   if (move.hasBounced || move.flags['futuremove'] ||
+        //       move.sourceEffect === 'snatch' || move.callsMove) return;
+        //   const type = move.type;
+        //   if (type && type !== '???' && source.getTypes().join() !== type) {
+        //     source.setType(type);                           // mono-type to move type
+        //     this.effectState.protean = true;
+        //   }
+        // Fires once per switch-in (gen-9 nerf) on ANY move the holder uses
+        // (status or damaging) — onPrepareHit runs before the move resolves,
+        // after PP is spent. The retype is skipped if the holder already has
+        // exactly that single type. The PS skip-flags (Magic-Bounced moves,
+        // future moves, Snatch, calls-move like Metronome) are edge cases we
+        // don't model as move flags yet; standard moves are unaffected.
+        // Reset on switch-out via `protean_used = false`.
+        {
+            let pl_slug = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.effective_ability_slug())
+                .unwrap_or("");
+            if matches!(pl_slug, "protean" | "libero") {
+                let do_retype = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        if a.protean_used || a.terastallized || m.type_ == u8::MAX {
+                            return false;
+                        }
+                        // Skip when the holder is already mono of the move type.
+                        let (types, num) = a.effective_types();
+                        !(num == 1 && types[0] == m.type_)
+                    });
+                if do_retype {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.set_type_override(m.type_, None);
+                        a.protean_used = true;
+                    }
+                }
             }
         }
 
@@ -6821,6 +6866,38 @@ mod tests {
         assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
                 "Toxic Orb must NOT poison a Steel-type holder (got {:?})",
                 b.p1.team[0].status);
+    }
+
+    #[test]
+    fn protean_retypes_once_per_switch_in() {
+        // PS data/abilities.ts:3452. Greninja (Protean) using a Water move
+        // becomes mono-Water; a second move of a different type does NOT
+        // re-type (gen-9 once-per-switch-in nerf). Water = 2, Dark = 15.
+        let p1_json = r#"[
+            {"species":"greninja","level":50,"ability":"protean","item":"focussash","nature":"timid","moves":["surf","darkpulse","icebeam","spikes"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        // Turn 1: Surf → mono-Water.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let (types, n) = b.p1.team[0].effective_types();
+        assert_eq!(n, 1, "Protean mono-types the holder");
+        assert_eq!(types[0], 2, "Greninja becomes Water after Surf");
+        // Turn 2: Dark Pulse — must NOT re-type (still Water).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let (types2, n2) = b.p1.team[0].effective_types();
+        assert_eq!(n2, 1, "still mono-typed");
+        assert_eq!(types2[0], 2, "Protean does not re-type a second time per switch-in");
     }
 
     #[test]
