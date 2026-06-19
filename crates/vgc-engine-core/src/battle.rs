@@ -11564,6 +11564,68 @@ mod tests {
     }
 
     #[test]
+    fn cute_charm_infatuates_opposite_gender_contact_attacker_and_respects_gates() {
+        // Clefable has Cute Charm. A male contact attacker should be
+        // infatuated ≈30% of the time; a same-gender attacker is never
+        // infatuated (gender gate). Body Slam (Snorlax, Normal) makes
+        // contact and isn't blocked.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"cutecharm","item":"","nature":"calm","moves":["moonblast","softboiled","calmmind","thunderbolt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        // Opposite-gender (M attacker vs F holder): proc ≈30% over trials.
+        let trials = 200u32;
+        let mut infatuated = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.p1.team[0].gender = data::Gender::Male;
+            b.p2.team[0].gender = data::Gender::Female;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p1.team[0].is_attracted() {
+                // Source recorded as the Cute Charm holder (P2 side 1, idx 0).
+                assert_eq!(b.p1.team[0].attract_source(), Some((1, 0)));
+                infatuated += 1;
+            }
+        }
+        let rate = infatuated * 100 / trials;
+        assert!(
+            rate >= 15 && rate <= 45,
+            "Cute Charm infatuation rate {rate}% (expected ≈30% over 200 trials)"
+        );
+
+        // Same-gender (M attacker vs M holder): never infatuated.
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.p1.team[0].gender = data::Gender::Male;
+            b.p2.team[0].gender = data::Gender::Male;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(
+                !b.p1.team[0].is_attracted(),
+                "same-gender attacker must never be infatuated by Cute Charm"
+            );
+        }
+    }
+
+    #[test]
     fn static_paralyzes_contact_attacker_with_30pct_chance() {
         // Pikachu has Static. A contact attacker should be paralyzed
         // roughly 30% of the time across trials. Use Mortal Spin? No,

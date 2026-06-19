@@ -1291,6 +1291,61 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Cute Charm — PS `data/abilities.ts:788` `onDamagingHit`:
+    //   if (this.checkMoveMakesContact(move, source, target)) {
+    //     if (this.randomChance(3, 10)) {
+    //       source.addVolatile('attract', this.effectState.target);
+    //     }
+    //   }
+    // 30% chance on a CONTACT hit received to infatuate the attacker, with
+    // the Cute Charm holder as the Attract source. Same RNG-draw shape as
+    // the Static / Flame Body / Poison Point 30%-on-contact block above —
+    // the draw fires whenever the contact gate passes (load-bearing for
+    // PsGen5 PRNG alignment). The Attract `addVolatile` is then gated by
+    // the standard infatuation rules (opposite non-genderless genders,
+    // Oblivious-immune, not already attracted) exactly as the Attract move
+    // applies them. Clefable / Wigglytuff signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Cute_Charm_(Ability)>.
+    if slug == "cutecharm" && move_makes_contact_from_attacker {
+        let attacker_alive = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive());
+        if attacker_alive && rng.percent_1_100() <= 30 {
+            // Gender gate: opposite, non-genderless (M↔F). Source = the
+            // Cute Charm holder; target of infatuation = the attacker.
+            let holder_gender = battle
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .map(|m| m.gender);
+            let attacker_gender = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|m| m.gender);
+            let opposite = matches!(
+                (holder_gender, attacker_gender),
+                (Some(data::Gender::Male), Some(data::Gender::Female))
+                    | (Some(data::Gender::Female), Some(data::Gender::Male))
+            );
+            // Oblivious on the attacker blocks infatuation (PS onTryHit
+            // -immune); a no-op if already attracted (PS volatileStatus add).
+            let attacker_immune = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .is_some_and(|a| {
+                    a.effective_ability_slug() == "oblivious" || a.is_attracted()
+                });
+            if opposite && !attacker_immune {
+                let src_idx = battle.side(target_side).active[target_slot as usize];
+                if let Some(a) = battle
+                    .side_mut(attacker_side)
+                    .active_mon_mut(attacker_slot as usize)
+                {
+                    a.set_attract(target_side as u8, src_idx);
+                }
+            }
+        }
+    }
     // Effect Spore — PS data/abilities.ts:effectspore. On contact hit
     // (and attacker passes powder-immunity gates), single `random(100)`
     // roll: 0-10 → sleep, 11-20 → par, 21-29 → poison, 30+ → nothing.
