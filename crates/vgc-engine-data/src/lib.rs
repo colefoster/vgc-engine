@@ -148,6 +148,21 @@ mod tests {
         assert!(species_by_slug("pikachu").is_some());
     }
 
+    /// Generated id constants must index back to their own slug — this is
+    /// the contract integer-id dispatch relies on. Covers an ability, an
+    /// item, a move, and a leading-digit-slug move (the `_` prefix case).
+    #[test]
+    fn id_constants_resolve_to_slugs() {
+        assert_eq!(ABILITIES[ability_id::INTIMIDATE as usize].slug, "intimidate");
+        assert_eq!(ABILITIES[ability_id::WONDERGUARD as usize].slug, "wonderguard");
+        assert_eq!(ITEMS[item_id::LEFTOVERS as usize].slug, "leftovers");
+        assert_eq!(MOVES[move_id::TACKLE as usize].slug, "tackle");
+        assert_eq!(
+            MOVES[move_id::_10000000VOLTTHUNDERBOLT as usize].slug,
+            "10000000voltthunderbolt"
+        );
+    }
+
     /// Every inert-by-design slug must (a) resolve to a real `ITEMS` row —
     /// so a held-item reference never errors — and (b) the registry must be
     /// sorted + deduped (binary search correctness) and the expected size.

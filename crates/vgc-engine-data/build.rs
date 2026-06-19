@@ -47,6 +47,38 @@ fn slugify(s: &str) -> String {
         .collect()
 }
 
+/// SCREAMING_SNAKE_CASE-ish Rust identifier for a dex slug, used as the
+/// name of a generated id constant (`ability_id::INTIMIDATE`, etc.).
+///
+/// Slugs are lowercase ASCII alphanumeric only (see `slugify`), so the
+/// transform is just an uppercase. Slugs that start with a digit
+/// (`10000000voltthunderbolt`) are not valid leading identifier chars, so
+/// they are prefixed with `_`. Uppercasing is injective over
+/// `[a-z0-9]`, so constant names stay unique within a table.
+fn const_ident(slug: &str) -> String {
+    let mut out = String::with_capacity(slug.len() + 1);
+    if slug.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        out.push('_');
+    }
+    for c in slug.chars() {
+        out.push(c.to_ascii_uppercase());
+    }
+    out
+}
+
+/// Emit a `pub mod {mod_name} { pub const NAME: u16 = idx; ... }` block of
+/// id constants from a list of `(ident, index)` pairs.
+fn emit_id_module(f: &mut fs::File, mod_name: &str, consts: &[(String, usize)]) {
+    writeln!(f, "/// Stable table indices for `{mod_name}`, generated alongside the").unwrap();
+    writeln!(f, "/// data tables. `TABLE[{mod_name}::NAME as usize].slug` round-trips.").unwrap();
+    writeln!(f, "pub mod {mod_name} {{").unwrap();
+    for (ident, idx) in consts {
+        writeln!(f, "    pub const {ident}: u16 = {idx};").unwrap();
+    }
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+}
+
 fn rust_str_lit(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -419,9 +451,14 @@ fn main() {
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
+    let mut move_consts: Vec<(String, usize)> = Vec::new();
     for (slug, m) in &moves_keep {
         // Skip moves whose type isn't in the 18-type set (e.g. "???" placeholder).
+        // The constant index must track the emitted-row count, not the
+        // position in `moves_keep`, since skipped rows shift later indices.
         let Some(ty) = type_index(&m.type_) else { continue; };
+        let move_idx = move_consts.len();
+        move_consts.push((const_ident(slug), move_idx));
         writeln!(
             f,
             "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
@@ -467,6 +504,7 @@ fn main() {
     }
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
+    emit_id_module(&mut f, "move_id", &move_consts);
 
     // --- Abilities
     let abilities_keep = keep_gen9(&abilities, |a| a.gen_, |a| a.is_nonstandard.as_deref());
@@ -477,7 +515,9 @@ fn main() {
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const ABILITIES: &[AbilityDef] = &[").unwrap();
+    let mut ability_consts: Vec<(String, usize)> = Vec::new();
     for (slug, a) in &abilities_keep {
+        ability_consts.push((const_ident(slug), ability_consts.len()));
         writeln!(
             f,
             "    AbilityDef {{ num: {}, name: {}, slug: {} }},",
@@ -488,6 +528,7 @@ fn main() {
     }
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
+    emit_id_module(&mut f, "ability_id", &ability_consts);
 
     // --- Items
     let items_keep = keep_gen9(&items, |i| i.gen_, |i| i.is_nonstandard.as_deref());
@@ -498,7 +539,9 @@ fn main() {
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const ITEMS: &[ItemDef] = &[").unwrap();
+    let mut item_consts: Vec<(String, usize)> = Vec::new();
     for (slug, i) in &items_keep {
+        item_consts.push((const_ident(slug), item_consts.len()));
         writeln!(
             f,
             "    ItemDef {{ num: {}, name: {}, slug: {} }},",
@@ -509,6 +552,7 @@ fn main() {
     }
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
+    emit_id_module(&mut f, "item_id", &item_consts);
 
     // --- Species
     let species_keep = keep_gen9(&species, |s| s.gen_, |s| s.is_nonstandard.as_deref());
