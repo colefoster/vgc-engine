@@ -2209,7 +2209,7 @@ impl Battle {
                     | "seismictoss" | "nightshade"
                     | "dragonrage" | "sonicboom"
                     | "superfang" | "ruination"
-                    | "endeavor");
+                    | "endeavor" | "finalgambit");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2565,7 +2565,7 @@ impl Battle {
             let is_fixed_damage = matches!(
                 m.slug,
                 "seismictoss" | "nightshade" | "dragonrage" | "sonicboom"
-                    | "superfang" | "ruination" | "endeavor"
+                    | "superfang" | "ruination" | "endeavor" | "finalgambit"
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3147,6 +3147,14 @@ impl Battle {
                 // onTryImmunity gate above guarantees target HP > user HP
                 // here, so the subtraction is non-negative and > 0.
                 "endeavor" => Some(defender.current_hp.saturating_sub(attacker.current_hp)),
+                // Final Gambit — PS data/moves.ts:5305 damageCallback:
+                //   `const damage = pokemon.hp; pokemon.faint(); return damage;`
+                // Damage = the user's CURRENT HP; the user then faints
+                // (`selfdestruct: 'ifHit'`). The faint is applied after the
+                // per-target loop below (the snapshot `attacker.current_hp`
+                // is the live value since the user hasn't taken damage this
+                // resolution).
+                "finalgambit" => Some(attacker.current_hp),
                 _ => None,
             };
 
@@ -3961,6 +3969,25 @@ impl Battle {
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
                     }
                 }
+            }
+        }
+
+        // Final Gambit — the user faints after dealing damage equal to
+        // its HP. PS data/moves.ts:5305 calls `pokemon.faint()` inside the
+        // damageCallback (and `selfdestruct: 'ifHit'`). We faint the user
+        // here, once, after the per-target loop. No RNG draw. The faint
+        // happens whether or not the hit connected to HP (PS faints the
+        // user in the callback unconditionally once the move reaches
+        // getDamage — i.e. past type immunity / accuracy). If the move was
+        // type-immune or missed, the per-target branch `continue`d before
+        // setting `fixed_damage`, so we only faint when the user actually
+        // committed Final Gambit's damage: gate on the move having dealt
+        // (or attempted) damage this resolution via `any_damage_dealt`.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Final_Gambit_(move)>.
+        if m.slug == "finalgambit" && any_damage_dealt > 0 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.current_hp = 0;
+                a.fainted = true;
             }
         }
 
@@ -7202,6 +7229,36 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, snorlax_before,
                    "Endeavor fails (no damage) when user HP >= target HP");
+    }
+
+    #[test]
+    fn final_gambit_deals_user_hp_then_user_faints() {
+        // PS data/moves.ts:5305 — damage = pokemon.hp, then pokemon.faint().
+        // User at HP X deals X to the target and KOs itself. Accuracy 100
+        // (no acc draw). Fighting-type → use a non-Ghost target.
+        let p1_json = r#"[
+            {"species":"staraptor","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["finalgambit","bravebird","closecombat","uturn"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"","nature":"adamant","moves":["rockslide","crunch","protect","earthquake"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Pin Staraptor HP to a known value; it outspeeds Tyranitar.
+        b.p1.team[0].current_hp = 120;
+        let ttar_before = b.p2.team[0].current_hp;
+        // Tyranitar Protect would block — instead it uses Crunch (later
+        // action, doesn't change its own HP).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].fainted, "Final Gambit user faints");
+        assert_eq!(b.p1.team[0].current_hp, 0, "Final Gambit user at 0 HP");
+        assert_eq!(ttar_before - b.p2.team[0].current_hp, 120,
+                   "Final Gambit deals damage = user's current HP (120)");
     }
 
     #[test]
