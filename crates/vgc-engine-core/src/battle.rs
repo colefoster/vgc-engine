@@ -3740,7 +3740,11 @@ impl Battle {
                     Status::Burn => ab == "waterbubble" || ab == "waterveil",
                     Status::Paralysis => ab == "limber",
                     Status::Freeze => ab == "magmaarmor",
-                    Status::Poison | Status::Toxic => ab == "immunity",
+                    // Pastel Veil (PS data/abilities.ts:3162 `onSetStatus`)
+                    // blocks psn/tox on the holder itself, same shape as
+                    // Immunity. The ally-aura (`onAllySetStatus`) is handled
+                    // by a separate side-scan below.
+                    Status::Poison | Status::Toxic => ab == "immunity" || ab == "pastelveil",
                     Status::Sleep => ab == "vitalspirit" || ab == "insomnia",
                     Status::None => false,
                 };
@@ -3748,7 +3752,24 @@ impl Battle {
             }
             _ => return,
         };
-        if immune || terrain_blocks_sleep || ability_blocks {
+        // Veil auras — Pastel Veil (psn/tox) and Sweet Veil (slp) block the
+        // status on EVERY mon on the holder's side, not just the holder.
+        // PS `onAllySetStatus` (pastelveil:3169 / sweetveil:4744). A holder
+        // anywhere on `side` (including the target itself) vetoes the set.
+        let ally_veil_blocks = {
+            let veil_slug = match status {
+                Status::Poison | Status::Toxic => "pastelveil",
+                Status::Sleep => "sweetveil",
+                _ => "",
+            };
+            !veil_slug.is_empty()
+                && (0..self.format().active_count()).any(|s| {
+                    self.side(side)
+                        .active_mon(s)
+                        .is_some_and(|m| m.is_alive() && m.effective_ability_slug() == veil_slug)
+                })
+        };
+        if immune || terrain_blocks_sleep || ability_blocks || ally_veil_blocks {
             return;
         }
         // Sleep duration roll. PS `data/conditions.ts:59` slp.onStart:
@@ -6800,6 +6821,38 @@ mod tests {
         assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
                 "Toxic Orb must NOT poison a Steel-type holder (got {:?})",
                 b.p1.team[0].status);
+    }
+
+    #[test]
+    fn pastel_veil_blocks_poison_on_self_and_ally_and_cures_on_switch_in() {
+        // PS data/abilities.ts:3144. Galarian Weezing (Pastel Veil) keeps
+        // itself AND its partner immune to psn/tox, and cures any existing
+        // poison on switch-in.
+        let p1_json = r#"[
+            {"species":"weezinggalar","level":50,"ability":"pastelveil","item":"focussash","nature":"bold","moves":["sludgebomb","flamethrower","willowisp","protect"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Pre-poison the Snorlax partner (slot 1) BEFORE switch-in cure ran;
+        // simulate a residual cure by re-running the switch-in hook directly.
+        b.p1.team[1].status = crate::pokemon::Status::Poison;
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+        assert!(matches!(b.p1.team[1].status, crate::pokemon::Status::None),
+                "Pastel Veil cures an ally's poison on switch-in");
+        // Holder itself is psn-immune.
+        b.try_set_status(SideRef::P1, 0, crate::pokemon::Status::Poison);
+        assert!(matches!(b.p1.team[0].status, crate::pokemon::Status::None),
+                "Pastel Veil holder is poison-immune");
+        // Ally aura: the partner can't be poisoned while the veil is up.
+        b.try_set_status(SideRef::P1, 1, crate::pokemon::Status::Toxic);
+        assert!(matches!(b.p1.team[1].status, crate::pokemon::Status::None),
+                "Pastel Veil ally is poison-immune");
     }
 
     #[test]
