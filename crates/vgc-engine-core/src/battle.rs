@@ -5135,6 +5135,46 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Web_(move)>
                 self.side_mut(opp_side).conditions.sticky_web = true;
             }
+            "defog" => {
+                // PS data/moves.ts:defog onHit. Status move, target
+                // "normal" (a foe), `reflectable: 1` (so it IS bounced by
+                // Magic Bounce — routed through the existing `is_reflectable`
+                // hook in `try_use_move`). Effects:
+                //   1. Lower the TARGET's evasion -1 (boost index 6), gated
+                //      on `!target.volatiles['substitute'] || move.infiltrates`.
+                //      Defog has no infiltrates flag, so a Substitute behind
+                //      the target blocks the drop.
+                //   2. Remove from the TARGET's side: reflect / lightscreen /
+                //      auroraveil (modelled) + safeguard / mist (NOT modelled
+                //      — no SideConditions fields; noted) + all entry hazards.
+                //   3. Remove all entry hazards from the SOURCE's (Defogger's)
+                //      side.
+                //   4. Clear the Terrain (gen 8+).
+                // accuracy: true (never misses) — no accuracy roll.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Defog_(move)>
+                if let Some((ts, tslot)) = opp_target {
+                    // Evasion drop unless the target hides behind a Sub.
+                    let sub_blocks = self
+                        .side(ts)
+                        .active_mon(tslot as usize)
+                        .is_some_and(|t| t.substitute_hp() > 0);
+                    if !sub_blocks {
+                        self.apply_boosts(ts, tslot, &[(6, -1)], actor_side, actor_slot);
+                    }
+                    // Screens off the target's side (modelled subset).
+                    let tc = &mut self.side_mut(ts).conditions;
+                    tc.reflect_turns = 0;
+                    tc.light_screen_turns = 0;
+                    tc.aurora_veil_turns = 0;
+                    // Hazards off the target's side.
+                    self.clear_entry_hazards(ts);
+                }
+                // Hazards off the Defogger's own side.
+                self.clear_entry_hazards(actor_side);
+                // Clear Terrain (gen 8+).
+                self.terrain = crate::terrain::Terrain::None;
+                self.terrain_turns = 0;
+            }
             "encore" => {
                 // Locks the first alive opposing target into its last-
                 // used move for 3 turns. PS data/conditions.ts:encore
@@ -8091,6 +8131,72 @@ mod tests {
         );
         assert!(b.p2.conditions.stealth_rock, "opponent Stealth Rock untouched");
         assert_eq!(b.p2.conditions.spikes_layers, 2, "opponent Spikes untouched");
+    }
+
+    #[test]
+    fn defog_clears_hazards_both_sides_screens_target_terrain_and_drops_evasion() {
+        // PS data/moves.ts:defog onHit — hazards off BOTH sides, screens
+        // off the TARGET's side, Terrain cleared, target evasion -1.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","item":"","nature":"impish","moves":["defog","bravebird","roost","uturn"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","reflect","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Hazards on BOTH sides; screens + a terrain on P2 (the target).
+        b.p1.conditions.stealth_rock = true;
+        b.p1.conditions.spikes_layers = 2;
+        b.p2.conditions.toxic_spikes_layers = 2;
+        b.p2.conditions.sticky_web = true;
+        b.p2.conditions.reflect_turns = 5;
+        b.p2.conditions.light_screen_turns = 5;
+        b.p2.conditions.aurora_veil_turns = 5;
+        b.terrain = crate::terrain::Terrain::Electric;
+        b.terrain_turns = 5;
+        let eva_before = b.p2.team[0].boosts[6];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Hazards cleared on both sides.
+        assert!(!b.p1.conditions.stealth_rock && b.p1.conditions.spikes_layers == 0,
+                "Defog clears the user's own hazards");
+        assert!(b.p2.conditions.toxic_spikes_layers == 0 && !b.p2.conditions.sticky_web,
+                "Defog clears the target's hazards");
+        // Screens cleared on the target's side.
+        assert_eq!(b.p2.conditions.reflect_turns, 0, "clears target Reflect");
+        assert_eq!(b.p2.conditions.light_screen_turns, 0, "clears target Light Screen");
+        assert_eq!(b.p2.conditions.aurora_veil_turns, 0, "clears target Aurora Veil");
+        // Terrain cleared.
+        assert_eq!(b.terrain, crate::terrain::Terrain::None, "Defog clears Terrain");
+        // Evasion dropped on the target.
+        assert_eq!(b.p2.team[0].boosts[6], eva_before - 1, "target evasion -1");
+    }
+
+    #[test]
+    fn defog_leaves_user_side_screens_intact() {
+        // Control: Defog removes screens only from the TARGET's side, not
+        // the user's own. Reflect on the Defogger's side survives.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","item":"","nature":"impish","moves":["defog","bravebird","roost","uturn"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","reflect","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.conditions.reflect_turns = 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // 5 -> 4 from the normal end-of-step screen tick; Defog itself
+        // does NOT clear the user's own screens (only the target's).
+        assert_eq!(b.p1.conditions.reflect_turns, 4, "Defog leaves the user's own screens up");
     }
 
     #[test]

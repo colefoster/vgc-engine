@@ -222,6 +222,10 @@ mod tests {
         assert!(move_by_slug("stickyweb").unwrap().is_reflectable);
         assert!(move_by_slug("thunderwave").unwrap().is_reflectable);
         assert!(move_by_slug("leechseed").unwrap().is_reflectable);
+        // Defog carries `flags.reflectable: 1` — Magic Bounce DOES bounce
+        // it. Court Change has no reflectable flag (target "all" / field).
+        assert!(move_by_slug("defog").unwrap().is_reflectable);
+        assert!(!move_by_slug("courtchange").unwrap().is_reflectable);
         assert!(!move_by_slug("tackle").unwrap().is_reflectable);
 
         // Self-max-HP recoil: Steel Beam, Mind Blown, Chloroblast all take 1/2 max HP.
