@@ -89,6 +89,14 @@ mod tests {
         let recover = move_by_slug("recover").unwrap();
         assert!(recover.is_heal);
 
+        // Reflectable flag (PS `flags.reflectable`): foe-targeting status
+        // moves bounced by Magic Coat / Magic Bounce. Entry hazards, status
+        // infliction, and Leech Seed are reflectable; damaging moves are not.
+        assert!(move_by_slug("toxicspikes").unwrap().is_reflectable);
+        assert!(move_by_slug("thunderwave").unwrap().is_reflectable);
+        assert!(move_by_slug("leechseed").unwrap().is_reflectable);
+        assert!(!move_by_slug("tackle").unwrap().is_reflectable);
+
         // Self-max-HP recoil: Steel Beam, Mind Blown, Chloroblast all take 1/2 max HP.
         for s in ["steelbeam", "mindblown", "chloroblast"] {
             let m = move_by_slug(s).unwrap();

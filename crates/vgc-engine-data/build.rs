@@ -369,6 +369,14 @@ fn main() {
     writeln!(f, "    pub is_powder: bool,").unwrap();
     writeln!(f, "    /// PS `flags.heal = 1`. Blocked by Heal Block.").unwrap();
     writeln!(f, "    pub is_heal: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.reflectable = 1`. The move can be bounced back at").unwrap();
+    writeln!(f, "    /// its user by Magic Coat (move) / Magic Bounce (ability). Set on").unwrap();
+    writeln!(f, "    /// status moves that target a foe — entry hazards (Toxic Spikes,").unwrap();
+    writeln!(f, "    /// Spikes, Stealth Rock, Sticky Web), status infliction (Thunder").unwrap();
+    writeln!(f, "    /// Wave, Toxic, Will-O-Wisp, Spore), Leech Seed, Taunt, etc. The").unwrap();
+    writeln!(f, "    /// canonical reflect-eligibility predicate the Magic Coat / Magic").unwrap();
+    writeln!(f, "    /// Bounce PRs read; damaging moves are never reflectable.").unwrap();
+    writeln!(f, "    pub is_reflectable: bool,").unwrap();
     writeln!(f, "    /// PS `flags.cantusetwice = 1`. After using the move, the user").unwrap();
     writeln!(f, "    /// cannot select it again on the next turn (Gigaton Hammer,").unwrap();
     writeln!(f, "    /// Blood Moon). Encoded as a per-mon volatile in the move handler.").unwrap();
@@ -410,7 +418,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -432,6 +440,7 @@ fn main() {
             m.flags.contains_key("wind"),
             m.flags.contains_key("powder"),
             m.flags.contains_key("heal"),
+            m.flags.contains_key("reflectable"),
             m.flags.contains_key("cantusetwice"),
             // PS hardcodes `mindBlownRecoil: true` on Mind Blown and Steel Beam,
             // and singles out Chloroblast by id in the same `onAfterMove`. All
