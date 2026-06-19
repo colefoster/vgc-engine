@@ -281,6 +281,21 @@ pub fn on_after_damage(
     // apply_boosts (Clear Body / Clear Amulet don't block self-boosts).
     // Single use. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Starf_Berry>.
+    // Micle Berry — PS data/items.ts:micleberry (line 4067): onResidual
+    // eats at <=25% HP (Gluttony <=50%, deferred); onEat adds the
+    // `micleberry` volatile, which on the holder's NEXT non-OHKO move
+    // multiplies that move's accuracy by 4915/4096 (×1.2) and removes
+    // itself (`condition.onSourceAccuracy`). We model the volatile as the
+    // `micle_next_move` Copy latch: set it on eat, consume it in the
+    // damage.rs/battle.rs accuracy block on the next move. Deterministic
+    // eat — no RNG; the boost scales an existing accuracy roll.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
+    if slug == "micleberry" && current * 4 <= max {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.item_id = u16::MAX;
+            m.micle_next_move = true;
+        }
+    }
     if slug == "starfberry" && current * 4 <= max {
         let boosts = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m.boosts,

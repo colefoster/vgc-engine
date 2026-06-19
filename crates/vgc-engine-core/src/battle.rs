@@ -891,6 +891,7 @@ impl Battle {
             incoming.clear_type_override(); // Protean / Color Change typing clears on switch-out.
             incoming.protean_used = false; // Protean / Libero once-per-switch latch resets.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
+            incoming.micle_next_move = false; // Micle Berry accuracy latch clears on switch-out.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
             // `twoturnmove` / `lockedmove` / `mustrecharge` volatiles
@@ -2388,6 +2389,24 @@ impl Battle {
                     let target_will_move = tk == 1 || tk == 2;
                     if !target_will_move {
                         eff_acc = (eff_acc * 4915 / 4096).min(100);
+                    }
+                }
+                // Micle Berry — PS data/items.ts:micleberry condition
+                // `onSourceAccuracy`: the holder's next non-OHKO move gets
+                // accuracy ×4915/4096 (≈×1.2), then the volatile removes
+                // itself. We read the live latch (the snapshot may be stale
+                // if the berry ate this same turn) and consume it here so
+                // it applies to exactly one move. OHKO moves take the
+                // separate path above and never reach this block.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
+                let micle_active = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| a.micle_next_move);
+                if micle_active {
+                    eff_acc = (eff_acc * 4915 / 4096).min(100);
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.micle_next_move = false;
                     }
                 }
                 // Bright Powder / Lax Incense — defender-side accuracy
@@ -9071,6 +9090,76 @@ mod tests {
             }
         }
         assert!(fired, "no accuracy miss occurred across scanned seeds");
+    }
+
+    #[test]
+    fn micle_berry_eats_at_quarter_hp_and_sets_accuracy_latch() {
+        // PS data/items.ts:micleberry — at <=25% HP, eat and set the
+        // one-shot accuracy latch (the `micleberry` volatile). Deterministic.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"micleberry","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert!(b.p1.team[0].micle_next_move, "Micle sets the next-move accuracy latch");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Micle Berry consumed");
+
+        // Control: above 25% → no eat, no latch.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert!(!b.p1.team[0].micle_next_move, "Micle does NOT fire above 25%");
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Micle NOT consumed above 25%");
+    }
+
+    #[test]
+    fn micle_berry_boosts_next_move_accuracy_x12_then_clears() {
+        // With the latch set, an 80-accuracy move (Stone Edge) gets ×1.2
+        // → effective 96. A pinned accuracy roll of 90 misses without Micle
+        // (90 > 80) but hits with it (90 <= 96). Detect via target damage,
+        // and confirm the latch clears after the move.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["stoneedge","earthquake","protect","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        // With Micle latch set: accuracy roll 90 hits (eff 96).
+        {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(90)], 0);
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+            b.p1.team[0].micle_next_move = true;
+            let hp_pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].current_hp < hp_pre, "Micle ×1.2 turns the 90-roll into a hit");
+            assert!(!b.p1.team[0].micle_next_move, "Micle latch cleared after one move");
+        }
+        // Without Micle latch: same 90-roll misses (eff 80).
+        {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(90)], 0);
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+            let hp_pre = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].current_hp, hp_pre, "without Micle the 90-roll misses Stone Edge (80 acc)");
+        }
     }
 
     #[test]
