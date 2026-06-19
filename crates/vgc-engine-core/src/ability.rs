@@ -145,11 +145,6 @@ fn blocks_intimidate(ability: &str) -> bool {
     )
 }
 
-/// Apply a single-stage attack drop to `mon`, clamping to -6..=6.
-fn drop_atk(mon: &mut crate::pokemon::Pokemon) {
-    mon.boosts[0] = (mon.boosts[0] - 1).clamp(-6, 6);
-}
-
 /// PS `onAfterEachBoost` for the just-dropped mon. Triggers Defiant
 /// (+2 Atk) and Competitive (+2 SpA) when an opposing source lowers
 /// any stat. Caller is responsible for the cross-side / hit-actually-
@@ -178,9 +173,8 @@ pub(crate) fn react_to_opposing_stat_drop(
         "competitive" => 2,  // SpA
         _ => return,
     };
-    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.boosts[stat_index] = (t.boosts[stat_index] + 2).clamp(-6, 6);
-    }
+    // Defiant / Competitive rebound is a self-boost (PS source = target).
+    battle.apply_boosts(target_side, target_slot, &[(stat_index as u8, 2)], target_side, target_slot);
 }
 
 /// Index (0=atk, 1=def, 2=spa, 3=spd, 4=spe) of the mon's highest stage-
@@ -422,11 +416,13 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => None,
     };
     if let Some((stat_idx, expected_slug)) = embody_stat {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if m.is_alive() && m.terastallized && m.species().slug == expected_slug {
-                let cur = m.boosts[stat_idx as usize];
-                m.boosts[stat_idx as usize] = (cur + 1).min(6);
-            }
+        let do_boost = battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+            m.is_alive() && m.terastallized && m.species().slug == expected_slug
+        });
+        if do_boost {
+            // Self-boost (+1). `.min(6)` historically; identical to the
+            // clamp here since a freshly-switched-in stage is never < -7.
+            battle.apply_boosts(side, slot, &[(stat_idx, 1)], side, slot);
         }
     }
 
@@ -581,9 +577,10 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 .unwrap_or(false);
             if adrenaline {
                 if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                    t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
                     t.item_id = u16::MAX;
                 }
+                // Self-boost (+1 Spe) on the Orb holder.
+                battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
             }
             if blocks_intimidate(target_ability) {
                 continue;
@@ -597,9 +594,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             if amulet {
                 continue;
             }
-            if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                drop_atk(t);
-            }
+            // Intimidate's Atk drop — source is the Intimidate user.
+            battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
             crate::item::try_consume_white_herb(battle, opp, s);
             // Eject Pack on the intimidated target — PS
             // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
@@ -618,9 +614,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             // Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
             if target_ability == "rattled" {
-                if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                    t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
-                }
+                // Self-boost (+1 Spe) on the intimidated Rattled holder.
+                battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
             }
         }
     }
@@ -784,9 +779,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // turn-1 starters) and 0 for mons brought in via this turn's switch
     // action. Our `switched_in_this_turn` flag is that exact bit.
     if slug == "speedboost" && !switched_in_this_turn {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            m.boosts[4] = (m.boosts[4] + 1).clamp(-6, 6);
-        }
+        // Self-boost (+1 Spe) at end of turn.
+        battle.apply_boosts(side, slot, &[(4, 1)], side, slot);
     }
 
     // Solar Power — PS `data/abilities.ts:solarpower`:
@@ -906,9 +900,9 @@ pub fn on_damaging_hit(
                 let blocked = cross_side && battle.side(sd).active_mon(s as usize)
                     .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 4));
                 if blocked { continue; }
-                if let Some(t) = battle.side_mut(sd).active_mon_mut(s as usize) {
-                    t.boosts[4] = (t.boosts[4] - 1).clamp(-6, 6);
-                }
+                // Cotton Down lowers Spe of every other active; source is
+                // the Cotton Down holder that was hit.
+                battle.apply_boosts(sd, s, &[(4, -1)], target_side, target_slot);
             }
         }
     }
@@ -921,9 +915,8 @@ pub fn on_damaging_hit(
     // a stat boost. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
     if slug == "stamina" && target_alive {
-        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-            t.boosts[1] = (t.boosts[1] + 1).clamp(-6, 6);
-        }
+        // Self-boost (+1 Def) on hit.
+        battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
     }
     // Anger Point — PS `data/abilities.ts:angerpoint`:
     //   onHit(target, source, move) {
@@ -937,9 +930,9 @@ pub fn on_damaging_hit(
     // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
     if slug == "angerpoint" && target_alive && crit {
-        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-            t.boosts[0] = 6;
-        }
+        // PS `boost({atk: 12})` — adding 12 to any in-range stage clamps to
+        // +6, identical to the old absolute `= 6`. Self-boost.
+        battle.apply_boosts(target_side, target_slot, &[(0, 12)], target_side, target_slot);
     }
     // Berserk — PS `data/abilities.ts:berserk`:
     //   onDamage(damage, target, source, effect) {
@@ -964,12 +957,8 @@ pub fn on_damaging_hit(
             let half = max / 2;
             // Crossed the half line: pre > half AND post <= half.
             if pre > half && post <= half && dmg > 0 {
-                if let Some(tm) = battle
-                    .side_mut(target_side)
-                    .active_mon_mut(target_slot as usize)
-                {
-                    tm.boosts[2] = (tm.boosts[2] + 1).clamp(-6, 6);
-                }
+                // Berserk self-boost (+1 SpA) on crossing 50%.
+                battle.apply_boosts(target_side, target_slot, &[(2, 1)], target_side, target_slot);
             }
         }
     }
@@ -982,9 +971,8 @@ pub fn on_damaging_hit(
     if slug == "justified" && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 15 {
-            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                t.boosts[0] = (t.boosts[0] + 1).clamp(-6, 6);
-            }
+            // Justified self-boost (+1 Atk) on incoming Dark move.
+            battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }
     // Steam Engine — PS `data/abilities.ts:steamengine`:
@@ -998,9 +986,8 @@ pub fn on_damaging_hit(
     if slug == "steamengine" && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 1 || move_type == 2 {
-            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                t.boosts[4] = (t.boosts[4] + 6).clamp(-6, 6);
-            }
+            // Steam Engine self-boost — PS `boost({spe: 6})` (additive +6).
+            battle.apply_boosts(target_side, target_slot, &[(4, 6)], target_side, target_slot);
         }
     }
     // Rattled — PS `data/abilities.ts:rattled`:
@@ -1017,9 +1004,8 @@ pub fn on_damaging_hit(
     if slug == "rattled" && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if matches!(move_type, 6 | 13 | 15) {
-            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                t.boosts[4] = (t.boosts[4] + 1).clamp(-6, 6);
-            }
+            // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
+            battle.apply_boosts(target_side, target_slot, &[(4, 1)], target_side, target_slot);
         }
     }
     // Anger Shell — PS `data/abilities.ts:angershell`:
@@ -1049,16 +1035,14 @@ pub fn on_damaging_hit(
                 let pre = post + dmg;
                 let half = max / 2;
                 if pre > half && post <= half && dmg > 0 {
-                    if let Some(tm) = battle
-                        .side_mut(target_side)
-                        .active_mon_mut(target_slot as usize)
-                    {
-                        tm.boosts[0] = (tm.boosts[0] + 1).clamp(-6, 6); // Atk
-                        tm.boosts[2] = (tm.boosts[2] + 1).clamp(-6, 6); // SpA
-                        tm.boosts[4] = (tm.boosts[4] + 1).clamp(-6, 6); // Spe
-                        tm.boosts[1] = (tm.boosts[1] - 1).clamp(-6, 6); // Def
-                        tm.boosts[3] = (tm.boosts[3] - 1).clamp(-6, 6); // SpD
-                    }
+                    // Anger Shell self-boost: +1 Atk/SpA/Spe, -1 Def/SpD.
+                    battle.apply_boosts(
+                        target_side,
+                        target_slot,
+                        &[(0, 1), (2, 1), (4, 1), (1, -1), (3, -1)],
+                        target_side,
+                        target_slot,
+                    );
                 }
             }
         }
