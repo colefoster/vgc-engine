@@ -43,11 +43,6 @@ pub struct ScheduledAction {
 /// Rush). Trick Room is handled by the comparator at the call site.
 pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
     let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
-    let ability_slug_for_spe = if mon.ability_id == u16::MAX {
-        ""
-    } else {
-        data::ABILITIES[mon.ability_id as usize].slug
-    };
     // Quick Feet — PS `data/abilities.ts:quickfeet`:
     //   onModifySpe(spe, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -58,7 +53,7 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     // Linoone / Ursaring HA.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Quick_Feet_(Ability)>.
     let statused = !matches!(mon.status, Status::None);
-    let has_quick_feet = ability_slug_for_spe == "quickfeet";
+    let has_quick_feet = mon.ability_id == data::ability_id::QUICKFEET;
     let after_para = if matches!(mon.status, Status::Paralysis) && !has_quick_feet {
         boosted / 2
     } else {
@@ -71,14 +66,9 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     };
     let after_tailwind = if tailwind_active { after_para * 2 } else { after_para };
     // Choice Scarf: ×1.5 to final speed.
-    let item_slug = if mon.item_id == u16::MAX {
-        ""
-    } else {
-        data::ITEMS[mon.item_id as usize].slug
-    };
-    let after_item = if item_slug == "choicescarf" {
+    let after_item = if mon.item_id == data::item_id::CHOICESCARF {
         after_tailwind * 3 / 2
-    } else if item_slug == "ironball" {
+    } else if mon.item_id == data::item_id::IRONBALL {
         // Iron Ball — PS `data/items.ts:ironball` `onModifySpe`:
         //   `return this.chainModify(0.5);`
         // Halves the holder's speed unconditionally. Bulbapedia:
@@ -100,16 +90,16 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swift_Swim_(Ability)>.
     use crate::weather::Weather;
     let weather_double = matches!(
-        (ability_slug_for_spe, weather),
-        ("swiftswim", Weather::Rain)
-            | ("chlorophyll", Weather::Sun)
-            | ("sandrush", Weather::Sand)
-            | ("slushrush", Weather::Snow)
+        (mon.ability_id, weather),
+        (data::ability_id::SWIFTSWIM, Weather::Rain)
+            | (data::ability_id::CHLOROPHYLL, Weather::Sun)
+            | (data::ability_id::SANDRUSH, Weather::Sand)
+            | (data::ability_id::SLUSHRUSH, Weather::Snow)
     );
     let after_weather = if weather_double { after_paradox * 2 } else { after_paradox };
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
-    let after_slowstart = if ability_slug_for_spe == "slowstart"
+    let after_slowstart = if mon.ability_id == data::ability_id::SLOWSTART
         && mon.slow_start_active_turns > 0
     {
         after_weather / 2
@@ -163,17 +153,10 @@ pub fn action_order(
                             // (gen 7+), not here — order-resolution still
                             // uses the bumped priority. PS data/abilities.ts
                             // prankster onModifyPriority.
-                            let pri_after_ability = if category == 2 {
-                                let ability_slug = if m.ability_id == u16::MAX {
-                                    ""
-                                } else {
-                                    data::ABILITIES[m.ability_id as usize].slug
-                                };
-                                if ability_slug == "prankster" {
-                                    base_pri + 1
-                                } else {
-                                    base_pri
-                                }
+                            let pri_after_ability = if category == 2
+                                && m.ability_id == data::ability_id::PRANKSTER
+                            {
+                                base_pri + 1
                             } else {
                                 base_pri
                             };
@@ -191,12 +174,7 @@ pub fn action_order(
                             // — we skip the gate for simplicity since
                             // Mycelium Might + Quick Claw is vanishingly
                             // rare in the corpus.
-                            let item_slug = if m.item_id == u16::MAX {
-                                ""
-                            } else {
-                                data::ITEMS[m.item_id as usize].slug
-                            };
-                            let pri_after_item = if item_slug == "quickclaw" && pri_after_ability <= 0 {
+                            let pri_after_item = if m.item_id == data::item_id::QUICKCLAW && pri_after_ability <= 0 {
                                 if rng.range(5) == 0 { pri_after_ability + 1 } else { pri_after_ability }
                             } else {
                                 pri_after_ability
@@ -212,12 +190,7 @@ pub fn action_order(
                             // (gap doc: "grassyglide priority-bump branch not
                             // yet wired"). Bulbapedia:
                             // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
-                            let move_slug_for_pri = if mid == u16::MAX {
-                                ""
-                            } else {
-                                data::MOVES[mid as usize].slug
-                            };
-                            let pri_after_terrain = if move_slug_for_pri == "grassyglide"
+                            let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
                                 && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
                                 && m.is_grounded()
                             {
@@ -248,12 +221,14 @@ pub fn action_order(
                             //   <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>
                             //   <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>
                             //   <https://bulbapedia.bulbagarden.net/wiki/Full_Incense>
-                            let frac = if item_slug == "custapberry"
+                            let frac = if m.item_id == data::item_id::CUSTAPBERRY
                                 && m.current_hp > 0
                                 && m.current_hp * 4 <= m.stats.hp
                             {
                                 -1i8
-                            } else if item_slug == "laggingtail" || item_slug == "fullincense" {
+                            } else if m.item_id == data::item_id::LAGGINGTAIL
+                                || m.item_id == data::item_id::FULLINCENSE
+                            {
                                 1i8
                             } else {
                                 0i8
