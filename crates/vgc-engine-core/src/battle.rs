@@ -1264,6 +1264,47 @@ impl Battle {
             }
         }
 
+        // 1f. Damp — PS `data/abilities.ts:801`:
+        //   onAnyTryMove(target, source, effect) {
+        //     if (['explosion','mindblown','mistyexplosion','selfdestruct']
+        //         .includes(effect.id)) {
+        //       this.attrLastMove('[still]');
+        //       this.add('cant', ..., 'ability: Damp', effect, ...);
+        //       return false;
+        //     }
+        //   }
+        // Field-wide: if ANY active mon (either side) has Damp, the
+        // explosion move fails outright — no damage, no self-faint.
+        // `onAnyTryMove` is a global event, so Mold Breaker (which only
+        // suppresses the move's *target* abilities) does NOT bypass it.
+        // PP IS consumed in PS (the move is selected and runMove proceeds
+        // past the PP deduction before TryMove vetoes) — we tick it then
+        // return, mirroring the Sucker-Punch fail path below.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_(Ability)>.
+        if matches!(
+            m.slug,
+            "explosion" | "selfdestruct" | "mindblown" | "mistyexplosion"
+        ) {
+            let n = self.format().active_count() as u8;
+            let damp_on_field = [SideRef::P1, SideRef::P2].iter().any(|&s| {
+                (0..n).any(|slot| {
+                    self.side(s)
+                        .active_mon(slot as usize)
+                        .is_some_and(|mon| {
+                            mon.is_alive() && mon.effective_ability_slug() == "damp"
+                        })
+                })
+            });
+            if damp_on_field {
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1);
+                    }
+                }
+                return;
+            }
+        }
+
         // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
         //     fails unless the target is still queued to use a
         //     damaging (non-Status) move this turn. Approximation:
@@ -5780,6 +5821,50 @@ mod tests {
             "Iron Hands took only Rough Skin recoil (no Earthquake damage — flinched)",
         );
         assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Garchomp took Fake Out damage");
+    }
+
+    #[test]
+    fn damp_blocks_explosion_field_wide() {
+        // PS data/abilities.ts:801 — Damp's onAnyTryMove cancels
+        // Explosion / Self-Destruct / Mind Blown / Misty Explosion if any
+        // active mon on the field has it. Foe with Damp ⇒ Explosion fails
+        // (foe takes no damage). Control foe without Damp ⇒ Explosion
+        // lands.
+        let attacker = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["selfdestruct","bodyslam","crunch","earthquake"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let damp_foe = r#"[
+            {"species":"golduck","level":50,"ability":"damp","item":"","nature":"bold","moves":["surf","icebeam","calmmind","recover"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let plain_foe = r#"[
+            {"species":"golduck","level":50,"ability":"cloudnine","item":"","nature":"bold","moves":["surf","icebeam","calmmind","recover"],"evs":{"hp":252,"def":252}}
+        ]"#;
+
+        // Returns true if the foe took damage from Self-Destruct.
+        let foe_took_damage = |foe_json: &str| -> bool {
+            let p1 = TeamBuilder::from_json(attacker).unwrap();
+            let p2 = TeamBuilder::from_json(foe_json).unwrap();
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: 5 },
+                p1,
+                p2,
+            );
+            let foe_hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+            );
+            b.p2.team[0].current_hp < foe_hp_before
+        };
+
+        assert!(
+            !foe_took_damage(damp_foe),
+            "Damp on the field must cancel Self-Destruct"
+        );
+        assert!(
+            foe_took_damage(plain_foe),
+            "control foe without Damp should take Self-Destruct damage"
+        );
     }
 
     #[test]
