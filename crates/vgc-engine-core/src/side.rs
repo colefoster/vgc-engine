@@ -93,6 +93,16 @@ pub struct SideConditions {
     /// Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
     /// Mortal Spin in later PRs.
     pub toxic_spikes_layers: u8,
+    /// Spikes hazard layer count on this side (0 = none, 1, 2, 3).
+    /// PS data/moves.ts:spikes sets a `foeSide` `sideCondition` whose
+    /// `effectState.layers` caps at 3 (onSideRestart returns false once
+    /// 3 layers are down). On switch-in a grounded non-immune mon takes
+    /// `damageAmounts[layers] * maxhp / 24` with `damageAmounts =
+    /// [0, 3, 4, 6]` → 1/8 (1 layer), 1/6 (2), 1/4 (3). Airborne mons,
+    /// Heavy-Duty Boots holders, and Magic Guard holders take nothing.
+    /// Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
+    /// Mortal Spin in later PRs.
+    pub spikes_layers: u8,
     /// True once this side has used Terastallize this battle. Gen-9
     /// rule: at most one mon per side may Terastallize per battle.
     /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
