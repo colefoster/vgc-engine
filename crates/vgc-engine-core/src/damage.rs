@@ -561,10 +561,11 @@ pub fn calculate_damage(
         // PS data/moves.ts:lowkick / :grassknot basePowerCallback
         // keys off the *target's* weight in hg:
         //   ≥2000 → 120, ≥1000 → 100, ≥500 → 80, ≥250 → 60, ≥100 → 40, else 20.
-        // Heavy/Light Metal + Float Stone modifiers deferred. Bulbapedia:
+        // Float Stone on the TARGET halves its weight (PS getWeight runs the
+        // item's onModifyWeight); Heavy/Light Metal still deferred. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Low_Kick_(move)>
         // <https://bulbapedia.bulbagarden.net/wiki/Grass_Knot_(move)>
-        let w = defender.species().weight_dg as u32;
+        let w = defender.effective_weight_dg();
         let bp = if w >= 2000 { 120 }
             else if w >= 1000 { 100 }
             else if w >= 500 { 80 }
@@ -584,13 +585,14 @@ pub fn calculate_damage(
         //   else bp = 40;
         //   return bp;
         // We use hectograms (kg × 10) so the multiplicative checks are
-        // exact integer comparisons. Float-ability multipliers from
-        // Heavy Metal (×2) / Light Metal (×0.5) / Float Stone (×0.5)
-        // are NOT applied here yet — they belong to their own PRs.
+        // exact integer comparisons. Float Stone on either combatant halves
+        // that mon's weight (PS getWeight runs onModifyWeight for both the
+        // user and the target). Heavy Metal (×2) / Light Metal (×0.5) are
+        // still deferred to their own PRs.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heat_Crash_(move)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Heavy_Slam_(move)>
-        let user_w = attacker.species().weight_dg as u64;
-        let tgt_w = (defender.species().weight_dg as u64).max(1);
+        let user_w = attacker.effective_weight_dg() as u64;
+        let tgt_w = (defender.effective_weight_dg() as u64).max(1);
         let bp = if user_w >= tgt_w * 5 { 120 }
             else if user_w >= tgt_w * 4 { 100 }
             else if user_w >= tgt_w * 3 { 80 }
@@ -1797,6 +1799,41 @@ mod tests {
         // Even with Snorlax's higher Def the heavy hit should dwarf light.
         assert!(dmg_heavy > dmg_light,
                 "Low Kick vs Snorlax (120 BP) should beat vs Pikachu (20 BP): heavy={dmg_heavy} light={dmg_light}");
+    }
+
+    #[test]
+    fn float_stone_halves_low_kick_target_weight() {
+        // PS data/items.ts:floatstone halves the holder's weight. Low Kick
+        // keys off the target's weight: a target right above a BP threshold
+        // drops a tier when it holds Float Stone, so Low Kick hits weaker.
+        // Snorlax = 460 kg (4600 hg) → 120 BP normally; halved to 2300 hg →
+        // still ≥2000 → 120 BP. Use a target straddling a boundary instead:
+        // Skarmory = 50.5 kg (505 hg) → ≥500 → 80 BP; halved → 252 hg →
+        // ≥250 → 60 BP. Control (no item) keeps 80 BP.
+        let attacker = make_mon(
+            "garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let lk = move_id("lowkick");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+        let float_stone = data::ITEMS.iter()
+            .position(|i| i.slug == "floatstone").expect("floatstone") as u16;
+        let mut plain = make_mon("skarmory", 50, "hardy", StatSpread::ZERO);
+        let mut light = make_mon("skarmory", 50, "hardy", StatSpread::ZERO);
+        light.item_id = float_stone;
+        let dmg_plain = calculate_damage(&attacker, &plain, lk, ctx);
+        let dmg_light = calculate_damage(&attacker, &light, lk, ctx);
+        assert!(dmg_plain > dmg_light,
+                "Float Stone should drop Low Kick a BP tier (80→60): plain={dmg_plain} float={dmg_light}");
+        // Control: removing the item restores the heavier hit.
+        plain.item_id = u16::MAX;
+        assert_eq!(calculate_damage(&attacker, &plain, lk, ctx), dmg_plain);
     }
 
     #[test]
