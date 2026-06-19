@@ -714,6 +714,32 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Blunder Policy — PS `sim/battle-actions.ts:740`:
+///   if (!move.ohko && pokemon.hasItem('blunderpolicy') && pokemon.useItem()) {
+///     this.battle.boost({ spe: 2 }, pokemon);
+///   }
+/// Fires when the HOLDER's own move misses due to accuracy (the `-miss`
+/// branch). Consume the item and grant the user +2 Speed. OHKO moves never
+/// trigger it (PS gates `!move.ohko`; the engine's OHKO accuracy path is
+/// separate, so the standard-miss caller already excludes them). Self-boost,
+/// so Clear Body / Clear Amulet don't gate it. No new RNG draw — the miss
+/// already consumed its accuracy roll.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Blunder_Policy>.
+pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) {
+    let slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => item_slug(m.item_id),
+        _ => return,
+    };
+    if slug != "blunderpolicy" {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.item_id = u16::MAX;
+    }
+    // +2 Speed self-boost (stat index 4).
+    battle.apply_boosts(side, slot, &[(4, 2)], side, slot);
+}
+
 /// Run the White Herb check on a single active mon. If holder has
 /// `whiteherb` AND any of `boosts[0..7]` is negative, zero those entries
 /// and consume the item (sentinel `u16::MAX`). Idempotent if no negative
