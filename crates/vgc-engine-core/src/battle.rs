@@ -6117,10 +6117,37 @@ fn apply_secondary_effect(
     if defender_has_covert_cloak {
         return;
     }
+    // Serene Grace — PS `data/abilities.ts:serenegrace` (line 4083):
+    //   onModifyMovePriority: -2,
+    //   onModifyMove(move) {
+    //     if (move.secondaries) for (const s of move.secondaries)
+    //       if (s.chance) s.chance *= 2;          // doubles the % only
+    //     if (move.self?.chance) move.self.chance *= 2;
+    //   }
+    // Doubles the CHANCE of every secondary (and self-secondary), NOT the
+    // number of rolls — PS still draws exactly one `random(100)` per
+    // secondary, just against a doubled threshold. We mirror that by
+    // doubling each `chance` value fed to the SAME single `percent_1_100()`
+    // draw below; the draw count and order are unchanged vs a non-Serene-
+    // Grace attacker, so PsGen5 alignment is preserved. Jirachi / Togekiss /
+    // Sylveon-less builds. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Serene_Grace_(Ability)>.
+    let serene_grace = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| a.is_alive() && a.effective_ability_slug() == "serenegrace")
+        .unwrap_or(false);
+    // PS leaves a doubled chance uncapped (e.g. 60 → 120); against a
+    // `random(100)`/`percent_1_100()` draw a threshold ≥ 100 always passes,
+    // identical to a cap at 100. We saturate at 100 to keep `u8`.
+    let sg = |chance: u8| -> u8 {
+        if serene_grace { (chance as u16 * 2).min(100) as u8 } else { chance }
+    };
     // PS rolls each secondary independently — a move can in principle
     // have multiple (none currently in our table, but the structure
     // tolerates it).
     if let Some(chance) = flinch_chance(move_slug) {
+        let chance = sg(chance);
         // PS rolls the flinch chance unconditionally; the flinch is then
         // vetoed by Inner Focus's onTryAddVolatile. We keep the draw so
         // the oracle stays aligned, then gate the actual flinch.
@@ -6156,12 +6183,12 @@ fn apply_secondary_effect(
         }
     }
     if let Some((status, chance)) = status_secondary(move_slug) {
-        if rng.percent_1_100() <= chance {
+        if rng.percent_1_100() <= sg(chance) {
             battle.try_set_status(target_side, target_slot, status);
         }
     }
     if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
-        if rng.percent_1_100() <= chance {
+        if rng.percent_1_100() <= sg(chance) {
             // Clear Body / White Smoke / Full Metal Body / Clear Amulet
             // veto any opposing stat drop. Per-stat blockers (Hyper
             // Cutter / Big Pecks / Keen Eye) gate on the specific stat
@@ -6200,7 +6227,7 @@ fn apply_secondary_effect(
     // handled by `try_set_status`. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Tri_Attack_(move)>.
     if move_slug == "triattack" {
-        if rng.percent_1_100() <= 20 {
+        if rng.percent_1_100() <= sg(20) {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Burn,
@@ -6211,7 +6238,7 @@ fn apply_secondary_effect(
         }
     }
     if move_slug == "direclaw" {
-        if rng.percent_1_100() <= 50 {
+        if rng.percent_1_100() <= sg(50) {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Poison,
@@ -6263,7 +6290,10 @@ fn apply_secondary_effect(
         // category: 0 Physical, 1 Special, 2 Status. Skip Status moves and
         // moves that already roll a flinch (PS's dedupe guard).
         if move_category != 2 && flinch_chance(move_slug).is_none() {
-            if rng.percent_1_100() <= 10 {
+            // PS appends King's Rock's flinch at onModifyMovePriority -1, and
+            // Serene Grace (-2) runs after, so its doubling DOES apply to the
+            // appended 10% flinch. `sg` is a no-op without Serene Grace.
+            if rng.percent_1_100() <= sg(10) {
                 let attacker_breaks_mold = battle
                     .side(attacker_side)
                     .active_mon(attacker_slot as usize)
@@ -11073,6 +11103,55 @@ mod tests {
                 "Sub must block T-bolt para secondary (seed {seed})",
             );
         }
+    }
+
+    #[test]
+    fn serene_grace_doubles_secondary_chance() {
+        // Body Slam has a 30% paralysis secondary. Serene Grace doubles
+        // that to 60% WITHOUT adding a second draw — so for any given seed
+        // the set of seeds where para fires under Serene Grace is a strict
+        // SUPERSET of the no-ability set (same single draw, higher
+        // threshold). We sweep seeds and assert the Serene-Grace para count
+        // strictly exceeds the control count, and never undershoots it.
+        // PS data/abilities.ts:serenegrace.
+        let control = r#"[
+            {"species":"chansey","level":50,"ability":"naturalcure","item":"","nature":"adamant","moves":["bodyslam","softboiled","seismictoss","protect"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let serene = r#"[
+            {"species":"chansey","level":50,"ability":"serenegrace","item":"","nature":"adamant","moves":["bodyslam","softboiled","seismictoss","protect"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        // Target: Snorlax (Normal) — not Electric/Ground, so para is legal.
+        let target = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","crunch","earthquake","curse"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let count_para = |p1_json: &str| -> usize {
+            let mut paras = 0usize;
+            for seed in 1u64..120 {
+                let p1 = TeamBuilder::from_json(p1_json).unwrap();
+                let p2 = TeamBuilder::from_json(target).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                );
+                if matches!(b.p2.team[0].status, Status::Paralysis) {
+                    paras += 1;
+                }
+            }
+            paras
+        };
+        let control_paras = count_para(control);
+        let serene_paras = count_para(serene);
+        assert!(
+            serene_paras > control_paras,
+            "Serene Grace must raise para frequency (control {control_paras}, serene {serene_paras})",
+        );
+        // Sanity: control fires sometimes (~30%) and Serene roughly doubles.
+        assert!(control_paras > 0, "control should paralyze on some seeds");
+        assert!(
+            serene_paras >= control_paras * 3 / 2,
+            "Serene Grace ~doubles the rate (control {control_paras}, serene {serene_paras})",
+        );
     }
 
     #[test]
