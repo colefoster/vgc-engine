@@ -4369,7 +4369,19 @@ impl Battle {
                 // does NOT bypass. Bulbapedia: e.g.
                 // <https://bulbapedia.bulbagarden.net/wiki/Limber_(Ability)>.
                 let ab = m.effective_ability_slug();
-                let ability_status_block = match status {
+                // Purifying Salt — PS `data/abilities.ts:3573` `onSetStatus`
+                // returns false for ANY move-inflicted status (and Yawn via
+                // onTryAddVolatile, handled at the Yawn site). The holder is
+                // immune to all five non-volatile statuses. Flagged
+                // `breakable: 1`, but `onSetStatus` is a target-side veto PS
+                // applies regardless of the attacker's Mold Breaker (Mold
+                // Breaker only suppresses `onTryHit`-style breakable gates on
+                // damaging-move immunities, not status-set vetoes), so we do
+                // NOT consult the attacker here. Garganacl signature.
+                // Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Purifying_Salt_(Ability)>.
+                let purifying_salt_blocks = ab == "purifyingsalt";
+                let ability_status_block = purifying_salt_blocks || match status {
                     Status::Burn => ab == "waterbubble" || ab == "waterveil",
                     Status::Paralysis => ab == "limber",
                     Status::Freeze => ab == "magmaarmor",
@@ -19177,6 +19189,40 @@ mod tests {
         b.p1.active[0] = 3;
         b.try_set_status(SideRef::P1, 0, Status::Burn);
         assert!(matches!(b.p1.team[3].status, Status::None), "Water Veil blocks brn");
+    }
+
+    #[test]
+    fn purifying_salt_blocks_all_statuses() {
+        // Purifying Salt (Garganacl) is immune to ALL non-volatile
+        // statuses. A control mon (no ability gate) accepts the status,
+        // proving the test would otherwise set it. PS data/abilities.ts:3573.
+        let p1_json = r#"[
+            {"species":"garganacl","level":50,"ability":"purifyingsalt","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["scratch","scratch","scratch","scratch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        for status in [Status::Burn, Status::Paralysis, Status::Poison, Status::Toxic, Status::Sleep] {
+            b.try_set_status(SideRef::P1, 0, status);
+            assert!(
+                matches!(b.p1.team[0].status, Status::None),
+                "Purifying Salt must block {status:?}",
+            );
+        }
+
+        // Control: Snorlax (thickfat) accepts paralysis — confirms the
+        // harness actually sets statuses.
+        b.p1.active[0] = 1;
+        b.try_set_status(SideRef::P1, 0, Status::Paralysis);
+        assert!(
+            matches!(b.p1.team[1].status, Status::Paralysis),
+            "control mon must accept paralysis",
+        );
     }
 
     #[test]

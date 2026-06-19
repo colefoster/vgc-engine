@@ -1397,6 +1397,24 @@ pub fn calculate_damage(
         a = (a / 2).max(1);
     }
 
+    // Purifying Salt — PS `data/abilities.ts:3573`:
+    //   onSourceModifyAtkPriority: 6,  onSourceModifyAtk(atk, a, d, move) {
+    //     if (move.type === 'Ghost') return this.chainModify(0.5); }
+    //   onSourceModifySpAPriority: 5,  onSourceModifySpA(spa, ...) { same }
+    // Halves the attacker's effective offensive stat on Ghost-type moves
+    // (both physical and special reads). ×0.5 = 2048/4096 (exact). Flagged
+    // `breakable: 1` — Mold Breaker / Teravolt / Turboblaze bypass. Applied
+    // on `a` (the offensive stat) like Heatproof; base damage is linear in
+    // A so this is equivalent to a damage ×0.5. Ghost = type 13. Garganacl
+    // signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Purifying_Salt_(Ability)>.
+    if move_type == 13
+        && !attacker_breaks_mold_for_offense
+        && defender.effective_ability_slug() == "purifyingsalt"
+    {
+        a = (a / 2).max(1);
+    }
+
     // Dry Skin — PS data/abilities.ts:dryskin:
     //   onSourceBasePower(basePower, attacker, defender, move) {
     //     if (move.type === 'Fire') return this.chainModify([5120, 4096]);
@@ -2702,6 +2720,40 @@ mod tests {
         assert!(px_ghost > 0, "Pixilate makes Hyper Voice Fairy — hits Ghost");
         assert!(px_neutral > ctrl_neutral,
             "Pixilate ×1.2 BP raises neutral-target damage (ctrl {ctrl_neutral}, px {px_neutral})");
+    }
+
+    #[test]
+    fn purifying_salt_halves_ghost_damage() {
+        // Purifying Salt defender takes ×0.5 from Ghost moves only. Shadow
+        // Ball (Ghost) is halved; a non-Ghost special move of similar power
+        // is unaffected. PS data/abilities.ts:3573.
+        let atk = make_mon("gengar", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        // Defender must not be Ghost-immune: Garchomp (Dragon/Ground) takes
+        // neutral Ghost and neutral Poison damage.
+        let mut def = make_mon("garchomp", 50, "careful",
+            StatSpread { hp: 252, atk: 0, def: 0, spa: 0, spd: 252, spe: 0 });
+        let mk = |d: &Pokemon, mid: u16| calculate_damage(&atk, d, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let ghost = move_id("shadowball");
+        let other = move_id("sludgebomb"); // Poison special, similar BP
+        let ctrl_ghost = mk(&def, ghost);
+        let ctrl_other = mk(&def, other);
+        let ps_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "purifyingsalt").unwrap() as u16;
+        def.ability_id = ps_id;
+        let ps_ghost = mk(&def, ghost);
+        let ps_other = mk(&def, other);
+        assert!(ps_ghost < ctrl_ghost,
+            "Purifying Salt halves Ghost damage (ctrl {ctrl_ghost}, ps {ps_ghost})");
+        assert_eq!(ps_other, ctrl_other,
+            "Purifying Salt must NOT touch non-Ghost damage");
     }
 
     #[test]
