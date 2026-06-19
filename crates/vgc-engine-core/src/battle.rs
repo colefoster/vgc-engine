@@ -922,6 +922,15 @@ impl Battle {
             && (team_index as usize) < s.team.len()
             && s.team[team_index as usize].is_alive()
         {
+            // Clear the OUTGOING mon's Skill Swap ability override —
+            // a reassigned ability only persists while the mon is on
+            // the field (PS resets `Pokemon.ability` to its base on
+            // switch-out). The incoming mon's override is cleared by the
+            // blanket reset below.
+            let outgoing_idx = s.active[actor_slot as usize] as usize;
+            if let Some(outgoing) = s.team.get_mut(outgoing_idx) {
+                outgoing.ability_override = u16::MAX;
+            }
             s.active[actor_slot as usize] = team_index;
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
@@ -943,6 +952,7 @@ impl Battle {
             incoming.booster_locked = false; // Booster lock only persists while on field.
             incoming.set_pending_self_switch(false);
             incoming.ability_suppressed = false; // Gastro Acid clears on switch-out.
+            incoming.ability_override = u16::MAX; // Skill Swap override clears on switch-out.
             incoming.clear_type_override(); // Protean / Color Change typing clears on switch-out.
             incoming.protean_used = false; // Protean / Libero once-per-switch latch resets.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
@@ -5773,6 +5783,52 @@ impl Battle {
                     self.apply_status_to_target(ts, tslot, Status::Toxic);
                 }
             }
+            "skillswap" => {
+                // Skill Swap — PS `data/moves.ts:skillswap` `onHit` →
+                // `Battle.skillSwap` (sim/battle.ts:1311). `accuracy: true`
+                // so no accuracy draw. Swaps the user's and target's
+                // *effective* abilities by setting each `ability_override`.
+                // Fails (no swap) if either side's ability carries the
+                // `failskillswap` flag (Wonder Guard, Multitype/RKS System,
+                // Stance Change, Disguise, Comatose, Illusion, the paradox
+                // boosters, Tera formes, etc.) or the target is fainted.
+                // The gen<=5 "same ability fails" rule doesn't apply in
+                // gen 9. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Skill_Swap_(move)>.
+                if let Some((ts, tslot)) = opp_target {
+                    let target_alive = self.side(ts).active_mon(tslot as usize)
+                        .is_some_and(|t| t.is_alive());
+                    let source_ability = self.side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .map(|s| s.effective_ability_slug())
+                        .unwrap_or("");
+                    let target_ability = self.side(ts).active_mon(tslot as usize)
+                        .map(|t| t.effective_ability_slug())
+                        .unwrap_or("");
+                    if target_alive
+                        && !ability_fails_skill_swap(source_ability)
+                        && !ability_fails_skill_swap(target_ability)
+                    {
+                        // The effective-ability id each mon currently
+                        // presents (override if set, else base). Swapping
+                        // sets each side's override to the other's id.
+                        let source_eff_id = self.side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .map(|s| if s.ability_override != u16::MAX { s.ability_override } else { s.ability_id })
+                            .unwrap_or(u16::MAX);
+                        let target_eff_id = self.side(ts)
+                            .active_mon(tslot as usize)
+                            .map(|t| if t.ability_override != u16::MAX { t.ability_override } else { t.ability_id })
+                            .unwrap_or(u16::MAX);
+                        if let Some(s) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            s.ability_override = target_eff_id;
+                        }
+                        if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                            t.ability_override = source_eff_id;
+                        }
+                    }
+                }
+            }
             "leechseed" => {
                 // PS data/moves.ts:10204 leechseed. 90% accuracy,
                 // single-target status, Grass-type immunity, applies
@@ -6239,6 +6295,45 @@ impl Battle {
 /// Per-slug self-target stat-boost table for boosting status moves.
 /// PS data/moves.ts: each entry's `boosts: { ... }` block. Stat indices
 /// match `Pokemon::boosts`: [atk, def, spa, spd, spe, acc, eva].
+/// Abilities that carry PS's `failskillswap` flag — Skill Swap fails if
+/// either the user or target has one (sim/battle.ts:1316). Sourced from
+/// `data/abilities.ts` (gen 9). Mirrors the unswappable set: forme/Tera
+/// gimmicks, signature immunities, and the paradox boosters.
+fn ability_fails_skill_swap(slug: &str) -> bool {
+    matches!(
+        slug,
+        "asoneglastrier"
+            | "asonespectrier"
+            | "battlebond"
+            | "comatose"
+            | "commander"
+            | "disguise"
+            | "embodyaspectcornerstone"
+            | "embodyaspecthearthflame"
+            | "embodyaspectteal"
+            | "embodyaspectwellspring"
+            | "hungerswitch"
+            | "iceface"
+            | "illusion"
+            | "multitype"
+            | "neutralizinggas"
+            | "poisonpuppeteer"
+            | "powerconstruct"
+            | "protosynthesis"
+            | "quarkdrive"
+            | "rkssystem"
+            | "schooling"
+            | "shieldsdown"
+            | "stancechange"
+            | "teraformzero"
+            | "terashell"
+            | "terashift"
+            | "wonderguard"
+            | "zenmode"
+            | "zerotohero"
+    )
+}
+
 fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
         // Single-stat:
@@ -8272,6 +8367,63 @@ mod tests {
         assert_eq!(b.p2.team[0].pp[0], fly_pp_before, "Fly charged no PP (cant)");
         assert_eq!(b.p2.team[0].semi_invuln, 0, "Fly did not enter semi-invuln");
         assert_eq!(b.p1.team[0].current_hp, cress_hp_before, "Fly dealt no damage");
+    }
+
+    #[test]
+    fn skill_swap_exchanges_abilities_and_resets_on_switch() {
+        // Jirachi (Serene Grace) Skill Swaps with Garchomp (Rough Skin):
+        // each effective ability becomes the other's. PS skillSwap.
+        let p1_json = r#"[
+            {"species":"jirachi","level":50,"ability":"serenegrace","item":"","nature":"timid","moves":["skillswap","mudslap","meteorbeam","imprison"],"evs":{"spe":252,"spd":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"spe":252,"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace");
+        assert_eq!(b.p2.team[0].effective_ability_slug(), "roughskin");
+        // Jirachi (faster) Skill Swaps into Garchomp.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "roughskin", "Jirachi got Rough Skin");
+        assert_eq!(b.p2.team[0].effective_ability_slug(), "serenegrace", "Garchomp got Serene Grace");
+        // Base ids are untouched (override only).
+        assert_ne!(b.p1.team[0].ability_override, u16::MAX);
+        // Switch Jirachi out → override clears.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].ability_override, u16::MAX, "override reset on switch-out");
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace", "Jirachi back to base ability");
+    }
+
+    #[test]
+    fn skill_swap_fails_into_failskillswap_ability() {
+        // Skill Swap fails entirely when the target has a failskillswap
+        // ability (Quark Drive). Neither side's ability changes.
+        let p1_json = r#"[
+            {"species":"jirachi","level":50,"ability":"serenegrace","item":"","nature":"timid","moves":["skillswap","mudslap","meteorbeam","imprison"],"evs":{"spe":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"ironboulder","level":50,"ability":"quarkdrive","item":"","nature":"serious","moves":["psychocut","ironhead","protect","psyshock"],"evs":{"spe":252,"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace", "user unchanged");
+        assert_eq!(b.p2.team[0].effective_ability_slug(), "quarkdrive", "target unchanged");
+        assert_eq!(b.p1.team[0].ability_override, u16::MAX);
+        assert_eq!(b.p2.team[0].ability_override, u16::MAX);
     }
 
     #[test]

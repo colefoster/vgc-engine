@@ -247,6 +247,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         moves,
         pp,
         ability_id,
+        ability_override: u16::MAX,
         item_id,
         current_hp: stats.hp,
         stats,

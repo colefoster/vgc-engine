@@ -437,6 +437,12 @@ pub struct Pokemon {
     pub moves: [u16; 4],
     pub pp: [u8; 4],
     pub ability_id: u16,
+    /// Effective-ability override (PS `Pokemon.ability` reassignment via
+    /// `setAbility`). `u16::MAX` = no override → `effective_ability_slug`
+    /// falls back to `ability_id`. Set by Skill Swap (and, later, Gastro
+    /// Acid / Worry Seed / Entrainment / Role Play / Simple Beam /
+    /// Doodle). Reset to the sentinel on switch-out.
+    pub ability_override: u16,
     pub item_id: u16,
     pub stats: FinalStats,
     pub current_hp: u16,
@@ -783,13 +789,18 @@ impl Pokemon {
         if self.ability_suppressed {
             return "";
         }
-        if self.ability_id == u16::MAX {
+        // Skill Swap (and future ability-setting moves) reassign the
+        // live ability via `ability_override`; it shadows `ability_id`
+        // while present (PS reassigns `Pokemon.ability` directly).
+        let id = if self.ability_override != u16::MAX {
+            self.ability_override
+        } else {
+            self.ability_id
+        };
+        if id == u16::MAX {
             return "";
         }
-        data::ABILITIES
-            .get(self.ability_id as usize)
-            .map(|a| a.slug)
-            .unwrap_or("")
+        data::ABILITIES.get(id as usize).map(|a| a.slug).unwrap_or("")
     }
 
     /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
@@ -1414,7 +1425,7 @@ mod tests {
         let mut mon = Pokemon {
             species_id: species_idx, level: 50, gender: data::Gender::Male,
             moves: [u16::MAX; 4], pp: [0; 4],
-            ability_id: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
+            ability_id: u16::MAX, ability_override: u16::MAX, item_id: u16::MAX, stats: FinalStats::default(),
             current_hp: 1,
             ivs: StatSpread::MAX_IV, evs: StatSpread::default(), nature: Nature::NEUTRAL,
             status: Status::None, boosts: [0; 7], fainted: false,
@@ -1454,6 +1465,7 @@ mod tests {
             moves: [u16::MAX; 4],
             pp: [0; 4],
             ability_id: ab_id,
+            ability_override: u16::MAX,
             item_id: u16::MAX,
             stats: FinalStats::default(),
             current_hp: 100,

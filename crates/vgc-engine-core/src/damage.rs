@@ -1815,6 +1815,7 @@ mod tests {
             moves: [u16::MAX; 4],
             pp: [0; 4],
             ability_id: u16::MAX,
+            ability_override: u16::MAX,
             item_id: u16::MAX,
             current_hp: stats.hp,
             stats,
