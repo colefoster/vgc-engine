@@ -615,6 +615,27 @@ impl Pokemon {
         &data::SPECIES[self.species_id as usize]
     }
 
+    /// Effective in-battle weight in hectograms (kg × 10), after held-item
+    /// weight modifiers. Currently only Float Stone applies (halves weight).
+    /// PS `data/items.ts:floatstone` (line 2172): `onModifyWeight(weight) {
+    /// return this.trunc(weight / 2); }`, and `sim/pokemon.ts:getWeight()`
+    /// clamps the result to `Math.max(weight, 0.1)` kg — i.e. ≥ 1 hg here —
+    /// so Low Kick's BP table can't see a 0-weight target.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
+    pub fn effective_weight_dg(&self) -> u32 {
+        let base = self.species().weight_dg as u32;
+        let item = if self.item_id == u16::MAX {
+            ""
+        } else {
+            data::ITEMS[self.item_id as usize].slug
+        };
+        if item == "floatstone" {
+            (base / 2).max(1)
+        } else {
+            base
+        }
+    }
+
     pub fn is_alive(&self) -> bool {
         !self.fainted && self.current_hp > 0
     }
