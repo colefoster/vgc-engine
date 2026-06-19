@@ -10600,6 +10600,32 @@ mod tests {
     }
 
     #[test]
+    fn wind_power_charges_on_wind_hit() {
+        // Pidgeot uses Gust (wind-flagged) at Kilowattrel (Wind Power).
+        // Wind Power does NOT grant immunity — the hit lands — but it
+        // sets the Charge volatile that doubles the next Electric move.
+        // PS data/abilities.ts:5466 `onDamagingHit`.
+        let p1_json = r#"[
+            {"species":"pidgeot","level":50,"ability":"keeneye","item":"","nature":"timid","moves":["gust","airslash","heatwave","tailwind"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"kilowattrel","level":50,"ability":"windpower","item":"focussash","nature":"timid","moves":["thunderbolt","hurricane","voltswitch","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert!(!b.p2.team[0].is_charged(), "not charged before the wind hit");
+        let hp_before = b.p2.team[0].current_hp;
+        // Kilowattrel uses Hurricane (not Protect) so Gust actually lands.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < hp_before, "Wind Power does NOT absorb — Gust lands");
+        assert!(b.p2.team[0].is_charged(), "Wind Power sets Charge on a wind hit");
+    }
+
+    #[test]
     fn storm_drain_absorbs_water_and_boosts_spa() {
         let p1_json = r#"[
             {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["surf","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}

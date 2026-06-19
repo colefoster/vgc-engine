@@ -1068,6 +1068,22 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Wind Power — PS `data/abilities.ts:5466` `onDamagingHit`:
+    //   if (move.flags['wind']) { target.addVolatile('charge'); }
+    // On taking a wind-flagged hit, set the Charge volatile — which
+    // doubles the BP of the holder's next Electric move (PR-312). The
+    // `onSideConditionStart` Tailwind trigger is DEFERRED for the same
+    // reason as Wind Rider: no per-ability hook on Tailwind being laid.
+    // Empty `flags: {}` — Mold Breaker does NOT bypass. Gated on the
+    // holder surviving (a fainted mon can't carry a volatile).
+    // Wattrel / Kilowattrel signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Wind_Power_(Ability)>.
+    if slug == "windpower" && target_alive && data::MOVES[move_id as usize].is_wind {
+        if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            m.set_charged(true);
+        }
+    }
+
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
