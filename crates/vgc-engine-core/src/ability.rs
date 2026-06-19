@@ -541,6 +541,29 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Pastel Veil — PS `data/abilities.ts:3144`:
+    //   onStart(pokemon) { for (const ally of pokemon.alliesAndSelf())
+    //     if (['psn','tox'].includes(ally.status)) ally.cureStatus(); }
+    //   onUpdate(pokemon) { /* same, holder only */ }
+    //   onAnySwitchIn() { /* re-runs onStart whenever any mon switches in */ }
+    // Net effect on switch-in: the holder and every ally on its side have
+    // any existing poison / bad-poison cured. The set-status immunity aura
+    // (psn/tox can't be applied to the holder or its allies) lives in
+    // `Battle::try_set_status`. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Pastel_Veil_(Ability)>.
+    if slug == "pastelveil" {
+        let n = battle.format().active_count() as u8;
+        for s in 0..n {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(s as usize) {
+                if m.is_alive()
+                    && matches!(m.status, crate::pokemon::Status::Poison | crate::pokemon::Status::Toxic)
+                {
+                    m.status = crate::pokemon::Status::None;
+                }
+            }
+        }
+    }
+
     if slug == "intimidate" {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
