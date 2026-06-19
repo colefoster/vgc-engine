@@ -2367,6 +2367,26 @@ impl Battle {
                 if attacker_item_slug == "widelens" {
                     eff_acc = (eff_acc * 4505 / 4096).min(100);
                 }
+                // Zoom Lens — attacker's accuracy ×4915/4096 (≈ ×1.2) if the
+                // holder moves AFTER its target this turn. PS
+                // `data/items.ts:7820` `onSourceModifyAccuracy(accuracy,
+                // target)`: applies when `!this.queue.willMove(target)` — the
+                // target has no pending move action left (it already moved,
+                // or it's switching / passing). `onSourceModifyAccuracyPriority
+                // -2` orders it after Wide Lens (0) and before Bright Powder
+                // (-4). We read the per-slot pending-action byte: a still-
+                // pending move is DamagingMove(1) / StatusMove(2); anything
+                // else (None(0) once consumed, or Switch(3)) means the target
+                // won't move later → boost. No new RNG draw — this scales the
+                // same accuracy roll. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Zoom_Lens>.
+                if attacker_item_slug == "zoomlens" {
+                    let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
+                    let target_will_move = tk == 1 || tk == 2;
+                    if !target_will_move {
+                        eff_acc = (eff_acc * 4915 / 4096).min(100);
+                    }
+                }
                 // Bright Powder / Lax Incense — defender-side accuracy
                 // ×3686/4096 (≈ ×0.9). PS `data/items.ts:brightpowder`
                 // and `:laxincense`:
@@ -6500,6 +6520,48 @@ mod tests {
             !target_moved(control),
             "control target without Inner Focus should flinch (no damage dealt)"
         );
+    }
+
+    #[test]
+    fn zoom_lens_boosts_accuracy_when_holder_moves_after_target() {
+        // PS data/items.ts:7820 — Zoom Lens ×1.2 accuracy if the holder
+        // moves after its target (the target has no pending move action
+        // left). A SLOW holder using a 70-acc move into a FAST target
+        // (which already moved) should hit more often with Zoom Lens than
+        // without. Count hits across many seeds.
+        fn hits_with_item(item: &str) -> u32 {
+            let mut hits = 0u32;
+            for seed in 0u64..120 {
+                let p1_json = format!(r#"[
+                    {{"species":"snorlax","level":50,"ability":"thickfat","item":"{item}","nature":"sassy","moves":["focusblast","rest","sleeptalk","headbutt"],"evs":{{"hp":252,"spd":252}}}}
+                ]"#);
+                // Fast target that moves first each turn (status move so it
+                // can't KO the holder), leaving Snorlax to swing afterward.
+                let p2_json = r#"[
+                    {"species":"regieleki","level":50,"ability":"transistor","item":"focussash","nature":"timid","moves":["thunderwave","rest","sleeptalk","protect"],"evs":{"spe":252}}
+                ]"#;
+                let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+                let p2 = TeamBuilder::from_json(p2_json).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+                let hp_before = b.p2.team[0].current_hp;
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                );
+                // Regieleki rested (move_slot 1) targeting itself → no chip
+                // on it except from a landed Focus Blast. HP drop = Snorlax
+                // hit. (Rest only heals at full; Regieleki starts full so
+                // Rest fails and leaves HP untouched.)
+                if b.p2.team[0].current_hp < hp_before {
+                    hits += 1;
+                }
+            }
+            hits
+        }
+        let with_zoom = hits_with_item("zoomlens");
+        let without = hits_with_item("");
+        assert!(with_zoom > without,
+            "Zoom Lens should land more 70-acc hits when moving last: zoom={with_zoom} none={without}");
     }
 
     #[test]
