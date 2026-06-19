@@ -2207,7 +2207,8 @@ impl Battle {
                     // `damage` / `damageCallback` early returns in
                     // `getDamage`. They must enter the damaging path.
                     | "seismictoss" | "nightshade"
-                    | "dragonrage" | "sonicboom");
+                    | "dragonrage" | "sonicboom"
+                    | "superfang" | "ruination");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2563,6 +2564,7 @@ impl Battle {
             let is_fixed_damage = matches!(
                 m.slug,
                 "seismictoss" | "nightshade" | "dragonrage" | "sonicboom"
+                    | "superfang" | "ruination"
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3120,10 +3122,15 @@ impl Battle {
             //   Level-damage: Seismic Toss / Night Shade = source level.
             //   Fixed-number: Dragon Rage = 40, Sonic Boom = 20 (PS
             //   data/moves.ts:4180 / :17305, `damage: 40` / `damage: 20`).
+            //   Fraction-of-current-HP: Super Fang / Ruination =
+            //   clampIntRange(floor(target current HP / 2), 1). PS
+            //   data/moves.ts:18475 superfang / :15537 ruination both
+            //   `damageCallback` over `target.getUndynamaxedHP() / 2`.
             let fixed_damage: Option<u16> = match m.slug {
                 "seismictoss" | "nightshade" => Some(attacker.level as u16),
                 "dragonrage" => Some(40),
                 "sonicboom" => Some(20),
+                "superfang" | "ruination" => Some((defender.current_hp / 2).max(1)),
                 _ => None,
             };
 
@@ -7094,6 +7101,53 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
         );
         assert_eq!(hp1 - b.p2.team[0].current_hp, 20, "Sonic Boom deals exactly 20");
+    }
+
+    #[test]
+    fn super_fang_and_ruination_halve_current_hp() {
+        // PS data/moves.ts:18475 superfang / :15537 ruination —
+        // clampIntRange(floor(target HP / 2), 1). On a full-HP target the
+        // first hit removes floor(maxHP/2); the second removes
+        // floor(remaining/2). Use a Steel target (neutral to both Normal
+        // and Dark, no immunity).
+        let p1_json = r#"[
+            {"species":"raticate","level":50,"ability":"guts","item":"","nature":"jolly","moves":["superfang","ruination","protect","crunch"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","item":"","nature":"relaxed","moves":["leechseed","powerwhip","protect","gyroball"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Super Fang / Ruination are 90% accuracy — pin both accuracy
+        // rolls to a guaranteed hit via OraclePartial PercentRoll(1).
+        // (Ferrothorn's Gyro Ball crit / damage rolls fall through to the
+        // splitmix fallback; they don't change Ferrothorn's own HP.)
+        let rng = crate::rng::Rng::oracle_partial(
+            vec![crate::rng::RngEvent::PercentRoll(1), crate::rng::RngEvent::PercentRoll(1)],
+            1,
+        );
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 1 }, rng, p1, p2,
+        );
+        let max = b.p2.team[0].stats.hp;
+        // Raticate (jolly, base 97 spe) outspeeds Ferrothorn (base 20).
+        // Ferrothorn uses Gyro Ball at Raticate (a later action that
+        // doesn't change Ferrothorn HP). Protect on the target WOULD
+        // block Super Fang, so we avoid it.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, max - (max / 2), "Super Fang removes floor(maxHP/2)");
+
+        // Ruination on the now-half-HP target removes floor(remaining/2).
+        let remaining = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, remaining - (remaining / 2),
+                   "Ruination removes floor(currentHP/2)");
     }
 
     #[test]
