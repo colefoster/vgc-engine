@@ -3241,19 +3241,35 @@ impl Battle {
                     if a.lockin_turns == 0 {
                         // Lock ended — confuse the user, clear slot.
                         a.lockin_move_slot = 255;
-                        // payload = remaining confusion turns. PS
-                        // `data/conditions.ts:174 confusion.onStart`:
-                        //   `this.effectState.time = this.random(min, 6);`
-                        // with `min = 2` (or 3 for Axe Kick — separate
-                        // mechanic). `random(2, 6)` = 2/3/4/5 turns.
-                        // Confusion onBeforeMove decrements first and
-                        // resolves when counter hits 0, so the stored
-                        // payload corresponds 1:1 with PS's startTime.
-                        let _ = a.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::Confusion,
-                            turns_remaining: 0,
-                            payload: conf_dur_roll,
-                        });
+                        // Own Tempo — PS `data/abilities.ts:3099`:
+                        //   onTryAddVolatile(status, pokemon) {
+                        //     if (status.id === 'confusion') return null;
+                        //   }
+                        // Confusion can never be added, regardless of
+                        // source — so the self-confusion from a lock-in
+                        // move ending is also blocked. The duration roll
+                        // above was already consumed (PS rolls
+                        // `confusion.onStart` before `onTryAddVolatile`
+                        // vetoes via the volatile's own duration handler),
+                        // keeping the oracle draw count aligned. Not in
+                        // PS's breakable list for this branch — there is
+                        // no attacker on a self-confusion. Bulbapedia:
+                        // <https://bulbapedia.bulbagarden.net/wiki/Own_Tempo_(Ability)>.
+                        if a.effective_ability_slug() != "owntempo" {
+                            // payload = remaining confusion turns. PS
+                            // `data/conditions.ts:174 confusion.onStart`:
+                            //   `this.effectState.time = this.random(min, 6);`
+                            // with `min = 2` (or 3 for Axe Kick — separate
+                            // mechanic). `random(2, 6)` = 2/3/4/5 turns.
+                            // Confusion onBeforeMove decrements first and
+                            // resolves when counter hits 0, so the stored
+                            // payload corresponds 1:1 with PS's startTime.
+                            let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::Confusion,
+                                turns_remaining: 0,
+                                payload: conf_dur_roll,
+                            });
+                        }
                     }
                 }
             }
@@ -11350,6 +11366,62 @@ mod tests {
         }
         // Across 200 seeds we should see every outcome at least once.
         assert!(seen.len() >= 3, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn own_tempo_blocks_lockin_self_confusion() {
+        // PS data/abilities.ts:3099 owntempo `onTryAddVolatile` vetoes
+        // confusion from any source — including the self-confusion a
+        // lock-in move (Outrage) inflicts when its lock ends. A control
+        // mon WITHOUT Own Tempo must still get confused.
+        let with_ot = r#"[
+            {"species":"slowbro","level":50,"ability":"owntempo","item":"","nature":"adamant","moves":["outrage","earthquake","protect","ironhead"]}
+        ]"#;
+        let without_ot = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["outrage","earthquake","protect","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        // Returns true if the lock-in user EVER became confused across a
+        // seed sweep (driving Outrage every turn until the lock resolves).
+        let ever_confused = |team_json: &str| -> bool {
+            let p1 = TeamBuilder::from_json(team_json).unwrap();
+            for seed in 0..50u64 {
+                let mut b = Battle::new(
+                    BattleConfig { format: Format::Singles, seed },
+                    p1.clone(),
+                    p2.clone(),
+                );
+                for _ in 0..5 {
+                    if !b.p1.team[0].is_alive() {
+                        break;
+                    }
+                    b.step(
+                        &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                        &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+                    );
+                    if b.p1.team[0]
+                        .volatiles
+                        .has(crate::pokemon::VolatileKind::Confusion)
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+
+        assert!(
+            !ever_confused(with_ot),
+            "Own Tempo must block lock-in self-confusion"
+        );
+        assert!(
+            ever_confused(without_ot),
+            "control mon without Own Tempo should get confused"
+        );
     }
 
     #[test]
