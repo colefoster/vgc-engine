@@ -727,6 +727,31 @@ pub fn calculate_damage(
         bp = (bp * tn + td / 2 - 1) / td;
     }
 
+    // Technician — PS `data/abilities.ts:technician` (line 4873):
+    //   onBasePowerPriority: 30,
+    //   onBasePower(basePower, attacker, defender, move) {
+    //     const basePowerAfterMultiplier = this.modify(basePower, this.event.modifier);
+    //     if (basePowerAfterMultiplier <= 60) return this.chainModify(1.5);
+    //   }
+    // ×1.5 BP on moves whose base power is ≤ 60 AFTER preceding base-power
+    // modifiers. PS runs this at the highest `onBasePower` priority (30),
+    // so the only chained modifier ahead of it is the variable-BP callback
+    // and the terrain mult (the `event.modifier` accumulated so far); every
+    // other ability/item BP boost in our chain registers at a LOWER PS
+    // priority (Sheer Force / Aura / type items at 19-23, etc.) and runs
+    // after, so reading `bp` here reproduces PS's `basePowerAfterMultiplier`.
+    // ×1.5 = 6144/4096 (exact in pokeRound; plain `*3/2` is identical for
+    // BP ≤ 60). Not breakable — Mold Breaker does NOT bypass an attacker's
+    // own offensive ability. Scizor (Bullet Punch) / Breloom (Mach Punch) /
+    // Scizor-Mega signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Technician_(Ability)>.
+    if bp <= 60
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "technician"
+    {
+        bp = bp * 3 / 2;
+    }
+
     // Sheer Force base-power boost — ×5325/4096 (≈1.3) on any move PS
     // would have stripped a secondary from, plus the manual opt-in
     // moves flagged `hasSheerForceBoost: true`. PS `data/abilities.ts`
@@ -2391,6 +2416,36 @@ mod tests {
         let if_tackle = mk(&atk, tackle);
         assert!(if_punch > no_punch, "Iron Fist boosts Drain Punch");
         assert_eq!(if_tackle, no_tackle, "Iron Fist must NOT boost Tackle");
+    }
+
+    #[test]
+    fn technician_boosts_low_bp_moves_only() {
+        // Technician ×1.5 BP iff base power ≤ 60. Bullet Punch (40 BP)
+        // qualifies; Earthquake (100 BP) does not. We assert the exact
+        // ×3/2 BP relationship by comparing to a control without the
+        // ability. PS data/abilities.ts:technician.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let bullet = move_id("bulletpunch"); // 40 BP — eligible
+        let quake = move_id("earthquake");   // 100 BP — not eligible
+        let no_bullet = mk(&atk, bullet);
+        let no_quake = mk(&atk, quake);
+        let tech_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "technician").unwrap() as u16;
+        atk.ability_id = tech_id;
+        let tech_bullet = mk(&atk, bullet);
+        let tech_quake = mk(&atk, quake);
+        assert!(tech_bullet > no_bullet, "Technician boosts Bullet Punch (40 BP)");
+        assert_eq!(tech_quake, no_quake, "Technician must NOT boost Earthquake (100 BP)");
     }
 
     #[test]
