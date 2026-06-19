@@ -6122,6 +6122,30 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
     })
 }
 
+/// Per-slug confuse-secondary chance: damaging moves carrying
+/// `secondary: { chance, volatileStatus: 'confusion' }` in PS
+/// `data/moves.ts`. Status-only confusers (Confuse Ray, Sweet Kiss,
+/// Supersonic, Swagger, Flatter, Teeter Dance) are NOT here — they apply
+/// the volatile directly, not via the damaging-move secondary path.
+fn confuse_secondary(slug: &str) -> Option<u8> {
+    Some(match slug {
+        // PS data/moves.ts confusion secondaries (slug → chance):
+        "axekick" => 30,        // moves.ts:944
+        "chatter" => 100,       // moves.ts:2369
+        "confusion" => 10,      // moves.ts:2751
+        "dizzypunch" => 20,     // moves.ts:3805
+        "dynamicpunch" => 100,  // moves.ts:4363
+        "hurricane" => 30,      // moves.ts:9049
+        "magicaltorque" => 30,  // moves.ts:10685
+        "psybeam" => 10,        // moves.ts:14021
+        "rockclimb" => 20,      // moves.ts:15220
+        "signalbeam" => 10,     // moves.ts:16403
+        "strangesteam" => 20,   // moves.ts:18164
+        "waterpulse" => 20,     // moves.ts:20608
+        _ => return None,
+    })
+}
+
 /// Per-slug flinch chance for moves whose secondary is a flinch.
 ///
 /// All values cross-checked against PS data/moves.ts. Moves with other
@@ -6273,6 +6297,60 @@ fn apply_secondary_effect(
     if let Some((status, chance)) = status_secondary(move_slug) {
         if rng.percent_1_100() <= sg(chance) {
             battle.try_set_status(target_side, target_slot, status);
+        }
+    }
+    // Confuse secondary — PS `secondary: { chance, volatileStatus:
+    // 'confusion' }` on damaging moves (Psybeam, Water Pulse, Hurricane,
+    // …). Draw order mirrors PS exactly:
+    //   1. `randomChance(chance, 100)` — the secondary gate, ALWAYS drawn
+    //      (one `percent_1_100()`), Serene-Grace-doubled like the others.
+    //   2. On a successful gate AND a successful `addVolatile('confusion')`
+    //      (target not already confused, not Own Tempo, not Misty-Terrain-
+    //      grounded), `confusion.onStart` rolls `this.random(min, 6)` for
+    //      the duration — `min = 3` for Axe Kick, else 2 (PS
+    //      data/conditions.ts:173). That's `min + range(6 - min)` → a
+    //      single `range(4)` (or `range(3)` for Axe Kick).
+    // The duration roll is NOT consumed when the volatile is vetoed
+    // (`onTryAddVolatile` fires before `onStart`), so the immunity checks
+    // gate the second draw — matching PS's draw count site-for-site.
+    if let Some(chance) = confuse_secondary(move_slug) {
+        if rng.percent_1_100() <= sg(chance) {
+            // Can the confusion volatile actually be added? Mirrors PS's
+            // `onTryAddVolatile` vetoes that run BEFORE `confusion.onStart`.
+            let blocked = battle
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .map(|t| {
+                    !t.is_alive()
+                        // Already confused: addVolatile returns early.
+                        || t.volatiles.has(crate::pokemon::VolatileKind::Confusion)
+                        // Own Tempo — PS data/abilities.ts:3106
+                        // `onTryAddVolatile` returns null for confusion.
+                        || t.effective_ability_slug() == "owntempo"
+                        // Misty Terrain — PS data/moves.ts:12183 blocks
+                        // confusion on grounded, non-semi-invulnerable
+                        // targets. (Safeguard also blocks it in PS, but
+                        // Safeguard is not yet modelled as a side
+                        // condition here — no mon can have it, so the
+                        // check is a no-op and is omitted.)
+                        || (matches!(battle.terrain, crate::terrain::Terrain::Misty)
+                            && t.is_grounded())
+                })
+                .unwrap_or(true);
+            if !blocked {
+                // Duration roll: random(min, 6) = min + range(6 - min).
+                let min: u32 = if move_slug == "axekick" { 3 } else { 2 };
+                let dur = min + rng.range(6 - min);
+                if let Some(t) =
+                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
+                {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::Confusion,
+                        turns_remaining: 0,
+                        payload: dur,
+                    });
+                }
+            }
         }
     }
     if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
@@ -14323,6 +14401,101 @@ mod tests {
             ever_confused(without_ot),
             "control mon without Own Tempo should get confused"
         );
+    }
+
+    #[test]
+    fn confuse_secondary_lands_on_damaging_move() {
+        // Dynamic Punch — PS data/moves.ts:4363 `secondary: { chance:
+        // 100, volatileStatus: 'confusion' }`. A 100%-chance confuser
+        // must always confuse a hit, non-immune target, with a duration
+        // in PS's [2,5] range. Machamp's No Guard makes the 50%-accuracy
+        // move connect every time.
+        // Machamp slow (Brave 0 IV would be ideal; Bold suffices since
+        // Zapdos outspeeds it regardless). No Guard is unmodelled so the
+        // 50%-acc Dynamic Punch still misses some seeds — fine, we only
+        // assert on the hits.
+        let p1_json = r#"[
+            {"species":"machamp","level":50,"ability":"noguard","item":"","nature":"bold","moves":["dynamicpunch","earthquake","protect","rockslide"]}
+        ]"#;
+        // Zapdos: Electric/Flying resists Fighting (0.5x) and base 100
+        // speed outspeeds Machamp, so it ACTS FIRST — meaning its
+        // confusion volatile is read post-step with the apply-time
+        // duration intact (the confusion onBeforeMove decrement only
+        // fires on the confused mon's OWN turn, which already passed
+        // before it was confused this turn). It also comfortably
+        // survives a resisted Dynamic Punch so the secondary applies.
+        let p2_json = r#"[
+            {"species":"zapdos","level":50,"ability":"static","item":"","nature":"bold","moves":["roost","thunderbolt","sleeptalk","drillpeck"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut hits = 0;
+        for seed in 0..120u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(),
+                p2.clone(),
+            );
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+            );
+            // No Guard is unmodelled, so Dynamic Punch (50% acc) misses on
+            // some seeds; only assert the 100% confuse on seeds where it
+            // actually connected (target lost HP) AND survived — a KO'd
+            // target is never confused (no `alive_post`), matching PS.
+            if b.p2.team[0].current_hp >= hp_before || b.p2.team[0].fainted {
+                continue;
+            }
+            hits += 1;
+            let v = b.p2.team[0]
+                .volatiles
+                .get(crate::pokemon::VolatileKind::Confusion);
+            assert!(
+                v.is_some(),
+                "Dynamic Punch (100% confuse) must confuse a target it hit (seed {seed})"
+            );
+            let dur = v.unwrap().payload;
+            assert!((2..=5).contains(&dur), "confusion duration {dur} outside PS [2,5]");
+            seen.insert(dur);
+        }
+        assert!(hits >= 5, "too few hits to validate ({hits})");
+        assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn confuse_secondary_blocked_by_own_tempo() {
+        // Own Tempo — PS data/abilities.ts:3106 `onTryAddVolatile`
+        // vetoes confusion from any source, including a damaging move's
+        // confuse secondary. A 100% confuser (Dynamic Punch) must NOT
+        // confuse an Own Tempo target. Lickilicky carries Own Tempo.
+        let p1_json = r#"[
+            {"species":"machamp","level":50,"ability":"noguard","item":"","nature":"adamant","moves":["dynamicpunch","earthquake","protect","rockslide"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"lickilicky","level":50,"ability":"owntempo","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        for seed in 0..20u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
+            );
+            assert!(
+                !b.p2.team[0]
+                    .volatiles
+                    .has(crate::pokemon::VolatileKind::Confusion),
+                "Own Tempo must block confuse secondary (seed {seed})"
+            );
+        }
     }
 
     #[test]
