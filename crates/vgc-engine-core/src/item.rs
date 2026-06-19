@@ -609,6 +609,10 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // holder switches in. Mirrors PS's `onStart` arm; the `onTerrainChange`
     // arm is dispatched separately from the terrain-set sites.
     try_consume_terrain_seed(battle, side, slot);
+    // Persim Berry — PS `onUpdate` also fires on switch-in if somehow
+    // confused (confusion normally clears on switch, so this is a safety
+    // net mirroring PS running onUpdate every tick).
+    try_consume_persim_berry(battle, side, slot);
 }
 
 /// Terrain seed dispatch — consumes the holder's seed if it's currently
@@ -652,6 +656,33 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     // Booster-energy terrain orb self-boost (+1).
     battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
+}
+
+/// Persim Berry — PS `data/items.ts:4513` (persimberry).
+///   onUpdate(pokemon) {
+///     if (pokemon.volatiles['confusion']) pokemon.eatItem();
+///   }
+///   onEat(pokemon) { pokemon.removeVolatile('confusion'); }
+///
+/// Cures the holder's own confusion the moment it becomes confused (PS's
+/// `onUpdate` runs the same tick the volatile is added). Single use — the
+/// berry is consumed. Lum Berry would cure confusion too (separate PR);
+/// Persim only handles confusion. Call this immediately after any site
+/// that adds the Confusion volatile to the holder, and on switch-in.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Persim_Berry>.
+pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
+    use crate::pokemon::VolatileKind as VK;
+    let (slug, confused) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (item_slug(m.item_id), m.volatiles.has(VK::Confusion)),
+        _ => return,
+    };
+    if slug != "persimberry" || !confused {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.volatiles.remove(VK::Confusion);
+        m.item_id = u16::MAX;
+    }
 }
 
 /// Run the White Herb check on a single active mon. If holder has
