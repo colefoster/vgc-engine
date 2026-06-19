@@ -640,6 +640,20 @@ impl Pokemon {
         !self.fainted && self.current_hp > 0
     }
 
+    /// True if the holder negates its own TYPE-based immunities — i.e. it
+    /// holds Ring Target. PS `data/items.ts:5222` sets `onNegateImmunity:
+    /// false`, which makes `Battle.runEvent('NegateImmunity')` return a
+    /// falsy value so `runImmunity` treats the type chart's 0× as "not
+    /// immune". This negates ONLY type-chart immunities (Ground vs Flying,
+    /// Normal/Fighting vs Ghost, Ghost vs Normal, Poison vs Steel, etc.).
+    /// It does NOT negate ability/item immunities (Levitate, Air Balloon),
+    /// which PS resolves separately in `isGrounded()` AFTER the Flying-type
+    /// check — those are gated below in `is_grounded_internal`.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ring_Target>.
+    pub fn negates_type_immunity(&self) -> bool {
+        self.item_id != u16::MAX && data::ITEMS[self.item_id as usize].slug == "ringtarget"
+    }
+
     /// True if the mon is grounded — i.e. terrain effects, Earthquake,
     /// Spikes etc. apply. False for Flying-type (type code 9),
     /// Levitate ability, or Air Balloon holder. Magnet Rise /
@@ -1257,9 +1271,16 @@ impl Pokemon {
         if self.volatiles.has(VolatileKind::SmackdownGrounded) {
             return true;
         }
+        // Ring Target negates the Flying-TYPE airborne immunity (PS's
+        // `isGrounded(negateImmunity)` skips the Flying-type branch when
+        // `negateImmunity` is set), but does NOT bypass Levitate or Air
+        // Balloon — those are checked after the Flying branch in PS and are
+        // unaffected. So a Flying-type Ring Target holder grounds out, while
+        // a Levitate / Air Balloon Ring Target holder stays airborne.
+        let negate_type_immunity = item == "ringtarget";
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
-        if flying {
+        if flying && !negate_type_immunity {
             return false;
         }
         let ability = self.effective_ability_slug();
