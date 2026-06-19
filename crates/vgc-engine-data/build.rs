@@ -350,6 +350,12 @@ fn main() {
     writeln!(f, "    pub is_punch: bool,").unwrap();
     writeln!(f, "    /// PS `flags.bite = 1`. Boosted by Strong Jaw (×1.5).").unwrap();
     writeln!(f, "    pub is_bite: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.slicing = 1`. Boosted by Sharpness (×1.5).").unwrap();
+    writeln!(f, "    /// Gen-9 set: Slash, Cut, Air Cutter, Aerial Ace, Night Slash,").unwrap();
+    writeln!(f, "    /// Psycho Cut, Sacred Sword, X-Scissor, Leaf Blade, Cross Poison,").unwrap();
+    writeln!(f, "    /// Air Slash, Razor Shell, Bitter Blade, Kowtow Cleave, Ceaseless").unwrap();
+    writeln!(f, "    /// Edge, Stone Axe, Population Bomb, Aqua Cutter, etc.").unwrap();
+    writeln!(f, "    pub is_slicing: bool,").unwrap();
     writeln!(f, "    /// PS `flags.pulse = 1`. Boosted by Mega Launcher (×1.5).").unwrap();
     writeln!(f, "    pub is_pulse: bool,").unwrap();
     writeln!(f, "    /// PS `flags.bullet = 1`. Blocked by Bulletproof; includes ball/").unwrap();
@@ -418,7 +424,7 @@ fn main() {
         let Some(ty) = type_index(&m.type_) else { continue; };
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -434,6 +440,7 @@ fn main() {
             m.flags.contains_key("contact"),
             m.flags.contains_key("punch"),
             m.flags.contains_key("bite"),
+            m.flags.contains_key("slicing"),
             m.flags.contains_key("pulse"),
             m.flags.contains_key("bullet"),
             m.flags.contains_key("dance"),
