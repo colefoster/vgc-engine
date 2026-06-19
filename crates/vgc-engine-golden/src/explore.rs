@@ -153,6 +153,19 @@ pub fn run_explore_in_memory_with_mode(
     // Pre-step snapshots, keyed by (side, slot_char).
     let mut prev: BTreeMap<(u8, char), SlotState> = engine_state(&battle, active_count);
 
+    // Persistent per-MON HP, keyed by mon identity (side, party index),
+    // NOT by raw slot. The slot-keyed `prev` above is wrong for damage
+    // detection across a switch: on a switch turn the slot's occupant
+    // changes, so the departed mon's HP would be compared against the
+    // incoming mon's HP (PR-368). Tracking HP per identity lets us ask
+    // the correct question — "did THIS mon lose HP this turn?" — by
+    // comparing its post-step HP to its own last-recorded HP (its
+    // baseline at the start of the turn). A mon appearing for the first
+    // time baselines at its max HP, so any entry-hazard / residual chip
+    // it takes the same turn it switches in is still counted as damage.
+    let mut hp_by_id: BTreeMap<(u8, u8), u32> = BTreeMap::new();
+    seed_hp_by_id(&battle, active_count, &mut hp_by_id);
+
     let mut ended = false;
     for (i, turn) in turns_ref.iter().enumerate() {
         let turn_no = (i + 1) as u32;
@@ -181,7 +194,14 @@ pub fn run_explore_in_memory_with_mode(
                 None
             };
             engine_status.insert(*k, status_change);
-            engine_damage.insert(*k, after_s.hp < prev_s.hp);
+            // "Did THIS mon lose HP this turn?" — compare the slot's
+            // current occupant against its OWN last-recorded HP, keyed by
+            // mon identity (side, party index), not by slot. Baseline for
+            // a never-before-seen mon is its max HP, so chip taken the
+            // same turn it switches in still registers (PR-368).
+            let id = (k.0, after_s.party_idx);
+            let baseline = hp_by_id.get(&id).copied().unwrap_or(after_s.max_hp);
+            engine_damage.insert(*k, after_s.hp < baseline);
         }
 
         // PS deltas this turn.
@@ -305,6 +325,14 @@ pub fn run_explore_in_memory_with_mode(
             }
         }
 
+        // Record each on-field mon's post-step HP as the baseline for
+        // next turn, keyed by mon identity. A mon that switches out keeps
+        // its last on-field HP here, so when it returns later we compare
+        // against the HP it left with — not a stale slot value.
+        for (k, after_s) in &after {
+            hp_by_id.insert((k.0, after_s.party_idx), after_s.hp);
+        }
+
         prev = after;
     }
 
@@ -336,6 +364,33 @@ struct SlotState {
     hp: u32,
     fainted: bool,
     status: String,
+    /// Party index of the mon occupying this slot — its identity within
+    /// the side. A switch swaps this to a different value, which is how
+    /// damage detection knows the slot changed hands (PR-368).
+    party_idx: u8,
+    /// Max HP of the slot occupant; the damage-detection baseline for a
+    /// mon appearing on the field for the first time.
+    max_hp: u32,
+}
+
+/// Seed the per-identity HP table with the starting (lead) mons so the
+/// first turn's damage detection has a correct baseline for them.
+fn seed_hp_by_id(
+    battle: &Battle,
+    active_count: usize,
+    hp_by_id: &mut BTreeMap<(u8, u8), u32>,
+) {
+    for (side_ref, side_letter) in [(SideRef::P1, 1u8), (SideRef::P2, 2u8)] {
+        let side = match side_ref {
+            SideRef::P1 => &battle.p1,
+            SideRef::P2 => &battle.p2,
+        };
+        for slot in 0..active_count {
+            let Some(mon) = side.active_mon(slot) else { continue };
+            let idx = side.active.get(slot).copied().unwrap_or(u8::MAX);
+            hp_by_id.insert((side_letter, idx), mon.current_hp as u32);
+        }
+    }
 }
 
 fn engine_state(battle: &Battle, active_count: usize) -> BTreeMap<(u8, char), SlotState> {
@@ -348,10 +403,16 @@ fn engine_state(battle: &Battle, active_count: usize) -> BTreeMap<(u8, char), Sl
         for slot in 0..active_count {
             let Some(mon) = side.active_mon(slot) else { continue };
             let slot_char = if slot == 0 { 'a' } else { 'b' };
+            // Identity = party index of the slot occupant. A switch
+            // swaps `side.active[slot]` to a different party index, so
+            // a changed identity here means a new mon entered the slot.
+            let occupant = side.active.get(slot).copied().unwrap_or(u8::MAX);
             out.insert((side_letter, slot_char), SlotState {
                 hp: mon.current_hp as u32,
                 fainted: mon.fainted,
                 status: status_to_str(mon.status),
+                party_idx: occupant,
+                max_hp: mon.stats.hp as u32,
             });
         }
     }
@@ -513,6 +574,48 @@ mod tests {
         assert_eq!(d.statuses.get(&(2, 'a')).cloned(), Some("slp".into()));
         assert_eq!(d.faints.get(&(1, 'a')).copied(), Some(true));
         assert_eq!(d.faints.get(&(2, 'b')).copied(), None);
+    }
+
+    /// Mirror the in-loop damage rule: a mon "took damage" iff its
+    /// post-step HP is below its own last-recorded baseline (or max HP
+    /// for a first appearance), keyed by identity — never against the
+    /// slot's previous, possibly-different, occupant.
+    fn took_damage(hp_by_id: &BTreeMap<(u8, u8), u32>, id: (u8, u8), hp: u32, max_hp: u32) -> bool {
+        let baseline = hp_by_id.get(&id).copied().unwrap_or(max_hp);
+        hp < baseline
+    }
+
+    #[test]
+    fn switch_in_does_not_count_as_damage() {
+        // Slot p1a held party-idx 0 at 200/200; it switches OUT and
+        // party-idx 2 (a different mon, max 300, currently 150/300)
+        // switches IN. The incoming mon is at full relative to its own
+        // baseline (never recorded → max 300), so 150 < 300 would be a
+        // bug ONLY if 150 were a real loss. Here it entered at 150? No —
+        // model a clean switch-in at full HP: incoming at 300/300.
+        let mut hp_by_id: BTreeMap<(u8, u8), u32> = BTreeMap::new();
+        hp_by_id.insert((1, 0), 200); // departed mon's last HP
+        // Incoming idx 2, full HP 300, never recorded.
+        assert!(
+            !took_damage(&hp_by_id, (1, 2), 300, 300),
+            "a full-HP switch-in must NOT register as damage"
+        );
+
+        // Same mon (idx 0) takes a real hit: 200 -> 150 against its
+        // recorded baseline of 200.
+        assert!(
+            took_damage(&hp_by_id, (1, 0), 150, 200),
+            "real HP loss on the same mon must register as damage"
+        );
+
+        // Switch-in that takes entry-hazard chip the same turn: incoming
+        // idx 3, max 250, lands on Stealth Rock and ends at 220. Baseline
+        // is its max (250), so 220 < 250 DOES count — we must not mask
+        // real switch-in residual damage.
+        assert!(
+            took_damage(&hp_by_id, (1, 3), 220, 250),
+            "entry-hazard chip on a switch-in must register as damage"
+        );
     }
 
     #[test]
