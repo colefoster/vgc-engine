@@ -316,6 +316,54 @@ impl Battle {
         }
     }
 
+    /// Swap a live mon's species to a battle forme in place.
+    ///
+    /// Mutates only `species_id` (and, when `recompute_stats`, the five
+    /// non-HP stats). Everything else is preserved: `current_hp`, the HP
+    /// stat, boosts, moves / PP, status, item, ability, and all volatiles.
+    /// Types are derived from `species_id` (`Pokemon::effective_types`), so
+    /// they update for free.
+    ///
+    /// When `recompute_stats` is true the five non-HP stats are recomputed
+    /// from the new species' base stats using the mon's stored spread
+    /// (`ivs` / `evs` / `nature` / `level`) — mirroring PS `formeChange`,
+    /// which keeps the `set` reference and recalculates `storedStats`. The
+    /// HP stat (max HP) and `current_hp` are never touched here; in-battle
+    /// gen-9 formes do not change max HP, and HP-altering transforms
+    /// (Zygarde-Complete) are out of scope.
+    ///
+    /// This is the shared primitive behind the Imposter / Transform stat
+    /// swap (see `ability::on_switch_in`) and the future Disguise / Stance
+    /// Change / Palafin forme PRs. No-op if the slot is empty.
+    pub fn set_forme(
+        &mut self,
+        side: SideRef,
+        slot: u8,
+        new_species_id: u16,
+        recompute_stats: bool,
+    ) {
+        let recomputed = if recompute_stats {
+            self.side(side).active_mon(slot as usize).map(|m| {
+                let species = &data::SPECIES[new_species_id as usize];
+                crate::pokemon::compute_stats(species, m.level, &m.ivs, &m.evs, &m.nature)
+            })
+        } else {
+            None
+        };
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.species_id = new_species_id;
+            if let Some(stats) = recomputed {
+                // Preserve HP stat (max HP) and current_hp; update the 5
+                // battle stats from the recomputed spread.
+                m.stats.atk = stats.atk;
+                m.stats.def = stats.def;
+                m.stats.spa = stats.spa;
+                m.stats.spd = stats.spd;
+                m.stats.spe = stats.spe;
+            }
+        }
+    }
+
     /// Legal choices for one active slot on one side.
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let s = self.side(side);
@@ -5461,6 +5509,60 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, pex_hp, "first Protect always succeeds; Toxapex takes no damage");
         assert_eq!(b.p1.team[0].stall_counter(), 1);
+    }
+
+    #[test]
+    fn set_forme_swaps_species_recomputes_stats_preserves_state() {
+        use crate::pokemon::compute_stats;
+        let sp_id = |slug: &str| data::SPECIES.iter().position(|s| s.slug == slug).unwrap() as u16;
+        // Palafin (Zero) -> Palafin-Hero: large base-stat jump (atk 70 -> 160).
+        let p1_json = r#"[
+            {"species":"palafin","level":50,"ability":"zerotohero","nature":"adamant","moves":["jetpunch","wavecrash","closecombat","protect"],"evs":{"atk":252,"hp":4,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        let zero_id = b.p1.team[0].species_id;
+        let zero_atk = b.p1.team[0].stats.atk;
+        let max_hp = b.p1.team[0].stats.hp;
+        // Damage the mon and set a boost so we can prove they survive the swap.
+        b.p1.team[0].current_hp = max_hp / 2;
+        b.p1.team[0].boosts[0] = 2;
+        let cur_hp = b.p1.team[0].current_hp;
+
+        let hero_id = sp_id("palafinhero");
+        b.set_forme(SideRef::P1, 0, hero_id, true);
+
+        let m = &b.p1.team[0];
+        assert_eq!(m.species_id, hero_id, "species swapped to Palafin-Hero");
+        assert_ne!(m.species_id, zero_id);
+        // Atk recomputed from the new, much higher base stat.
+        assert!(m.stats.atk > zero_atk, "atk recomputed upward: {} vs {}", m.stats.atk, zero_atk);
+        // Recompute is exactly compute_stats over the stored spread.
+        let expect = compute_stats(&data::SPECIES[hero_id as usize], m.level, &m.ivs, &m.evs, &m.nature);
+        assert_eq!(m.stats.atk, expect.atk, "atk matches spread recompute");
+        assert_eq!(m.stats.spe, expect.spe, "spe matches spread recompute");
+        // HP stat (max), current_hp, and boosts are all preserved.
+        assert_eq!(m.stats.hp, max_hp, "max HP unchanged by forme swap");
+        assert_eq!(m.current_hp, cur_hp, "current HP preserved");
+        assert_eq!(m.boosts[0], 2, "boosts preserved");
+
+        // recompute_stats = false: types track species_id for free, stats
+        // are left untouched. Swap to a differently-typed species and assert
+        // the type derivation follows the new species while stats hold.
+        let atk_before = b.p1.team[0].stats.atk;
+        let char_id = sp_id("charizard"); // Fire/Flying
+        b.set_forme(SideRef::P1, 0, char_id, false);
+        let m = &b.p1.team[0];
+        assert_eq!(m.species_id, char_id);
+        let (types, n) = m.effective_types();
+        assert_eq!(n, 2);
+        assert_eq!(types, data::SPECIES[char_id as usize].types, "types derive from new species id");
+        assert_eq!(m.stats.atk, atk_before, "recompute_stats=false leaves stats untouched");
     }
 
     #[test]

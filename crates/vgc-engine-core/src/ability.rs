@@ -508,15 +508,18 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
             .filter(|m| m.is_alive())
             .map(|m| (m.species_id, m.ability_id, m.stats));
         if let Some((sp, ab, st)) = target_payload {
+            // Swap species via the shared forme primitive (no base-stat
+            // recompute — Transform copies the target's *actual* stat values,
+            // not a spread recompute). `set_forme` preserves current_hp / the
+            // HP stat / boosts / moves / volatiles; we then overlay the
+            // Transform-specific copies (foe ability + the five battle stats).
+            battle.set_forme(side, slot, sp, false);
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.species_id = sp;
                 m.ability_id = ab;
-                // Preserve HP per PS Transform; clone other stats.
+                // Preserve HP per PS Transform; clone the five other stats.
                 let hp = m.stats.hp;
-                let cur = m.current_hp;
                 m.stats = st;
                 m.stats.hp = hp;
-                m.current_hp = cur;
             }
         }
     }
