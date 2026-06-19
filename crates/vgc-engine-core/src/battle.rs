@@ -1947,6 +1947,71 @@ impl Battle {
                     return;
                 }
             }
+            // Good as Gold — PS `data/abilities.ts:1585` goodasgold.
+            //   onTryHit(target, source, move) {
+            //     if (move.category === 'Status' && target !== source) {
+            //       this.add('-immune', target, '[from] ability: Good as Gold');
+            //       return null;
+            //     }
+            //   }
+            //   flags: { breakable: 1 },
+            // A status move aimed at a Good as Gold holder fails, UNLESS the
+            // holder is the user itself (`target !== source`). Side / field
+            // status moves (Tailwind, Stealth Rock, Trick Room) don't "target"
+            // the holder and are unaffected — they carry a non-targeting
+            // `target` code, so `is_targeting_move` gates them out. Breakable,
+            // so an attacker with Mold Breaker / Teravolt / Turboblaze bypasses
+            // it. We resolve the move's single explicit target; ally-targeted
+            // status moves at a Good as Gold ally are blocked too (PS's
+            // `target !== source` covers any non-self target). Gholdengo
+            // signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Good_as_Gold_(Ability)>.
+            if is_targeting_move(m.target) {
+                let attacker_breaks_mold = matches!(
+                    attacker_ability,
+                    "moldbreaker" | "teravolt" | "turboblaze"
+                );
+                if !attacker_breaks_mold {
+                    // Resolve the move's effective single target. An explicit
+                    // `target` (doubles, or any move issued with a slot) is
+                    // honored directly. For a `None` target on an opposing-
+                    // targeting move (the singles default — see the
+                    // Prankster-vs-Dark block, which also scans the foe side),
+                    // the implied target is the lone living foe.
+                    let resolved: Option<(SideRef, u8)> = match target {
+                        Some(t) => Some((t.side, t.slot)),
+                        None => {
+                            let opp = actor_side.opposing();
+                            let n = self.format().active_count() as u8;
+                            // Only auto-resolve when the implied target is
+                            // unambiguous (singles, or a single living foe).
+                            // Count living foes without allocating.
+                            let mut count = 0u8;
+                            let mut only = 0u8;
+                            for slot in 0..n {
+                                if self.side(opp).active_mon(slot as usize)
+                                    .is_some_and(|t| t.is_alive())
+                                {
+                                    count += 1;
+                                    only = slot;
+                                }
+                            }
+                            if count == 1 { Some((opp, only)) } else { None }
+                        }
+                    };
+                    if let Some((tside, tslot)) = resolved {
+                        let is_self = tside == actor_side && tslot == actor_slot;
+                        let target_good_as_gold = self
+                            .side(tside)
+                            .active_mon(tslot as usize)
+                            .map(|tm| tm.is_alive() && tm.effective_ability_slug() == "goodasgold")
+                            .unwrap_or(false);
+                        if !is_self && target_good_as_gold {
+                            return;
+                        }
+                    }
+                }
+            }
             // Magic Bounce — PS `data/abilities.ts:2392` magicbounce.
             //   onTryHit(target, source, move) {
             //     if (target === source || move.hasBounced ||
@@ -10435,6 +10500,49 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].encore_turns(), 0, "Prankster Encore blocked by Dark target");
         assert_eq!(b.p2.team[0].encored_move_slot(), 255);
+    }
+
+    #[test]
+    fn good_as_gold_blocks_status_moves_at_holder() {
+        // Gholdengo @ Good as Gold. An opponent's Will-O-Wisp must FAIL
+        // (no burn); a damaging move still lands. A control mon (Snorlax,
+        // no Good as Gold) gets burned, proving the move otherwise works.
+        let target_block = r#"[
+            {"species":"gholdengo","level":50,"ability":"goodasgold","item":"","nature":"timid","moves":["shadowball","recover","nastyplot","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let target_ctrl = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","curse"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let burner = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"bold","moves":["willowisp","hurricane","tailwind","airslash"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Good as Gold target: Will-O-Wisp fails.
+        let p1 = TeamBuilder::from_json(burner).unwrap();
+        let p2 = TeamBuilder::from_json(target_block).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::None),
+            "Good as Gold blocks Will-O-Wisp");
+        // Self-targeted status (Nasty Plot) on the Gholdengo still works.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert!(b.p2.team[0].boosts[2] > 0, "Good as Gold does NOT block self Nasty Plot");
+
+        // Control: non-Good-as-Gold target gets burned by the same move.
+        let p1 = TeamBuilder::from_json(burner).unwrap();
+        let p2 = TeamBuilder::from_json(target_ctrl).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::Burn),
+            "control mon is burned by Will-O-Wisp");
     }
 
     #[test]
