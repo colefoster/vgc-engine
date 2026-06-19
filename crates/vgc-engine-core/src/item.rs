@@ -1058,3 +1058,40 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
     // (one-shot — handled on fatal hit, not residual), lifeorb (handled
     // on attack hit, not residual), choice items (modify A/D), etc.
 }
+
+#[cfg(test)]
+mod inert_tests {
+    /// Every behavioral item arm in the engine is a string-literal slug
+    /// match (e.g. `if slug == "leftovers"`) in one of these four source
+    /// files. So "this inert item has no behavioral arm" is machine-checked
+    /// by asserting no inert slug appears as a `"<slug>"` literal in any of
+    /// them. Pairs with the data-crate `inert_items_registry_is_consistent`
+    /// test (which proves each inert slug resolves to a real ITEMS row).
+    const ITEM_SRC: &str = include_str!("item.rs");
+    const BATTLE_SRC: &str = include_str!("battle.rs");
+    const DAMAGE_SRC: &str = include_str!("damage.rs");
+    const ABILITY_SRC: &str = include_str!("ability.rs");
+
+    #[test]
+    fn inert_items_have_no_behavioral_arm() {
+        // This very file (`item.rs`) names some inert slugs inside the
+        // doc comment / category list below as literals; strip the test
+        // module out before scanning so it doesn't self-trip.
+        let item_src = ITEM_SRC
+            .split("mod inert_tests")
+            .next()
+            .unwrap_or(ITEM_SRC);
+        let sources = [item_src, BATTLE_SRC, DAMAGE_SRC, ABILITY_SRC];
+        for slug in vgc_engine_data::INERT_ITEMS {
+            let needle = format!("\"{slug}\"");
+            for src in sources {
+                assert!(
+                    !src.contains(&needle),
+                    "inert item {slug:?} has a behavioral arm in the engine \
+                     source — it should be inert-by-design, not handled. \
+                     Remove it from INERT_ITEMS or remove the arm."
+                );
+            }
+        }
+    }
+}

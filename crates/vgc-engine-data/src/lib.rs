@@ -32,6 +32,99 @@ pub enum Gender {
 
 include!(concat!(env!("OUT_DIR"), "/data_tables.rs"));
 
+/// Items that are gen-9 legal but have **no in-battle effect by design** —
+/// "inert" flavor / utility items. Each entry resolves to a real `ITEMS`
+/// row (so a held-item reference never errors) but is intentionally a
+/// data-only no-op: the engine deliberately has no behavioral arm for it.
+///
+/// This registry exists to separate **inert-by-design** from
+/// **not-yet-implemented** in coverage accounting. An item belongs here
+/// iff PS `data/items.ts` carries **no behavioral `on*` handler** for it —
+/// only ordering/metadata keys, `onEat: false`, `naturalGift`, `isBerry`,
+/// `megaStone`/`zMove` flags, or nothing at all. (Verified entry-by-entry
+/// against PS `data/items.ts` — every slug below has an empty real-hook
+/// set; e.g. the EV-reducing berries carry `onEat: false`, evolution
+/// stones carry no handler, Alcremie sweets carry no handler.) Items whose
+/// effect PS reads from *outside* the item block — weather/terrain rocks,
+/// Heavy-Duty Boots, Protective Pads, Light Clay, the Arceus plates — are
+/// **not** inert and are excluded.
+///
+/// Categories (49 total):
+///   - Evolution stones (11): Fire/Water/Thunder/Leaf/Moon/Sun/Dawn/Dusk/
+///     Shiny/Ice/Oval Stone.
+///   - Evolution trade/use items (20): Dragon Scale, Prism Scale, Up-Grade,
+///     Dubious Disc, Magmarizer, Electirizer, Reaper Cloth, Protector,
+///     Auspicious/Malicious Armor, Galarica Cuff/Wreath, Metal Alloy,
+///     Sweet/Tart/Syrupy Apple, Chipped/Cracked Pot, Masterpiece/
+///     Unremarkable Teacup.
+///   - Alcremie sweets (7): Berry/Clover/Flower/Love/Ribbon/Star/
+///     Strawberry Sweet.
+///   - Bottle Caps (2): Bottle Cap, Gold Bottle Cap.
+///   - EV-reducing berries (6): Grepa/Hondew/Kelpsy/Pomeg/Qualot/Tamato
+///     (each `onEat: false` in PS — the EV-lowering effect never fires in
+///     battle).
+///   - Trainer flavor (3): Big Nugget, Pretty Feather, Rare Bone.
+///
+/// Sorted; `is_inert_item` binary-searches it.
+pub const INERT_ITEMS: &[&str] = &[
+    "auspiciousarmor",
+    "berrysweet",
+    "bignugget",
+    "bottlecap",
+    "chippedpot",
+    "cloversweet",
+    "crackedpot",
+    "dawnstone",
+    "dragonscale",
+    "dubiousdisc",
+    "duskstone",
+    "electirizer",
+    "firestone",
+    "flowersweet",
+    "galaricacuff",
+    "galaricawreath",
+    "goldbottlecap",
+    "grepaberry",
+    "hondewberry",
+    "icestone",
+    "kelpsyberry",
+    "leafstone",
+    "lovesweet",
+    "magmarizer",
+    "maliciousarmor",
+    "masterpieceteacup",
+    "metalalloy",
+    "moonstone",
+    "ovalstone",
+    "pomegberry",
+    "prettyfeather",
+    "prismscale",
+    "protector",
+    "qualotberry",
+    "rarebone",
+    "reapercloth",
+    "ribbonsweet",
+    "shinystone",
+    "starsweet",
+    "strawberrysweet",
+    "sunstone",
+    "sweetapple",
+    "syrupyapple",
+    "tamatoberry",
+    "tartapple",
+    "thunderstone",
+    "unremarkableteacup",
+    "upgrade",
+    "waterstone",
+];
+
+/// True iff `slug` is an inert-by-design item (see [`INERT_ITEMS`]).
+/// A future coverage pass can ask this instead of mislabeling the item
+/// "missing". Relies on `INERT_ITEMS` being sorted.
+pub fn is_inert_item(slug: &str) -> bool {
+    INERT_ITEMS.binary_search(&slug).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +146,38 @@ mod tests {
     fn slug_lookup_finds_known_entries() {
         assert!(move_by_slug("tackle").is_some());
         assert!(species_by_slug("pikachu").is_some());
+    }
+
+    /// Every inert-by-design slug must (a) resolve to a real `ITEMS` row —
+    /// so a held-item reference never errors — and (b) the registry must be
+    /// sorted + deduped (binary search correctness) and the expected size.
+    /// The "has no behavioral arm" half of the invariant is asserted in the
+    /// core crate (it greps the engine source); here we lock the data side.
+    #[test]
+    fn inert_items_registry_is_consistent() {
+        // Expected size: 11 evo stones + 20 evo trade/use + 7 sweets +
+        // 2 bottle caps + 6 EV berries + 3 trainer flavor = 49.
+        assert_eq!(INERT_ITEMS.len(), 49, "inert registry size drifted");
+
+        // Sorted + deduped so `is_inert_item` binary search is valid.
+        for w in INERT_ITEMS.windows(2) {
+            assert!(w[0] < w[1], "INERT_ITEMS not strictly sorted at {:?}", w);
+        }
+
+        // Each slug resolves to a real ITEMS entry.
+        for slug in INERT_ITEMS {
+            assert!(
+                item_by_slug(slug).is_some(),
+                "inert slug {slug:?} does not resolve to an ITEMS entry"
+            );
+            assert!(is_inert_item(slug), "is_inert_item missed {slug:?}");
+        }
+
+        // A handful of non-inert spot checks (real battle effect).
+        assert!(!is_inert_item("leftovers"));
+        assert!(!is_inert_item("sitrusberry"));
+        assert!(!is_inert_item("floatstone")); // onModifyWeight in PS
+        assert!(!is_inert_item("poweranklet")); // onModifySpe in PS
     }
 
     /// PS move flags populate the new MoveDef bool fields.
