@@ -161,6 +161,11 @@ mod tests {
             MOVES[move_id::_10000000VOLTTHUNDERBOLT as usize].slug,
             "10000000voltthunderbolt"
         );
+        assert_eq!(SPECIES[species_id::MIMIKYU as usize].slug, "mimikyu");
+        assert_eq!(
+            SPECIES[species_id::TERAPAGOSTERASTAL as usize].slug,
+            "terapagosterastal"
+        );
     }
 
     /// Every inert-by-design slug must (a) resolve to a real `ITEMS` row —

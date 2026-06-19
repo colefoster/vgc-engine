@@ -409,15 +409,15 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // post-Terastallize, so the gate is sufficient in practice.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Embody_Aspect_(Ability)>.
     let embody_stat = match slug {
-        "embodyaspectteal" => Some((4u8, "ogerpontealtera")),
-        "embodyaspectwellspring" => Some((3, "ogerponwellspringtera")),
-        "embodyaspecthearthflame" => Some((0, "ogerponhearthflametera")),
-        "embodyaspectcornerstone" => Some((1, "ogerponcornerstonetera")),
+        "embodyaspectteal" => Some((4u8, data::species_id::OGERPONTEALTERA)),
+        "embodyaspectwellspring" => Some((3, data::species_id::OGERPONWELLSPRINGTERA)),
+        "embodyaspecthearthflame" => Some((0, data::species_id::OGERPONHEARTHFLAMETERA)),
+        "embodyaspectcornerstone" => Some((1, data::species_id::OGERPONCORNERSTONETERA)),
         _ => None,
     };
-    if let Some((stat_idx, expected_slug)) = embody_stat {
+    if let Some((stat_idx, expected_id)) = embody_stat {
         let do_boost = battle.side(side).active_mon(slot as usize).is_some_and(|m| {
-            m.is_alive() && m.terastallized && m.species().slug == expected_slug
+            m.is_alive() && m.terastallized && m.species_id == expected_id
         });
         if do_boost {
             // Self-boost (+1). `.min(6)` historically; identical to the

@@ -3735,21 +3735,20 @@ impl Battle {
                     .is_some_and(|d| {
                         !d.disguise_busted
                             && d.effective_ability_slug() == "disguise"
-                            && matches!(d.species().slug, "mimikyu" | "mimikyutotem")
+                            && matches!(
+                                d.species_id,
+                                data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
+                            )
                     });
             if disguise_triggered {
                 // Busted-forme slug: totem -> busted-totem, else busted.
                 let (chip, busted_id) = {
                     let d = self.side(tside).active_mon(tslot as usize).unwrap();
-                    let busted_slug = if d.species().slug == "mimikyutotem" {
-                        "mimikyubustedtotem"
+                    let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
+                        Some(data::species_id::MIMIKYUBUSTEDTOTEM)
                     } else {
-                        "mimikyubusted"
+                        Some(data::species_id::MIMIKYUBUSTED)
                     };
-                    let busted_id = data::SPECIES
-                        .iter()
-                        .position(|s| s.slug == busted_slug)
-                        .map(|i| i as u16);
                     // PS chips `baseMaxhp / 8` (integer division, min 1).
                     let chip = (d.stats.hp / 8).max(1);
                     (chip, busted_id)

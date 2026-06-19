@@ -1571,7 +1571,7 @@ pub fn calculate_damage(
     // (Terapagos-Terastal sees no multi-hit hits in the gen-9 doubles
     // corpus in practice).
     let mut eff = eff;
-    if defender.species().slug == "terapagosterastal"
+    if defender.species_id == data::species_id::TERAPAGOSTERASTAL
         && defender.effective_ability_id() == data::ability_id::TERASHELL
         && defender.current_hp >= defender.stats.hp
         && !matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
