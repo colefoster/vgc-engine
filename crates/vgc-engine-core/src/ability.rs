@@ -1346,6 +1346,47 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Cursed Body — PS `data/abilities.ts:774` `onDamagingHit`:
+    //   if (source.volatiles['disable']) return;
+    //   if (!move.isMax && !move.flags['futuremove'] && move.id !== 'struggle') {
+    //     if (this.randomChance(3, 10)) {
+    //       source.addVolatile('disable', this.effectState.target);
+    //     }
+    //   }
+    // 30% chance on ANY damaging hit received (no contact requirement) to
+    // Disable the move the attacker just used. Same RNG-draw shape as the
+    // 30%-on-contact block above — a single percent_1_100 draw, fired once
+    // the eligibility gates pass, keeping the PsGen5 golden harness aligned.
+    // Gates: the attacker isn't already Disabled, and the move isn't
+    // Struggle (Max moves / future moves aren't modelled, so those PS
+    // exclusions are vacuous here). Disable lands on the attacker's move
+    // SLOT with effective duration 4 — PS's `duration: 5` condition
+    // decrements its first turn because the attacker is the active mon
+    // mid-move (`activeMove` set, not external). Gengar / Froslass HA.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cursed_Body_(Ability)>.
+    if slug == "cursedbody" {
+        let move_slug = data::MOVES[move_id as usize].slug;
+        let attacker_eligible = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive() && a.disabled_move_slot() == 255);
+        if attacker_eligible && move_slug != "struggle" && rng.percent_1_100() <= 30 {
+            // The disabled slot is the attacker's move-array index that
+            // holds the move that just hit (PS disables `lastMove.id`).
+            let move_slot = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .and_then(|a| a.moves.iter().position(|&mid| mid == move_id));
+            if let Some(slot) = move_slot {
+                if let Some(a) = battle
+                    .side_mut(attacker_side)
+                    .active_mon_mut(attacker_slot as usize)
+                {
+                    a.set_disable(4, slot as u8);
+                }
+            }
+        }
+    }
     // Effect Spore — PS data/abilities.ts:effectspore. On contact hit
     // (and attacker passes powder-immunity gates), single `random(100)`
     // roll: 0-10 → sleep, 11-20 → par, 21-29 → poison, 30+ → nothing.
