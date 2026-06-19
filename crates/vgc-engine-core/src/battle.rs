@@ -4702,6 +4702,22 @@ impl Battle {
                         return true;
                     }
                 }
+                // Arena Trap traps adjacent foes that are grounded
+                // (airborne mons — Flying / Levitate / Air Balloon /
+                // Magnet Rise — escape; Ghost / Shed Shell already
+                // returned above). PS data/abilities.ts:arenatrap.
+                data::ability_id::ARENATRAP => {
+                    if mon.is_grounded() {
+                        return true;
+                    }
+                }
+                // Magnet Pull traps adjacent Steel-type foes (type code
+                // 16). PS data/abilities.ts:magnetpull.
+                data::ability_id::MAGNETPULL => {
+                    if (0..n_types as usize).any(|i| types[i] == 16) {
+                        return true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -9779,6 +9795,52 @@ mod tests {
             TeamBuilder::from_json(st_team).unwrap(),
             TeamBuilder::from_json(p2_json).unwrap());
         assert!(n_switch_choices(&b_st, SideRef::P1, 0) > 0, "fellow Shadow Tag holder not trapped");
+    }
+
+    #[test]
+    fn arena_trap_traps_grounded_foes_only() {
+        // P2 Dugtrio has Arena Trap. A grounded P1 lead is trapped; an
+        // airborne (Flying-type) lead escapes. PS data/abilities.ts:arenatrap.
+        let p2_json = r#"[
+            {"species":"dugtrio","level":50,"ability":"arenatrap","item":"","nature":"jolly","moves":["earthquake","suckerpunch","protect","stoneedge"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let grounded = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let airborne = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["hurricane","surf","tailwind","protect"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let b_g = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(grounded).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert_eq!(n_switch_choices(&b_g, SideRef::P1, 0), 0, "Arena Trap traps grounded Garchomp");
+        let b_a = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(airborne).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b_a, SideRef::P1, 0) > 0, "Flying-type Pelipper escapes Arena Trap");
+    }
+
+    #[test]
+    fn magnet_pull_traps_steel_foes_only() {
+        // P2 Magnezone has Magnet Pull. A Steel-type P1 lead is trapped; a
+        // non-Steel lead escapes. PS data/abilities.ts:magnetpull.
+        let p2_json = r#"[
+            {"species":"magnezone","level":50,"ability":"magnetpull","item":"","nature":"modest","moves":["thunderbolt","flashcannon","protect","voltswitch"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let steel = r#"[
+            {"species":"scizor","level":50,"ability":"technician","item":"","nature":"adamant","moves":["bulletpunch","uturn","protect","swordsdance"],"evs":{"atk":252,"hp":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let nonsteel = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let b_s = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(steel).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert_eq!(n_switch_choices(&b_s, SideRef::P1, 0), 0, "Magnet Pull traps Steel-type Scizor");
+        let b_n = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(nonsteel).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b_n, SideRef::P1, 0) > 0, "non-Steel Garchomp escapes Magnet Pull");
     }
 
     #[test]
