@@ -616,8 +616,7 @@ impl Battle {
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
         // placeholder for the duration of the call.
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-        let order: Vec<ScheduledAction> =
-            action_order(self, p1_choices, p2_choices, &mut rng);
+        let order = action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
         // Consume Custap Berry for any holder whose `onFractionalPriority`
         // fired this turn. PS `data/items.ts:custapberry` consumes the
