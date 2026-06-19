@@ -173,6 +173,8 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         dark_aura_active: false,
         aura_break_active: false,
         attacker_total_fainted_allies: 0,
+        attacker_stats: None,
+        defender_stats: None,
     };
     let lo = calculate_damage(a, d, mid, ctx(DamageContext::MIN_ROLL));
     let hi = calculate_damage(a, d, mid, ctx(DamageContext::MAX_ROLL));

@@ -2266,15 +2266,15 @@ impl Battle {
         // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
         // by cloning the attacker snapshot and scaling the stat in
         // place before passing to calculate_damage.
-        let mut boosted_attacker = attacker.clone();
+        let mut atk_stats_ovr = attacker.stats;
         let physical_move = m.category == 0;
         let special_move = m.category == 1;
         if attacker_item_id == data::item_id::CHOICEBAND && physical_move {
-            boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
+            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
         if attacker_item_id == data::item_id::CHOICESPECS && special_move {
-            boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
+            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
         // Paradox booster (Protosynthesis / Quark Drive): attacker's
@@ -2291,11 +2291,11 @@ impl Battle {
         let scale_off_13 = |v: u16| -> u16 {
             (((v as u32 * 5325 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
-        if boosted_attacker.boosted_stat == 0 && physical_move {
-            boosted_attacker.stats.atk = scale_off_13(boosted_attacker.stats.atk);
+        if attacker.boosted_stat == 0 && physical_move {
+            atk_stats_ovr.atk = scale_off_13(atk_stats_ovr.atk);
         }
-        if boosted_attacker.boosted_stat == 2 && special_move {
-            boosted_attacker.stats.spa = scale_off_13(boosted_attacker.stats.spa);
+        if attacker.boosted_stat == 2 && special_move {
+            atk_stats_ovr.spa = scale_off_13(atk_stats_ovr.spa);
         }
         // Hadron Engine: Iron Moth's signature — SpA ×5461/4096 (≈1.333)
         // on special moves while Electric Terrain is up. The ability also
@@ -2323,8 +2323,8 @@ impl Battle {
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
         {
             // PS chainModify([5461, 4096]) — fixed-point ≈ 1.3333.
-            boosted_attacker.stats.spa =
-                ((boosted_attacker.stats.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            atk_stats_ovr.spa =
+                ((atk_stats_ovr.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
         }
         // Orichalcum Pulse: Koraidon's signature — Atk ×5461/4096 (≈1.333)
         // on physical moves while Sun is up. Symmetric counterpart to
@@ -2334,8 +2334,8 @@ impl Battle {
             && physical_move
             && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
         {
-            boosted_attacker.stats.atk =
-                ((boosted_attacker.stats.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+            atk_stats_ovr.atk =
+                ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
         }
         // Ruin abilities (gen 9 paradox quartet): Tablets of Ruin
         // (Wo-Chien) / Vessel of Ruin (Chi-Yu) / Sword of Ruin (Chien-Pao) /
@@ -2367,10 +2367,10 @@ impl Battle {
             (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
         if side_has_ruin(self, opp_side, data::ability_id::TABLETSOFRUIN) && physical_move {
-            boosted_attacker.stats.atk = scale_off_075(boosted_attacker.stats.atk);
+            atk_stats_ovr.atk = scale_off_075(atk_stats_ovr.atk);
         }
         if side_has_ruin(self, opp_side, data::ability_id::VESSELOFRUIN) && special_move {
-            boosted_attacker.stats.spa = scale_off_075(boosted_attacker.stats.spa);
+            atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
         }
 
         // Water Bubble — Araquanid signature. On the attacker side it
@@ -2381,11 +2381,11 @@ impl Battle {
         // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
         if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
             if physical_move {
-                boosted_attacker.stats.atk =
-                    ((boosted_attacker.stats.atk as u32 * 2).min(u16::MAX as u32)) as u16;
+                atk_stats_ovr.atk =
+                    ((atk_stats_ovr.atk as u32 * 2).min(u16::MAX as u32)) as u16;
             } else if special_move {
-                boosted_attacker.stats.spa =
-                    ((boosted_attacker.stats.spa as u32 * 2).min(u16::MAX as u32)) as u16;
+                atk_stats_ovr.spa =
+                    ((atk_stats_ovr.spa as u32 * 2).min(u16::MAX as u32)) as u16;
             }
         }
         // Toxic Boost / Flare Boost — PS `data/abilities.ts:toxicboost`
@@ -2404,14 +2404,14 @@ impl Battle {
             && physical_move
             && matches!(attacker.status, Status::Poison | Status::Toxic)
         {
-            boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
+            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
         if attacker_ability_id == data::ability_id::FLAREBOOST
             && special_move
             && matches!(attacker.status, Status::Burn)
         {
-            boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
+            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
         let _ = special_move;
@@ -3177,9 +3177,9 @@ impl Battle {
             // ctx-matched (min, max) to the back-solver.
             // Apply Assault Vest spd boost to the defender if the attack
             // is special (×1.5 spd; physical untouched).
-            let mut boosted_defender = defender.clone();
-            if boosted_defender.item_id == data::item_id::ASSAULTVEST && m.category == 1 {
-                boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
+            let mut def_stats_ovr = defender.stats;
+            if defender.item_id == data::item_id::ASSAULTVEST && m.category == 1 {
+                def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
             }
             // Eviolite — PS `data/items.ts:eviolite` `onModifyDef` /
@@ -3189,12 +3189,12 @@ impl Battle {
             // (different slots), but does stack with paradox booster
             // ×1.3 above (PS chains both modifiers).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eviolite>.
-            if boosted_defender.item_id == data::item_id::EVIOLITE && boosted_defender.species().is_nfe {
+            if defender.item_id == data::item_id::EVIOLITE && defender.species().is_nfe {
                 if m.category == 0 {
-                    boosted_defender.stats.def = ((boosted_defender.stats.def as u32 * 3 / 2)
+                    def_stats_ovr.def = ((def_stats_ovr.def as u32 * 3 / 2)
                         .min(u16::MAX as u32)) as u16;
                 } else if m.category == 1 {
-                    boosted_defender.stats.spd = ((boosted_defender.stats.spd as u32 * 3 / 2)
+                    def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
                         .min(u16::MAX as u32)) as u16;
                 }
             }
@@ -3205,10 +3205,10 @@ impl Battle {
             // active. x0.75 per-source, no stacking. See attacker-side
             // notes above for the PS handler shape and citations.
             if side_has_ruin(self, actor_side, data::ability_id::SWORDOFRUIN) && m.category == 0 {
-                boosted_defender.stats.def = scale_off_075(boosted_defender.stats.def);
+                def_stats_ovr.def = scale_off_075(def_stats_ovr.def);
             }
             if side_has_ruin(self, actor_side, data::ability_id::BEADSOFRUIN) && m.category == 1 {
-                boosted_defender.stats.spd = scale_off_075(boosted_defender.stats.spd);
+                def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
             }
             // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
             // is the active weather. PS `data/conditions.ts:sandstorm`
@@ -3222,21 +3222,21 @@ impl Battle {
             if matches!(self.effective_weather(), crate::weather::Weather::Sand)
                 && m.category == 1
             {
-                let (eff_types, eff_num) = boosted_defender.effective_types();
+                let (eff_types, eff_num) = defender.effective_types();
                 let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
                 if is_rock {
-                    boosted_defender.stats.spd =
-                        ((boosted_defender.stats.spd as u32 * 3 / 2)
+                    def_stats_ovr.spd =
+                        ((def_stats_ovr.spd as u32 * 3 / 2)
                             .min(u16::MAX as u32)) as u16;
                 }
             }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
-            if boosted_defender.boosted_stat == 1 && m.category == 0 {
-                boosted_defender.stats.def = scale_off_13(boosted_defender.stats.def);
+            if defender.boosted_stat == 1 && m.category == 0 {
+                def_stats_ovr.def = scale_off_13(def_stats_ovr.def);
             }
-            if boosted_defender.boosted_stat == 3 && m.category == 1 {
-                boosted_defender.stats.spd = scale_off_13(boosted_defender.stats.spd);
+            if defender.boosted_stat == 3 && m.category == 1 {
+                def_stats_ovr.spd = scale_off_13(def_stats_ovr.spd);
             }
             let def_conds = self.side(tside).conditions;
             let defender_has_reflect = def_conds.reflect_turns > 0;
@@ -3287,16 +3287,18 @@ impl Battle {
                             defender_has_aurora_veil, is_doubles,
                             fairy_aura_active, dark_aura_active, aura_break_active,
                             attacker_total_fainted_allies,
+                            attacker_stats: Some(atk_stats_ovr),
+                            defender_stats: Some(def_stats_ovr),
                         };
                         let (lo, hi) = crate::damage::damage_range_in_ctx(
-                            &boosted_attacker, &boosted_defender, move_id, stub_ctx,
+                            &attacker, &defender, move_id, stub_ctx,
                         );
                         self.rng.damage_roll_hint(lo, hi)
                     }
                 };
                 calculate_damage(
-                    &boosted_attacker,
-                    &boosted_defender,
+                    &attacker,
+                    &defender,
                     move_id,
                     DamageContext {
                         crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
@@ -3305,6 +3307,8 @@ impl Battle {
                         defender_has_aurora_veil, is_doubles,
                         fairy_aura_active, dark_aura_active, aura_break_active,
                         attacker_total_fainted_allies,
+                        attacker_stats: Some(atk_stats_ovr),
+                        defender_stats: Some(def_stats_ovr),
                     },
                 )
             };
@@ -9889,11 +9893,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -12595,11 +12599,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -15726,7 +15730,7 @@ mod tests {
         let mk = |tf: u8| {
             calculate_damage(&p1[0], &p2[0], lr_id, DamageContext {
                 roll: 15,
-                attacker_total_fainted_allies: tf,
+                attacker_total_fainted_allies: tf, attacker_stats: None, defender_stats: None,
                 ..DamageContext::default()
             })
         };
