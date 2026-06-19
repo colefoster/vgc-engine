@@ -884,6 +884,22 @@ pub fn calculate_damage(
         bp = bp * 6144 / 4096;
     }
 
+    // Sharpness — PS `data/abilities.ts:sharpness` (line 4129)
+    //   onBasePowerPriority: 19,
+    //   onBasePower(basePower, attacker, defender, move) {
+    //     if (move.flags['slicing']) return this.chainModify(1.5);
+    //   }
+    // ×1.5 BP on moves carrying the `slicing` flag. ×1.5 = 6144/4096 (exact
+    // in pokeRound; plain `*3/2` for our BP integers). Not breakable — own
+    // offensive ability. Kingambit / Gallade / Samurott-Hisui signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sharpness_(Ability)>.
+    if m.is_slicing
+        && attacker.ability_id != u16::MAX
+        && data::ABILITIES[attacker.ability_id as usize].slug == "sharpness"
+    {
+        bp = bp * 6144 / 4096;
+    }
+
     // Tough Claws — PS `data/abilities.ts:toughclaws` `onBasePower`
     // returns `chainModify([5325, 4096])` (≈ ×1.3) when the move makes
     // contact (`move.flags['contact']`). Mega Charizard-X / Aerodactyl-Mega
@@ -2564,6 +2580,34 @@ mod tests {
         let sj_tackle = mk(&atk, tackle);
         assert!(sj_crunch > no_crunch, "Strong Jaw boosts Crunch");
         assert_eq!(sj_tackle, no_tackle, "Strong Jaw must NOT boost Tackle");
+    }
+
+    #[test]
+    fn sharpness_boosts_slicing_moves() {
+        // Leaf Blade carries the slicing flag; Tackle does not. Sharpness
+        // ×1.5 BP. PS data/abilities.ts:sharpness.
+        let mut atk = make_mon("garchomp", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let slash = move_id("leafblade");
+        let tackle = move_id("tackle");
+        let no_slash = mk(&atk, slash);
+        let no_tackle = mk(&atk, tackle);
+        let sh_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "sharpness").unwrap() as u16;
+        atk.ability_id = sh_id;
+        let sh_slash = mk(&atk, slash);
+        let sh_tackle = mk(&atk, tackle);
+        assert!(sh_slash > no_slash, "Sharpness boosts Leaf Blade");
+        assert_eq!(sh_tackle, no_tackle, "Sharpness must NOT boost Tackle");
     }
 
     #[test]

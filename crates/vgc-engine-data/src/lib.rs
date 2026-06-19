@@ -191,6 +191,12 @@ mod tests {
         let crunch = move_by_slug("crunch").unwrap();
         assert!(crunch.is_bite);
 
+        // Slicing flag (PS `flags.slicing`): drives Sharpness ×1.5 BP.
+        assert!(move_by_slug("leafblade").unwrap().is_slicing);
+        assert!(move_by_slug("psychocut").unwrap().is_slicing);
+        assert!(move_by_slug("nightslash").unwrap().is_slicing);
+        assert!(!move_by_slug("tackle").unwrap().is_slicing);
+
         let darkpulse = move_by_slug("darkpulse").unwrap();
         assert!(darkpulse.is_pulse);
 
