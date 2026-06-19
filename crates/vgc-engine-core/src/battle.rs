@@ -4591,6 +4591,57 @@ impl Battle {
         })
     }
 
+    /// Swap the held items of two active mons (Trick / Switcheroo, and the
+    /// reusable primitive for any future give/swap item move). Returns
+    /// `true` if the swap actually happened. Mirrors PS Trick `onHit`
+    /// (`data/moves.ts:trick`): the move FAILS (no change) when **both**
+    /// mons are itemless, or when **either** mon holds an un-swappable item
+    /// (`held_item_is_swappable` — the species-locked orbs / masks / Rusted
+    /// gear / Booster Energy whose `onTakeItem` vetoes the take). Sticky
+    /// Hold on the target is handled by the caller's `onTryImmunity` gate
+    /// before this is reached. Only `item_id` is moved — receive-time item
+    /// effects (a Trick'd-on berry's `onUpdate`, Air Balloon's pop message)
+    /// are not modelled. PS data/moves.ts:trick / switcheroo.
+    pub(crate) fn swap_held_items(
+        &mut self,
+        a_side: SideRef,
+        a_slot: u8,
+        b_side: SideRef,
+        b_slot: u8,
+    ) -> bool {
+        let a_item = match self.side(a_side).active_mon(a_slot as usize) {
+            Some(m) => m.item_id,
+            None => return false,
+        };
+        let b_item = match self.side(b_side).active_mon(b_slot as usize) {
+            Some(m) => m.item_id,
+            None => return false,
+        };
+        // Both itemless → nothing to swap (PS `!yourItem && !myItem`).
+        if a_item == u16::MAX && b_item == u16::MAX {
+            return false;
+        }
+        // Either holder's item vetoes the take → fail, no change.
+        let a_ok = self
+            .side(a_side)
+            .active_mon(a_slot as usize)
+            .is_some_and(held_item_is_swappable);
+        let b_ok = self
+            .side(b_side)
+            .active_mon(b_slot as usize)
+            .is_some_and(held_item_is_swappable);
+        if !a_ok || !b_ok {
+            return false;
+        }
+        if let Some(m) = self.side_mut(a_side).active_mon_mut(a_slot as usize) {
+            m.item_id = b_item;
+        }
+        if let Some(m) = self.side_mut(b_side).active_mon_mut(b_slot as usize) {
+            m.item_id = a_item;
+        }
+        true
+    }
+
     /// Pick the lowest-index alive bench Pokemon on `side` not already in an
     /// active slot. Used by the reactive-switch items (Eject Button / Eject
     /// Pack / Red Card) as a deterministic auto-replacement chooser in
@@ -5712,6 +5763,27 @@ impl Battle {
                     crate::item::try_consume_mental_herb(self, opp, slot);
                     return;
                 }
+            }
+            data::move_id::TRICK => {
+                // Trick — swap held items with the target. PS
+                // data/moves.ts:trick. 100% accuracy; `onTryImmunity`
+                // fails the move when the target has Sticky Hold (NOT
+                // bypassed by Mold Breaker — it's a move callback, not a
+                // runImmunity check). A Substitute also blocks it (Trick
+                // has no `bypasssub` flag). The actual swap + un-swappable /
+                // both-empty fail conditions live in `swap_held_items`.
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                let Some((ts, tslot)) = opp_target else { return };
+                let blocked = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    t.effective_ability_id() == data::ability_id::STICKYHOLD
+                        || t.substitute_hp() > 0
+                });
+                if blocked {
+                    return;
+                }
+                self.swap_held_items(actor_side, actor_slot, ts, tslot);
             }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
@@ -7164,6 +7236,43 @@ fn scan_aura_field(b: &Battle) -> (bool, bool, bool) {
 
 /// PS targets that aim at a specific opposing/adjacent slot. Spread,
 /// self, and side-targeted moves are not blocked by Protect.
+/// True if `mon`'s held item may be removed / swapped away by Trick,
+/// Switcheroo, Knock Off, Thief, etc. Mirrors PS `sim/pokemon.ts:takeItem`
+/// running the `TakeItem` event: the species-locked items below veto the
+/// take (`onTakeItem` returns false) when held by their signature species,
+/// and are otherwise take-able. A mon with no item returns `true` (nothing
+/// to block). Mega Stones / Z-Crystals are filtered out of the gen-9 data
+/// dump entirely, so they need no arm here.
+/// PS data/items.ts: cornerstonemask / hearthflamemask / wellspringmask
+/// (Ogerpon #1017), rustedsword (Zacian #888) / rustedshield (Zamazenta
+/// #889), adamantcrystal (Dialga #483) / lustrousglobe (Palkia #484) /
+/// griseouscore (Giratina #487), boosterenergy (Paradox holders).
+fn held_item_is_swappable(mon: &Pokemon) -> bool {
+    if mon.item_id == u16::MAX {
+        return true;
+    }
+    let num = mon.species().num;
+    match mon.item_id {
+        data::item_id::CORNERSTONEMASK
+        | data::item_id::HEARTHFLAMEMASK
+        | data::item_id::WELLSPRINGMASK => num != 1017,
+        data::item_id::RUSTEDSWORD => num != 888,
+        data::item_id::RUSTEDSHIELD => num != 889,
+        data::item_id::ADAMANTCRYSTAL => num != 483,
+        data::item_id::LUSTROUSGLOBE => num != 484,
+        data::item_id::GRISEOUSCORE => num != 487,
+        // Booster Energy is un-takeable from a Paradox species; PS gates on
+        // `baseSpecies.tags.includes("Paradox")`. Every Paradox mon's
+        // ability is Protosynthesis or Quark Drive, so that ability check is
+        // a faithful proxy without a Paradox-tag field in the data dump.
+        data::item_id::BOOSTERENERGY => !matches!(
+            mon.ability_id,
+            data::ability_id::PROTOSYNTHESIS | data::ability_id::QUARKDRIVE
+        ),
+        _ => true,
+    }
+}
+
 fn is_targeting_move(target_code: u8) -> bool {
     // 0 normal, 2 adjacentAlly, 3 adjacentAllyOrSelf, 4 adjacentFoe, 10 any.
     // 5 allAdjacent and 6 allAdjacentFoes are spread — PS's Protect
@@ -9461,6 +9570,51 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, snorlax_max,
                    "Metal Burst fails when the user takes no damage before acting");
+    }
+
+    #[test]
+    fn trick_swaps_held_items_with_target() {
+        // P1 Gengar (Choice Scarf) Tricks P2 Blissey (Leftovers). After the
+        // swap Gengar holds Leftovers and Blissey holds the Choice Scarf.
+        // PS data/moves.ts:trick.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"choicescarf","nature":"timid","moves":["trick","shadowball","sludgebomb","protect"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        assert_eq!(b.p1.team[0].item_id, data::item_id::CHOICESCARF);
+        assert_eq!(b.p2.team[0].item_id, data::item_id::LEFTOVERS);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].item_id, data::item_id::LEFTOVERS, "Gengar receives Leftovers");
+        assert_eq!(b.p2.team[0].item_id, data::item_id::CHOICESCARF, "Blissey receives the Choice Scarf");
+    }
+
+    #[test]
+    fn trick_fails_against_sticky_hold() {
+        // Sticky Hold (Gastrodon) blocks Trick — both keep their items.
+        // PS data/moves.ts:trick onTryImmunity.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"choicescarf","nature":"timid","moves":["trick","shadowball","sludgebomb","protect"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"gastrodon","level":50,"ability":"stickyhold","item":"leftovers","nature":"calm","moves":["recover","earthpower","icebeam","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].item_id, data::item_id::CHOICESCARF, "Trick blocked: Gengar keeps Choice Scarf");
+        assert_eq!(b.p2.team[0].item_id, data::item_id::LEFTOVERS, "Trick blocked: Gastrodon keeps Leftovers");
     }
 
     #[test]
