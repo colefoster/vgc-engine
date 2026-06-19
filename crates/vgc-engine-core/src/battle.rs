@@ -5175,6 +5175,29 @@ impl Battle {
                 self.terrain = crate::terrain::Terrain::None;
                 self.terrain_turns = 0;
             }
+            "tidyup" => {
+                // PS data/moves.ts:tidyup onHit. Status move, target "self",
+                // no flags (NOT reflectable). Effects:
+                //   1. Remove every Substitute on the field (all active mons,
+                //      BOTH sides) — Substitute is modelled as a volatile.
+                //   2. Remove all entry hazards from BOTH sides.
+                //   3. Raise the user's Atk +1 and Spe +1 (boost indices
+                //      0 and 4), routed through apply_boosts.
+                // accuracy: true — no accuracy roll.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Tidy_Up_(move)>
+                let n = self.format().active_count() as u8;
+                for s in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n {
+                        if let Some(mon) = self.side_mut(s).active_mon_mut(slot as usize) {
+                            if mon.substitute_hp() > 0 {
+                                mon.set_substitute_hp(0);
+                            }
+                        }
+                    }
+                    self.clear_entry_hazards(s);
+                }
+                self.apply_boosts(actor_side, actor_slot, &[(0, 1), (4, 1)], actor_side, actor_slot);
+            }
             "encore" => {
                 // Locks the first alive opposing target into its last-
                 // used move for 3 turns. PS data/conditions.ts:encore
@@ -8197,6 +8220,42 @@ mod tests {
         // 5 -> 4 from the normal end-of-step screen tick; Defog itself
         // does NOT clear the user's own screens (only the target's).
         assert_eq!(b.p1.conditions.reflect_turns, 4, "Defog leaves the user's own screens up");
+    }
+
+    #[test]
+    fn tidy_up_clears_hazards_both_sides_and_subs_then_boosts() {
+        // PS data/moves.ts:tidyup onHit — hazards off BOTH sides, every
+        // Substitute removed, user gains Atk +1 and Spe +1.
+        let p1_json = r#"[
+            {"species":"grimmsnarl","level":50,"ability":"prankster","item":"","nature":"jolly","moves":["tidyup","substitute","spiritbreak","thunderwave"],"evs":{"hp":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","substitute","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Hazards on BOTH sides; a Substitute on each active mon.
+        b.p1.conditions.stealth_rock = true;
+        b.p1.conditions.spikes_layers = 1;
+        b.p2.conditions.toxic_spikes_layers = 1;
+        b.p2.conditions.sticky_web = true;
+        b.p1.team[0].set_substitute_hp(50);
+        b.p2.team[0].set_substitute_hp(60);
+        let atk_before = b.p1.team[0].boosts[0];
+        let spe_before = b.p1.team[0].boosts[4];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p1.conditions.stealth_rock && b.p1.conditions.spikes_layers == 0,
+                "Tidy Up clears the user's own hazards");
+        assert!(b.p2.conditions.toxic_spikes_layers == 0 && !b.p2.conditions.sticky_web,
+                "Tidy Up clears the foe's hazards");
+        assert_eq!(b.p1.team[0].substitute_hp(), 0, "Tidy Up removes the user's Substitute");
+        assert_eq!(b.p2.team[0].substitute_hp(), 0, "Tidy Up removes the foe's Substitute");
+        assert_eq!(b.p1.team[0].boosts[0], atk_before + 1, "user gains +1 Atk");
+        assert_eq!(b.p1.team[0].boosts[4], spe_before + 1, "user gains +1 Spe");
     }
 
     #[test]
