@@ -218,6 +218,8 @@ mod tests {
         // moves bounced by Magic Coat / Magic Bounce. Entry hazards, status
         // infliction, and Leech Seed are reflectable; damaging moves are not.
         assert!(move_by_slug("toxicspikes").unwrap().is_reflectable);
+        assert!(move_by_slug("spikes").unwrap().is_reflectable);
+        assert!(move_by_slug("stickyweb").unwrap().is_reflectable);
         assert!(move_by_slug("thunderwave").unwrap().is_reflectable);
         assert!(move_by_slug("leechseed").unwrap().is_reflectable);
         assert!(!move_by_slug("tackle").unwrap().is_reflectable);

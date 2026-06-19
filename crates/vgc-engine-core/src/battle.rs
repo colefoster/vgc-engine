@@ -916,6 +916,7 @@ impl Battle {
         // Guard is the only ability that blocks Stealth Rock and gets
         // checked at damage time.
         self.apply_stealth_rock_to(side, actor_slot);
+        self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
         true
     }
@@ -1043,6 +1044,58 @@ impl Battle {
             }
             Outcome::Poison => self.try_set_status(side, slot, Status::Poison),
             Outcome::Toxic => self.try_set_status(side, slot, Status::Toxic),
+        }
+    }
+
+    /// Spikes damage on switch-in. PS data/moves.ts:spikes
+    /// `condition.onSwitchIn`:
+    ///   if (!pokemon.isGrounded() || pokemon.hasItem('heavydutyboots')) return;
+    ///   const damageAmounts = [0, 3, 4, 6]; // 1/8, 1/6, 1/4
+    ///   this.damage(damageAmounts[layers] * pokemon.maxhp / 24);
+    /// Airborne mons (Flying / Levitate / Air Balloon / Magnet Rise) and
+    /// Heavy-Duty Boots holders take nothing. Magic Guard blocks the chip
+    /// via PS's global `onDamage` indirect-damage gate (mirrors
+    /// `apply_stealth_rock_to`). Unlike Toxic Spikes there is no
+    /// type-based absorb/immunity — only grounded-ness and HDB gate it.
+    fn apply_spikes_to(&mut self, side: SideRef, slot: u8) {
+        let layers = self.side(side).conditions.spikes_layers;
+        if layers == 0 {
+            return;
+        }
+        let (max_hp, dmg_num) = {
+            let mon = match self.side(side).active_mon(slot as usize) {
+                Some(m) if m.is_alive() => m,
+                _ => return,
+            };
+            if !mon.is_grounded() {
+                return;
+            }
+            let item_slug = if mon.item_id == u16::MAX {
+                ""
+            } else {
+                data::ITEMS[mon.item_id as usize].slug
+            };
+            if item_slug == "heavydutyboots" {
+                return;
+            }
+            if crate::ability::has_magic_guard(mon) {
+                return;
+            }
+            // damageAmounts = [0, 3, 4, 6] indexed by layers (1..=3).
+            let dmg_num: u32 = match layers {
+                1 => 3,
+                2 => 4,
+                _ => 6, // 3 layers (capped)
+            };
+            (mon.stats.hp, dmg_num)
+        };
+        // maxhp * damageAmounts[layers] / 24.
+        let dmg = ((max_hp as u32 * dmg_num) / 24).max(1) as u16;
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            m.current_hp = m.current_hp.saturating_sub(dmg);
+            if m.current_hp == 0 {
+                m.fainted = true;
+            }
         }
     }
 
@@ -4954,6 +5007,18 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Spikes_(move)>
                 let layers = &mut self.side_mut(opp_side).conditions.toxic_spikes_layers;
                 if *layers < 2 {
+                    *layers += 1;
+                }
+            }
+            "spikes" => {
+                // PS data/moves.ts:spikes — `sideCondition` on the foe
+                // side, `effectState.layers` caps at 3 (onSideRestart
+                // returns false once 3 layers are down). Switch-in chip
+                // happens at `apply_spikes_to`, not here.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Spikes_(move)>
+                let layers = &mut self.side_mut(opp_side).conditions.spikes_layers;
+                if *layers < 3 {
                     *layers += 1;
                 }
             }
@@ -15691,6 +15756,154 @@ mod tests {
         );
         assert!(matches!(b.p2.team[1].status, Status::None), "Steel/Flying mon takes no status");
         assert_eq!(b.p2.conditions.toxic_spikes_layers, 2, "layers untouched (no absorb)");
+    }
+
+    #[test]
+    fn spikes_layers_cap_at_three() {
+        // PS data/moves.ts:spikes — `effectState.layers` caps at 3;
+        // onSideRestart returns false once 3 are down. A 4th use no-ops.
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"relaxed","moves":["spikes","powerwhip","gyroball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for expected in [1u8, 2, 3, 3] {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.conditions.spikes_layers, expected, "spikes layers cap at 3");
+        }
+    }
+
+    #[test]
+    fn spikes_damage_scales_one_eighth_one_sixth_one_quarter() {
+        // PS damageAmounts = [0, 3, 4, 6] * maxhp / 24 → 1/8, 1/6, 1/4.
+        // Garchomp (Ground/Dragon) is grounded and non-immune; re-pull a
+        // fresh battle per layer count so each switch-in is the first.
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"relaxed","moves":["spikes","powerwhip","gyroball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","tackle"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        for (layers, num) in [(1u8, 3u32), (2, 4), (3, 6)] {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            for _ in 0..layers {
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                    &[Choice::Pass { actor_slot: 0 }],
+                );
+            }
+            assert_eq!(b.p2.conditions.spikes_layers, layers, "layers down");
+            let chomp_max = b.p2.team[1].stats.hp;
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            );
+            let expected_dmg = ((chomp_max as u32 * num) / 24).max(1) as u16;
+            assert_eq!(
+                b.p2.team[1].current_hp,
+                chomp_max - expected_dmg,
+                "{} spikes layer(s) → {}/24 maxhp chip",
+                layers, num,
+            );
+        }
+    }
+
+    #[test]
+    fn spikes_airborne_and_heavy_duty_boots_take_nothing() {
+        // Airborne mons (Flying / Levitate) and Heavy-Duty Boots holders
+        // take no Spikes chip. Corviknight (Flying) is airborne; a
+        // grounded Garchomp holding HDB is gated by the boots.
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"relaxed","moves":["spikes","powerwhip","gyroball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["scald","recover","haze","protect"]},
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","tackle"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"heavydutyboots","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Lay 3 layers.
+        for _ in 0..3 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        // Corviknight (airborne) switches in — no chip.
+        let corv_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].current_hp, corv_max, "airborne mon takes no Spikes chip");
+        // Garchomp with Heavy-Duty Boots switches in — no chip.
+        let chomp_max = b.p2.team[2].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.team[2].current_hp, chomp_max, "Heavy-Duty Boots blocks Spikes");
+    }
+
+    #[test]
+    fn spikes_no_damage_to_magic_guard() {
+        // PS: Spikes' `this.damage()` is indirect chip, blocked by Magic
+        // Guard's global onDamage gate. Clefable is Fairy (grounded).
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"relaxed","moves":["spikes","powerwhip","gyroball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]},
+            {"species":"clefable","level":50,"ability":"magicguard","nature":"calm","moves":["moonblast","calmmind","softboiled","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for _ in 0..3 {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+        }
+        let clef_max = b.p2.team[1].stats.hp;
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].current_hp, clef_max, "Magic Guard blocks Spikes chip");
+    }
+
+    // Spikes (a foeSide hazard) is reflectable: bounces onto the CASTER's
+    // own side instead of the Magic Bounce holder's side.
+    #[test]
+    fn magic_bounce_reflects_spikes_to_caster_side() {
+        let p1_json = r#"[
+            {"species":"ferrothorn","level":50,"ability":"ironbarbs","nature":"relaxed","moves":["spikes","powerwhip","gyroball","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["dazzlinggleam","psychic","calmmind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.spikes_layers, 1, "spikes bounced onto caster's side");
+        assert_eq!(b.p2.conditions.spikes_layers, 0, "Magic Bounce holder's side stays clear");
     }
 
     #[test]
