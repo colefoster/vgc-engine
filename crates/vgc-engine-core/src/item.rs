@@ -642,6 +642,9 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // confused (confusion normally clears on switch, so this is a safety
     // net mirroring PS running onUpdate every tick).
     try_consume_persim_berry(battle, side, slot);
+    // Room Service — PS `onStart`: consume for -1 Spe if Trick Room is
+    // already active when the holder switches in.
+    try_consume_room_service(battle, side, slot);
 }
 
 /// Terrain seed dispatch — consumes the holder's seed if it's currently
@@ -712,6 +715,39 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
         m.volatiles.remove(VK::Confusion);
         m.item_id = u16::MAX;
     }
+}
+
+/// Room Service — PS `data/items.ts:5305` (roomservice).
+///   onStart(pokemon) {  // switch-in, priority -1
+///     if (!pokemon.ignoringItem() && field.getPseudoWeather('trickroom'))
+///       pokemon.useItem();
+///   }
+///   onAnyPseudoWeatherChange() {  // any pseudo-weather change
+///     if (field.getPseudoWeather('trickroom')) pokemon.useItem();
+///   }
+///   boosts: { spe: -1 }
+///
+/// Consumes the item for -1 Speed when Trick Room is active — on switch-in
+/// (if TR is already up) or the instant TR is set while the holder is out.
+/// Single use. Self-boost-drop (the holder lowers its own Speed), so Clear
+/// Body / Clear Amulet don't gate it. No RNG.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Room_Service>.
+pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.trick_room_turns == 0 {
+        return;
+    }
+    let slug = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => item_slug(m.item_id),
+        _ => return,
+    };
+    if slug != "roomservice" {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        m.item_id = u16::MAX;
+    }
+    // -1 Speed self-drop (stat index 4).
+    battle.apply_boosts(side, slot, &[(4, -1)], side, slot);
 }
 
 /// Blunder Policy — PS `sim/battle-actions.ts:740`:

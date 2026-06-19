@@ -4685,6 +4685,16 @@ impl Battle {
                     self.trick_room_turns = 0;
                 } else {
                     self.trick_room_turns = 5;
+                    // Room Service — PS `onAnyPseudoWeatherChange`: every
+                    // holder out on the field consumes its Room Service for
+                    // -1 Spe the instant Trick Room is set. Dispatch to all
+                    // active slots on both sides.
+                    let n = self.format().active_count() as u8;
+                    for side in [SideRef::P1, SideRef::P2] {
+                        for s in 0..n {
+                            crate::item::try_consume_room_service(self, side, s);
+                        }
+                    }
                 }
             }
             "tailwind" => {
@@ -6860,6 +6870,47 @@ mod tests {
         // slower one = Snorlax.
         assert_eq!(order[0].side, SideRef::P1);
         assert_eq!(order[0].actor_slot, 1, "Snorlax (slow) first under TR");
+    }
+
+    #[test]
+    fn room_service_drops_speed_when_trick_room_is_set() {
+        // PS data/items.ts:roomservice — when Trick Room is set while the
+        // holder is out, consume for -1 Spe. Cresselia @ Room Service sets
+        // its own Trick Room; the onAnyPseudoWeatherChange dispatch fires.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"roomservice","nature":"relaxed","moves":["trickroom","moonlight","helpinghand","psychic"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosts[4], 0, "no Speed drop before TR");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.trick_room_turns > 0, "Trick Room must be active");
+        assert_eq!(b.p1.team[0].boosts[4], -1, "Room Service drops Speed by 1 on TR set");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Room Service consumed");
+    }
+
+    #[test]
+    fn room_service_does_not_fire_without_trick_room() {
+        // Control: no Trick Room → the helper is a no-op (item stays).
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"roomservice","nature":"relaxed","moves":["psychic","moonlight","helpinghand","trickroom"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        crate::item::try_consume_room_service(&mut b, SideRef::P1, 0);
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "no TR → Room Service kept");
+        assert_eq!(b.p1.team[0].boosts[4], 0, "no Speed change without TR");
     }
 
     #[test]
