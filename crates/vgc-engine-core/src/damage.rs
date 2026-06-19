@@ -272,6 +272,11 @@ pub fn effectiveness_for_move_type(
 ) -> TypeEff {
     let m = &data::MOVES[move_id as usize];
     let (def_eff_types, def_eff_num) = defender.effective_types();
+    // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
+    // demoted to a neutral (×1) contribution rather than zeroing the hit.
+    // PS resolves this in `runImmunity` via the NegateImmunity event; we
+    // fold it into the effectiveness fold by skipping the `immune` set.
+    let negate_immunity = defender.negates_type_immunity();
     if m.slug == "freezedry" {
         let mut net = 0i32;
         let mut immune = false;
@@ -284,7 +289,7 @@ pub fn effectiveness_for_move_type(
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
-                    3 => immune = true,
+                    3 => immune = !negate_immunity,
                     other => unreachable!("bad type-chart code {other}"),
                 }
             }
@@ -311,7 +316,7 @@ pub fn effectiveness_for_move_type(
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
-                    3 => return TypeEff::Immune,
+                    3 => if !negate_immunity { return TypeEff::Immune },
                     other => unreachable!("bad type-chart code {other}"),
                 }
             }
@@ -333,7 +338,7 @@ pub fn effectiveness_for_move_type(
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
-                    3 => immune = true,
+                    3 => immune = !negate_immunity,
                     other => unreachable!("bad type-chart code {other}"),
                 }
             }
@@ -371,7 +376,7 @@ pub fn effectiveness_for_move_type(
                 0 => {}
                 1 => weak += 1,
                 2 => resist += 1,
-                3 => immune = true,
+                3 => immune = !negate_immunity,
                 other => unreachable!("bad type-chart code {other}"),
             }
         }
@@ -1834,6 +1839,63 @@ mod tests {
         // Control: removing the item restores the heavier hit.
         plain.item_id = u16::MAX;
         assert_eq!(calculate_damage(&attacker, &plain, lk, ctx), dmg_plain);
+    }
+
+    #[test]
+    fn ring_target_negates_type_immunity() {
+        // PS data/items.ts:5222 ringtarget onNegateImmunity: false. The
+        // holder's type-chart immunities are removed: Normal hits a Ghost
+        // holder, Ground hits a Flying holder. Levitate / Air Balloon are
+        // NOT negated (separate test below). Control (no item) stays immune.
+        let ring = data::ITEMS.iter()
+            .position(|i| i.slug == "ringtarget").expect("ringtarget") as u16;
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0 };
+
+        // Normal vs Ghost: 0× normally, neutral with Ring Target.
+        let normal_user = make_mon("snorlax", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let mut ghost = make_mon("gengar", 50, "timid", StatSpread::ZERO);
+        let tackle = move_id("tackle");
+        assert_eq!(calculate_damage(&normal_user, &ghost, tackle, ctx), 0,
+            "control: Normal should be immune vs Ghost");
+        ghost.item_id = ring;
+        assert!(calculate_damage(&normal_user, &ghost, tackle, ctx) > 0,
+            "Ring Target: Normal should now hit a Ghost holder");
+
+        // Ground vs Flying: effectiveness gate must also report non-immune.
+        let mut flyer = make_mon("corviknight", 50, "impish", StatSpread::ZERO);
+        let eq = move_id("earthquake");
+        assert!(effectiveness_for_move_type(eq, 8, &flyer).is_immune(),
+            "control: Ground should be immune vs Flying");
+        flyer.item_id = ring;
+        assert!(!effectiveness_for_move_type(eq, 8, &flyer).is_immune(),
+            "Ring Target: Ground should now hit a Flying holder");
+        // is_grounded should also report the Flying Ring Target holder as
+        // grounded so the battle.rs Ground gate lets the hit through.
+        assert!(flyer.is_grounded(),
+            "Ring Target Flying holder must count as grounded");
+    }
+
+    #[test]
+    fn ring_target_does_not_negate_levitate() {
+        // PS isGrounded checks Levitate AFTER the negateImmunity-gated Flying
+        // branch, so Ring Target does NOT ground a Levitate holder.
+        let ring = data::ITEMS.iter()
+            .position(|i| i.slug == "ringtarget").expect("ringtarget") as u16;
+        // Hydreigon is a Levitate user with no Flying type.
+        let mut mon = make_mon("hydreigon", 50, "modest", StatSpread::ZERO);
+        mon.item_id = ring;
+        // Force the Levitate ability id so effective_ability_slug == levitate.
+        mon.ability_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "levitate").expect("levitate") as u16;
+        assert!(!mon.is_grounded(),
+            "Ring Target must NOT negate Levitate's airborne immunity");
     }
 
     #[test]
