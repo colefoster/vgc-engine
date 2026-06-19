@@ -496,14 +496,19 @@ impl Battle {
         };
         let is_choice_item = matches!(item_slug, "choiceband" | "choicespecs" | "choicescarf");
         let is_assault_vest = item_slug == "assaultvest";
+        // Gorilla Tactics (PS data/abilities.ts:1609) locks the holder into
+        // its first selected move exactly like a Choice item, but driven by
+        // the ability instead of an item. Reuses the same `locked_move_slot`
+        // state, so the lock gate below covers both. Darmanitan-Galar.
+        let is_move_locker = is_choice_item || active.effective_ability_slug() == "gorillatactics";
 
         let mut out = Vec::with_capacity(8);
         for (i, &move_id) in active.moves.iter().enumerate() {
             if move_id == u16::MAX || active.pp.get(i).copied().unwrap_or(0) == 0 {
                 continue;
             }
-            // Choice lock: only the locked slot is usable.
-            if is_choice_item
+            // Choice / Gorilla Tactics lock: only the locked slot is usable.
+            if is_move_locker
                 && active.locked_move_slot() != 255
                 && active.locked_move_slot() as usize != i
             {
@@ -1840,10 +1845,16 @@ impl Battle {
                 mon.last_used_move_slot = move_slot;
             }
         }
+        // Choice items AND Gorilla Tactics lock the holder into its first
+        // selected move. PS sets Gorilla Tactics' `choiceLock` in
+        // `onModifyMove` (data/abilities.ts:1624) the first time a move is
+        // used; we reuse the Choice-item `locked_move_slot` state. Struggle
+        // and Z/Max moves are exempt in PS, but neither is modelled as a
+        // selectable slot here, so the slot-based lock is equivalent.
         let is_choice = matches!(
             if attacker.item_id == u16::MAX { "" } else { data::ITEMS[attacker.item_id as usize].slug },
             "choiceband" | "choicespecs" | "choicescarf"
-        );
+        ) || attacker.effective_ability_slug() == "gorillatactics";
         // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
         // +1 PP per foe target holding active Pressure. Computed before the
         // mutable borrow; for charge / semi-invuln moves PS applies this only
@@ -7126,6 +7137,42 @@ mod tests {
             }
         }
         assert!(!moves_only.is_empty(), "should still have the locked move available");
+    }
+
+    #[test]
+    fn gorilla_tactics_locks_into_first_move() {
+        // Darmanitan-Galar @ Gorilla Tactics (no item). After using its
+        // first move, legal_choices must only offer that slot — the
+        // ability locks like a Choice item. The lock clears on switch
+        // (covered by the shared locked_move_slot reset on switch-in).
+        // PS data/abilities.ts:1609.
+        let p1_json = r#"[
+            {"species":"darmanitangalar","level":50,"ability":"gorillatactics","item":"","nature":"adamant","moves":["iciclecrash","flareblitz","uturn","earthquake"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Before any move: all four slots selectable.
+        let pre: Vec<_> = b.legal_choices(SideRef::P1, 0).into_iter()
+            .filter(|c| matches!(c, Choice::Move { .. })).collect();
+        assert!(pre.len() >= 2, "all moves selectable before first use");
+        // First move: Earthquake (slot 3).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].locked_move_slot(), 3, "Gorilla Tactics locks the slot");
+        let lc = b.legal_choices(SideRef::P1, 0);
+        let moves_only: Vec<_> = lc.iter().filter(|c| matches!(c, Choice::Move { .. })).collect();
+        for c in &moves_only {
+            if let Choice::Move { move_slot, .. } = **c {
+                assert_eq!(move_slot, 3, "Gorilla Tactics locks Darmanitan into Earthquake");
+            }
+        }
+        assert!(!moves_only.is_empty(), "locked move still available");
     }
 
     #[test]

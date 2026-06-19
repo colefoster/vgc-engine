@@ -1366,6 +1366,22 @@ pub fn calculate_damage(
         a = (a * 6144 / 4096).max(1);
     }
 
+    // Gorilla Tactics — PS `data/abilities.ts:1628`:
+    //   onModifyAtkPriority: 1,
+    //   onModifyAtk(atk, pokemon) {
+    //     if (pokemon.volatiles['dynamax']) return;
+    //     return this.chainModify(1.5);
+    //   }
+    // ×1.5 Atk unconditionally (physical reads only — `onModifyAtk`). The
+    // companion move-lock (Choice-Band-style, no item) lives in battle.rs.
+    // NOT in PS's breakable list — Mold Breaker does NOT bypass an own
+    // offensive ability. ×1.5 = 6144/4096 (exact). Darmanitan-Galar
+    // signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Gorilla_Tactics_(Ability)>.
+    if physical && attacker.effective_ability_slug() == "gorillatactics" {
+        a = (a * 6144 / 4096).max(1);
+    }
+
     // Marvel Scale — PS `data/abilities.ts:marvelscale`:
     //   onModifyDef(def, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -2754,6 +2770,34 @@ mod tests {
             "Purifying Salt halves Ghost damage (ctrl {ctrl_ghost}, ps {ps_ghost})");
         assert_eq!(ps_other, ctrl_other,
             "Purifying Salt must NOT touch non-Ghost damage");
+    }
+
+    #[test]
+    fn gorilla_tactics_boosts_atk_x1_5() {
+        // Gorilla Tactics ×1.5 Atk on physical moves; special moves
+        // unaffected (onModifyAtk only). PS data/abilities.ts:1628.
+        let mut atk = make_mon("darmanitangalar", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        let eq = move_id("earthquake"); // physical
+        let base_phys = mk(&atk, eq);
+        let gt_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "gorillatactics").unwrap() as u16;
+        atk.ability_id = gt_id;
+        let gt_phys = mk(&atk, eq);
+        // ×1.5 Atk is linear in damage's base term; assert the boosted
+        // physical hit is ~1.5× (allow integer-rounding slack).
+        let ratio_x100 = (gt_phys as u32) * 100 / (base_phys.max(1) as u32);
+        assert!((146..=154).contains(&ratio_x100),
+            "Gorilla Tactics ≈ ×1.5 Atk, got ×{ratio_x100}/100");
     }
 
     #[test]
