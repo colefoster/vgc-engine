@@ -162,6 +162,13 @@ struct ItemJson {
     gen_: u32,
     #[serde(rename = "isNonstandard", default)]
     is_nonstandard: Option<String>,
+    /// PS/@pkmn `megaStone`. For a mega stone this is an object mapping the
+    /// base species **name** → its Mega forme **name** (e.g. Charizardite X
+    /// = `{"Charizard": "Charizard-Mega-X"}`). Null/absent on non-stones.
+    /// Multi-key for stones that serve several base formes (Meowstic M/F,
+    /// Magearna, Tatsugiri). Drives the `MEGA_STONES` linkage table.
+    #[serde(default, rename = "megaStone")]
+    mega_stone: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +213,12 @@ struct SpeciesJson {
     /// ratio to a single `Random` category; the numerator is not stored.
     #[serde(default)]
     gender: Option<String>,
+    /// PS `abilities`: slot key → ability **name** (`"0"`, `"1"`, `"H"`,
+    /// `"S"`). Mega/forme transforms read slot `"0"` to set the forme's
+    /// fixed ability via the `MEGA_STONES` table. Default empty for forme
+    /// stubs that omit it.
+    #[serde(default)]
+    abilities: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -516,7 +529,10 @@ fn main() {
     writeln!(f).unwrap();
     writeln!(f, "pub const ABILITIES: &[AbilityDef] = &[").unwrap();
     let mut ability_consts: Vec<(String, usize)> = Vec::new();
+    // slug → emitted table index, for resolving mega-forme abilities below.
+    let mut ability_slug_to_idx: BTreeMap<String, usize> = BTreeMap::new();
     for (slug, a) in &abilities_keep {
+        ability_slug_to_idx.insert((*slug).clone(), ability_consts.len());
         ability_consts.push((const_ident(slug), ability_consts.len()));
         writeln!(
             f,
@@ -540,7 +556,10 @@ fn main() {
     writeln!(f).unwrap();
     writeln!(f, "pub const ITEMS: &[ItemDef] = &[").unwrap();
     let mut item_consts: Vec<(String, usize)> = Vec::new();
+    // slug → emitted table index, for the mega-stone linkage table below.
+    let mut item_slug_to_idx: BTreeMap<String, usize> = BTreeMap::new();
     for (slug, i) in &items_keep {
+        item_slug_to_idx.insert((*slug).clone(), item_consts.len());
         item_consts.push((const_ident(slug), item_consts.len()));
         writeln!(
             f,
@@ -581,6 +600,8 @@ fn main() {
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
     let mut species_consts: Vec<(String, usize)> = Vec::new();
+    // slug → emitted table index, for the mega-stone linkage table below.
+    let mut species_slug_to_idx: BTreeMap<String, usize> = BTreeMap::new();
     for (slug, s) in &species_keep {
         let mut t = [0u8; 2];
         let nt = s.types.len().min(2) as u8;
@@ -595,6 +616,7 @@ fn main() {
         // The constant index must track the emitted-row count, not the
         // position in `species_keep`, since bad-type rows are skipped and
         // shift later indices (mirrors the MOVES `move_idx` pattern).
+        species_slug_to_idx.insert((*slug).clone(), species_consts.len());
         species_consts.push((const_ident(slug), species_consts.len()));
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
@@ -624,6 +646,70 @@ fn main() {
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
     emit_id_module(&mut f, "species_id", &species_consts);
+
+    // --- Mega Evolution linkage: stone item → (base species, mega forme,
+    // mega forme's ability). Built from PS/@pkmn `item.megaStone`, which maps
+    // base-species name → mega-forme name. A holder may Mega Evolve iff it
+    // holds the stone AND its species matches `base_species_id`; on transform
+    // the engine `set_forme`s to `mega_species_id` (recomputing stats from the
+    // forme's base stats + the mon's own EVs/IVs/nature) and overrides ability
+    // to `mega_ability_id` (the forme's slot-0 ability). One row per
+    // base→forme; stones serving several base formes (Meowstic M/F, Magearna,
+    // Tatsugiri) emit multiple rows. Linkage is data-driven: any stone+base+
+    // forme that survives `keep_gen9` is included.
+    writeln!(f, "/// One mega-stone → forme linkage. See build.rs for derivation.").unwrap();
+    writeln!(f, "#[derive(Clone, Copy, Debug)]").unwrap();
+    writeln!(f, "pub struct MegaStone {{").unwrap();
+    writeln!(f, "    /// `item_id` of the mega stone the holder must carry.").unwrap();
+    writeln!(f, "    pub item_id: u16,").unwrap();
+    writeln!(f, "    /// `species_id` the holder must be to use this stone.").unwrap();
+    writeln!(f, "    pub base_species_id: u16,").unwrap();
+    writeln!(f, "    /// `species_id` to `set_forme` to on Mega Evolution.").unwrap();
+    writeln!(f, "    /// `ability_id` the mega forme gains (PS slot-0 ability).").unwrap();
+    writeln!(f, "    pub mega_species_id: u16,").unwrap();
+    writeln!(f, "    pub mega_ability_id: u16,").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "pub const MEGA_STONES: &[MegaStone] = &[").unwrap();
+    let mut mega_rows: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for (slug, i) in &items_keep {
+        let Some(stone) = &i.mega_stone else { continue };
+        let Some(&item_idx) = item_slug_to_idx.get(*slug) else { continue };
+        for (base_name, forme_name) in stone {
+            let base_slug = slugify(base_name);
+            let forme_slug = slugify(forme_name);
+            let (Some(&base_idx), Some(&forme_idx)) = (
+                species_slug_to_idx.get(&base_slug),
+                species_slug_to_idx.get(&forme_slug),
+            ) else {
+                continue;
+            };
+            // Mega forme's slot-0 ability, resolved to an ability index.
+            let ability_idx = species
+                .get(&forme_slug)
+                .and_then(|sp| sp.abilities.get("0"))
+                .map(|a| slugify(a))
+                .and_then(|a_slug| ability_slug_to_idx.get(&a_slug).copied());
+            let Some(ability_idx) = ability_idx else { continue };
+            mega_rows.push((item_idx, base_idx, forme_idx, ability_idx));
+        }
+    }
+    mega_rows.sort_unstable();
+    for (item_idx, base_idx, forme_idx, ability_idx) in &mega_rows {
+        writeln!(
+            f,
+            "    MegaStone {{ item_id: {item_idx}, base_species_id: {base_idx}, mega_species_id: {forme_idx}, mega_ability_id: {ability_idx} }},",
+        ).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "/// Mega-evolution linkage for a holder: the row whose stone the").unwrap();
+    writeln!(f, "/// mon holds AND whose `base_species_id` matches its species, if any.").unwrap();
+    writeln!(f, "/// Linear scan over the small `MEGA_STONES` table (alloc-free).").unwrap();
+    writeln!(f, "pub fn mega_stone_for(item_id: u16, species_id: u16) -> Option<&'static MegaStone> {{").unwrap();
+    writeln!(f, "    MEGA_STONES.iter().find(|m| m.item_id == item_id && m.base_species_id == species_id)").unwrap();
+    writeln!(f, "}}").unwrap();
+    writeln!(f).unwrap();
 
     // Quick slug lookup helpers — linear scan. Phase 4 may swap to perfect hash.
     writeln!(f).unwrap();
