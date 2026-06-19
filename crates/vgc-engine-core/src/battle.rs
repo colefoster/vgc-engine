@@ -591,6 +591,10 @@ impl Battle {
                 m.last_attacker = (255, 255);
                 m.last_attacker_category = 255;
                 m.last_damage_taken = 0;
+                m.last_phys_attacker = (255, 255);
+                m.last_phys_damage = 0;
+                m.last_spec_attacker = (255, 255);
+                m.last_spec_damage = 0;
                 m.set_pending_self_switch(false);
                 // Endure is a duration-1 volatile (PS `data/moves.ts:4823`
                 // `condition: { duration: 1 }`): it protects only on the
@@ -938,6 +942,10 @@ impl Battle {
             incoming.last_attacker = (255, 255);
             incoming.last_attacker_category = 255;
             incoming.last_damage_taken = 0;
+            incoming.last_phys_attacker = (255, 255);
+            incoming.last_phys_damage = 0;
+            incoming.last_spec_attacker = (255, 255);
+            incoming.last_spec_damage = 0;
             incoming.set_protected(false);
             incoming.set_stall(0, false);
             incoming.set_locked_move_slot(255); // Choice lock clears on switch.
@@ -1287,7 +1295,7 @@ impl Battle {
         pending_kind: &[[u8; 2]; 2],
         will_act: bool,
     ) {
-        let (actor_slot, move_slot, target, tera) = match action.choice {
+        let (actor_slot, move_slot, mut target, tera) = match action.choice {
             Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
             Choice::Terastallize { actor_slot, move_slot, target } => (actor_slot, move_slot, target, true),
             _ => return,
@@ -2147,6 +2155,41 @@ impl Battle {
             return;
         }
 
+        // Counter / Mirror Coat / Metal Burst — `target: scripted`. PS
+        // redirects these to the slot that dealt the qualifying damage this
+        // turn (`condition.onRedirectTarget` for Counter/Mirror Coat,
+        // `onModifyTarget` for Metal Burst) and FAILS (`onTry`) when no such
+        // hit was recorded this turn. Counter keys off the last *physical*
+        // hit, Mirror Coat the last *special* hit, Metal Burst the most
+        // recent hit of either category. The attacker must still be on the
+        // field — if it fainted / switched, `getAtSlot` is empty and the
+        // move fizzles. PP was already deducted above (PS deducts before the
+        // failing `onTry`), so we just return.
+        // PS data/moves.ts: counter / mirrorcoat / metalburst.
+        if matches!(
+            move_id,
+            data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST
+        ) {
+            let ((src_side_byte, src_slot), dmg) = match move_id {
+                data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
+                data::move_id::MIRRORCOAT => (attacker.last_spec_attacker, attacker.last_spec_damage),
+                _ => (attacker.last_attacker, attacker.last_damage_taken),
+            };
+            if dmg == 0 {
+                return; // no qualifying damage taken this turn
+            }
+            let scr_side = if src_side_byte == 0 { SideRef::P1 } else { SideRef::P2 };
+            let scr_slot = src_slot;
+            let attacker_present = self
+                .side(scr_side)
+                .active_mon(scr_slot as usize)
+                .is_some_and(|m| m.is_alive());
+            if !attacker_present {
+                return; // the attacker is gone — move fails
+            }
+            target = Some(Target { side: scr_side, slot: scr_slot });
+        }
+
         // 5. Enumerate targets (spread or single).
         let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
         if targets.is_empty() {
@@ -2246,7 +2289,8 @@ impl Battle {
                     | data::move_id::SEISMICTOSS | data::move_id::NIGHTSHADE
                     | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
-                    | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT);
+                    | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
+                    | data::move_id::COUNTER);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2573,6 +2617,14 @@ impl Battle {
                         d.last_attacker = (aside_byte, actor_slot as u8);
                         d.last_attacker_category = m.category;
                         d.last_damage_taken = capped;
+                        // Per-category attribution for Counter / Mirror Coat.
+                        if m.category == 0 {
+                            d.last_phys_attacker = (aside_byte, actor_slot as u8);
+                            d.last_phys_damage = capped;
+                        } else if m.category == 1 {
+                            d.last_spec_attacker = (aside_byte, actor_slot as u8);
+                            d.last_spec_damage = capped;
+                        }
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(capped);
@@ -2599,6 +2651,7 @@ impl Battle {
                     | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
+                    | data::move_id::COUNTER
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3152,6 +3205,15 @@ impl Battle {
                 // is the live value since the user hasn't taken damage this
                 // resolution).
                 data::move_id::FINALGAMBIT => Some(attacker.current_hp),
+                // Counter — PS data/moves.ts:counter damageCallback returns
+                // the `counter` volatile's stored `2 * damage` (the last
+                // physical hit this turn). The scripted-target override and
+                // fail-if-zero gate run before targeting; by the time we get
+                // here `last_phys_damage > 0` is guaranteed. PS stores the
+                // doubled value (`2 * damage`); we recompute it the same way.
+                data::move_id::COUNTER => {
+                    Some((attacker.last_phys_damage.saturating_mul(2)).max(1))
+                }
                 _ => None,
             };
 
@@ -3691,6 +3753,14 @@ impl Battle {
                         t.last_attacker = (aside_byte, actor_slot as u8);
                         t.last_attacker_category = m.category;
                         t.last_damage_taken = effective_dmg;
+                        // Per-category attribution for Counter / Mirror Coat.
+                        if m.category == 0 {
+                            t.last_phys_attacker = (aside_byte, actor_slot as u8);
+                            t.last_phys_damage = effective_dmg;
+                        } else if m.category == 1 {
+                            t.last_spec_attacker = (aside_byte, actor_slot as u8);
+                            t.last_spec_damage = effective_dmg;
+                        }
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
@@ -6389,7 +6459,11 @@ fn enumerate_targets(
     };
     match m.target {
         // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
-        0 | 4 | 10 | 13 => {
+        // 14 scripted (Counter / Mirror Coat / Metal Burst) — the caller has
+        // already rewritten `chosen` to the slot that dealt the qualifying
+        // damage (PS `onRedirectTarget` / `onModifyTarget`), so it resolves
+        // through the same single-target path.
+        0 | 4 | 10 | 13 | 14 => {
             if let Some(t) = chosen {
                 if alive(t.side, t.slot) {
                     return TargetBuf::single((t.side, t.slot));
@@ -7080,7 +7154,9 @@ fn is_targeting_move(target_code: u8) -> bool {
     // condition.onTryHit (data/moves.ts:protect → conditions.ts) fires
     // per target, so the protected slot is shielded from the spread
     // hit while siblings still take damage.
-    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10)
+    // 14 scripted (Counter / Mirror Coat / Metal Burst) carries the
+    // `protect` flag in PS, so it is blocked by a protected target.
+    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10 | 14)
 }
 
 #[cfg(test)]
@@ -9213,6 +9289,57 @@ mod tests {
         );
         assert_eq!(b.p2.conditions.toxic_spikes_layers, 1,
                    "physical hit lays one Toxic Spikes layer on the attacker side");
+    }
+
+    #[test]
+    fn counter_returns_double_last_physical_damage_at_attacker() {
+        // P1 Snorlax holds Counter (slot 0). P2 Garchomp uses a weak
+        // physical move (Tackle) so the doubled retaliation can't KO and
+        // mask the HP delta. Counter is priority -5, so Garchomp's hit
+        // lands first and the recorded physical damage is available when
+        // Counter resolves. Expect Garchomp to lose exactly 2× the HP
+        // Snorlax lost. PS data/moves.ts:counter damageCallback.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["counter","bodyslam","rest","crunch"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["tackle","earthquake","dragonclaw","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let snorlax_max = b.p1.team[0].current_hp;
+        let chomp_max = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let snorlax_dmg = snorlax_max - b.p1.team[0].current_hp;
+        let chomp_dmg = chomp_max - b.p2.team[0].current_hp;
+        assert!(snorlax_dmg > 0, "Snorlax should have taken Tackle damage");
+        assert_eq!(chomp_dmg, snorlax_dmg * 2, "Counter deals 2× the physical damage taken");
+    }
+
+    #[test]
+    fn counter_fails_with_no_physical_damage_taken() {
+        // P2 uses a SPECIAL move; Counter has no physical hit to mirror and
+        // must fail (foe takes no damage). PS data/moves.ts:counter onTry.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["counter","bodyslam","rest","crunch"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"modest","moves":["dragonpulse","earthquake","dragonclaw","ironhead"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let chomp_max = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, chomp_max,
+                   "Counter must fail when only special damage was taken");
     }
 
     #[test]

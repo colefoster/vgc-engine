@@ -557,6 +557,20 @@ pub struct Pokemon {
     /// Used by Counter / Mirror Coat / Metal Burst / Bide payout
     /// calculation. Cleared at end of step.
     pub last_damage_taken: u16,
+    /// Encoded `(side_byte, slot_byte)` of the most recent *physical*
+    /// attacker this turn, and the HP damage it dealt. Counter
+    /// (`data/moves.ts:counter`) keys off these specifically — PS tracks
+    /// physical and special hits in separate `counter` / `mirrorcoat`
+    /// volatiles, so a special hit landing after a physical one does NOT
+    /// overwrite the value Counter retaliates against. `(255, 255)` / `0`
+    /// = no physical hit recorded this turn. Cleared each turn alongside
+    /// `last_attacker`.
+    pub last_phys_attacker: (u8, u8),
+    pub last_phys_damage: u16,
+    /// Same as `last_phys_*` but for the most recent *special* attacker
+    /// this turn. Read by Mirror Coat (`data/moves.ts:mirrorcoat`).
+    pub last_spec_attacker: (u8, u8),
+    pub last_spec_damage: u16,
     /// Slot index of the most recent move this mon used (PP-consumed),
     /// or 255 if it hasn't moved yet on the field. Cleared on switch-
     /// out. Used by Encore to determine the lock target.
@@ -766,6 +780,10 @@ impl Pokemon {
             last_attacker: (255, 255),
             last_attacker_category: 255,
             last_damage_taken: 0,
+            last_phys_attacker: (255, 255),
+            last_phys_damage: 0,
+            last_spec_attacker: (255, 255),
+            last_spec_damage: 0,
             terastallized: false,
             stellar_boosted_types: 0,
             semi_invuln: 0,
