@@ -1150,6 +1150,26 @@ impl Battle {
         crate::item::try_consume_white_herb(self, side, slot);
     }
 
+    /// Clear all modelled entry hazards (Spikes / Toxic Spikes / Stealth
+    /// Rock / Sticky Web) from `side`, returning `true` if at least one
+    /// was active. Mirrors PS `side.removeSideCondition` over the
+    /// `['spikes', 'toxicspikes', 'stealthrock', 'stickyweb']` set used
+    /// by Rapid Spin / Defog / Tidy Up / Mortal Spin / Court Change.
+    /// `gmaxsteelsurge` is not modelled (no G-Max in gen-9 VGC singles
+    /// data) — noted, not cleared.
+    fn clear_entry_hazards(&mut self, side: SideRef) -> bool {
+        let c = &mut self.side_mut(side).conditions;
+        let cleared = c.spikes_layers != 0
+            || c.toxic_spikes_layers != 0
+            || c.stealth_rock
+            || c.sticky_web;
+        c.spikes_layers = 0;
+        c.toxic_spikes_layers = 0;
+        c.stealth_rock = false;
+        c.sticky_web = false;
+        cleared
+    }
+
     /// After the move loop, every actor_slot whose user set
     /// `pending_self_switch` consumes the next un-applied Switch choice
     /// for that slot from the player's choice array. PS's analogue:
@@ -3985,6 +4005,39 @@ impl Battle {
                     });
                 }
                 break; // single-target
+            }
+        }
+
+        // Rapid Spin — PS `data/moves.ts:rapidspin` `onAfterHit`. After a
+        // connecting hit (and `onAfterSubDamage` if it hit a Substitute),
+        // the user: frees itself from Leech Seed and partial-trap, clears
+        // every entry hazard on ITS OWN side (Spikes / Toxic Spikes /
+        // Stealth Rock / Sticky Web — `gmaxsteelsurge` not modelled), and
+        // gains +1 Spe via the move's 100% self-secondary. The whole
+        // `onAfterHit` body is gated on `!move.hasSheerForce` (a Sheer
+        // Force user skips both the clears AND the Spe boost). The Spe
+        // boost is routed through `apply_boosts` (Contrary inverts it,
+        // Clear Body does NOT block self-boosts). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>.
+        if m.slug == "rapidspin" && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            // User must be alive (recoil / Rough Skin could have KO'd it;
+            // PS gates the sub-damage variant on `pokemon.hp`).
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
+                    a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                }
+                self.clear_entry_hazards(actor_side);
+                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
             }
         }
 
@@ -7970,6 +8023,74 @@ mod tests {
         );
         assert_eq!(b.p2.conditions.toxic_spikes_layers, 1,
                    "physical hit lays one Toxic Spikes layer on the attacker side");
+    }
+
+    #[test]
+    fn rapid_spin_clears_own_hazards_and_traps_and_boosts_speed() {
+        // PS data/moves.ts:rapidspin onAfterHit — clears the user's own
+        // entry hazards + Leech Seed + partial-trap, then +1 Spe.
+        let p1_json = r#"[
+            {"species":"forretress","level":50,"ability":"sturdy","item":"","nature":"relaxed","moves":["rapidspin","gyroball","spikes","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Pile every modelled hazard onto P1's own side + a Leech Seed
+        // and partial-trap volatile on the user.
+        b.p1.conditions.spikes_layers = 3;
+        b.p1.conditions.toxic_spikes_layers = 2;
+        b.p1.conditions.stealth_rock = true;
+        b.p1.conditions.sticky_web = true;
+        b.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::LeechSeed,
+            turns_remaining: 0,
+            payload: 0x0100,
+        });
+        b.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::PartialTrap,
+            turns_remaining: 0,
+            payload: 5,
+        });
+        let spe_before = b.p1.team[0].boosts[4];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.spikes_layers, 0, "Rapid Spin clears Spikes");
+        assert_eq!(b.p1.conditions.toxic_spikes_layers, 0, "clears Toxic Spikes");
+        assert!(!b.p1.conditions.stealth_rock, "clears Stealth Rock");
+        assert!(!b.p1.conditions.sticky_web, "clears Sticky Web");
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed),
+                "frees user from Leech Seed");
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap),
+                "frees user from partial trap");
+        assert_eq!(b.p1.team[0].boosts[4], spe_before + 1, "user gains +1 Spe");
+    }
+
+    #[test]
+    fn rapid_spin_does_not_clear_opponent_hazards() {
+        // Control: Rapid Spin only clears the USER's side. The foe's
+        // hazards are untouched.
+        let p1_json = r#"[
+            {"species":"forretress","level":50,"ability":"sturdy","item":"","nature":"relaxed","moves":["rapidspin","gyroball","spikes","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p2.conditions.stealth_rock = true;
+        b.p2.conditions.spikes_layers = 2;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.conditions.stealth_rock, "opponent Stealth Rock untouched");
+        assert_eq!(b.p2.conditions.spikes_layers, 2, "opponent Spikes untouched");
     }
 
     #[test]
