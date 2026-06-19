@@ -2201,7 +2201,12 @@ impl Battle {
         let damaging = m.base_power > 0
             || matches!(m.slug,
                 "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
-                    | "gyroball" | "electroball");
+                    | "gyroball" | "electroball"
+                    // Fixed-damage / damage-callback moves carry
+                    // basePower: 0 in PS but still deal damage via the
+                    // `damage` / `damageCallback` early returns in
+                    // `getDamage`. They must enter the damaging path.
+                    | "seismictoss" | "nightshade");
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2538,6 +2543,38 @@ impl Battle {
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(capped);
                 continue;
+            }
+
+            // Fixed-damage / damage-callback moves. PS `getDamage`
+            // (sim/battle-actions.ts:1610-1616) returns the fixed amount
+            // BEFORE the crit roll (:1645) and BEFORE the randomizer/16-
+            // value damage roll (:1759). So these moves draw NEITHER a
+            // crit value NOR a damage-roll value — only the accuracy roll
+            // (PercentRoll) like any other move. They also bypass STAB /
+            // type-multiplier / weather / item-damage modifiers (those
+            // run inside the formula path the early return skips). Type
+            // IMMUNITY and move-specific `onTryImmunity` are still checked
+            // (PS `hitStepTypeImmunity` :557 / `hitStepTryImmunity` :560
+            // run BEFORE `hitStepAccuracy` :563) — an immune/failed target
+            // ends the move with NO accuracy draw.
+            //
+            // PS file:line: sim/battle-actions.ts:1606-1616.
+            let is_fixed_damage = matches!(
+                m.slug,
+                "seismictoss" | "nightshade"
+            );
+            if is_fixed_damage {
+                // Type immunity (checked before the accuracy roll → no
+                // draw if immune). Seismic Toss=Fighting fails on Ghost,
+                // Night Shade=Ghost fails on Normal. PS `runImmunity`
+                // via the type chart. The general fixed-damage value is
+                // computed at the crit/roll site below.
+                let eff = crate::damage::effectiveness_for_move_type(
+                    move_id, m.type_, &defender,
+                );
+                if eff.is_immune() {
+                    continue;
+                }
             }
 
             // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
@@ -3072,6 +3109,19 @@ impl Battle {
                 continue;
             }
 
+            // Fixed-damage value (computed once the attacker / defender
+            // clones are available). `Some(n)` short-circuits the crit
+            // roll, the 16-value damage roll, the formula, AND every
+            // damage multiplier below — PS returns these from `getDamage`
+            // before any of that. The accuracy roll already fired above
+            // (PS draws it the same as a normal move). See the
+            // `is_fixed_damage` immunity gate above for the citation.
+            //   Level-damage: Seismic Toss / Night Shade = source level.
+            let fixed_damage: Option<u16> = match m.slug {
+                "seismictoss" | "nightshade" => Some(attacker.level as u16),
+                _ => None,
+            };
+
             // Crit + damage roll. Stage sums attacker on-mon
             // contributors (item, ability, volatile) and the move's
             // `crit_stage_delta`. PS gen-9 stage table:
@@ -3079,10 +3129,16 @@ impl Battle {
             // PS: `sim/battle.ts` `getCritRatio` + `data/conditions.ts`.
             // Oracle: replays the source sim's recorded crit flag, so
             // stage is irrelevant on that arm.
+            // Fixed-damage moves never crit (PS skips the crit roll), so
+            // force `crit = false` with NO draw when `fixed_damage`.
             let crit_stage = attacker
                 .effective_crit_stage()
                 .saturating_add(m.crit_stage_delta);
-            let crit = self.rng.crit_with_stage(crit_stage);
+            let crit = if fixed_damage.is_some() {
+                false
+            } else {
+                self.rng.crit_with_stage(crit_stage)
+            };
             // Damage roll happens later (after `boosted_defender` /
             // ctx fields are computed) so the hint path can pass the
             // ctx-matched (min, max) to the back-solver.
@@ -3187,40 +3243,58 @@ impl Battle {
             // the range computation is dead code (cheap but constant
             // overhead — calculate_damage runs twice; live calc runs
             // again below for the actual roll).
-            let roll = match &self.rng {
-                Rng::Splitmix(_) => self.rng.damage_roll(),
-                _ => {
-                    let stub_ctx = DamageContext {
-                        crit, roll: 0, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+            // Fixed-damage moves skip the 16-value damage roll entirely
+            // (PS returns before `randomizer`). No draw; the value is the
+            // pre-computed `fixed_damage`. Normal moves roll as before.
+            let mut dmg = if let Some(fd) = fixed_damage {
+                fd
+            } else {
+                let roll = match &self.rng {
+                    Rng::Splitmix(_) => self.rng.damage_roll(),
+                    _ => {
+                        let stub_ctx = DamageContext {
+                            crit, roll: 0, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                            terrain: active_terrain,
+                            defender_has_reflect, defender_has_light_screen,
+                            defender_has_aurora_veil, is_doubles,
+                            fairy_aura_active, dark_aura_active, aura_break_active,
+                            attacker_total_fainted_allies,
+                        };
+                        let (lo, hi) = crate::damage::damage_range_in_ctx(
+                            &boosted_attacker, &boosted_defender, move_id, stub_ctx,
+                        );
+                        self.rng.damage_roll_hint(lo, hi)
+                    }
+                };
+                calculate_damage(
+                    &boosted_attacker,
+                    &boosted_defender,
+                    move_id,
+                    DamageContext {
+                        crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                         terrain: active_terrain,
                         defender_has_reflect, defender_has_light_screen,
                         defender_has_aurora_veil, is_doubles,
                         fairy_aura_active, dark_aura_active, aura_break_active,
                         attacker_total_fainted_allies,
-                    };
-                    let (lo, hi) = crate::damage::damage_range_in_ctx(
-                        &boosted_attacker, &boosted_defender, move_id, stub_ctx,
-                    );
-                    self.rng.damage_roll_hint(lo, hi)
-                }
+                    },
+                )
             };
-            let mut dmg = calculate_damage(
-                &boosted_attacker,
-                &boosted_defender,
-                move_id,
-                DamageContext {
-                    crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                    terrain: active_terrain,
-                    defender_has_reflect, defender_has_light_screen,
-                    defender_has_aurora_veil, is_doubles,
-                    fairy_aura_active, dark_aura_active, aura_break_active,
-                    attacker_total_fainted_allies,
-                },
-            );
+            // Fixed-damage moves bypass EVERY damage multiplier below
+            // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
+            // Fat / Water Bubble / Knock Off / type-resist berries) — PS
+            // returns the raw value from `getDamage` before the formula's
+            // modifier chain runs. Snapshot the fixed value and restore it
+            // after the chain so all the existing per-multiplier logic is
+            // left untouched for normal moves. (The type-resist berry
+            // block below also consumes the berry; we skip that too, which
+            // is correct — a fixed-damage hit never reaches that step in
+            // PS.)
+            let fixed_dmg_snapshot = fixed_damage;
             // Apply attacker item multiplier (Life Orb). See declaration
             // above for the pokeRound formula derived from PS's
             // `modify(chainModify([5324, 4096]))`.
-            if life_orb && dmg > 0 {
+            if fixed_dmg_snapshot.is_none() && life_orb && dmg > 0 {
                 dmg = (((dmg as u32) * 5324 + 2047) / 4096)
                     .min(u16::MAX as u32) as u16;
             }
@@ -3403,13 +3477,23 @@ impl Battle {
             // Consumed on use. Berry-resist is the FIRST non-Splash
             // damage-modifier the holder's item can do — it runs before
             // Sub interception so the sub sees the halved value too.
-            if dmg > 0 {
+            if fixed_dmg_snapshot.is_none() && dmg > 0 {
                 let halved = crate::item::try_consume_type_resist_berry(
                     self, tside, tslot, m.type_, defender.species(),
                 );
                 if halved {
                     dmg = (dmg / 2).max(1);
                 }
+            }
+
+            // Restore the fixed-damage value: every multiplier above was
+            // skipped for fixed-damage moves, and `dmg` was never touched
+            // (the snapshot equals the value we set pre-chain). This line
+            // is a no-op for fixed moves but documents the invariant —
+            // `dmg` entering Substitute interception is the raw fixed
+            // amount. For normal moves `fixed_dmg_snapshot` is None.
+            if let Some(fd) = fixed_dmg_snapshot {
+                dmg = fd;
             }
 
             // Substitute interception. If the defender has a sub up, the
@@ -6897,6 +6981,81 @@ mod tests {
         );
         assert!(!b.p1.team[0].is_protected_this_turn(), "Protect must FAIL when no later action acts");
         assert_eq!(b.p1.team[0].stall_counter(), 0, "stall counter NOT bumped on willAct fail");
+    }
+
+    #[test]
+    fn seismic_toss_and_night_shade_deal_exactly_user_level() {
+        // Fixed-damage = source.level (PS data/moves.ts:16001 / :12735,
+        // `damage: 'level'`). No STAB / type mult / roll. Level 50 user
+        // → exactly 50 HP damage. Seismic Toss (Fighting) vs a non-Ghost,
+        // Night Shade (Ghost) vs a non-Normal.
+        let p1_json = r#"[
+            {"species":"machamp","level":50,"ability":"guts","item":"leftovers","nature":"adamant","moves":["seismictoss","nightshade","bulkup","knockoff"]}
+        ]"#;
+        // Target must be neither Ghost (else Seismic Toss is immune) nor
+        // Normal (else Night Shade is immune). Toxapex = Poison/Water:
+        // both moves land, each for exactly the user's level.
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["recover","scald","toxic","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp0 = b.p2.team[0].current_hp;
+        // Machamp (faster) Seismic Toss; Toxapex Scald (slot 1) at Machamp
+        // — a later action so willAct passes, and Scald doesn't touch
+        // Toxapex's own HP, so the delta isolates Seismic Toss damage.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(hp0 - b.p2.team[0].current_hp, 50, "Seismic Toss deals exactly user level (50)");
+
+        // Now Night Shade from the same level-50 user.
+        let hp1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(hp1 - b.p2.team[0].current_hp, 50, "Night Shade deals exactly user level (50)");
+    }
+
+    #[test]
+    fn seismic_toss_fails_on_ghost_night_shade_fails_on_normal() {
+        // Type immunity respected: Seismic Toss=Fighting fails on Ghost,
+        // Night Shade=Ghost fails on Normal (PS runImmunity before the
+        // accuracy roll). P1 Machamp into P2 Gengar (Ghost/Poison):
+        // Seismic Toss is immune. Then a Normal-type target for Night
+        // Shade immunity.
+        let p1_json = r#"[
+            {"species":"machamp","level":50,"ability":"guts","item":"leftovers","nature":"adamant","moves":["seismictoss","nightshade","bulkup","knockoff"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["shadowball","sludgebomb","protect","willowisp"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp0 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp0, "Seismic Toss (Fighting) is immune vs Ghost Gengar");
+
+        // Night Shade (Ghost) vs a Normal-type (Blissey).
+        let p3_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p3 = TeamBuilder::from_json(p3_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(), p3);
+        let hp1 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b2.p2.team[0].current_hp, hp1, "Night Shade (Ghost) is immune vs Normal Blissey");
     }
 
     #[test]
