@@ -388,23 +388,37 @@ pub struct Volatile {
 }
 
 /// Fixed-cap volatile registry. 8 slots is comfortably more than the
-/// in-corpus max (≈4). Lookup is a linear scan — at this size, that's
-/// faster than the branchier alternatives.
+/// in-corpus max (≈4). `items[..len]` is the data store (linear scan for
+/// `get`/`position`); `present` is a presence bitmask kept in sync on every
+/// insert/remove so `has()` — called frequently in `step()` — is O(1).
+///
+/// `present` bit `i` is set iff a volatile with discriminant `i` is in the
+/// store. `VolatileKind` is `#[repr(u8)]` with 51 sequential variants
+/// (0..=50), so a `u64` holds one bit per kind with room to spare.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VolatileSet {
     pub items: [Volatile; 8],
     pub len: u8,
+    /// Presence bitmask: `1 << (kind as u8)` per stored kind. Derived
+    /// purely from `items[..len]`; kept consistent by the mutators below.
+    pub present: u64,
 }
 
 impl VolatileSet {
     /// Find the slot index of the given kind, or `None` if absent.
     #[inline]
     pub fn position(&self, k: VolatileKind) -> Option<usize> {
+        // Fast reject via the presence bitmask before the linear scan.
+        if !self.has(k) {
+            return None;
+        }
         (0..self.len as usize).find(|&i| self.items[i].kind == k)
     }
 
+    /// O(1) presence test via the bitmask.
+    #[inline]
     pub fn has(&self, k: VolatileKind) -> bool {
-        self.position(k).is_some()
+        self.present & (1u64 << (k as u8)) != 0
     }
 
     pub fn get(&self, k: VolatileKind) -> Option<&Volatile> {
@@ -421,6 +435,8 @@ impl VolatileSet {
     pub fn add(&mut self, v: Volatile) -> bool {
         if let Some(i) = self.position(v.kind) {
             self.items[i] = v;
+            // Bit already set (refresh); keep it set defensively.
+            self.present |= 1u64 << (v.kind as u8);
             return true;
         }
         if (self.len as usize) >= self.items.len() {
@@ -428,6 +444,7 @@ impl VolatileSet {
         }
         self.items[self.len as usize] = v;
         self.len += 1;
+        self.present |= 1u64 << (v.kind as u8);
         true
     }
 
@@ -438,6 +455,7 @@ impl VolatileSet {
             self.items[i] = self.items[last];
             self.items[last] = Volatile::default();
             self.len -= 1;
+            self.present &= !(1u64 << (k as u8));
         }
     }
 
@@ -459,10 +477,12 @@ impl VolatileSet {
             if self.items[i].turns_remaining > 0 {
                 self.items[i].turns_remaining -= 1;
                 if self.items[i].turns_remaining == 0 {
+                    let dropped_kind = self.items[i].kind;
                     let last = self.len as usize - 1;
                     self.items[i] = self.items[last];
                     self.items[last] = Volatile::default();
                     self.len -= 1;
+                    self.present &= !(1u64 << (dropped_kind as u8));
                     continue;
                 }
             }
