@@ -5204,6 +5204,41 @@ impl Battle {
                 }
                 self.apply_boosts(actor_side, actor_slot, &[(0, 1), (4, 1)], actor_side, actor_slot);
             }
+            "courtchange" => {
+                // PS data/moves.ts:courtchange onHitField. Status move,
+                // target "all" (field), NOT reflectable. Swaps every
+                // swappable side condition between the two sides. PS's
+                // swap list (non-FFA path):
+                //   mist, lightscreen, reflect, spikes, safeguard, tailwind,
+                //   toxicspikes, stealthrock, waterpledge, firepledge,
+                //   grasspledge, stickyweb, auroraveil, luckychant, gmax*.
+                // Of these, the MODELLED SideConditions fields are
+                // tailwind / reflect / lightscreen / auroraveil / stealth
+                // rock / toxicspikes / spikes / stickyweb — swap exactly
+                // those. mist / safeguard / the pledges / luckychant / gmax
+                // hazards are NOT modelled (no fields) — noted, not swapped.
+                // Single-turn protect flags (Wide/Quick Guard, Round) and
+                // `tera_used` are NOT in PS's swap list and stay put.
+                // accuracy: 100 (always passes here; no gen-9 evasion clause).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Court_Change_(move)>
+                let opp = actor_side.opposing();
+                macro_rules! swap_cond {
+                    ($field:ident) => {{
+                        let a = self.side(actor_side).conditions.$field;
+                        let o = self.side(opp).conditions.$field;
+                        self.side_mut(actor_side).conditions.$field = o;
+                        self.side_mut(opp).conditions.$field = a;
+                    }};
+                }
+                swap_cond!(tailwind_turns);
+                swap_cond!(reflect_turns);
+                swap_cond!(light_screen_turns);
+                swap_cond!(aurora_veil_turns);
+                swap_cond!(stealth_rock);
+                swap_cond!(toxic_spikes_layers);
+                swap_cond!(spikes_layers);
+                swap_cond!(sticky_web);
+            }
             "encore" => {
                 // Locks the first alive opposing target into its last-
                 // used move for 3 turns. PS data/conditions.ts:encore
@@ -8303,6 +8338,54 @@ mod tests {
         // Garchomp (Ground/Dragon, not Poison/Steel) is now poisoned by
         // the 100% secondary.
         assert_eq!(b.p2.team[0].status, Status::Poison, "Mortal Spin poisons the foe");
+    }
+
+    #[test]
+    fn court_change_swaps_side_conditions_between_sides() {
+        // PS data/moves.ts:courtchange onHitField — swap every swappable
+        // side condition between the two sides.
+        let p1_json = r#"[
+            {"species":"cinderace","level":50,"ability":"libero","item":"","nature":"jolly","moves":["courtchange","pyroball","suckerpunch","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","reflect","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // P1 (the Court Change user): Stealth Rock + Tailwind + Reflect.
+        b.p1.conditions.stealth_rock = true;
+        b.p1.conditions.tailwind_turns = 4;
+        b.p1.conditions.reflect_turns = 5;
+        // P2 (the foe): Spikes(3) + Toxic Spikes(2) + Sticky Web + Light Screen.
+        b.p2.conditions.spikes_layers = 3;
+        b.p2.conditions.toxic_spikes_layers = 2;
+        b.p2.conditions.sticky_web = true;
+        b.p2.conditions.light_screen_turns = 5;
+        // A NON-swappable marker that must stay on its original side.
+        b.p1.conditions.tera_used = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // P1's old conditions are now on P2.
+        assert!(b.p2.conditions.stealth_rock, "Stealth Rock moved to the foe");
+        // 4 -> 3 from the end-of-step Tailwind tick after the swap.
+        assert_eq!(b.p2.conditions.tailwind_turns, 3, "Tailwind moved to the foe (then ticked)");
+        // P2's old conditions are now on P1 (account for end-of-step ticks:
+        // hazards/Sticky Web don't tick; Reflect/Light Screen tick 5 -> 4).
+        assert_eq!(b.p1.conditions.spikes_layers, 3, "Spikes moved to the user");
+        assert_eq!(b.p1.conditions.toxic_spikes_layers, 2, "Toxic Spikes moved to the user");
+        assert!(b.p1.conditions.sticky_web, "Sticky Web moved to the user");
+        assert_eq!(b.p1.conditions.light_screen_turns, 4, "Light Screen moved to the user (then ticked)");
+        assert_eq!(b.p2.conditions.reflect_turns, 4, "Reflect moved to the foe (then ticked)");
+        // Old hazards/screens are gone from their original sides.
+        assert!(!b.p1.conditions.stealth_rock, "user's old Stealth Rock left");
+        assert_eq!(b.p1.conditions.tailwind_turns, 0, "user's old Tailwind left");
+        assert_eq!(b.p2.conditions.spikes_layers, 0, "foe's old Spikes left");
+        // Non-swappable marker stays put.
+        assert!(b.p1.conditions.tera_used, "tera_used is not swapped");
+        assert!(!b.p2.conditions.tera_used, "tera_used stays off the foe");
     }
 
     #[test]
