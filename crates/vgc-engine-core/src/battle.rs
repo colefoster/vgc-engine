@@ -2290,7 +2290,7 @@ impl Battle {
                     | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
-                    | data::move_id::COUNTER);
+                    | data::move_id::COUNTER | data::move_id::MIRRORCOAT);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2651,7 +2651,7 @@ impl Battle {
                     | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
-                    | data::move_id::COUNTER
+                    | data::move_id::COUNTER | data::move_id::MIRRORCOAT
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3213,6 +3213,13 @@ impl Battle {
                 // doubled value (`2 * damage`); we recompute it the same way.
                 data::move_id::COUNTER => {
                     Some((attacker.last_phys_damage.saturating_mul(2)).max(1))
+                }
+                // Mirror Coat — PS data/moves.ts:mirrorcoat damageCallback
+                // returns the `mirrorcoat` volatile's stored `2 * damage`
+                // (the last special hit this turn). Scripted-target / fail
+                // gate above guarantees `last_spec_damage > 0` here.
+                data::move_id::MIRRORCOAT => {
+                    Some((attacker.last_spec_damage.saturating_mul(2)).max(1))
                 }
                 _ => None,
             };
@@ -9340,6 +9347,58 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Counter must fail when only special damage was taken");
+    }
+
+    #[test]
+    fn mirror_coat_returns_double_last_special_damage_at_attacker() {
+        // P1 Blissey holds Mirror Coat (slot 0). P2 Garchomp uses a weak
+        // SPECIAL move so the doubled retaliation can't KO. Mirror Coat is
+        // priority -5, Psychic type; Garchomp (Dragon/Ground) is not immune.
+        // Expect Garchomp to lose exactly 2× the HP Blissey lost.
+        // PS data/moves.ts:mirrorcoat damageCallback.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["mirrorcoat","softboiled","seismictoss","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"modest","moves":["mudshot","dragonpulse","earthpower","flamethrower"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let blissey_max = b.p1.team[0].current_hp;
+        let chomp_max = b.p2.team[0].current_hp;
+        // P2 uses Earth Power (slot 2, special) so it counts toward
+        // last_spec_damage that Mirror Coat retaliates against.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let blissey_dmg = blissey_max - b.p1.team[0].current_hp;
+        let chomp_dmg = chomp_max - b.p2.team[0].current_hp;
+        assert!(blissey_dmg > 0, "Blissey should have taken Earth Power damage");
+        assert_eq!(chomp_dmg, blissey_dmg * 2, "Mirror Coat deals 2× the special damage taken");
+    }
+
+    #[test]
+    fn mirror_coat_fails_with_no_special_damage_taken() {
+        // P2 uses a PHYSICAL move; Mirror Coat has no special hit to mirror
+        // and must fail. PS data/moves.ts:mirrorcoat onTry.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["mirrorcoat","softboiled","seismictoss","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["tackle","earthquake","dragonclaw","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let chomp_max = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, chomp_max,
+                   "Mirror Coat must fail when only physical damage was taken");
     }
 
     #[test]
