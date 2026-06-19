@@ -1821,7 +1821,7 @@ mod tests {
             stats,
             ivs: StatSpread::MAX_IV,
             evs,
-            nature: *nature,
+            nature_id: crate::pokemon::nature_id_by_slug(nature.slug).expect("nature id"),
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
