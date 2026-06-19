@@ -1007,6 +1007,47 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Color Change — PS `data/abilities.ts:553` `onAfterMoveSecondary`:
+    //   if (!target.hp) return;
+    //   const type = move.type;
+    //   if (target.isActive && move.effectType === 'Move' &&
+    //       move.category !== 'Status' && type !== '???' &&
+    //       !target.hasType(type)) {
+    //     target.setType(type);  // mono-types the holder to the move type
+    //   }
+    // After taking a damaging hit, the holder's type becomes the move's
+    // type — unless it already has that type. The caller only invokes
+    // this hook for damaging moves that dealt > 0 HP, so the category /
+    // effectType gates are already satisfied; we still gate on the
+    // holder surviving and not already carrying the type. Reset on
+    // switch-out via `clear_type_override`. Kecleon signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Color_Change_(Ability)>.
+    if slug == "colorchange" && target_alive {
+        let move_type = data::MOVES[move_id as usize].type_;
+        if move_type != u8::MAX {
+            let already_has = battle
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .map(|m| {
+                    let (types, num) = m.effective_types();
+                    (0..num as usize).any(|i| types[i] == move_type)
+                })
+                .unwrap_or(true);
+            if !already_has {
+                if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    // PS `setType` fails (no-op) on a Terastallized mon's
+                    // locked typing; effective_types already prefers the
+                    // Tera type, so a Tera mon reports `already_has`-style
+                    // matchups, but to be safe we skip the override while
+                    // Terastallized (Tera typing wins regardless).
+                    if !m.terastallized {
+                        m.set_type_override(move_type, None);
+                    }
+                }
+            }
+        }
+    }
+
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
