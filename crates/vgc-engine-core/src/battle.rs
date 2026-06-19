@@ -2664,6 +2664,70 @@ impl Battle {
                 }
             }
 
+            // Wonder Guard — PS `data/abilities.ts:5510` `onTryHit`:
+            //   if (target === source || move.category === 'Status' ||
+            //       move.id === 'struggle') return;
+            //   if (move.id === 'skydrop' && !source.volatiles['skydrop']) return;
+            //   if (target.runEffectiveness(move) <= 0 || !target.runImmunity(move)) {
+            //     ... this.add('-immune', target, '[from] ability: Wonder Guard');
+            //     return null;
+            //   }
+            // A DAMAGING move only lands if it is super-effective (final
+            // type-eff > 1×). Neutral / not-very-effective / type-immune
+            // damaging moves deal NOTHING. Status moves and Struggle are
+            // unaffected (we never reach here for them: status moves skip
+            // at the `!damaging` continue above, and Struggle is typeless
+            // → not SE so it WOULD be blocked, but PS exempts it — handled
+            // by the `struggle` guard below). Indirect damage (weather /
+            // status / hazards / Leech Seed / recoil) never routes through
+            // this move-immunity block, so it is unaffected, matching PS.
+            // `flags: { breakable: 1 }` — Mold Breaker / Teravolt /
+            // Turboblaze bypass (gated on `attacker_breaks_mold`). Shedinja
+            // signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Wonder_Guard_(Ability)>.
+            {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "wonderguard"
+                    && !attacker_breaks_mold
+                    && m.slug != "struggle"
+                {
+                    // Resolve the move's effective type in-context (Tera
+                    // Blast / Weather Ball / Terrain Pulse), then its
+                    // post-Tera, override-aware effectiveness — the same
+                    // value PS's `runEffectiveness` returns. Block unless
+                    // strictly super-effective.
+                    let eff_ctx = DamageContext {
+                        weather: self.effective_weather_for_pair(
+                            actor_side, actor_slot, tside, tslot,
+                        ),
+                        terrain: if defender.is_grounded() {
+                            self.terrain
+                        } else {
+                            crate::terrain::Terrain::None
+                        },
+                        ..DamageContext::default()
+                    };
+                    let move_type = crate::damage::move_type_in_ctx(
+                        &attacker, move_id, &eff_ctx,
+                    );
+                    let eff = crate::damage::effectiveness_for_move_type(
+                        move_id, move_type, &defender,
+                    );
+                    let super_effective = matches!(
+                        eff,
+                        crate::damage::TypeEff::DoubleX
+                            | crate::damage::TypeEff::QuadrupleX
+                    );
+                    if !super_effective {
+                        continue;
+                    }
+                }
+            }
+
             // Ground-immunity gate. Levitate (ability), Air Balloon
             // (item), Flying-type defenders, and grounded-disabling
             // volatiles (Magnet Rise / Telekinesis — not modeled yet)
@@ -11001,6 +11065,129 @@ mod tests {
         assert!(after > before, "Volt Absorb heals (after={}, before={})", after, before);
         assert_eq!(after, (before + expected_heal).min(max_hp),
                    "Volt Absorb heals exactly 1/4 max HP");
+    }
+
+    // ---- Wonder Guard (Shedinja) -------------------------------------
+
+    /// Helper: Garchomp attacker (Rough Skin, no Mold Breaker) vs a
+    /// Shedinja with Wonder Guard at full (1) HP. Runs P1's `move_slot`
+    /// at the Shedinja and returns its post-hit HP.
+    fn wonderguard_hit(attacker_json: &str, move_slot: u8, ability: &str) -> u16 {
+        let p2_json = format!(
+            r#"[{{"species":"shedinja","level":50,"ability":"{ability}","item":"","nature":"adamant","moves":["xscissor","shadowsneak","protect","swordsdance"]}}]"#
+        );
+        let p1 = TeamBuilder::from_json(attacker_json).unwrap();
+        let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        b.p2.team[0].current_hp
+    }
+
+    #[test]
+    fn wonder_guard_super_effective_move_damages() {
+        // Rock Slide (Rock) vs Bug/Ghost = 2× → super-effective → lands.
+        // Shedinja starts at 1 HP, so a landed hit faints it (0 HP).
+        let chomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["rockslide","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        assert_eq!(wonderguard_hit(chomp, 0, "wonderguard"), 0,
+                   "super-effective Rock Slide should KO the Wonder Guard holder");
+    }
+
+    #[test]
+    fn wonder_guard_neutral_move_does_nothing() {
+        // Aqua Tail (Water) vs Bug/Ghost = 1× → neutral → blocked.
+        let chomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["rockslide","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        assert_eq!(wonderguard_hit(chomp, 1, "wonderguard"), 1,
+                   "neutral Aqua Tail should deal 0 to the Wonder Guard holder");
+    }
+
+    #[test]
+    fn wonder_guard_not_very_effective_move_does_nothing() {
+        // Earthquake (Ground) vs Bug/Ghost = 0.5× → NVE → blocked.
+        let chomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["rockslide","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        assert_eq!(wonderguard_hit(chomp, 2, "wonderguard"), 1,
+                   "not-very-effective Earthquake should deal 0 to the holder");
+    }
+
+    #[test]
+    fn wonder_guard_does_not_block_without_the_ability() {
+        // Same neutral Aqua Tail, but the Shedinja has a different
+        // ability — it lands and faints the 1-HP mon. Confirms the gate
+        // is ability-scoped, not a Shedinja-species special-case.
+        let chomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["rockslide","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        assert_eq!(wonderguard_hit(chomp, 1, "runaway"), 0,
+                   "without Wonder Guard, neutral Aqua Tail KOs the 1-HP Shedinja");
+    }
+
+    #[test]
+    fn wonder_guard_mold_breaker_lands_non_se_move() {
+        // Pinsir (Mold Breaker) Earthquake — NVE (not SE) but Mold
+        // Breaker bypasses the breakable Wonder Guard → lands → KO.
+        let pinsir = r#"[
+            {"species":"pinsir","level":50,"ability":"moldbreaker","item":"","nature":"adamant","moves":["earthquake","xscissor","closecombat","stoneedge"]}
+        ]"#;
+        assert_eq!(wonderguard_hit(pinsir, 0, "wonderguard"), 0,
+                   "Mold Breaker Earthquake should bypass Wonder Guard and KO");
+    }
+
+    #[test]
+    fn wonder_guard_status_move_unaffected() {
+        // Thunder Wave (status) is not gated by Wonder Guard — it still
+        // paralyzes the holder.
+        let chomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["thunderwave","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        let p2_json = r#"[{"species":"shedinja","level":50,"ability":"wonderguard","item":"","nature":"adamant","moves":["xscissor","shadowsneak","protect","swordsdance"]}]"#;
+        let p1 = TeamBuilder::from_json(chomp).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Paralysis,
+                   "Wonder Guard does not block status moves");
+        assert_eq!(b.p2.team[0].current_hp, 1, "Thunder Wave deals no HP damage");
+    }
+
+    #[test]
+    fn wonder_guard_does_not_block_entry_hazard() {
+        // Stealth Rock (indirect chip damage) is not a move that targets
+        // the holder directly — Wonder Guard never gates it. The 1-HP
+        // Shedinja faints when it would take any hazard chip on switch-in.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["stealthrock","aquatail","earthquake","dragonclaw"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"","nature":"bold","moves":["moonblast","softboiled","calmmind","protect"]},
+            {"species":"shedinja","level":50,"ability":"wonderguard","item":"","nature":"adamant","moves":["xscissor","shadowsneak","protect","swordsdance"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // P1 sets Stealth Rock; P2 stays in.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // P2 switches Shedinja in — Stealth Rock chip (Rock vs Bug/Ghost,
+        // SE) is residual hazard damage and bypasses Wonder Guard.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].current_hp, 0,
+                   "Stealth Rock hazard damage bypasses Wonder Guard");
     }
 
     #[test]
