@@ -222,6 +222,7 @@ fn make_pokemon(
         truant_loafing: false,
         type_override: [255, 255],
         protean_used: false,
+        disguise_busted: false,
         volatiles: VolatileSet::default(),
     }
 }

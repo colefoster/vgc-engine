@@ -3067,6 +3067,71 @@ impl Battle {
                 crate::item::on_before_damage(self, tside, tslot, capped).unwrap_or(capped)
             };
 
+            // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
+            // damaging move that would deal HP damage to an intact-disguise
+            // Mimikyu / Mimikyu-Totem is fully negated; instead the holder
+            // takes `baseMaxhp / 8` chip and forme-changes to the Busted
+            // forme (which has identical base stats, so no stat recompute).
+            // PS structure: `onDamage` returns 0 (no move damage) and sets
+            // `busted`, then `onUpdate` does `formeChange` + `damage(
+            // baseMaxhp / 8)`. We collapse both into this choke point: if
+            // the move would have landed HP damage (`effective_dmg > 0`,
+            // category Physical/Special) on an intact holder, negate it and
+            // apply the chip. Disguise is breakable, so a Mold Breaker
+            // attacker bypasses it. Only triggers when the hit reaches the
+            // mon (a Substitute that absorbs the hit takes the `hit_sub`
+            // branch and Disguise never fires — matching PS, where
+            // `onDamage` only runs when the mon itself is damaged).
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
+            let disguise_triggered = !hit_sub
+                && effective_dmg > 0
+                && m.category != 2
+                && !attacker_breaks_mold
+                && self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|d| {
+                        !d.disguise_busted
+                            && d.effective_ability_slug() == "disguise"
+                            && matches!(d.species().slug, "mimikyu" | "mimikyutotem")
+                    });
+            if disguise_triggered {
+                // Busted-forme slug: totem -> busted-totem, else busted.
+                let (chip, busted_id) = {
+                    let d = self.side(tside).active_mon(tslot as usize).unwrap();
+                    let busted_slug = if d.species().slug == "mimikyutotem" {
+                        "mimikyubustedtotem"
+                    } else {
+                        "mimikyubusted"
+                    };
+                    let busted_id = data::SPECIES
+                        .iter()
+                        .position(|s| s.slug == busted_slug)
+                        .map(|i| i as u16);
+                    // PS chips `baseMaxhp / 8` (integer division, min 1).
+                    let chip = (d.stats.hp / 8).max(1);
+                    (chip, busted_id)
+                };
+                // Forme-change first (identical base stats — no recompute),
+                // then mark busted and apply the chip.
+                if let Some(busted_id) = busted_id {
+                    self.set_forme(tside, tslot, busted_id, false);
+                }
+                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    d.disguise_busted = true;
+                    d.current_hp = d.current_hp.saturating_sub(chip);
+                    if d.current_hp == 0 {
+                        d.fainted = true;
+                    }
+                }
+                // The move's own damage is fully negated — skip the normal
+                // apply / item-hook / Stellar bookkeeping below for this hit.
+                // (Disguise carries no contact/secondary follow-through that
+                // the engine models beyond the damage itself.)
+                continue;
+            }
+
             // Apply (only when the sub didn't intercept).
             if !hit_sub {
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7553,6 +7618,60 @@ mod tests {
         b.apply_boosts(SideRef::P1, 0, &[(1, -1)], SideRef::P1, 0);
         assert_eq!(b.p1.team[0].boosts[1], -1, "self-inflicted drop applies, not reflected");
         assert_eq!(b.p2.team[0].boosts[1], 0, "foe untouched by a self-drop");
+    }
+
+    #[test]
+    fn disguise_blocks_first_hit_then_takes_normal_damage() {
+        // Mimikyu's Disguise: the first damaging move deals 0 normal damage
+        // — instead Mimikyu takes 1/8 max-HP chip and forme-changes to
+        // Mimikyu-Busted. The SECOND damaging move then lands for real.
+        // Attacker: Dragonite with Aerial Ace (accuracy `true`, always
+        // hits; Flying is neutral on Ghost/Fairy Mimikyu) so the result is
+        // miss-proof regardless of seed.
+        let p1_json = r#"[
+            {"species":"dragonite","level":50,"ability":"innerfocus","item":"","nature":"adamant","moves":["aerialace","earthquake","roost","dragondance"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"mimikyu","level":50,"ability":"disguise","item":"","nature":"jolly","moves":["playrough","shadowsneak","swordsdance","substitute"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+
+        let max_hp = b.p2.team[0].stats.hp;
+        let mimikyu_id = data::SPECIES.iter().position(|s| s.slug == "mimikyu").unwrap() as u16;
+        let busted_id = data::SPECIES.iter().position(|s| s.slug == "mimikyubusted").unwrap() as u16;
+        assert_eq!(b.p2.team[0].species_id, mimikyu_id, "starts as Mimikyu");
+        assert!(!b.p2.team[0].disguise_busted);
+
+        // Turn 1: Dragonite Aerial Ace into Mimikyu. Disguise absorbs all
+        // move damage; Mimikyu takes exactly 1/8 max-HP chip and busts.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let expected_chip = (max_hp / 8).max(1);
+        assert_eq!(
+            b.p2.team[0].current_hp,
+            max_hp - expected_chip,
+            "first hit: only 1/8 chip, move damage negated"
+        );
+        assert!(b.p2.team[0].disguise_busted, "disguise busted after first hit");
+        assert_eq!(b.p2.team[0].species_id, busted_id, "forme-changed to Mimikyu-Busted");
+
+        // Turn 2: a second Aerial Ace now lands for real (busted disguise no
+        // longer blocks) — HP drops below the post-chip total.
+        let hp_after_turn1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(
+            b.p2.team[0].current_hp < hp_after_turn1,
+            "second hit deals real damage: {} < {}",
+            b.p2.team[0].current_hp,
+            hp_after_turn1
+        );
     }
 
     #[test]

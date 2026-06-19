@@ -598,6 +598,16 @@ pub struct Pokemon {
     /// re-types until it switches out. Reset on switch-out alongside
     /// `clear_type_override`. PS data/abilities.ts:3452 / :2273.
     pub protean_used: bool,
+    /// Disguise (Mimikyu) busted latch. `false` while the disguise is
+    /// intact; set `true` the first time a damaging move would deal HP
+    /// damage to a Disguise holder, at which point the move's damage is
+    /// negated, the holder takes 1/8 max-HP chip and forme-changes to
+    /// Mimikyu-Busted. Persists across the rest of the battle (Disguise
+    /// only blocks once). Unlike most volatiles this is NOT reset on
+    /// switch-out — PS models it via the species itself (the Busted forme
+    /// stays busted), and the forme change is permanent. Initialised
+    /// `false`; only ever set `true`. PS data/abilities.ts:960.
+    pub disguise_busted: bool,
 }
 
 impl Pokemon {
@@ -1351,6 +1361,7 @@ mod tests {
             slow_start_active_turns: 0, truant_loafing: false,
             type_override: [255, 255],
             protean_used: false,
+            disguise_busted: false,
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -1404,6 +1415,7 @@ mod tests {
             truant_loafing: false,
             type_override: [255, 255],
             protean_used: false,
+            disguise_busted: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();
