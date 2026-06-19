@@ -11626,6 +11626,77 @@ mod tests {
     }
 
     #[test]
+    fn cursed_body_disables_attacker_used_move_30pct_no_contact_required() {
+        // Gengar has Cursed Body. A foe that lands a damaging hit (even a
+        // non-contact special move) should have that move Disabled ≈30%
+        // of the time. Use Snorlax's Crunch... no — use a NON-contact
+        // move to prove contact isn't required: Tauros isn't handy, so
+        // pick a special attacker. Use Clefable's Thunderbolt (special,
+        // non-contact) into Gengar; Gengar is hit and may Disable it.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["shadowball","sludgebomb","focusblast","thunderbolt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"unaware","item":"","nature":"modest","moves":["thunderbolt","moonblast","calmmind","softboiled"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+
+        let trials = 200u32;
+        let mut disabled = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            // P2 (Clefable) goes first with Thunderbolt (slot 0) into the
+            // faster... Gengar is faster, so have Gengar pass and Clefable
+            // attack to guarantee the hit lands on Gengar.
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p2.team[0].disabled_move_slot() != 255 {
+                // The disabled slot must be Thunderbolt (slot 0, the move
+                // that just hit). Cursed Body sets duration 4; the standard
+                // end-of-turn tick has already counted it down once by the
+                // time `step` returns, so the observable value is 3.
+                assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "disabled the used move slot");
+                assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one end-of-turn tick applied");
+                disabled += 1;
+            }
+        }
+        let rate = disabled * 100 / trials;
+        assert!(
+            rate >= 15 && rate <= 45,
+            "Cursed Body disable rate {rate}% (expected ≈30% over 200 trials)"
+        );
+
+        // Gate: an attacker that is ALREADY disabled is never re-disabled
+        // (PS `if (source.volatiles['disable']) return`).
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            // Pre-disable Clefable's Moonblast (slot 1); it attacks with
+            // Thunderbolt (slot 0). Cursed Body must not overwrite the
+            // existing Disable.
+            b.p2.team[0].set_disable(4, 1);
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert_eq!(
+                b.p2.team[0].disabled_move_slot(), 1,
+                "already-disabled attacker keeps its existing Disable slot"
+            );
+        }
+    }
+
+    #[test]
     fn static_paralyzes_contact_attacker_with_30pct_chance() {
         // Pikachu has Static. A contact attacker should be paralyzed
         // roughly 30% of the time across trials. Use Mortal Spin? No,
