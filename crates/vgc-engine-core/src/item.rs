@@ -185,7 +185,12 @@ pub fn on_before_damage(
 /// by HP-trigger items like Sitrus Berry (heal at ≤50%) and Air Balloon
 /// (already burst in on_before_damage, but this hook supports e.g.
 /// Weakness Policy +2 atk/spa on SE hits in a future PR).
-pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
+pub fn on_after_damage(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    rng: &mut crate::rng::Rng,
+) {
     let (item_id, max, current) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => (m.item_id, m.stats.hp, m.current_hp),
         _ => return,
@@ -258,6 +263,47 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
             let heal = (m.stats.hp / 3).max(1);
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             m.item_id = u16::MAX;
+        }
+    }
+    // Starf Berry — PS data/items.ts:starfberry (line 5984): onUpdate eats
+    // at <=25% HP (Gluttony <=50%, deferred); onEat raises a RANDOM stat
+    // by +2:
+    //   const stats = [];
+    //   for (stat in pokemon.boosts)
+    //     if (stat !== 'accuracy' && stat !== 'evasion' && pokemon.boosts[stat] < 6)
+    //       stats.push(stat);
+    //   if (stats.length) boost[this.sample(stats)] = 2;
+    // PS iterates `pokemon.boosts` in object order atk→def→spa→spd→spe
+    // (acc/eva excluded), keeping only stages < +6, then `this.sample(arr)`
+    // == `arr[this.random(arr.length)]` — exactly the Moody +2 selection.
+    // We mirror that draw: build the candidate list in the same index
+    // order, then one `rng.range(n)` pick. Self-boost routed through
+    // apply_boosts (Clear Body / Clear Amulet don't block self-boosts).
+    // Single use. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Starf_Berry>.
+    if slug == "starfberry" && current * 4 <= max {
+        let boosts = match battle.side(side).active_mon(slot as usize) {
+            Some(m) => m.boosts,
+            None => return,
+        };
+        // Candidate combat stats (atk=0 def=1 spa=2 spd=3 spe=4) with
+        // stage < +6, in PS iteration order.
+        let mut cands: [u8; 5] = [0; 5];
+        let mut n = 0usize;
+        for i in 0u8..5 {
+            if boosts[i as usize] < 6 {
+                cands[n] = i;
+                n += 1;
+            }
+        }
+        // Consume the berry regardless (PS `eatItem` fires on the HP gate);
+        // the +2 only applies if at least one stat is unmaxed.
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.item_id = u16::MAX;
+        }
+        if n > 0 {
+            let chosen = cands[rng.range(n as u32) as usize];
+            battle.apply_boosts(side, slot, &[(chosen, 2)], side, slot);
         }
     }
 }

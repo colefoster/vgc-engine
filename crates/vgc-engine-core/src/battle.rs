@@ -3344,8 +3344,12 @@ impl Battle {
                     }
                 }
 
-                // Post-damage item hook (Sitrus Berry etc.).
-                crate::item::on_after_damage(self, tside, tslot);
+                // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
+                // Starf Berry draws RNG for its random-stat pick, so swap
+                // self.rng out across the borrow (mem::replace idiom).
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::on_after_damage(self, tside, tslot, &mut rng);
+                self.rng = rng;
 
                 // Defender thaw on Fire-type hit (PS cartridge rule —
                 // any Fire damaging move thaws the target) or on any
@@ -9118,7 +9122,7 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2; // exactly 50%
         let pre_hp = b.p1.team[0].current_hp;
-        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].current_hp, pre_hp + 10, "Oran Berry heals 10 HP");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Oran Berry consumed");
     }
@@ -9137,7 +9141,7 @@ mod tests {
         let max_hp = b.p1.team[0].stats.hp;
         b.p1.team[0].current_hp = max_hp / 4; // exactly 25%
         let expected_after = (max_hp / 4) + (max_hp / 3).max(1);
-        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].current_hp, expected_after.min(max_hp), "Figy heals 1/3 max");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Figy consumed");
     }
@@ -9156,7 +9160,7 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         // Set Pikachu HP to exactly maxhp/4 (the upper edge of the eat band).
         b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
-        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].boosts[4], 1, "Salac Berry gives +1 Spe");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Salac Berry consumed");
 
@@ -9165,9 +9169,44 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2; // 50%, above threshold
-        crate::item::on_after_damage(&mut b, SideRef::P1, 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].boosts[4], 0, "Salac Berry does NOT fire above 25%");
         assert_ne!(b.p1.team[0].item_id, u16::MAX, "Salac Berry NOT consumed");
+    }
+
+    #[test]
+    fn starf_berry_raises_random_stat_by_two_at_quarter_hp() {
+        // PS data/items.ts:starfberry — at <=25% HP, eat and +2 a random
+        // non-acc/eva stat (atk/def/spa/spd/spe) that's below +6. With all
+        // boosts at 0 the candidate list is [atk,def,spa,spd,spe] (n=5);
+        // an oracle Range(2) picks index 2 = SpA → +2 SpA. Consumed.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"starfberry","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1); // edge of eat band
+        let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut rng);
+        assert_eq!(b.p1.team[0].boosts[2], 2, "Starf gives +2 to the sampled stat (SpA at index 2)");
+        // No other stat moved.
+        assert_eq!(b.p1.team[0].boosts[0], 0);
+        assert_eq!(b.p1.team[0].boosts[4], 0);
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Starf Berry consumed");
+
+        // Control: above 25% HP → does NOT fire, item kept.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2; // 50%
+        let mut rng2 = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 0);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut rng2);
+        assert_eq!(b.p1.team[0].boosts[2], 0, "Starf does NOT fire above 25%");
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Starf NOT consumed above 25%");
     }
 
     #[test]
