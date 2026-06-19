@@ -5188,9 +5188,37 @@ fn apply_secondary_effect(
     // have multiple (none currently in our table, but the structure
     // tolerates it).
     if let Some(chance) = flinch_chance(move_slug) {
-        if rng.percent_1_100() <= chance {
-            if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                t.set_flinched(true);
+        // PS rolls the flinch chance unconditionally; the flinch is then
+        // vetoed by Inner Focus's onTryAddVolatile. We keep the draw so
+        // the oracle stays aligned, then gate the actual flinch.
+        let flinched = rng.percent_1_100() <= chance;
+        if flinched {
+            // Inner Focus — PS `data/abilities.ts:2108`:
+            //   onTryAddVolatile(status, pokemon) {
+            //     if (status.id === 'flinch') return null;
+            //   }
+            // Cannot be flinched. Carries `flags: { breakable: 1 }`, so
+            // Mold Breaker / Teravolt / Turboblaze bypass it. The
+            // Intimidate-immune branch already shipped (ability.rs
+            // blocks_intimidate). Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Inner_Focus_(Ability)>.
+            let attacker_breaks_mold = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|a| matches!(
+                    a.effective_ability_slug(),
+                    "moldbreaker" | "teravolt" | "turboblaze"
+                ))
+                .unwrap_or(false);
+            let target_inner_focus = battle
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .map(|t| t.effective_ability_slug() == "innerfocus")
+                .unwrap_or(false);
+            if !(target_inner_focus && !attacker_breaks_mold) {
+                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    t.set_flinched(true);
+                }
             }
         }
     }
@@ -5784,6 +5812,53 @@ mod tests {
         assert!(b.p2.team[0].current_hp >= chomp_hp, "Fake Out failed → Garchomp didn't lose HP");
         // Garchomp's Dragon Claw should have hit Iron Hands.
         assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn inner_focus_blocks_flinch() {
+        // Fake Out is a 100%-flinch priority move. A slower Inner Focus
+        // target must still get its move off; a control without Inner
+        // Focus flinches and deals no damage. PS data/abilities.ts:2108.
+        let attacker = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        // Target slower than Iron Hands so Fake Out lands first, then the
+        // target tries to act. Crobat: fast naturally, so give it a Brave
+        // nature + 0 Spe EVs is still fast — use Slowbro instead (slow).
+        let inner = r#"[
+            {"species":"slowbro","level":50,"ability":"innerfocus","item":"","nature":"relaxed","moves":["zenheadbutt","scald","slackoff","irondefense"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let control = r#"[
+            {"species":"slowbro","level":50,"ability":"regenerator","item":"","nature":"relaxed","moves":["zenheadbutt","scald","slackoff","irondefense"],"evs":{"hp":252,"def":252}}
+        ]"#;
+
+        // Returns true if the target's move (Zen Headbutt → Iron Hands)
+        // landed, i.e. it was NOT flinched by Fake Out.
+        let target_moved = |target_json: &str| -> bool {
+            let p1 = TeamBuilder::from_json(attacker).unwrap();
+            let p2 = TeamBuilder::from_json(target_json).unwrap();
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: 3 },
+                p1,
+                p2,
+            );
+            let ih_hp_before = b.p1.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            // If the target moved, Iron Hands took Zen Headbutt damage.
+            b.p1.team[0].current_hp < ih_hp_before
+        };
+
+        assert!(
+            target_moved(inner),
+            "Inner Focus target should not flinch from Fake Out"
+        );
+        assert!(
+            !target_moved(control),
+            "control target without Inner Focus should flinch (no damage dealt)"
+        );
     }
 
     #[test]
