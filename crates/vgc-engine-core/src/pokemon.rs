@@ -590,6 +590,14 @@ pub struct Pokemon {
     /// Tera type (Tera locks typing in gen 9). Reset on switch-out.
     /// PS analog: `Pokemon.setType` writing `pokemon.types`.
     pub type_override: [u8; 2],
+    /// Protean / Libero once-per-switch-in latch (gen-9 nerf). PS tracks
+    /// this as `this.effectState.protean` / `.libero` on the ability,
+    /// which resets when the holder switches out (the ability's effect
+    /// state is re-created on switch-in). `true` once the holder has
+    /// changed type via Protean/Libero this stint; blocks further
+    /// re-types until it switches out. Reset on switch-out alongside
+    /// `clear_type_override`. PS data/abilities.ts:3452 / :2273.
+    pub protean_used: bool,
 }
 
 impl Pokemon {
@@ -1342,6 +1350,7 @@ mod tests {
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0, truant_loafing: false,
             type_override: [255, 255],
+            protean_used: false,
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -1394,6 +1403,7 @@ mod tests {
             slow_start_active_turns: 0,
             truant_loafing: false,
             type_override: [255, 255],
+            protean_used: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();

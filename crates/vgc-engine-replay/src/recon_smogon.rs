@@ -592,6 +592,7 @@ mod tests {
                     must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
                     slow_start_active_turns: 0, truant_loafing: false,
                     type_override: [255, 255],
+                    protean_used: false,
                     volatiles: VolatileSet::default(),
                 }
             };
