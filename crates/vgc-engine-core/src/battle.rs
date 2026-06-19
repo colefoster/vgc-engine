@@ -3726,23 +3726,21 @@ impl Battle {
         roll <= m.accuracy as u32
     }
 
-    /// Apply Sleep to the first alive opposing active mon, with optional
-    /// powder-move Grass-type immunity. Mirrors `apply_status_to_opposing`
-    /// but adds the powder gate; called from "spore" / "sleeppowder"
-    /// (is_powder = true) and "hypnosis" (is_powder = false).
-    fn apply_sleep_to_opposing(&mut self, actor_side: SideRef, is_powder: bool) {
-        let opp = actor_side.opposing();
-        let n = self.format().active_count() as u8;
-        for slot in 0..n {
-            let target_alive = self.side(opp).active_mon(slot as usize)
-                .is_some_and(|m| m.is_alive());
-            if !target_alive { continue; }
-            if is_powder && self.target_is_powder_immune(opp, slot) {
-                return;
-            }
-            self.try_set_status(opp, slot, Status::Sleep);
+    /// Apply Sleep to an explicit target mon, with optional powder-move
+    /// Grass-type immunity. Mirrors `apply_status_to_target` but adds the
+    /// powder gate; called from "spore" / "sleeppowder" (is_powder = true)
+    /// and "hypnosis" (is_powder = false). The target slot is resolved by
+    /// the caller via `resolve_status_target` (PR-334), so a bounced or
+    /// redirected move can land on a specific mon rather than always the
+    /// first opposing active.
+    fn apply_sleep_to_target(&mut self, tside: SideRef, tslot: u8, is_powder: bool) {
+        let target_alive = self.side(tside).active_mon(tslot as usize)
+            .is_some_and(|m| m.is_alive());
+        if !target_alive { return; }
+        if is_powder && self.target_is_powder_immune(tside, tslot) {
             return;
         }
+        self.try_set_status(tside, tslot, Status::Sleep);
     }
 
     /// Throat Spray — PS `data/items.ts:throatspray`
@@ -3806,17 +3804,33 @@ impl Battle {
         false
     }
 
-    /// Apply a status to the first alive opposing active mon, respecting
-    /// type-based immunities. Helper for single-target status moves.
-    fn apply_status_to_opposing(&mut self, actor_side: SideRef, status: Status) {
-        let opp = actor_side.opposing();
-        let n = self.format().active_count() as u8;
-        for slot in 0..n {
-            if self.side(opp).active_mon(slot as usize).is_some_and(|m| m.is_alive()) {
-                self.try_set_status(opp, slot, status);
-                return;
-            }
+    /// Apply a status to an explicit target mon, respecting type-based
+    /// immunities. Helper for single-target status moves. The target slot
+    /// is resolved by the caller via `resolve_status_target` (PR-334) so a
+    /// bounced / redirected move can hit a specific mon rather than always
+    /// the first opposing active.
+    fn apply_status_to_target(&mut self, tside: SideRef, tslot: u8, status: Status) {
+        if self.side(tside).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
+            self.try_set_status(tside, tslot, status);
         }
+    }
+
+    /// Resolve the concrete opposing target slot a single-target status
+    /// move will hit. Behavior-preserving choke point (PR-334): replicates
+    /// EXACTLY the historical "first alive opposing active" pick that every
+    /// opposing-targeting status sub-handler used inline (a `0..n` slot scan
+    /// on `opp`). The explicit `target` is intentionally NOT consulted here
+    /// so PR-334 stays byte-identical with the prior inline logic — the
+    /// engine's status sub-handlers always picked the first alive foe, and
+    /// the one doubles golden depends on that pick. The `target` plumbing
+    /// exists so PR-335 (Magic Bounce) can pass an explicit `opp`/slot
+    /// override (bouncer's foe = the original attacker) without touching
+    /// this fallback path.
+    fn resolve_status_target(&self, opp: SideRef) -> Option<(SideRef, u8)> {
+        let n = self.format().active_count() as u8;
+        (0..n)
+            .find(|&slot| self.side(opp).active_mon(slot as usize).is_some_and(|m| m.is_alive()))
+            .map(|slot| (opp, slot))
     }
 
     /// Attempt to apply a status to a specific mon. No-op if the mon
@@ -4379,6 +4393,15 @@ impl Battle {
         m: &data::MoveDef,
         target: Option<Target>,
     ) {
+        // Resolve the explicit opposing target slot ONCE (PR-334). For the
+        // normal path this is the first alive mon on `actor_side.opposing()`
+        // — byte-identical to the inline `0..n` scans the sub-handlers used
+        // before this refactor. `opp_side`/`opp_slot` are the side+slot a
+        // single-target opposing status move lands on; side-targeting moves
+        // (hazards, screens) read `opp_side` directly. Magic Bounce (PR-335)
+        // re-dispatches with a swapped target via this same path.
+        let opp_side = actor_side.opposing();
+        let opp_target = self.resolve_status_target(opp_side);
         match m.slug {
             "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
             | "obstruct" | "burningbulwark" | "silktrap" => {
@@ -4615,8 +4638,7 @@ impl Battle {
                 // switch-in time (`apply_stealth_rock_to`), not here.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stealth_Rock_(move)>
-                let opp = actor_side.opposing();
-                self.side_mut(opp).conditions.stealth_rock = true;
+                self.side_mut(opp_side).conditions.stealth_rock = true;
             }
             "toxicspikes" => {
                 // PS data/moves.ts:toxicspikes — `sideCondition` on the
@@ -4625,8 +4647,7 @@ impl Battle {
                 // happens at `apply_toxic_spikes_to`, not here.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Spikes_(move)>
-                let opp = actor_side.opposing();
-                let layers = &mut self.side_mut(opp).conditions.toxic_spikes_layers;
+                let layers = &mut self.side_mut(opp_side).conditions.toxic_spikes_layers;
                 if *layers < 2 {
                     *layers += 1;
                 }
@@ -4638,7 +4659,7 @@ impl Battle {
                 // exception move (Encore, Struggle, Sketch, Transform,
                 // Mimic, Mirror Move, Assist, Copycat, Me First, Nature
                 // Power, Metronome), or already encored.
-                let opp = actor_side.opposing();
+                let opp = opp_side;
                 let n = self.format().active_count() as u8;
                 for slot in 0..n {
                     let (last, ok) = match self.side(opp).active_mon(slot as usize) {
@@ -4681,17 +4702,23 @@ impl Battle {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_sleep_to_opposing(actor_side, true);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_sleep_to_target(ts, tslot, true);
+                }
             }
             "sleeppowder" => {
                 // Powder: 75% acc, Grass immunity.
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_sleep_to_opposing(actor_side, true);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_sleep_to_target(ts, tslot, true);
+                }
             }
             "hypnosis" => {
                 // Non-powder: 60% acc, no Grass immunity.
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_sleep_to_opposing(actor_side, false);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_sleep_to_target(ts, tslot, false);
+                }
             }
             "thunderwave" => {
                 // 90% accuracy in gen 7+; the move's accuracy field
@@ -4699,15 +4726,21 @@ impl Battle {
                 // AFTER the category check and BEFORE the accuracy roll.
                 // Roll accuracy here so failures behave correctly.
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_status_to_opposing(actor_side, Status::Paralysis);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_status_to_target(ts, tslot, Status::Paralysis);
+                }
             }
             "willowisp" => {
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_status_to_opposing(actor_side, Status::Burn);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_status_to_target(ts, tslot, Status::Burn);
+                }
             }
             "toxic" => {
                 if !self.rolled_accuracy_passed(m) { return; }
-                self.apply_status_to_opposing(actor_side, Status::Toxic);
+                if let Some((ts, tslot)) = opp_target {
+                    self.apply_status_to_target(ts, tslot, Status::Toxic);
+                }
             }
             "leechseed" => {
                 // PS data/moves.ts:10204 leechseed. 90% accuracy,
@@ -4716,12 +4749,7 @@ impl Battle {
                 // seeder's slot (`sourceSlot`). End-of-turn residual:
                 // target loses 1/8 max HP, seeder heals the same.
                 if !self.rolled_accuracy_passed(m) { return; }
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                for slot in 0..n {
-                    let alive = self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| t.is_alive());
-                    if !alive { continue; }
+                if let Some((opp, slot)) = opp_target {
                     // Grass-type immunity: PS `onTryImmunity` returns
                     // false when target has Grass.
                     let is_grass = self.side(opp).active_mon(slot as usize)
@@ -4730,24 +4758,21 @@ impl Battle {
                             (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
                         })
                         .unwrap_or(false);
-                    if is_grass { break; }
                     // Already seeded — PS volatileStatus add is a no-op.
-                    if self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::LeechSeed))
-                    {
-                        break;
+                    let already_seeded = self.side(opp).active_mon(slot as usize)
+                        .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
+                    if !is_grass && !already_seeded {
+                        // payload encoding: (source_side << 8) | source_slot.
+                        // SideRef as u8: P1=0, P2=1.
+                        let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
+                        if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                            let _ = t.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::LeechSeed,
+                                turns_remaining: 0,
+                                payload: source_payload,
+                            });
+                        }
                     }
-                    // payload encoding: (source_side << 8) | source_slot.
-                    // SideRef as u8: P1=0, P2=1.
-                    let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
-                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                        let _ = t.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::LeechSeed,
-                            turns_remaining: 0,
-                            payload: source_payload,
-                        });
-                    }
-                    break; // single-target
                 }
             }
             "attract" => {
@@ -4761,7 +4786,7 @@ impl Battle {
                 // PS step order: immunity events run before the accuracy
                 // roll, so a gender-incompatible / Oblivious target fails
                 // WITHOUT consuming the accuracy draw.
-                let opp = actor_side.opposing();
+                let opp = opp_side;
                 let target_slot = match target {
                     Some(t) if t.side == opp => t.slot,
                     _ => {
@@ -4832,15 +4857,9 @@ impl Battle {
             "poisonpowder" => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 // Powder gate: Grass / Overcoat / Safety Goggles.
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                for slot in 0..n {
-                    let alive = self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| t.is_alive());
-                    if !alive { continue; }
+                if let Some((opp, slot)) = opp_target {
                     if self.target_is_powder_immune(opp, slot) { return; }
                     self.try_set_status(opp, slot, Status::Poison);
-                    return;
                 }
             }
             "partingshot" => {
@@ -4860,40 +4879,28 @@ impl Battle {
                 // standard accuracy roll. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)>.
                 if !self.rolled_accuracy_passed(m) { return; }
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
                 let mut dropped_any = false;
-                for slot in 0..n {
-                    let alive = self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| t.is_alive());
-                    if !alive { continue; }
+                if let Some((opp, slot)) = opp_target {
                     let blocked = self.side(opp).active_mon(slot as usize)
                         .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
-                    if blocked {
-                        // PS Clear Body / Clear Amulet: drop is vetoed.
-                        // Parting Shot's self-switch hinges on whether ANY
-                        // boost call returned a success; a fully-blocked
-                        // target means no switch fires. Match PS by
-                        // skipping the dropped_any flip.
-                        break;
+                    // PS Clear Body / Clear Amulet: drop is vetoed. Parting
+                    // Shot's self-switch hinges on whether ANY boost call
+                    // returned a success; a fully-blocked target means no
+                    // switch fires (skip the dropped_any flip).
+                    if !blocked {
+                        // Opposing drop — source is the Parting Shot user.
+                        self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
+                        crate::item::try_consume_white_herb(self, opp, slot);
+                        // Eject Pack: opposing-source stat drop triggers a
+                        // reactive switch on the target. PS handler order:
+                        // useItem fires after Defiant/Competitive
+                        // reactions (see `react_to_opposing_stat_drop`),
+                        // since onAfterEachBoost runs after the boost call
+                        // returns control.
+                        let _ = crate::item::try_consume_eject_pack(self, opp, slot, true);
+                        crate::ability::react_to_opposing_stat_drop(self, opp, slot);
+                        dropped_any = true;
                     }
-                    // Opposing drop — source is the Parting Shot user.
-                    self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
-                    crate::item::try_consume_white_herb(self, opp, slot);
-                    // Eject Pack: opposing-source stat drop triggers a
-                    // reactive switch on the target. PS handler order:
-                    // useItem fires after Defiant/Competitive
-                    // reactions (see `react_to_opposing_stat_drop`),
-                    // since onAfterEachBoost runs after the boost call
-                    // returns control.
-                    let _ = crate::item::try_consume_eject_pack(self, opp, slot, true);
-                    crate::ability::react_to_opposing_stat_drop(self, opp, slot);
-                    dropped_any = true;
-                    // PS targets a single mon ("normal"); pick the first
-                    // alive slot. Doubles target-picker refinement
-                    // deferred until Choice::Move's `target` field is
-                    // threaded into resolve_status_move.
-                    break;
                 }
                 if dropped_any && self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -4983,16 +4990,7 @@ impl Battle {
                 // hits through-sub == false; sub absorbs the onHit).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pain_Split_(move)>
                 if !self.rolled_accuracy_passed(m) { return; }
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                let mut target_slot: Option<u8> = None;
-                for slot in 0..n {
-                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
-                        target_slot = Some(slot);
-                        break;
-                    }
-                }
-                let ts = match target_slot { Some(s) => s, None => return };
+                let (opp, ts) = match opp_target { Some(t) => t, None => return };
                 let (target_hp, target_max, has_sub) = match self.side(opp).active_mon(ts as usize) {
                     Some(t) => (t.current_hp as u32, t.stats.hp as u32, t.substitute_hp() > 0),
                     None => return,
@@ -5029,20 +5027,8 @@ impl Battle {
                 // Sinistcha signature; mirrored on Whimsicott (filler).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Strength_Sap_(move)>
                 if !self.rolled_accuracy_passed(m) { return; }
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                // Pick first alive opposing as the target (matches the
-                // existing apply_status_to_opposing pattern). Singles is
-                // exact; doubles approximates the chosen target slot
-                // until status moves carry the explicit target id.
-                let mut target_slot: Option<u8> = None;
-                for slot in 0..n {
-                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
-                        target_slot = Some(slot);
-                        break;
-                    }
-                }
-                let ts = match target_slot { Some(s) => s, None => return };
+                // First alive opposing as the target (PR-334 choke point).
+                let (opp, ts) = match opp_target { Some(t) => t, None => return };
                 // Snapshot target Atk stat post-stage.
                 let (raw_atk, atk_stage, has_substitute) = match self.side(opp).active_mon(ts as usize) {
                     Some(t) => (t.stats.atk as u32, t.boosts[0], t.substitute_hp() > 0),
@@ -6635,6 +6621,35 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].status, Status::Paralysis);
+    }
+
+    // PR-334 regression: after parametrizing status-move resolution with an
+    // explicit target slot, a single-target status move in DOUBLES must
+    // still land on the first alive opposing active (the historical pick),
+    // routed through the new `resolve_status_target` choke point. Thunder
+    // Wave from P1 slot 0 must paralyze P2 slot 0, leaving P2 slot 1 clean.
+    #[test]
+    fn thunder_wave_targets_first_alive_foe_in_doubles() {
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["thunderwave","hurricane","tailwind","airslash"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Paralysis, "first alive foe paralyzed");
+        assert_eq!(b.p2.team[1].status, Status::None, "second foe untouched");
     }
 
     #[test]
