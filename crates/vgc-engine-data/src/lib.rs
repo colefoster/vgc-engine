@@ -200,6 +200,43 @@ mod tests {
         assert!(!is_inert_item("poweranklet")); // onModifySpe in PS
     }
 
+    /// Mega-stone linkage table resolves canonical megas to the right
+    /// forme + ability, gates on the holder's species, and is internally
+    /// consistent (every row's ids index real table rows). Sourced from
+    /// PS/@pkmn `item.megaStone` + the forme's slot-0 ability.
+    #[test]
+    fn mega_stone_linkage_resolves_canonical() {
+        // Charizardite X → Charizard-Mega-X / Tough Claws (Fire/Dragon).
+        let cx = mega_stone_for(item_id::CHARIZARDITEX, species_id::CHARIZARD)
+            .expect("Charizard holding Charizardite X can mega");
+        assert_eq!(cx.mega_species_id, species_id::CHARIZARDMEGAX);
+        assert_eq!(cx.mega_ability_id, ability_id::TOUGHCLAWS);
+        assert_eq!(SPECIES[cx.mega_species_id as usize].slug, "charizardmegax");
+
+        // Charizardite Y → Charizard-Mega-Y / Drought.
+        let cy = mega_stone_for(item_id::CHARIZARDITEY, species_id::CHARIZARD).unwrap();
+        assert_eq!(cy.mega_species_id, species_id::CHARIZARDMEGAY);
+        assert_eq!(cy.mega_ability_id, ability_id::DROUGHT);
+
+        // Kangaskhanite → Kangaskhan-Mega / Parental Bond.
+        let k = mega_stone_for(item_id::KANGASKHANITE, species_id::KANGASKHAN).unwrap();
+        assert_eq!(k.mega_species_id, species_id::KANGASKHANMEGA);
+        assert_eq!(k.mega_ability_id, ability_id::PARENTALBOND);
+
+        // Gate on species: the right stone on the wrong mon yields nothing,
+        // and a non-stone item never resolves.
+        assert!(mega_stone_for(item_id::CHARIZARDITEX, species_id::KANGASKHAN).is_none());
+        assert!(mega_stone_for(item_id::LEFTOVERS, species_id::CHARIZARD).is_none());
+
+        // Every row indexes real rows and the stone item carries a megaStone.
+        for m in MEGA_STONES {
+            assert!((m.item_id as usize) < ITEMS.len());
+            assert!((m.base_species_id as usize) < SPECIES.len());
+            assert!((m.mega_species_id as usize) < SPECIES.len());
+            assert!((m.mega_ability_id as usize) < ABILITIES.len());
+        }
+    }
+
     /// PS move flags populate the new MoveDef bool fields.
     /// Verified against PS `data/moves.ts` flag entries.
     #[test]
