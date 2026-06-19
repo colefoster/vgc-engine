@@ -16850,6 +16850,60 @@ mod tests {
     }
 
     #[test]
+    fn enigma_berry_heals_quarter_on_super_effective_hit() {
+        // PS data/items.ts:1841 — after a super-effective hit, eat and heal
+        // 1/4 max HP. Blissey @ Enigma hit by Mach Punch (Fighting SE vs
+        // Normal ×2). Pre-set Blissey below full HP so the heal is visible.
+        let p1_json = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"focussash","nature":"hardy","moves":["machpunch","ironhead","extremespeed","bulletpunch"],"ivs":{"atk":0,"hp":31,"def":31,"spa":31,"spd":31,"spe":31},"evs":{"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"enigmaberry","nature":"bold","moves":["bodyslam","softboiled","calmmind","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drop Blissey to ~40% HP so a 1/4-max heal can't overflow the cap
+        // and stays observable even after the incoming Mach Punch chip.
+        let max_hp = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = (max_hp * 2) / 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].is_alive(), "Blissey must survive the SE hit");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Enigma Berry consumed on SE hit");
+        // After taking damage then healing 1/4 max, HP must exceed the
+        // post-damage-only level. Easiest invariant: it healed, so HP is
+        // strictly above (start - damage). We assert it's above ~1/4 max,
+        // which only the heal can produce given the chip taken.
+        assert!(b.p2.team[0].current_hp > max_hp / 4,
+            "Enigma heal should lift HP above 1/4 max after the chip");
+    }
+
+    #[test]
+    fn enigma_berry_does_not_fire_on_neutral_hit() {
+        // Control: a neutral hit must NOT consume Enigma or heal. Garchomp
+        // @ Enigma hit by Dragon Claw (Dragon vs Ground/Dragon = neutral...
+        // actually Dragon vs Dragon is ×2). Use Body Slam (Normal) vs
+        // Garchomp (Ground/Dragon) = neutral ×1.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"enigmaberry","nature":"jolly","moves":["dragonclaw","earthquake","rockslide","ironhead"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_ne!(b.p2.team[0].item_id, u16::MAX, "neutral hit must NOT consume Enigma");
+    }
+
+    #[test]
     fn chople_berry_halves_se_fighting_hit_and_is_consumed() {
         // Lucario Close Combat into Kingambit @ Chople Berry. Kingambit
         // is Dark/Steel — Fighting hits ×4. Chople should halve, and the

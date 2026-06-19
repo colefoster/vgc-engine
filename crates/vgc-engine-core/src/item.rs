@@ -432,6 +432,35 @@ pub fn on_damaging_hit(
         }
         let _ = attacker_side; let _ = attacker_slot;
     }
+    // Enigma Berry — PS `data/items.ts:1841`
+    //   onHit(target, source, move) {
+    //     if (move && target.getMoveHitData(move).typeMod > 0) {
+    //       if (target.eatItem()) this.heal(target.baseMaxhp / 4);
+    //     }
+    //   }
+    // After the holder takes a super-effective damaging hit (typeMod > 0,
+    // i.e. ×2 or ×4 on the type chart), eat the berry and heal 1/4 max HP.
+    // Same species-level effectiveness read as Weakness Policy (Tera typing
+    // deferred). No RNG. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Enigma_Berry>.
+    if slug == "enigmaberry" {
+        let mv = &data::MOVES[move_id as usize];
+        if mv.category != 2 {
+            let species = match battle.side(target_side).active_mon(target_slot as usize) {
+                Some(m) => m.species(),
+                None => return,
+            };
+            let eff = crate::damage::type_effectiveness(mv.type_, species);
+            use crate::damage::TypeEff;
+            if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    let heal = (t.stats.hp / 4).max(1);
+                    t.current_hp = t.current_hp.saturating_add(heal).min(t.stats.hp);
+                    t.item_id = u16::MAX;
+                }
+            }
+        }
+    }
     // Air Balloon pop: handled above the alive-gate. PS
     // `data/items.ts:airballoon onDamagingHit` consumes the item on every
     // damaging hit; Ground immunity in `Pokemon::is_grounded` reads the
