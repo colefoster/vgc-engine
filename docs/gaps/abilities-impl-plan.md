@@ -12,12 +12,13 @@
 
 Round 10 shipped almost everything. The short tail below is what is left.
 
-**SHIPPED this round (PRs 318–333):** Own Tempo, Inner Focus, Damp, Pastel
+**SHIPPED this round (PRs 318–335):** Own Tempo, Inner Focus, Damp, Pastel
 Veil, Sweet Veil, Moody, Color Change, Protean, Libero, Toxic Debris, Wind
-Rider, Wind Power, Cute Charm, Cursed Body, Mirror Armor, Disguise — **plus the
-systems they depend on** (PRs 309–317: Toxic Spikes, runtime type-override,
-Disable full-apply, wind-move flag + Charge volatile, gender, Attract,
-reflectable flag, forme-change, source-threaded `apply_boosts`). These join the
+Rider, Wind Power, Cute Charm, Cursed Body, Mirror Armor, Disguise, **Magic
+Bounce** — **plus the systems they depend on** (PRs 309–317, 334: Toxic Spikes,
+runtime type-override, Disable full-apply, wind-move flag + Charge volatile,
+gender, Attract, reflectable flag, forme-change, source-threaded `apply_boosts`,
+status-move explicit target-slot). These join the
 prior-round shipped set (bigpecks, keeneye-acc, vitalspirit, insomnia, limber,
 magmaarmor, immunity, waterveil, cloudnine, airlock, healer, cottondown,
 poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
@@ -27,9 +28,6 @@ poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
   interaction matrix (Mold Breaker / Scrappy / Tinted Lens SE-gate).
 - **Aroma Veil (full)** — partial; needs Torment / Heal Block immunity wiring
   to be complete.
-- **Magic Bounce** — **deferred**: needs a status-move target-slot refactor; a
-  Hatterene sits in a strict-gate doubles golden, so a naive implementation
-  risks regressing it.
 - **Pressure** + **Frisk** — deferred no-ops (no PP system / information-only).
 
 **Note:** Wind Rider / Wind Power are otherwise complete; only their
