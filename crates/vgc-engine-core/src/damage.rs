@@ -27,11 +27,7 @@ pub(crate) fn attacker_has_sheer_force(mon: &Pokemon) -> bool {
     if mon.ability_id == u16::MAX {
         return false;
     }
-    data::ABILITIES
-        .get(mon.ability_id as usize)
-        .map(|a| a.slug)
-        .unwrap_or("")
-        == "sheerforce"
+    mon.ability_id == data::ability_id::SHEERFORCE
 }
 
 /// True iff this move is boosted by Sheer Force on a Sheer Force user —
@@ -53,10 +49,7 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     if !m.makes_contact {
         return false;
     }
-    if m.is_punch
-        && attacker.item_id != u16::MAX
-        && data::ITEMS[attacker.item_id as usize].slug == "punchingglove"
-    {
+    if m.is_punch && attacker.item_id == data::item_id::PUNCHINGGLOVE {
         return false;
     }
     // Protective Pads — PS `data/items.ts:protectivepads`
@@ -79,9 +72,7 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     // which is a strict negative for the attacker, so PS users mostly
     // pair the item with non-contact-incentivized abilities.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protective_Pads>.
-    if attacker.item_id != u16::MAX
-        && data::ITEMS[attacker.item_id as usize].slug == "protectivepads"
-    {
+    if attacker.item_id == data::item_id::PROTECTIVEPADS {
         return false;
     }
     true
@@ -270,14 +261,13 @@ pub fn effectiveness_for_move_type(
     move_type: u8,
     defender: &Pokemon,
 ) -> TypeEff {
-    let m = &data::MOVES[move_id as usize];
     let (def_eff_types, def_eff_num) = defender.effective_types();
     // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
     // demoted to a neutral (×1) contribution rather than zeroing the hit.
     // PS resolves this in `runImmunity` via the NegateImmunity event; we
     // fold it into the effectiveness fold by skipping the `immune` set.
     let negate_immunity = defender.negates_type_immunity();
-    if m.slug == "freezedry" {
+    if move_id == data::move_id::FREEZEDRY {
         let mut net = 0i32;
         let mut immune = false;
         for i in 0..def_eff_num as usize {
@@ -305,7 +295,7 @@ pub fn effectiveness_for_move_type(
                 _ => TypeEff::QuadrupleX,
             }
         }
-    } else if m.slug == "thousandarrows" {
+    } else if move_id == data::move_id::THOUSANDARROWS {
         let mut net = 0i32;
         for i in 0..def_eff_num as usize {
             let def_type = def_eff_types[i] as usize;
@@ -328,7 +318,7 @@ pub fn effectiveness_for_move_type(
             1 => TypeEff::DoubleX,
             _ => TypeEff::QuadrupleX,
         }
-    } else if m.slug == "flyingpress" {
+    } else if move_id == data::move_id::FLYINGPRESS {
         let mut net = 0i32;
         let mut immune = false;
         for i in 0..def_eff_num as usize {
@@ -406,13 +396,13 @@ pub fn move_type_in_ctx(
     ctx: &DamageContext,
 ) -> u8 {
     let m = &data::MOVES[move_id as usize];
-    if matches!(m.slug, "terablast" | "terastarstorm") {
+    if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
         if attacker.terastallized {
             attacker.tera_type
         } else {
             m.type_
         }
-    } else if m.slug == "weatherball" {
+    } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
         match ctx.weather {
             Weather::Sun => 1,
@@ -421,7 +411,7 @@ pub fn move_type_in_ctx(
             Weather::Snow => 5,
             Weather::None => m.type_,
         }
-    } else if m.slug == "terrainpulse" {
+    } else if move_id == data::move_id::TERRAINPULSE {
         use crate::terrain::Terrain;
         if attacker.is_grounded() {
             match ctx.terrain {
@@ -459,9 +449,10 @@ pub fn calculate_damage(
         return 0;
     }
     if m.base_power == 0 && !matches!(
-        m.slug,
-        "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
-            | "gyroball" | "electroball"
+        move_id,
+        data::move_id::HEATCRASH | data::move_id::HEAVYSLAM
+            | data::move_id::LOWKICK | data::move_id::GRASSKNOT
+            | data::move_id::GYROBALL | data::move_id::ELECTROBALL
     ) {
         return 0;
     }
@@ -476,7 +467,7 @@ pub fn calculate_damage(
     // weather and the multiplier still fires — Sun WB hits Fire-type
     // ×1.5). We replicate that ordering: `move_type` flows through to
     // both `ctx.weather.damage_mult` and STAB / type chart below.
-    let (mut move_type, mut bp) = if matches!(m.slug, "terablast" | "terastarstorm") {
+    let (mut move_type, mut bp) = if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
         // Tera Blast: PS data/moves.ts:terablast:19234 `onModifyType` sets
         // `move.type = pokemon.teraType` when terastallized. BP 80 by
         // default; 100 when Tera type is Stellar (#255).
@@ -490,7 +481,7 @@ pub fn calculate_damage(
         // Tera type when Tera-active. A non-Tera Tera Blast keeps Normal
         // type (PS keeps move.type = 'Normal' when !terastallized).
         let ttype = if attacker.terastallized { attacker.tera_type } else { m.type_ };
-        let bp_local = if m.slug == "terastarstorm" {
+        let bp_local = if move_id == data::move_id::TERASTARSTORM {
             120u32
         } else if attacker.terastallized && attacker.tera_type == 255 {
             100
@@ -498,7 +489,7 @@ pub fn calculate_damage(
             m.base_power as u32
         };
         (ttype, bp_local)
-    } else if m.slug == "weatherball" {
+    } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
         match ctx.weather {
             Weather::Sun => (1u8, 100u32),
@@ -507,14 +498,14 @@ pub fn calculate_damage(
             Weather::Snow => (5u8, 100),
             Weather::None => (m.type_, m.base_power as u32),
         }
-    } else if m.slug == "lastrespects" {
+    } else if move_id == data::move_id::LASTRESPECTS {
         // Last Respects — PS data/moves.ts:lastrespects
         // `basePowerCallback: 50 + 50 * pokemon.side.totalFainted`,
         // PS chainModify cap at 950. Type stays Ghost. Houndstone /
         // Basculegion-F / Pecharunt's late-game finisher.
         let tf = ctx.attacker_total_fainted_allies as u32;
         (m.type_, (50 + 50 * tf).min(950))
-    } else if matches!(m.slug, "avalanche" | "revenge")
+    } else if matches!(move_id, data::move_id::AVALANCHE | data::move_id::REVENGE)
         && attacker.damaged_this_turn()
     {
         // PS data/moves.ts:avalanche / revenge basePowerCallback —
@@ -528,7 +519,7 @@ pub fn calculate_damage(
         // Both moves are priority -4 so they naturally resolve after
         // most attacks.
         (m.type_, (m.base_power as u32) * 2)
-    } else if matches!(m.slug, "eruption" | "waterspout" | "dragonenergy") {
+    } else if matches!(move_id, data::move_id::ERUPTION | data::move_id::WATERSPOUT | data::move_id::DRAGONENERGY) {
         // PS data/moves.ts: shared basePowerCallback
         //   bp = move.basePower * pokemon.hp / pokemon.maxhp
         // At full HP, 150 BP; linearly down to 1 at fainting. PS uses
@@ -541,7 +532,7 @@ pub fn calculate_damage(
         let max = attacker.stats.hp.max(1) as u32;
         let scaled = (m.base_power as u32 * cur / max).max(1);
         (m.type_, scaled)
-    } else if matches!(m.slug, "storedpower" | "powertrip") {
+    } else if matches!(move_id, data::move_id::STOREDPOWER | data::move_id::POWERTRIP) {
         // PS data/moves.ts:storedpower / powertrip basePowerCallback:
         // `bp = move.basePower + 20 * pokemon.positiveBoosts()`.
         // `positiveBoosts` counts only the strictly positive entries
@@ -556,13 +547,13 @@ pub fn calculate_damage(
             .map(|&b| b as u32)
             .sum();
         (m.type_, (20 + 20 * pos).min(860))
-    } else if m.slug == "acrobatics" && attacker.item_id == u16::MAX {
+    } else if move_id == data::move_id::ACROBATICS && attacker.item_id == u16::MAX {
         // PS data/moves.ts:acrobatics `onBasePower(bp, pokemon) {
         //   if (!pokemon.item) return this.chainModify(2); }`. Doubles
         //   BP (55 → 110) when the user holds no item. Flying Gem
         //   case (item consumed pre-hit) deferred.
         (m.type_, (m.base_power as u32) * 2)
-    } else if matches!(m.slug, "lowkick" | "grassknot") {
+    } else if matches!(move_id, data::move_id::LOWKICK | data::move_id::GRASSKNOT) {
         // PS data/moves.ts:lowkick / :grassknot basePowerCallback
         // keys off the *target's* weight in hg:
         //   ≥2000 → 120, ≥1000 → 100, ≥500 → 80, ≥250 → 60, ≥100 → 40, else 20.
@@ -578,7 +569,7 @@ pub fn calculate_damage(
             else if w >= 100 { 40 }
             else { 20 };
         (m.type_, bp)
-    } else if matches!(m.slug, "heatcrash" | "heavyslam") {
+    } else if matches!(move_id, data::move_id::HEATCRASH | data::move_id::HEAVYSLAM) {
         // PS data/moves.ts:heatcrash / :heavyslam basePowerCallback:
         //   const targetWeight = target.getWeight();
         //   const pokemonWeight = pokemon.getWeight();
@@ -604,7 +595,7 @@ pub fn calculate_damage(
             else if user_w >= tgt_w * 2 { 60 }
             else { 40 };
         (m.type_, bp as u32)
-    } else if m.slug == "risingvoltage" {
+    } else if move_id == data::move_id::RISINGVOLTAGE {
         // PS data/moves.ts:risingvoltage
         //   onBasePower(basePower, source, target) {
         //     if (this.field.isTerrain('electricterrain') && target.isGrounded())
@@ -617,7 +608,7 @@ pub fn calculate_damage(
             && defender.is_grounded();
         let bp_local = if boost { (m.base_power as u32) * 2 } else { m.base_power as u32 };
         (m.type_, bp_local)
-    } else if m.slug == "mistyexplosion" {
+    } else if move_id == data::move_id::MISTYEXPLOSION {
         // PS data/moves.ts:mistyexplosion
         //   onBasePower(bp, source) {
         //     if (this.field.isTerrain('mistyterrain') && source.isGrounded())
@@ -631,7 +622,7 @@ pub fn calculate_damage(
             && attacker.is_grounded();
         let bp_local = if boost { (m.base_power as u32) * 3 / 2 } else { m.base_power as u32 };
         (m.type_, bp_local)
-    } else if m.slug == "psyblade" {
+    } else if move_id == data::move_id::PSYBLADE {
         // PS data/moves.ts:psyblade
         //   onBasePower(bp, source) {
         //     if (this.field.isTerrain('electricterrain') && source.isGrounded())
@@ -644,7 +635,7 @@ pub fn calculate_damage(
             && attacker.is_grounded();
         let bp_local = if boost { (m.base_power as u32) * 3 / 2 } else { m.base_power as u32 };
         (m.type_, bp_local)
-    } else if m.slug == "terrainpulse" {
+    } else if move_id == data::move_id::TERRAINPULSE {
         // PS data/moves.ts:terrainpulse
         //   onModifyType(move, pokemon) {
         //     if (!pokemon.isGrounded()) return;
@@ -671,7 +662,7 @@ pub fn calculate_damage(
             _ => (m.type_, m.base_power as u32),
         };
         (t, bp_local)
-    } else if m.slug == "gyroball" {
+    } else if move_id == data::move_id::GYROBALL {
         // PS data/moves.ts:gyroball basePowerCallback:
         //   const power = Math.floor(25 * target.getStat('spe') /
         //                            pokemon.getStat('spe')) + 1;
@@ -686,7 +677,7 @@ pub fn calculate_damage(
         let tgt_spe = apply_boost(defender.stats.spe as u32, defender.boosts[4]);
         let bp_local = (25u32 * tgt_spe / user_spe + 1).min(150);
         (m.type_, bp_local)
-    } else if m.slug == "electroball" {
+    } else if move_id == data::move_id::ELECTROBALL {
         // PS data/moves.ts:electroball basePowerCallback:
         //   let ratio = (pokemon.getStat('spe') / target.getStat('spe')) | 0;
         //   const bp = [40, 60, 80, 120, 150][Math.min(ratio, 4)];
@@ -706,7 +697,7 @@ pub fn calculate_damage(
             _ => 150,
         };
         (m.type_, bp_local)
-    } else if m.slug == "hex" && !matches!(defender.status, Status::None) {
+    } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
         // Comatose ability (treats holder as Sleep) deferred.
@@ -748,17 +739,19 @@ pub fn calculate_damage(
     if move_type == 0 // Normal
         && attacker.ability_id != u16::MAX
         && !matches!(
-            m.slug,
-            "judgment" | "multiattack" | "naturalgift" | "revelationdance"
-                | "technoblast" | "terrainpulse" | "weatherball"
+            move_id,
+            data::move_id::JUDGMENT | data::move_id::MULTIATTACK
+                | data::move_id::NATURALGIFT | data::move_id::REVELATIONDANCE
+                | data::move_id::TECHNOBLAST | data::move_id::TERRAINPULSE
+                | data::move_id::WEATHERBALL
         )
-        && !(m.slug == "terablast" && attacker.terastallized)
+        && !(move_id == data::move_id::TERABLAST && attacker.terastallized)
     {
-        let ate_type: Option<u8> = match data::ABILITIES[attacker.ability_id as usize].slug {
-            "aerilate" => Some(9),    // Flying
-            "pixilate" => Some(17),   // Fairy
-            "refrigerate" => Some(5), // Ice
-            "galvanize" => Some(3),   // Electric
+        let ate_type: Option<u8> = match attacker.ability_id {
+            data::ability_id::AERILATE => Some(9),    // Flying
+            data::ability_id::PIXILATE => Some(17),   // Fairy
+            data::ability_id::REFRIGERATE => Some(5), // Ice
+            data::ability_id::GALVANIZE => Some(3),   // Electric
             _ => None,
         };
         if let Some(t) = ate_type {
@@ -800,7 +793,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Technician_(Ability)>.
     if bp <= 60
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "technician"
+        && attacker.ability_id == data::ability_id::TECHNICIAN
     {
         bp = bp * 3 / 2;
     }
@@ -854,7 +847,7 @@ pub fn calculate_damage(
     // target-change is doubles-only and not modelled here. Indeedee /
     // Espathra / Lugia (Hidden Power era) signature in PT-stacked teams.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Expanding_Force_(move)>.
-    if m.slug == "expandingforce"
+    if move_id == data::move_id::EXPANDINGFORCE
         && matches!(ctx.terrain, crate::terrain::Terrain::Psychic)
         && attacker.is_grounded()
     {
@@ -883,7 +876,7 @@ pub fn calculate_damage(
     if matches!(ctx.weather, crate::weather::Weather::Sand)
         && matches!(move_type, 8 | 12 | 16)
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "sandforce"
+        && attacker.ability_id == data::ability_id::SANDFORCE
     {
         bp = bp * 5325 / 4096;
     }
@@ -895,7 +888,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Iron_Fist_(Ability)>.
     if m.is_punch
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "ironfist"
+        && attacker.ability_id == data::ability_id::IRONFIST
     {
         bp = bp * 4915 / 4096;
     }
@@ -916,7 +909,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Punching_Glove>.
     if m.is_punch
         && attacker.item_id != u16::MAX
-        && data::ITEMS[attacker.item_id as usize].slug == "punchingglove"
+        && attacker.item_id == data::item_id::PUNCHINGGLOVE
     {
         bp = bp * 4506 / 4096;
     }
@@ -928,7 +921,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mega_Launcher_(Ability)>.
     if m.is_pulse
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "megalauncher"
+        && attacker.ability_id == data::ability_id::MEGALAUNCHER
     {
         bp = bp * 6144 / 4096;
     }
@@ -939,7 +932,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Strong_Jaw_(Ability)>.
     if m.is_bite
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "strongjaw"
+        && attacker.ability_id == data::ability_id::STRONGJAW
     {
         bp = bp * 6144 / 4096;
     }
@@ -955,7 +948,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sharpness_(Ability)>.
     if m.is_slicing
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "sharpness"
+        && attacker.ability_id == data::ability_id::SHARPNESS
     {
         bp = bp * 6144 / 4096;
     }
@@ -967,7 +960,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Tough_Claws_(Ability)>.
     if move_makes_contact(m, attacker)
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "toughclaws"
+        && attacker.ability_id == data::ability_id::TOUGHCLAWS
     {
         bp = bp * 5325 / 4096;
     }
@@ -982,7 +975,7 @@ pub fn calculate_damage(
     // own move). Kingambit signature, 24.5% usage per Smogon 2026-05.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Supreme_Overlord_(Ability)>.
     if attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "supremeoverlord"
+        && attacker.ability_id == data::ability_id::SUPREMEOVERLORD
     {
         let fallen = (ctx.attacker_total_fainted_allies as usize).min(5);
         const POW_MOD: [u32; 6] = [4096, 4506, 4915, 5325, 5734, 6144];
@@ -1000,7 +993,7 @@ pub fn calculate_damage(
     // Emboar / Staraptor / Pawmot use this.
     if m.recoil_num > 0
         && attacker.ability_id != u16::MAX
-        && data::ABILITIES[attacker.ability_id as usize].slug == "reckless"
+        && attacker.ability_id == data::ability_id::RECKLESS
     {
         bp = bp * 4915 / 4096;
     }
@@ -1017,26 +1010,25 @@ pub fn calculate_damage(
     // the type-boost rocks. Bulbapedia hub:
     //   <https://bulbapedia.bulbagarden.net/wiki/Type-enhancing_item>.
     if attacker.item_id != u16::MAX {
-        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
-        let item_type: i32 = match item_slug {
-            "silkscarf"     => 0,   // Normal
-            "charcoal"      => 1,   // Fire
-            "mysticwater"   => 2,   // Water
-            "magnet"        => 3,   // Electric
-            "miracleseed"   => 4,   // Grass
-            "nevermeltice"  => 5,   // Ice
-            "blackbelt"     => 6,   // Fighting
-            "poisonbarb"    => 7,   // Poison
-            "softsand"      => 8,   // Ground
-            "sharpbeak"     => 9,   // Flying
-            "twistedspoon"  => 10,  // Psychic
-            "silverpowder"  => 11,  // Bug
-            "hardstone"     => 12,  // Rock
-            "spelltag"      => 13,  // Ghost (not in list but parallel; harmless if unused)
-            "dragonfang"    => 14,  // Dragon
-            "blackglasses"  => 15,  // Dark
-            "metalcoat"     => 16,  // Steel
-            "pixieplate"    => 17,  // Fairy
+        let item_type: i32 = match attacker.item_id {
+            data::item_id::SILKSCARF     => 0,   // Normal
+            data::item_id::CHARCOAL      => 1,   // Fire
+            data::item_id::MYSTICWATER   => 2,   // Water
+            data::item_id::MAGNET        => 3,   // Electric
+            data::item_id::MIRACLESEED   => 4,   // Grass
+            data::item_id::NEVERMELTICE  => 5,   // Ice
+            data::item_id::BLACKBELT     => 6,   // Fighting
+            data::item_id::POISONBARB    => 7,   // Poison
+            data::item_id::SOFTSAND      => 8,   // Ground
+            data::item_id::SHARPBEAK     => 9,   // Flying
+            data::item_id::TWISTEDSPOON  => 10,  // Psychic
+            data::item_id::SILVERPOWDER  => 11,  // Bug
+            data::item_id::HARDSTONE     => 12,  // Rock
+            data::item_id::SPELLTAG      => 13,  // Ghost (not in list but parallel; harmless if unused)
+            data::item_id::DRAGONFANG    => 14,  // Dragon
+            data::item_id::BLACKGLASSES  => 15,  // Dark
+            data::item_id::METALCOAT     => 16,  // Steel
+            data::item_id::PIXIEPLATE    => 17,  // Fairy
             // Arceus type-boost plates — PS data/items.ts each
             // `onBasePower` returns `chainModify([4915, 4096])` when
             // `move.type` matches the plate. Identical numerics to the
@@ -1044,26 +1036,26 @@ pub fn calculate_damage(
             // used by Arceus, but that team-build concern is handled
             // outside the BP block. Bulbapedia hub:
             // <https://bulbapedia.bulbagarden.net/wiki/Arceus_(Pok%C3%A9mon)#Plates>.
-            "flameplate"    => 1,   // Fire — PS data/items.ts:2152
-            "splashplate"   => 2,   // Water — PS data/items.ts:5925
-            "zapplate"      => 3,   // Electric — PS data/items.ts:7788
-            "meadowplate"   => 4,   // Grass — PS data/items.ts:3840
-            "icicleplate"   => 5,   // Ice — PS data/items.ts:2973
-            "fistplate"     => 6,   // Fighting — PS data/items.ts:2117
-            "toxicplate"    => 7,   // Poison — PS data/items.ts:6352
-            "earthplate"    => 8,   // Ground — PS data/items.ts:1636
-            "skyplate"      => 9,   // Flying — PS data/items.ts:5783
-            "mindplate"     => 10,  // Psychic — PS data/items.ts:4110
-            "insectplate"   => 11,  // Bug — PS data/items.ts:3025
-            "stoneplate"    => 12,  // Rock — PS data/items.ts:6129
-            "spookyplate"   => 13,  // Ghost — PS data/items.ts:5945
-            "dracoplate"    => 14,  // Dragon — PS data/items.ts:1449
-            "dreadplate"    => 15,  // Dark — PS data/items.ts:1571
-            "ironplate"     => 16,  // Steel — PS data/items.ts:3063
+            data::item_id::FLAMEPLATE    => 1,   // Fire — PS data/items.ts:2152
+            data::item_id::SPLASHPLATE   => 2,   // Water — PS data/items.ts:5925
+            data::item_id::ZAPPLATE      => 3,   // Electric — PS data/items.ts:7788
+            data::item_id::MEADOWPLATE   => 4,   // Grass — PS data/items.ts:3840
+            data::item_id::ICICLEPLATE   => 5,   // Ice — PS data/items.ts:2973
+            data::item_id::FISTPLATE     => 6,   // Fighting — PS data/items.ts:2117
+            data::item_id::TOXICPLATE    => 7,   // Poison — PS data/items.ts:6352
+            data::item_id::EARTHPLATE    => 8,   // Ground — PS data/items.ts:1636
+            data::item_id::SKYPLATE      => 9,   // Flying — PS data/items.ts:5783
+            data::item_id::MINDPLATE     => 10,  // Psychic — PS data/items.ts:4110
+            data::item_id::INSECTPLATE   => 11,  // Bug — PS data/items.ts:3025
+            data::item_id::STONEPLATE    => 12,  // Rock — PS data/items.ts:6129
+            data::item_id::SPOOKYPLATE   => 13,  // Ghost — PS data/items.ts:5945
+            data::item_id::DRACOPLATE    => 14,  // Dragon — PS data/items.ts:1449
+            data::item_id::DREADPLATE    => 15,  // Dark — PS data/items.ts:1571
+            data::item_id::IRONPLATE     => 16,  // Steel — PS data/items.ts:3063
             // Fairy Feather — Fairy-type ×1.2 BP, non-plate variant.
             // PS data/items.ts:1922 — same numerics as the plates.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fairy_Feather>.
-            "fairyfeather"  => 17,  // Fairy
+            data::item_id::FAIRYFEATHER  => 17,  // Fairy
             _ => -1,
         };
         if item_type as i32 == move_type as i32 && item_type >= 0 {
@@ -1093,12 +1085,11 @@ pub fn calculate_damage(
     //   <https://bulbapedia.bulbagarden.net/wiki/Hearthflame_Mask>
     //   <https://bulbapedia.bulbagarden.net/wiki/Cornerstone_Mask>
     if attacker.item_id != u16::MAX {
-        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
         let species_slug = attacker.species().slug;
-        let mask_match = match item_slug {
-            "wellspringmask"  => species_slug.starts_with("ogerponwellspring"),
-            "hearthflamemask" => species_slug.starts_with("ogerponhearthflame"),
-            "cornerstonemask" => species_slug.starts_with("ogerponcornerstone"),
+        let mask_match = match attacker.item_id {
+            data::item_id::WELLSPRINGMASK  => species_slug.starts_with("ogerponwellspring"),
+            data::item_id::HEARTHFLAMEMASK => species_slug.starts_with("ogerponhearthflame"),
+            data::item_id::CORNERSTONEMASK => species_slug.starts_with("ogerponcornerstone"),
             _ => false,
         };
         if mask_match {
@@ -1124,14 +1115,13 @@ pub fn calculate_damage(
     // breakable; Mold Breaker does NOT bypass. Bulbapedia hub:
     //   <https://bulbapedia.bulbagarden.net/wiki/Adamant_Orb>.
     if attacker.item_id != u16::MAX {
-        let item_slug = data::ITEMS[attacker.item_id as usize].slug;
         let species_slug = attacker.species().slug;
         // (item, carrier prefix, secondary boosted type — Dragon=14 is always one).
-        let orb_match = match item_slug {
-            "adamantorb"  => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
-            "lustrousorb" => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
-            "griseousorb" => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
-            "souldew"     => (species_slug.starts_with("latias")
+        let orb_match = match attacker.item_id {
+            data::item_id::ADAMANTORB  => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
+            data::item_id::LUSTROUSORB => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
+            data::item_id::GRISEOUSORB => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
+            data::item_id::SOULDEW     => (species_slug.starts_with("latias")
                               || species_slug.starts_with("latios"))
                               && (move_type == 14 || move_type == 10),
             // PLA crystal trio — carrier-locked Origin-Forme equivalents
@@ -1148,9 +1138,9 @@ pub fn calculate_damage(
             //   <https://bulbapedia.bulbagarden.net/wiki/Adamant_Crystal>
             //   <https://bulbapedia.bulbagarden.net/wiki/Lustrous_Globe>
             //   <https://bulbapedia.bulbagarden.net/wiki/Griseous_Core>
-            "adamantcrystal" => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
-            "lustrousglobe"  => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
-            "griseouscore"   => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
+            data::item_id::ADAMANTCRYSTAL => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
+            data::item_id::LUSTROUSGLOBE  => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
+            data::item_id::GRISEOUSCORE   => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
             _ => false,
         };
         if orb_match {
@@ -1167,7 +1157,7 @@ pub fn calculate_damage(
     // Toxtricity signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Punk_Rock_(Ability)>.
     if crate::battle::is_sound_move(m.slug)
-        && attacker.effective_ability_slug() == "punkrock"
+        && attacker.effective_ability_id() == data::ability_id::PUNKROCK
     {
         bp = (bp * 5325 + 2047) / 4096;
     }
@@ -1196,11 +1186,11 @@ pub fn calculate_damage(
     //     data/moves.ts:lightthatburnsthesky.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Photon_Geyser_(move)>
     //             <https://bulbapedia.bulbagarden.net/wiki/Light_That_Burns_the_Sky_(move)>
-    let physical = if matches!(m.slug, "photongeyser" | "lightthatburnsthesky") {
+    let physical = if matches!(move_id, data::move_id::PHOTONGEYSER | data::move_id::LIGHTTHATBURNSTHESKY) {
         let atk_boosted = apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
         let spa_boosted = apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
         atk_boosted > spa_boosted
-    } else if matches!(m.slug, "terablast" | "terastarstorm") && attacker.terastallized {
+    } else if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) && attacker.terastallized {
         // Tera Blast: PS data/moves.ts:terablast:19239 `onModifyMove`
         //   if (pokemon.terastallized && pokemon.getStat('atk', false, true)
         //       > pokemon.getStat('spa', false, true)) move.category =
@@ -1240,7 +1230,7 @@ pub fn calculate_damage(
     // Attack for the damage formula. Defender's defensive stat /
     // stage are unaffected (still its Def vs a Physical move).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Body_Press_(move)>.
-    if m.slug == "bodypress" {
+    if move_id == data::move_id::BODYPRESS {
         atk_stat = attacker.stats.def as u32;
         atk_stage = attacker.boosts[1];
     }
@@ -1252,7 +1242,7 @@ pub fn calculate_damage(
     // still attacks itself at -1 unless this move crits. PS does
     // the same. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Foul_Play_(move)>.
-    if m.slug == "foulplay" {
+    if move_id == data::move_id::FOULPLAY {
         atk_stat = defender.stats.atk as u32;
         atk_stage = defender.boosts[0];
     }
@@ -1269,7 +1259,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Solar_Power_(Ability)>.
     if !physical
         && matches!(ctx.weather, crate::weather::Weather::Sun)
-        && attacker.effective_ability_slug() == "solarpower"
+        && attacker.effective_ability_id() == data::ability_id::SOLARPOWER
     {
         atk_stat = atk_stat * 3 / 2;
     }
@@ -1284,8 +1274,8 @@ pub fn calculate_damage(
     // Bronzong / Numel-Camerupt signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
     let attacker_breaks_mold_for_offense = matches!(
-        attacker.effective_ability_slug(),
-        "moldbreaker" | "teravolt" | "turboblaze"
+        attacker.effective_ability_id(),
+        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
     );
 
     // Crit ignores attacker's negative offensive boosts and defender's
@@ -1301,15 +1291,15 @@ pub fn calculate_damage(
     //   — Mold Breaker on the OPPOSING side bypasses. Clodsire /
     //   Quagsire signature. Bulbapedia:
     //   <https://bulbapedia.bulbagarden.net/wiki/Unaware_(Ability)>.
-    let attacker_unaware = attacker.effective_ability_slug() == "unaware";
-    let defender_unaware = defender.effective_ability_slug() == "unaware";
+    let attacker_unaware = attacker.effective_ability_id() == data::ability_id::UNAWARE;
+    let defender_unaware = defender.effective_ability_id() == data::ability_id::UNAWARE;
     let attacker_breaks_mold = matches!(
-        attacker.effective_ability_slug(),
-        "moldbreaker" | "teravolt" | "turboblaze"
+        attacker.effective_ability_id(),
+        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
     );
     let defender_breaks_mold = matches!(
-        defender.effective_ability_slug(),
-        "moldbreaker" | "teravolt" | "turboblaze"
+        defender.effective_ability_id(),
+        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
     );
     let mut atk_policy = if ctx.crit { BoostIgnore::Negative } else { BoostIgnore::None };
     let mut def_policy = if ctx.crit { BoostIgnore::Positive } else { BoostIgnore::None };
@@ -1332,7 +1322,7 @@ pub fn calculate_damage(
     // Atk + SpA halved while user HP ≤ 50%. NOT in PS's breakable
     // list — Mold Breaker does NOT bypass. Archen/Archeops signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Defeatist_(Ability)>.
-    if attacker.effective_ability_slug() == "defeatist"
+    if attacker.effective_ability_id() == data::ability_id::DEFEATIST
         && (attacker.current_hp as u32) * 2 <= attacker.stats.hp as u32
     {
         a = (a / 2).max(1);
@@ -1345,7 +1335,7 @@ pub fn calculate_damage(
     // signature). We use `slow_start_active_turns` on the active mon
     // (set on switch-in, decremented end-of-turn).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Slow_Start_(Ability)>.
-    if attacker.effective_ability_slug() == "slowstart"
+    if attacker.effective_ability_id() == data::ability_id::SLOWSTART
         && attacker.slow_start_active_turns > 0
         && physical
     {
@@ -1360,7 +1350,7 @@ pub fn calculate_damage(
     // Heracross / Ursaring signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Guts_(Ability)>.
     if physical
-        && attacker.effective_ability_slug() == "guts"
+        && attacker.effective_ability_id() == data::ability_id::GUTS
         && !matches!(attacker.status, crate::pokemon::Status::None)
     {
         a = (a * 6144 / 4096).max(1);
@@ -1378,7 +1368,7 @@ pub fn calculate_damage(
     // offensive ability. ×1.5 = 6144/4096 (exact). Darmanitan-Galar
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Gorilla_Tactics_(Ability)>.
-    if physical && attacker.effective_ability_slug() == "gorillatactics" {
+    if physical && attacker.effective_ability_id() == data::ability_id::GORILLATACTICS {
         a = (a * 6144 / 4096).max(1);
     }
 
@@ -1392,7 +1382,7 @@ pub fn calculate_damage(
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Marvel_Scale_(Ability)>.
     if physical
-        && defender.effective_ability_slug() == "marvelscale"
+        && defender.effective_ability_id() == data::ability_id::MARVELSCALE
         && !matches!(defender.status, crate::pokemon::Status::None)
         && !attacker_breaks_mold_for_offense
     {
@@ -1408,7 +1398,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
     if move_type == 1
         && !attacker_breaks_mold_for_offense
-        && defender.effective_ability_slug() == "heatproof"
+        && defender.effective_ability_id() == data::ability_id::HEATPROOF
     {
         a = (a / 2).max(1);
     }
@@ -1426,7 +1416,7 @@ pub fn calculate_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Purifying_Salt_(Ability)>.
     if move_type == 13
         && !attacker_breaks_mold_for_offense
-        && defender.effective_ability_slug() == "purifyingsalt"
+        && defender.effective_ability_id() == data::ability_id::PURIFYINGSALT
     {
         a = (a / 2).max(1);
     }
@@ -1443,7 +1433,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
     if move_type == 1
         && !attacker_breaks_mold_for_offense
-        && defender.effective_ability_slug() == "dryskin"
+        && defender.effective_ability_id() == data::ability_id::DRYSKIN
     {
         a = (a * 5120 / 4096).max(1);
     }
@@ -1478,7 +1468,7 @@ pub fn calculate_damage(
     if ctx.crit {
         dmg = dmg * 3 / 2;
         let sniper = attacker.ability_id != u16::MAX
-            && data::ABILITIES[attacker.ability_id as usize].slug == "sniper";
+            && attacker.ability_id == data::ability_id::SNIPER;
         if sniper {
             dmg = dmg * 6144 / 4096;
         }
@@ -1533,7 +1523,7 @@ pub fn calculate_damage(
             && attacker.tera_type == move_type
             && base_has_move_type;
         let adaptability = attacker.ability_id != u16::MAX
-            && data::ABILITIES[attacker.ability_id as usize].slug == "adaptability";
+            && attacker.ability_id == data::ability_id::ADAPTABILITY;
         if tera_boosted_stab {
             if adaptability {
                 // ×2.25 = 9/4. PS returns 2.25 from onModifySTAB.
@@ -1582,7 +1572,7 @@ pub fn calculate_damage(
     // corpus in practice).
     let mut eff = eff;
     if defender.species().slug == "terapagosterastal"
-        && defender.effective_ability_slug() == "terashell"
+        && defender.effective_ability_id() == data::ability_id::TERASHELL
         && defender.current_hp >= defender.stats.hp
         && !matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
     {
@@ -1605,12 +1595,12 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multiscale_(Ability)>
     //             <https://bulbapedia.bulbagarden.net/wiki/Shadow_Shield_(Ability)>.
     let attacker_breaks_mold = matches!(
-        attacker.effective_ability_slug(),
-        "moldbreaker" | "teravolt" | "turboblaze"
+        attacker.effective_ability_id(),
+        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
     );
-    let def_ab = defender.effective_ability_slug();
-    let multiscale_active = (def_ab == "multiscale" && !attacker_breaks_mold)
-        || def_ab == "shadowshield";
+    let def_ab = defender.effective_ability_id();
+    let multiscale_active = (def_ab == data::ability_id::MULTISCALE && !attacker_breaks_mold)
+        || def_ab == data::ability_id::SHADOWSHIELD;
     if multiscale_active && defender.current_hp >= defender.stats.hp {
         dmg /= 2;
     }
@@ -1623,7 +1613,7 @@ pub fn calculate_damage(
     // after the type chart). ×2 = mod 8192/4096 (exact). Venomoth,
     // Sigilyph carry it. Bulbapedia:
     //   <https://bulbapedia.bulbagarden.net/wiki/Tinted_Lens_(Ability)>.
-    if attacker.effective_ability_slug() == "tintedlens"
+    if attacker.effective_ability_id() == data::ability_id::TINTEDLENS
         && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
     {
         dmg *= 2;
@@ -1640,10 +1630,10 @@ pub fn calculate_damage(
     //   <https://bulbapedia.bulbagarden.net/wiki/Filter_(Ability)>
     //   <https://bulbapedia.bulbagarden.net/wiki/Solid_Rock_(Ability)>
     //   <https://bulbapedia.bulbagarden.net/wiki/Prism_Armor_(Ability)>
-    let def_ab = defender.effective_ability_slug();
+    let def_ab = defender.effective_ability_id();
     let se_reducer = match def_ab {
-        "filter" | "solidrock" => !attacker_breaks_mold,
-        "prismarmor" => true,
+        data::ability_id::FILTER | data::ability_id::SOLIDROCK => !attacker_breaks_mold,
+        data::ability_id::PRISMARMOR => true,
         _ => false,
     };
     if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
@@ -1668,7 +1658,7 @@ pub fn calculate_damage(
     // ×0.5 incoming Special damage. NOT in PS's breakable list — Mold
     // Breaker does NOT bypass. Frosmoth signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Ice_Scales_(Ability)>.
-    if def_ab == "icescales" && !physical {
+    if def_ab == data::ability_id::ICESCALES && !physical {
         dmg /= 2;
     }
 
@@ -1678,11 +1668,11 @@ pub fn calculate_damage(
     //   }
     // Flagged `breakable: 1` — Mold Breaker / Teravolt / Turboblaze
     // bypass. Toxtricity.
-    if def_ab == "punkrock" && crate::battle::is_sound_move(m.slug) && !attacker_breaks_mold {
+    if def_ab == data::ability_id::PUNKROCK && crate::battle::is_sound_move(m.slug) && !attacker_breaks_mold {
         dmg /= 2;
     }
 
-    if def_ab == "fluffy" && !attacker_breaks_mold {
+    if def_ab == data::ability_id::FLUFFY && !attacker_breaks_mold {
         let fire = move_type == 1;
         let contact = move_makes_contact(m, attacker);
         if fire && !contact {
@@ -1706,9 +1696,9 @@ pub fn calculate_damage(
     // Facade also bypasses the burn halving (and gets ×2 BP when
     // statused) — Facade BP handling is in the move-BP block; the
     // burn-halve skip belongs here.
-    let attacker_ability = attacker.effective_ability_slug();
-    let attacker_has_guts = attacker_ability == "guts";
-    if physical && attacker.status == Status::Burn && !attacker_has_guts && m.slug != "facade" {
+    let attacker_ability = attacker.effective_ability_id();
+    let attacker_has_guts = attacker_ability == data::ability_id::GUTS;
+    if physical && attacker.status == Status::Burn && !attacker_has_guts && move_id != data::move_id::FACADE {
         dmg /= 2;
     }
 
