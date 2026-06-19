@@ -1366,9 +1366,13 @@ impl Battle {
                 })
             });
             if damp_on_field {
+                // Pressure still applies — PS deducts the foe's extra PP in
+                // `useMove` (before the move's TryMove veto). See
+                // `pressure_extra_pp`.
+                let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1);
+                        *pp = pp.saturating_sub(1 + extra);
                     }
                 }
                 return;
@@ -1403,9 +1407,10 @@ impl Battle {
                 _ => pending_kind[opp].iter().any(|&k| k == 1),
             };
             if !ok {
+                let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1);
+                        *pp = pp.saturating_sub(1 + extra);
                     }
                 }
                 return;
@@ -1424,9 +1429,10 @@ impl Battle {
         //      the move slot pays PP, no damage is dealt).
         //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
         if m.slug == "focuspunch" && attacker.damaged_this_turn() {
+            let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1);
+                    *pp = pp.saturating_sub(1 + extra);
                 }
                 mon.last_used_move_slot = move_slot;
             }
@@ -1447,9 +1453,10 @@ impl Battle {
         if matches!(m.slug, "gigatonhammer" | "bloodmoon")
             && attacker.last_used_move_slot == move_slot
         {
+            let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1);
+                    *pp = pp.saturating_sub(1 + extra);
                 }
                 // Set last_used_move_slot to 255 so a third attempt
                 // succeeds — PS clears the volatile on every other
@@ -1464,10 +1471,11 @@ impl Battle {
         //    (i.e. this is its first action since switch-in). PS marks
         //    this with the 'fakeout' move's onTry checking activeTurns.
         if m.slug == "fakeout" && attacker.turns_active != 0 {
-            // Failure still ticks PP per PS.
+            // Failure still ticks PP per PS (plus Pressure extra).
+            let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1);
+                    *pp = pp.saturating_sub(1 + extra);
                 }
             }
             return;
@@ -1646,10 +1654,12 @@ impl Battle {
                         a.item_id = u16::MAX;
                     }
                 } else {
-                    // Charge turn: deduct PP, set charging state, return.
+                    // Charge turn: deduct PP (+ Pressure extra, which PS
+                    // applies on turn 1 only), set charging state, return.
+                    let extra = pressure_extra_pp(self, actor_side, m, target);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                            *pp = pp.saturating_sub(1);
+                            *pp = pp.saturating_sub(1 + extra);
                         }
                         a.last_used_move_slot = move_slot;
                         a.charging_turns = 1;
@@ -1671,10 +1681,12 @@ impl Battle {
                 }
                 skip_pp_deduct = true;
             } else {
-                // Turn 1: enter semi-invuln, deduct PP, no damage.
+                // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
+                // applied turn 1 only per PS), no damage.
+                let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1);
+                        *pp = pp.saturating_sub(1 + extra);
                     }
                     a.last_used_move_slot = move_slot;
                     a.charging_turns = 1;
@@ -1700,10 +1712,19 @@ impl Battle {
             if attacker.item_id == u16::MAX { "" } else { data::ITEMS[attacker.item_id as usize].slug },
             "choiceband" | "choicespecs" | "choicescarf"
         );
+        // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
+        // +1 PP per foe target holding active Pressure. Computed before the
+        // mutable borrow; for charge / semi-invuln moves PS applies this only
+        // on turn 1, so it sits inside the `!skip_pp_deduct` arm.
+        let pressure_extra = if skip_pp_deduct {
+            0
+        } else {
+            pressure_extra_pp(self, actor_side, m, target)
+        };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1);
+                    *pp = pp.saturating_sub(1 + pressure_extra);
                 }
                 if is_choice && mon.locked_move_slot() == 255 {
                     mon.set_locked_move_slot(move_slot);
@@ -5529,6 +5550,70 @@ fn enumerate_targets(
         }
         // Targets we don't damage-resolve here (allies / side / team / all / scripted).
         _ => vec![],
+    }
+}
+
+/// Pressure — PS `data/abilities.ts:3392` (`onDeductPP` returns 1 for a
+/// non-ally `source`) applied via `sim/battle-actions.ts:467-484`: for each
+/// member of the move's `pressureTargets` (its foe-side targets) that holds
+/// Pressure, the move costs +1 PP. A spread move hitting two Pressure foes
+/// therefore costs +2. Allies with Pressure do NOT add (PS `isAlly` guard).
+/// Returns the extra PP to deduct (0 if no foe target holds active Pressure).
+/// Non-allocating — counts directly off the same foe-target rules as
+/// `enumerate_targets`. Respects ability suppression via
+/// `effective_ability_slug`.
+fn pressure_extra_pp(
+    battle: &Battle,
+    actor_side: SideRef,
+    m: &data::MoveDef,
+    chosen: Option<Target>,
+) -> u8 {
+    let opp = actor_side.opposing();
+    let active_n = battle.format().active_count() as u8;
+    let is_pressure_foe = |slot: u8| -> bool {
+        battle
+            .side(opp)
+            .active_mon(slot as usize)
+            .is_some_and(|mon| mon.is_alive() && mon.effective_ability_slug() == "pressure")
+    };
+    match m.target {
+        // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
+        0 | 4 | 10 | 13 => {
+            // Pressure only fires on a foe target. If the chosen target is on
+            // the actor's own side (e.g. `any` aimed at an ally), no Pressure.
+            if let Some(t) = chosen {
+                if t.side == opp && is_pressure_foe(t.slot) {
+                    return 1;
+                }
+                if t.side == actor_side {
+                    return 0;
+                }
+            }
+            // Fallback: first alive opposing slot (matches enumerate_targets).
+            for slot in 0..active_n {
+                if battle
+                    .side(opp)
+                    .active_mon(slot as usize)
+                    .is_some_and(|mon| mon.is_alive())
+                {
+                    return is_pressure_foe(slot) as u8;
+                }
+            }
+            0
+        }
+        // 5 allAdjacent | 6 allAdjacentFoes — count every opposing Pressure
+        // holder. (allAdjacent also hits the ally, but allies don't add.)
+        5 | 6 => {
+            let mut extra = 0u8;
+            for slot in 0..active_n {
+                if is_pressure_foe(slot) {
+                    extra += 1;
+                }
+            }
+            extra
+        }
+        // Self / ally / side / team / all / scripted — no foe target.
+        _ => 0,
     }
 }
 
@@ -15467,6 +15552,87 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Solar Beam hits turn 1 with Power Herb");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
         assert_eq!(b.p1.team[0].charging_turns, 0);
+    }
+
+    #[test]
+    fn pressure_deducts_extra_pp_on_foe_targeting_move() {
+        // PS abilities.ts:3392 (onDeductPP) via battle-actions.ts:467-484.
+        // A move that targets a Pressure holder costs 2 PP, not 1.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(
+            b.p1.team[0].pp[0],
+            pp_before - 2,
+            "Dragon Claw vs a Pressure holder costs 2 PP",
+        );
+    }
+
+    #[test]
+    fn pressure_no_extra_pp_on_self_targeting_move() {
+        // Protect targets self (not the foe), so Pressure does not fire:
+        // only the normal 1 PP is deducted even with a Pressure foe out.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // move_slot 3 = Protect (self-target).
+        let pp_before = b.p1.team[0].pp[3];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(
+            b.p1.team[0].pp[3],
+            pp_before - 1,
+            "self-targeting Protect costs only 1 PP vs a Pressure foe",
+        );
+    }
+
+    #[test]
+    fn pressure_spread_move_deducts_extra_per_pressure_target() {
+        // Doubles: Earthquake (allAdjacent) hitting TWO Pressure foes costs
+        // 1 + 2 = 3 PP. PS sums onDeductPP across pressureTargets.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","ironhead","aerialace","protect"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","defog"]},
+            {"species":"dragapult","level":50,"ability":"pressure","nature":"jolly","moves":["dragondarts","phantomforce","uturn","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(
+            b.p1.team[0].pp[0],
+            pp_before - 3,
+            "spread Earthquake vs two Pressure foes costs 1 + 2 = 3 PP",
+        );
     }
 
     #[test]
