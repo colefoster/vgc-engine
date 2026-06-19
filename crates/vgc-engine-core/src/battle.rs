@@ -4669,8 +4669,10 @@ impl Battle {
             Some(m) if m.is_alive() => m,
             _ => return false,
         };
-        // Shed Shell escapes every form of trapping (PR-404 wires the item
-        // arm; until then this is a no-op).
+        // Shed Shell — the holder escapes every form of trapping. PS
+        // data/items.ts:shedshell onTrapPokemon (priority -10) sets
+        // `trapped = false` after all trappers have run, so it overrides
+        // Shadow Tag / Arena Trap / Magnet Pull and partial-trap alike.
         if mon.item_id == data::item_id::SHEDSHELL {
             return false;
         }
@@ -9841,6 +9843,30 @@ mod tests {
         let b_n = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
             TeamBuilder::from_json(nonsteel).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
         assert!(n_switch_choices(&b_n, SideRef::P1, 0) > 0, "non-Steel Garchomp escapes Magnet Pull");
+    }
+
+    #[test]
+    fn shed_shell_escapes_all_trapping() {
+        // A Shed Shell holder may switch out even against Shadow Tag (and,
+        // by the same early return, Arena Trap / Magnet Pull / partial
+        // trap). PS data/items.ts:shedshell onTrapPokemon.
+        let p2_json = r#"[
+            {"species":"gothitelle","level":50,"ability":"shadowtag","item":"leftovers","nature":"bold","moves":["psychic","calmmind","protect","trick"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let no_shell = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let with_shell = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"shedshell","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let b_trapped = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(no_shell).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert_eq!(n_switch_choices(&b_trapped, SideRef::P1, 0), 0, "no Shed Shell → trapped by Shadow Tag");
+        let b_free = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(with_shell).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b_free, SideRef::P1, 0) > 0, "Shed Shell holder escapes Shadow Tag");
     }
 
     #[test]
