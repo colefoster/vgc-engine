@@ -102,6 +102,48 @@ impl ActionOrder {
             ActionOrder::Heap(v) => v.as_slice(),
         }
     }
+
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [ScheduledAction] {
+        match self {
+            ActionOrder::Inline { buf, len } => &mut buf[..*len],
+            ActionOrder::Heap(v) => v.as_mut_slice(),
+        }
+    }
+
+    /// Re-position the pending move action of `(side, slot)` within the
+    /// still-unprocessed tail of the queue (indices `after + 1 ..`).
+    ///
+    /// `to_front = true` (After You) moves it to act immediately next — i.e.
+    /// to index `after + 1`, sliding the actions it jumped over back by one.
+    /// `to_front = false` (Quash) moves it to act last — to the end of the
+    /// queue, sliding the actions after it forward by one. Only move /
+    /// terastallize actions are matched (switches already ran up-front). A
+    /// no-op when the target has no pending action left this turn — which is
+    /// exactly when PS's After You / Quash `onHit` returns false. Pure
+    /// in-place rotation; no allocation.
+    pub fn reorder_remaining(&mut self, after: usize, side: SideRef, slot: u8, to_front: bool) {
+        let s = self.as_mut_slice();
+        let start = after + 1;
+        if start >= s.len() {
+            return;
+        }
+        let Some(rel) = s[start..].iter().position(|a| {
+            a.side == side
+                && a.actor_slot == slot
+                && matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. })
+        }) else {
+            return;
+        };
+        let j = start + rel;
+        if to_front {
+            // Bring index j to `start`, shifting [start, j) right by one.
+            s[start..=j].rotate_right(1);
+        } else {
+            // Send index j to the end, shifting (j, len) left by one.
+            s[j..].rotate_left(1);
+        }
+    }
 }
 
 impl core::ops::Deref for ActionOrder {
@@ -609,6 +651,55 @@ mod tests {
         // they fall through to Splitmix). Range count = 1.
         let (consumed, _) = rng.oracle_pops().unwrap();
         assert_eq!(consumed, 1);
+    }
+
+    fn mv(side: SideRef, slot: u8) -> ScheduledAction {
+        ScheduledAction {
+            side,
+            actor_slot: slot,
+            choice: Choice::Move { actor_slot: slot, move_slot: 0, target: None },
+        }
+    }
+
+    fn build(actions: &[ScheduledAction]) -> ActionOrder {
+        let mut o = ActionOrder::new();
+        for a in actions {
+            o.push(*a);
+        }
+        o
+    }
+
+    #[test]
+    fn reorder_remaining_after_you_moves_target_to_front_of_tail() {
+        // Queue: [P1/0, P2/0, P2/1, P1/1]. After P1/0 resolves (idx 0),
+        // After You promotes P1/1 to act immediately next (index 1).
+        let mut o = build(&[mv(SideRef::P1, 0), mv(SideRef::P2, 0), mv(SideRef::P2, 1), mv(SideRef::P1, 1)]);
+        o.reorder_remaining(0, SideRef::P1, 1, true);
+        let got: Vec<(SideRef, u8)> = o.iter().map(|a| (a.side, a.actor_slot)).collect();
+        assert_eq!(got, vec![
+            (SideRef::P1, 0), (SideRef::P1, 1), (SideRef::P2, 0), (SideRef::P2, 1),
+        ]);
+    }
+
+    #[test]
+    fn reorder_remaining_quash_moves_target_to_back() {
+        // Queue: [P1/0, P2/0, P2/1, P1/1]. After P1/0 resolves, Quash on
+        // P2/0 sends it to the end of the queue.
+        let mut o = build(&[mv(SideRef::P1, 0), mv(SideRef::P2, 0), mv(SideRef::P2, 1), mv(SideRef::P1, 1)]);
+        o.reorder_remaining(0, SideRef::P2, 0, false);
+        let got: Vec<(SideRef, u8)> = o.iter().map(|a| (a.side, a.actor_slot)).collect();
+        assert_eq!(got, vec![
+            (SideRef::P1, 0), (SideRef::P2, 1), (SideRef::P1, 1), (SideRef::P2, 0),
+        ]);
+    }
+
+    #[test]
+    fn reorder_remaining_noop_when_target_already_acted() {
+        // Target P1/0 is at/behind the cursor (already resolved) → no change.
+        let mut o = build(&[mv(SideRef::P1, 0), mv(SideRef::P2, 0), mv(SideRef::P1, 1)]);
+        o.reorder_remaining(0, SideRef::P1, 0, true);
+        let got: Vec<(SideRef, u8)> = o.iter().map(|a| (a.side, a.actor_slot)).collect();
+        assert_eq!(got, vec![(SideRef::P1, 0), (SideRef::P2, 0), (SideRef::P1, 1)]);
     }
 
     #[test]
