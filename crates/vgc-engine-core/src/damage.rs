@@ -476,7 +476,7 @@ pub fn calculate_damage(
     // weather and the multiplier still fires — Sun WB hits Fire-type
     // ×1.5). We replicate that ordering: `move_type` flows through to
     // both `ctx.weather.damage_mult` and STAB / type chart below.
-    let (move_type, mut bp) = if matches!(m.slug, "terablast" | "terastarstorm") {
+    let (mut move_type, mut bp) = if matches!(m.slug, "terablast" | "terastarstorm") {
         // Tera Blast: PS data/moves.ts:terablast:19234 `onModifyType` sets
         // `move.type = pokemon.teraType` when terastallized. BP 80 by
         // default; 100 when Tera type is Stellar (#255).
@@ -714,6 +714,59 @@ pub fn calculate_damage(
     } else {
         (m.type_, m.base_power as u32)
     };
+
+    // -ate abilities — Aerilate / Pixilate / Refrigerate / Galvanize. PS
+    // `data/abilities.ts:aerilate` (line 57) and the three siblings share
+    //   onModifyTypePriority: -1,
+    //   onModifyType(move, pokemon) {
+    //     const noModifyType = ['judgment','multiattack','naturalgift',
+    //       'revelationdance','technoblast','terrainpulse','weatherball'];
+    //     if (move.type === 'Normal' && !noModifyType.includes(move.id)
+    //         && !(move.name === 'Tera Blast' && pokemon.terastallized)) {
+    //       move.type = '<Type>';
+    //       move.typeChangerBoosted = this.effect;
+    //     }
+    //   }
+    //   onBasePowerPriority: 23,
+    //   onBasePower(bp, pokemon, target, move) {
+    //     if (move.typeChangerBoosted === this.effect) return this.chainModify([4915, 4096]);
+    //   }
+    // A Normal-type move is rebound to the ability's type (Aerilate→Flying=9,
+    // Pixilate→Fairy=17, Refrigerate→Ice=5, Galvanize→Electric=3) AND gets
+    // ×1.2 BP (4915/4096, gen-7+). Rebinding `move_type` here makes the new
+    // type drive STAB, the type chart, and weather/aura mults downstream
+    // (all read this `move_type` local). The ×1.2 fires only when the type
+    // actually changed (PS's `typeChangerBoosted` gate), matching the
+    // exclusion list and the Tera-Blast-while-Tera carve-out. The type
+    // rebind (an `onModifyType` event) happens here, ahead of every
+    // `onBasePower` step; the companion ×1.2 (`onBasePowerPriority: 23`) is
+    // deferred below so it lands at PS's priority position — AFTER Technician
+    // (priority 30) reads `basePowerAfterMultiplier`. Sylveon / Salamence-
+    // Mega / many VGC pivots. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Aerilate_(Ability)> et al.
+    let mut ate_boost = false;
+    if move_type == 0 // Normal
+        && attacker.ability_id != u16::MAX
+        && !matches!(
+            m.slug,
+            "judgment" | "multiattack" | "naturalgift" | "revelationdance"
+                | "technoblast" | "terrainpulse" | "weatherball"
+        )
+        && !(m.slug == "terablast" && attacker.terastallized)
+    {
+        let ate_type: Option<u8> = match data::ABILITIES[attacker.ability_id as usize].slug {
+            "aerilate" => Some(9),    // Flying
+            "pixilate" => Some(17),   // Fairy
+            "refrigerate" => Some(5), // Ice
+            "galvanize" => Some(3),   // Electric
+            _ => None,
+        };
+        if let Some(t) = ate_type {
+            move_type = t;
+            ate_boost = true;
+        }
+    }
+
     // Terrain BP modifier — PS data/conditions.ts:electricterrain et al.
     // implement this via `onBasePower` (chainModify [5325, 4096]). PS
     // applies the chain through `modify()` (sim/battle.ts:2345) which is
@@ -750,6 +803,13 @@ pub fn calculate_damage(
         && data::ABILITIES[attacker.ability_id as usize].slug == "technician"
     {
         bp = bp * 3 / 2;
+    }
+
+    // -ate ×1.2 BP — deferred from the type-rebind above so it lands at PS's
+    // `onBasePowerPriority: 23`, i.e. AFTER Technician (30). ×1.2 = 4915/4096
+    // (pokeRound). Fires only when the type was actually changed.
+    if ate_boost {
+        bp = (bp * 4915 + 2047) / 4096;
     }
 
     // Sheer Force base-power boost — ×5325/4096 (≈1.3) on any move PS
@@ -2608,6 +2668,40 @@ mod tests {
         let sh_tackle = mk(&atk, tackle);
         assert!(sh_slash > no_slash, "Sharpness boosts Leaf Blade");
         assert_eq!(sh_tackle, no_tackle, "Sharpness must NOT boost Tackle");
+    }
+
+    #[test]
+    fn pixilate_changes_type_and_boosts_bp() {
+        // Pixilate turns a Normal move into Fairy AND grants ×1.2 BP.
+        // (1) Type change: Hyper Voice (Normal) is immune vs a Ghost target
+        //     without the ability (0 dmg); with Pixilate it becomes Fairy
+        //     and hits for nonzero. (2) ×1.2 BP: vs a neutral non-Fairy
+        //     target the Pixilate damage exceeds the control. We use a
+        //     non-Fairy attacker so STAB doesn't confound the BP assertion.
+        let mut atk = make_mon("garchomp", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let ghost = make_mon("gengar", 50, "timid", StatSpread::ZERO);
+        let neutral = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, d: &Pokemon| calculate_damage(a, d, move_id("hypervoice"),
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0 });
+        // Control (Garchomp has no Pixilate): Normal vs Ghost = immune.
+        let ctrl_ghost = mk(&atk, &ghost);
+        let ctrl_neutral = mk(&atk, &neutral);
+        assert_eq!(ctrl_ghost, 0, "Normal Hyper Voice is immune vs Ghost");
+        let px_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "pixilate").unwrap() as u16;
+        atk.ability_id = px_id;
+        let px_ghost = mk(&atk, &ghost);
+        let px_neutral = mk(&atk, &neutral);
+        assert!(px_ghost > 0, "Pixilate makes Hyper Voice Fairy — hits Ghost");
+        assert!(px_neutral > ctrl_neutral,
+            "Pixilate ×1.2 BP raises neutral-target damage (ctrl {ctrl_neutral}, px {px_neutral})");
     }
 
     #[test]
