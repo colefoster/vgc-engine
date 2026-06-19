@@ -2416,6 +2416,12 @@ impl Battle {
                 }
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
+                    // Blunder Policy — the holder's own move missed due to
+                    // accuracy. PS `sim/battle-actions.ts:740` consumes the
+                    // item and grants +2 Spe on the miss branch (non-OHKO;
+                    // this path is the standard accuracy roll, OHKO uses a
+                    // separate one above). No new RNG draw.
+                    crate::item::try_consume_blunder_policy(self, actor_side, actor_slot);
                     continue;
                 }
             }
@@ -8774,6 +8780,55 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].boosts[1], 1, "Kee Berry gives +1 Def on physical hit");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Kee Berry consumed");
+    }
+
+    #[test]
+    fn blunder_policy_grants_plus_two_spe_on_own_miss() {
+        // Direct: the holder's move missed → consume Blunder Policy, +2 Spe.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"blunderpolicy","nature":"jolly","moves":["earthquake","stoneedge","protect","ironhead"],"evs":{"spe":252,"atk":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        crate::item::try_consume_blunder_policy(&mut b, SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].boosts[4], 2, "Blunder Policy gives +2 Spe on miss");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Blunder Policy consumed");
+    }
+
+    #[test]
+    fn blunder_policy_fires_through_full_step_on_a_real_miss() {
+        // Integration: drive an actual accuracy miss. Stone Edge is 80 acc;
+        // crank the user's accuracy stage to -6 so most rolls miss, then
+        // scan seeds until a miss lands and assert the boost + consume.
+        let mut fired = false;
+        for seed in 0u64..40 {
+            let p1_json = r#"[
+                {"species":"garchomp","level":50,"ability":"roughskin","item":"blunderpolicy","nature":"jolly","moves":["stoneedge","earthquake","protect","ironhead"],"evs":{"spe":252,"atk":252,"hp":4}}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.p1.team[0].boosts[5] = -6; // accuracy stage floor → frequent miss
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            // A miss consumes the item and yields +2 Spe; a hit leaves it.
+            if b.p1.team[0].item_id == u16::MAX {
+                assert_eq!(b.p1.team[0].boosts[4], 2,
+                    "Blunder Policy consumed on miss must grant +2 Spe (seed {seed})");
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "no accuracy miss occurred across scanned seeds");
     }
 
     #[test]
