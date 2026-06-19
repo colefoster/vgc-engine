@@ -133,6 +133,14 @@ pub struct Battle {
     /// condition reversing the speed-sort order within each priority
     /// bracket.
     pub trick_room_turns: u8,
+    /// Gravity remaining turns (0 = inactive). Battle-wide field
+    /// pseudo-weather (PS `data/moves.ts:gravity`, duration 5). While
+    /// active: all Pokémon are grounded (Levitate / Magnet Rise /
+    /// Telekinesis / Air Balloon / Flying-type immunity suppressed),
+    /// every move's accuracy is ×6840/4096, and moves with the
+    /// `gravity` flag (Fly, Bounce, Jump Kick, Splash, Magnet Rise,
+    /// Telekinesis, …) are disabled / fail.
+    pub gravity_turns: u8,
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -180,6 +188,7 @@ impl Battle {
             weather: crate::weather::Weather::None, weather_turns: 0,
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
+            gravity_turns: 0,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -800,6 +809,22 @@ impl Battle {
         if self.trick_room_turns > 0 {
             self.trick_room_turns -= 1;
         }
+        // Gravity field pseudo-weather ticks down each end-of-turn
+        // (PS `data/moves.ts:gravity` condition, `onFieldResidual`).
+        // On expiry, drop the grounding marker from every active mon.
+        if self.gravity_turns > 0 {
+            self.gravity_turns -= 1;
+            if self.gravity_turns == 0 {
+                let n = self.format().active_count() as u8;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for s in 0..n {
+                        if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
+                            mon.volatiles.remove(crate::pokemon::VolatileKind::GravityGrounded);
+                        }
+                    }
+                }
+            }
+        }
         if self.terrain_turns > 0 {
             self.terrain_turns -= 1;
             if self.terrain_turns == 0 {
@@ -891,6 +916,7 @@ impl Battle {
                 crate::ability::on_switch_out(self, side, actor_slot);
             }
         }
+        let gravity_active = self.gravity_turns > 0;
         let s = self.side_mut(side);
         if (actor_slot as usize) < s.active.len()
             && (team_index as usize) < s.team.len()
@@ -936,6 +962,17 @@ impl Battle {
             // Set after the blanket clear so the marker survives until
             // the end-of-turn reset.
             incoming.set_switched_in_this_turn(true);
+            // Gravity grounds mons that switch in while it's active
+            // (PS reads the field condition live in `isGrounded()`).
+            // Re-add the marker that the blanket `volatiles.clear()`
+            // above just wiped.
+            if gravity_active {
+                let _ = incoming.volatiles.add(crate::pokemon::Volatile {
+                    kind: crate::pokemon::VolatileKind::GravityGrounded,
+                    turns_remaining: 0,
+                    payload: 0,
+                });
+            }
         } else {
             return false;
         }
@@ -1623,6 +1660,27 @@ impl Battle {
                 mon.last_used_move_slot = 255;
             }
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
+            return;
+        }
+
+        // 1c. Gravity — moves with the `gravity` flag can't be used while
+        // the field condition is up (PS `data/moves.ts:gravity` condition
+        // `onBeforeMove`: `this.add('cant', ...); return false;`). PS's
+        // `cant` cancels the move BEFORE PP is charged and draws no RNG.
+        // The gravity-flagged move set (PS `flags.gravity`): the airborne /
+        // jump moves — Fly, Bounce, Sky Drop, Jump Kick, High Jump Kick,
+        // Splash, Magnet Rise, Telekinesis, Flying Press, plus the bounce
+        // variant Hi Jump Kick. Hardcoded here rather than threading a new
+        // generated `is_gravity` flag through `build.rs` (no consumer for
+        // the broader flag set yet). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
+        if self.gravity_turns > 0
+            && matches!(
+                m.slug,
+                "fly" | "bounce" | "skydrop" | "jumpkick" | "highjumpkick"
+                    | "splash" | "magnetrise" | "telekinesis" | "flyingpress"
+            )
+        {
             return;
         }
 
@@ -2731,6 +2789,15 @@ impl Battle {
                 );
                 if weather_veil && !attacker_breaks_mold {
                     eff_acc = eff_acc * 3277 / 4096;
+                }
+                // Gravity — PS `data/moves.ts:gravity` condition
+                // `onModifyAccuracy`: `this.chainModify([6840, 4096])`
+                // (≈ ×1.67) for every numeric-accuracy move while the
+                // field condition is up. Scales the existing accuracy
+                // roll — no extra PRNG draw. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
+                if self.gravity_turns > 0 {
+                    eff_acc = eff_acc * 6840 / 4096;
                 }
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
@@ -5240,6 +5307,35 @@ impl Battle {
                     for side in [SideRef::P1, SideRef::P2] {
                         for s in 0..n {
                             crate::item::try_consume_room_service(self, side, s);
+                        }
+                    }
+                }
+            }
+            "gravity" => {
+                // Gravity — PS `data/moves.ts:gravity` (pseudoWeather,
+                // duration 5). Fails if already active. On set, every
+                // active mon's airborne volatiles (Magnet Rise /
+                // Telekinesis; Fly / Bounce / Sky Drop charge states)
+                // are cleared so they fall to the ground; grounding,
+                // the ×6840/4096 accuracy mod, and `gravity`-flag move
+                // disabling are read live from `gravity_turns` elsewhere.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
+                if self.gravity_turns == 0 {
+                    self.gravity_turns = 5;
+                    let n = self.format().active_count() as u8;
+                    for side in [SideRef::P1, SideRef::P2] {
+                        for s in 0..n {
+                            if let Some(mon) =
+                                self.side_mut(side).active_mon_mut(s as usize)
+                            {
+                                mon.volatiles.remove(crate::pokemon::VolatileKind::MagnetRise);
+                                mon.volatiles.remove(crate::pokemon::VolatileKind::Telekinesis);
+                                let _ = mon.volatiles.add(crate::pokemon::Volatile {
+                                    kind: crate::pokemon::VolatileKind::GravityGrounded,
+                                    turns_remaining: 0,
+                                    payload: 0,
+                                });
+                            }
                         }
                     }
                 }
@@ -8107,6 +8203,75 @@ mod tests {
         );
         // Toggle clears immediately; end-of-turn saturating_sub keeps 0.
         assert_eq!(b.trick_room_turns, 0, "second TR cancels");
+    }
+
+    #[test]
+    fn gravity_sets_ticks_and_grounds_levitator() {
+        // Bronzor (Levitate) is airborne — Earth Power is immune. After
+        // Bronzor's own Gravity lands, the field condition grounds it and
+        // a Ground move now connects. PS data/moves.ts:gravity.
+        let p1_json = r#"[
+            {"species":"bronzor","level":50,"ability":"levitate","item":"","nature":"calm","moves":["gravity","zenheadbutt","bodyslam","rest"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["earthpower","earthquake","dragonclaw","ironhead"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Pre-gravity: Bronzor is airborne (Levitate), Ground-immune.
+        assert!(!b.p1.team[0].is_grounded(), "Bronzor airborne before Gravity");
+        // Turn 1: Bronzor uses Gravity (Garchomp Earth Power whiffs on the
+        // still-airborne mon this same turn only if it moved first; Bronzor
+        // is slower so Garchomp moves first into an airborne target → no
+        // damage). We only assert the field state here.
+        let hp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.gravity_turns, 4, "Gravity set to 5, ticked to 4");
+        assert!(b.p1.team[0].is_grounded(), "Bronzor grounded under Gravity");
+        // Earth Power into airborne Bronzor on turn 1 (before Gravity) did
+        // nothing.
+        assert_eq!(b.p1.team[0].current_hp, hp_before, "EQ immune turn 1");
+        // Turn 2: now grounded, Earth Power connects. Bronzor uses Zen
+        // Headbutt (slot 1) — a non-healing move so its HP only moves down.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].current_hp < hp_before, "Earth Power hits grounded Bronzor");
+        assert_eq!(b.gravity_turns, 3, "Gravity ticked to 3");
+    }
+
+    #[test]
+    fn gravity_disables_airborne_move() {
+        // While Gravity is up, Fly (gravity-flagged) can't be used — it
+        // does nothing and (per PS `cant`) charges no PP.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","item":"","nature":"relaxed","moves":["gravity","moonlight","helpinghand","psychic"]}
+        ]"#;
+        // Skarmory (base Spe 70) is slower than Cresselia (85), so Gravity
+        // resolves first and the same-turn Fly is already disabled.
+        let p2_json = r#"[
+            {"species":"skarmory","level":50,"ability":"sturdy","item":"","nature":"sassy","moves":["fly","spikes","roost","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // Turn 1: Cresselia sets Gravity; Skarmory tries Fly.
+        let fly_pp_before = b.p2.team[0].pp[0];
+        let cress_hp_before = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.gravity_turns > 0, "Gravity active");
+        // Fly was canceled — no charge state, no PP spent, no damage.
+        assert_eq!(b.p2.team[0].pp[0], fly_pp_before, "Fly charged no PP (cant)");
+        assert_eq!(b.p2.team[0].semi_invuln, 0, "Fly did not enter semi-invuln");
+        assert_eq!(b.p1.team[0].current_hp, cress_hp_before, "Fly dealt no damage");
     }
 
     #[test]

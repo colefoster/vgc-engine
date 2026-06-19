@@ -295,6 +295,16 @@ pub enum VolatileKind {
     /// type, Levitate, Air Balloon, and Magnet Rise are all overridden.
     /// Payload unused.
     SmackdownGrounded,
+    /// Gravity grounding (PS `data/moves.ts:gravity` pseudo-weather, read
+    /// live by `Pokemon.isGrounded()` via `field.getPseudoWeather('gravity')`).
+    /// We mirror PS's "grounded while the field condition is up" semantics
+    /// with a per-mon marker that the battle keeps in sync with
+    /// `gravity_turns`: added to every active mon when Gravity is set and
+    /// re-added on switch-in while it's active; removed from all active
+    /// mons when Gravity expires. While set, the holder counts as grounded
+    /// — Flying type, Levitate, Air Balloon, Magnet Rise, and Telekinesis
+    /// are all overridden. Payload unused.
+    GravityGrounded,
     /// Infatuation (PS `data/moves.ts:706` attract `condition`). Set by the
     /// move Attract (and later Cute Charm / Destiny Knot) on a target whose
     /// gender is opposite and non-genderless relative to the source (M↔F).
@@ -1278,6 +1288,14 @@ impl Pokemon {
         // `Pokemon.isGrounded()`. Overrides Flying type, Levitate,
         // Air Balloon, and Magnet Rise.
         if self.volatiles.has(VolatileKind::SmackdownGrounded) {
+            return true;
+        }
+        // Gravity — while the field condition is up every Pokémon is
+        // grounded (PS `Pokemon.isGrounded()` checks
+        // `this.battle.field.getPseudoWeather('gravity')`). The battle
+        // keeps this marker in sync with `gravity_turns`. Overrides
+        // Flying type, Levitate, Air Balloon, Magnet Rise, Telekinesis.
+        if self.volatiles.has(VolatileKind::GravityGrounded) {
             return true;
         }
         // Ring Target negates the Flying-TYPE airborne immunity (PS's
