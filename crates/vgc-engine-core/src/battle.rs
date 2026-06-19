@@ -5895,6 +5895,27 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::QUASH => {
+                // Quash — make the target act LAST this turn. PS
+                // data/moves.ts:quash: fails in singles; otherwise sets the
+                // target's pending action `order = 201` (sorts to the end).
+                // We record the request and the `step` loop moves the
+                // target's pending action to the back of the remaining
+                // queue; a target that already moved is a no-op (PS returns
+                // false). Quash is a 100%-accuracy, Protect-blockable move
+                // (unlike After You), so it rolls accuracy.
+                if self.format().active_count() < 2 {
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                if let Some((ts, tslot)) = opp_target {
+                    if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
+                        self.pending_queue_reorder = Some((ts, tslot, false));
+                    }
+                }
+            }
             data::move_id::TRICK | data::move_id::SWITCHEROO => {
                 // Trick / Switcheroo — swap held items with the target.
                 // PS data/moves.ts:trick / switcheroo are byte-identical
@@ -9992,6 +10013,59 @@ mod tests {
         );
         assert!(c.p1.team[0].current_hp < whimsicott_max_c,
                 "Control: without After You, Garchomp's Earthquake hits Whimsicott");
+    }
+
+    #[test]
+    fn quash_forces_target_to_act_last() {
+        // Doubles. P1 Whimsicott (fastest) Quashes P2 Garchomp, which then
+        // acts AFTER P1's slow Iron Hands — so Iron Hands KOs Garchomp
+        // (HP 1) before it can fire Earthquake, and Whimsicott is untouched.
+        // PS data/moves.ts:quash.
+        let p1_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"infiltrator","item":"","nature":"jolly","moves":["quash","moonblast","tailwind","protect"],"evs":{"spe":252,"spa":252}},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","fakeout","wildcharge","thunderpunch"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","protect"],"evs":{"atk":252,"spe":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["protect","surf","hurricane","tailwind"]}
+        ]"#;
+
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        b.p2.team[0].current_hp = 1;
+        let whimsicott_max = b.p1.team[0].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Quash → Garchomp
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Drain Punch → Garchomp
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, // Garchomp Earthquake
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },                   // Pelipper Protect
+            ],
+        );
+        assert!(b.p2.team[0].fainted, "Iron Hands KO'd Garchomp");
+        assert_eq!(b.p1.team[0].current_hp, whimsicott_max,
+                   "Quash: Garchomp moved last and fainted before its Earthquake — Whimsicott untouched");
+
+        // Control: Whimsicott uses Moonblast instead → no Quash → Garchomp
+        // (faster than Iron Hands) lands Earthquake first.
+        let mut c = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        c.p2.team[0].current_hp = 1;
+        let whimsicott_max_c = c.p1.team[0].current_hp;
+        c.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert!(c.p1.team[0].current_hp < whimsicott_max_c,
+                "Control: without Quash, Garchomp's Earthquake hits Whimsicott");
     }
 
     #[test]
