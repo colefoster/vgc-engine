@@ -280,6 +280,7 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         type_override: [255, 255],
         protean_used: false,
         disguise_busted: false,
+            micle_next_move: false,
     })
 }
 

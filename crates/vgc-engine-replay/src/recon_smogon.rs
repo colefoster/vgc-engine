@@ -594,6 +594,7 @@ mod tests {
                     type_override: [255, 255],
                     protean_used: false,
                     disguise_busted: false,
+            micle_next_move: false,
                     volatiles: VolatileSet::default(),
                 }
             };

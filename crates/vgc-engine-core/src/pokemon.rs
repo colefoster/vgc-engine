@@ -608,6 +608,15 @@ pub struct Pokemon {
     /// stays busted), and the forme change is permanent. Initialised
     /// `false`; only ever set `true`. PS data/abilities.ts:960.
     pub disguise_busted: bool,
+    /// Micle Berry one-shot accuracy latch. PS `data/items.ts:micleberry`
+    /// (line 4067): on the HP-trigger eat, the holder gains the `micleberry`
+    /// volatile, which on its NEXT non-OHKO move multiplies that move's
+    /// accuracy by 4915/4096 (×1.2) and then removes itself. We model the
+    /// volatile as this single Copy latch: set `true` when the berry is
+    /// eaten, consumed (cleared) the next time the holder uses a non-OHKO
+    /// move (in the accuracy block). Reset to `false` on switch-out
+    /// alongside the other single-turn volatiles.
+    pub micle_next_move: bool,
 }
 
 impl Pokemon {
@@ -1404,6 +1413,7 @@ mod tests {
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,
+            micle_next_move: false,
         };
         let (types, n) = mon.effective_types();
         assert_eq!(n, species.num_types);
@@ -1458,6 +1468,7 @@ mod tests {
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,
+            micle_next_move: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
         let mut sup = mon.clone();
