@@ -24,10 +24,14 @@ magmaarmor, immunity, waterveil, cloudnine, airlock, healer, cottondown,
 poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
 
 **REMAINING — the short tail:**
-- **Wonder Guard** — not blocked structurally; deferred only for its wide
-  interaction matrix (Mold Breaker / Scrappy / Tinted Lens SE-gate).
-- **Aroma Veil (full)** — partial; needs Torment / Heal Block immunity wiring
-  to be complete.
+- **Wonder Guard** — SHIPPED (PR-336). Only-SE damage gate in the
+  move-immunity block; Mold-Breaker-breakable; status / Struggle / indirect
+  damage unaffected.
+- **Aroma Veil** — SHIPPED for every reachable volatile (PR-337): immunity
+  (holder + ally aura) wired at all THREE live application sites — Attract
+  (move + Cute Charm), Encore (move), Disable (Cursed Body). Taunt / Torment /
+  Heal Block have no setter in the engine yet, so their Aroma Veil immunity is
+  **vacuous-pending** — wire it when those volatiles first gain an applier.
 - **Pressure** + **Frisk** — deferred no-ops (no PP system / information-only).
 
 **Note:** Wind Rider / Wind Power are otherwise complete; only their
