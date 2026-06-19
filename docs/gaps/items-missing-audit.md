@@ -147,9 +147,11 @@ remaining list below._
 - **System-blocked (need a prerequisite first):**
   - Shed Shell / Binding Band / Grip Claw — need the **trapping / partial-trap**
     system.
-  - Leppa Berry — needs a **PP system**.
   - Rusted Sword / Rusted Shield — **team-build forme-lock**, not a runtime
     battle item.
+
+  (Leppa Berry SHIPPED in PR-339 — the engine already tracks PP; the
+  "needs a PP system" note was stale.)
 
 No engine-shipped slug appears in the dex as illegal — the handled slugs are
 all gen-9 legal, so no "doc says shipped but engine-only" drift.

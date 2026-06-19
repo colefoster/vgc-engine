@@ -232,8 +232,8 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
 /// berry and restore +10 PP to the first 0-PP slot (Ripen → +20), capped at
 /// that move's max PP. Single use — the item is consumed (`item_id = MAX`).
 ///
-/// Max-PP cap uses the move's base PP (`data::MOVES[id].pp`); when PP-Up/Max
-/// max-PP application lands, this should read the holder's stored max instead.
+/// Max-PP cap uses `team::boosted_max_pp` (base PP with +3 PP-Ups, matching
+/// PS's PP-maxed build), so the restore clamps to the move's true maximum.
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Leppa_Berry>.
 pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
     let (item_id, ripen) = match battle.side(side).active_mon(slot as usize) {
@@ -251,7 +251,7 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         if move_id == u16::MAX {
             return;
         }
-        let max_pp = data::MOVES[move_id as usize].pp;
+        let max_pp = crate::team::boosted_max_pp(move_id);
         let added: u8 = if ripen { 20 } else { 10 };
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
         m.item_id = u16::MAX;

@@ -152,6 +152,32 @@ fn parse_gender_token(s: &str) -> Option<data::Gender> {
     }
 }
 
+/// Max PP for a move id with the standard +3 PP-Ups (PP Max) applied —
+/// the PP a competitively-built mon actually has.
+///
+/// PS `sim/pokemon.ts:351-373` always builds move slots with `ppUps = 3`
+/// (the `set.pp`/`set.ppup` fields are NOT consulted by the simulator; it
+/// hard-codes 3 PP-ups for every move that can take them). `sim/battle.ts:
+/// 2387 calculatePP`: `noPPBoosts` moves keep their base PP, everything else
+/// gets `pp * (5 + 3) / 5 = pp * 8 / 5`. All boostable base PPs are multiples
+/// of 5, so the integer division is exact (max result 64, fits u8).
+///
+/// `noPPBoosts` moves in gen 9 (data/moves.ts): Revival Blessing, Sketch,
+/// Struggle. Trump Card is additionally forced to 0 PP-ups by pokemon.ts:361.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/PP_Up>.
+pub fn boosted_max_pp(move_id: u16) -> u8 {
+    if move_id == u16::MAX {
+        return 0;
+    }
+    let mv = &data::MOVES[move_id as usize];
+    if matches!(mv.slug, "revivalblessing" | "sketch" | "struggle" | "trumpcard") {
+        return mv.pp;
+    }
+    // pp * 8 / 5 — exact for every multiple-of-5 base PP. Compute in u16 to
+    // avoid the intermediate `pp * 8` overflowing u8 (40 * 8 = 320).
+    ((mv.pp as u16 * 8) / 5) as u8
+}
+
 /// Build a single Pokémon from a team-member spec.
 pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
     let species_id = lookup_species(&m.species)?;
@@ -164,7 +190,9 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
     for (i, mv) in m.moves.iter().take(4).enumerate() {
         let id = lookup_move(mv)?;
         moves[i] = id;
-        pp[i] = data::MOVES[id as usize].pp;
+        // Competitive sets are PP-maxed (PS sim always builds with +3 PP-Ups);
+        // current PP starts at the boosted max. See `boosted_max_pp`.
+        pp[i] = boosted_max_pp(id);
     }
 
     // Tera type: PS type names → typechart index (0..=17). Stellar is
@@ -304,6 +332,34 @@ mod gender_tests {
             teratype: None,
             gender: gender.map(|g| g.to_string()),
         }
+    }
+
+    #[test]
+    fn boosted_max_pp_applies_three_pp_ups() {
+        let id = |slug: &str| data::MOVES.iter().position(|m| m.slug == slug).unwrap() as u16;
+        // pp * 8 / 5 for boostable moves (exact for multiples of 5).
+        assert_eq!(boosted_max_pp(id("closecombat")), 8, "base 5 → 8");
+        assert_eq!(boosted_max_pp(id("earthquake")), 16, "base 10 → 16");
+        assert_eq!(boosted_max_pp(id("bravebird")), 24, "base 15 → 24");
+        assert_eq!(boosted_max_pp(id("protect")), 16, "base 10 → 16");
+        assert_eq!(boosted_max_pp(id("scratch")), 56, "base 35 → 56");
+        // noPPBoosts moves keep their base PP.
+        assert_eq!(boosted_max_pp(id("struggle")), data::MOVES[id("struggle") as usize].pp,
+                   "Struggle takes no PP boost");
+        assert_eq!(boosted_max_pp(id("sketch")), data::MOVES[id("sketch") as usize].pp,
+                   "Sketch takes no PP boost");
+    }
+
+    #[test]
+    fn build_member_starts_with_pp_maxed_moves() {
+        // Competitive sets are PP-maxed; the engine builds current PP at the
+        // boosted max (PS sim always uses +3 PP-Ups). Earthquake base 10 → 16.
+        let mut m = member("Garchomp", None);
+        m.moves = vec!["earthquake".into(), "closecombat".into(), "protect".into()];
+        let mon = build_member(&m).unwrap();
+        assert_eq!(mon.pp[0], 16, "Earthquake PP-maxed to 16");
+        assert_eq!(mon.pp[1], 8, "Close Combat PP-maxed to 8");
+        assert_eq!(mon.pp[2], 16, "Protect PP-maxed to 16");
     }
 
     #[test]

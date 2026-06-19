@@ -330,8 +330,8 @@ remaining work**; citation entries for each are below.
   PP-decrement site.
 - **Complexity:** small — SHIPPED (PR-339). The engine DOES track PP (populated
   at team-build, decremented on use, gates selection at 0), so this was never
-  blocked. Max-PP cap currently reads base move PP; revisit if PP-Up/Max
-  max-PP application lands.
+  blocked. Max-PP cap reads `team::boosted_max_pp` (base PP + 3 PP-Ups, the
+  PP-maxed value PS sim builds — PR-340).
 - **Deps:** none (the "blocked on PP system" claim was stale).
 - **Batch with:** none
 
@@ -565,8 +565,8 @@ guard, not after. **Same PR as Adrenaline Orb**.
   restores +10 (Ripen +20) capped at the move's max PP.
 - **Complexity:** small. NOT hard, NOT blocked — the engine already tracks PP.
   `item.rs::on_pp_depleted` is invoked from every PP-decrement site in
-  `battle.rs`; restores to the first 0-PP slot. Max-PP cap reads base move PP
-  until PP-Up/Max max-PP application lands.
+  `battle.rs`; restores to the first 0-PP slot. Max-PP cap reads
+  `team::boosted_max_pp` (base PP + 3 PP-Ups, PR-340).
 - **Deps:** none (the "blocked on PP tracking" claim was stale).
 
 ### Mirror Herb cross-Pokémon `effectState`
