@@ -2,6 +2,16 @@
 
 Major structural gaps where no scaffolding exists yet. Each entry needs at minimum a new state field on `Pokemon` / `Side` / `Battle` plus a pipeline hook.
 
+> **Recently-shipped subsystems (verified 2026-06-19).** Several entries below were "not implemented" but landed in PRs 309–317 and are now live primitives other mechanics consume:
+> - **Toxic Spikes** (PR-309) — `side.rs: toxic_spikes_layers`, applied on switch-in.
+> - **Runtime type-override** (PR-310) — `Pokemon::type_override` (`pokemon.rs:592`); drives Color Change / Protean / Libero.
+> - **Disable (full apply)** (PR-311) — `Pokemon::set_disable` / `disabled_move` (`pokemon.rs:988`).
+> - **Wind-move flag + Charge volatile** (PR-312) — `data::MOVES[..].is_wind`; `VolatileKind::Charge` (`pokemon.rs:185`), ×2 next Electric BP.
+> - **Gender subsystem** (PR-313) — `Pokemon::gender` (`pokemon.rs:426`).
+> - **Attract / infatuation** (PR-314) — `VolatileKind::Attract` + `Pokemon::set_attract` (`pokemon.rs:1009`).
+> - **Forme-change primitive** (PR-316) — `Battle::set_forme` (`battle.rs:338`); used by Disguise.
+> - **Centralized source-threaded boost application** (PR-317) — `Battle::apply_boosts(target, deltas, source)` threads the boost source for Mirror Armor / Clear Amulet / etc.
+
 ## Generational identity
 
 ### Terastallization
@@ -88,7 +98,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/conditions.ts:confusion`, `data/moves.ts:confuseray,swagger,flatter`.
 
-**Status**: not implemented.
+**Status**: shipped. `VolatileKind::Confusion` exists (`pokemon.rs`) and is applied + self-hit chip resolved (`battle.rs`). Own Tempo blocks it (PR-323-era). Remaining: some confusion-inducing moves (Swagger/Flatter/Teeter Dance secondary) may still lack their `match` arms — audit per-move.
 
 ### Taunt / Disable / Torment / Heal Block / Imprison / Embargo
 
@@ -100,7 +110,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/conditions.ts:taunt,disable,torment,healblock,imprison,embargo`.
 
-**Status**: not implemented. (Encore is implemented — PR-28.)
+**Status**: partial — all six exist as `VolatileKind` variants (`pokemon.rs`: `Taunt`, `Disable`, `Torment`, `HealBlock`, `Imprison`, `Embargo`). **Disable is fully applied** via `Pokemon::set_disable` / `disabled_move` (PR-311; consumed by Cursed Body PR-331 and the choice-validation gate). The other five have the volatile slot + turn-counter wired but still lack full effect plumbing (Taunt status-move gate at action-selection, Torment same-move lockout, Heal Block heal-gate, Imprison/Embargo gates) and their setter moves. Encore is implemented — PR-28.
 
 ## Entry hazards / removal
 
@@ -124,7 +134,9 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:spikes,toxicspikes,stickyweb`.
 
-**Status**: not implemented.
+**Status**: partial.
+- **Toxic Spikes — shipped (PR-309).** `SideConditions::toxic_spikes_layers` (`side.rs:95`); applied on switch-in via `Battle::apply_toxic_spikes_to` (`battle.rs:1001`) including 2-layer Toxic upgrade and Poison-type absorb. The Toxic Debris ability (PR-327) lays a layer.
+- **Spikes + Sticky Web — not implemented.** No `spikes_layers` / `sticky_web` fields yet (only a TODO comment at `side.rs:41`).
 
 ### Hazard control
 
@@ -388,9 +400,14 @@ These aren't single mechanics — they're prerequisites that block many of the a
 
 ### Switch-in pipeline ordering
 
-**What it is**: PS order on switch-in is: hazards → Heavy Boots check → ability triggers (Intimidate, Drizzle, Trace, Embody Aspect, Regenerator on the *outgoing* mon happens at switch-out) → item triggers (Air Balloon announce, Booster Energy proc) → form changes. Currently `apply_switches` runs `on_switch_in` directly; no hazards, no item phase.
+**What it is**: PS order on switch-in is: hazards → Heavy Boots check → ability triggers (Intimidate, Drizzle, Trace, Embody Aspect, Regenerator on the *outgoing* mon happens at switch-out) → item triggers (Air Balloon announce, Booster Energy proc) → form changes.
 
-**Status**: partial — abilities fire; hazards / items / forme changes missing.
+**Status**: partial — most of the pipeline now exists.
+- **Abilities fire** on switch-in (`ability::on_switch_in`, `battle.rs:842`).
+- **Items fire** on switch-in (`item::on_switch_in`, `battle.rs:843`) — e.g. terrain seeds consume here (`item.rs:565`, PR-301).
+- **Hazards fire**: Stealth Rock (PR-113) and Toxic Spikes (`apply_toxic_spikes_to`, PR-309) apply in `do_switch` (`battle.rs:918`).
+- **Forme change** exists (`Battle::set_forme`, `battle.rs:338`, PR-316) and runs in the switch path.
+- **Still missing**: Spikes / Sticky Web hazards (not modelled); Heavy Boots hazard-immunity; full PS-canonical *ordering* audit of the phases above. Note: Room Service is **not** implemented (the on-Trick-Room-set item hook does not exist yet).
 
 ### End-of-turn residual ordering
 

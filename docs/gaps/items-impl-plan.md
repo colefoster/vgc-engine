@@ -25,39 +25,43 @@ Griseous trio each split into separate entries.)
 
 ## Suggested shipping order
 
-Highest-leverage per PR first. Each numbered item is a single PR.
+> **Status (2026-06-19): #1–#10 are all SHIPPED (PRs 299–308).** The numbered
+> batches below are kept for their citations; each is annotated DONE. The real
+> remaining work is the "mop up" tail at the bottom (~20 items) — see
+> `items-missing-audit.md` for the refreshed remaining list.
 
-1. **Plate batch (×16)** — extend the type-boost BP arm in `damage.rs:725-744`
+1. **Plate batch (×16)** — **DONE (PR-299).** extend the type-boost BP arm in `damage.rs:725-744`
    with all 16 plate slugs + `fairyfeather`. One match-arm extension, 17 slugs
    shipped together. Single highest-leverage PR in the audit.
-2. **PLA crystal batch (×3)** — `adamantcrystal` / `lustrousglobe` /
+2. **PLA crystal batch (×3)** — **DONE (PR-300).** `adamantcrystal` / `lustrousglobe` /
    `griseouscore`. Extend the existing Adamant Orb / Lustrous Orb / Griseous
    Orb arm in `damage.rs:803-810` with the carrier-locked variants. Trivial.
-3. **Terrain seed batch (×4)** — `electricseed` / `grassyseed` / `mistyseed` /
+3. **Terrain seed batch (×4)** — **DONE (PR-301).** `electricseed` / `grassyseed` / `mistyseed` /
    `psychicseed`. Single on-switch-in / on-terrain-change consumable family,
    +1 Def or +1 SpD depending on terrain. Shared shape; one PR.
-4. **Utility Umbrella** — weather-suppression flag consulted by damage and
+4. **Utility Umbrella** — **DONE (PR-306).** weather-suppression flag consulted by damage and
    residual phases when the holder is on field. Highest-leverage single item.
-5. **Booster-orb batch (×4)** — `absorbbulb` / `cellbattery` / `snowball` /
+5. **Booster-orb batch (×4)** — **DONE (PR-302).** `absorbbulb` / `cellbattery` / `snowball` /
    `luminousmoss`. Identical `on_damaging_hit` shape: type-match consumes for
    +1 stat. One PR, four slugs.
-6. **Pinch-stat-berry batch (×5)** — `liechiberry` / `ganlonberry` /
+6. **Pinch-stat-berry batch (×5)** — **DONE (PR-303).** `liechiberry` / `ganlonberry` /
    `salacberry` / `petayaberry` / `apicotberry`. Identical `on_after_damage`
-   <=1/4 HP trigger, +1 stat. One PR. Add `starfberry` (random +2) and
-   `lansatberry` (Focus Energy) as small follow-ups if they fit.
-7. **HP-restoring berry batch (×6)** — `oranberry` + the Figy family
+   <=1/4 HP trigger, +1 stat. One PR. (`starfberry` random +2 and
+   `lansatberry` Focus Energy remain — see tail.)
+7. **HP-restoring berry batch (×6)** — **DONE (PR-304).** `oranberry` + the Figy family
    (`figyberry` / `wikiberry` / `magoberry` / `aguavberry` / `iapapaberry`).
    All share the <=1/4 HP heal-1/3 trigger (Oran is <=1/2 heal-10). Confuse-
-   if-disliked-nature branch is data-table only.
-8. **On-hit retaliate berry batch (×4)** — `keeberry` (+1 Def on physical),
-   `marangaberry` (+1 SpD on special), `rowapberry` (1/8 damage on special),
-   `jabocaberry` (already shipped — confirm). Same `on_damaging_hit` shape.
-9. **Adrenaline Orb** — needs Intimidate-trigger hook; high VGC leverage.
-10. **Mirror Herb** — opposing-boost-copy consumable. Medium but signature.
+   if-disliked-nature branch is data-table only (still deferred).
+8. **On-hit retaliate berry batch (×4)** — **DONE (PR-305).** `keeberry` (+1 Def on physical),
+   `marangaberry` (+1 SpD on special), `rowapberry` (1/8 damage on special).
+   `jabocaberry` already shipped. Same `on_damaging_hit` shape.
+9. **Adrenaline Orb** — **DONE (PR-307).** needs Intimidate-trigger hook; high VGC leverage.
+10. **Mirror Herb** — **DONE (PR-308).** opposing-boost-copy consumable. Medium but signature.
 
 After those, mop up the speed/priority/accuracy/utility singles (Quick Claw,
 Lagging Tail, King's Rock, Razor Fang, Zoom Lens, Focus Band, Shed Shell,
-Float Stone, Ring Target, etc.).
+Float Stone, Ring Target, etc.) — **this tail (~20 items) is the actual
+remaining work**; citation entries for each are below.
 
 ---
 

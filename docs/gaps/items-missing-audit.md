@@ -13,7 +13,8 @@ as a string literal in the four engine source files above.
 - Handled by engine: **146**
 - Missing: **103** (raw); after filtering pure-flavor (Poke Balls,
   evolution items/stones, EV-reducing berries, Sweets, Bottle Caps,
-  Pretty Feather, Big Nugget, Rare Bone): **~5 competitively relevant**
+  Pretty Feather, Big Nugget, Rare Bone): **~20 competitively-meaningful**
+  held items remaining (refreshed 2026-06-19 — see list at end).
 
 ## Missing by category
 
@@ -121,36 +122,34 @@ competitive set uses them. Tag low-priority.
 
 ## Notes & surprises
 
-- **Plates are mostly missing.** Engine handles `pixieplate` only —
-  the other 16 Arceus plates are not in the BP table at
-  `damage.rs:725-744`. Trivial fix: extend that match arm. Same shape
-  as the existing type-boost rocks. This is the single highest-leverage
-  one-PR gap in the audit.
-- **Carrier-locked PLA crystals missing.** `adamantcrystal`,
-  `lustrousglobe`, `griseouscore` are the BDSP/PLA variants of
-  Adamant/Lustrous/Griseous Orb. The Orb forms ARE handled
-  (`damage.rs:803-810`). Extending the existing match is a one-line fix.
-- **Terrain seeds all missing.** Four single-line consumables that
-  meaningfully change VGC builds (Indeedee + Psychic Seed Hatterene is
-  a known archetype). Priority bucket.
-- **Utility Umbrella missing** is the most surprising omission — it's a
-  staple in any weather-heavy meta and has a clean, well-defined effect.
-- **No engine-shipped slug appears in the dex as illegal** — the 101
-  handled slugs are all gen-9 legal, so no "doc says shipped but
-  engine-only" drift.
-- **`docs/items.md` cross-check not run** in this audit; it lists
-  mechanics by name rather than slug, so a deeper diff is tracked
-  separately.
+_Superseded (all the surprises below shipped) — see the refreshed remaining list below._
 
 ## Top 10 highest leverage to ship next
 
-1. The 16 missing Arceus plates (one match-arm extension).
-2. Terrain seeds (4 items, one trigger family).
-3. Utility Umbrella.
-4. Booster-orb consumables (Absorb Bulb / Cell Battery / Snowball / Luminous Moss).
-5. Adrenaline Orb (Intimidate-trigger Speed +1).
-6. Mirror Herb (boost-copy on opposing stat raise).
-7. Salac / Petaya / Liechi / Apicot / Ganlon pinch berries.
-8. Oran / Sitrus-family healing berries (Sitrus IS handled; Oran/Figy-family are not).
-9. Adamant Crystal / Lustrous Globe / Griseous Core.
-10. Shed Shell + Utility Umbrella + Eject Pack (Eject Pack IS handled — confirm).
+_Superseded — every item in the former Top 10 (plates, PLA crystals, terrain
+seeds, Utility Umbrella, booster orbs, Adrenaline Orb, Mirror Herb, pinch
+berries, Oran/Figy heal berries) shipped in PRs 299–308. See the refreshed
+remaining list below._
+
+## Refreshed remaining list (competitively-meaningful held items, 2026-06-19)
+
+~20 held items remain that a real gen-9 VGC set might run:
+
+- **Consumable / pinch berries:** Enigma, Starf, Micle, Lansat, Persim.
+- **Reactive consumables:** Blunder Policy (+2 Spe on own-move miss); Room
+  Service (-1 Spe under Trick Room — **not implemented**, no on-TR-set item
+  hook exists yet).
+- **Speed / priority / accuracy:** Quick Claw (20% move-first), Lagging Tail
+  (move-last), King's Rock / Razor Fang (+10% flinch), Zoom Lens (×1.2 acc if
+  moving after target).
+- **Utility:** Focus Band (10% survive a KO), Float Stone (halve weight), Ring
+  Target (negate type immunities).
+- **System-blocked (need a prerequisite first):**
+  - Shed Shell / Binding Band / Grip Claw — need the **trapping / partial-trap**
+    system.
+  - Leppa Berry — needs a **PP system**.
+  - Rusted Sword / Rusted Shield — **team-build forme-lock**, not a runtime
+    battle item.
+
+No engine-shipped slug appears in the dex as illegal — the handled slugs are
+all gen-9 legal, so no "doc says shipped but engine-only" drift.
