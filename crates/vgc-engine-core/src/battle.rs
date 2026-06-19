@@ -2130,6 +2130,7 @@ impl Battle {
                         b_side,
                         b_slot,
                         m,
+                        move_id,
                         Some(Target { side: actor_side, slot: actor_slot }),
                         Some((actor_side, actor_slot)),
                         will_act,
@@ -2140,7 +2141,7 @@ impl Battle {
                     return;
                 }
             }
-            self.resolve_status_move(actor_side, actor_slot, m, target, will_act);
+            self.resolve_status_move(actor_side, actor_slot, m, move_id, target, will_act);
             // Throat Spray: sound-flag status moves (Sing, Heal Bell,
             // Roar of Time... Growl) trigger the +1 SpA on the user.
             self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
@@ -5055,10 +5056,11 @@ impl Battle {
         actor_side: SideRef,
         actor_slot: u8,
         m: &data::MoveDef,
+        move_id: u16,
         target: Option<Target>,
         will_act: bool,
     ) {
-        self.resolve_status_move_inner(actor_side, actor_slot, m, target, None, will_act)
+        self.resolve_status_move_inner(actor_side, actor_slot, m, move_id, target, None, will_act)
     }
 
     /// Core status-move resolver. `forced_target` overrides the
@@ -5072,6 +5074,7 @@ impl Battle {
         actor_side: SideRef,
         actor_slot: u8,
         m: &data::MoveDef,
+        move_id: u16,
         target: Option<Target>,
         forced_target: Option<(SideRef, u8)>,
         will_act: bool,
@@ -5092,9 +5095,10 @@ impl Battle {
             }
             _ => self.resolve_status_target(opp_side),
         };
-        match m.slug {
-            "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
-            | "obstruct" | "burningbulwark" | "silktrap" => {
+        match move_id {
+            data::move_id::PROTECT | data::move_id::DETECT | data::move_id::SPIKYSHIELD
+            | data::move_id::BANEFULBUNKER | data::move_id::KINGSSHIELD
+            | data::move_id::OBSTRUCT | data::move_id::BURNINGBULWARK | data::move_id::SILKTRAP => {
                 // PS stall-move `onPrepareHit`/`onTry`:
                 //   `return !!this.queue.willAct() && this.runEvent('StallMove', pokemon);`
                 // (e.g. data/moves.ts:997 Baneful Bunker, :3538 Detect,
@@ -5137,7 +5141,7 @@ impl Battle {
                     actor.set_stall(0, true);
                 }
             }
-            "endure" => {
+            data::move_id::ENDURE => {
                 // Endure — PS `data/moves.ts:4805`. Same stall-counter
                 // family as Protect (`stallingMove: true`, `runEvent(
                 // 'StallMove')` → 1/3^n success), but on success it sets
@@ -5182,7 +5186,7 @@ impl Battle {
                     actor.set_stall(0, true);
                 }
             }
-            "trickroom" => {
+            data::move_id::TRICKROOM => {
                 // Toggle: if active, cancel; else set to 5.
                 if self.trick_room_turns > 0 {
                     self.trick_room_turns = 0;
@@ -5200,7 +5204,7 @@ impl Battle {
                     }
                 }
             }
-            "gravity" => {
+            data::move_id::GRAVITY => {
                 // Gravity — PS `data/moves.ts:gravity` (pseudoWeather,
                 // duration 5). Fails if already active. On set, every
                 // active mon's airborne volatiles (Magnet Rise /
@@ -5229,7 +5233,7 @@ impl Battle {
                     }
                 }
             }
-            "tailwind" => {
+            data::move_id::TAILWIND => {
                 // Side condition: 4-turn timer. Fails if already up.
                 // PS data/conditions.ts:tailwind has duration 4.
                 let s = self.side_mut(actor_side);
@@ -5237,7 +5241,7 @@ impl Battle {
                     s.conditions.tailwind_turns = 4;
                 }
             }
-            "wideguard" | "quickguard" => {
+            data::move_id::WIDEGUARD | data::move_id::QUICKGUARD => {
                 // Both follow the Protect stall-counter family. PS
                 // data/moves.ts: `sideCondition` with `duration: 1`,
                 // gated by `onTry: !!this.queue.willAct()` (i.e. some
@@ -5267,7 +5271,7 @@ impl Battle {
                     }
                     return;
                 }
-                let is_wide = m.slug == "wideguard";
+                let is_wide = move_id == data::move_id::WIDEGUARD;
                 let s = self.side_mut(actor_side);
                 if is_wide {
                     s.conditions.wide_guard_this_turn = true;
@@ -5279,7 +5283,7 @@ impl Battle {
                     a.set_stall(c, true);
                 }
             }
-            "helpinghand" => {
+            data::move_id::HELPINGHAND => {
                 // PS data/moves.ts:helpinghand — priority +5,
                 // target: adjacentAlly, sets a single-turn volatile on
                 // the partner that boosts its next damaging move's BP
@@ -5304,7 +5308,7 @@ impl Battle {
                     }
                 }
             }
-            "ragepowder" | "followme" => {
+            data::move_id::RAGEPOWDER | data::move_id::FOLLOWME => {
                 // Doubles-only redirection. PS data/moves.ts:
                 //   ragepowder — priority +2, target: self, powder flag,
                 //     volatileStatus 'ragepowder' (duration 1, onFoeRedirectTarget
@@ -5324,14 +5328,14 @@ impl Battle {
                 if n < 2 {
                     return;
                 }
-                let is_powder = m.slug == "ragepowder";
+                let is_powder = move_id == data::move_id::RAGEPOWDER;
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() {
                         a.set_redirecting(true, is_powder);
                     }
                 }
             }
-            "reflect" => {
+            data::move_id::REFLECT => {
                 // Side condition: 5-turn timer (8 with Light Clay). Fails
                 // if already up. PS data/conditions.ts:reflect — the
                 // ConditionData duration is 5; Light Clay's onModifyDuration
@@ -5343,7 +5347,7 @@ impl Battle {
                     s.conditions.reflect_turns = dur;
                 }
             }
-            "lightscreen" => {
+            data::move_id::LIGHTSCREEN => {
                 // Mirror of Reflect for special damage. Duration 5 (8 with
                 // Light Clay). PS data/conditions.ts:lightscreen.
                 let dur = self.screen_duration(actor_side);
@@ -5352,7 +5356,7 @@ impl Battle {
                     s.conditions.light_screen_turns = dur;
                 }
             }
-            "substitute" => {
+            data::move_id::SUBSTITUTE => {
                 // Pays max_hp/4 (rounded down). Fails if current_hp <=
                 // max_hp/4 OR sub already up. PS data/moves.ts:substitute
                 // onTryHit: `if (pokemon.volatiles['substitute']) return false;
@@ -5370,7 +5374,7 @@ impl Battle {
                     a.set_substitute_hp(cost);
                 }
             }
-            "auroraveil" => {
+            data::move_id::AURORAVEIL => {
                 // Reflect + Light Screen combined. PS data/moves.ts:auroraveil
                 // `onTry` fails unless the field weather is Hail or Snow.
                 // Light Clay also extends Aurora Veil 5 → 8 (PS
@@ -5388,7 +5392,7 @@ impl Battle {
             // with `status: 'xxx'`. Accuracy is rolled at the standard
             // move-resolution point; here we just apply the status to the
             // chosen target (or the actor for self-target moves).
-            "electricterrain" => {
+            data::move_id::ELECTRICTERRAIN => {
                 // PS data/moves.ts:electricterrain — sets terrain unless
                 // already Electric, duration 5 (or 8 with Terrain Extender
                 // on the setter, PS `data/items.ts:terrainextender`).
@@ -5397,9 +5401,9 @@ impl Battle {
                     let user_item = self
                         .side(actor_side)
                         .active_mon(actor_slot as usize)
-                        .map(|m| if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug })
-                        .unwrap_or("");
-                    self.terrain_turns = if user_item == "terrainextender" { 8 } else { 5 };
+                        .map(|m| m.item_id)
+                        .unwrap_or(u16::MAX);
+                    self.terrain_turns = if user_item == data::item_id::TERRAINEXTENDER { 8 } else { 5 };
                     // Quark Drive users on either side may now flip on.
                     let n = self.format().active_count() as u8;
                     for s in [SideRef::P1, SideRef::P2] {
@@ -5417,7 +5421,7 @@ impl Battle {
                     }
                 }
             }
-            "stealthrock" => {
+            data::move_id::STEALTHROCK => {
                 // PS data/moves.ts:stealthrock — `sideCondition` on the
                 // foe side. Idempotent: re-setting an already-up rock
                 // doesn't stack. Damage application happens at
@@ -5426,7 +5430,7 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stealth_Rock_(move)>
                 self.side_mut(opp_side).conditions.stealth_rock = true;
             }
-            "toxicspikes" => {
+            data::move_id::TOXICSPIKES => {
                 // PS data/moves.ts:toxicspikes — `sideCondition` on the
                 // foe side, `effectState.layers` caps at 2 (onSideRestart
                 // returns false once 2 layers are down). Poison-on-switch-in
@@ -5438,7 +5442,7 @@ impl Battle {
                     *layers += 1;
                 }
             }
-            "spikes" => {
+            data::move_id::SPIKES => {
                 // PS data/moves.ts:spikes — `sideCondition` on the foe
                 // side, `effectState.layers` caps at 3 (onSideRestart
                 // returns false once 3 layers are down). Switch-in chip
@@ -5450,7 +5454,7 @@ impl Battle {
                     *layers += 1;
                 }
             }
-            "stickyweb" => {
+            data::move_id::STICKYWEB => {
                 // PS data/moves.ts:stickyweb — single-layer `sideCondition`
                 // on the foe side (no stacking; re-use is idempotent).
                 // Speed-drop on switch-in happens at `apply_sticky_web_to`,
@@ -5459,7 +5463,7 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Web_(move)>
                 self.side_mut(opp_side).conditions.sticky_web = true;
             }
-            "defog" => {
+            data::move_id::DEFOG => {
                 // PS data/moves.ts:defog onHit. Status move, target
                 // "normal" (a foe), `reflectable: 1` (so it IS bounced by
                 // Magic Bounce — routed through the existing `is_reflectable`
@@ -5499,7 +5503,7 @@ impl Battle {
                 self.terrain = crate::terrain::Terrain::None;
                 self.terrain_turns = 0;
             }
-            "tidyup" => {
+            data::move_id::TIDYUP => {
                 // PS data/moves.ts:tidyup onHit. Status move, target "self",
                 // no flags (NOT reflectable). Effects:
                 //   1. Remove every Substitute on the field (all active mons,
@@ -5522,7 +5526,7 @@ impl Battle {
                 }
                 self.apply_boosts(actor_side, actor_slot, &[(0, 1), (4, 1)], actor_side, actor_slot);
             }
-            "courtchange" => {
+            data::move_id::COURTCHANGE => {
                 // PS data/moves.ts:courtchange onHitField. Status move,
                 // target "all" (field), NOT reflectable. Swaps every
                 // swappable side condition between the two sides. PS's
@@ -5557,7 +5561,7 @@ impl Battle {
                 swap_cond!(spikes_layers);
                 swap_cond!(sticky_web);
             }
-            "encore" => {
+            data::move_id::ENCORE => {
                 // Locks the first alive opposing target into its last-
                 // used move for 3 turns. PS data/conditions.ts:encore
                 // duration 3; fails if target has no last move, used an
@@ -5580,12 +5584,14 @@ impl Battle {
                             if mid == u16::MAX {
                                 continue;
                             }
-                            let slug = data::MOVES[mid as usize].slug;
                             let exempt = matches!(
-                                slug,
-                                "encore" | "struggle" | "sketch" | "transform"
-                                | "mimic" | "mirrormove" | "assist" | "copycat"
-                                | "mefirst" | "naturepower" | "metronome"
+                                mid,
+                                data::move_id::ENCORE | data::move_id::STRUGGLE
+                                | data::move_id::SKETCH | data::move_id::TRANSFORM
+                                | data::move_id::MIMIC | data::move_id::MIRRORMOVE
+                                | data::move_id::ASSIST | data::move_id::COPYCAT
+                                | data::move_id::MEFIRST | data::move_id::NATUREPOWER
+                                | data::move_id::METRONOME
                             );
                             let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
                             (last, !exempt && !no_pp)
@@ -5618,7 +5624,7 @@ impl Battle {
                     return;
                 }
             }
-            "spore" => {
+            data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
                 if !self.rolled_accuracy_passed(m) { return; }
@@ -5626,21 +5632,21 @@ impl Battle {
                     self.apply_sleep_to_target(ts, tslot, true);
                 }
             }
-            "sleeppowder" => {
+            data::move_id::SLEEPPOWDER => {
                 // Powder: 75% acc, Grass immunity.
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, true);
                 }
             }
-            "hypnosis" => {
+            data::move_id::HYPNOSIS => {
                 // Non-powder: 60% acc, no Grass immunity.
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, false);
                 }
             }
-            "thunderwave" => {
+            data::move_id::THUNDERWAVE => {
                 // 90% accuracy in gen 7+; the move's accuracy field
                 // already encodes this, but resolve_status_move is called
                 // AFTER the category check and BEFORE the accuracy roll.
@@ -5650,19 +5656,19 @@ impl Battle {
                     self.apply_status_to_target(ts, tslot, Status::Paralysis);
                 }
             }
-            "willowisp" => {
+            data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Burn);
                 }
             }
-            "toxic" => {
+            data::move_id::TOXIC => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Toxic);
                 }
             }
-            "sleeptalk" => {
+            data::move_id::SLEEPTALK => {
                 // Sleep Talk — PS `data/moves.ts:sleeptalk` `onHit`. Builds
                 // the eligible-move list in move-slot order, excluding moves
                 // with the `nosleeptalk` or `charge` flag (and Z/Max, not
@@ -5685,7 +5691,7 @@ impl Battle {
                     .active_mon(actor_slot as usize)
                     .is_some_and(|a| {
                         matches!(a.status, Status::Sleep)
-                            || a.effective_ability_slug() == "comatose"
+                            || a.effective_ability_id() == data::ability_id::COMATOSE
                     });
                 if !usable {
                     return;
@@ -5716,7 +5722,7 @@ impl Battle {
                     // Called-move execution deferred (draw parity only).
                 }
             }
-            "skillswap" => {
+            data::move_id::SKILLSWAP => {
                 // Skill Swap — PS `data/moves.ts:skillswap` `onHit` →
                 // `Battle.skillSwap` (sim/battle.ts:1311). `accuracy: true`
                 // so no accuracy draw. Swaps the user's and target's
@@ -5762,7 +5768,7 @@ impl Battle {
                     }
                 }
             }
-            "leechseed" => {
+            data::move_id::LEECHSEED => {
                 // PS data/moves.ts:10204 leechseed. 90% accuracy,
                 // single-target status, Grass-type immunity, applies
                 // a `leechseed` volatile to the target tracking the
@@ -5795,7 +5801,7 @@ impl Battle {
                     }
                 }
             }
-            "attract" => {
+            data::move_id::ATTRACT => {
                 // PS data/moves.ts:706 attract. Single-target status
                 // (target "normal"). Applies the `attract` volatile gated
                 // on opposite, non-genderless genders (move `onTryImmunity`
@@ -5831,7 +5837,7 @@ impl Battle {
                         Some(mon) => (
                             mon.gender,
                             mon.is_alive(),
-                            mon.effective_ability_slug() == "oblivious",
+                            mon.effective_ability_id() == data::ability_id::OBLIVIOUS,
                         ),
                         None => return,
                     };
@@ -5885,7 +5891,7 @@ impl Battle {
                 // Mental Herb cures Attract on application (PS onUpdate).
                 crate::item::try_consume_mental_herb(self, opp, target_slot);
             }
-            "poisonpowder" => {
+            data::move_id::POISONPOWDER => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 // Powder gate: Grass / Overcoat / Safety Goggles.
                 if let Some((opp, slot)) = opp_target {
@@ -5893,7 +5899,7 @@ impl Battle {
                     self.try_set_status(opp, slot, Status::Poison);
                 }
             }
-            "partingshot" => {
+            data::move_id::PARTINGSHOT => {
                 // Parting Shot — PS data/moves.ts:partingshot:13171.
                 // Status move with `onHit: this.boost({atk:-1,spa:-1},
                 // target, source)` followed by `selfSwitch: true`. If
@@ -5939,7 +5945,7 @@ impl Battle {
                     }
                 }
             }
-            "teleport" => {
+            data::move_id::TELEPORT => {
                 // Teleport — priority -6 selfSwitch. PS
                 // `data/moves.ts:teleport` `onTry` returns
                 // `!!this.canSwitch(source.side)`, i.e. fails when the
@@ -5952,7 +5958,7 @@ impl Battle {
                     }
                 }
             }
-            "chillyreception" => {
+            data::move_id::CHILLYRECEPTION => {
                 // Chilly Reception — sets Snow for 5 turns AND
                 // self-switches. PS `data/moves.ts:chillyreception`
                 // schedules the weather change via `weather: 'snowscape'`
@@ -5961,19 +5967,19 @@ impl Battle {
                 // cosmetic `priorityChargeCallback` flavor is skipped.
                 self.weather = crate::weather::Weather::Snow;
                 // Icy Rock extends Snow 5 → 8 (PS data/items.ts:icyrock).
-                let user_item = if let Some(m) =
-                    self.side(actor_side).active_mon(actor_slot as usize)
-                {
-                    if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug }
-                } else { "" };
-                self.weather_turns = if user_item == "icyrock" { 8 } else { 5 };
+                let user_item = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .map(|m| m.item_id)
+                    .unwrap_or(u16::MAX);
+                self.weather_turns = if user_item == data::item_id::ICYROCK { 8 } else { 5 };
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
                     }
                 }
             }
-            "bellydrum" | "filletaway" | "clangoroussoul" => {
+            data::move_id::BELLYDRUM | data::move_id::FILLETAWAY | data::move_id::CLANGOROUSSOUL => {
                 // PS data/moves.ts: each pays HP up-front, then applies a
                 // self-target boost set. Belly Drum: pays 1/2 maxhp,
                 // boosts atk +12 (i.e. straight to +6 from any starting
@@ -5993,10 +5999,10 @@ impl Battle {
                 // pays itself. We mirror by deducting current_hp directly.
                 //
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Belly_Drum_(move)>
-                let (cost_num, cost_den, boosts): (u32, u32, &[(u8, i8)]) = match m.slug {
-                    "bellydrum" => (1, 2, &[(0, 12)]), // +12 → clamps to +6
-                    "filletaway" => (1, 2, &[(0, 2), (2, 2), (4, 2)]),
-                    "clangoroussoul" => (33, 100, &[(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]),
+                let (cost_num, cost_den, boosts): (u32, u32, &[(u8, i8)]) = match move_id {
+                    data::move_id::BELLYDRUM => (1, 2, &[(0, 12)]), // +12 → clamps to +6
+                    data::move_id::FILLETAWAY => (1, 2, &[(0, 2), (2, 2), (4, 2)]),
+                    data::move_id::CLANGOROUSSOUL => (33, 100, &[(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]),
                     _ => unreachable!(),
                 };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -6004,7 +6010,7 @@ impl Battle {
                     if max <= 1 { return; }
                     let cost = ((max * cost_num) / cost_den).max(1) as u16;
                     if a.current_hp <= cost { return; }
-                    if m.slug == "bellydrum" && a.boosts[0] >= 6 { return; }
+                    if move_id == data::move_id::BELLYDRUM && a.boosts[0] >= 6 { return; }
                     a.current_hp -= cost;
                 }
                 // Self-boost after paying HP. The guards above `return`
@@ -6012,7 +6018,7 @@ impl Battle {
                 // exactly the same paths as the old inline loop.
                 self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
             }
-            "painsplit" => {
+            data::move_id::PAINSPLIT => {
                 // PS data/moves.ts:painsplit onHit: averages user + target
                 // current HP, sets both to that average (or 1 if it would
                 // round to 0). Status category, "normal" target.
@@ -6045,7 +6051,7 @@ impl Battle {
                     t.current_hp = avg.min(target_max) as u16;
                 }
             }
-            "strengthsap" => {
+            data::move_id::STRENGTHSAP => {
                 // PS data/moves.ts:strengthsap onHit. Heals the user by
                 // the target's effective Atk stat (post-boost stage,
                 // pre-item/ability via `getStat('atk', false, true)`),
@@ -6088,7 +6094,7 @@ impl Battle {
                     let _ = crate::item::try_consume_eject_pack(self, opp, ts, true);
                 }
             }
-            "rest" => {
+            data::move_id::REST => {
                 // PS data/moves.ts:14963 rest. onTry fails if user is
                 // already asleep / Comatose, at full HP, or has Insomnia
                 // or Vital Spirit. onHit calls setStatus('slp'), then
@@ -6128,8 +6134,10 @@ impl Battle {
                     a.set_sleep_turns(3);
                 }
             }
-            "recover" | "softboiled" | "slackoff" | "milkdrink" | "roost"
-            | "synthesis" | "morningsun" | "moonlight" | "shoreup" => {
+            data::move_id::RECOVER | data::move_id::SOFTBOILED | data::move_id::SLACKOFF
+            | data::move_id::MILKDRINK | data::move_id::ROOST
+            | data::move_id::SYNTHESIS | data::move_id::MORNINGSUN
+            | data::move_id::MOONLIGHT | data::move_id::SHOREUP => {
                 // Recover-class self heals. PS data/moves.ts: each entry
                 // either declares `heal: [1,2]` (flat 50%) or uses an
                 // onHit `factor` depending on weather. We replicate:
@@ -6152,15 +6160,15 @@ impl Battle {
                 // Heal moves read weather from the USER's perspective —
                 // Utility Umbrella holders see Sun/Rain as clear.
                 let user_weather = self.effective_weather_for(actor_side, actor_slot);
-                let max_hp_factor: (u32, u32) = match m.slug {
-                    "synthesis" | "morningsun" | "moonlight" => match user_weather {
+                let max_hp_factor: (u32, u32) = match move_id {
+                    data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => match user_weather {
                         crate::weather::Weather::Sun => (2, 3),
                         crate::weather::Weather::Rain
                         | crate::weather::Weather::Sand
                         | crate::weather::Weather::Snow => (1, 4),
                         _ => (1, 2),
                     },
-                    "shoreup" => match user_weather {
+                    data::move_id::SHOREUP => match user_weather {
                         crate::weather::Weather::Sand => (2, 3),
                         _ => (1, 2),
                     },
@@ -6195,7 +6203,7 @@ impl Battle {
                     crate::item::try_consume_mirror_herb_on_foe_boost(
                         self, actor_side, actor_slot, boosts,
                     );
-                    if m.slug == "howl" {
+                    if move_id == data::move_id::HOWL {
                         // PS target "allies" in doubles: also boost the
                         // adjacent ally's Atk. Singles → ally slot is
                         // absent, skip.
