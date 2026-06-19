@@ -103,6 +103,16 @@ pub struct SideConditions {
     /// Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
     /// Mortal Spin in later PRs.
     pub spikes_layers: u8,
+    /// Sticky Web hazard on this side (single layer, no stacking).
+    /// PS data/moves.ts:stickyweb sets a `foeSide` `sideCondition`.
+    /// On switch-in a grounded non-immune mon takes -1 Speed, with the
+    /// Sticky Web setter's side (foe.active[0]) as the boost SOURCE — so
+    /// Mirror Armor reflects the drop back at the setter, Contrary
+    /// inverts it, and Clear Body / White Smoke block it (all handled by
+    /// `apply_boosts`). Airborne mons and Heavy-Duty Boots holders are
+    /// immune. Cleared by Defog / Rapid Spin / Tidy Up / Court Change /
+    /// Mortal Spin in later PRs.
+    pub sticky_web: bool,
     /// True once this side has used Terastallize this battle. Gen-9
     /// rule: at most one mon per side may Terastallize per battle.
     /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
