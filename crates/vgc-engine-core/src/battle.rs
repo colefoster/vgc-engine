@@ -2290,7 +2290,8 @@ impl Battle {
                     | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
-                    | data::move_id::COUNTER | data::move_id::MIRRORCOAT);
+                    | data::move_id::COUNTER | data::move_id::MIRRORCOAT
+                    | data::move_id::METALBURST);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -2652,6 +2653,7 @@ impl Battle {
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
                     | data::move_id::COUNTER | data::move_id::MIRRORCOAT
+                    | data::move_id::METALBURST
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -3220,6 +3222,13 @@ impl Battle {
                 // gate above guarantees `last_spec_damage > 0` here.
                 data::move_id::MIRRORCOAT => {
                     Some((attacker.last_spec_damage.saturating_mul(2)).max(1))
+                }
+                // Metal Burst — PS data/moves.ts:metalburst damageCallback
+                // returns `(lastDamagedBy.damage * 1.5) || 1` for the most
+                // recent hit of EITHER category this turn. Scripted-target /
+                // fail gate above guarantees `last_damage_taken > 0` here.
+                data::move_id::METALBURST => {
+                    Some(((attacker.last_damage_taken as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
                 }
                 _ => None,
             };
@@ -9399,6 +9408,59 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, chomp_max,
                    "Mirror Coat must fail when only physical damage was taken");
+    }
+
+    #[test]
+    fn metal_burst_returns_1point5x_last_damage_at_attacker() {
+        // P1 Snorlax (slow) holds Metal Burst (slot 0, priority 0). P2
+        // Garchomp (fast) uses a weak physical move; Garchomp moves first,
+        // so Metal Burst sees the recorded damage and retaliates for 1.5×.
+        // Expect Garchomp to lose floor(1.5 × Snorlax's HP loss).
+        // PS data/moves.ts:metalburst damageCallback.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["metalburst","bodyslam","rest","crunch"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["tackle","earthquake","dragonclaw","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let snorlax_max = b.p1.team[0].current_hp;
+        let chomp_max = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let snorlax_dmg = snorlax_max - b.p1.team[0].current_hp;
+        let chomp_dmg = chomp_max - b.p2.team[0].current_hp;
+        assert!(snorlax_dmg > 0, "Snorlax should have taken Tackle damage");
+        assert_eq!(chomp_dmg, snorlax_dmg * 3 / 2, "Metal Burst deals 1.5× the damage taken");
+    }
+
+    #[test]
+    fn metal_burst_fails_when_user_moves_first() {
+        // Snorlax outspeeds via a forced-fast setup: give it max Spe and let
+        // it move before any damage is recorded — Metal Burst (priority 0)
+        // sees no damage this turn and fails. PS data/moves.ts:metalburst
+        // onTry (`!lastDamagedBy?.thisTurn`).
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["metalburst","moonblast","shadowball","protect"],"evs":{"spe":252,"spa":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["bodyslam","rest","crunch","yawn"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        let snorlax_max = b.p2.team[0].current_hp;
+        // Flutter Mane (fast) uses Metal Burst before being hit → fails.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, snorlax_max,
+                   "Metal Burst fails when the user takes no damage before acting");
     }
 
     #[test]
