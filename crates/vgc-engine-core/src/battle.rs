@@ -1405,7 +1405,12 @@ impl Battle {
                     None => return,
                 }
             };
-            if still_asleep {
+            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
+            // asleep it normally returns false (skip the move), but
+            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
+            // proceed. We let those through so Sleep Talk's `onHit`
+            // (random-move pick) runs and consumes its PRNG draw.
+            if still_asleep && !matches!(m.slug, "sleeptalk" | "snore") {
                 return;
             }
         }
@@ -5783,6 +5788,60 @@ impl Battle {
                     self.apply_status_to_target(ts, tslot, Status::Toxic);
                 }
             }
+            "sleeptalk" => {
+                // Sleep Talk — PS `data/moves.ts:sleeptalk` `onHit`. Builds
+                // the eligible-move list in move-slot order, excluding moves
+                // with the `nosleeptalk` or `charge` flag (and Z/Max, not
+                // modelled as slots). If the list is non-empty it calls
+                // `this.sample(moves)` = `this.random(moves.length)` — a
+                // single PRNG draw — to pick one, then runs it via
+                // `useMove`. We reproduce the DRAW exactly (range(N) over the
+                // eligible set, same order as PS) so the PsGen5 stream stays
+                // aligned; executing the called move's own effect is deferred
+                // (it would require a PP-free `useMove` re-entry that bypasses
+                // the sleep/flinch gates — a separate mechanic). The draw is
+                // the load-bearing piece for stream parity. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Sleep_Talk_(move)>.
+                //
+                // PS `onTry(source)`: the move only proceeds (and only draws)
+                // when `source.status === 'slp' || source.hasAbility('comatose')`.
+                // An awake user fails with no draw.
+                let usable = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        matches!(a.status, Status::Sleep)
+                            || a.effective_ability_slug() == "comatose"
+                    });
+                if !usable {
+                    return;
+                }
+                let eligible: u32 = {
+                    let mon = match self.side(actor_side).active_mon(actor_slot as usize) {
+                        Some(a) => a,
+                        None => return,
+                    };
+                    let mut count = 0u32;
+                    for &mid in mon.moves.iter() {
+                        if mid == u16::MAX {
+                            continue;
+                        }
+                        let slug = data::MOVES[mid as usize].slug;
+                        if sleep_talk_excluded(slug) {
+                            continue;
+                        }
+                        count += 1;
+                    }
+                    count
+                };
+                // PS only calls `sample()` when at least one move is eligible
+                // (`if (moves.length) randomMove = this.sample(moves)`); an
+                // empty list fails with no draw.
+                if eligible > 0 {
+                    let _picked = self.rng.range(eligible);
+                    // Called-move execution deferred (draw parity only).
+                }
+            }
             "skillswap" => {
                 // Skill Swap — PS `data/moves.ts:skillswap` `onHit` →
                 // `Battle.skillSwap` (sim/battle.ts:1311). `accuracy: true`
@@ -6331,6 +6390,29 @@ fn ability_fails_skill_swap(slug: &str) -> bool {
             | "wonderguard"
             | "zenmode"
             | "zerotohero"
+    )
+}
+
+/// Moves Sleep Talk can NOT call — PS `data/moves.ts:sleeptalk` onHit
+/// skips any move whose flags carry `nosleeptalk` or `charge` (plus Z/Max
+/// moves, which aren't modelled as selectable slots here). The union of
+/// the two flag sets, sourced from `data/moves.ts` (gen 9).
+fn sleep_talk_excluded(slug: &str) -> bool {
+    matches!(
+        slug,
+        // nosleeptalk flag:
+        "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
+            | "chatter" | "combattorque" | "copycat" | "dynamaxcannon"
+            | "focuspunch" | "freezeshock" | "geomancy" | "holdhands"
+            | "iceburn" | "magicaltorque" | "mefirst" | "metronome"
+            | "mimic" | "mirrormove" | "naturepower" | "noxioustorque"
+            | "razorwind" | "shelltrap" | "sketch" | "skyattack"
+            | "sleeptalk" | "solarbeam" | "struggle" | "uproar"
+            | "wickedtorque"
+            // charge flag (two-turn moves; also covers the moves that
+            // carry both flags such as Dig/Fly/Bounce/Solar Blade):
+            | "bounce" | "dig" | "dive" | "fly" | "phantomforce"
+            | "shadowforce" | "skullbash" | "skydrop" | "solarblade"
     )
 }
 
@@ -8367,6 +8449,47 @@ mod tests {
         assert_eq!(b.p2.team[0].pp[0], fly_pp_before, "Fly charged no PP (cant)");
         assert_eq!(b.p2.team[0].semi_invuln, 0, "Fly did not enter semi-invuln");
         assert_eq!(b.p1.team[0].current_hp, cress_hp_before, "Fly dealt no damage");
+    }
+
+    #[test]
+    fn sleep_talk_fires_while_asleep_but_regular_move_is_skipped() {
+        // PS `slp` onBeforeMove allows `sleepUsable` moves (Sleep Talk) to
+        // proceed while the user stays asleep; non-sleepUsable moves are
+        // skipped with no PP. Observable: Sleep Talk's own PP IS spent
+        // while asleep (it reaches resolution), whereas a normal move's PP
+        // is NOT spent (skipped before PP deduct).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        // Case A: asleep Snorlax uses Sleep Talk (slot 2) → PP spent.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        b.p1.team[0].status = Status::Sleep;
+        b.p1.team[0].set_sleep_turns(3);
+        let st_pp = b.p1.team[0].pp[2];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.team[0].sleep_turns() < 3, "sleep counter ticked");
+        assert_eq!(b.p1.team[0].pp[2], st_pp - 1, "Sleep Talk PP spent while asleep");
+
+        // Case B: asleep Snorlax uses Body Slam (slot 0) → skipped, no PP.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1b, p2b);
+        b2.p1.team[0].status = Status::Sleep;
+        b2.p1.team[0].set_sleep_turns(3);
+        let bs_pp = b2.p1.team[0].pp[0];
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b2.p1.team[0].pp[0], bs_pp, "regular move skipped while asleep, no PP");
     }
 
     #[test]
