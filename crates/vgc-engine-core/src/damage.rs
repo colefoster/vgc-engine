@@ -256,6 +256,184 @@ pub fn type_effectiveness(move_type: u8, defender: &data::SpeciesDef) -> TypeEff
     }
 }
 
+/// Final type effectiveness of `move_id` (already resolved to its
+/// in-context `move_type`) against `defender`, post-Tera and with the
+/// per-move `onEffectiveness` overrides PS applies (Freeze-Dry, Thousand
+/// Arrows, Flying Press, Stellar, Smack Down grounding). This is exactly
+/// the value PS's `sim/pokemon.ts:Pokemon.runEffectiveness` returns —
+/// i.e. BEFORE Tera Shell's `onModifyDamage` downgrade, which is a
+/// damage modifier, not an effectiveness change. `calculate_damage` uses
+/// this for its own effectiveness step; the move-immunity layer
+/// (Wonder Guard) uses it to gate on `> Neutral`.
+pub fn effectiveness_for_move_type(
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+) -> TypeEff {
+    let m = &data::MOVES[move_id as usize];
+    let (def_eff_types, def_eff_num) = defender.effective_types();
+    if m.slug == "freezedry" {
+        let mut net = 0i32;
+        let mut immune = false;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            if def_type == 2 {
+                net += 1;
+            } else {
+                match data::TYPE_CHART[def_type][move_type as usize] {
+                    0 => {}
+                    1 => net += 1,
+                    2 => net -= 1,
+                    3 => immune = true,
+                    other => unreachable!("bad type-chart code {other}"),
+                }
+            }
+        }
+        if immune {
+            TypeEff::Immune
+        } else {
+            match net {
+                n if n <= -2 => TypeEff::QuarterX,
+                -1 => TypeEff::HalfX,
+                0 => TypeEff::Neutral,
+                1 => TypeEff::DoubleX,
+                _ => TypeEff::QuadrupleX,
+            }
+        }
+    } else if m.slug == "thousandarrows" {
+        let mut net = 0i32;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            if def_type == 9 {
+                // Flying slot: override to 0 (neutral contribution).
+            } else {
+                match data::TYPE_CHART[def_type][move_type as usize] {
+                    0 => {}
+                    1 => net += 1,
+                    2 => net -= 1,
+                    3 => return TypeEff::Immune,
+                    other => unreachable!("bad type-chart code {other}"),
+                }
+            }
+        }
+        match net.clamp(-2, 2) {
+            -2 => TypeEff::QuarterX,
+            -1 => TypeEff::HalfX,
+            0 => TypeEff::Neutral,
+            1 => TypeEff::DoubleX,
+            _ => TypeEff::QuadrupleX,
+        }
+    } else if m.slug == "flyingpress" {
+        let mut net = 0i32;
+        let mut immune = false;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            for atk_type in [move_type as usize, 9 /* Flying */] {
+                match data::TYPE_CHART[def_type][atk_type] {
+                    0 => {}
+                    1 => net += 1,
+                    2 => net -= 1,
+                    3 => immune = true,
+                    other => unreachable!("bad type-chart code {other}"),
+                }
+            }
+        }
+        if immune {
+            TypeEff::Immune
+        } else {
+            match net.clamp(-2, 2) {
+                -2 => TypeEff::QuarterX,
+                -1 => TypeEff::HalfX,
+                0 => TypeEff::Neutral,
+                1 => TypeEff::DoubleX,
+                _ => TypeEff::QuadrupleX,
+            }
+        }
+    } else if move_type == 255 {
+        if defender.terastallized {
+            TypeEff::DoubleX
+        } else {
+            TypeEff::Neutral
+        }
+    } else {
+        let smackdown_active = defender
+            .volatiles
+            .has(crate::pokemon::VolatileKind::SmackdownGrounded);
+        let mut weak = 0i32;
+        let mut resist = 0i32;
+        let mut immune = false;
+        for i in 0..def_eff_num as usize {
+            let def_type = def_eff_types[i] as usize;
+            if smackdown_active && move_type == 8 && def_type == 9 {
+                continue;
+            }
+            match data::TYPE_CHART[def_type][move_type as usize] {
+                0 => {}
+                1 => weak += 1,
+                2 => resist += 1,
+                3 => immune = true,
+                other => unreachable!("bad type-chart code {other}"),
+            }
+        }
+        if immune {
+            TypeEff::Immune
+        } else {
+            match (weak - resist).clamp(-2, 2) {
+                -2 => TypeEff::QuarterX,
+                -1 => TypeEff::HalfX,
+                0 => TypeEff::Neutral,
+                1 => TypeEff::DoubleX,
+                _ => TypeEff::QuadrupleX,
+            }
+        }
+    }
+}
+
+/// Resolve `move_id`'s effective TYPE against the live context — the
+/// type half of `calculate_damage`'s base-power/type derivation. Covers
+/// the moves whose type is not their static `MoveDef.type_`: Tera Blast /
+/// Tera Star Storm (user's Tera type), Weather Ball, Terrain Pulse. All
+/// other moves keep their data type. Used by the Wonder Guard immunity
+/// gate, which must know the post-context type to judge effectiveness.
+pub fn move_type_in_ctx(
+    attacker: &Pokemon,
+    move_id: u16,
+    ctx: &DamageContext,
+) -> u8 {
+    let m = &data::MOVES[move_id as usize];
+    if matches!(m.slug, "terablast" | "terastarstorm") {
+        if attacker.terastallized {
+            attacker.tera_type
+        } else {
+            m.type_
+        }
+    } else if m.slug == "weatherball" {
+        use crate::weather::Weather;
+        match ctx.weather {
+            Weather::Sun => 1,
+            Weather::Rain => 2,
+            Weather::Sand => 12,
+            Weather::Snow => 5,
+            Weather::None => m.type_,
+        }
+    } else if m.slug == "terrainpulse" {
+        use crate::terrain::Terrain;
+        if attacker.is_grounded() {
+            match ctx.terrain {
+                Terrain::Electric => 3,
+                Terrain::Grassy => 4,
+                Terrain::Misty => 17,
+                Terrain::Psychic => 10,
+                Terrain::None => m.type_,
+            }
+        } else {
+            m.type_
+        }
+    } else {
+        m.type_
+    }
+}
+
 /// Calculate damage in HP for a single hit.
 ///
 /// Returns 0 for status moves, base-power-0 moves, or type-immune hits.
@@ -1237,160 +1415,12 @@ pub fn calculate_damage(
     // We replicate by computing the per-type sum here when the slug
     // matches, and otherwise delegate to `type_effectiveness`.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Freeze-Dry_(move)>.
-    // Defender effective types — post-Tera if the defender is currently
-    // Terastallized. PS `sim/pokemon.ts:Pokemon.runEffectiveness` iterates
-    // `this.getTypes()` which returns the Tera type when active.
-    let (def_eff_types, def_eff_num) = defender.effective_types();
-    let eff = if m.slug == "freezedry" {
-        let mut net = 0i32;
-        let mut immune = false;
-        for i in 0..def_eff_num as usize {
-            let def_type = def_eff_types[i] as usize;
-            if def_type == 2 {
-                // Water slot: override to +1 (SE).
-                net += 1;
-            } else {
-                match data::TYPE_CHART[def_type][move_type as usize] {
-                    0 => {}
-                    1 => net += 1,
-                    2 => net -= 1,
-                    3 => immune = true,
-                    other => unreachable!("bad type-chart code {other}"),
-                }
-            }
-        }
-        if immune {
-            TypeEff::Immune
-        } else {
-            match net {
-                n if n <= -2 => TypeEff::QuarterX,
-                -1 => TypeEff::HalfX,
-                0 => TypeEff::Neutral,
-                1 => TypeEff::DoubleX,
-                _ => TypeEff::QuadrupleX,
-            }
-        }
-    } else if m.slug == "thousandarrows" {
-        // PS data/moves.ts:thousandarrows onEffectiveness — Flying-type
-        // slot is overridden to 0 (Ground vs Flying = 1× instead of 0).
-        // Levitate / Air Balloon grounding is handled separately by the
-        // damage path (move bypasses the ungrounded-immunity gate); this
-        // branch handles the chart-side Flying-type immunity only.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
-        let mut net = 0i32;
-        for i in 0..def_eff_num as usize {
-            let def_type = def_eff_types[i] as usize;
-            if def_type == 9 {
-                // Flying slot: override to 0 (neutral contribution).
-            } else {
-                match data::TYPE_CHART[def_type][move_type as usize] {
-                    0 => {}
-                    1 => net += 1,
-                    2 => net -= 1,
-                    3 => return 0, // Other immunity (no candidates in gen-9)
-                    other => unreachable!("bad type-chart code {other}"),
-                }
-            }
-        }
-        match net.clamp(-2, 2) {
-            -2 => TypeEff::QuarterX,
-            -1 => TypeEff::HalfX,
-            0 => TypeEff::Neutral,
-            1 => TypeEff::DoubleX,
-            _ => TypeEff::QuadrupleX,
-        }
-    } else if m.slug == "flyingpress" {
-        // PS data/moves.ts:flyingpress onEffectiveness adds the Flying
-        // type-chart row to the move's own (Fighting) effectiveness.
-        // Result: Flying Press computes as if it were *both* Fighting
-        // AND Flying simultaneously — e.g. vs Grass it's 2x (Fighting
-        // neutral × Flying SE), vs Fairy it's 0.5x (Fighting resist ×
-        // Flying neutral), vs Bug it's 1x (Fighting half × Flying 2x).
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flying_Press_(move)>.
-        let mut net = 0i32;
-        let mut immune = false;
-        for i in 0..def_eff_num as usize {
-            let def_type = def_eff_types[i] as usize;
-            for atk_type in [move_type as usize, 9 /* Flying */] {
-                match data::TYPE_CHART[def_type][atk_type] {
-                    0 => {}
-                    1 => net += 1,
-                    2 => net -= 1,
-                    3 => immune = true,
-                    other => unreachable!("bad type-chart code {other}"),
-                }
-            }
-        }
-        if immune {
-            TypeEff::Immune
-        } else {
-            match net.clamp(-2, 2) {
-                -2 => TypeEff::QuarterX,
-                -1 => TypeEff::HalfX,
-                0 => TypeEff::Neutral,
-                1 => TypeEff::DoubleX,
-                _ => TypeEff::QuadrupleX,
-            }
-        }
-    } else if move_type == 255 {
-        // Stellar-type move. PS sim/pokemon.ts:2214 `runEffectiveness`:
-        //   if (this.terastallized && move.type === 'Stellar')
-        //     totalTypeMod = 1;  // SE
-        //   else
-        //     // falls through to per-type lookup; Stellar isn't in
-        //     // PS's type chart so each type returns 0 → neutral.
-        // The non-Tera branch previously fell into the per-type loop
-        // below, which OOB-indexed TYPE_CHART[def_type][255] — Stellar
-        // isn't a chart column. Resolve directly here.
-        if defender.terastallized {
-            TypeEff::DoubleX
-        } else {
-            TypeEff::Neutral
-        }
-    } else {
-        // Iterate Tera-effective types; same logic as `type_effectiveness`
-        // but on the post-Tera type list.
-        //
-        // Smack Down / Thousand Arrows volatile bypass — when the
-        // defender carries SmackdownGrounded, the chart's Flying-type
-        // immunity to Ground moves is removed (PS gates this through
-        // `runImmunity('Ground')` returning true for smackdown'd mons).
-        // Same skip applies for any other Ground move while the
-        // volatile is up — Earthquake into a smacked-down Pelipper
-        // becomes a neutral hit instead of a 0×. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>.
-        let smackdown_active = defender
-            .volatiles
-            .has(crate::pokemon::VolatileKind::SmackdownGrounded);
-        let mut weak = 0i32;
-        let mut resist = 0i32;
-        let mut immune = false;
-        for i in 0..def_eff_num as usize {
-            let def_type = def_eff_types[i] as usize;
-            if smackdown_active && move_type == 8 && def_type == 9 {
-                // Skip Flying-type contribution to Ground immunity.
-                continue;
-            }
-            match data::TYPE_CHART[def_type][move_type as usize] {
-                0 => {}
-                1 => weak += 1,
-                2 => resist += 1,
-                3 => immune = true,
-                other => unreachable!("bad type-chart code {other}"),
-            }
-        }
-        if immune {
-            TypeEff::Immune
-        } else {
-            match (weak - resist).clamp(-2, 2) {
-                -2 => TypeEff::QuarterX,
-                -1 => TypeEff::HalfX,
-                0 => TypeEff::Neutral,
-                1 => TypeEff::DoubleX,
-                _ => TypeEff::QuadrupleX,
-            }
-        }
-    };
+    // Final type effectiveness, post-Tera and with the per-move
+    // `onEffectiveness` overrides (Freeze-Dry / Thousand Arrows / Flying
+    // Press / Stellar / Smack Down). Factored into
+    // `effectiveness_for_move_type` so the Wonder Guard immunity gate can
+    // share the exact same computation PS's `runEffectiveness` uses.
+    let eff = effectiveness_for_move_type(move_id, move_type, defender);
     if eff.is_immune() {
         return 0;
     }
