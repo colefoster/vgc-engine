@@ -45,7 +45,7 @@ work order.
 
 - Climb the corpus frequency curve. Target: implement everything that appears in ≥0.1% of corpus turns.
 - Tera (gen 9 signature mechanic).
-- Champions VGC mod overlay (sig moves: snap-trap, light-of-ruin, fake-out on Pansage line, etc. per `mimikyu/docs/champions_mod_data.md`).
+- Champions VGC Reg M-B mod overlay — Mega Evolution + new abilities/moves. **Full impl plan: [`docs/gaps/champions-impl-plan.md`](gaps/champions-impl-plan.md).**
 - All edge-case interactions surfaced by the differential harness.
 - **Gate:** ≥95% turn-level agreement on full mimikyu replay corpus (≥10k battles).
 

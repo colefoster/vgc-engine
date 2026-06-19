@@ -613,6 +613,7 @@ mod tests {
                 terrain: vgc_engine_core::terrain::Terrain::None,
                 fairy_aura_active: false, dark_aura_active: false, aura_break_active: false,
                 attacker_total_fainted_allies: 0,
+                attacker_stats: None, defender_stats: None,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));
