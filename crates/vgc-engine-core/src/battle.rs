@@ -918,6 +918,7 @@ impl Battle {
         self.apply_stealth_rock_to(side, actor_slot);
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
+        self.apply_sticky_web_to(side, actor_slot);
         true
     }
 
@@ -1097,6 +1098,56 @@ impl Battle {
                 m.fainted = true;
             }
         }
+    }
+
+    /// Sticky Web speed drop on switch-in. PS data/moves.ts:stickyweb
+    /// `condition.onSwitchIn`:
+    ///   if (!pokemon.isGrounded() || pokemon.hasItem('heavydutyboots')) return;
+    ///   this.boost({ spe: -1 }, pokemon, pokemon.side.foe.active[0],
+    ///              this.dex.getActiveMove('stickyweb'));
+    /// The boost SOURCE is the Sticky Web setter's side slot 0
+    /// (`pokemon.side.foe.active[0]`), NOT the switching mon — routing the
+    /// −1 Spe through `apply_boosts` with that opposing source gives
+    /// Mirror Armor reflection for free (the drop bounces back onto the
+    /// setter's slot). Clear Body / White Smoke / Full Metal Body /
+    /// Clear Amulet veto the drop via the same caller-side
+    /// `blocks_opposing_stat_drop_for` gate the move-secondary drops use.
+    /// Airborne mons and Heavy-Duty Boots holders are immune (gated
+    /// here). Unlike Spikes there is no chip and no Magic Guard
+    /// interaction. (Contrary is not yet modelled engine-wide, so no
+    /// inversion arm is added here.)
+    fn apply_sticky_web_to(&mut self, side: SideRef, slot: u8) {
+        if !self.side(side).conditions.sticky_web {
+            return;
+        }
+        let blocked = {
+            let mon = match self.side(side).active_mon(slot as usize) {
+                Some(m) if m.is_alive() => m,
+                _ => return,
+            };
+            if !mon.is_grounded() {
+                return;
+            }
+            let item_slug = if mon.item_id == u16::MAX {
+                ""
+            } else {
+                data::ITEMS[mon.item_id as usize].slug
+            };
+            if item_slug == "heavydutyboots" {
+                return;
+            }
+            // Clear Body family / Clear Amulet veto the opposing Spe drop.
+            crate::ability::blocks_opposing_stat_drop_for(mon, 4)
+        };
+        if blocked {
+            return;
+        }
+        // Spe is boost index 4. Source = the Sticky Web setter's side,
+        // slot 0 (PS `pokemon.side.foe.active[0]`). Mirror Armor reflect
+        // and White Herb restore ride through from here.
+        let source_side = side.opposing();
+        self.apply_boosts(side, slot, &[(4, -1)], source_side, 0);
+        crate::item::try_consume_white_herb(self, side, slot);
     }
 
     /// After the move loop, every actor_slot whose user set
@@ -5021,6 +5072,15 @@ impl Battle {
                 if *layers < 3 {
                     *layers += 1;
                 }
+            }
+            "stickyweb" => {
+                // PS data/moves.ts:stickyweb — single-layer `sideCondition`
+                // on the foe side (no stacking; re-use is idempotent).
+                // Speed-drop on switch-in happens at `apply_sticky_web_to`,
+                // not here.
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Web_(move)>
+                self.side_mut(opp_side).conditions.sticky_web = true;
             }
             "encore" => {
                 // Locks the first alive opposing target into its last-
@@ -15904,6 +15964,144 @@ mod tests {
         );
         assert_eq!(b.p1.conditions.spikes_layers, 1, "spikes bounced onto caster's side");
         assert_eq!(b.p2.conditions.spikes_layers, 0, "Magic Bounce holder's side stays clear");
+    }
+
+    #[test]
+    fn sticky_web_drops_speed_of_grounded_switchin() {
+        // PS data/moves.ts:stickyweb — single layer (no stacking); a
+        // grounded non-immune switch-in gets -1 Spe. Garchomp is grounded.
+        let p1_json = r#"[
+            {"species":"galvantula","level":50,"ability":"compoundeyes","nature":"timid","moves":["stickyweb","thunder","bugbuzz","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","tackle"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Lay the web; re-using it does not stack (stays a single layer).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.conditions.sticky_web, "Sticky Web up on P2 side");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.conditions.sticky_web, "still single layer (no stacking)");
+        // Garchomp (grounded) switches in → -1 Spe.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].boosts[4], -1, "grounded switch-in gets -1 Spe");
+    }
+
+    #[test]
+    fn sticky_web_airborne_and_heavy_duty_boots_unaffected() {
+        // Airborne mons (Flying / Levitate) and Heavy-Duty Boots holders
+        // take no Speed drop. Corviknight (Flying) is airborne; a grounded
+        // Garchomp holding Heavy-Duty Boots is gated by the boots.
+        let p1_json = r#"[
+            {"species":"galvantula","level":50,"ability":"compoundeyes","nature":"timid","moves":["stickyweb","thunder","bugbuzz","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"bold","moves":["scald","recover","haze","protect"]},
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","tackle"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"heavydutyboots","nature":"jolly","moves":["dragonclaw","ironhead","aerialace","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Corviknight (airborne) — no drop.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].boosts[4], 0, "airborne mon keeps its Speed");
+        // Garchomp with Heavy-Duty Boots — no drop.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.team[2].boosts[4], 0, "Heavy-Duty Boots blocks Sticky Web");
+    }
+
+    #[test]
+    fn sticky_web_clear_body_blocks_speed_drop() {
+        // Clear Body / White Smoke / Full Metal Body veto the opposing
+        // Spe drop. Metagross (Clear Body) is grounded but immune.
+        let p1_json = r#"[
+            {"species":"galvantula","level":50,"ability":"compoundeyes","nature":"timid","moves":["stickyweb","thunder","bugbuzz","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"impish","moves":["bravebird","roost","uturn","tackle"]},
+            {"species":"metagross","level":50,"ability":"clearbody","nature":"adamant","moves":["meteormash","bulletpunch","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p2.team[1].boosts[4], 0, "Clear Body blocks Sticky Web Spe drop");
+    }
+
+    // Sticky Web threads the setter's side (foe.active[0]) as the boost
+    // SOURCE, so a Mirror Armor mon reflects the -1 Spe back onto the
+    // setter's slot instead of taking it. The only gen-9 Mirror Armor
+    // species (Corviknight) is Flying — and thus airborne/immune to the
+    // hazard on a real switch-in — so, like the Intimidate-reflect test,
+    // we exercise the exact boost the handler issues through the
+    // `apply_boosts` choke point with the setter as the opposing source.
+    #[test]
+    fn sticky_web_mirror_armor_reflects_via_source_threading() {
+        let p1_json = r#"[
+            {"species":"galvantula","level":50,"ability":"compoundeyes","nature":"timid","moves":["stickyweb","thunder","bugbuzz","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"mirrorarmor","nature":"impish","moves":["bravebird","roost","uturn","tackle"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Exactly the boost the Sticky Web handler issues: target = P2
+        // slot 0 (Mirror Armor holder), source = P1 slot 0 (the setter).
+        b.apply_boosts(SideRef::P2, 0, &[(4, -1)], SideRef::P1, 0);
+        assert_eq!(b.p2.team[0].boosts[4], 0, "Mirror Armor holder's Spe untouched");
+        assert_eq!(b.p1.team[0].boosts[4], -1, "Sticky Web Spe drop reflected onto the setter");
+    }
+
+    // Sticky Web (a foeSide hazard) is reflectable: bounces onto the
+    // CASTER's own side instead of the Magic Bounce holder's side.
+    #[test]
+    fn magic_bounce_reflects_sticky_web_to_caster_side() {
+        let p1_json = r#"[
+            {"species":"galvantula","level":50,"ability":"compoundeyes","nature":"timid","moves":["stickyweb","thunder","bugbuzz","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["dazzlinggleam","psychic","calmmind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.conditions.sticky_web, "sticky web bounced onto caster's side");
+        assert!(!b.p2.conditions.sticky_web, "Magic Bounce holder's side stays clear");
     }
 
     #[test]
