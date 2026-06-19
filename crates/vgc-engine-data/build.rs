@@ -580,6 +580,7 @@ fn main() {
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
+    let mut species_consts: Vec<(String, usize)> = Vec::new();
     for (slug, s) in &species_keep {
         let mut t = [0u8; 2];
         let nt = s.types.len().min(2) as u8;
@@ -591,6 +592,10 @@ fn main() {
             }
         }
         if bad_type { continue; }
+        // The constant index must track the emitted-row count, not the
+        // position in `species_keep`, since bad-type rows are skipped and
+        // shift later indices (mirrors the MOVES `move_idx` pattern).
+        species_consts.push((const_ident(slug), species_consts.len()));
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
@@ -617,6 +622,8 @@ fn main() {
         ).unwrap();
     }
     writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    emit_id_module(&mut f, "species_id", &species_consts);
 
     // Quick slug lookup helpers — linear scan. Phase 4 may swap to perfect hash.
     writeln!(f).unwrap();
