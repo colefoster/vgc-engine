@@ -257,8 +257,7 @@ impl Battle {
         let holder_umbrella = self
             .side(side)
             .active_mon(slot as usize)
-            .map(|m| m.item_id != u16::MAX
-                && data::ITEMS[m.item_id as usize].slug == "utilityumbrella")
+            .map(|m| m.item_id == data::item_id::UTILITYUMBRELLA)
             .unwrap_or(false);
         if holder_umbrella
             && matches!(base, crate::weather::Weather::Sun | crate::weather::Weather::Rain)
@@ -300,8 +299,8 @@ impl Battle {
             for slot in 0..n {
                 if let Some(m) = self.side(side).active_mon(slot) {
                     if m.is_alive() {
-                        let ab = m.effective_ability_slug();
-                        if ab == "cloudnine" || ab == "airlock" {
+                        let ab = m.effective_ability_id();
+                        if ab == data::ability_id::CLOUDNINE || ab == data::ability_id::AIRLOCK {
                             return true;
                         }
                     }
@@ -425,14 +424,16 @@ impl Battle {
             && self
                 .side(target_side)
                 .active_mon(target_slot as usize)
-                .is_some_and(|m| m.effective_ability_slug() == "mirrorarmor");
+                .is_some_and(|m| m.effective_ability_id() == data::ability_id::MIRRORARMOR);
         let source_breaks_mold = self
             .side(source_side)
             .active_mon(source_slot as usize)
             .is_some_and(|m| {
                 matches!(
-                    m.effective_ability_slug(),
-                    "moldbreaker" | "teravolt" | "turboblaze"
+                    m.effective_ability_id(),
+                    data::ability_id::MOLDBREAKER
+                        | data::ability_id::TERAVOLT
+                        | data::ability_id::TURBOBLAZE
                 )
             });
         if target_mirror_armor && !source_breaks_mold {
@@ -499,18 +500,16 @@ impl Battle {
             return switches;
         }
 
-        let item_slug = if active.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[active.item_id as usize].slug
-        };
-        let is_choice_item = matches!(item_slug, "choiceband" | "choicespecs" | "choicescarf");
-        let is_assault_vest = item_slug == "assaultvest";
+        let is_choice_item = matches!(
+            active.item_id,
+            data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+        );
+        let is_assault_vest = active.item_id == data::item_id::ASSAULTVEST;
         // Gorilla Tactics (PS data/abilities.ts:1609) locks the holder into
         // its first selected move exactly like a Choice item, but driven by
         // the ability instead of an item. Reuses the same `locked_move_slot`
         // state, so the lock gate below covers both. Darmanitan-Galar.
-        let is_move_locker = is_choice_item || active.effective_ability_slug() == "gorillatactics";
+        let is_move_locker = is_choice_item || active.effective_ability_id() == data::ability_id::GORILLATACTICS;
 
         let mut out = Vec::with_capacity(8);
         for (i, &move_id) in active.moves.iter().enumerate() {
@@ -631,14 +630,11 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count();
             for slot in 0..n {
-                let (cur, max, slug) = match self.side(side).active_mon(slot) {
-                    Some(m) if m.is_alive() => {
-                        let s = if m.item_id == u16::MAX { "" } else { data::ITEMS[m.item_id as usize].slug };
-                        (m.current_hp, m.stats.hp, s)
-                    }
+                let (cur, max, item_id) = match self.side(side).active_mon(slot) {
+                    Some(m) if m.is_alive() => (m.current_hp, m.stats.hp, m.item_id),
                     _ => continue,
                 };
-                if slug == "custapberry" && cur > 0 && cur * 4 <= max {
+                if item_id == data::item_id::CUSTAPBERRY && cur > 0 && cur * 4 <= max {
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
                         m.item_id = u16::MAX;
                     }
@@ -1028,12 +1024,7 @@ impl Battle {
             // emits a quick `-enditem`-style log but no field-state
             // change. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Heavy-Duty_Boots>.
-            let item_slug = if mon.item_id == u16::MAX {
-                ""
-            } else {
-                data::ITEMS[mon.item_id as usize].slug
-            };
-            if item_slug == "heavydutyboots" {
+            if mon.item_id == data::item_id::HEAVYDUTYBOOTS {
                 return;
             }
             let mg = crate::ability::has_magic_guard(mon);
@@ -1099,14 +1090,9 @@ impl Battle {
             } else {
                 let (types, num) = mon.effective_types();
                 let has_type = |t: u8| (0..num as usize).any(|i| types[i] == t);
-                let item_slug = if mon.item_id == u16::MAX {
-                    ""
-                } else {
-                    data::ITEMS[mon.item_id as usize].slug
-                };
                 if has_type(7) {
                     Outcome::Absorb
-                } else if has_type(16) || item_slug == "heavydutyboots" {
+                } else if has_type(16) || mon.item_id == data::item_id::HEAVYDUTYBOOTS {
                     Outcome::None
                 } else if self.side(side).conditions.toxic_spikes_layers >= 2 {
                     Outcome::Toxic
@@ -1148,12 +1134,7 @@ impl Battle {
             if !mon.is_grounded() {
                 return;
             }
-            let item_slug = if mon.item_id == u16::MAX {
-                ""
-            } else {
-                data::ITEMS[mon.item_id as usize].slug
-            };
-            if item_slug == "heavydutyboots" {
+            if mon.item_id == data::item_id::HEAVYDUTYBOOTS {
                 return;
             }
             if crate::ability::has_magic_guard(mon) {
@@ -1205,12 +1186,7 @@ impl Battle {
             if !mon.is_grounded() {
                 return;
             }
-            let item_slug = if mon.item_id == u16::MAX {
-                ""
-            } else {
-                data::ITEMS[mon.item_id as usize].slug
-            };
-            if item_slug == "heavydutyboots" {
+            if mon.item_id == data::item_id::HEAVYDUTYBOOTS {
                 return;
             }
             // Clear Body family / Clear Amulet veto the opposing Spe drop.
@@ -1411,7 +1387,7 @@ impl Battle {
             // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
             // proceed. We let those through so Sleep Talk's `onHit`
             // (random-move pick) runs and consumes its PRNG draw.
-            if still_asleep && !matches!(m.slug, "sleeptalk" | "snore") {
+            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
                 return;
             }
         }
@@ -1560,8 +1536,11 @@ impl Battle {
         // return, mirroring the Sucker-Punch fail path below.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_(Ability)>.
         if matches!(
-            m.slug,
-            "explosion" | "selfdestruct" | "mindblown" | "mistyexplosion"
+            move_id,
+            data::move_id::EXPLOSION
+                | data::move_id::SELFDESTRUCT
+                | data::move_id::MINDBLOWN
+                | data::move_id::MISTYEXPLOSION
         ) {
             let n = self.format().active_count() as u8;
             let damp_on_field = [SideRef::P1, SideRef::P2].iter().any(|&s| {
@@ -1569,7 +1548,7 @@ impl Battle {
                     self.side(s)
                         .active_mon(slot as usize)
                         .is_some_and(|mon| {
-                            mon.is_alive() && mon.effective_ability_slug() == "damp"
+                            mon.is_alive() && mon.effective_ability_id() == data::ability_id::DAMP
                         })
                 })
             });
@@ -1601,7 +1580,7 @@ impl Battle {
         //     doubles whenever Sucker Punch has been routed to a
         //     specific slot via the action target field — see below.
         //     Fails still tick PP (PS behavior).
-        if m.slug == "suckerpunch" {
+        if move_id == data::move_id::SUCKERPUNCH {
             let opp = actor_side.opposing() as usize;
             // If the action specifies a target slot, check ONLY that
             // slot's pending action. Otherwise (single-target moves
@@ -1638,7 +1617,7 @@ impl Battle {
         //      PP deduct in PS's flow, but the gen-9 outcome is the same:
         //      the move slot pays PP, no damage is dealt).
         //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
-        if m.slug == "focuspunch" && attacker.damaged_this_turn() {
+        if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
@@ -1661,7 +1640,7 @@ impl Battle {
         //            data/moves.ts:bloodmoon (line 1528).
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gigaton_Hammer_(move)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Blood_Moon_(move)>
-        if matches!(m.slug, "gigatonhammer" | "bloodmoon")
+        if matches!(move_id, data::move_id::GIGATONHAMMER | data::move_id::BLOODMOON)
             && attacker.last_used_move_slot == move_slot
         {
             let extra = pressure_extra_pp(self, actor_side, m, target);
@@ -1692,9 +1671,11 @@ impl Battle {
         // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
         if self.gravity_turns > 0
             && matches!(
-                m.slug,
-                "fly" | "bounce" | "skydrop" | "jumpkick" | "highjumpkick"
-                    | "splash" | "magnetrise" | "telekinesis" | "flyingpress"
+                move_id,
+                data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP
+                    | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK
+                    | data::move_id::SPLASH | data::move_id::MAGNETRISE
+                    | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS
             )
         {
             return;
@@ -1703,7 +1684,7 @@ impl Battle {
         // 2. Fake Out: fails unless attacker has been on the field 0 turns
         //    (i.e. this is its first action since switch-in). PS marks
         //    this with the 'fakeout' move's onTry checking activeTurns.
-        if m.slug == "fakeout" && attacker.turns_active != 0 {
+        if move_id == data::move_id::FAKEOUT && attacker.turns_active != 0 {
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -1769,14 +1750,14 @@ impl Battle {
         // / bypass-Substitute) is wired via the move's existing sound
         // flag list (PR-51). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Round_(move)>.
-        if m_owned.slug == "round" {
+        if move_id == data::move_id::ROUND {
             if self.side(actor_side).conditions.round_used_this_turn {
                 m_owned.base_power = m_owned.base_power.saturating_mul(2);
             }
             // Mark for subsequent same-turn Rounds on this side.
             self.side_mut(actor_side).conditions.round_used_this_turn = true;
         }
-        if m_owned.slug == "shellsidearm" {
+        if move_id == data::move_id::SHELLSIDEARM {
             let opp = actor_side.opposing();
             let primary_target = match target {
                 Some(Target { side, slot }) if side == opp => Some(slot as usize),
@@ -1852,9 +1833,9 @@ impl Battle {
         //   Bash +1 Def) are load-bearing for follow-up damage and land
         //   as separate move PRs alongside their `onTryMove` boost arms.
         let is_charge_move = matches!(
-            m.slug,
-            "solarbeam" | "solarblade" | "skyattack" | "razorwind"
-                | "skullbash" | "meteorbeam"
+            move_id,
+            data::move_id::SOLARBEAM | data::move_id::SOLARBLADE | data::move_id::SKYATTACK
+                | data::move_id::RAZORWIND | data::move_id::SKULLBASH | data::move_id::METEORBEAM
         );
         let semi_code = semi_invuln_code_for(m.slug);
         let mut skip_pp_deduct = false;
@@ -1870,14 +1851,9 @@ impl Battle {
             } else {
                 // Skip-charge gates: Sun (Solar Beam / Solar Blade) or
                 // Power Herb consumption.
-                let sun_skip = matches!(m.slug, "solarbeam" | "solarblade")
+                let sun_skip = matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
                     && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun);
-                let attacker_item_slug = if attacker.item_id == u16::MAX {
-                    ""
-                } else {
-                    data::ITEMS[attacker.item_id as usize].slug
-                };
-                let power_herb = attacker_item_slug == "powerherb";
+                let power_herb = attacker.item_id == data::item_id::POWERHERB;
                 if sun_skip {
                     // Skip charge — fall through to normal damage. PP
                     // deducts via the standard PP block.
@@ -1951,9 +1927,9 @@ impl Battle {
         // and Z/Max moves are exempt in PS, but neither is modelled as a
         // selectable slot here, so the slot-based lock is equivalent.
         let is_choice = matches!(
-            if attacker.item_id == u16::MAX { "" } else { data::ITEMS[attacker.item_id as usize].slug },
-            "choiceband" | "choicespecs" | "choicescarf"
-        ) || attacker.effective_ability_slug() == "gorillatactics";
+            attacker.item_id,
+            data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+        ) || attacker.effective_ability_id() == data::ability_id::GORILLATACTICS;
         // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
         // +1 PP per foe target holding active Pressure. Computed before the
         // mutable borrow; for charge / semi-invuln moves PS applies this only
@@ -1998,12 +1974,12 @@ impl Battle {
         // don't model as move flags yet; standard moves are unaffected.
         // Reset on switch-out via `protean_used = false`.
         {
-            let pl_slug = self
+            let pl_ability = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
-                .map(|a| a.effective_ability_slug())
-                .unwrap_or("");
-            if matches!(pl_slug, "protean" | "libero") {
+                .map(|a| a.effective_ability_id())
+                .unwrap_or(u16::MAX);
+            if matches!(pl_ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) {
                 let do_retype = self
                     .side(actor_side)
                     .active_mon(actor_slot as usize)
@@ -2033,12 +2009,7 @@ impl Battle {
             // data/abilities.ts:prankster — sets `pranksterBoosted` on
             // the move; data/conditions.ts checks it at onTryHit vs
             // Dark targets.
-            let attacker_ability = if attacker.ability_id == u16::MAX {
-                ""
-            } else {
-                data::ABILITIES[attacker.ability_id as usize].slug
-            };
-            let prankster_boosted = attacker_ability == "prankster";
+            let prankster_boosted = attacker.ability_id == data::ability_id::PRANKSTER;
             let opposing_targeting = is_targeting_move(m.target);
             if prankster_boosted && opposing_targeting {
                 let opp = actor_side.opposing();
@@ -2078,8 +2049,10 @@ impl Battle {
             // <https://bulbapedia.bulbagarden.net/wiki/Good_as_Gold_(Ability)>.
             if is_targeting_move(m.target) {
                 let attacker_breaks_mold = matches!(
-                    attacker_ability,
-                    "moldbreaker" | "teravolt" | "turboblaze"
+                    attacker.ability_id,
+                    data::ability_id::MOLDBREAKER
+                        | data::ability_id::TERAVOLT
+                        | data::ability_id::TURBOBLAZE
                 );
                 if !attacker_breaks_mold {
                     // Resolve the move's effective single target. An explicit
@@ -2114,7 +2087,7 @@ impl Battle {
                         let target_good_as_gold = self
                             .side(tside)
                             .active_mon(tslot as usize)
-                            .map(|tm| tm.is_alive() && tm.effective_ability_slug() == "goodasgold")
+                            .map(|tm| tm.is_alive() && tm.effective_ability_id() == data::ability_id::GOODASGOLD)
                             .unwrap_or(false);
                         if !is_self && target_good_as_gold {
                             return;
@@ -2244,19 +2217,9 @@ impl Battle {
                             let s = attacker.species();
                             let grass_attacker =
                                 (0..s.num_types as usize).any(|i| s.types[i] == 4);
-                            let attacker_item = if attacker.item_id == u16::MAX {
-                                ""
-                            } else {
-                                data::ITEMS[attacker.item_id as usize].slug
-                            };
-                            let attacker_ability = if attacker.ability_id == u16::MAX {
-                                ""
-                            } else {
-                                data::ABILITIES[attacker.ability_id as usize].slug
-                            };
                             if grass_attacker
-                                || attacker_item == "safetygoggles"
-                                || attacker_ability == "overcoat"
+                                || attacker.item_id == data::item_id::SAFETYGOGGLES
+                                || attacker.ability_id == data::ability_id::OVERCOAT
                             {
                                 blocked = true;
                             }
@@ -2273,26 +2236,22 @@ impl Battle {
         // real BP in damage.rs via per-slug branches. They must NOT bail
         // out of the damaging-move path here.
         let damaging = m.base_power > 0
-            || matches!(m.slug,
-                "heatcrash" | "heavyslam" | "lowkick" | "grassknot"
-                    | "gyroball" | "electroball"
+            || matches!(move_id,
+                data::move_id::HEATCRASH | data::move_id::HEAVYSLAM | data::move_id::LOWKICK
+                    | data::move_id::GRASSKNOT | data::move_id::GYROBALL | data::move_id::ELECTROBALL
                     // Fixed-damage / damage-callback moves carry
                     // basePower: 0 in PS but still deal damage via the
                     // `damage` / `damageCallback` early returns in
                     // `getDamage`. They must enter the damaging path.
-                    | "seismictoss" | "nightshade"
-                    | "dragonrage" | "sonicboom"
-                    | "superfang" | "ruination"
-                    | "endeavor" | "finalgambit");
+                    | data::move_id::SEISMICTOSS | data::move_id::NIGHTSHADE
+                    | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
+                    | data::move_id::SUPERFANG | data::move_id::RUINATION
+                    | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
         // type-matched, etc.
-        let attacker_item_slug = if attacker.item_id == u16::MAX {
-            ""
-        } else {
-            data::ITEMS[attacker.item_id as usize].slug
-        };
+        let attacker_item_id = attacker.item_id;
         // Life Orb — PS `data/items.ts:lifeorb` applies
         // `chainModify([5324, 4096])` via `modify`, which is *not* equal
         // to a plain ×1.3 truncate. PS form (sim/battle.ts:2345
@@ -2303,18 +2262,18 @@ impl Battle {
         // truncated 1 lower than PS at ~40% of damage values — the
         // distribution-test harness (PR-229) caught it as a +0.4 HP
         // mean delta vs PS on a Lucario CC scenario.
-        let life_orb = attacker_item_slug == "lifeorb";
+        let life_orb = attacker_item_id == data::item_id::LIFEORB;
         // Choice Band/Specs: ×1.5 to atk/spa of the attacker. Implemented
         // by cloning the attacker snapshot and scaling the stat in
         // place before passing to calculate_damage.
         let mut boosted_attacker = attacker.clone();
         let physical_move = m.category == 0;
         let special_move = m.category == 1;
-        if attacker_item_slug == "choiceband" && physical_move {
+        if attacker_item_id == data::item_id::CHOICEBAND && physical_move {
             boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
-        if attacker_item_slug == "choicespecs" && special_move {
+        if attacker_item_id == data::item_id::CHOICESPECS && special_move {
             boosted_attacker.stats.spa = ((boosted_attacker.stats.spa as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
@@ -2344,11 +2303,7 @@ impl Battle {
         // PS data/abilities.ts:hadronengine `onModifyAtk` is misnamed in
         // the file — the real handler is `onModifySpA`. Same chainModify
         // shape as Orichalcum Pulse on Atk.
-        let attacker_ability_slug = if attacker.ability_id == u16::MAX {
-            ""
-        } else {
-            data::ABILITIES[attacker.ability_id as usize].slug
-        };
+        let attacker_ability_id = attacker.ability_id;
         // Mold Breaker / Teravolt / Turboblaze — the attacker's
         // damaging moves bypass defender abilities flagged
         // `breakable: 1`. PS sets `move.ignoreAbility = true` in the
@@ -2360,10 +2315,10 @@ impl Battle {
         // site. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Mold_Breaker_(Ability)>.
         let attacker_breaks_mold = matches!(
-            attacker_ability_slug,
-            "moldbreaker" | "teravolt" | "turboblaze"
+            attacker_ability_id,
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
         );
-        if attacker_ability_slug == "hadronengine"
+        if attacker_ability_id == data::ability_id::HADRONENGINE
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
         {
@@ -2375,7 +2330,7 @@ impl Battle {
         // on physical moves while Sun is up. Symmetric counterpart to
         // Hadron Engine. PS gates on `isWeather(['sunnyday','desolateland'])`;
         // we only carry standard Sun (no Primal Sun yet).
-        if attacker_ability_slug == "orichalcumpulse"
+        if attacker_ability_id == data::ability_id::ORICHALCUMPULSE
             && physical_move
             && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
         {
@@ -2399,11 +2354,11 @@ impl Battle {
         //            <https://bulbapedia.bulbagarden.net/wiki/Vessel_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Sword_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Beads_of_Ruin_(Ability)>.
-        let side_has_ruin = |b: &Self, side: SideRef, slug: &str| -> bool {
+        let side_has_ruin = |b: &Self, side: SideRef, ability_id: u16| -> bool {
             let n = b.format().active_count();
             (0..n).any(|s| {
                 b.side(side).active_mon(s)
-                    .map(|m| m.is_alive() && m.effective_ability_slug() == slug)
+                    .map(|m| m.is_alive() && m.effective_ability_id() == ability_id)
                     .unwrap_or(false)
             })
         };
@@ -2411,10 +2366,10 @@ impl Battle {
         let scale_off_075 = |v: u16| -> u16 {
             (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
-        if side_has_ruin(self, opp_side, "tabletsofruin") && physical_move {
+        if side_has_ruin(self, opp_side, data::ability_id::TABLETSOFRUIN) && physical_move {
             boosted_attacker.stats.atk = scale_off_075(boosted_attacker.stats.atk);
         }
-        if side_has_ruin(self, opp_side, "vesselofruin") && special_move {
+        if side_has_ruin(self, opp_side, data::ability_id::VESSELOFRUIN) && special_move {
             boosted_attacker.stats.spa = scale_off_075(boosted_attacker.stats.spa);
         }
 
@@ -2424,7 +2379,7 @@ impl Battle {
         // return this.chainModify(2);`). PS data/abilities.ts:waterbubble.
         // Water type code = 2. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-        if attacker_ability_slug == "waterbubble" && m.type_ == 2 {
+        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
             if physical_move {
                 boosted_attacker.stats.atk =
                     ((boosted_attacker.stats.atk as u32 * 2).min(u16::MAX as u32)) as u16;
@@ -2445,14 +2400,14 @@ impl Battle {
         // Conkeldurr / Zangoose / Swellow signature.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Boost_(Ability)>
         //             <https://bulbapedia.bulbagarden.net/wiki/Flare_Boost_(Ability)>.
-        if attacker_ability_slug == "toxicboost"
+        if attacker_ability_id == data::ability_id::TOXICBOOST
             && physical_move
             && matches!(attacker.status, Status::Poison | Status::Toxic)
         {
             boosted_attacker.stats.atk = ((boosted_attacker.stats.atk as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
-        if attacker_ability_slug == "flareboost"
+        if attacker_ability_id == data::ability_id::FLAREBOOST
             && special_move
             && matches!(attacker.status, Status::Burn)
         {
@@ -2510,14 +2465,15 @@ impl Battle {
             if defender.semi_invuln != 0 {
                 let hits_through = match defender.semi_invuln {
                     // Dig
-                    1 => matches!(m.slug, "earthquake" | "magnitude"),
+                    1 => matches!(move_id, data::move_id::EARTHQUAKE | data::move_id::MAGNITUDE),
                     // Dive
-                    2 => matches!(m.slug, "surf" | "whirlpool"),
+                    2 => matches!(move_id, data::move_id::SURF | data::move_id::WHIRLPOOL),
                     // Fly / Bounce
                     3 | 4 => matches!(
-                        m.slug,
-                        "gust" | "twister" | "skyuppercut" | "thunder"
-                            | "hurricane" | "smackdown" | "thousandarrows"
+                        move_id,
+                        data::move_id::GUST | data::move_id::TWISTER | data::move_id::SKYUPPERCUT
+                            | data::move_id::THUNDER | data::move_id::HURRICANE
+                            | data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS
                     ),
                     // Phantom Force, Shadow Force, Sky Drop: nothing hits.
                     _ => false,
@@ -2545,8 +2501,9 @@ impl Battle {
             // Focus Sash's onDamage fires and caps to hp-1; we mirror
             // that here. Bulbapedia:
             //   <https://bulbapedia.bulbagarden.net/wiki/One-hit_knockout_move>.
-            let is_ohko = matches!(m.slug,
-                "fissure" | "horndrill" | "guillotine" | "sheercold");
+            let is_ohko = matches!(move_id,
+                data::move_id::FISSURE | data::move_id::HORNDRILL
+                    | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD);
             if is_ohko {
                 // Type immunity (Ground vs Flying / Levitate / Balloon
                 // already handled below for Fissure via the type-chart
@@ -2556,10 +2513,10 @@ impl Battle {
                 let def_types = defender.species().types;
                 let def_ntypes = defender.species().num_types as usize;
                 let is_ice = (0..def_ntypes).any(|i| def_types[i] == 5); // Ice = 5
-                if m.slug == "sheercold" && is_ice {
+                if move_id == data::move_id::SHEERCOLD && is_ice {
                     continue;
                 }
-                if m.slug == "fissure" {
+                if move_id == data::move_id::FISSURE {
                     let g = if attacker_breaks_mold {
                         defender.is_grounded_for_mold_breaker()
                     } else {
@@ -2578,7 +2535,7 @@ impl Battle {
                 let attacker_types = attacker.species().types;
                 let attacker_ntypes = attacker.species().num_types as usize;
                 let user_is_ice = (0..attacker_ntypes).any(|i| attacker_types[i] == 5);
-                let base = if m.slug == "sheercold" && !user_is_ice { 20u32 } else { 30u32 };
+                let base = if move_id == data::move_id::SHEERCOLD && !user_is_ice { 20u32 } else { 30u32 };
                 let eff_acc = (base + (attacker.level as u32 - defender.level as u32)).min(100);
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
@@ -2590,12 +2547,12 @@ impl Battle {
                 let raw_dmg = defender.current_hp;
                 let capped = {
                     let (def_ability, def_cur, def_max) = (
-                        defender.effective_ability_slug(),
+                        defender.effective_ability_id(),
                         defender.current_hp,
                         defender.stats.hp,
                     );
                     let mut c = raw_dmg;
-                    if def_ability == "sturdy" && !attacker_breaks_mold
+                    if def_ability == data::ability_id::STURDY && !attacker_breaks_mold
                         && def_cur == def_max && c >= def_cur
                     {
                         c = def_cur - 1;
@@ -2637,9 +2594,11 @@ impl Battle {
             //
             // PS file:line: sim/battle-actions.ts:1606-1616.
             let is_fixed_damage = matches!(
-                m.slug,
-                "seismictoss" | "nightshade" | "dragonrage" | "sonicboom"
-                    | "superfang" | "ruination" | "endeavor" | "finalgambit"
+                move_id,
+                data::move_id::SEISMICTOSS | data::move_id::NIGHTSHADE
+                    | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
+                    | data::move_id::SUPERFANG | data::move_id::RUINATION
+                    | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -2659,7 +2618,7 @@ impl Battle {
                 // current HP is strictly LESS than the target's. This is
                 // a TryImmunity step (:560) — it runs before the accuracy
                 // roll, so a failed Endeavor draws nothing.
-                if m.slug == "endeavor" && attacker.current_hp >= defender.current_hp {
+                if move_id == data::move_id::ENDEAVOR && attacker.current_hp >= defender.current_hp {
                     continue;
                 }
             }
@@ -2687,13 +2646,13 @@ impl Battle {
             // Weather is read by both sides; Utility Umbrella on either
             // suppresses Sun/Rain (but not Snow, which is unaffected).
             let weather_for_acc = self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot);
-            let base_acc: u8 = match m.slug {
-                "hurricane" | "thunder" => match weather_for_acc {
+            let base_acc: u8 = match move_id {
+                data::move_id::HURRICANE | data::move_id::THUNDER => match weather_for_acc {
                     crate::weather::Weather::Rain => 255,
                     crate::weather::Weather::Sun => 50,
                     _ => m.accuracy,
                 },
-                "blizzard" => match self.effective_weather() {
+                data::move_id::BLIZZARD => match self.effective_weather() {
                     crate::weather::Weather::Snow => 255,
                     _ => m.accuracy,
                 },
@@ -2718,7 +2677,7 @@ impl Battle {
                 // its tr() helper; we use integer-truncating divide which
                 // matches within ±1 percentage point.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wide_Lens>.
-                if attacker_item_slug == "widelens" {
+                if attacker_item_id == data::item_id::WIDELENS {
                     eff_acc = (eff_acc * 4505 / 4096).min(100);
                 }
                 // Zoom Lens — attacker's accuracy ×4915/4096 (≈ ×1.2) if the
@@ -2734,7 +2693,7 @@ impl Battle {
                 // won't move later → boost. No new RNG draw — this scales the
                 // same accuracy roll. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Zoom_Lens>.
-                if attacker_item_slug == "zoomlens" {
+                if attacker_item_id == data::item_id::ZOOMLENS {
                     let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
                     let target_will_move = tk == 1 || tk == 2;
                     if !target_will_move {
@@ -2793,15 +2752,15 @@ impl Battle {
                 // Sandslash); Snow Cloak mons (Glaliе, Beartic).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Veil_(Ability)>
                 //             <https://bulbapedia.bulbagarden.net/wiki/Snow_Cloak_(Ability)>.
-                let def_ability = defender.effective_ability_slug();
+                let def_ability = defender.effective_ability_id();
                 let weather_veil = match (def_ability, self.effective_weather()) {
-                    ("sandveil", crate::weather::Weather::Sand) => true,
-                    ("snowcloak", crate::weather::Weather::Snow) => true,
+                    (data::ability_id::SANDVEIL, crate::weather::Weather::Sand) => true,
+                    (data::ability_id::SNOWCLOAK, crate::weather::Weather::Snow) => true,
                     _ => false,
                 };
                 let attacker_breaks_mold = matches!(
-                    attacker.effective_ability_slug(),
-                    "moldbreaker" | "teravolt" | "turboblaze"
+                    attacker.effective_ability_id(),
+                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
                 );
                 if weather_veil && !attacker_breaks_mold {
                     eff_acc = eff_acc * 3277 / 4096;
@@ -2871,12 +2830,8 @@ impl Battle {
             // attacker bypasses. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Telepathy_(Ability)>.
             if tside == actor_side && tslot != actor_slot {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "telepathy" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::TELEPATHY && !attacker_breaks_mold {
                     continue;
                 }
             }
@@ -2895,12 +2850,8 @@ impl Battle {
             // plumbing — tracked for a follow-up. Brambleghast signature.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wind_Rider_(Ability)>.
             if m.is_wind {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "windrider" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::WINDRIDER && !attacker_breaks_mold {
                     // Self-boost (+1 Atk) on absorbing a wind move.
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
                     continue;
@@ -2913,19 +2864,15 @@ impl Battle {
             // return null on Electric-type moves and apply their effect.
             // Electric type code = 3. Mold Breaker honored.
             if m.type_ == 3 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
+                let def_ability = defender.ability_id;
                 if !attacker_breaks_mold {
                     match def_ability {
-                        "motordrive" => {
+                        data::ability_id::MOTORDRIVE => {
                             // <https://bulbapedia.bulbagarden.net/wiki/Motor_Drive_(Ability)>
                             self.apply_boosts(tside, tslot, &[(4, 1)], tside, tslot);
                             continue;
                         }
-                        "voltabsorb" => {
+                        data::ability_id::VOLTABSORB => {
                             // PS `data/abilities.ts:voltabsorb` —
                             // `if (!this.heal(target.baseMaxhp / 4))` falls
                             // back to a flavor message; effect is heal 1/4
@@ -2937,7 +2884,7 @@ impl Battle {
                             }
                             continue;
                         }
-                        "lightningrod" => {
+                        data::ability_id::LIGHTNINGROD => {
                             // PS `data/abilities.ts:lightningrod` —
                             // `onTryHit` returns null on Electric moves
                             // and applies `this.boost({spa: 1}, target)`.
@@ -2959,12 +2906,8 @@ impl Battle {
             // Lanturn / Lumineon. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
             if m.type_ == 2 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "stormdrain" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::STORMDRAIN && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                     continue;
                 }
@@ -2978,12 +2921,8 @@ impl Battle {
             // `flags: { breakable: 1 }` — Mold Breaker bypasses.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
             if m.type_ == 1 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "flashfire" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::FLASHFIRE && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         d.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::FlashFire,
@@ -3005,12 +2944,8 @@ impl Battle {
             // same — Flying defenders skip damage anyway.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Earth_Eater_(Ability)>.
             if m.type_ == 8 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "eartheater" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::EARTHEATER && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         let heal = (d.stats.hp / 4).max(1);
                         d.current_hp = d.current_hp.saturating_add(heal).min(d.stats.hp);
@@ -3031,12 +2966,8 @@ impl Battle {
             // self-check is implicit. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Soundproof_(Ability)>.
             if is_sound_move(m.slug) {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "soundproof" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::SOUNDPROOF && !attacker_breaks_mold {
                     continue;
                 }
             }
@@ -3051,12 +2982,8 @@ impl Battle {
             // PS `flags.bullet`. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Bulletproof_(Ability)>.
             if m.is_bullet {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "bulletproof" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::BULLETPROOF && !attacker_breaks_mold {
                     continue;
                 }
             }
@@ -3070,12 +2997,8 @@ impl Battle {
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>,
             //             <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
             if m.type_ == 2 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if matches!(def_ability, "waterabsorb" | "dryskin") && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if matches!(def_ability, data::ability_id::WATERABSORB | data::ability_id::DRYSKIN) && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         let heal = (d.stats.hp / 4).max(1);
                         d.current_hp = d.current_hp.saturating_add(heal).min(d.stats.hp);
@@ -3090,12 +3013,8 @@ impl Battle {
             // damage, no secondaries). Goodra / Azumarill HA fallback.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sap_Sipper_(Ability)>.
             if m.type_ == 4 {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "sapsipper" && !attacker_breaks_mold {
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::SAPSIPPER && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
                     continue;
                 }
@@ -3123,14 +3042,10 @@ impl Battle {
             // signature. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Wonder_Guard_(Ability)>.
             {
-                let def_ability = if defender.ability_id == u16::MAX {
-                    ""
-                } else {
-                    data::ABILITIES[defender.ability_id as usize].slug
-                };
-                if def_ability == "wonderguard"
+                let def_ability = defender.ability_id;
+                if def_ability == data::ability_id::WONDERGUARD
                     && !attacker_breaks_mold
-                    && m.slug != "struggle"
+                    && move_id != data::move_id::STRUGGLE
                 {
                     // Resolve the move's effective type in-context (Tera
                     // Blast / Weather Ball / Terrain Pulse), then its
@@ -3295,10 +3210,10 @@ impl Battle {
             // simplified model we treat any same-side source as
             // active. x0.75 per-source, no stacking. See attacker-side
             // notes above for the PS handler shape and citations.
-            if side_has_ruin(self, actor_side, "swordofruin") && m.category == 0 {
+            if side_has_ruin(self, actor_side, data::ability_id::SWORDOFRUIN) && m.category == 0 {
                 boosted_defender.stats.def = scale_off_075(boosted_defender.stats.def);
             }
-            if side_has_ruin(self, actor_side, "beadsofruin") && m.category == 1 {
+            if side_has_ruin(self, actor_side, data::ability_id::BEADSOFRUIN) && m.category == 1 {
                 boosted_defender.stats.spd = scale_off_075(boosted_defender.stats.spd);
             }
             // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
@@ -3436,17 +3351,17 @@ impl Battle {
             // Expert Belt — multipliers commute with the formula tail
             // to within rounding. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>.
-            if attacker_item_slug == "wiseglasses" && special_move && dmg > 0 {
+            if attacker_item_id == data::item_id::WISEGLASSES && special_move && dmg > 0 {
                 dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
             }
             // Muscle Band — physical moves ×1.1 BP. PS
             // `data/items.ts:muscleband` mirrors Wise Glasses with
             // `move.category === 'Physical'`. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
-            if attacker_item_slug == "muscleband" && physical_move && dmg > 0 {
+            if attacker_item_id == data::item_id::MUSCLEBAND && physical_move && dmg > 0 {
                 dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
             }
-            if attacker_item_slug == "expertbelt" && dmg > 0 {
+            if attacker_item_id == data::item_id::EXPERTBELT && dmg > 0 {
                 let eff = crate::damage::type_effectiveness(
                     m.type_,
                     defender.species(),
@@ -4248,7 +4163,7 @@ impl Battle {
         // for any non-Move effect, and Life Orb's recoil is an item-side
         // residual, not the move itself. PS: `data/items.ts:lifeorb` recoil
         // routes through the standard onDamage event.
-        if attacker_item_slug == "lifeorb" && any_damage_dealt > 0 {
+        if attacker_item_id == data::item_id::LIFEORB && any_damage_dealt > 0 {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
             // `!(move.hasSheerForce && pokemon.hasAbility('sheerforce'))`,
@@ -4289,7 +4204,7 @@ impl Battle {
         // anyway). Magic Guard does NOT block heals; PS routes through
         // onTryHeal, not onDamage.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
-        if attacker_item_slug == "shellbell" && any_damage_dealt > 0 && damaging {
+        if attacker_item_id == data::item_id::SHELLBELL && any_damage_dealt > 0 && damaging {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 if a.is_alive() {
                     let heal = (any_damage_dealt as u32 / 8).max(1) as u16;
