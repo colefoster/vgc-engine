@@ -1792,6 +1792,50 @@ impl Battle {
                     return;
                 }
             }
+            // Magic Bounce — PS `data/abilities.ts:2392` magicbounce.
+            //   onTryHit(target, source, move) {
+            //     if (target === source || move.hasBounced ||
+            //         !move.flags['reflectable'] || target.isSemiInvulnerable())
+            //       return;
+            //     const newMove = this.dex.getActiveMove(move.id);
+            //     newMove.hasBounced = true;
+            //     newMove.pranksterBoosted = false;
+            //     this.actions.useMove(newMove, target, { target: source });
+            //     return null;
+            //   }
+            // When an opponent targets a Magic Bounce holder with a
+            // reflectable status move, the move is re-resolved with the
+            // BOUNCER as source and the original ATTACKER as target. We
+            // re-dispatch straight into `resolve_status_move_inner` (the
+            // bounce hook lives only here in `try_use_move`), so the bounced
+            // copy structurally cannot re-bounce — PS's once-only
+            // `hasBounced` guard is satisfied by construction.
+            //
+            // NOT bypassed by Mold Breaker: PS Magic Bounce's onTryHit runs
+            // regardless of the attacker's `ignoreAbility`, so we deliberately
+            // do not consult `attacker_breaks_mold` here. `pranksterBoosted`
+            // is reset on the bounced copy in PS — the engine doesn't carry
+            // per-move mutable state, but the bounced re-dispatch already
+            // skips the Prankster-vs-Dark gate above (it runs once, on the
+            // original cast), so the observable result matches.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Bounce_(Ability)>.
+            if m.is_reflectable {
+                if let Some((b_side, b_slot)) = self.find_magic_bounce_target(actor_side, m) {
+                    // Re-resolve: bouncer is the new source, original
+                    // attacker (actor_side/actor_slot) is the forced target.
+                    self.resolve_status_move_inner(
+                        b_side,
+                        b_slot,
+                        m,
+                        Some(Target { side: actor_side, slot: actor_slot }),
+                        Some((actor_side, actor_slot)),
+                    );
+                    // Throat Spray etc. key off the user; the original
+                    // attacker's move was bounced and produced no on-user
+                    // effect, so nothing further fires for the caster.
+                    return;
+                }
+            }
             self.resolve_status_move(actor_side, actor_slot, m, target);
             // Throat Spray: sound-flag status moves (Sing, Heal Bell,
             // Roar of Time... Growl) trigger the +1 SpA on the user.
@@ -3833,6 +3877,57 @@ impl Battle {
             .map(|slot| (opp, slot))
     }
 
+    /// Magic Bounce detection — PS `data/abilities.ts:2392` onTryHit.
+    /// Returns the (side, slot) of an opposing Magic Bounce holder that
+    /// will reflect a reflectable status move cast by `actor_side`, or
+    /// `None` if the move resolves normally.
+    ///
+    /// Eligibility per PS onTryHit guards: holder is alive, not
+    /// semi-invulnerable, and is the mon the move would target. The
+    /// `target === source` and `move.hasBounced` guards can't fire here —
+    /// the caster and bouncer are on opposite sides, and a bounced copy is
+    /// re-dispatched via `resolve_status_move_inner` (which has no bounce
+    /// hook). Magic Bounce is famously NOT bypassed by Mold Breaker, so the
+    /// attacker's mold-breaking ability is irrelevant here.
+    ///
+    ///   * Single-target opposing moves (codes 0 / 4 / 10) bounce only when
+    ///     the specific resolved target slot holds Magic Bounce.
+    ///   * Side-targeted reflectable moves (foeSide hazards, code 11 —
+    ///     Stealth Rock / Toxic Spikes / Spikes) bounce when ANY alive foe
+    ///     active holds Magic Bounce (first such slot in PS speed/slot
+    ///     order; we pick the lowest slot).
+    fn find_magic_bounce_target(
+        &self,
+        actor_side: SideRef,
+        m: &data::MoveDef,
+    ) -> Option<(SideRef, u8)> {
+        let opp = actor_side.opposing();
+        let eligible = |slot: u8| -> bool {
+            self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                t.is_alive()
+                    && t.semi_invuln == 0
+                    && t.effective_ability_slug() == "magicbounce"
+            })
+        };
+        match m.target {
+            // Single-target opposing: only the resolved target slot bounces.
+            0 | 4 | 10 => {
+                let (_, tslot) = self.resolve_status_target(opp)?;
+                if eligible(tslot) {
+                    Some((opp, tslot))
+                } else {
+                    None
+                }
+            }
+            // foeSide hazards: first eligible foe active reflects.
+            11 => {
+                let n = self.format().active_count() as u8;
+                (0..n).find(|&slot| eligible(slot)).map(|slot| (opp, slot))
+            }
+            _ => None,
+        }
+    }
+
     /// Attempt to apply a status to a specific mon. No-op if the mon
     /// already has a non-None status, or if it's type-immune to this status.
     /// True iff `side` has at least one alive bench Pokémon that
@@ -4393,15 +4488,39 @@ impl Battle {
         m: &data::MoveDef,
         target: Option<Target>,
     ) {
+        self.resolve_status_move_inner(actor_side, actor_slot, m, target, None)
+    }
+
+    /// Core status-move resolver. `forced_target` overrides the
+    /// "first alive opposing active" pick when `Some` — this is the lever
+    /// Magic Bounce (PR-335) uses to send a bounced move back at the
+    /// SPECIFIC original attacker (doubles), with the bouncer as the new
+    /// source (`actor_side`/`actor_slot`). For every non-bounce caller
+    /// `forced_target` is `None` and behavior is byte-identical to PR-334.
+    fn resolve_status_move_inner(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        m: &data::MoveDef,
+        target: Option<Target>,
+        forced_target: Option<(SideRef, u8)>,
+    ) {
         // Resolve the explicit opposing target slot ONCE (PR-334). For the
         // normal path this is the first alive mon on `actor_side.opposing()`
         // — byte-identical to the inline `0..n` scans the sub-handlers used
         // before this refactor. `opp_side`/`opp_slot` are the side+slot a
         // single-target opposing status move lands on; side-targeting moves
-        // (hazards, screens) read `opp_side` directly. Magic Bounce (PR-335)
-        // re-dispatches with a swapped target via this same path.
+        // (hazards, screens) read `opp_side` directly. A bounced move
+        // (PR-335) overrides the slot pick via `forced_target`.
         let opp_side = actor_side.opposing();
-        let opp_target = self.resolve_status_target(opp_side);
+        let opp_target = match forced_target {
+            Some((ts, tslot))
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) =>
+            {
+                Some((ts, tslot))
+            }
+            _ => self.resolve_status_target(opp_side),
+        };
         match m.slug {
             "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
             | "obstruct" | "burningbulwark" | "silktrap" => {
@@ -6650,6 +6769,118 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].status, Status::Paralysis, "first alive foe paralyzed");
         assert_eq!(b.p2.team[1].status, Status::None, "second foe untouched");
+    }
+
+    // PR-335: Magic Bounce reflects a foe's reflectable status move back at
+    // the attacker. P1 Snorlax Thunder-Waves a Magic Bounce Hatterene; the
+    // paralysis lands on the SNORLAX (caster), not Hatterene.
+    #[test]
+    fn magic_bounce_reflects_thunder_wave_at_attacker() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["thunderwave","bodyslam","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["stealthrock","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::Paralysis, "caster paralyzed by bounce");
+        assert_eq!(b.p2.team[0].status, Status::None, "Magic Bounce holder unaffected");
+    }
+
+    // Toxic is also reflectable: bounces back and badly-poisons the caster.
+    #[test]
+    fn magic_bounce_reflects_toxic_at_attacker() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["toxic","bodyslam","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["stealthrock","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::Toxic, "caster badly poisoned by bounce");
+        assert_eq!(b.p2.team[0].status, Status::None, "Magic Bounce holder unaffected");
+    }
+
+    // Stealth Rock (a foeSide hazard) is reflectable: bounces onto the
+    // CASTER's own side instead of the Magic Bounce holder's side.
+    #[test]
+    fn magic_bounce_reflects_stealth_rock_to_caster_side() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["stealthrock","bodyslam","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["stealthrock","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p1.conditions.stealth_rock, "rocks bounced onto caster's side");
+        assert!(!b.p2.conditions.stealth_rock, "Magic Bounce holder's side stays clear");
+    }
+
+    // A non-reflectable status move (Will-O-Wisp IS reflectable, but a
+    // self-targeted boost like Swords Dance is not foe-targeting and the
+    // damaging move below confirms the gate): a damaging move is unaffected
+    // by Magic Bounce and hits the holder normally.
+    #[test]
+    fn magic_bounce_ignores_damaging_move() {
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"choiceband","nature":"adamant","moves":["bodyslam","crunch","earthquake","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["stealthrock","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < hp_before, "Body Slam (damaging) hits the holder normally");
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "caster took no damage");
+    }
+
+    // Single-bounce guard: a bounced move must NOT re-bounce even when the
+    // ORIGINAL ATTACKER also has Magic Bounce. P1 Hatterene (Magic Bounce)
+    // Thunder-Waves P2 Hatterene (Magic Bounce); the move bounces ONCE back
+    // at P1 and paralyzes P1 — it does not ping-pong.
+    #[test]
+    fn magic_bounce_does_not_re_bounce() {
+        let p1_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["thunderwave","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"hatterene","level":50,"ability":"magicbounce","item":"lifeorb","nature":"quiet","moves":["stealthrock","dazzlinggleam","psychic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Hatterene is Psychic/Fairy — not Ground/Electric — so it CAN be
+        // paralyzed. The single bounce lands on P1; P2 stays clean.
+        assert_eq!(b.p1.team[0].status, Status::Paralysis, "bounced once back at caster");
+        assert_eq!(b.p2.team[0].status, Status::None, "did not re-bounce onto target");
     }
 
     #[test]
