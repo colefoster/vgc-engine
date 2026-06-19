@@ -564,8 +564,14 @@ impl Battle {
                 });
             }
         }
-        for team_index in s.switch_candidates(slot) {
-            out.push(Choice::Switch { actor_slot, team_index });
+        // Trapping (Shadow Tag / Arena Trap / Magnet Pull / partial-trap /
+        // move-trap) removes the voluntary switch options. Moves stay
+        // selectable. PS gates the switch choice via the `TrapPokemon`
+        // event; see `is_trapped`.
+        if !self.is_trapped(side, actor_slot) {
+            for team_index in s.switch_candidates(slot) {
+                out.push(Choice::Switch { actor_slot, team_index });
+            }
         }
         if out.is_empty() {
             out.push(Choice::Pass { actor_slot });
@@ -4640,6 +4646,66 @@ impl Battle {
             m.item_id = a_item;
         }
         true
+    }
+
+    /// True if the active mon at (`side`, `slot`) is prevented from
+    /// switching out **voluntarily** this turn. Consulted by
+    /// `legal_choices` to drop the switch options. Forced replacement of a
+    /// fainted mon is NOT gated by this (the mon has already left the
+    /// field), and self-switch MOVES (U-turn etc.) are unaffected — PS
+    /// trapping only blocks the switch *choice*.
+    ///
+    /// PS models trapping via the `TrapPokemon` event: every adjacent foe's
+    /// trapper ability, a partial-trap volatile, and the move-trap `trapped`
+    /// volatile each call `pokemon.tryTrap()`. Ghost types are immune
+    /// (`runStatusImmunity('trapped')` — the type chart marks Ghost immune
+    /// to the `trapped` status), and Shed Shell frees the holder
+    /// (`onTrapPokemon` priority -10 sets `trapped = false`). In our
+    /// singles/doubles scope every opposing active counts as adjacent.
+    /// PS data/abilities.ts:shadowtag / arenatrap / magnetpull;
+    /// data/conditions.ts:partiallytrapped; data/items.ts:shedshell.
+    pub(crate) fn is_trapped(&self, side: SideRef, slot: u8) -> bool {
+        let mon = match self.side(side).active_mon(slot as usize) {
+            Some(m) if m.is_alive() => m,
+            _ => return false,
+        };
+        // Shed Shell escapes every form of trapping (PR-404 wires the item
+        // arm; until then this is a no-op).
+        if mon.item_id == data::item_id::SHEDSHELL {
+            return false;
+        }
+        // Ghost types are immune to trapping — `tryTrap` fails for them on
+        // every trapper path (ability, partial-trap, and move-trap alike).
+        let (types, n_types) = mon.effective_types();
+        if (0..n_types as usize).any(|i| types[i] == 13) {
+            return false;
+        }
+        // Partial-trap volatile (Bind / Wrap / Fire Spin / Whirlpool / ...):
+        // switch-locked while the volatile is alive.
+        if mon.volatiles.has(crate::pokemon::VolatileKind::PartialTrap) {
+            return true;
+        }
+        // Adjacent-foe trapper abilities.
+        let opp = side.opposing();
+        let n_active = self.format().active_count() as u8;
+        for opp_slot in 0..n_active {
+            let foe = match self.side(opp).active_mon(opp_slot as usize) {
+                Some(f) if f.is_alive() => f,
+                _ => continue,
+            };
+            match foe.effective_ability_id() {
+                // Shadow Tag traps every adjacent foe except a fellow
+                // Shadow Tag holder (Ghost / Shed Shell already returned
+                // above). PS data/abilities.ts:shadowtag.
+                data::ability_id::SHADOWTAG => {
+                    if mon.effective_ability_id() != data::ability_id::SHADOWTAG {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Pick the lowest-index alive bench Pokemon on `side` not already in an
@@ -9659,6 +9725,83 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].item_id, data::item_id::CHOICESCARF, "Trick blocked: Gengar keeps Choice Scarf");
         assert_eq!(b.p2.team[0].item_id, data::item_id::LEFTOVERS, "Trick blocked: Gastrodon keeps Leftovers");
+    }
+
+    fn n_switch_choices(b: &Battle, side: SideRef, slot: u8) -> usize {
+        b.legal_choices(side, slot)
+            .iter()
+            .filter(|c| matches!(c, Choice::Switch { .. }))
+            .count()
+    }
+
+    #[test]
+    fn shadow_tag_traps_adjacent_foe_but_not_ghost_or_fellow_holder() {
+        // P2 Gothitelle has Shadow Tag. A grounded non-Ghost P1 lead is
+        // trapped (no switch choices); a Ghost lead and a fellow Shadow
+        // Tag holder are NOT. PS data/abilities.ts:shadowtag.
+        let p2_json = r#"[
+            {"species":"gothitelle","level":50,"ability":"shadowtag","item":"leftovers","nature":"bold","moves":["psychic","calmmind","protect","trick"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Control: same lead, foe WITHOUT Shadow Tag → switches legal.
+        let garchomp_team = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let p2_control = r#"[
+            {"species":"gothitelle","level":50,"ability":"competitive","item":"leftovers","nature":"bold","moves":["psychic","calmmind","protect","trick"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let b_ctrl = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(garchomp_team).unwrap(),
+            TeamBuilder::from_json(p2_control).unwrap());
+        assert!(n_switch_choices(&b_ctrl, SideRef::P1, 0) > 0, "no trapper → Garchomp may switch");
+
+        let b_trap = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(garchomp_team).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap());
+        assert_eq!(n_switch_choices(&b_trap, SideRef::P1, 0), 0, "Shadow Tag traps grounded Garchomp");
+
+        // Ghost lead escapes Shadow Tag.
+        let gengar_team = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["shadowball","sludgebomb","protect","trick"],"evs":{"spa":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let b_ghost = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(gengar_team).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b_ghost, SideRef::P1, 0) > 0, "Ghost-type Gengar escapes Shadow Tag");
+
+        // A fellow Shadow Tag holder is not trapped by Shadow Tag.
+        let st_team = r#"[
+            {"species":"gothitelle","level":50,"ability":"shadowtag","item":"","nature":"bold","moves":["psychic","calmmind","protect","trick"],"evs":{"hp":252,"def":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let b_st = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(st_team).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b_st, SideRef::P1, 0) > 0, "fellow Shadow Tag holder not trapped");
+    }
+
+    #[test]
+    fn partial_trap_volatile_prevents_switching() {
+        // A grounded non-Ghost mon with the partial-trap volatile cannot
+        // switch. PS data/conditions.ts:partiallytrapped onTrapPokemon.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["hurricane","surf","whirlpool","protect"]}
+        ]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap());
+        assert!(n_switch_choices(&b, SideRef::P1, 0) > 0, "free Garchomp may switch");
+        b.p1.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::PartialTrap,
+            turns_remaining: 4,
+            payload: 8,
+        });
+        assert_eq!(n_switch_choices(&b, SideRef::P1, 0), 0, "partial-trapped Garchomp cannot switch");
     }
 
     #[test]
