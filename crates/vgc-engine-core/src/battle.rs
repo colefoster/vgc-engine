@@ -679,7 +679,8 @@ impl Battle {
             [queue.entries[1][0].kind.as_byte(), queue.entries[1][1].kind.as_byte()],
         ];
 
-        for action in order {
+        for (idx, action) in order.iter().enumerate() {
+            let action = *action;
             if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
                 continue;
             }
@@ -691,6 +692,24 @@ impl Battle {
             if !actor_alive {
                 continue;
             }
+            // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
+            // iff any action ordered AFTER the current one this turn is a
+            // move/switch/instaswitch/shift. PS shifts the current action
+            // off the queue BEFORE running it, so `willAct()` only sees
+            // later actions. Stall moves (Protect family / Endure / etc.)
+            // gate their success+RNG draw on this — if no later action
+            // will act, the stall move FAILS and does NOT draw. We mirror
+            // by scanning the remainder of `order` for a still-alive Move
+            // action (switches in our engine already ran up-front, so the
+            // only "later acting" actions at move-resolution time are
+            // moves).
+            let will_act = order[idx + 1..].iter().any(|a| {
+                matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. })
+                    && self
+                        .side(a.side)
+                        .active_mon(a.actor_slot as usize)
+                        .is_some_and(|m| m.is_alive())
+            });
             // Mark this actor as having consumed their queued action
             // BEFORE resolving — so Sucker Punch's `willMove(target)`
             // check sees the target as "still pending" only when it
@@ -698,7 +717,7 @@ impl Battle {
             let s = action.side as usize;
             let slot = (action.actor_slot as usize).min(1);
             pending_kind[s][slot] = 0;
-            self.resolve_move_with_pending(action, &pending_kind);
+            self.resolve_move_with_pending(action, &pending_kind, will_act);
         }
 
         // 2b. Self-switch sweep — U-turn / Volt Switch / Flip Turn /
@@ -1243,6 +1262,7 @@ impl Battle {
         &mut self,
         action: ScheduledAction,
         pending_kind: &[[u8; 2]; 2],
+        will_act: bool,
     ) {
         let (actor_slot, move_slot, target, tera) = match action.choice {
             Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
@@ -2065,6 +2085,7 @@ impl Battle {
                         m,
                         Some(Target { side: actor_side, slot: actor_slot }),
                         Some((actor_side, actor_slot)),
+                        will_act,
                     );
                     // Throat Spray etc. key off the user; the original
                     // attacker's move was bounced and produced no on-user
@@ -2072,7 +2093,7 @@ impl Battle {
                     return;
                 }
             }
-            self.resolve_status_move(actor_side, actor_slot, m, target);
+            self.resolve_status_move(actor_side, actor_slot, m, target, will_act);
             // Throat Spray: sound-flag status moves (Sing, Heal Bell,
             // Roar of Time... Growl) trigger the +1 SpA on the user.
             self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
@@ -4940,8 +4961,9 @@ impl Battle {
         actor_slot: u8,
         m: &data::MoveDef,
         target: Option<Target>,
+        will_act: bool,
     ) {
-        self.resolve_status_move_inner(actor_side, actor_slot, m, target, None)
+        self.resolve_status_move_inner(actor_side, actor_slot, m, target, None, will_act)
     }
 
     /// Core status-move resolver. `forced_target` overrides the
@@ -4957,6 +4979,7 @@ impl Battle {
         m: &data::MoveDef,
         target: Option<Target>,
         forced_target: Option<(SideRef, u8)>,
+        will_act: bool,
     ) {
         // Resolve the explicit opposing target slot ONCE (PR-334). For the
         // normal path this is the first alive mon on `actor_side.opposing()`
@@ -4977,6 +5000,18 @@ impl Battle {
         match m.slug {
             "protect" | "detect" | "spikyshield" | "banefulbunker" | "kingsshield"
             | "obstruct" | "burningbulwark" | "silktrap" => {
+                // PS stall-move `onPrepareHit`/`onTry`:
+                //   `return !!this.queue.willAct() && this.runEvent('StallMove', pokemon);`
+                // (e.g. data/moves.ts:997 Baneful Bunker, :3538 Detect,
+                // :14506 Protect family). The `&&` short-circuits: if no
+                // later action will act this turn, the move FAILS and the
+                // StallMove event — which is what draws the 1/3^n RNG —
+                // never fires. The stall counter is NOT bumped and NO
+                // value is drawn. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Protect_(move)>.
+                if !will_act {
+                    return;
+                }
                 // Mark the issuer as having attempted a stall move.
                 let stall_counter = {
                     let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -5016,6 +5051,11 @@ impl Battle {
                 // damage at 1 HP (the clamp in the damage path above).
                 // PS draws the StallMove counter EXACTLY like Protect, so
                 // sharing this code keeps the LCG draw site/order aligned.
+                // willAct gating (PS data/moves.ts:4817): no later action
+                // → fail with NO draw and NO counter bump.
+                if !will_act {
+                    return;
+                }
                 let stall_counter = {
                     let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         Some(a) => a,
@@ -6831,6 +6871,32 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, pex_hp, "first Protect always succeeds; Toxapex takes no damage");
         assert_eq!(b.p1.team[0].stall_counter(), 1);
+    }
+
+    #[test]
+    fn protect_fails_and_does_not_draw_when_no_later_action_acts() {
+        // PS `willAct()` gate (sim/battle-queue.ts:310, data/moves.ts:14506):
+        // a stall move FAILS (no Protect, no stall-counter bump, NO RNG
+        // draw) if no action ordered after it will act this turn. Singles:
+        // P1 uses Protect, P2 SWITCHES. Switches run up-front, so by the
+        // time Protect resolves nothing else acts → willAct() is false →
+        // Protect fails, counter stays 0, and the mon is NOT protected.
+        let p1_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"leftovers","nature":"calm","moves":["protect","scald","toxic","recover"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"raichu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(!b.p1.team[0].is_protected_this_turn(), "Protect must FAIL when no later action acts");
+        assert_eq!(b.p1.team[0].stall_counter(), 0, "stall counter NOT bumped on willAct fail");
     }
 
     #[test]
