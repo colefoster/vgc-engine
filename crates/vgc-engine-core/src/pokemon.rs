@@ -747,8 +747,7 @@ impl Pokemon {
     /// `data/conditions.ts`:focusenergy.
     pub fn effective_crit_stage(&self) -> u8 {
         let mut s = self.crit_stage_volatile;
-        let ability = self.effective_ability_slug();
-        if ability == "superluck" {
+        if self.effective_ability_id() == data::ability_id::SUPERLUCK {
             s = s.saturating_add(1);
         }
         let item = if self.item_id == u16::MAX {
@@ -801,6 +800,37 @@ impl Pokemon {
             return "";
         }
         data::ABILITIES.get(id as usize).map(|a| a.slug).unwrap_or("")
+    }
+
+    /// Effective ability id — the integer-dispatch mirror of
+    /// `effective_ability_slug()`. Returns `u16::MAX` (the "no ability"
+    /// sentinel) when the ability is suppressed (Gastro Acid) or the slot
+    /// is empty, otherwise the override-aware `ability_id`. Hot-path code
+    /// should compare this against `data::ability_id::*` constants instead
+    /// of materializing the slug and running a `strcmp`. The two accessors
+    /// are kept in exact lockstep: `effective_ability_slug()` returns
+    /// `""` iff this returns `u16::MAX`.
+    #[inline]
+    pub fn effective_ability_id(&self) -> u16 {
+        if self.ability_suppressed {
+            return u16::MAX;
+        }
+        if self.ability_override != u16::MAX {
+            self.ability_override
+        } else {
+            self.ability_id
+        }
+    }
+
+    /// Effective held-item id — `u16::MAX` when no item is held. Mirror of
+    /// the inline `item_id == u16::MAX ? "" : ITEMS[item_id].slug` pattern
+    /// used across the hot path, letting call sites compare against
+    /// `data::item_id::*` constants without the slug round-trip. (There is
+    /// no item suppression today, so this is simply the field; it exists
+    /// for call-site symmetry with the ability accessor.)
+    #[inline]
+    pub fn effective_item_id(&self) -> u16 {
+        self.item_id
     }
 
     /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
@@ -1501,9 +1531,13 @@ mod tests {
             micle_next_move: false,
         };
         assert_eq!(mon.effective_ability_slug(), "roughskin");
+        // Id accessor must stay in lockstep with the slug accessor.
+        assert_eq!(mon.effective_ability_id(), ab_id);
+        assert_eq!(data::ABILITIES[mon.effective_ability_id() as usize].slug, "roughskin");
         let mut sup = mon.clone();
         sup.ability_suppressed = true;
         assert_eq!(sup.effective_ability_slug(), "");
+        assert_eq!(sup.effective_ability_id(), u16::MAX);
     }
 
     #[test]
