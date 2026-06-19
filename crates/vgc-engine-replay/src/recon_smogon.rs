@@ -573,30 +573,13 @@ mod tests {
             let stats_a = compute_stats(spec, 50, &StatSpread::MAX_IV,
                 &StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 }, nature);
             let mk = |species_id: u16, level: u8, stats: vgc_engine_core::FinalStats| -> Pokemon {
-                Pokemon {
-                    species_id, level, gender: data::Gender::Male,
-                    moves: [u16::MAX; 4], pp: [0; 4],
-                    ability_id: u16::MAX, ability_override: u16::MAX, item_id: u16::MAX,
-                    current_hp: stats.hp, stats,
-                    ivs: StatSpread::MAX_IV, evs: StatSpread::default(),
-                    nature_id: vgc_engine_core::nature_id::NEUTRAL,
-                    status: Status::None,
-                    boosts: [0; 7], fainted: false,
-                    turns_active: 0,
-                    last_used_move_slot: 255,
-                    boosted_stat: 255, booster_locked: false,
-                    ability_suppressed: false, crit_stage_volatile: 0,
-                    last_attacker: (255, 255), last_attacker_category: 255, last_damage_taken: 0,
-                    tera_type: 0, terastallized: false, stellar_boosted_types: 0,
-                    semi_invuln: 0, charging_turns: 0, charging_move_slot: 255,
-                    must_recharge: false, lockin_turns: 0, lockin_move_slot: 255,
-                    slow_start_active_turns: 0, truant_loafing: false,
-                    type_override: [255, 255],
-                    protean_used: false,
-                    disguise_busted: false,
-            micle_next_move: false,
-                    volatiles: VolatileSet::default(),
-                }
+                Pokemon::with_identity(
+                    species_id, level, data::Gender::Male,
+                    [u16::MAX; 4], [0; 4],
+                    u16::MAX, u16::MAX, stats, stats.hp,
+                    StatSpread::MAX_IV, StatSpread::default(),
+                    vgc_engine_core::nature_id::NEUTRAL, 0,
+                )
             };
             let atk = mk(data::SPECIES.iter().position(|s| s.slug == "garchomp").unwrap() as u16, 50, stats_a);
             let def_nat = nature_by_slug("careful").unwrap();

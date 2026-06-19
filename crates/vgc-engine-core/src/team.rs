@@ -20,7 +20,7 @@
 use serde::Deserialize;
 
 use crate::pokemon::{
-    compute_stats, nature_by_slug, Nature, Pokemon, StatSpread, Status,
+    compute_stats, nature_by_slug, Nature, Pokemon, StatSpread,
 };
 
 use vgc_engine_data as data;
@@ -243,49 +243,21 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
         .and_then(parse_gender_token)
         .unwrap_or(species.gender);
 
-    Ok(Pokemon {
+    Ok(Pokemon::with_identity(
         species_id,
-        level: m.level,
+        m.level,
         gender,
         moves,
         pp,
         ability_id,
-        ability_override: u16::MAX,
         item_id,
-        current_hp: stats.hp,
         stats,
-        ivs: m.ivs,
-        evs: m.evs,
+        stats.hp,
+        m.ivs,
+        m.evs,
         nature_id,
-        status: Status::None,
-        boosts: [0; 7],
-        fainted: false,
-        turns_active: 0,
-        last_used_move_slot: 255,
-        boosted_stat: 255,
-        booster_locked: false,
-        ability_suppressed: false,
-        crit_stage_volatile: 0,
-        last_attacker: (255, 255),
-        last_attacker_category: 255,
-        last_damage_taken: 0,
         tera_type,
-        terastallized: false,
-        stellar_boosted_types: 0,
-        semi_invuln: 0,
-        charging_turns: 0,
-        charging_move_slot: 255,
-        must_recharge: false,
-        lockin_turns: 0,
-        lockin_move_slot: 255,
-        volatiles: crate::pokemon::VolatileSet::default(),
-        slow_start_active_turns: 0,
-        truant_loafing: false,
-        type_override: [255, 255],
-        protean_used: false,
-        disguise_busted: false,
-            micle_next_move: false,
-    })
+    ))
 }
 
 /// Convenience: parse a team JSON document (array of TeamMember) into a
