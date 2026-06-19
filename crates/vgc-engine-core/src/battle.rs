@@ -5905,6 +5905,74 @@ fn apply_secondary_effect(
             battle.try_set_status(target_side, target_slot, status);
         }
     }
+    // King's Rock / Razor Fang — PS `data/items.ts:kingsrock` (3204) and
+    // `razorfang` (5096). Both share `onModifyMovePriority: -1` +
+    //   onModifyMove(move) {
+    //     if (move.category !== "Status") {
+    //       if (!move.secondaries) move.secondaries = [];
+    //       for (const secondary of move.secondaries)
+    //         if (secondary.volatileStatus === 'flinch') return;
+    //       move.secondaries.push({ chance: 10, volatileStatus: 'flinch' });
+    //     }
+    //   }
+    // i.e. a 10% flinch secondary is appended to any non-Status move that
+    // doesn't already carry one. `onModifyMovePriority: -1` registers it
+    // late, and `push` appends it last, so PS rolls this AFTER the move's
+    // own secondaries — hence this arm sits at the end of
+    // `apply_secondary_effect`, after the status/stat-drop/Tri-Attack/
+    // Dire-Claw rolls. The draw fires whenever the move is non-Status and
+    // has no native flinch chance (`flinch_chance(move_slug).is_none()`).
+    // The flinch is then vetoed by Inner Focus (breakable by Mold Breaker)
+    // exactly like the native flinch secondary above. Bulbapedia:
+    //   <https://bulbapedia.bulbagarden.net/wiki/King%27s_Rock>
+    //   <https://bulbapedia.bulbagarden.net/wiki/Razor_Fang>.
+    let attacker_kings_rock = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| {
+            a.is_alive()
+                && a.item_id != u16::MAX
+                && matches!(
+                    data::ITEMS[a.item_id as usize].slug,
+                    "kingsrock" | "razorfang"
+                )
+        })
+        .unwrap_or(false);
+    if attacker_kings_rock {
+        let move_category = data::MOVES
+            .iter()
+            .find(|mv| mv.slug == move_slug)
+            .map(|mv| mv.category)
+            .unwrap_or(2);
+        // category: 0 Physical, 1 Special, 2 Status. Skip Status moves and
+        // moves that already roll a flinch (PS's dedupe guard).
+        if move_category != 2 && flinch_chance(move_slug).is_none() {
+            if rng.percent_1_100() <= 10 {
+                let attacker_breaks_mold = battle
+                    .side(attacker_side)
+                    .active_mon(attacker_slot as usize)
+                    .map(|a| {
+                        matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        )
+                    })
+                    .unwrap_or(false);
+                let target_inner_focus = battle
+                    .side(target_side)
+                    .active_mon(target_slot as usize)
+                    .map(|t| t.effective_ability_slug() == "innerfocus")
+                    .unwrap_or(false);
+                if !(target_inner_focus && !attacker_breaks_mold) {
+                    if let Some(t) =
+                        battle.side_mut(target_side).active_mon_mut(target_slot as usize)
+                    {
+                        t.set_flinched(true);
+                    }
+                }
+            }
+        }
+    }
 }
 
 
@@ -16256,6 +16324,62 @@ mod tests {
         assert!(seen_flinch_only, "no seed produced flinch-without-burn — {summary}");
         assert!(seen_both,
             "Fire Fang never landed BOTH burn AND flinch — secondaries are not rolling independently — {summary}");
+    }
+
+    #[test]
+    fn kings_rock_adds_10pct_flinch_to_non_flinch_move() {
+        // King's Rock / Razor Fang append a 10% flinch secondary to any
+        // non-Status move that doesn't already roll a flinch. Slow Snorlax
+        // (Brave) under Trick Room moves first with Crunch (no native
+        // flinch; its Def-drop secondary doesn't touch HP). If the King's
+        // Rock proc lands, Blissey's Seismic Toss is suppressed → Snorlax HP
+        // unchanged. Control = Leftovers, which must NEVER flinch (the move
+        // has no native flinch arm). Both Razor Fang and King's Rock checked.
+        let sweep = |attacker_item: &str| -> u32 {
+            let p1_json = format!(r#"[
+                {{"species":"hatterene","level":50,"ability":"magicbounce","item":"","nature":"quiet","moves":["trickroom","psychic","dazzlinggleam","drainingkiss"],"evs":{{"hp":252,"spa":252,"def":4}}}},
+                {{"species":"snorlax","level":50,"ability":"thickfat","item":"{attacker_item}","nature":"brave","moves":["drainpunch","crunch","bodyslam","earthquake"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["tackle","seismictoss","softboiled","protect"],"evs":{"hp":252,"def":252,"spd":4}}
+            ]"#;
+            let mut flinches = 0u32;
+            for seed in 0u64..300 {
+                let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+                let p2 = TeamBuilder::from_json(p2_json).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+                // T1: Hatterene sets Trick Room.
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+                );
+                // T2: switch Hatterene → Snorlax.
+                b.step(
+                    &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+                );
+                // T3: Snorlax Crunch (Trick Room → first). Blissey then uses
+                // Softboiled (slot 2). A flinched mon does NOT consume PP
+                // (battle.rs flinch check replaces the move), so the flinch
+                // signal is "Blissey's Softboiled PP did NOT drop".
+                let pp_pre = b.side(SideRef::P2).active_mon(0).unwrap().pp[2];
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+                );
+                let pp_post = b.side(SideRef::P2).active_mon(0).unwrap().pp[2];
+                if pp_post == pp_pre {
+                    flinches += 1;
+                }
+            }
+            flinches
+        };
+        let control = sweep("");
+        assert_eq!(control, 0, "no item + no native flinch → Blissey must never flinch (got {control})");
+        let kings = sweep("kingsrock");
+        assert!(kings > 0, "King's Rock should land at least one 10% flinch over 300 trials (got {kings})");
+        let razor = sweep("razorfang");
+        assert!(razor > 0, "Razor Fang should land at least one 10% flinch over 300 trials (got {razor})");
     }
 
     #[test]
