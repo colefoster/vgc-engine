@@ -375,8 +375,8 @@ impl Battle {
     /// `source_side` / `source_slot` identify who caused the change — the
     /// attacker for an opposing drop (Intimidate / a move secondary /
     /// Parting Shot / Strength Sap), or the target itself for a self-boost.
-    /// They are threaded but not yet read: this is the plumbing the future
-    /// Mirror Armor reflect hook lives in. Stat-drop veto abilities
+    /// The Mirror Armor reflect branch (below) reads them to bounce a
+    /// foe-sourced drop back onto the source. Stat-drop veto abilities
     /// (Clear Body / Hyper Cutter / Big Pecks / ...) and the item / ability
     /// reactions (White Herb / Eject Pack / Defiant) stay at the call sites,
     /// exactly as before — this helper performs ONLY the clamped arithmetic.
@@ -391,9 +391,78 @@ impl Battle {
         source_side: SideRef,
         source_slot: u8,
     ) {
-        // Source identity is threaded for the (future) Mirror Armor reflect
-        // hook; no behavior depends on it yet.
-        let _ = (source_side, source_slot);
+        // Mirror Armor — PS `data/abilities.ts:2612` `onTryBoost`:
+        //   if (!source || target === source || effect.name === 'Mirror Armor') return;
+        //   for (b in boost) if (boost[b] < 0) {
+        //     if (target.boosts[b] === -6) continue;
+        //     delete boost[b];
+        //     if (source.hp) this.boost(negativeBoost, source, target, null, true);
+        //   }
+        // A stat DROP from a source other than the holder itself is
+        // reflected back onto that source instead of applying to the
+        // holder. Self-inflicted drops (source == target) pass through
+        // unreflected, as do all positive boosts. The redirected drop is
+        // written straight to the source's stage (clamped) — never routed
+        // back through this reflect branch — matching PS's `[true]`
+        // (isSecondary) `boost` call that suppresses a second bounce, so a
+        // Mirror-Armor-vs-Mirror-Armor drop lands exactly once on the
+        // original source. Mirror Armor is `breakable: 1`, so a source with
+        // Mold Breaker / Teravolt / Turboblaze bypasses the reflect.
+        // Corviknight signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Mirror_Armor_(Ability)>.
+        let is_self_source = source_side == target_side && source_slot == target_slot;
+        let target_mirror_armor = !is_self_source
+            && self
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .is_some_and(|m| m.effective_ability_slug() == "mirrorarmor");
+        let source_breaks_mold = self
+            .side(source_side)
+            .active_mon(source_slot as usize)
+            .is_some_and(|m| {
+                matches!(
+                    m.effective_ability_slug(),
+                    "moldbreaker" | "teravolt" | "turboblaze"
+                )
+            });
+        if target_mirror_armor && !source_breaks_mold {
+            // Reflect each negative delta onto the source; positive boosts
+            // still apply to the holder normally.
+            let source_alive = self
+                .side(source_side)
+                .active_mon(source_slot as usize)
+                .is_some_and(|m| m.is_alive());
+            for &(idx, delta) in deltas {
+                if delta < 0 {
+                    // PS skips the bounce entirely when the holder's stage
+                    // is already at the -6 floor (the drop simply no-ops).
+                    let at_floor = self
+                        .side(target_side)
+                        .active_mon(target_slot as usize)
+                        .map(|m| m.boosts[idx as usize] == -6)
+                        .unwrap_or(true);
+                    if at_floor {
+                        continue;
+                    }
+                    if source_alive {
+                        if let Some(s) =
+                            self.side_mut(source_side).active_mon_mut(source_slot as usize)
+                        {
+                            let stage = &mut s.boosts[idx as usize];
+                            *stage = (*stage + delta).clamp(-6, 6);
+                        }
+                    }
+                } else if delta > 0 {
+                    if let Some(m) =
+                        self.side_mut(target_side).active_mon_mut(target_slot as usize)
+                    {
+                        let stage = &mut m.boosts[idx as usize];
+                        *stage = (*stage + delta).clamp(-6, 6);
+                    }
+                }
+            }
+            return;
+        }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
@@ -7444,6 +7513,46 @@ mod tests {
         assert_eq!(b.p2.team[1].boosts[0], -1, "garchomp atk -1 from Intimidate");
         // No friendly fire — Pelipper's atk unaffected.
         assert_eq!(b.p1.team[1].boosts[0], 0);
+    }
+
+    #[test]
+    fn mirror_armor_reflects_intimidate_back_at_the_foe() {
+        // Corviknight has Mirror Armor. When an opposing Incineroar's
+        // Intimidate fires at battle start, the -1 Atk drop is reflected
+        // onto Incineroar (the source) instead of landing on Corviknight.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"mirrorarmor","item":"","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Holder's Atk untouched; the drop bounced back onto the source.
+        assert_eq!(b.p1.team[0].boosts[0], 0, "Mirror Armor holder's Atk not lowered");
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drop reflected onto the foe");
+    }
+
+    #[test]
+    fn mirror_armor_does_not_reflect_self_inflicted_drops() {
+        // A Mirror Armor holder that lowers its OWN stats (e.g. via a
+        // self-drop move like Close Combat / Overheat) is NOT reflected —
+        // PS gates the reflect on `target !== source`. Apply a self-drop
+        // directly through the choke point and confirm it lands.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"mirrorarmor","item":"","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Self-sourced -1 Def (source == target).
+        b.apply_boosts(SideRef::P1, 0, &[(1, -1)], SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].boosts[1], -1, "self-inflicted drop applies, not reflected");
+        assert_eq!(b.p2.team[0].boosts[1], 0, "foe untouched by a self-drop");
     }
 
     #[test]
