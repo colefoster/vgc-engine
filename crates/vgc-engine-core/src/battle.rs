@@ -6901,6 +6901,40 @@ mod tests {
     }
 
     #[test]
+    fn libero_retypes_once_per_switch_in() {
+        // PS data/abilities.ts:2273 — Libero is mechanically identical to
+        // Protean and shares the once-per-switch-in latch. Cinderace
+        // (Libero) using a Fire move becomes mono-Fire (code 1); a second
+        // different-type move does not re-type.
+        let p1_json = r#"[
+            {"species":"cinderace","level":50,"ability":"libero","item":"focussash","nature":"jolly","moves":["pyroball","highjumpkick","suckerpunch","courtchange"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+        // Cinderace is natively Fire, so use a non-Fire move first (High
+        // Jump Kick = Fighting) to actually change type and consume the
+        // latch. Fighting = 6.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let (types, n) = b.p1.team[0].effective_types();
+        assert_eq!(n, 1, "Libero mono-types the holder");
+        assert_eq!(types[0], 6, "Cinderace becomes Fighting after High Jump Kick");
+        // Second move (Fire Pyro Ball) must not re-type — latch spent.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let (types2, _) = b.p1.team[0].effective_types();
+        assert_eq!(types2[0], 6, "Libero does not re-type a second time per switch-in");
+    }
+
+    #[test]
     fn color_change_retypes_holder_to_move_type_on_hit() {
         // PS data/abilities.ts:553. Kecleon (Normal) hit by a Water move
         // becomes mono-Water. Type code: Water = 2.
