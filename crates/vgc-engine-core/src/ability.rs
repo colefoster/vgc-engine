@@ -1048,6 +1048,26 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Toxic Debris — PS `data/abilities.ts:5061` `onDamagingHit`:
+    //   const side = source.isAlly(target) ? source.side.foe : source.side;
+    //   const toxicSpikes = side.sideConditions['toxicspikes'];
+    //   if (move.category === 'Physical' && (!toxicSpikes || toxicSpikes.layers < 2)) {
+    //     side.addSideCondition('toxicspikes', target);
+    //   }
+    // On taking a PHYSICAL hit, lay one layer of Toxic Spikes on the
+    // attacker's side (capped at 2 layers — same cap as the move). Fires
+    // even on a KO hit (PS has no `!target.hp` gate) and regardless of
+    // contact. `move.category` Physical = 0. Glimmora signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Debris_(Ability)>.
+    if slug == "toxicdebris" && data::MOVES[move_id as usize].category == 0 {
+        // The attacker is by definition a foe of the holder, so the layer
+        // lands on the attacker's own side.
+        let layers = &mut battle.side_mut(attacker_side).conditions.toxic_spikes_layers;
+        if *layers < 2 {
+            *layers += 1;
+        }
+    }
+
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
