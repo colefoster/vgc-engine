@@ -6824,6 +6824,37 @@ mod tests {
     }
 
     #[test]
+    fn color_change_retypes_holder_to_move_type_on_hit() {
+        // PS data/abilities.ts:553. Kecleon (Normal) hit by a Water move
+        // becomes mono-Water. Type code: Water = 2.
+        let p1_json = r#"[
+            {"species":"kecleon","level":50,"ability":"colorchange","item":"leftovers","nature":"careful","moves":["knockoff","suckerpunch","protect","recover"],"evs":{"hp":252,"def":4,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["surf","hurricane","tailwind","airslash"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // Pre-check: Kecleon starts Normal (code 0), not Water.
+        let (pre_types, pre_n) = b.p1.team[0].effective_types();
+        assert!(!(0..pre_n as usize).any(|i| pre_types[i] == 2), "Kecleon not Water pre-hit");
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // Kecleon survives (Focus Sash-free but high bulk vs Surf) — assert
+        // it retyped to mono-Water.
+        if b.p1.team[0].is_alive() {
+            let (types, n) = b.p1.team[0].effective_types();
+            assert_eq!(n, 1, "Color Change mono-types the holder");
+            assert_eq!(types[0], 2, "Kecleon becomes Water after a Water hit");
+        } else {
+            panic!("Kecleon should survive a single Surf to observe the retype");
+        }
+    }
+
+    #[test]
     fn moody_boosts_one_stat_plus2_and_a_different_stat_minus1() {
         // PS data/abilities.ts:2656. End-of-turn: +2 to one random combat
         // stat, -1 to a different one (acc/eva excluded). Starting from all
