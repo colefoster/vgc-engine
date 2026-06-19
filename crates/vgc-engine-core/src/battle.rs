@@ -9093,6 +9093,36 @@ mod tests {
     }
 
     #[test]
+    fn lansat_berry_grants_focus_energy_at_quarter_hp() {
+        // PS data/items.ts:lansatberry — at <=25% HP, eat and add the
+        // focusenergy volatile (+2 crit stage). Deterministic.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"lansatberry","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].crit_stage_volatile, 2, "Lansat grants Focus Energy (+2 crit)");
+        // effective_crit_stage reflects the +2 (no item now, no Super Luck).
+        assert_eq!(b.p1.team[0].effective_crit_stage(), 2, "effective crit stage is +2");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Lansat Berry consumed");
+
+        // Control: above 25% → no eat, no crit boost.
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].crit_stage_volatile, 0, "Lansat does NOT fire above 25%");
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Lansat NOT consumed above 25%");
+    }
+
+    #[test]
     fn micle_berry_eats_at_quarter_hp_and_sets_accuracy_latch() {
         // PS data/items.ts:micleberry — at <=25% HP, eat and set the
         // one-shot accuracy latch (the `micleberry` volatile). Deterministic.
