@@ -37,6 +37,98 @@ pub struct ScheduledAction {
     pub choice: Choice,
 }
 
+/// Inert placeholder used to fill the unused tail of the fixed action
+/// buffers. Never observed: `ActionOrder` only ever exposes `buf[..len]`.
+const PLACEHOLDER_ACTION: ScheduledAction = ScheduledAction {
+    side: SideRef::P1,
+    actor_slot: 0,
+    choice: Choice::Pass { actor_slot: 0 },
+};
+
+/// Inline capacity of [`ActionOrder`]. VGC self-play passes at most 4
+/// actions per turn (2 mons × 2 sides), so the hot loop stays entirely on
+/// the stack. The larger margin (8) also covers normal doubles turns where
+/// both sides queue replacements; only the offline replay scorer — which
+/// crams a whole PS turn's worth of mid-turn replacement switches into one
+/// `step()` — can exceed it, and that path spills to the heap (see
+/// [`ActionOrder::Heap`]). The self-play hot loop NEVER spills.
+const ACTION_INLINE_CAP: usize = 8;
+
+/// Result of [`action_order`]: an ordered list of this turn's actions.
+///
+/// Inline-by-default, heap-free for every VGC self-play turn. Derefs to
+/// `&[ScheduledAction]`, so every existing call site (`order.iter()`,
+/// `order[i..]`, `order[0]`, `order.len()`) keeps working unchanged.
+#[derive(Debug, Clone)]
+pub enum ActionOrder {
+    /// Stack-allocated common case (≤ [`ACTION_INLINE_CAP`] actions).
+    Inline {
+        buf: [ScheduledAction; ACTION_INLINE_CAP],
+        len: usize,
+    },
+    /// Spill for pathologically large offline replay turns. Never hit by
+    /// the self-play `step()` hot loop.
+    Heap(Vec<ScheduledAction>),
+}
+
+impl ActionOrder {
+    #[inline]
+    fn new() -> Self {
+        ActionOrder::Inline { buf: [PLACEHOLDER_ACTION; ACTION_INLINE_CAP], len: 0 }
+    }
+
+    #[inline]
+    fn push(&mut self, a: ScheduledAction) {
+        match self {
+            ActionOrder::Inline { buf, len } => {
+                if *len < ACTION_INLINE_CAP {
+                    buf[*len] = a;
+                    *len += 1;
+                } else {
+                    // Overflow: migrate to heap (offline path only).
+                    let mut v: Vec<ScheduledAction> = buf[..*len].to_vec();
+                    v.push(a);
+                    *self = ActionOrder::Heap(v);
+                }
+            }
+            ActionOrder::Heap(v) => v.push(a),
+        }
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[ScheduledAction] {
+        match self {
+            ActionOrder::Inline { buf, len } => &buf[..*len],
+            ActionOrder::Heap(v) => v.as_slice(),
+        }
+    }
+}
+
+impl core::ops::Deref for ActionOrder {
+    type Target = [ScheduledAction];
+    #[inline]
+    fn deref(&self) -> &[ScheduledAction] {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for ActionOrder {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+impl Eq for ActionOrder {}
+
+impl<'a> IntoIterator for &'a ActionOrder {
+    type Item = &'a ScheduledAction;
+    type IntoIter = core::slice::Iter<'a, ScheduledAction>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
 /// Speed of `mon` after stage boosts, paralysis, side conditions
 /// (Tailwind), held item (Choice Scarf), Paradox booster, and weather-
 /// keyed speed abilities (Swift Swim / Chlorophyll / Sand Rush / Slush
@@ -109,6 +201,136 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     after_slowstart.min(u16::MAX as u32) as u16
 }
 
+/// One move action's sort key plus the action itself:
+/// (negative priority, fractional-priority sub-bucket, signed speed key,
+/// RNG nonce, action) — sorted ascending. `frac_pri` resolves Custap Berry
+/// (= -1, "first in bracket") vs Lagging Tail / Full Incense (= +1, "last
+/// in bracket"); default 0. PS analog: `onFractionalPriority`.
+type MoveEntry = (i32, i8, i64, u64, ScheduledAction);
+
+/// Compute the [`MoveEntry`] sort key for one queued move/terastallize.
+///
+/// Consumes exactly one `rng.next_u64()` (the tiebreak nonce) and, for a
+/// Quick Claw holder with a priority-≤0 move, one extra `rng.range(5)`
+/// draw — in that order. Shared by both `action_order` code paths so the
+/// RNG stream is identical regardless of which path runs.
+fn schedule_move(
+    battle: &Battle,
+    side: SideRef,
+    actor_slot: u8,
+    move_slot: u8,
+    choice: Choice,
+    rng: &mut Rng,
+) -> MoveEntry {
+    let trick_room = battle.trick_room_turns > 0;
+    let tailwind = battle.side(side).conditions.tailwind_turns > 0;
+    let mon = battle.side(side).active_mon(actor_slot as usize);
+    let (priority, frac_pri, speed) = match mon {
+        Some(m) => {
+            let mid = m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX);
+            let (base_pri, category) = if mid == u16::MAX {
+                (0i32, 2u8)
+            } else {
+                let mv = &data::MOVES[mid as usize];
+                (mv.priority as i32, mv.category)
+            };
+            // Prankster: +1 priority to status moves used by the holder.
+            // Dark-type immunity to the boosted move is enforced at
+            // resolve time (gen 7+), not here — order-resolution still
+            // uses the bumped priority. PS data/abilities.ts prankster
+            // onModifyPriority.
+            let pri_after_ability = if category == 2
+                && m.ability_id == data::ability_id::PRANKSTER
+            {
+                base_pri + 1
+            } else {
+                base_pri
+            };
+            // Quick Claw: PS data/items.ts:4984 onFractionalPriority —
+            // when the holder has a priority-≤0 move queued,
+            // `randomChance(1, 5)` (20%) bumps priority by +0.1. We
+            // approximate with a +1 integer bump; the draw fires every
+            // turn the move qualifies regardless of outcome, so PsGen5
+            // oracle stays aligned with PS's recorded `Chance(1, 5)`
+            // events.
+            //
+            // PS also gates Mycelium Might + Status moves out of the
+            // bonus, but the draw still happens — we skip the gate for
+            // simplicity since Mycelium Might + Quick Claw is vanishingly
+            // rare in the corpus.
+            let pri_after_item = if m.item_id == data::item_id::QUICKCLAW && pri_after_ability <= 0 {
+                if rng.range(5) == 0 { pri_after_ability + 1 } else { pri_after_ability }
+            } else {
+                pri_after_ability
+            };
+            // Grassy Glide — PS data/moves.ts:grassyglide
+            //   onModifyPriority(priority, source, target, move) {
+            //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
+            //       return priority + 1;
+            //     }
+            //   }
+            // +1 priority bump when the USER is grounded under Grassy
+            // Terrain. PR-275 left this branch unwired (gap doc:
+            // "grassyglide priority-bump branch not yet wired").
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
+            let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
+                && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
+                && m.is_grounded()
+            {
+                pri_after_item + 1
+            } else {
+                pri_after_item
+            };
+            let pri_after_item = pri_after_terrain;
+            // Fractional-priority items:
+            //   Custap Berry — PS `data/items.ts:custapberry`
+            //   `onFractionalPriority(priority, pokemon) {
+            //      if (pokemon.hp <= pokemon.maxhp / 4) {
+            //        if (pokemon.eatItem()) return 0.1;
+            //      }
+            //   }`
+            //   Lagging Tail / Full Incense — PS
+            //   `data/items.ts:laggingtail`/`fullincense`
+            //   `onFractionalPriority() { return -0.1; }`
+            // Custap is consumed when it fires; the consume happens at
+            // queue-build time in `battle.rs:step`
+            // (`consume_fractional_pri_items`), mirroring the way Quick
+            // Claw's RNG draw is committed here even though the item is a
+            // one-shot. We model the fractional bump as an i8 sub-bucket:
+            // -1 = first in bracket (Custap), +1 = last (Lagging Tail /
+            // Full Incense), 0 = default. Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>
+            //   <https://bulbapedia.bulbagarden.net/wiki/Full_Incense>
+            let frac = if m.item_id == data::item_id::CUSTAPBERRY
+                && m.current_hp > 0
+                && m.current_hp * 4 <= m.stats.hp
+            {
+                -1i8
+            } else if m.item_id == data::item_id::LAGGINGTAIL
+                || m.item_id == data::item_id::FULLINCENSE
+            {
+                1i8
+            } else {
+                0i8
+            };
+            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
+        }
+        None => (0, 0, 0),
+    };
+    // Trick Room reverses speed sort within a priority bracket (priority
+    // itself is NOT reversed).
+    let speed_key = if trick_room { speed } else { -speed };
+    (
+        -priority,
+        frac_pri,
+        speed_key,
+        rng.next_u64(),
+        ScheduledAction { side, actor_slot, choice },
+    )
+}
+
 /// Resolve one turn's action order.
 ///
 /// `p1` and `p2` are the per-active-slot choices for each side. `Pass`
@@ -118,144 +340,78 @@ pub fn action_order(
     p1: &[Choice],
     p2: &[Choice],
     rng: &mut Rng,
-) -> Vec<ScheduledAction> {
-    let mut switches: Vec<ScheduledAction> = Vec::with_capacity(4);
-    // (negative priority, fractional priority sub-bucket, signed speed key,
-    // nonce, action) — ascending. `frac_pri` resolves Custap Berry
-    // (= -1, "first in bracket") vs Lagging Tail / Full Incense (= +1,
-    // "last in bracket"); default 0. PS analog: `onFractionalPriority`.
-    let mut moves: Vec<(i32, i8, i64, u64, ScheduledAction)> = Vec::with_capacity(4);
-    let trick_room = battle.trick_room_turns > 0;
+) -> ActionOrder {
+    // Heap-spill path for pathologically large offline turns: the replay
+    // scorer can cram a whole PS turn's worth of mid-turn replacement
+    // switches into one `step()`, exceeding the inline capacity. This is
+    // NEVER reached by VGC self-play, which passes at most 4 choices, so
+    // the hot loop stays heap-free. The spill path iterates choices in the
+    // same order and calls the same RNG methods per choice, so the RNG
+    // stream — and therefore behavior — is byte-identical to the inline
+    // path.
+    if p1.len() + p2.len() > ACTION_INLINE_CAP {
+        let mut switches: Vec<ScheduledAction> = Vec::new();
+        let mut moves: Vec<MoveEntry> = Vec::new();
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            for c in choices {
+                match *c {
+                    Choice::Pass { .. } => {}
+                    Choice::Switch { actor_slot, .. } => {
+                        switches.push(ScheduledAction { side, actor_slot, choice: *c });
+                    }
+                    Choice::Move { actor_slot, move_slot, .. }
+                    | Choice::Terastallize { actor_slot, move_slot, .. } => {
+                        moves.push(schedule_move(
+                            battle, side, actor_slot, move_slot, *c, rng,
+                        ));
+                    }
+                }
+            }
+        }
+        moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
+        let mut v = switches;
+        v.extend(moves.into_iter().map(|t| t.4));
+        return ActionOrder::Heap(v);
+    }
+
+    // Inline fast path — fixed stack buffers, zero heap. Bounded by
+    // ACTION_INLINE_CAP (guaranteed by the guard above).
+    let mut switches: [ScheduledAction; ACTION_INLINE_CAP] =
+        [PLACEHOLDER_ACTION; ACTION_INLINE_CAP];
+    let mut n_switch = 0usize;
+    let mut moves: [MoveEntry; ACTION_INLINE_CAP] =
+        [(0, 0, 0, 0, PLACEHOLDER_ACTION); ACTION_INLINE_CAP];
+    let mut n_move = 0usize;
 
     for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
         for c in choices {
             match *c {
                 Choice::Pass { .. } => {}
                 Choice::Switch { actor_slot, .. } => {
-                    switches.push(ScheduledAction { side, actor_slot, choice: *c });
+                    switches[n_switch] = ScheduledAction { side, actor_slot, choice: *c };
+                    n_switch += 1;
                 }
                 Choice::Move { actor_slot, move_slot, .. }
                 | Choice::Terastallize { actor_slot, move_slot, .. } => {
-                    let tailwind = battle.side(side).conditions.tailwind_turns > 0;
-                    let mon = battle.side(side).active_mon(actor_slot as usize);
-                    let (priority, frac_pri, speed) = match mon {
-                        Some(m) => {
-                            let mid = m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX);
-                            let (base_pri, category) = if mid == u16::MAX {
-                                (0i32, 2u8)
-                            } else {
-                                let mv = &data::MOVES[mid as usize];
-                                (mv.priority as i32, mv.category)
-                            };
-                            // Prankster: +1 priority to status moves used
-                            // by the holder. Dark-type immunity to the
-                            // boosted move is enforced at resolve time
-                            // (gen 7+), not here — order-resolution still
-                            // uses the bumped priority. PS data/abilities.ts
-                            // prankster onModifyPriority.
-                            let pri_after_ability = if category == 2
-                                && m.ability_id == data::ability_id::PRANKSTER
-                            {
-                                base_pri + 1
-                            } else {
-                                base_pri
-                            };
-                            // Quick Claw: PS data/items.ts:4984
-                            // onFractionalPriority — when the holder has a
-                            // priority-≤0 move queued, `randomChance(1, 5)`
-                            // (20%) bumps priority by +0.1. We approximate
-                            // with a +1 integer bump; the draw fires every
-                            // turn the move qualifies regardless of outcome,
-                            // so PsGen5 oracle stays aligned with PS's
-                            // recorded `Chance(1, 5)` events.
-                            //
-                            // PS also gates Mycelium Might + Status moves
-                            // out of the bonus, but the draw still happens
-                            // — we skip the gate for simplicity since
-                            // Mycelium Might + Quick Claw is vanishingly
-                            // rare in the corpus.
-                            let pri_after_item = if m.item_id == data::item_id::QUICKCLAW && pri_after_ability <= 0 {
-                                if rng.range(5) == 0 { pri_after_ability + 1 } else { pri_after_ability }
-                            } else {
-                                pri_after_ability
-                            };
-                            // Grassy Glide — PS data/moves.ts:grassyglide
-                            //   onModifyPriority(priority, source, target, move) {
-                            //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
-                            //       return priority + 1;
-                            //     }
-                            //   }
-                            // +1 priority bump when the USER is grounded under
-                            // Grassy Terrain. PR-275 left this branch unwired
-                            // (gap doc: "grassyglide priority-bump branch not
-                            // yet wired"). Bulbapedia:
-                            // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
-                            let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
-                                && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
-                                && m.is_grounded()
-                            {
-                                pri_after_item + 1
-                            } else {
-                                pri_after_item
-                            };
-                            let pri_after_item = pri_after_terrain;
-                            // Fractional-priority items:
-                            //   Custap Berry — PS `data/items.ts:custapberry`
-                            //   `onFractionalPriority(priority, pokemon) {
-                            //      if (pokemon.hp <= pokemon.maxhp / 4) {
-                            //        if (pokemon.eatItem()) return 0.1;
-                            //      }
-                            //   }`
-                            //   Lagging Tail / Full Incense — PS
-                            //   `data/items.ts:laggingtail`/`fullincense`
-                            //   `onFractionalPriority() { return -0.1; }`
-                            // Custap is consumed when it fires; the
-                            // consume happens at queue-build time in
-                            // `battle.rs:step` (`consume_fractional_pri_items`),
-                            // mirroring the way Quick Claw's RNG draw is
-                            // committed here even though the item is a
-                            // one-shot. We model the fractional bump as
-                            // an i8 sub-bucket: -1 = first in bracket
-                            // (Custap), +1 = last (Lagging Tail / Full
-                            // Incense), 0 = default. Bulbapedia:
-                            //   <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>
-                            //   <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>
-                            //   <https://bulbapedia.bulbagarden.net/wiki/Full_Incense>
-                            let frac = if m.item_id == data::item_id::CUSTAPBERRY
-                                && m.current_hp > 0
-                                && m.current_hp * 4 <= m.stats.hp
-                            {
-                                -1i8
-                            } else if m.item_id == data::item_id::LAGGINGTAIL
-                                || m.item_id == data::item_id::FULLINCENSE
-                            {
-                                1i8
-                            } else {
-                                0i8
-                            };
-                            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
-                        }
-                        None => (0, 0, 0),
-                    };
-                    // Trick Room reverses speed sort within a priority
-                    // bracket (priority itself is NOT reversed).
-                    let speed_key = if trick_room { speed } else { -speed };
-                    moves.push((
-                        -priority,
-                        frac_pri,
-                        speed_key,
-                        rng.next_u64(),
-                        ScheduledAction { side, actor_slot, choice: *c },
-                    ));
+                    moves[n_move] =
+                        schedule_move(battle, side, actor_slot, move_slot, *c, rng);
+                    n_move += 1;
                 }
             }
         }
     }
 
-    moves.sort_by_key(|t| (t.0, t.1, t.2, t.3));
-    let mut out = switches;
-    out.reserve(moves.len());
-    out.extend(moves.into_iter().map(|t| t.4));
+    // The `rng.next_u64()` nonce makes every key unique, so unstable sort
+    // produces the same ordering as the prior stable `sort_by_key` — and
+    // `sort_unstable_by_key` never heap-allocates (stable sort can).
+    moves[..n_move].sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
+    let mut out = ActionOrder::new();
+    for s in &switches[..n_switch] {
+        out.push(*s);
+    }
+    for m in &moves[..n_move] {
+        out.push(m.4);
+    }
     out
 }
 
