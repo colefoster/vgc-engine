@@ -2331,6 +2331,32 @@ impl Battle {
                 }
             }
 
+            // Wind Rider — PS `data/abilities.ts:5484` `onTryHit`:
+            //   if (target !== source && move.flags['wind']) {
+            //     if (!this.boost({ atk: 1 }, target, target)) { /* -immune */ }
+            //     return null;
+            //   }
+            // Immune to wind moves; gains +1 Atk on absorbing one (even if
+            // the Atk can't actually rise — the immunity still applies).
+            // `flags: { breakable: 1 }` — Mold Breaker bypasses. The
+            // Tailwind-set trigger (`onStart` / `onSideConditionStart`) is
+            // DEFERRED: Tailwind is laid inline in resolve_status_move with
+            // no per-ability dispatch hook, so wiring it would need new
+            // plumbing — tracked for a follow-up. Brambleghast signature.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wind_Rider_(Ability)>.
+            if m.is_wind {
+                let def_ability = if defender.ability_id == u16::MAX {
+                    ""
+                } else {
+                    data::ABILITIES[defender.ability_id as usize].slug
+                };
+                if def_ability == "windrider" && !attacker_breaks_mold {
+                    // Self-boost (+1 Atk) on absorbing a wind move.
+                    self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
+                    continue;
+                }
+            }
+
             // Electric-immunity absorbing abilities — Motor Drive
             // (+1 Spe), Volt Absorb (heal 1/4 max HP), Lightning Rod
             // (deferred; needs redirect). PS handlers all `onTryHit`
@@ -10547,6 +10573,30 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].current_hp, hp_before, "Lightning Rod absorbs Electric");
         assert_eq!(b.p2.team[0].boosts[2], spa_before + 1, "Lightning Rod grants +1 SpA");
+    }
+
+    #[test]
+    fn wind_rider_absorbs_wind_move_and_boosts_atk() {
+        // Pidgeot uses Gust (Flying, wind-flagged) at Brambleghast (Wind
+        // Rider). Wind Rider nulls the hit (0 damage) AND grants +1 Atk.
+        // PS data/abilities.ts:5484 `onTryHit`.
+        let p1_json = r#"[
+            {"species":"pidgeot","level":50,"ability":"keeneye","item":"focussash","nature":"timid","moves":["gust","airslash","heatwave","tailwind"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"brambleghast","level":50,"ability":"windrider","item":"sitrusberry","nature":"adamant","moves":["powerwhip","shadowsneak","ragingfury","leechseed"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp_before = b.p2.team[0].current_hp;
+        let atk_before = b.p2.team[0].boosts[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "Wind Rider absorbs the wind move");
+        assert_eq!(b.p2.team[0].boosts[0], atk_before + 1, "Wind Rider grants +1 Atk");
     }
 
     #[test]
