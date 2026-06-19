@@ -806,6 +806,83 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         battle.apply_boosts(side, slot, &[(4, 1)], side, slot);
     }
 
+    // Moody — PS `data/abilities.ts:2656` (onResidualOrder 28, sub-order 2):
+    //   let stats = [];
+    //   for (statPlus in pokemon.boosts) {
+    //     if (statPlus === 'accuracy' || statPlus === 'evasion') continue;
+    //     if (pokemon.boosts[statPlus] < 6) stats.push(statPlus);
+    //   }
+    //   randomStat = stats.length ? this.sample(stats) : undefined;
+    //   if (randomStat) boost[randomStat] = 2;
+    //   stats = [];
+    //   for (statMinus in pokemon.boosts) {
+    //     if (statMinus === 'accuracy' || statMinus === 'evasion') continue;
+    //     if (pokemon.boosts[statMinus] > -6 && statMinus !== randomStat) stats.push(statMinus);
+    //   }
+    //   randomStat = stats.length ? this.sample(stats) : undefined;
+    //   if (randomStat) boost[randomStat] = -1;
+    //   this.boost(boost, pokemon, pokemon);
+    //
+    // gen-8+ excludes accuracy/evasion: only the five combat stats
+    // (atk=0, def=1, spa=2, spd=3, spe=4) are eligible. PS iterates
+    // `pokemon.boosts` in object order atk→def→spa→spd→spe, so the
+    // candidate lists are built in that index order; `this.sample(arr)`
+    // == `arr[this.random(arr.length)]`, one PRNG draw per sample. We
+    // mirror the exact draw order: pick the +2 stat first (consuming
+    // one `range`), then the -1 stat from the remainder (one more
+    // `range`). Both boosts are applied together via the apply_boosts
+    // choke point. Octillery / Bidoof / Glalie line.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moody_(Ability)>.
+    if slug == "moody" {
+        let boosts = match battle.side(side).active_mon(slot as usize) {
+            Some(m) if m.is_alive() => m.boosts,
+            _ => return,
+        };
+        // +2 candidate stats: combat stats with stage < 6, in index order.
+        let mut plus: [u8; 5] = [0; 5];
+        let mut plus_n = 0usize;
+        for i in 0u8..5 {
+            if boosts[i as usize] < 6 {
+                plus[plus_n] = i;
+                plus_n += 1;
+            }
+        }
+        let chosen_plus = if plus_n > 0 {
+            Some(plus[rng.range(plus_n as u32) as usize])
+        } else {
+            None
+        };
+        // -1 candidate stats: combat stats with stage > -6, excluding the
+        // just-chosen +2 stat, in index order.
+        let mut minus: [u8; 5] = [0; 5];
+        let mut minus_n = 0usize;
+        for i in 0u8..5 {
+            if boosts[i as usize] > -6 && Some(i) != chosen_plus {
+                minus[minus_n] = i;
+                minus_n += 1;
+            }
+        }
+        let chosen_minus = if minus_n > 0 {
+            Some(minus[rng.range(minus_n as u32) as usize])
+        } else {
+            None
+        };
+        // Apply both in one call (PS `this.boost(boost, ...)`). Self-boost.
+        let mut deltas: [(u8, i8); 2] = [(0, 0); 2];
+        let mut dn = 0;
+        if let Some(p) = chosen_plus {
+            deltas[dn] = (p, 2);
+            dn += 1;
+        }
+        if let Some(mn) = chosen_minus {
+            deltas[dn] = (mn, -1);
+            dn += 1;
+        }
+        if dn > 0 {
+            battle.apply_boosts(side, slot, &deltas[..dn], side, slot);
+        }
+    }
+
     // Solar Power — PS `data/abilities.ts:solarpower`:
     //   onWeather(target, source, effect) {
     //     if (effect.id === 'sunnyday' || effect.id === 'desolateland')

@@ -6824,6 +6824,37 @@ mod tests {
     }
 
     #[test]
+    fn moody_boosts_one_stat_plus2_and_a_different_stat_minus1() {
+        // PS data/abilities.ts:2656. End-of-turn: +2 to one random combat
+        // stat, -1 to a different one (acc/eva excluded). Starting from all
+        // zeroes both candidate lists are full, so exactly one +2 and one
+        // -1 land on distinct stats.
+        let p1_json = r#"[
+            {"species":"octillery","level":50,"ability":"moody","item":"leftovers","nature":"modest","moves":["surf","icebeam","gunkshot","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let boosts = b.p1.team[0].boosts;
+        let plus2 = (0..5).filter(|&i| boosts[i] == 2).count();
+        let minus1 = (0..5).filter(|&i| boosts[i] == -1).count();
+        let other = (0..5).filter(|&i| boosts[i] != 0 && boosts[i] != 2 && boosts[i] != -1).count();
+        // Accuracy / evasion must never move.
+        assert_eq!(boosts[5], 0, "Moody must not touch accuracy");
+        assert_eq!(boosts[6], 0, "Moody must not touch evasion");
+        assert_eq!(plus2, 1, "exactly one stat at +2 (boosts={boosts:?})");
+        assert_eq!(minus1, 1, "exactly one stat at -1 (boosts={boosts:?})");
+        assert_eq!(other, 0, "no other stat changes (boosts={boosts:?})");
+    }
+
+    #[test]
     fn pastel_veil_blocks_poison_on_self_and_ally_and_cures_on_switch_in() {
         // PS data/abilities.ts:3144. Galarian Weezing (Pastel Veil) keeps
         // itself AND its partner immune to psn/tox, and cures any existing
