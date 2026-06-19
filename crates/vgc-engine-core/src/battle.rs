@@ -1375,6 +1375,7 @@ impl Battle {
                         *pp = pp.saturating_sub(1 + extra);
                     }
                 }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return;
             }
         }
@@ -1413,6 +1414,7 @@ impl Battle {
                         *pp = pp.saturating_sub(1 + extra);
                     }
                 }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return;
             }
         }
@@ -1436,6 +1438,7 @@ impl Battle {
                 }
                 mon.last_used_move_slot = move_slot;
             }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return;
         }
 
@@ -1464,6 +1467,7 @@ impl Battle {
                 // turn whether the user actually used it or not).
                 mon.last_used_move_slot = 255;
             }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return;
         }
 
@@ -1478,6 +1482,7 @@ impl Battle {
                     *pp = pp.saturating_sub(1 + extra);
                 }
             }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return;
         }
 
@@ -1665,6 +1670,7 @@ impl Battle {
                         a.charging_turns = 1;
                         a.charging_move_slot = move_slot;
                     }
+                    crate::item::on_pp_depleted(self, actor_side, actor_slot);
                     return;
                 }
             }
@@ -1693,6 +1699,7 @@ impl Battle {
                     a.charging_move_slot = move_slot;
                     a.semi_invuln = semi_code;
                 }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return;
             }
         }
@@ -1734,6 +1741,8 @@ impl Battle {
                 // after PP deduction, regardless of accuracy outcome.
                 mon.last_used_move_slot = move_slot;
             }
+            // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
         }
 
         // Protean / Libero — PS `data/abilities.ts:3452` / `:2273`
@@ -15633,6 +15642,77 @@ mod tests {
             pp_before - 3,
             "spread Earthquake vs two Pressure foes costs 1 + 2 = 3 PP",
         );
+    }
+
+    #[test]
+    fn leppa_berry_restores_ten_pp_when_move_hits_zero() {
+        // PS data/items.ts:leppaberry — onUpdate eats once any move is at 0
+        // PP; onEat restores +10 (capped at maxpp). Brave Bird has base PP
+        // 15, so a 0→10 restore stays under the cap.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"unnerve","item":"leppaberry","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Drive Brave Bird (slot 0) to 1 PP, then use it once → 0 → Leppa.
+        b.p1.team[0].pp[0] = 1;
+        let leppa = data::ITEMS.iter().position(|i| i.slug == "leppaberry").unwrap() as u16;
+        assert_eq!(b.p1.team[0].item_id, leppa, "starts holding Leppa");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], 10, "Leppa restored the move to 10 PP");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Leppa berry consumed");
+    }
+
+    #[test]
+    fn leppa_berry_caps_restore_at_move_max_pp() {
+        // Close Combat has base PP 5. With max-PP application not yet wired,
+        // the engine treats base PP as the cap, so a 0→+10 restore clamps to
+        // 5, not 10 (PS `Math.min(pp + 10, maxpp)`).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leppaberry","nature":"adamant","moves":["closecombat","earthquake","ironhead","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].pp[0], 5, "Close Combat base PP is 5");
+        b.p1.team[0].pp[0] = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], 5, "restore clamps to the move's max PP (5)");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Leppa berry consumed");
+    }
+
+    #[test]
+    fn no_leppa_move_stays_at_zero_pp() {
+        // Sanity: without Leppa, a depleted move stays at 0 PP.
+        let p1_json = r#"[
+            {"species":"corviknight","level":50,"ability":"unnerve","nature":"impish","moves":["bravebird","roost","uturn","defog"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","crunch","rest","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "no held item");
+        b.p1.team[0].pp[0] = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], 0, "no Leppa → move stays at 0 PP");
     }
 
     #[test]

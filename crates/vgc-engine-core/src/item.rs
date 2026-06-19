@@ -215,6 +215,49 @@ pub fn on_after_damage(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Leppa Berry — PS `data/items.ts:leppaberry` (line 3347).
+///   onUpdate(pokemon) {
+///     if (!pokemon.hp) return;
+///     if (pokemon.moveSlots.some(move => move.pp === 0)) pokemon.eatItem();
+///   }
+///   onEat(pokemon) {
+///     const moveSlot = pokemon.moveSlots.find(m => m.pp === 0) ||
+///                      pokemon.moveSlots.find(m => m.pp < m.maxpp);
+///     const addedPP = pokemon.hasAbility('ripen') ? 20 : 10;
+///     moveSlot.pp = Math.min(moveSlot.pp + addedPP, moveSlot.maxpp);
+///   }
+///
+/// Called immediately after a move's PP is decremented. If the holder is a
+/// living Leppa holder and *any* of its move slots has reached 0 PP, eat the
+/// berry and restore +10 PP to the first 0-PP slot (Ripen → +20), capped at
+/// that move's max PP. Single use — the item is consumed (`item_id = MAX`).
+///
+/// Max-PP cap uses the move's base PP (`data::MOVES[id].pp`); when PP-Up/Max
+/// max-PP application lands, this should read the holder's stored max instead.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Leppa_Berry>.
+pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
+    let (item_id, ripen) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (m.item_id, m.effective_ability_slug() == "ripen"),
+        _ => return,
+    };
+    if item_slug(item_id) != "leppaberry" {
+        return;
+    }
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        // First slot at 0 PP (PS `onUpdate` gate + `onEat` target selection).
+        let zero_slot = (0..m.pp.len()).find(|&i| m.pp[i] == 0);
+        let Some(i) = zero_slot else { return };
+        let move_id = m.moves[i];
+        if move_id == u16::MAX {
+            return;
+        }
+        let max_pp = data::MOVES[move_id as usize].pp;
+        let added: u8 = if ripen { 20 } else { 10 };
+        m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
+        m.item_id = u16::MAX;
+    }
+}
+
 /// Defender's held item reacts to an incoming contact hit. Mirrors PS's
 /// `onDamagingHit` step for items: runs after damage application, only
 /// when the move made contact and the hit wasn't absorbed by a
