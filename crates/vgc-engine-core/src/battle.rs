@@ -5764,14 +5764,16 @@ impl Battle {
                     return;
                 }
             }
-            data::move_id::TRICK => {
-                // Trick — swap held items with the target. PS
-                // data/moves.ts:trick. 100% accuracy; `onTryImmunity`
-                // fails the move when the target has Sticky Hold (NOT
-                // bypassed by Mold Breaker — it's a move callback, not a
-                // runImmunity check). A Substitute also blocks it (Trick
-                // has no `bypasssub` flag). The actual swap + un-swappable /
-                // both-empty fail conditions live in `swap_held_items`.
+            data::move_id::TRICK | data::move_id::SWITCHEROO => {
+                // Trick / Switcheroo — swap held items with the target.
+                // PS data/moves.ts:trick / switcheroo are byte-identical
+                // handlers (different type/flavor only). 100% accuracy;
+                // `onTryImmunity` fails the move when the target has Sticky
+                // Hold (NOT bypassed by Mold Breaker — it's a move callback,
+                // not a runImmunity check). A Substitute also blocks it
+                // (neither move has a `bypasssub` flag). The actual swap +
+                // un-swappable / both-empty fail conditions live in
+                // `swap_held_items`.
                 if !self.rolled_accuracy_passed(m) {
                     return;
                 }
@@ -9594,6 +9596,48 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].item_id, data::item_id::LEFTOVERS, "Gengar receives Leftovers");
         assert_eq!(b.p2.team[0].item_id, data::item_id::CHOICESCARF, "Blissey receives the Choice Scarf");
+    }
+
+    #[test]
+    fn switcheroo_swaps_held_items_with_target() {
+        // Switcheroo is the Dark-type clone of Trick — same swap behavior.
+        // PS data/moves.ts:switcheroo.
+        let p1_json = r#"[
+            {"species":"weavile","level":50,"ability":"pickpocket","item":"choiceband","nature":"jolly","moves":["switcheroo","iciclecrash","knockoff","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].item_id, data::item_id::LEFTOVERS, "Weavile receives Leftovers");
+        assert_eq!(b.p2.team[0].item_id, data::item_id::CHOICEBAND, "Blissey receives the Choice Band");
+    }
+
+    #[test]
+    fn switcheroo_fails_when_both_itemless() {
+        // Neither holder has an item → Switcheroo fails (PS `!yourItem &&
+        // !myItem`). Exercises the both-empty fail path in swap_held_items.
+        let p1_json = r#"[
+            {"species":"weavile","level":50,"ability":"pickpocket","item":"","nature":"jolly","moves":["switcheroo","iciclecrash","knockoff","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Weavile still itemless");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Blissey still itemless");
     }
 
     #[test]
