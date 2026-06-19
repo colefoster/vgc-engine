@@ -296,6 +296,19 @@ pub fn on_after_damage(
             m.micle_next_move = true;
         }
     }
+    // Lansat Berry — PS data/items.ts:lansatberry (line 3248): onUpdate
+    // eats at <=25% HP (Gluttony <=50%, deferred); onEat adds the
+    // `focusenergy` volatile (+2 crit stage). The engine models Focus
+    // Energy as `crit_stage_volatile` (read by effective_crit_stage), so
+    // we set it to 2 — the Focus Energy / Laser Focus / Dire Hit value.
+    // Deterministic. Cleared on switch-out alongside Focus Energy.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lansat_Berry>.
+    if slug == "lansatberry" && current * 4 <= max {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.item_id = u16::MAX;
+            m.crit_stage_volatile = 2;
+        }
+    }
     if slug == "starfberry" && current * 4 <= max {
         let boosts = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m.boosts,
