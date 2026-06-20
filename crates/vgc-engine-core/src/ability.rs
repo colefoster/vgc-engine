@@ -1362,13 +1362,11 @@ pub fn on_damaging_hit(
             // not a move, so Mold Breaker is irrelevant (pass `false`).
             let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
             if opposite && !attacker_immune && !aroma_veil_protects {
-                let src_idx = battle.side(target_side).active[target_slot as usize];
-                if let Some(a) = battle
-                    .side_mut(attacker_side)
-                    .active_mon_mut(attacker_slot as usize)
-                {
-                    a.set_attract(target_side as u8, src_idx);
-                }
+                // Holder = the infatuated attacker; source = the Cute Charm
+                // holder. `apply_infatuation` folds in the Destiny Knot mirror
+                // (a Destiny-Knot-holding attacker reflects back onto the
+                // Cute Charm mon).
+                battle.apply_infatuation(attacker_side, attacker_slot, target_side, target_slot);
             }
         }
     }

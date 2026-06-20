@@ -5436,6 +5436,53 @@ impl Battle {
         }
     }
 
+    /// Apply the Attract (infatuation) volatile to the holder at
+    /// (`holder_side`, `holder_slot`) with the active mon at
+    /// (`src_side`, `src_slot`) recorded as the infatuator, then run the
+    /// **Destiny Knot** mirror. PS `data/items.ts:destinyknot` `onAttract`
+    /// (priority -100, so it fires AFTER the attract volatile is added):
+    ///   `if (!source.volatiles['attract']) source.addVolatile('attract', target);`
+    /// — a freshly-infatuated Destiny Knot holder reflects the infatuation
+    /// back onto its infatuator (with the holder as that mon's new source),
+    /// unless the infatuator is already attracted. The caller is responsible
+    /// for the gender / Oblivious / Aroma Veil / already-attracted gates on
+    /// the *holder* (PS runs those before the volatile is added); this helper
+    /// is the single set-attract site so the Destiny Knot reflection applies
+    /// uniformly to the Attract move and Cute Charm alike. The reflected
+    /// infatuation is NOT itself re-gated by gender on the cartridge — PS's
+    /// `onAttract` only checks the infatuator's existing `attract` volatile.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Destiny_Knot>.
+    pub(crate) fn apply_infatuation(
+        &mut self,
+        holder_side: SideRef,
+        holder_slot: u8,
+        src_side: SideRef,
+        src_slot: u8,
+    ) {
+        let src_idx = self.side(src_side).active[src_slot as usize];
+        let holder_idx = self.side(holder_side).active[holder_slot as usize];
+        let holder_has_knot = match self
+            .side_mut(holder_side)
+            .active_mon_mut(holder_slot as usize)
+        {
+            Some(h) => {
+                h.set_attract(src_side as u8, src_idx);
+                h.item_id == data::item_id::DESTINYKNOT
+            }
+            None => return,
+        };
+        if !holder_has_knot {
+            return;
+        }
+        // Destiny Knot mirror: reflect onto the infatuator unless it is
+        // already infatuated (PS `if (!source.volatiles['attract'])`).
+        if let Some(s) = self.side_mut(src_side).active_mon_mut(src_slot as usize) {
+            if s.is_alive() && !s.is_attracted() {
+                s.set_attract(holder_side as u8, holder_idx);
+            }
+        }
+    }
+
     /// Status-move dispatch. Phase 2 PR-5 implements: Protect.
     ///
     /// Other status moves currently no-op (will be enabled per-move in
@@ -6340,10 +6387,8 @@ impl Battle {
                 {
                     return;
                 }
-                let src_idx = self.side(actor_side).active[actor_slot as usize];
-                if let Some(t) = self.side_mut(opp).active_mon_mut(target_slot as usize) {
-                    t.set_attract(actor_side as u8, src_idx);
-                }
+                // Destiny Knot mirror is folded into `apply_infatuation`.
+                self.apply_infatuation(opp, target_slot, actor_side, actor_slot);
                 // Mental Herb cures Attract on application (PS onUpdate).
                 crate::item::try_consume_mental_herb(self, opp, target_slot);
             }
@@ -16325,6 +16370,64 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert!(!b.p2.team[0].is_attracted(), "Oblivious blocks Attract");
+    }
+
+    #[test]
+    fn destiny_knot_reflects_infatuation_back_on_the_attractor() {
+        // PS data/items.ts:destinyknot onAttract: when the Destiny Knot
+        // holder is infatuated, the infatuator is infatuated too (mirror),
+        // unless it is already attracted. Source P1/0 (Male) uses Attract on
+        // P2/0 (Female) who holds Destiny Knot → BOTH end up infatuated,
+        // each recording the other as its source.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"destinyknot","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_attracted(), "Destiny Knot holder infatuated");
+        assert_eq!(b.p2.team[0].attract_source(), Some((0, 0)), "holder source = P1/0");
+        assert!(
+            b.p1.team[0].is_attracted(),
+            "Destiny Knot reflects infatuation back onto the attractor",
+        );
+        assert_eq!(
+            b.p1.team[0].attract_source(),
+            Some((1, 0)),
+            "reflected source = the Destiny Knot holder (P2/0)",
+        );
+    }
+
+    #[test]
+    fn destiny_knot_no_reflection_without_the_item() {
+        // Control: identical to the mirror test but the target holds no
+        // Destiny Knot — only the target is infatuated, the attractor is not.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["attract","bodyslam","rest","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].gender = data::Gender::Male;
+        b.p2.team[0].gender = data::Gender::Female;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].is_attracted(), "target infatuated");
+        assert!(!b.p1.team[0].is_attracted(), "no Destiny Knot → no reflection");
     }
 
     #[test]
