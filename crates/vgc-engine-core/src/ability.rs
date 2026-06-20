@@ -699,6 +699,20 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             battle.set_forme(side, slot, data::species_id::PALAFINHERO, true);
         }
     }
+    // Stance Change reverts on switch-out — PS `formeChange` for Aegislash
+    // is non-permanent, so `clearVolatile` on switch-out restores the base
+    // Aegislash (Shield) forme. A mon that left in Blade forme is back to
+    // Shield on the bench and when it returns. (Zero to Hero, just below,
+    // is the opposite — that one is permanent.)
+    if ability_id == data::ability_id::STANCECHANGE {
+        let is_blade = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.species_id == data::species_id::AEGISLASHBLADE);
+        if is_blade {
+            battle.set_forme(side, slot, data::species_id::AEGISLASH, true);
+        }
+    }
     // Slow Start + Truant per-mon counters reset on switch-out.
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         m.slow_start_active_turns = 0;
