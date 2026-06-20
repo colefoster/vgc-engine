@@ -678,6 +678,27 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             m.status = crate::pokemon::Status::None;
         }
     }
+    // Zero to Hero — PS `data/abilities.ts:zerotohero` onSwitchOut:
+    //   if (pokemon.baseSpecies.baseSpecies !== 'Palafin') return;
+    //   if (pokemon.species.forme !== 'Hero')
+    //     pokemon.formeChange('Palafin-Hero', this.effect, true);
+    // Palafin (Zero) PERMANENTLY becomes Palafin-Hero the instant it
+    // switches out — keeping the Hero forme (and its 70→160 Attack jump)
+    // for the rest of the battle. The PS onSwitchIn handler only prints
+    // an `-activate` message, so the entire mechanic lives here.
+    // `recompute_stats=true` updates the five battle stats from the new
+    // base stats. The on_switch_out alive-guard above means a FAINTED
+    // Palafin never transforms, matching PS (faint ≠ switch out).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Zero_to_Hero_(Ability)>.
+    if ability_id == data::ability_id::ZEROTOHERO {
+        let is_zero = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.species_id == data::species_id::PALAFIN);
+        if is_zero {
+            battle.set_forme(side, slot, data::species_id::PALAFINHERO, true);
+        }
+    }
     // Slow Start + Truant per-mon counters reset on switch-out.
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         m.slow_start_active_turns = 0;
