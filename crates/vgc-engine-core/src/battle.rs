@@ -2722,6 +2722,19 @@ impl Battle {
             attacker_ability_id,
             data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
         );
+        // No Guard (attacker side) — PS data/abilities.ts:2960 `noguard`.
+        // `onAnyAccuracy` returns `true` (always hit) and
+        // `onAnyInvulnerability` returns 0 (ignore semi-invuln) whenever
+        // the No Guard holder is EITHER the source OR the target of the
+        // move. Here we capture the source-side case once: if the user has
+        // No Guard, every one of its moves auto-hits every target and
+        // pierces their semi-invulnerable state. Uses
+        // `effective_ability_id()` so Gastro Acid / Neutralizing Gas
+        // suppression disables it. Mold Breaker does NOT bypass No Guard
+        // (not on PS's `breakable` list, and the handler is `onAny*`).
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/No_Guard_(Ability)>.
+        let attacker_no_guard =
+            attacker.effective_ability_id() == data::ability_id::NOGUARD;
         if attacker_ability_id == data::ability_id::HADRONENGINE
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
@@ -2838,6 +2851,18 @@ impl Battle {
                 _ => continue,
             };
 
+            // No Guard for this attacker/defender pair — true if EITHER end
+            // holds No Guard (PS `onAnyAccuracy` / `onAnyInvulnerability`
+            // fire when the holder is source OR target). When set, this
+            // move skips the semi-invuln dodge AND the accuracy roll
+            // (numeric + OHKO) for this target — but does NOT bypass type
+            // immunity or Protect (those checks run independently below).
+            // PS data/abilities.ts:2960. We mirror the existing
+            // `accuracy == 255` sure-hit convention (skip the roll, draw no
+            // PRNG value) so draw order is unchanged.
+            let no_guard_pair = attacker_no_guard
+                || defender.effective_ability_id() == data::ability_id::NOGUARD;
+
             // Pollen Puff — PS data/moves.ts:pollenpuff.
             //   onTryHit(target, source) {
             //     if (source.isAlly(target)) {
@@ -2875,7 +2900,7 @@ impl Battle {
             //   Sky Drop: nothing hits through (handled like Fly target).
             // Gust / Twister BP ×2 vs airborne is `onSourceModifyDamage`;
             // we land the BP doubling as additive move PRs.
-            if defender.semi_invuln != 0 {
+            if defender.semi_invuln != 0 && !no_guard_pair {
                 let hits_through = match defender.semi_invuln {
                     // Dig
                     1 => matches!(move_id, data::move_id::EARTHQUAKE | data::move_id::MAGNITUDE),
@@ -2950,9 +2975,14 @@ impl Battle {
                 let user_is_ice = (0..attacker_ntypes).any(|i| attacker_types[i] == 5);
                 let base = if move_id == data::move_id::SHEERCOLD && !user_is_ice { 20u32 } else { 30u32 };
                 let eff_acc = (base + (attacker.level as u32 - defender.level as u32)).min(100);
-                let roll = self.rng.percent_1_100() as u32;
-                if roll > eff_acc {
-                    continue;
+                // No Guard (PS `onAnyAccuracy` → true) auto-hits OHKO moves
+                // too: skip the accuracy roll entirely (no PRNG draw), same
+                // as a sure-hit move.
+                if !no_guard_pair {
+                    let roll = self.rng.percent_1_100() as u32;
+                    if roll > eff_acc {
+                        continue;
+                    }
                 }
                 // Hit. Set damage to target's current HP; Sturdy / Focus
                 // Sash's on_before_damage cap will reduce to hp-1 if
@@ -3085,6 +3115,13 @@ impl Battle {
                 data::move_id::PURSUIT if self.pursuit_intercepting => 255,
                 _ => m.accuracy,
             };
+            // No Guard (PS `onAnyAccuracy` returns `true`): force the
+            // sure-hit code (255), which skips the entire accuracy block —
+            // no stage/evasion math, no item modifiers, and no PRNG draw.
+            // This is the SAME mechanism `accuracy == true` moves (Swift,
+            // Aerial Ace, weather-boosted Hurricane/Thunder/Blizzard) use,
+            // so draw order is identical to a sure-hit move.
+            let base_acc = if no_guard_pair { 255 } else { base_acc };
             if base_acc != 255 {
                 let acc_stage = attacker.boosts[5] as i32;
                 let eva_stage = defender.boosts[6] as i32;
@@ -17462,6 +17499,101 @@ mod tests {
         }
         assert!(hits >= 5, "too few hits to validate ({hits})");
         assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn no_guard_auto_hits_both_directions() {
+        // No Guard — PS data/abilities.ts:2960. While a No Guard mon is on
+        // the field, EVERY move involving it (as source OR target) skips the
+        // accuracy roll and always hits. A 50%-accuracy move must connect on
+        // EVERY seed in both directions; a non-No-Guard control must miss on
+        // at least one seed (proving the move is genuinely inaccurate and the
+        // ability — not luck — is what makes it never miss).
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/No_Guard_(Ability)>.
+        //
+        // Machamp uses Dynamic Punch (50% acc, Fighting). Snorlax (Normal,
+        // huge HP, slow) is the punching bag — it survives the hit so HP-loss
+        // is a clean "did it connect" signal, and it is not immune to
+        // Fighting. Snorlax answers with Body Slam aimed at Machamp
+        // (move_slot 1) — a move that touches only Machamp's HP, never
+        // Snorlax's, so it can't mask the signal we measure on Snorlax.
+        let attacker_json = |ability: &str| {
+            format!(
+                r#"[{{"species":"machamp","level":50,"ability":"{ability}","item":"","nature":"adamant","moves":["dynamicpunch","earthquake","protect","rockslide"]}}]"#
+            )
+        };
+        let target_json = |ability: &str| {
+            format!(
+                r#"[{{"species":"snorlax","level":50,"ability":"{ability}","item":"","nature":"sassy","moves":["dynamicpunch","bodyslam","protect","crunch"]}}]"#
+            )
+        };
+
+        // --- Attacker side: Machamp(No Guard) Dynamic Punch ALWAYS hits. ---
+        let p1 = TeamBuilder::from_json(&attacker_json("noguard")).unwrap();
+        let p2 = TeamBuilder::from_json(&target_json("thickfat")).unwrap();
+        for seed in 0..120u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(),
+                p2.clone(),
+            );
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert!(
+                b.p2.team[0].current_hp < hp_before,
+                "No Guard attacker's 50%-acc move missed on seed {seed}"
+            );
+        }
+
+        // --- Control: same Machamp WITHOUT No Guard misses on some seed. ---
+        let p1c = TeamBuilder::from_json(&attacker_json("guts")).unwrap();
+        let p2c = TeamBuilder::from_json(&target_json("thickfat")).unwrap();
+        let mut control_missed = false;
+        for seed in 0..120u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1c.clone(),
+                p2c.clone(),
+            );
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p2.team[0].current_hp >= hp_before {
+                control_missed = true;
+                break;
+            }
+        }
+        assert!(
+            control_missed,
+            "control (no No Guard) never missed — test isn't exercising accuracy"
+        );
+
+        // --- Defender side: a No Guard holder is ALWAYS hit by a 50%-acc move
+        // aimed at it. Snorlax(No Guard) is targeted by Machamp(Guts) Dynamic
+        // Punch; it must take damage on every seed. ---
+        let p1d = TeamBuilder::from_json(&attacker_json("guts")).unwrap();
+        let p2d = TeamBuilder::from_json(&target_json("noguard")).unwrap();
+        for seed in 0..120u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1d.clone(),
+                p2d.clone(),
+            );
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert!(
+                b.p2.team[0].current_hp < hp_before,
+                "move aimed at No Guard holder missed on seed {seed}"
+            );
+        }
     }
 
     #[test]
