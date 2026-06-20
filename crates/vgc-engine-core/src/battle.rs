@@ -2632,6 +2632,15 @@ impl Battle {
         }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
+        // Phazing target for Dragon Tail / Circle Throw (`forceSwitch`): the
+        // opposing slot that took a REAL (non-Substitute) hit this move. PS
+        // runs forceSwitch (battle-actions.ts:1124, step 6) only for targets
+        // whose `damage[i]` is a number — a Substitute absorb sets
+        // `targets[i] = false`, so a mon behind a Sub is never phazed.
+        // Tracking the real-hit slot here reproduces that gate without a
+        // separate sub-state capture in the post-hit hook. Single-target
+        // moves only, so the last writer is the move's one target.
+        let mut drag_target: Option<(SideRef, u8)> = None;
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
@@ -3951,6 +3960,12 @@ impl Battle {
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
+                // Record the real-hit foe slot for Dragon Tail / Circle
+                // Throw phazing (a Substitute absorb never reaches this
+                // branch, so a subbed mon stays None and is not phazed).
+                if tside != actor_side && effective_dmg > 0 {
+                    drag_target = Some((tside, tslot));
+                }
 
                 // Stellar once-per-type bookkeeping. PS
                 // `sim/pokemon.ts` runEffectiveness sets the consumed-
@@ -4574,6 +4589,41 @@ impl Battle {
             if still_alive && self.has_eligible_bench(actor_side) {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.set_pending_self_switch(true);
+                }
+            }
+        }
+
+        // Dragon Tail / Circle Throw — damaging phazing. PS
+        // data/moves.ts:dragontail:4208 / circlethrow:2450 (`forceSwitch:
+        // true`, priority -6, NO `bypasssub`). After the hit connects,
+        // forceSwitch (battle-actions.ts:1124, step 6) drags the target out
+        // for a random bench replacement — but only when it took a real
+        // (non-Substitute) hit and survived. `drag_target` is set only on a
+        // real foe hit, so a subbed or fainted target is already excluded.
+        // DragOut blockers (Suction Cups / Guard Dog / Ingrain) and the
+        // no-eligible-bench fizzle match the status phazers; Mold Breaker on
+        // the user bypasses the ability blockers. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Dragon_Tail_(move)>.
+        if matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW) {
+            if let Some((ts, tslot)) = drag_target {
+                let still_alive = self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.is_alive());
+                let breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        )
+                    });
+                if still_alive
+                    && self.has_eligible_bench(ts)
+                    && self.can_be_dragged_out(ts, tslot, breaks_mold)
+                {
+                    self.force_switch_random(ts, tslot);
                 }
             }
         }
@@ -18850,6 +18900,72 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.active[0], 0, "Ingrain blocks the drag");
+    }
+
+    #[test]
+    fn dragon_tail_damages_then_drags_target_out() {
+        // PS data/moves.ts:dragontail — damaging phazer; after the hit the
+        // foe is dragged out for a random bench mon.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragontail","earthquake","crunch","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lax_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < lax_full, "Snorlax took Dragon Tail damage");
+        assert_eq!(b.p2.active[0], 1, "Snorlax was dragged out for Gyarados");
+    }
+
+    #[test]
+    fn dragon_tail_behind_substitute_does_not_switch() {
+        // No `bypasssub` → a Substitute absorbs the hit and the mon is NOT
+        // phazed (PS sets targets[i]=false for a sub hit before forceSwitch).
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragontail","earthquake","crunch","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].set_substitute_hp(60);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.active[0], 0, "Substitute blocks the phaze");
+    }
+
+    #[test]
+    fn circle_throw_damages_then_drags_target_out() {
+        let p1 = r#"[
+            {"species":"hitmontop","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["circlethrow","closecombat","suckerpunch","fakeout"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lax_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < lax_full, "Snorlax took Circle Throw damage");
+        assert_eq!(b.p2.active[0], 1, "Snorlax was dragged out for Gyarados");
     }
 
     #[test]
