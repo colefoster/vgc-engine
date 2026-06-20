@@ -117,6 +117,11 @@ pub struct SideConditions {
     /// rule: at most one mon per side may Terastallize per battle.
     /// PS `side.terastallized` mirror. Not on a `SideConditions` tick.
     pub tera_used: bool,
+    /// True once this side has Mega-Evolved a Pokémon this battle. Gen-6/7
+    /// rule: at most one Mega Evolution per side per battle. Parallel to
+    /// `tera_used`. PS `side.megaEvo` / `pokemon.canMegaEvo` gate. Not on a
+    /// `SideConditions` tick.
+    pub mega_used: bool,
 }
 
 impl Side {

@@ -522,6 +522,18 @@ impl Battle {
         // state, so the lock gate below covers both. Darmanitan-Galar.
         let is_move_locker = is_choice_item || active.effective_ability_id() == data::ability_id::GORILLATACTICS;
 
+        // Transform declarations are enumerated as EXTRA variants alongside
+        // each legal Move, so the ML pipeline discovers them as actions.
+        // A Tera variant is offered whenever the side's permit is unspent
+        // (any move can carry the `terastallize` flag). A Mega variant is
+        // offered when the side's `mega_used` permit is unspent AND the
+        // active mon holds the stone that matches its species (PR-407
+        // `mega_stone_for` table). `step()` still accepts agent-built
+        // `Terastallize` / `MegaEvolve` directly (these are additive).
+        let can_tera = !s.conditions.tera_used;
+        let can_mega = !s.conditions.mega_used
+            && data::mega_stone_for(active.item_id, active.species_id).is_some();
+
         let mut out = Vec::with_capacity(8);
         for (i, &move_id) in active.moves.iter().enumerate() {
             if move_id == u16::MAX || active.pp.get(i).copied().unwrap_or(0) == 0 {
@@ -560,19 +572,24 @@ impl Battle {
                         .active_mon(opp_slot as usize)
                         .is_some_and(|m| m.is_alive())
                     {
-                        out.push(Choice::Move {
-                            actor_slot,
-                            move_slot: i as u8,
-                            target: Some(Target { side: side.opposing(), slot: opp_slot }),
-                        });
+                        let target = Some(Target { side: side.opposing(), slot: opp_slot });
+                        out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
+                        if can_tera {
+                            out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target });
+                        }
+                        if can_mega {
+                            out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target });
+                        }
                     }
                 }
             } else {
-                out.push(Choice::Move {
-                    actor_slot,
-                    move_slot: i as u8,
-                    target: None,
-                });
+                out.push(Choice::Move { actor_slot, move_slot: i as u8, target: None });
+                if can_tera {
+                    out.push(Choice::Terastallize { actor_slot, move_slot: i as u8, target: None });
+                }
+                if can_mega {
+                    out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target: None });
+                }
             }
         }
         // Trapping (Shadow Tag / Arena Trap / Magnet Pull / partial-trap /
@@ -632,6 +649,15 @@ impl Battle {
         self.apply_switches(SideRef::P1, p1_choices);
         self.apply_switches(SideRef::P2, p2_choices);
 
+        // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
+        //     between switch resolution and move ordering. Transforming
+        //     before `action_order` means the post-mega Speed (recomputed by
+        //     `set_forme`) governs this turn's move order, matching PS where
+        //     a mon that Mega-Evolves into higher Speed moves accordingly.
+        //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
+        self.apply_megas(SideRef::P1, p1_choices);
+        self.apply_megas(SideRef::P2, p2_choices);
+
         // 2. Resolve moves in priority+speed order.
         // Temporarily move rng out to split-borrow with `self`. `Rng`
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
@@ -674,7 +700,8 @@ impl Battle {
                 let s = side_ref as usize;
                 match *c {
                     Choice::Move { actor_slot, move_slot, .. }
-                    | Choice::Terastallize { actor_slot, move_slot, .. } => {
+                    | Choice::Terastallize { actor_slot, move_slot, .. }
+                    | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
                         if let Some(a) = self.side(side_ref).active_mon(actor_slot as usize) {
                             if let Some(mid) = a.moves.get(move_slot as usize).copied() {
@@ -736,8 +763,10 @@ impl Battle {
             // only "later acting" actions at move-resolution time are
             // moves).
             let will_act = order[idx + 1..].iter().any(|a| {
-                matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. })
-                    && self
+                matches!(
+                    a.choice,
+                    Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
+                ) && self
                         .side(a.side)
                         .active_mon(a.actor_slot as usize)
                         .is_some_and(|m| m.is_alive())
@@ -886,6 +915,66 @@ impl Battle {
         StepResult::Continue
     }
 
+    /// Resolve any `MegaEvolve` declarations in one side's choice queue.
+    /// Runs at PS `order: 104` — after switches, before move ordering — so
+    /// the recomputed Speed governs this turn. No-op when the side has no
+    /// `MegaEvolve` choice.
+    fn apply_megas(&mut self, side: SideRef, choices: &[Choice]) {
+        for c in choices {
+            if let Choice::MegaEvolve { actor_slot, .. } = *c {
+                self.try_mega_evolve(side, actor_slot);
+            }
+        }
+    }
+
+    /// Mega-Evolve the active mon in `actor_slot`, if legal. Forgiving like
+    /// the Terastallize fall-through: silently no-ops when the side's
+    /// `mega_used` permit is already spent, the slot is empty/fainted, or
+    /// the mon doesn't hold the stone matching its species.
+    ///
+    /// The transform mirrors PS `formeChange` + the mega ability swap:
+    /// `set_forme(recompute_stats=true)` swaps species and recomputes the
+    /// five non-HP stats; the BASE `ability_id` is overwritten with the
+    /// forme's mega ability (so the change PERSISTS through switch-out/in —
+    /// the per-switch resets only clear `ability_override`, never the base —
+    /// matching PS, where a mega forme keeps its ability for the battle).
+    /// Overwriting the base (rather than `ability_override`) is also what
+    /// lets `ability::on_switch_in` — which reads the base `ability_id` —
+    /// fire the NEW ability below. The mega stone is NOT consumed.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mega_Evolution>.
+    fn try_mega_evolve(&mut self, side: SideRef, actor_slot: u8) {
+        if self.side(side).conditions.mega_used {
+            return;
+        }
+        let slot = actor_slot as usize;
+        let (item_id, species_id, alive) = match self.side(side).active_mon(slot) {
+            Some(m) => (m.item_id, m.species_id, m.is_alive()),
+            None => return,
+        };
+        if !alive {
+            return;
+        }
+        let Some(stone) = data::mega_stone_for(item_id, species_id) else {
+            return;
+        };
+        let mega_species = stone.mega_species_id;
+        let mega_ability = stone.mega_ability_id;
+        // Forme + recomputed stats (Speed feeds the upcoming `action_order`).
+        self.set_forme(side, actor_slot, mega_species, true);
+        // Overwrite the base ability so it survives switching out and back;
+        // clear any transient override (e.g. a prior Skill Swap) so the mega
+        // ability is the live one.
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+            m.ability_id = mega_ability;
+            m.ability_override = u16::MAX;
+        }
+        self.side_mut(side).conditions.mega_used = true;
+        // Fire the mega ability's switch-in effect (Mega Charizard Y →
+        // Drought-sun, Mega Manectric → Intimidate, ...). Reuses the
+        // established re-invoke pattern (cf. Ogerpon-Tera switch-in).
+        crate::ability::on_switch_in(self, side, actor_slot);
+    }
+
     fn apply_switches(&mut self, side: SideRef, choices: &[Choice]) {
         // A Switch that comes AFTER a Move for the same actor_slot in
         // the same choice array is a self-switch follow-up (U-turn /
@@ -899,7 +988,8 @@ impl Battle {
         for c in choices {
             match *c {
                 Choice::Move { actor_slot, .. }
-                | Choice::Terastallize { actor_slot, .. } => {
+                | Choice::Terastallize { actor_slot, .. }
+                | Choice::MegaEvolve { actor_slot, .. } => {
                     if (actor_slot as usize) < 2 {
                         moved_slot[actor_slot as usize] = true;
                     }
@@ -1276,7 +1366,8 @@ impl Battle {
             for c in choices {
                 match *c {
                     Choice::Move { actor_slot, .. }
-                    | Choice::Terastallize { actor_slot, .. } => {
+                    | Choice::Terastallize { actor_slot, .. }
+                    | Choice::MegaEvolve { actor_slot, .. } => {
                         if (actor_slot as usize) < 2 {
                             moved_slot[actor_slot as usize] = true;
                         }
@@ -1328,6 +1419,9 @@ impl Battle {
         let (actor_slot, move_slot, mut target, tera) = match action.choice {
             Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
             Choice::Terastallize { actor_slot, move_slot, target } => (actor_slot, move_slot, target, true),
+            // Mega Evolution already transformed the actor in `apply_megas`
+            // (PS order 104, pre-`action_order`); here it just runs the move.
+            Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
             _ => return,
         };
         let actor_side = action.side;
@@ -7955,6 +8049,209 @@ mod tests {
     }
 
     #[test]
+    fn mega_evolve_charizard_x_transforms_forme_stats_ability_type() {
+        // Charizard @ Charizardite X mega-evolves into Charizard-Mega-X:
+        // Fire/Dragon, Tough Claws, and a much higher Attack stat. The
+        // mega ability is written to the BASE so it persists.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditex","nature":"adamant","moves":["flareblitz","dragonclaw","earthquake","roost"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let atk_before = b.p1.team[0].stats.atk;
+        assert!(!b.p1.conditions.mega_used);
+        b.step(
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::CHARIZARDMEGAX, "forme = Charizard-Mega-X");
+        assert_eq!(b.p1.team[0].ability_id, data::ability_id::TOUGHCLAWS, "base ability overwritten to Tough Claws");
+        assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::TOUGHCLAWS);
+        assert!(b.p1.conditions.mega_used, "mega permit consumed");
+        // Type now Fire(1)/Dragon(14) — base Charizard is Fire/Flying.
+        let (types, n) = b.p1.team[0].effective_types();
+        assert_eq!(n, 2);
+        assert!(types[..2].contains(&14), "Charizard-Mega-X is Dragon-type");
+        // Stats recomputed: Mega-X Attack base (130) >> base Charizard (84).
+        assert!(b.p1.team[0].stats.atk > atk_before, "Attack recomputed upward after mega");
+        // Stone is NOT consumed.
+        assert_eq!(b.p1.team[0].item_id, data::item_id::CHARIZARDITEX, "mega stone not consumed");
+    }
+
+    #[test]
+    fn mega_evolve_charizard_y_fires_drought_sun() {
+        // The on-mega ability trigger: Charizard-Mega-Y's Drought sets sun
+        // the moment it transforms (via ability::on_switch_in).
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditey","nature":"timid","moves":["flamethrower","airslash","solarbeam","roost"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::None);
+        b.step(
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::CHARIZARDMEGAY);
+        assert_eq!(b.p1.team[0].ability_id, data::ability_id::DROUGHT);
+        assert_eq!(b.weather, crate::weather::Weather::Sun, "Mega-Y Drought set sun on transform");
+    }
+
+    #[test]
+    fn mega_evolve_kangaskhan_parental_bond() {
+        let p1_json = r#"[
+            {"species":"kangaskhan","level":50,"ability":"scrappy","item":"kangaskhanite","nature":"adamant","moves":["doubleedge","suckerpunch","poweruppunch","fakeout"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::KANGASKHANMEGA);
+        assert_eq!(b.p1.team[0].ability_id, data::ability_id::PARENTALBOND);
+    }
+
+    #[test]
+    fn mega_cannot_evolve_twice_per_side() {
+        // Doubles: both actives hold a matching stone and both declare
+        // MegaEvolve the same turn. Only the first (slot 0) transforms —
+        // the side's single mega permit is spent.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditex","nature":"adamant","moves":["flareblitz","dragonclaw","earthquake","roost"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"kangaskhan","level":50,"ability":"scrappy","item":"kangaskhanite","nature":"adamant","moves":["doubleedge","suckerpunch","poweruppunch","fakeout"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","thunderwave","toxic"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::MegaEvolve { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::CHARIZARDMEGAX, "slot 0 mega'd");
+        assert_eq!(b.p1.team[1].species_id, data::species_id::KANGASKHAN, "slot 1 stayed base — permit spent");
+        assert!(b.p1.conditions.mega_used);
+    }
+
+    #[test]
+    fn mega_persists_through_switch_out_and_in() {
+        // Mega Manectric switches out and back; it keeps the Mega forme
+        // and the Mega ability (Intimidate), which re-fires on the return
+        // switch-in (drops the foe's Attack again).
+        let p1_json = r#"[
+            {"species":"manectric","level":50,"ability":"lightningrod","item":"manectite","nature":"timid","moves":["thunderbolt","flamethrower","voltswitch","protect"],"evs":{"spa":252,"spe":252,"hp":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Turn 1: mega (Intimidate fires once, foe Atk -1).
+        b.step(
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::MANECTRICMEGA);
+        assert_eq!(b.p1.team[0].ability_id, data::ability_id::INTIMIDATE);
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate dropped foe Atk on mega");
+        // Turn 2: switch Manectric out for Snorlax.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Turn 3: switch Manectric back in.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::MANECTRICMEGA, "forme persists through switch");
+        assert_eq!(b.p1.team[0].ability_id, data::ability_id::INTIMIDATE, "base ability persists through switch");
+        assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::INTIMIDATE);
+        assert_eq!(b.p2.team[0].boosts[0], -2, "Intimidate re-fired on the return switch-in");
+    }
+
+    #[test]
+    fn mega_speed_governs_this_turn_move_order() {
+        // Manectric's Speed jumps (105 → 135 base) on mega. With the foe's
+        // Speed set between the pre- and post-mega values, the foe outspeeds
+        // base Manectric but is outsped once Manectric Mega-Evolves.
+        let p1_json = r#"[
+            {"species":"manectric","level":50,"ability":"lightningrod","item":"manectite","nature":"timid","moves":["thunderbolt","flamethrower","voltswitch","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let base_spe = b.p1.team[0].stats.spe;
+        // Pin the foe's Speed one point above base Manectric.
+        b.p2.team[0].stats.spe = base_spe + 1;
+        use crate::rng::Rng;
+        let mut rng = Rng::new(0);
+        let p1c = [Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let p2c = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }];
+        // Before transforming: foe is faster.
+        let pre = crate::order::action_order(&b, &p1c, &p2c, &mut rng);
+        assert_eq!(pre[0].side, SideRef::P2, "foe outspeeds base Manectric");
+        // Apply the mega transform, then re-order: Manectric now first.
+        b.try_mega_evolve(SideRef::P1, 0);
+        assert!(b.p1.team[0].stats.spe > base_spe + 1, "mega Speed exceeds the foe");
+        let post = crate::order::action_order(&b, &p1c, &p2c, &mut rng);
+        assert_eq!(post[0].side, SideRef::P1, "mega Manectric outspeeds the foe");
+    }
+
+    #[test]
+    fn legal_choices_emits_mega_and_tera_variants() {
+        // A stone-holder with an unspent mega + tera permit gets BOTH a
+        // MegaEvolve and a Terastallize variant alongside each plain Move.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditex","nature":"adamant","moves":["flareblitz","dragonclaw","earthquake","roost"],"evs":{"atk":252,"spe":252,"hp":4},"teratype":"fire"}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(lc.iter().any(|c| matches!(c, Choice::Move { .. })), "plain moves present");
+        assert!(lc.iter().any(|c| matches!(c, Choice::Terastallize { .. })), "tera variants enumerated");
+        assert!(lc.iter().any(|c| matches!(c, Choice::MegaEvolve { .. })), "mega variants enumerated");
+        // A holder of a non-matching item gets Tera but no Mega.
+        let p1b_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"leftovers","nature":"adamant","moves":["flareblitz","dragonclaw","earthquake","roost"],"teratype":"fire"}
+        ]"#;
+        let p1b = TeamBuilder::from_json(p1b_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let bb = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        let lcb = bb.legal_choices(SideRef::P1, 0);
+        assert!(lcb.iter().any(|c| matches!(c, Choice::Terastallize { .. })), "tera still offered");
+        assert!(!lcb.iter().any(|c| matches!(c, Choice::MegaEvolve { .. })), "no mega without matching stone");
+    }
+
+    #[test]
     fn eviolite_reduces_damage_to_nfe() {
         // Pure damage-calc test: Chansey (NFE) holding Eviolite takes
         // 1/1.5 the special damage of no-item Chansey. We call into the
@@ -12425,7 +12722,13 @@ mod tests {
         assert_eq!(b.p2.team[0].encore_turns(), 2, "duration 3 → 2 after end-of-turn tick");
         let legal = b.legal_choices(SideRef::P2, 0);
         assert!(
-            legal.iter().all(|c| matches!(c, Choice::Move { move_slot: 0, .. } | Choice::Switch { .. })),
+            legal.iter().all(|c| matches!(
+                c,
+                Choice::Move { move_slot: 0, .. }
+                    | Choice::Terastallize { move_slot: 0, .. }
+                    | Choice::MegaEvolve { move_slot: 0, .. }
+                    | Choice::Switch { .. }
+            )),
             "Encore restricts move choices to slot 0",
         );
     }

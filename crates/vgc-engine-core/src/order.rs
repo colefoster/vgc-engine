@@ -131,7 +131,10 @@ impl ActionOrder {
         let Some(rel) = s[start..].iter().position(|a| {
             a.side == side
                 && a.actor_slot == slot
-                && matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. })
+                && matches!(
+                    a.choice,
+                    Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
+                )
         }) else {
             return;
         };
@@ -402,7 +405,8 @@ pub fn action_order(
                         switches.push(ScheduledAction { side, actor_slot, choice: *c });
                     }
                     Choice::Move { actor_slot, move_slot, .. }
-                    | Choice::Terastallize { actor_slot, move_slot, .. } => {
+                    | Choice::Terastallize { actor_slot, move_slot, .. }
+                    | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         moves.push(schedule_move(
                             battle, side, actor_slot, move_slot, *c, rng,
                         ));
@@ -434,7 +438,8 @@ pub fn action_order(
                     n_switch += 1;
                 }
                 Choice::Move { actor_slot, move_slot, .. }
-                | Choice::Terastallize { actor_slot, move_slot, .. } => {
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                     moves[n_move] =
                         schedule_move(battle, side, actor_slot, move_slot, *c, rng);
                     n_move += 1;
