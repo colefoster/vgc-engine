@@ -6127,6 +6127,100 @@ impl Battle {
                 }
                 self.swap_held_items(actor_side, actor_slot, ts, tslot);
             }
+            data::move_id::SPEEDSWAP
+            | data::move_id::POWERSWAP
+            | data::move_id::GUARDSWAP
+            | data::move_id::HEARTSWAP => {
+                // Stat / boost-stage swaps. PS data/moves.ts:
+                //   * speedswap — swap raw `storedStats.spe` between user/target.
+                //   * powerswap — swap atk + spa boost stages.
+                //   * guardswap — swap def + spd boost stages.
+                //   * heartswap — swap ALL stat stages (atk/def/spa/spd/spe/
+                //     accuracy/evasion).
+                // All four: accuracy `true` (no roll, no RNG), `bypasssub`
+                // (go straight through a Substitute), single-target `normal`
+                // (may target an ally in doubles). No fail condition beyond a
+                // missing/fainted target. `setBoost` overwrites stages
+                // outright (the swap is a straight exchange, no Contrary/
+                // Simple/Clear-Body interaction — those only gate `boost`
+                // deltas, not `setBoost`). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Speed_Swap_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                // Swapping with oneself is a no-op (PS never targets self).
+                if tside == actor_side && tslot == actor_slot {
+                    return;
+                }
+                let tgt_alive = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|m| m.is_alive());
+                if !tgt_alive {
+                    return;
+                }
+                if move_id == data::move_id::SPEEDSWAP {
+                    let user_spe = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .map(|m| m.stats.spe);
+                    let tgt_spe = self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .map(|m| m.stats.spe);
+                    if let (Some(us), Some(ts)) = (user_spe, tgt_spe) {
+                        if let Some(a) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            a.stats.spe = ts;
+                        }
+                        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                            t.stats.spe = us;
+                        }
+                    }
+                } else {
+                    // Boost-stage indices to exchange: [atk,def,spa,spd,spe,
+                    // acc,eva].
+                    let indices: &[usize] = match move_id {
+                        data::move_id::POWERSWAP => &[0, 2],
+                        data::move_id::GUARDSWAP => &[1, 3],
+                        _ => &[0, 1, 2, 3, 4, 5, 6], // Heart Swap: all stages
+                    };
+                    let user_b = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .map(|m| m.boosts);
+                    let tgt_b = self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .map(|m| m.boosts);
+                    if let (Some(ub), Some(tb)) = (user_b, tgt_b) {
+                        if let Some(a) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            for &i in indices {
+                                a.boosts[i] = tb[i];
+                            }
+                        }
+                        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                            for &i in indices {
+                                t.boosts[i] = ub[i];
+                            }
+                        }
+                    }
+                }
+            }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
@@ -16428,6 +16522,98 @@ mod tests {
         );
         assert!(b.p2.team[0].is_attracted(), "target infatuated");
         assert!(!b.p1.team[0].is_attracted(), "no Destiny Knot → no reflection");
+    }
+
+    #[test]
+    fn power_swap_exchanges_only_atk_and_spa_stages() {
+        // PS data/moves.ts:powerswap — swaps atk + spa boost stages,
+        // leaving def/spd/spe/acc/eva untouched.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["powerswap","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // [atk, def, spa, spd, spe, acc, eva]
+        b.p1.team[0].boosts = [2, 1, 0, 3, 4, 0, 0];
+        b.p2.team[0].boosts = [-1, 5, 6, -2, 1, 0, 0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // User gets target's atk(-1)/spa(6); keeps own def/spd/spe.
+        assert_eq!(b.p1.team[0].boosts, [-1, 1, 6, 3, 4, 0, 0]);
+        // Target gets user's atk(2)/spa(0); keeps own def/spd/spe.
+        assert_eq!(b.p2.team[0].boosts, [2, 5, 0, -2, 1, 0, 0]);
+    }
+
+    #[test]
+    fn guard_swap_exchanges_only_def_and_spd_stages() {
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["guardswap","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].boosts = [2, 1, 0, 3, 4, 0, 0];
+        b.p2.team[0].boosts = [-1, 5, 6, -2, 1, 0, 0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // Only def(idx1)/spd(idx3) swap.
+        assert_eq!(b.p1.team[0].boosts, [2, 5, 0, -2, 4, 0, 0]);
+        assert_eq!(b.p2.team[0].boosts, [-1, 1, 6, 3, 1, 0, 0]);
+    }
+
+    #[test]
+    fn heart_swap_exchanges_all_stat_stages() {
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["heartswap","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].boosts = [2, 1, 0, 3, 4, 1, -1];
+        b.p2.team[0].boosts = [-1, 5, 6, -2, 1, 0, 2];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts, [-1, 5, 6, -2, 1, 0, 2]);
+        assert_eq!(b.p2.team[0].boosts, [2, 1, 0, 3, 4, 1, -1]);
+    }
+
+    #[test]
+    fn speed_swap_exchanges_raw_speed_stat() {
+        // PS data/moves.ts:speedswap — swaps the raw `storedStats.spe`.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["speedswap","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let zam_spe = b.p1.team[0].stats.spe;
+        let lax_spe = b.p2.team[0].stats.spe;
+        assert_ne!(zam_spe, lax_spe, "fixture must differ in Speed");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].stats.spe, lax_spe, "user took target's Speed");
+        assert_eq!(b.p2.team[0].stats.spe, zam_spe, "target took user's Speed");
     }
 
     #[test]
