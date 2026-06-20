@@ -8252,6 +8252,39 @@ mod tests {
     }
 
     #[test]
+    fn zero_to_hero_transforms_palafin_on_switch_out() {
+        // Palafin (Zero) becomes Palafin-Hero the moment it switches out,
+        // gaining the Hero Attack (70 → 160 base). It does NOT transform at
+        // battle start, and it stays Hero when switched back in.
+        let p1_json = r#"[
+            {"species":"palafin","level":50,"ability":"zerotohero","item":"choiceband","nature":"adamant","moves":["jetpunch","wavecrash","closecombat","flipturn"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Battle start: still Zero form.
+        assert_eq!(b.p1.team[0].species_id, data::species_id::PALAFIN, "Zero form at switch-in");
+        let zero_atk = b.p1.team[0].stats.atk;
+        // Switch Palafin out for Snorlax → transforms to Hero on the way out.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::PALAFINHERO, "Zero to Hero on switch-out");
+        assert!(b.p1.team[0].stats.atk > zero_atk, "Hero Attack recomputed upward");
+        // Switch Palafin-Hero back in — stays Hero.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::PALAFINHERO, "Hero forme persists");
+    }
+
+    #[test]
     fn eviolite_reduces_damage_to_nfe() {
         // Pure damage-calc test: Chansey (NFE) holding Eviolite takes
         // 1/1.5 the special damage of no-item Chansey. We call into the
