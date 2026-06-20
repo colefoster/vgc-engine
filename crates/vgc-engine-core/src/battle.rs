@@ -4937,6 +4937,76 @@ impl Battle {
         true
     }
 
+    /// Phazing force-switch: drag `slot` on `side` off the field and pull in
+    /// a RANDOM eligible bench Pokemon. Used by Whirlwind / Roar / Dragon
+    /// Tail / Circle Throw (`forceSwitch: true`). Unlike `force_switch_auto`
+    /// (deterministic first-bench pick, for the reactive items), PS chooses
+    /// the replacement with `getRandomSwitchable` → `sample(canSwitchIn)`,
+    /// a single `random(N)` draw over the bench mons (PS `sim/battle.ts:1567`,
+    /// `sim/battle-actions.ts:162` dragIn). We mirror that draw shape: collect
+    /// every alive bench mon (in roster order — PS uses pokemon-array order;
+    /// the exact ordering is not chased for draw-parity), draw one, and run
+    /// the standard `do_switch` machinery. Returns true if a drag actually
+    /// fired. Returns false with NO draw when there is no eligible bench
+    /// (PS `canSwitch` gate fails before the move sets `forceSwitchFlag`).
+    pub(crate) fn force_switch_random(&mut self, side: SideRef, slot: u8) -> bool {
+        // Collect alive bench indices (alive, not currently active).
+        let n = self.format().active_count();
+        let mut bench: [u8; 6] = [0; 6];
+        let mut count = 0usize;
+        {
+            let s = self.side(side);
+            for (idx, mon) in s.team.iter().enumerate() {
+                if !mon.is_alive() {
+                    continue;
+                }
+                let active = s.active.iter().take(n).any(|&a| a as usize == idx);
+                if active {
+                    continue;
+                }
+                bench[count] = idx as u8;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return false;
+        }
+        let pick = self.rng.range(count as u32) as usize;
+        let team_index = bench[pick];
+        if !self.do_switch(side, slot, team_index) {
+            return false;
+        }
+        crate::ability::on_switch_in(self, side, slot);
+        crate::item::on_switch_in(self, side, slot);
+        true
+    }
+
+    /// Whether a force-switch (phazing) move can drag out the mon at
+    /// (`side`, `slot`). Mirrors PS's `DragOut` event blockers:
+    ///   * Suction Cups / Guard Dog abilities (`onDragOut` → return null).
+    ///   * the Ingrain volatile (`onDragOut` → return null).
+    /// Breakable: a Mold-Breaker phazer bypasses the *ability* blockers
+    /// (Suction Cups / Guard Dog are `breakable`), but NOT Ingrain (a move
+    /// volatile, not an ability). Returns true when the mon CAN be dragged.
+    pub(crate) fn can_be_dragged_out(&self, side: SideRef, slot: u8, breaks_mold: bool) -> bool {
+        let mon = match self.side(side).active_mon(slot as usize) {
+            Some(m) if m.is_alive() => m,
+            _ => return false,
+        };
+        if mon.volatiles.has(crate::pokemon::VolatileKind::Ingrain) {
+            return false;
+        }
+        if !breaks_mold
+            && matches!(
+                mon.effective_ability_id(),
+                data::ability_id::SUCTIONCUPS | data::ability_id::GUARDDOG
+            )
+        {
+            return false;
+        }
+        true
+    }
+
     /// Duration to set for a freshly-created screen (Reflect / Light Screen
     /// / Aurora Veil) on `setter_side`. PS `data/items.ts:lightclay`
     /// `onModifyDuration(duration, source, effect)`: when `effect.id` is
@@ -6274,6 +6344,41 @@ impl Battle {
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     t.item_id = item;
                 }
+            }
+            data::move_id::WHIRLWIND | data::move_id::ROAR => {
+                // Phazing status moves — drag the target out for a RANDOM
+                // bench replacement. PS data/moves.ts:20770 whirlwind /
+                // :15163 roar (`forceSwitch: true`, accuracy `true`,
+                // priority -6, `bypasssub: 1` so a Substitute does NOT block
+                // the drag). PS forceSwitch (`sim/battle-actions.ts:1374`):
+                //   if (target && target.hp > 0 && source.hp > 0 &&
+                //       this.battle.canSwitch(target.side)) {
+                //     const hitResult = this.battle.runEvent('DragOut', target, source, move);
+                //     if (hitResult) target.forceSwitchFlag = true;
+                //   }
+                // then `dragIn` (`battle.ts:2845`) pulls a getRandomSwitchable.
+                // Fails (no draw) when the target side has no eligible bench
+                // (`canSwitch`), or when DragOut is vetoed by Suction Cups /
+                // Guard Dog / Ingrain (`can_be_dragged_out`). Mold Breaker on
+                // the phazer bypasses the ability blockers. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Whirlwind_(move)>.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.has_eligible_bench(ts) {
+                    return;
+                }
+                let breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        )
+                    });
+                if !self.can_be_dragged_out(ts, tslot, breaks_mold) {
+                    return;
+                }
+                self.force_switch_random(ts, tslot);
             }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
@@ -18655,6 +18760,96 @@ mod tests {
         assert!(b.p2.team[0].current_hp < pika_hp, "Flip Turn dealt damage");
         assert_eq!(b.p1.active[0], 0, "Greninja stays in (no bench)");
         assert!(!b.p1.team[0].pending_self_switch());
+    }
+
+    #[test]
+    fn roar_drags_target_to_its_bench() {
+        // PS data/moves.ts:roar forceSwitch — phazes the foe out for a
+        // random bench replacement. With a single bench mon the pick is
+        // deterministic.
+        let p1 = r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["roar","flareblitz","crunch","extremespeed"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.active[0], 0, "Snorlax leads");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.active[0], 1, "Roar dragged the bench mon (Gyarados) in");
+    }
+
+    #[test]
+    fn whirlwind_fails_with_no_eligible_bench() {
+        // No bench to drag to → the move fizzles (PS canSwitch gate).
+        let p1 = r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["whirlwind","flareblitz","crunch","extremespeed"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.active[0], 0, "no bench → Whirlwind fizzles");
+    }
+
+    #[test]
+    fn roar_fails_against_suction_cups() {
+        // PS data/abilities.ts:4649 suctioncups onDragOut returns null —
+        // the holder cannot be phazed.
+        let p1 = r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["roar","flareblitz","crunch","extremespeed"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"cradily","level":50,"ability":"suctioncups","item":"","nature":"careful","moves":["ancientpower","recover","stockpile","gigadrain"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.active[0], 0, "Suction Cups blocks the drag");
+    }
+
+    #[test]
+    fn roar_fails_against_ingrain() {
+        // PS data/moves.ts:9633 ingrain onDragOut returns null — a rooted
+        // mon cannot be phazed.
+        let p1 = r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["roar","flareblitz","crunch","extremespeed"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Root the active Snorlax (Ingrain volatile).
+        b.p2.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::Ingrain,
+            turns_remaining: 0,
+            payload: 0,
+        });
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.active[0], 0, "Ingrain blocks the drag");
     }
 
     #[test]
