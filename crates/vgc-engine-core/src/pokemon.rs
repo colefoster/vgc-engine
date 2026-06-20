@@ -369,6 +369,15 @@ pub enum VolatileKind {
     /// "immobilized by love" and skips the move (PS `onBeforeMovePriority 2`,
     /// `randomChance(1, 2)`; no PP consumed).
     Attract,
+    /// Throat Chop lockout (PS `data/moves.ts:throatchop` `condition`,
+    /// `duration: 2`). Applied to the target after Throat Chop hits (a
+    /// 100% secondary). While present, every sound-flagged move
+    /// (`MoveDef::is_sound`) is undisplayable — filtered out of
+    /// `legal_choices` (PS `onDisableMove`) and made to fail if somehow
+    /// dispatched (PS `onBeforeMove` / `onModifyMove`). Decremented each
+    /// end of turn alongside Disable / Encore (PS `onResidualOrder 22`);
+    /// drops at 0. Payload unused.
+    ThroatChop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -393,8 +402,8 @@ pub struct Volatile {
 /// insert/remove so `has()` — called frequently in `step()` — is O(1).
 ///
 /// `present` bit `i` is set iff a volatile with discriminant `i` is in the
-/// store. `VolatileKind` is `#[repr(u8)]` with 51 sequential variants
-/// (0..=50), so a `u64` holds one bit per kind with room to spare.
+/// store. `VolatileKind` is `#[repr(u8)]` with 52 sequential variants
+/// (0..=51), so a `u64` holds one bit per kind with room to spare.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VolatileSet {
     pub items: [Volatile; 8],
@@ -1336,6 +1345,51 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::Disable);
+        }
+    }
+
+    /// Remaining Throat Chop lockout turns. `0` if not locked out. While
+    /// > 0 the holder cannot use sound-flagged moves. PS
+    /// `data/moves.ts:throatchop` condition `duration: 2`.
+    #[inline]
+    pub fn throat_chop_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::ThroatChop)
+            .map(|v| v.turns_remaining)
+            .unwrap_or(0)
+    }
+
+    /// Apply the Throat Chop lockout for `turns` (PS uses `duration: 2`).
+    /// Re-application replaces (PS `addVolatile` resets the duration).
+    /// `turns == 0` clears instead.
+    #[inline]
+    pub fn set_throat_chop(&mut self, turns: u8) {
+        if turns == 0 {
+            self.volatiles.remove(VolatileKind::ThroatChop);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::ThroatChop,
+                turns_remaining: turns,
+                payload: 0,
+            });
+        }
+    }
+
+    /// End-of-turn Throat Chop countdown — mirrors `tick_disable`. PS
+    /// `data/moves.ts:throatchop` condition `onResidualOrder 22`.
+    #[inline]
+    pub fn tick_throat_chop(&mut self) {
+        let Some(pos) = self.volatiles.position(VolatileKind::ThroatChop) else { return };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::ThroatChop);
         }
     }
 
