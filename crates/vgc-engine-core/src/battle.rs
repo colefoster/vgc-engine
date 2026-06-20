@@ -6221,6 +6221,60 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::BESTOW => {
+                // Bestow — give the user's held item to the target if (and
+                // only if) the target is itemless. PS data/moves.ts:1237
+                // onHit:
+                //   if (target.item) return false;          // target must be empty
+                //   const myItem = source.takeItem();        // user must hold a giveable item
+                //   if (!myItem) return false;
+                //   if (!singleEvent('TakeItem', ...) || !target.setItem(myItem)) { restore; return false; }
+                // accuracy:true (no roll), bypasssub (through Substitute),
+                // target normal (may give to an ally in doubles). The user's
+                // item is CONSUMED (one-way transfer, unlike Trick's swap).
+                // The TakeItem veto is the same un-giveable set as the swap
+                // primitive (`held_item_is_swappable`): species-locked orbs /
+                // masks / Rusted gear / Adamant&Lustrous&Griseous core /
+                // Booster Energy on a Paradox holder. Sticky Hold is
+                // irrelevant — the item is given, not taken from the target.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Bestow_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                if tside == actor_side && tslot == actor_slot {
+                    return;
+                }
+                // Target must be alive and hold NO item.
+                let target_empty = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|m| m.is_alive() && m.item_id == u16::MAX);
+                if !target_empty {
+                    return;
+                }
+                // User must hold a giveable item.
+                let item = match self.side(actor_side).active_mon(actor_slot as usize) {
+                    Some(a) if a.item_id != u16::MAX && held_item_is_swappable(a) => a.item_id,
+                    _ => return,
+                };
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.item_id = u16::MAX;
+                }
+                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    t.item_id = item;
+                }
+            }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
@@ -16522,6 +16576,49 @@ mod tests {
         );
         assert!(b.p2.team[0].is_attracted(), "target infatuated");
         assert!(!b.p1.team[0].is_attracted(), "no Destiny Knot → no reflection");
+    }
+
+    #[test]
+    fn bestow_gives_item_to_an_itemless_target() {
+        // PS data/moves.ts:bestow — one-way transfer to an itemless target.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["bestow","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let item = b.p1.team[0].item_id;
+        assert_ne!(item, u16::MAX, "user holds an item to give");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "user's item was consumed");
+        assert_eq!(b.p2.team[0].item_id, item, "target received the item");
+    }
+
+    #[test]
+    fn bestow_fails_when_target_already_holds_an_item() {
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","item":"leftovers","nature":"timid","moves":["bestow","psychic","recover","calmmind"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let user_item = b.p1.team[0].item_id;
+        let tgt_item = b.p2.team[0].item_id;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].item_id, user_item, "user keeps its item on fail");
+        assert_eq!(b.p2.team[0].item_id, tgt_item, "occupied target unchanged");
     }
 
     #[test]
