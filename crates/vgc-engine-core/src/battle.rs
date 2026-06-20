@@ -2140,6 +2140,7 @@ impl Battle {
             move_id,
             data::move_id::SOLARBEAM | data::move_id::SOLARBLADE | data::move_id::SKYATTACK
                 | data::move_id::RAZORWIND | data::move_id::SKULLBASH | data::move_id::METEORBEAM
+                | data::move_id::ELECTROSHOT
         );
         let semi_code = semi_invuln_code_for(m.slug);
         let mut skip_pp_deduct = false;
@@ -2153,12 +2154,25 @@ impl Battle {
                 }
                 skip_pp_deduct = true;
             } else {
-                // Skip-charge gates: Sun (Solar Beam / Solar Blade) or
-                // Power Herb consumption.
-                let sun_skip = matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
-                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun);
+                // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
+                // raises the user's Special Attack by +1 the moment it begins
+                // charging — PS calls `this.boost({spa:1})` after `-prepare`
+                // and *before* the weather/ChargeMove skip check, so the boost
+                // lands on turn 1 whether the charge is skipped (Rain / Power
+                // Herb) or not. Self-boost (source == target), so Clear
+                // Body / Mirror Armor don't block it. `&[(2, 1)]` is a stack
+                // slice — no heap allocation in step().
+                if move_id == data::move_id::ELECTROSHOT {
+                    self.apply_boosts(actor_side, actor_slot, &[(2, 1)], actor_side, actor_slot);
+                }
+                // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
+                // Electro Shot in Rain) or Power Herb consumption.
+                let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
+                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun))
+                    || (move_id == data::move_id::ELECTROSHOT
+                        && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
                 let power_herb = attacker.item_id == data::item_id::POWERHERB;
-                if sun_skip {
+                if weather_skip {
                     // Skip charge — fall through to normal damage. PP
                     // deducts via the standard PP block.
                 } else if power_herb {
@@ -20620,6 +20634,69 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Solar Beam hits turn 1 with Power Herb");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
         assert_eq!(b.p1.team[0].charging_turns, 0);
+    }
+
+    #[test]
+    fn electro_shot_charges_boosts_spa_then_releases() {
+        // PS data/moves.ts:electroshot:4639 — turn 1 in clear weather:
+        // -prepare, boost {spa:+1}, then charge (no damage). Turn 2: release,
+        // hits, no PP re-deduct. The +1 SpA lands on the charge turn.
+        let p1_json = r#"[
+            {"species":"duraludon","level":50,"ability":"lightmetal","item":"lifeorb","nature":"modest","moves":["electroshot","flashcannon","protect","thunderbolt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        let snorlax_hp = b.p2.team[0].current_hp;
+        assert_eq!(b.p1.team[0].boosts[2], 0, "no SpA boost before charging");
+        // Turn 1: charge + SpA boost, no damage.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "PP deducted on charge");
+        assert_eq!(b.p1.team[0].charging_turns, 1);
+        assert_eq!(b.p1.team[0].semi_invuln, 0, "Electro Shot is NOT semi-invuln");
+        assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA on the charge turn");
+        assert_eq!(b.p2.team[0].current_hp, snorlax_hp, "no damage on charge turn");
+        // Turn 2: release.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "no PP re-deduct on release");
+        assert_eq!(b.p1.team[0].charging_turns, 0);
+        assert_eq!(b.p1.team[0].boosts[2], 1, "SpA boost not re-applied on release");
+        assert!(b.p2.team[0].current_hp < snorlax_hp, "Electro Shot hits on release");
+    }
+
+    #[test]
+    fn electro_shot_skips_charge_in_rain() {
+        // In Rain, Electro Shot fires the same turn (like Solar Beam in Sun)
+        // and still grants +1 SpA. PS data/moves.ts:electroshot:4645 — the
+        // raindance/primordialsea weather branch skips charging after boost.
+        let p1_json = r#"[
+            {"species":"duraludon","level":50,"ability":"lightmetal","item":"lifeorb","nature":"modest","moves":["electroshot","flashcannon","protect","thunderbolt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.weather = crate::weather::Weather::Rain;
+        let snorlax_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < snorlax_hp, "Electro Shot hits turn 1 in Rain");
+        assert_eq!(b.p1.team[0].charging_turns, 0, "no charge state in Rain");
+        assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA still applies when charge is skipped");
     }
 
     #[test]
