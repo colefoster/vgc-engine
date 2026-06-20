@@ -145,6 +145,15 @@ impl PyBattle {
                     });
                     ("tera".to_string(), actor_slot, move_slot, ts, tl)
                 }
+                core::Choice::MegaEvolve { actor_slot, move_slot, target } => {
+                    let (ts, tl) = target.map_or((-1, -1), |t| {
+                        (
+                            if t.side == core::SideRef::P1 { 0 } else { 1 },
+                            t.slot as i8,
+                        )
+                    });
+                    ("mega".to_string(), actor_slot, move_slot, ts, tl)
+                }
             })
             .collect())
     }
