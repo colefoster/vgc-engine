@@ -169,6 +169,24 @@ struct ItemJson {
     /// Magearna, Tatsugiri). Drives the `MEGA_STONES` linkage table.
     #[serde(default, rename = "megaStone")]
     mega_stone: Option<BTreeMap<String, String>>,
+    /// PS/@pkmn `fling`: `{ basePower, status?, volatileStatus? }`. Present
+    /// only on items that can be thrown by the move Fling. Drives the
+    /// `fling_bp` / `fling_effect` columns on `ItemDef`.
+    #[serde(default)]
+    fling: Option<FlingJson>,
+    /// PS `isBerry` — true for Berries (Fling makes the TARGET eat them).
+    #[serde(default, rename = "isBerry")]
+    is_berry: bool,
+}
+
+#[derive(Deserialize)]
+struct FlingJson {
+    #[serde(rename = "basePower")]
+    base_power: u32,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, rename = "volatileStatus")]
+    volatile_status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -552,6 +570,14 @@ fn main() {
     writeln!(f, "    pub num: u16,").unwrap();
     writeln!(f, "    pub name: &'static str,").unwrap();
     writeln!(f, "    pub slug: &'static str,").unwrap();
+    writeln!(f, "    /// Fling base power. `255` = the item has no `fling`").unwrap();
+    writeln!(f, "    /// field (cannot be thrown). Real BP is 0..=130.").unwrap();
+    writeln!(f, "    pub fling_bp: u8,").unwrap();
+    writeln!(f, "    /// Fling on-hit effect: 0 none, 1 brn, 2 par, 3 psn,").unwrap();
+    writeln!(f, "    /// 4 tox, 5 flinch.").unwrap();
+    writeln!(f, "    pub fling_effect: u8,").unwrap();
+    writeln!(f, "    /// PS `isBerry` — Fling makes the target eat it.").unwrap();
+    writeln!(f, "    pub is_berry: bool,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const ITEMS: &[ItemDef] = &[").unwrap();
@@ -561,12 +587,29 @@ fn main() {
     for (slug, i) in &items_keep {
         item_slug_to_idx.insert((*slug).clone(), item_consts.len());
         item_consts.push((const_ident(slug), item_consts.len()));
+        let (fling_bp, fling_effect) = match &i.fling {
+            None => (255u16, 0u8),
+            Some(fl) => {
+                let eff = match (fl.status.as_deref(), fl.volatile_status.as_deref()) {
+                    (Some("brn"), _) => 1,
+                    (Some("par"), _) => 2,
+                    (Some("psn"), _) => 3,
+                    (Some("tox"), _) => 4,
+                    (_, Some("flinch")) => 5,
+                    _ => 0,
+                };
+                (fl.base_power.min(254) as u16, eff)
+            }
+        };
         writeln!(
             f,
-            "    ItemDef {{ num: {}, name: {}, slug: {} }},",
+            "    ItemDef {{ num: {}, name: {}, slug: {}, fling_bp: {}, fling_effect: {}, is_berry: {} }},",
             i.num.max(0) as u16,
             rust_str_lit(&i.name),
             rust_str_lit(slug),
+            fling_bp,
+            fling_effect,
+            i.is_berry,
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

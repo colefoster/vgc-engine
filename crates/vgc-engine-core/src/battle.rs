@@ -2361,6 +2361,20 @@ impl Battle {
             target = Some(Target { side: scr_side, slot: scr_slot });
         }
 
+        // Fling — fail if the user holds no flingable item. PS
+        // data/moves.ts:fling onPrepareHit: `if (!item.fling) return false`.
+        // An itemless user or an un-flingable item (no `fling` field, data
+        // sentinel `fling_bp == 255`) fails the move with NO item consumed.
+        // (Embargo / Klutz / Magic Room `ignoringItem` gating is deferred —
+        // those item-suppressors aren't modelled yet.)
+        if move_id == data::move_id::FLING {
+            let flingable = attacker.item_id != u16::MAX
+                && data::ITEMS[attacker.item_id as usize].fling_bp != 255;
+            if !flingable {
+                return;
+            }
+        }
+
         // 5. Enumerate targets (spread or single).
         let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
         if targets.is_empty() {
@@ -2462,7 +2476,10 @@ impl Battle {
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
                     | data::move_id::COUNTER | data::move_id::MIRRORCOAT
-                    | data::move_id::METALBURST);
+                    | data::move_id::METALBURST
+                    // Fling carries basePower 0 in PS; its real BP comes from
+                    // the held item's `fling.basePower` in the damage calc.
+                    | data::move_id::FLING);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -4624,6 +4641,53 @@ impl Battle {
                     && self.can_be_dragged_out(ts, tslot, breaks_mold)
                 {
                     self.force_switch_random(ts, tslot);
+                }
+            }
+        }
+
+        // Fling — consume the thrown item and apply its on-hit effect. PS
+        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
+        // user's item after the move; the per-item `fling.status` /
+        // `volatileStatus` rides as a 100% secondary, so it lands only on a
+        // real (non-Substitute) hit and respects the target's status
+        // immunities. We gate consumption on the move connecting
+        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
+        // item still spent, status blocked); a clean miss spends nothing.
+        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
+        // status/flinch applies exactly where PS's secondary would.
+        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
+        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
+        // is deferred (same shape as Trick's un-modelled receive-time item
+        // effects). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
+        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
+            let item_id = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.item_id)
+                .unwrap_or(u16::MAX);
+            if item_id != u16::MAX {
+                let effect = data::ITEMS[item_id as usize].fling_effect;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.item_id = u16::MAX;
+                }
+                if let Some((ts, tslot)) = drag_target {
+                    match effect {
+                        1 => self.apply_status_to_target(ts, tslot, Status::Burn),
+                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis),
+                        3 => self.apply_status_to_target(ts, tslot, Status::Poison),
+                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic),
+                        5 => {
+                            if let Some(t) =
+                                self.side_mut(ts).active_mon_mut(tslot as usize)
+                            {
+                                if t.is_alive() {
+                                    t.set_flinched(true);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -18966,6 +19030,73 @@ mod tests {
         );
         assert!(b.p2.team[0].current_hp < lax_full, "Snorlax took Circle Throw damage");
         assert_eq!(b.p2.active[0], 1, "Snorlax was dragged out for Gyarados");
+    }
+
+    #[test]
+    fn fling_flame_orb_damages_and_burns_target() {
+        // PS data/moves.ts:fling — Flame Orb flings at 30 BP and burns the
+        // target; the user's item is consumed.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"flameorb","nature":"jolly","moves":["fling","earthquake","crunch","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lax_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < lax_full, "Fling dealt damage");
+        assert_eq!(b.p2.team[0].status, Status::Burn, "Flame Orb fling burned the target");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "the flung item was consumed");
+    }
+
+    #[test]
+    fn fling_fails_without_an_item() {
+        // No item → Fling fails (PS onPrepareHit `if (!item.fling) return false`).
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["fling","earthquake","crunch","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lax_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, lax_full, "Fling with no item deals no damage");
+        assert_eq!(b.p2.team[0].status, Status::None, "no status applied");
+    }
+
+    #[test]
+    fn fling_consumes_item_with_no_status_for_plain_items() {
+        // A non-status item (Iron Ball, 130 BP) flings for big damage and is
+        // consumed, but applies no on-hit status.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"ironball","nature":"jolly","moves":["fling","earthquake","crunch","ironhead"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let lax_full = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < lax_full, "Iron Ball Fling dealt damage");
+        assert_eq!(b.p2.team[0].status, Status::None, "plain item Fling applies no status");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Iron Ball consumed");
     }
 
     #[test]
