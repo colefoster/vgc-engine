@@ -470,6 +470,7 @@ pub fn calculate_damage(
         data::move_id::HEATCRASH | data::move_id::HEAVYSLAM
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
             | data::move_id::GYROBALL | data::move_id::ELECTROBALL
+            | data::move_id::FLING
     ) {
         return 0;
     }
@@ -570,6 +571,21 @@ pub fn calculate_damage(
         //   BP (55 → 110) when the user holds no item. Flying Gem
         //   case (item consumed pre-hit) deferred.
         (m.type_, (m.base_power as u32) * 2)
+    } else if move_id == data::move_id::FLING {
+        // Fling — PS data/moves.ts:fling `onPrepareHit` sets
+        // `move.basePower = item.fling.basePower`. BP is the user's held
+        // item's per-item fling power (data table `fling_bp`; 255 sentinel =
+        // un-flingable). The move is gated upstream so an un-flingable /
+        // itemless user never reaches damage; if it somehow does, treat as
+        // 0 BP. Type stays Dark. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
+        let bp = if attacker.item_id == u16::MAX {
+            0
+        } else {
+            let fbp = data::ITEMS[attacker.item_id as usize].fling_bp;
+            if fbp == 255 { 0 } else { fbp as u32 }
+        };
+        (m.type_, bp)
     } else if matches!(move_id, data::move_id::LOWKICK | data::move_id::GRASSKNOT) {
         // PS data/moves.ts:lowkick / :grassknot basePowerCallback
         // keys off the *target's* weight in hg:
