@@ -1444,8 +1444,10 @@ impl Battle {
         }
 
         // Snapshot attacker and defender — avoids overlapping borrows
-        // through the damage calc.
-        let attacker = match self.side(actor_side).active_mon(actor_slot as usize).cloned() {
+        // through the damage calc. `mut` because Stance Change (below) can
+        // forme-swap the actor mid-resolution and must refresh the snapshot
+        // so the damage calc reads the new forme's stats.
+        let mut attacker = match self.side(actor_side).active_mon(actor_slot as usize).cloned() {
             Some(m) => m,
             None => return,
         };
@@ -1646,6 +1648,51 @@ impl Battle {
                 }
             } else if self.rng.range(2) == 0 {
                 return;
+            }
+        }
+
+        // 1e-bis. Stance Change — PS `data/abilities.ts:stancechange`
+        //   onModifyMove(move, attacker) {
+        //     if (attacker.species.baseSpecies !== 'Aegislash' ||
+        //         attacker.transformed) return;
+        //     if (move.category === 'Status' && move.id !== 'kingsshield')
+        //       return;
+        //     const targetForme =
+        //       move.id === 'kingsshield' ? 'Aegislash' : 'Aegislash-Blade';
+        //     if (attacker.species.id !== toID(targetForme))
+        //       attacker.formeChange(targetForme);
+        //   }
+        // Aegislash flips to Blade (offensive) forme when it uses any
+        // attacking move, and back to Shield forme (base Aegislash) when it
+        // uses King's Shield. Other status moves leave the forme unchanged.
+        // Placed AFTER the beforeMove gates (a flinched / fully-paralyzed /
+        // asleep Aegislash that fails to move does not change forme — PS's
+        // onModifyMove only runs once the move executes) and BEFORE accuracy
+        // / damage, so the new forme's stats apply to THIS move (even on a
+        // miss). `recompute_stats=true` swaps the five battle stats; the
+        // `attacker` snapshot is refreshed so the damage calc reads them.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stance_Change_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::STANCECHANGE {
+            let cur = attacker.species_id;
+            let is_aegislash =
+                cur == data::species_id::AEGISLASH || cur == data::species_id::AEGISLASHBLADE;
+            let target = if !is_aegislash {
+                None
+            } else if move_id == data::move_id::KINGSSHIELD {
+                Some(data::species_id::AEGISLASH)
+            } else if m.category != 2 {
+                Some(data::species_id::AEGISLASHBLADE)
+            } else {
+                None
+            };
+            if let Some(target_species) = target {
+                if target_species != cur {
+                    self.set_forme(actor_side, actor_slot, target_species, true);
+                    if let Some(live) = self.side(actor_side).active_mon(actor_slot as usize) {
+                        attacker.species_id = live.species_id;
+                        attacker.stats = live.stats;
+                    }
+                }
             }
         }
 
@@ -8282,6 +8329,50 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].species_id, data::species_id::PALAFINHERO, "Hero forme persists");
+    }
+
+    #[test]
+    fn stance_change_blade_on_attack_shield_on_kings_shield() {
+        // Aegislash starts in Shield forme; an attacking move flips it to
+        // Blade (Attack 50 → 140 base), King's Shield flips it back to
+        // Shield, and leaving the field reverts Blade to Shield.
+        let p1_json = r#"[
+            {"species":"aegislash","level":50,"ability":"stancechange","item":"leftovers","nature":"quiet","moves":["shadowball","ironhead","kingsshield","shadowsneak"],"evs":{"spa":252,"hp":252,"def":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","thunderwave","toxic"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].species_id, data::species_id::AEGISLASH, "Shield forme at switch-in");
+        let shield_atk = b.p1.team[0].stats.atk;
+        // Attacking move (Iron Head, slot 1) → Blade forme.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::AEGISLASHBLADE, "attack → Blade forme");
+        assert!(b.p1.team[0].stats.atk > shield_atk, "Blade Attack recomputed upward");
+        // King's Shield (slot 2) → back to Shield forme.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::AEGISLASH, "King's Shield → Shield forme");
+        assert_eq!(b.p1.team[0].stats.atk, shield_atk, "Shield Attack restored");
+        // Attack again → Blade, then switch out → reverts to Shield.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::AEGISLASHBLADE, "attack → Blade again");
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].species_id, data::species_id::AEGISLASH, "Blade reverts to Shield on switch-out");
     }
 
     #[test]
