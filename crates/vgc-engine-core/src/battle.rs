@@ -704,7 +704,13 @@ impl Battle {
                     Some(m) if m.is_alive() => (m.current_hp, m.stats.hp, m.item_id),
                     _ => continue,
                 };
-                if item_id == data::item_id::CUSTAPBERRY && cur > 0 && cur * 4 <= max {
+                if item_id == data::item_id::CUSTAPBERRY
+                    && cur > 0
+                    && cur * 4 <= max
+                    // Opposing Unnerve suppresses the Custap eat (and thus
+                    // its priority bump applied during order-sort).
+                    && crate::item::can_eat_berry(self, side, item_id)
+                {
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
                         m.item_id = u16::MAX;
                     }
@@ -8005,6 +8011,10 @@ fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
     if !cures {
         return;
     }
+    // Opposing Unnerve suppresses the status-cure Berry eat.
+    if !crate::item::can_eat_berry(b, side, item_id) {
+        return;
+    }
     if let Some(m) = b.side_mut(side).active_mon_mut(slot as usize) {
         m.status = Status::None;
         m.set_toxic_counter(0);
@@ -12578,6 +12588,59 @@ mod tests {
         crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].crit_stage_volatile, 0, "Lansat does NOT fire above 25%");
         assert_ne!(b.p1.team[0].item_id, u16::MAX, "Lansat NOT consumed above 25%");
+    }
+
+    #[test]
+    fn unnerve_suppresses_opposing_berry_eat() {
+        // PS data/abilities.ts:unnerve — while an opposing active mon has
+        // Unnerve, this side's Pokémon cannot eat their held Berries
+        // (`onFoeTryEatItem` returns false). Verify a Salac holder at
+        // pinch HP does NOT eat while a foe has Unnerve, DOES eat once the
+        // Unnerve mon leaves, and is unaffected by a non-Unnerve foe.
+        let salac_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"salacberry","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        // Foe WITH Unnerve.
+        let unnerve_json = r#"[
+            {"species":"snorlax","level":50,"ability":"unnerve","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"hardy","moves":["earthquake","crunch","firefang","dragonclaw"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(salac_json).unwrap();
+        let p2 = TeamBuilder::from_json(unnerve_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Salac NOT consumed under opposing Unnerve");
+        assert_eq!(b.p1.team[0].boosts[4], 0, "no +1 Spe while suppressed");
+
+        // Swap the Unnerve mon out for the non-Unnerve bench mon → eat fires.
+        b.p2.active[0] = 1; // Garchomp (roughskin) now active
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Salac eaten once Unnerve leaves");
+        assert_eq!(b.p1.team[0].boosts[4], 1, "+1 Spe from Salac after Unnerve gone");
+
+        // Control: identical setup vs a NON-Unnerve foe eats immediately.
+        let nofoe_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(salac_json).unwrap();
+        let p2 = TeamBuilder::from_json(nofoe_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Salac eaten vs non-Unnerve foe");
+        assert_eq!(b.p1.team[0].boosts[4], 1, "+1 Spe vs non-Unnerve foe");
+
+        // Unnerve does NOT suppress the user's OWN side's berries: give the
+        // Unnerve mon a Salac and confirm it still eats at pinch HP.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"unnerve","nature":"hardy","item":"salacberry","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(nofoe_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Unnerve does not block own-side berries");
     }
 
     #[test]

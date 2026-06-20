@@ -351,6 +351,10 @@ fn schedule_move(
             let frac = if m.item_id == data::item_id::CUSTAPBERRY
                 && m.current_hp > 0
                 && m.current_hp * 4 <= m.stats.hp
+                // Opposing Unnerve suppresses Custap's priority bump (the
+                // berry can't be eaten). The consume site in
+                // `battle.rs:consume_fractional_pri_items` gates identically.
+                && crate::item::can_eat_berry(battle, side, m.item_id)
             {
                 -1i8
             } else if m.item_id == data::item_id::LAGGINGTAIL

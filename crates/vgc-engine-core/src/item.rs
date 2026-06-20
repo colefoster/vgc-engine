@@ -9,6 +9,54 @@ use crate::battle::Battle;
 use crate::side::SideRef;
 use vgc_engine_data as data;
 
+/// True if any **active opposing** Pokémon has Unnerve in effect.
+///
+/// Unnerve is an aura/field effect: while ANY opposing active mon has it,
+/// this side's Pokémon cannot eat their held Berries (PS suppresses the
+/// eat via `onFoeTryEatItem` returning false). Uses
+/// `effective_ability_id()` so ability suppression / Neutralizing Gas /
+/// overrides correctly disable the aura. Heap-free — scans at most the
+/// two opposing active slots.
+///
+/// PS `data/abilities.ts:unnerve` (line 5250):
+/// ```text
+/// unnerve: {
+///   onStart(pokemon) { ... this.effectState.unnerved = true; },
+///   onEnd() { this.effectState.unnerved = false; },
+///   onFoeTryEatItem() { return !this.effectState.unnerved; },
+/// }
+/// ```
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unnerve_(Ability)>.
+#[inline]
+pub fn foe_has_unnerve(battle: &Battle, side: SideRef) -> bool {
+    let opp = side.opposing();
+    let n = battle.format().active_count();
+    (0..n).any(|s| {
+        battle
+            .side(opp)
+            .active_mon(s)
+            .is_some_and(|m| {
+                m.is_alive() && m.effective_ability_id() == data::ability_id::UNNERVE
+            })
+    })
+}
+
+/// Single gate every Berry-consumption site routes through. Returns
+/// `false` when the holder's item is a Berry AND an opposing active mon
+/// has Unnerve — in which case the eat must be suppressed. Non-Berry
+/// items (Air Balloon, Focus Sash, Weakness Policy, booster orbs, …) are
+/// never affected, so this only ever blocks actual Berries.
+#[inline]
+pub fn can_eat_berry(battle: &Battle, side: SideRef, item_id: u16) -> bool {
+    if item_id == u16::MAX {
+        return false;
+    }
+    if !data::ITEMS[item_id as usize].is_berry {
+        return true;
+    }
+    !foe_has_unnerve(battle, side)
+}
+
 /// Type-resist berries — halve incoming damage of a specific type when the
 /// hit is super-effective (Chilan halves any Normal hit regardless of
 /// effectiveness). PS handler shape (one entry per berry):
@@ -43,6 +91,11 @@ pub fn try_consume_type_resist_berry(
         Some(m) if m.is_alive() => m.item_id,
         _ => return false,
     };
+    // Unnerve on the opposing side suppresses all Berry effects (resist
+    // berries included). Gate before the type table.
+    if !can_eat_berry(battle, target_side, item_id) {
+        return false;
+    }
     // (item id, type_code, requires_se). Type codes match
     // `vgc-engine-data` TYPE_NAMES — 0=Normal, 1=Fire, 2=Water, 3=Electric,
     // 4=Grass, 5=Ice, 6=Fighting, 7=Poison, 8=Ground, 9=Flying, 10=Psychic,
@@ -186,6 +239,12 @@ pub fn on_after_damage(
         Some(m) if m.is_alive() => (m.item_id, m.stats.hp, m.current_hp),
         _ => return,
     };
+    // Every item handled here is an HP-triggered Berry (Sitrus, Oran, the
+    // pinch stat berries, Figy family, Micle, Lansat, Starf). If an
+    // opposing mon has Unnerve, none of them may be eaten.
+    if !can_eat_berry(battle, side, item_id) {
+        return;
+    }
     if item_id == data::item_id::SITRUSBERRY && current * 2 <= max {
         // Heal 25% max HP, consume berry. PS data/items.ts:sitrusberry —
         // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
@@ -358,6 +417,10 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
     if item_id != data::item_id::LEPPABERRY {
         return;
     }
+    // Opposing Unnerve suppresses the Leppa eat (it is a Berry).
+    if !can_eat_berry(battle, side, item_id) {
+        return;
+    }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         // First slot at 0 PP (PS `onUpdate` gate + `onEat` target selection).
         let zero_slot = (0..m.pp.len()).find(|&i| m.pp[i] == 0);
@@ -504,6 +567,11 @@ pub fn on_damaging_hit(
         Some(m) if m.is_alive() => m.item_id,
         _ => return,
     };
+    // Berries handled in this hook (Enigma, Kee, Maranga, Rowap, Jaboca)
+    // are suppressed by an opposing Unnerve. Non-Berry reactive items
+    // (Weakness Policy, booster orbs, Air Balloon) are unaffected — gate
+    // each Berry arm on this flag rather than the whole function.
+    let berry_ok = can_eat_berry(battle, target_side, item_id);
     // Weakness Policy — PS `data/items.ts:weaknesspolicy`
     //   onHit(target, source, move) {
     //     if (target.runEffectiveness(move) > 0) {
@@ -556,7 +624,7 @@ pub fn on_damaging_hit(
     // Same species-level effectiveness read as Weakness Policy (Tera typing
     // deferred). No RNG. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Enigma_Berry>.
-    if item_id == data::item_id::ENIGMABERRY {
+    if item_id == data::item_id::ENIGMABERRY && berry_ok {
         let mv = &data::MOVES[move_id as usize];
         if mv.category != 2 {
             let species = match battle.side(target_side).active_mon(target_slot as usize) {
@@ -617,7 +685,7 @@ pub fn on_damaging_hit(
     // if hit category was Physical, +1 Def, consume. Self-boost — Clear
     // Body / Clear Amulet don't block. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Kee_Berry>.
-    if item_id == data::item_id::KEEBERRY {
+    if item_id == data::item_id::KEEBERRY && berry_ok {
         let category = data::MOVES[move_id as usize].category;
         if category == 0 {
             if let Some(t) = battle
@@ -633,7 +701,7 @@ pub fn on_damaging_hit(
     // Maranga Berry — PS data/items.ts:marangaberry (line 3782). Mirror
     // of Kee for SpD on Special hit. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Maranga_Berry>.
-    if item_id == data::item_id::MARANGABERRY {
+    if item_id == data::item_id::MARANGABERRY && berry_ok {
         let category = data::MOVES[move_id as usize].category;
         if category == 1 {
             if let Some(t) = battle
@@ -650,7 +718,7 @@ pub fn on_damaging_hit(
     // Jaboca for Special category: damage special attacker 1/8 max HP
     // (Ripen ×2 deferred). Magic Guard on attacker blocks. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Rowap_Berry>.
-    if item_id == data::item_id::ROWAPBERRY {
+    if item_id == data::item_id::ROWAPBERRY && berry_ok {
         let category = data::MOVES[move_id as usize].category;
         if category == 1 {
             let attacker_alive_and_no_mg = battle
@@ -677,7 +745,7 @@ pub fn on_damaging_hit(
             }
         }
     }
-    if item_id == data::item_id::JABOCABERRY {
+    if item_id == data::item_id::JABOCABERRY && berry_ok {
         // Physical-only gate. PS reads `move.category === 'Physical'`.
         let category = data::MOVES[move_id as usize].category;
         if category != 0 {
@@ -822,6 +890,10 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => return,
     };
     if item_id != data::item_id::PERSIMBERRY || !confused {
+        return;
+    }
+    // Opposing Unnerve suppresses the Persim eat (it is a Berry).
+    if !can_eat_berry(battle, side, item_id) {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
