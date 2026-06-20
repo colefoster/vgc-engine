@@ -151,6 +151,19 @@ pub struct Battle {
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
     pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    /// Set true for the duration of a single Pursuit switch-interception
+    /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
+    /// by the damage calc (BP ×2) and the accuracy block (no accuracy
+    /// check) so a normal move-phase Pursuit stays a 40-BP Dark move.
+    /// Always `false` outside the interception call. Copy field, hot-loop
+    /// safe. PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`.
+    pursuit_intercepting: bool,
+    /// Per-(side, slot) latch marking a queued move action that was
+    /// already executed as a Pursuit interception during switch
+    /// resolution this turn. The move-phase walk skips these so the
+    /// Pursuit user does not act twice. PS analog: `this.queue.cancelMove`
+    /// in the `pursuit` condition. Reset at the top of every `step`.
+    pursuit_consumed: [[bool; 2]; 2],
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -200,6 +213,8 @@ impl Battle {
             trick_room_turns: 0,
             gravity_turns: 0,
             pending_queue_reorder: None,
+            pursuit_intercepting: false,
+            pursuit_consumed: [[false; 2]; 2],
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -646,8 +661,17 @@ impl Battle {
         //    Switch / Parting Shot etc. through the same Choice::Switch
         //    queue; the runner emits them after the `|move|` event in
         //    that turn.
-        self.apply_switches(SideRef::P1, p1_choices);
-        self.apply_switches(SideRef::P2, p2_choices);
+        self.pursuit_consumed = [[false; 2]; 2];
+        // Pursuit switch-interception: a voluntary start-of-turn switch is
+        // intercepted by an opposing Pursuit BEFORE the switcher leaves
+        // (PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`). Both
+        // sides' choices are surveyed so an opposing Pursuit user (on the
+        // OTHER side from the switcher) can fire. Self-switch / pivot and
+        // force-switch (Roar/Whirlwind/Dragon Tail/Circle Throw) switches
+        // are NOT intercepted (they don't run through `apply_switches`'
+        // voluntary path).
+        self.apply_switches(SideRef::P1, p1_choices, p2_choices);
+        self.apply_switches(SideRef::P2, p2_choices, p1_choices);
 
         // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
         //     between switch resolution and move ordering. Transforming
@@ -748,6 +772,12 @@ impl Battle {
                 .active_mon(action.actor_slot as usize)
                 .is_some_and(|m| m.is_alive());
             if !actor_alive {
+                idx += 1;
+                continue;
+            }
+            // Skip a Pursuit whose action was already consumed during
+            // switch interception this turn (PS `this.queue.cancelMove`).
+            if self.pursuit_consumed[action.side as usize][(action.actor_slot as usize).min(1)] {
                 idx += 1;
                 continue;
             }
@@ -975,7 +1005,7 @@ impl Battle {
         crate::ability::on_switch_in(self, side, actor_slot);
     }
 
-    fn apply_switches(&mut self, side: SideRef, choices: &[Choice]) {
+    fn apply_switches(&mut self, side: SideRef, choices: &[Choice], opp_choices: &[Choice]) {
         // A Switch that comes AFTER a Move for the same actor_slot in
         // the same choice array is a self-switch follow-up (U-turn /
         // Volt Switch / Parting Shot / Teleport / Chilly Reception);
@@ -999,6 +1029,9 @@ impl Battle {
                         // Deferred self-switch follow-up; skip for now.
                         continue;
                     }
+                    // Pursuit interception — an opposing Pursuit user hits
+                    // this voluntary switcher BEFORE it leaves, at 2× BP.
+                    self.try_pursuit_interception(side, actor_slot, opp_choices);
                     if self.do_switch(side, actor_slot, team_index) {
                         switched_slots.push(actor_slot);
                     }
@@ -1015,6 +1048,99 @@ impl Battle {
         for slot in switched_slots {
             crate::ability::on_switch_in(self, side, slot);
             crate::item::on_switch_in(self, side, slot);
+        }
+    }
+
+    /// Pursuit switch-interception. `switcher_side`/`switcher_slot` is the
+    /// mon about to leave via a voluntary switch; `opp_choices` is the
+    /// OPPOSING side's choice array. PS `data/moves.ts:pursuit` condition
+    /// `onBeforeSwitchOut` runs every opposing Pursuit source against the
+    /// leaving mon (retargeted onto the switcher even if it was not the
+    /// move's original target — `beforeTurnCallback` registers the source
+    /// against every foe). Each source's queued move is cancelled
+    /// (`this.queue.cancelMove`) so it does not act again in the move
+    /// phase, and Pursuit hits at 2× BP with no accuracy check. Multiple
+    /// sources resolve fastest-first (PS iterates `effectState.sources`,
+    /// populated in turn/speed order). The switch still proceeds whether
+    /// or not the switcher survives.
+    fn try_pursuit_interception(
+        &mut self,
+        switcher_side: SideRef,
+        switcher_slot: u8,
+        opp_choices: &[Choice],
+    ) {
+        let opp = switcher_side.opposing();
+        // Gather qualifying opposing Pursuit users: (actor_slot, move_slot,
+        // effective_speed). Bounded by active_count (≤ 2) — fixed array, no
+        // heap. A source qualifies if it chose a Move whose move is Pursuit,
+        // is currently alive, and has not already been consumed this turn.
+        let mut sources: [(u8, u8, u16); 2] = [(0, 0, 0); 2];
+        let mut n = 0usize;
+        let tailwind = self.side(opp).conditions.tailwind_turns > 0;
+        for c in opp_choices {
+            if let Choice::Move { actor_slot, move_slot, .. } = *c {
+                let slot = (actor_slot as usize).min(1);
+                if self.pursuit_consumed[opp as usize][slot] {
+                    continue;
+                }
+                let Some(mon) = self.side(opp).active_mon(actor_slot as usize) else { continue };
+                if !mon.is_alive() {
+                    continue;
+                }
+                let is_pursuit = mon
+                    .moves
+                    .get(move_slot as usize)
+                    .copied()
+                    .is_some_and(|mid| mid == data::move_id::PURSUIT);
+                if !is_pursuit {
+                    continue;
+                }
+                let spe = crate::order::effective_speed(mon, tailwind, self.weather);
+                if n < sources.len() {
+                    sources[n] = (actor_slot, move_slot, spe);
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 {
+            return;
+        }
+        // Fastest source first (PS source insertion order ≈ speed order).
+        sources[..n].sort_unstable_by(|a, b| b.2.cmp(&a.2));
+        let target = Target { side: switcher_side, slot: switcher_slot };
+        for &(actor_slot, move_slot, _) in &sources[..n] {
+            let slot = (actor_slot as usize).min(1);
+            // Re-check liveness — an earlier source could have fainted this
+            // user (e.g. via a contact-damage ability on a prior hit).
+            let user_alive = self
+                .side(opp)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|m| m.is_alive());
+            if !user_alive {
+                continue;
+            }
+            // PS cancels the source's queued move regardless of whether the
+            // hit lands, so mark it consumed up front.
+            self.pursuit_consumed[opp as usize][slot] = true;
+            // Only run the hit while the switcher is still on the field and
+            // alive (a prior same-target Pursuit in doubles may have KO'd
+            // it — the switch then still proceeds, but the second Pursuit
+            // has nothing to hit).
+            let switcher_alive = self
+                .side(switcher_side)
+                .active_mon(switcher_slot as usize)
+                .is_some_and(|m| m.is_alive());
+            if !switcher_alive {
+                continue;
+            }
+            let action = ScheduledAction {
+                side: opp,
+                actor_slot,
+                choice: Choice::Move { actor_slot, move_slot, target: Some(target) },
+            };
+            self.pursuit_intercepting = true;
+            self.resolve_move_with_pending(action, &[[0u8; 2]; 2], false);
+            self.pursuit_intercepting = false;
         }
     }
 
@@ -2908,6 +3034,10 @@ impl Battle {
                     crate::weather::Weather::Snow => 255,
                     _ => m.accuracy,
                 },
+                // Pursuit during switch interception bypasses the accuracy
+                // check (PS `data/moves.ts:pursuit` `onModifyMove` sets
+                // `move.accuracy = true`). 255 = guaranteed hit, no draw.
+                data::move_id::PURSUIT if self.pursuit_intercepting => 255,
                 _ => m.accuracy,
             };
             if base_acc != 255 {
@@ -3564,6 +3694,8 @@ impl Battle {
                             attacker_total_fainted_allies,
                             attacker_stats: Some(atk_stats_ovr),
                             defender_stats: Some(def_stats_ovr),
+                            pursuit_doubled: move_id == data::move_id::PURSUIT
+                                && self.pursuit_intercepting,
                         };
                         let (lo, hi) = crate::damage::damage_range_in_ctx(
                             &attacker, &defender, move_id, stub_ctx,
@@ -3584,6 +3716,8 @@ impl Battle {
                         attacker_total_fainted_allies,
                         attacker_stats: Some(atk_stats_ovr),
                         defender_stats: Some(def_stats_ovr),
+                        pursuit_doubled: move_id == data::move_id::PURSUIT
+                            && self.pursuit_intercepting,
                     },
                 )
             };
@@ -11579,11 +11713,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -14291,11 +14425,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -17615,7 +17749,7 @@ mod tests {
         let mk = |tf: u8| {
             calculate_damage(&p1[0], &p2[0], lr_id, DamageContext {
                 roll: 15,
-                attacker_total_fainted_allies: tf, attacker_stats: None, defender_stats: None,
+                attacker_total_fainted_allies: tf, attacker_stats: None, defender_stats: None, pursuit_doubled: false,
                 ..DamageContext::default()
             })
         };
@@ -18874,6 +19008,163 @@ mod tests {
         assert!(b.p2.team[0].current_hp < pika_hp, "Flip Turn dealt damage");
         assert_eq!(b.p1.active[0], 0, "Greninja stays in (no bench)");
         assert!(!b.p1.team[0].pending_self_switch());
+    }
+
+    #[test]
+    fn pursuit_base_power_doubles_when_intercepting() {
+        // PS data/moves.ts:pursuit:14379 basePowerCallback — BP 40 → 80
+        // when the target is switching out. Pure calc check: same mons,
+        // same roll, only `pursuit_doubled` differs.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"weavile","level":50,"ability":"pressure","nature":"adamant","moves":["pursuit","iceshard","protect","swordsdance"],"evs":{"atk":252,"spe":252}}]"#,
+        ).unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","protect","calmmind"]}]"#,
+        ).unwrap();
+        let pid = data::move_id::PURSUIT;
+        let single = calculate_damage(&p1[0], &p2[0], pid, DamageContext { roll: 15, pursuit_doubled: false, ..Default::default() });
+        let doubled = calculate_damage(&p1[0], &p2[0], pid, DamageContext { roll: 15, pursuit_doubled: true, ..Default::default() });
+        assert!(single > 0, "Pursuit deals damage normally");
+        assert!(doubled > single, "interception BP is higher");
+        // BP doubles; final damage ≈ 2× modulo the formula's `+2` constant
+        // (doubling BP doubles the base term but not the +2, so the result
+        // is `2*single - k` for a small k).
+        assert!(doubled <= single * 2 && doubled >= single * 2 - 10,
+                "Pursuit interception ≈ 2× normal (single={single}, doubled={doubled})");
+    }
+
+    #[test]
+    fn pursuit_intercepts_switch_and_consumes_action() {
+        // Singles: P1 Weavile clicks Pursuit on P2 Alakazam, which chooses
+        // to switch to Pelipper. Pursuit must hit Alakazam BEFORE it leaves
+        // at 2× BP, the switch still completes, the replacement is unharmed,
+        // and Weavile's move-phase action is consumed (PP spent exactly once).
+        // Bulky Normal-type switcher (Blissey) so neither hit caps at its
+        // max HP — lets the raw 1× vs 2× damage be compared directly.
+        let p1_json = r#"[{"species":"weavile","level":50,"ability":"pressure","nature":"adamant","moves":["pursuit","iceshard","protect","swordsdance"],"evs":{"atk":252,"spe":252}}]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","softboiled","protect","calmmind"],"evs":{"hp":252,"spd":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        // Interception battle: P2 switches.
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        let blissey_full = b.p2.team[0].current_hp;
+        let pp_before = b.p1.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        let intercept_dmg = blissey_full - b.p2.team[0].current_hp;
+        assert!(intercept_dmg > 0, "outgoing Blissey was hit before it left");
+        assert_eq!(b.p2.active[0], 1, "Pelipper still switched in");
+        assert_eq!(b.p2.team[1].current_hp, b.p2.team[1].stats.hp,
+                   "replacement Pelipper unharmed by Pursuit");
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1,
+                   "Pursuit fired exactly once — move-phase action consumed");
+
+        // Control battle: P2 does NOT switch — Pursuit is a normal 40-BP move.
+        let mut bn = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        let blissey_full_n = bn.p2.team[0].current_hp;
+        bn.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let normal_dmg = blissey_full_n - bn.p2.team[0].current_hp;
+        assert!(normal_dmg > 0, "normal Pursuit dealt damage in the move phase");
+        assert_eq!(bn.p2.active[0], 0, "Blissey stayed in (no switch)");
+        assert!(intercept_dmg > normal_dmg + normal_dmg / 2,
+                "switch interception hits ≈2× a normal Pursuit (intercept={intercept_dmg}, normal={normal_dmg})");
+    }
+
+    #[test]
+    fn pursuit_does_not_intercept_roar_forced_switch() {
+        // Doubles: P1 = Dragapult (Roar) + Weavile (Pursuit). P2 slot0
+        // Alakazam is phazed out by Roar (a forced switch), NOT a voluntary
+        // one — so Pursuit must NOT intercept it. Weavile aims Pursuit at the
+        // P2 ally (slot1) so the only thing that can touch Alakazam is the
+        // (non-damaging) Roar; Alakazam therefore leaves at full HP, proving
+        // no interception fired. Weavile still spends its PP as a normal move.
+        let p1_json = r#"[
+            {"species":"dragapult","level":50,"ability":"clearbody","nature":"jolly","moves":["roar","dragondarts","protect","uturn"],"evs":{"spe":252}},
+            {"species":"weavile","level":50,"ability":"pressure","nature":"adamant","moves":["pursuit","iceshard","protect","swordsdance"],"evs":{"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","protect","calmmind"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","softboiled","protect","calmmind"],"evs":{"hp":252,"spd":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        let kaz_full = b.p2.team[0].current_hp;
+        let weavile_pp = b.p1.team[1].pp[0];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Roar P2 slot0
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 1)) }, // Pursuit P2 slot1
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 2, target: None }, // Protect
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None }, // Protect
+            ],
+        );
+        // Roar fired (Alakazam dragged out for the only eligible bench mon).
+        assert_eq!(b.p2.active[0], 2, "Roar pulled in the bench Pelipper");
+        // Pursuit did NOT intercept the forced switch — Alakazam left unharmed.
+        assert_eq!(b.p2.team[0].current_hp, kaz_full,
+                   "forced (Roar) switch is not intercepted by Pursuit");
+        // Pursuit still ran as a normal move (PP consumed).
+        assert_eq!(b.p1.team[1].pp[0], weavile_pp - 1, "Pursuit used normally, PP spent");
+    }
+
+    #[test]
+    fn pursuit_speed_order_two_pursuits_in_doubles() {
+        // Doubles: both P1 mons click Pursuit on the same switching foe.
+        // The faster user (Weavile) fires first; if it KOs the switcher, the
+        // slower user (Snorlax) finds nothing to hit (PS iterates sources in
+        // speed order). Switcher is set to 1 HP so one hit KOs.
+        let p1_json = r#"[
+            {"species":"weavile","level":50,"ability":"pressure","nature":"jolly","moves":["pursuit","iceshard","protect","swordsdance"],"evs":{"atk":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["pursuit","bodyslam","protect","crunch"],"evs":{"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","protect","calmmind"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","softboiled","protect","calmmind"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 5 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        b.p2.team[0].current_hp = 1; // one Pursuit KOs the switcher
+        let weavile_pp = b.p1.team[0].pp[0];
+        let snorlax_pp = b.p1.team[1].pp[0];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Switch { actor_slot: 0, team_index: 2 },
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None }, // Blissey Protect
+            ],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 0, "switcher KO'd by the first Pursuit");
+        assert_eq!(b.p2.active[0], 2, "switch still completed — Pelipper in");
+        assert_eq!(b.p1.team[0].pp[0], weavile_pp - 1, "fast Weavile Pursuit fired first");
+        assert_eq!(b.p1.team[1].pp[0], snorlax_pp,
+                   "slow Snorlax Pursuit did not fire — target already gone (speed order)");
     }
 
     #[test]
