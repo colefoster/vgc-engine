@@ -575,6 +575,12 @@ impl Battle {
                 continue;
             }
             let m = &data::MOVES[move_id as usize];
+            // Throat Chop lockout: every sound-flagged move is disabled
+            // for 2 turns. PS data/moves.ts:throatchop condition
+            // onDisableMove — disables each moveSlot with flags['sound'].
+            if active.throat_chop_turns() > 0 && m.is_sound {
+                continue;
+            }
             // Assault Vest: status moves disallowed.
             if is_assault_vest && m.category == 2 {
                 continue;
@@ -868,6 +874,10 @@ impl Battle {
                     // onResidualOrder 17 — counts down each end of turn,
                     // ends at 0.
                     mon.tick_disable();
+                    // Throat Chop tick. PS data/moves.ts:throatchop
+                    // condition, onResidualOrder 22 — counts down each end
+                    // of turn, ends at 0 (2-turn lockout).
+                    mon.tick_throat_chop();
                 }
             }
             // Tailwind / future side-condition timers.
@@ -1603,6 +1613,18 @@ impl Battle {
         // slot here. No PP is consumed (we return before the PP-spend
         // site). PS `cant`.
         if attacker.disabled_move_slot() == move_slot {
+            return;
+        }
+
+        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
+        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
+        // used while the lockout is up. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a sound move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
+        // sound moves are exempt in PS, but the gen-9 data dump strips
+        // Z/Max so the exemption is a no-op here.
+        if attacker.throat_chop_turns() > 0 && m.is_sound {
             return;
         }
 
@@ -7939,6 +7961,23 @@ fn apply_secondary_effect(
                 _ => Status::Sleep,
             };
             battle.try_set_status(target_side, target_slot, status);
+        }
+    }
+    // Throat Chop — PS data/moves.ts:throatchop
+    //   secondary: { chance: 100, onHit(target) { target.addVolatile('throatchop'); } }
+    // A 100%-chance secondary that adds the 2-turn `throatchop` lockout to
+    // the target on every hit (locks out sound moves). No RNG draw — PS's
+    // `chance: 100` secondary skips the `randomChance` roll entirely
+    // (`secondary.chance === 100` short-circuits in sim/battle-actions),
+    // so we apply it unconditionally and consume no PRNG, preserving draw
+    // alignment. Covert Cloak (handled at the top of this fn) already
+    // vetoes the whole secondary. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Throat_Chop_(move)>.
+    if move_slug == "throatchop" {
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.is_alive() {
+                t.set_throat_chop(2);
+            }
         }
     }
     // King's Rock / Razor Fang — PS `data/items.ts:kingsrock` (3204) and
@@ -20628,6 +20667,79 @@ mod tests {
         assert!(
             lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
             "slot 0 selectable after Disable clears",
+        );
+    }
+
+    #[test]
+    fn throat_chop_locks_sound_moves_for_two_turns() {
+        // Throat Chop (Dark physical) applies the 2-turn `throatchop`
+        // lockout to the target as a 100% secondary on hit: the target's
+        // sound moves (Hyper Voice here) vanish from legal_choices and
+        // fail if forced, while non-sound moves stay selectable. The
+        // lockout counts down each end of turn and clears on turn 3.
+        // PS data/moves.ts:throatchop condition (duration 2).
+        let p1_json = r#"[
+            {"species":"weavile","level":50,"ability":"pressure","nature":"jolly","moves":["throatchop","iceshard","swordsdance","protect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        // P2: Sylveon knows Hyper Voice (sound, slot 0) + Calm Mind
+        // (non-sound, slot 1). Bulky so it survives the Throat Chop hits.
+        let p2_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"calm","moves":["hypervoice","calmmind","wish","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Before Throat Chop: Hyper Voice (sound, slot 0) is selectable.
+        let lc0 = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc0.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "sound move selectable before Throat Chop",
+        );
+
+        // P1 Throat Chops P2. The 100% secondary applies the lockout.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(b.p2.team[0].is_alive(), "Sylveon survived Throat Chop");
+        // Volatile set to 2, ticked once at end of turn -> 1.
+        assert_eq!(b.p2.team[0].throat_chop_turns(), 1, "lockout applied (2), ticked to 1");
+
+        // Turn 2: Hyper Voice (sound, slot 0) is filtered out, but the
+        // non-sound Calm Mind (slot 1) remains selectable.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().all(|c| !matches!(c, Choice::Move { move_slot: 0, .. })),
+            "sound move absent from legal_choices while locked",
+        );
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 1, .. })),
+            "non-sound move still selectable while locked",
+        );
+
+        // Forcing the sound move (slot 0) does nothing — no damage, no PP.
+        let hp_before = b.p1.team[0].current_hp;
+        let pp_before = b.p2.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, hp_before, "locked sound move dealt no damage");
+        assert_eq!(b.p2.team[0].pp[0], pp_before, "locked sound move spent no PP");
+
+        // End of turn 2 tick: 1 -> 0, lockout clears.
+        assert_eq!(b.p2.team[0].throat_chop_turns(), 0, "lockout expired after 2 turns");
+        assert!(
+            !b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::ThroatChop),
+            "ThroatChop volatile removed",
+        );
+
+        // Turn 3: the sound move is selectable again.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "sound move selectable again after lockout clears",
         );
     }
 

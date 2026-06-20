@@ -436,6 +436,11 @@ fn main() {
     writeln!(f, "    /// immune. Currently approximated inline; this flag is the").unwrap();
     writeln!(f, "    /// canonical source.").unwrap();
     writeln!(f, "    pub is_powder: bool,").unwrap();
+    writeln!(f, "    /// PS `flags.sound = 1`. Sound-based move (Hyper Voice, Boomburst,").unwrap();
+    writeln!(f, "    /// Bug Buzz, Snarl, Round, Clanging Scales, Disarming Voice, etc.).").unwrap();
+    writeln!(f, "    /// Disabled for 2 turns by Throat Chop; boosted by Punk Rock / Liquid").unwrap();
+    writeln!(f, "    /// Voice; bypasses Substitute; ignored by Soundproof.").unwrap();
+    writeln!(f, "    pub is_sound: bool,").unwrap();
     writeln!(f, "    /// PS `flags.heal = 1`. Blocked by Heal Block.").unwrap();
     writeln!(f, "    pub is_heal: bool,").unwrap();
     writeln!(f, "    /// PS `flags.reflectable = 1`. The move can be bounced back at").unwrap();
@@ -492,7 +497,7 @@ fn main() {
         move_consts.push((const_ident(slug), move_idx));
         writeln!(
             f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
+            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_sound: {}, is_heal: {}, is_reflectable: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
@@ -514,6 +519,7 @@ fn main() {
             m.flags.contains_key("dance"),
             m.flags.contains_key("wind"),
             m.flags.contains_key("powder"),
+            m.flags.contains_key("sound"),
             m.flags.contains_key("heal"),
             m.flags.contains_key("reflectable"),
             m.flags.contains_key("cantusetwice"),
