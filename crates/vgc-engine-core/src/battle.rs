@@ -2606,6 +2606,31 @@ impl Battle {
             }
         }
         let is_spread = targets.len() > 1;
+
+        // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
+        // "attacks using the target's item"; mechanically the only effect is
+        // the `onTry(source, target) { return !!target.item; }` gate: it
+        // FAILS outright if the resolved target holds no item. The item is
+        // never removed or consumed (PS's `onTryHit` only emits a flavor
+        // `-activate`). A target whose item was already knocked off / used
+        // has `effective_item_id() == u16::MAX`, so Poltergeist fails there
+        // too. `target: "normal"` (single target), so `targets[0]` is the
+        // one resolved foe. PP was already deducted in the standard block
+        // above (matching PS, which deducts in `useMove` before the failing
+        // `onTry`), so we simply return on failure — no damage, target HP
+        // unchanged. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Poltergeist_(move)>.
+        if move_id == data::move_id::POLTERGEIST {
+            let has_item = targets.first().is_some_and(|&(ts, tslot)| {
+                self.side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.effective_item_id() != u16::MAX)
+            });
+            if !has_item {
+                return;
+            }
+        }
+
         // Variable-BP moves carry `basePower: 0` in PS and compute the
         // real BP in damage.rs via per-slug branches. They must NOT bail
         // out of the damaging-move path here.
@@ -19492,6 +19517,56 @@ mod tests {
         assert!(b.p2.team[0].current_hp < lax_full, "Iron Ball Fling dealt damage");
         assert_eq!(b.p2.team[0].status, Status::None, "plain item Fling applies no status");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Iron Ball consumed");
+    }
+
+    #[test]
+    fn poltergeist_damages_a_target_holding_an_item() {
+        // PS data/moves.ts:poltergeist — succeeds when the target holds an
+        // item; deals normal Ghost physical damage without removing it.
+        // Target is Steel/Psychic (Ghost is super-effective) so the hit lands
+        // squarely; Ghost is immune vs Normal types, so the target choice
+        // matters. seed 7 passes the 90% accuracy roll.
+        let p1 = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"adamant","moves":["poltergeist","shadowball","sludgebomb","focusblast"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"bronzong","level":50,"ability":"levitate","item":"leftovers","nature":"sassy","moves":["gyroball","rest","trickroom","ironhead"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let tgt_full = b.p2.team[0].current_hp;
+        let item = b.p2.team[0].item_id;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < tgt_full, "Poltergeist hit an item-holder");
+        assert_eq!(b.p2.team[0].item_id, item, "the target's item is NOT removed");
+    }
+
+    #[test]
+    fn poltergeist_fails_against_an_itemless_target() {
+        // PS `onTry(source, target) { return !!target.item; }` — fails with no
+        // damage when the target has no held item. PP is still spent (PS
+        // deducts PP in useMove before the failing onTry).
+        let p1 = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"adamant","moves":["poltergeist","shadowball","sludgebomb","focusblast"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"bronzong","level":50,"ability":"levitate","item":"","nature":"sassy","moves":["gyroball","rest","trickroom","ironhead"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1).unwrap();
+        let p2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let tgt_full = b.p2.team[0].current_hp;
+        let pp_before = b.p1.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, tgt_full, "Poltergeist vs itemless target deals no damage");
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "PP is still spent on the failed move");
     }
 
     #[test]
