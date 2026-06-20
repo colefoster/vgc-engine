@@ -15537,6 +15537,33 @@ mod tests {
     }
 
     #[test]
+    fn electromorphosis_charges_on_any_damaging_hit() {
+        // Pidgeot uses Gust (NOT Electric, NOT contact-irrelevant) at
+        // Bellibolt (Electromorphosis). Unlike Wind Power — which only
+        // charges on wind moves — Electromorphosis sets the Charge
+        // volatile on ANY damaging hit. PS data/abilities.ts:1180
+        // `onDamagingHit` → `target.addVolatile('charge')`.
+        let p1_json = r#"[
+            {"species":"pidgeot","level":50,"ability":"keeneye","item":"","nature":"timid","moves":["gust","airslash","heatwave","tailwind"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"bellibolt","level":50,"ability":"electromorphosis","item":"focussash","nature":"modest","moves":["thunderbolt","muddywater","slackoff","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert!(!b.p2.team[0].is_charged(), "not charged before the hit");
+        let hp_before = b.p2.team[0].current_hp;
+        // Bellibolt uses Muddy Water (not Protect) so Gust actually lands.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < hp_before, "Gust lands — no immunity");
+        assert!(b.p2.team[0].is_charged(), "Electromorphosis sets Charge on any damaging hit");
+    }
+
+    #[test]
     fn storm_drain_absorbs_water_and_boosts_spa() {
         let p1_json = r#"[
             {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"modest","moves":["surf","earthquake","rockslide","crunch"],"evs":{"spa":252,"spe":252,"hp":4}}

@@ -1103,6 +1103,22 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Electromorphosis — PS `data/abilities.ts:1180` `onDamagingHit`:
+    //   target.addVolatile('charge');
+    // Identical effect to Wind Power, but triggers on ANY damaging hit
+    // rather than only wind-flagged moves — `on_damaging_hit` is itself
+    // only invoked for damaging contact, so no move-type gate is needed.
+    // Sets the Charge volatile, which doubles the BP of the holder's next
+    // Electric move (consumed in `damage.rs`). Empty `flags: {}` — Mold
+    // Breaker does NOT bypass. Gated on the holder surviving (a fainted
+    // mon can't carry a volatile). Bellibolt / Tadbulb signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Electromorphosis_(Ability)>.
+    if ability_id == data::ability_id::ELECTROMORPHOSIS && target_alive {
+        if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            m.set_charged(true);
+        }
+    }
+
     // Stamina (Mudsdale signature, common gen-9 spread): +1 Def per hit
     // taken. PS `data/abilities.ts:stamina` — `onDamagingHit` calls
     // `this.boost({def: 1})` unconditionally. Not in PS's `breakable`
