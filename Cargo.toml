@@ -30,6 +30,7 @@ repository = "https://github.com/colefoster/vgc-engine"
 vgc-engine-core = { path = "crates/vgc-engine-core" }
 vgc-engine-data = { path = "crates/vgc-engine-data" }
 vgc-engine-replay = { path = "crates/vgc-engine-replay" }
+vgc-engine-golden = { path = "crates/vgc-engine-golden" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pyo3 = { version = "0.23", features = ["extension-module"] }

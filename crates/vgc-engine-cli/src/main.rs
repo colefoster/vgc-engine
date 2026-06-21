@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vgc_engine_core as core;
+use vgc_engine_golden as golden;
 use vgc_engine_replay as replay;
 
 fn print_usage() {
@@ -18,6 +19,7 @@ fn print_usage() {
            replay-init <replay.json>  Reconstruct teams from a PS replay and print them.\n\
            score <replay.json>        Run the engine against a replay and print per-turn agreement.\n\
            score-corpus <dir> [N] [--oracle] [--smogon-stats <path>]   Score every replay JSON under <dir> (recursive); optional cap N. --oracle replays PS's crit outcomes via Rng::oracle_partial. --smogon-stats switches recon from CanonicalDefault to SmogonStatsRecon backed by the supplied moveset file.\n\
+           synth-score [dir]          Aggregate turn-level agreement %% over the synthetic goldens (oracle-fed full-info metric). Defaults to the committed random goldens.\n\
            help                      This message.\n"
     );
 }
@@ -430,6 +432,60 @@ fn collect_json_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
     Ok(())
 }
 
+/// `synth-score [dir]` — aggregate turn-level agreement over the synthetic
+/// goldens via the oracle-fed `run_golden` path. This is the full-information
+/// metric: PS already ran each battle and its exact RNG outcomes are fed in,
+/// so any divergence is a real engine bug (not recon noise, not draw-order
+/// LCG-parity noise). Replaces the recon-capped replay-corpus %.
+fn cmd_synth_score(args: &[String]) -> ExitCode {
+    let dir = match args {
+        [] => golden::default_goldens_dir(),
+        [d] => PathBuf::from(d),
+        _ => {
+            eprintln!("synth-score: expected at most 1 directory argument");
+            return ExitCode::from(2);
+        }
+    };
+    if !dir.exists() {
+        eprintln!("synth-score: directory not found: {}", dir.display());
+        return ExitCode::from(1);
+    }
+
+    let score = golden::score_synth_corpus(&dir);
+
+    println!("synthetic goldens : {}", dir.display());
+    println!("battles scored    : {}", score.battles_scored);
+    println!("battles errored   : {}", score.battles_errored);
+    println!("turns compared    : {}", score.turns_run);
+    println!(
+        "slot-comparisons  : {} matched / {} diverged ({} total)",
+        score.matched,
+        score.diverged,
+        score.matched + score.diverged,
+    );
+    println!();
+    println!("turn-level agreement (oracle-fed full-info): {:.1}%", score.agreement_pct());
+
+    if !score.mechanics.is_empty() {
+        println!();
+        let shown = score.mechanics.len().min(15);
+        println!("top divergence mechanics (of {} buckets):", score.mechanics.len());
+        for b in score.mechanics.iter().take(shown) {
+            println!("  {:>5}  {}", b.count, b.label);
+        }
+    }
+
+    if score.battles_errored > 0 {
+        println!();
+        println!("errors ({}):", score.battles_errored);
+        for e in score.errors.iter().take(10) {
+            println!("  {e}");
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first() else {
@@ -442,6 +498,7 @@ fn main() -> ExitCode {
         "replay-init" => cmd_replay_init(&args[1..]),
         "score" => cmd_score(&args[1..]),
         "score-corpus" => cmd_score_corpus(&args[1..]),
+        "synth-score" => cmd_synth_score(&args[1..]),
         "help" | "--help" | "-h" => { print_usage(); ExitCode::SUCCESS }
         other => {
             eprintln!("unknown command: {other}");
