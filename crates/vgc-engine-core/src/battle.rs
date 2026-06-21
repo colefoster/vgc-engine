@@ -2183,14 +2183,17 @@ impl Battle {
                 skip_pp_deduct = true;
             } else {
                 // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
-                // raises the user's Special Attack by +1 the moment it begins
-                // charging — PS calls `this.boost({spa:1})` after `-prepare`
-                // and *before* the weather/ChargeMove skip check, so the boost
-                // lands on turn 1 whether the charge is skipped (Rain / Power
-                // Herb) or not. Self-boost (source == target), so Clear
-                // Body / Mirror Armor don't block it. `&[(2, 1)]` is a stack
-                // slice — no heap allocation in step().
-                if move_id == data::move_id::ELECTROSHOT {
+                // and Meteor Beam (data/moves.ts:meteorbeam:11740 onTryMove)
+                // both raise the user's Special Attack by +1 the moment they
+                // begin charging — PS calls `this.boost({spa:1})` after
+                // `-prepare` and *before* the weather/ChargeMove skip check, so
+                // the boost lands on turn 1 whether the charge is then skipped
+                // (Electro Shot in Rain, either via Power Herb) or not.
+                // Self-boost (source == target), so Clear Body / Mirror Armor
+                // don't block it. `&[(2, 1)]` is a stack slice — no heap
+                // allocation in step(). Meteor Beam has no weather skip; it
+                // only skips charge via Power Herb (handled below).
+                if matches!(move_id, data::move_id::ELECTROSHOT | data::move_id::METEORBEAM) {
                     self.apply_boosts(actor_side, actor_slot, &[(2, 1)], actor_side, actor_slot);
                 }
                 // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
@@ -21105,6 +21108,70 @@ mod tests {
         );
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Electro Shot hits turn 1 in Rain");
         assert_eq!(b.p1.team[0].charging_turns, 0, "no charge state in Rain");
+        assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA still applies when charge is skipped");
+    }
+
+    #[test]
+    fn meteor_beam_charges_boosts_spa_then_releases() {
+        // PS data/moves.ts:meteorbeam:11740 — turn 1: -prepare, boost
+        // {spa:+1}, then charge (no damage). Turn 2: release, hits, no PP
+        // re-deduct. The +1 SpA lands on the charge turn. Meteor Beam has no
+        // weather skip — it only fires turn 1 via Power Herb.
+        let p1_json = r#"[
+            {"species":"nihilego","level":50,"ability":"beastboost","item":"lifeorb","nature":"modest","moves":["meteorbeam","powergem","protect","sludgebomb"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let pp_before = b.p1.team[0].pp[0];
+        let snorlax_hp = b.p2.team[0].current_hp;
+        assert_eq!(b.p1.team[0].boosts[2], 0, "no SpA boost before charging");
+        // Turn 1: charge + SpA boost, no damage.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "PP deducted on charge");
+        assert_eq!(b.p1.team[0].charging_turns, 1);
+        assert_eq!(b.p1.team[0].semi_invuln, 0, "Meteor Beam is NOT semi-invuln");
+        assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA on the charge turn");
+        assert_eq!(b.p2.team[0].current_hp, snorlax_hp, "no damage on charge turn");
+        // Turn 2: release.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].pp[0], pp_before - 1, "no PP re-deduct on release");
+        assert_eq!(b.p1.team[0].charging_turns, 0);
+        assert_eq!(b.p1.team[0].boosts[2], 1, "SpA boost not re-applied on release");
+        assert!(b.p2.team[0].current_hp < snorlax_hp, "Meteor Beam hits on release");
+    }
+
+    #[test]
+    fn meteor_beam_power_herb_fires_turn_1_with_spa_boost() {
+        // Power Herb (data/items.ts:powerherb:4770) consumes to skip the
+        // charge turn. PS boosts {spa:+1} before the ChargeMove skip check, so
+        // Meteor Beam still grants +1 SpA the same turn it fires via Power Herb.
+        let p1_json = r#"[
+            {"species":"nihilego","level":50,"ability":"beastboost","item":"powerherb","nature":"modest","moves":["meteorbeam","powergem","protect","sludgebomb"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 4 }, p1, p2);
+        let snorlax_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < snorlax_hp, "Meteor Beam hits turn 1 via Power Herb");
+        assert_eq!(b.p1.team[0].charging_turns, 0, "no charge state with Power Herb");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Power Herb consumed");
         assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA still applies when charge is skipped");
     }
 
