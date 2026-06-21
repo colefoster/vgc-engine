@@ -232,6 +232,7 @@ name = "vgc-engine-cli"
 version = "0.0.1"
 dependencies = [
  "vgc-engine-core",
+ "vgc-engine-golden",
  "vgc-engine-replay",
 ]
 

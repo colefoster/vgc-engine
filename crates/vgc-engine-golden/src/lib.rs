@@ -180,6 +180,18 @@ impl GoldenReport {
     pub fn is_ok(&self) -> bool {
         self.diverged.is_empty()
     }
+
+    /// Turn-level agreement as a fraction in `0.0..=1.0`:
+    /// `matched / (matched + diverged)` slot-comparisons. Returns `1.0`
+    /// when no comparisons were made (nothing to disagree about), mirroring
+    /// the "vacuously agreeing" convention of an empty divergence set.
+    pub fn agreement(&self) -> f32 {
+        let total = self.matched + self.diverged.len();
+        if total == 0 {
+            return 1.0;
+        }
+        self.matched as f32 / total as f32
+    }
 }
 
 #[derive(Debug)]
@@ -328,6 +340,188 @@ pub fn run_golden_in_memory(
     }
 
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic-corpus aggregator (offline tooling — drives the `synth-score` CLI)
+// ---------------------------------------------------------------------------
+
+/// One mechanic/divergence bucket in the aggregate rollup.
+#[derive(Debug, Clone, Serialize)]
+pub struct MechanicBucket {
+    /// `"{kind}: {note}"` label — the grouping key.
+    pub label: String,
+    /// Number of diverged slot-comparisons that fell into this bucket.
+    pub count: usize,
+}
+
+/// Aggregate turn-level agreement over a directory of golden battles, run
+/// through the **oracle-fed** `run_golden` path (PS's recorded RNG outcomes
+/// are fed in via `Rng::oracle_partial`, so divergences are real engine
+/// bugs, not draw-order noise). This is the full-information metric that
+/// replaces the recon-capped replay-corpus %.
+#[derive(Debug, Clone, Serialize)]
+pub struct SynthScore {
+    /// Battles successfully loaded + run.
+    pub battles_scored: usize,
+    /// Battles that failed to load/run (missing `.ps.json`, parse error, ...).
+    pub battles_errored: usize,
+    /// Total matched slot-comparisons across all battles.
+    pub matched: usize,
+    /// Total diverged slot-comparisons across all battles.
+    pub diverged: usize,
+    /// Total engine turns stepped across all battles.
+    pub turns_run: u32,
+    /// Divergence buckets, sorted by descending count — points at which
+    /// mechanics are failing.
+    pub mechanics: Vec<MechanicBucket>,
+    /// Per-battle errors (`name: message`) for the ones that failed.
+    pub errors: Vec<String>,
+}
+
+impl SynthScore {
+    /// Turn-level agreement as a fraction in `0.0..=1.0`:
+    /// `matched / (matched + diverged)`. Returns `1.0` when no
+    /// comparisons were made.
+    pub fn agreement(&self) -> f32 {
+        let total = self.matched + self.diverged;
+        if total == 0 {
+            return 1.0;
+        }
+        self.matched as f32 / total as f32
+    }
+
+    /// Same fraction as a `0.0..=100.0` percentage — mirrors
+    /// `ReplayScore::agreement_pct`'s callers in the CLI.
+    pub fn agreement_pct(&self) -> f32 {
+        self.agreement() * 100.0
+    }
+}
+
+/// Default location of the committed random goldens, so `synth-score` with
+/// no argument Just Works. These are full-info battles PS already ran (the
+/// `.ps.json` is committed), so scoring is a pure-Rust replay — no live PS.
+pub fn default_goldens_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("goldens")
+        .join("random")
+}
+
+/// Recursively collect `(qualified_name, input_path, ps_path)` triples for
+/// every `*.input.json` under `dir`. The qualified name is the path stem
+/// relative to `dir` for stable, human-readable identification.
+pub fn collect_goldens_in(
+    dir: &Path,
+) -> Vec<(String, std::path::PathBuf, std::path::PathBuf)> {
+    let mut out = Vec::new();
+    collect_goldens_rec(dir, dir, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn collect_goldens_rec(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, std::path::PathBuf, std::path::PathBuf)>,
+) {
+    let entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(it) => it.filter_map(|e| e.ok()).collect(),
+        Err(_) => return,
+    };
+    for entry in entries {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_goldens_rec(root, &p, out);
+            continue;
+        }
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let Some(stem) = name.strip_suffix(".input.json") else { continue };
+        let ps_path = p.with_file_name(format!("{stem}.ps.json"));
+        let rel = p.strip_prefix(root).unwrap_or(&p);
+        let qualified = rel
+            .to_string_lossy()
+            .trim_end_matches(".input.json")
+            .to_string();
+        out.push((qualified, p.clone(), ps_path));
+    }
+}
+
+/// Group key for a divergence in the aggregate rollup. The raw `note`
+/// embeds concrete HP values (`ps 70/126 vs engine 87/126`), so grouping
+/// on it verbatim yields one bucket per battle — useless for spotting
+/// *which mechanic* is failing. Instead we bucket on the divergence `kind`
+/// plus the structural shape of the note: which fields diverged (hp /
+/// status / faint / boosts), with the numbers stripped. That collapses
+/// hundreds of unique HP mismatches into a handful of mechanic categories.
+fn divergence_bucket_label(d: &Divergence) -> String {
+    if d.note.is_empty() {
+        return d.kind.clone();
+    }
+    // The note is a `; `-joined list of `field: ...` fragments; keep just
+    // the field names so e.g. "hp" and "status" mismatches bucket apart
+    // but two different HP-value mismatches bucket together.
+    let mut fields: Vec<&str> = d
+        .note
+        .split(';')
+        .filter_map(|frag| frag.trim().split(':').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    fields.dedup();
+    if fields.is_empty() {
+        d.kind.clone()
+    } else {
+        format!("{} [{}]", d.kind, fields.join(" + "))
+    }
+}
+
+/// Score every golden battle under `dir` via the oracle-fed `run_golden`
+/// path and roll the per-battle reports up into a single agreement figure
+/// plus a per-mechanic divergence breakdown.
+pub fn score_synth_corpus(dir: &Path) -> SynthScore {
+    let goldens = collect_goldens_in(dir);
+    let mut score = SynthScore {
+        battles_scored: 0,
+        battles_errored: 0,
+        matched: 0,
+        diverged: 0,
+        turns_run: 0,
+        mechanics: Vec::new(),
+        errors: Vec::new(),
+    };
+    // label -> count, accumulated then sorted.
+    let mut buckets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (name, input, ps_path) in &goldens {
+        if !ps_path.exists() {
+            score.battles_errored += 1;
+            score.errors.push(format!("{name}: missing .ps.json"));
+            continue;
+        }
+        match run_golden(input, ps_path) {
+            Ok(report) => {
+                score.battles_scored += 1;
+                score.matched += report.matched;
+                score.diverged += report.diverged.len();
+                score.turns_run += report.turns_run;
+                for d in &report.diverged {
+                    *buckets.entry(divergence_bucket_label(d)).or_insert(0) += 1;
+                }
+            }
+            Err(e) => {
+                score.battles_errored += 1;
+                score.errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+
+    let mut mechanics: Vec<MechanicBucket> = buckets
+        .into_iter()
+        .map(|(label, count)| MechanicBucket { label, count })
+        .collect();
+    mechanics.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+    score.mechanics = mechanics;
+    score
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,5 +1343,21 @@ mod corpus_tests {
                 failures.join("\n\n"),
             );
         }
+    }
+
+    #[test]
+    fn synth_corpus_aggregates_sanely() {
+        let score = score_synth_corpus(&default_goldens_dir());
+        // The committed random goldens exist and load.
+        assert!(score.battles_scored > 0, "no battles scored");
+        // Agreement is a real fraction in [0, 100]%.
+        let pct = score.agreement_pct();
+        assert!((0.0..=100.0).contains(&pct), "agreement out of range: {pct}");
+        // Something was actually compared.
+        assert!(
+            score.matched + score.diverged > 0,
+            "no slot-comparisons made",
+        );
+        assert!(score.turns_run > 0, "no turns stepped");
     }
 }
