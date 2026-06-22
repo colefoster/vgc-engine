@@ -648,6 +648,13 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     for s in 0..n {
         refresh_paradox_booster(battle, opp, s);
     }
+
+    // Commander (Tatsugiri): re-evaluate the pairing on this side whenever
+    // either half enters. PS routes this through `onAnySwitchIn` /`onStart`
+    // → `onUpdate`; we check the whole side so the trigger is independent of
+    // which slot just switched in (the `commanding` / `commanded` guards
+    // make it idempotent).
+    battle.commander_update(side);
 }
 
 /// Defender ability `onSwitchOut` — runs on the leaving mon BEFORE the
