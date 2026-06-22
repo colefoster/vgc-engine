@@ -8277,22 +8277,30 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchagotcha" => (Status::Burn, 30),
         // Paralysis 10%:
         "thunderbolt" | "thunder" | "thundershock" | "spark" | "thunderpunch"
-        | "thunderfang" | "zingzap" | "lightningbird" => (Status::Paralysis, 10),
+        | "thunderfang" | "zingzap" => (Status::Paralysis, 10),
         // Freeze 10% — Ice Fang. PS data/moves.ts:icefang carries two
         // independent secondaries (chance:10 frz + chance:10 flinch);
         // the flinch arm is in `flinch_chance` below.
         "icefang" => (Status::Freeze, 10),
         // Paralysis 30%:
-        "discharge" | "bodyslam" | "force" | "thunderouskick"
+        // (Thunderous Kick is NOT a paralysis move — PS
+        // data/moves.ts:19549 `thunderouskick` has no status secondary; its
+        // secondary is a guaranteed Def -1 drop, handled in
+        // `stat_drop_secondary` below.)
+        "discharge" | "bodyslam"
         | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
         // Paralysis 100% — Nuzzle (PS data/moves.ts:nuzzle
         // `secondary: { chance: 100, status: 'par' }`):
         "nuzzle" => (Status::Paralysis, 100),
         // Poison 30%:
-        "sludgebomb" | "sludgewave" | "sludge" | "gunkshot" | "poisonjab"
-        | "smog" => (Status::Poison, 30),
+        "sludgebomb" | "sludgewave" | "sludge" | "gunkshot"
+        | "poisonjab" => (Status::Poison, 30),
+        // Poison 40% — Smog (PS data/moves.ts:17042 `chance: 40`):
+        "smog" => (Status::Poison, 40),
+        // Poison 30% — Poison Sting (PS data/moves.ts:13533 `chance: 30`):
+        "poisonsting" => (Status::Poison, 30),
         // Poison 10%:
-        "poisontail" | "crosspoison" | "poisonsting" => (Status::Poison, 10),
+        "poisontail" | "crosspoison" => (Status::Poison, 10),
         // Poison 100% (Mortal Spin — `secondary: { status: 'psn' }`,
         // target allAdjacentFoes; fired per target by apply_secondary_effect):
         "mortalspin" => (Status::Poison, 100),
@@ -8361,6 +8369,9 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         "mudslap" | "muddywater" => (5, -1, 100),
         // 30% -1 SpA (Moonblast — #8 by usage):
         "moonblast" => (2, -1, 30),
+        // 100% -1 Def — Thunderous Kick (PS data/moves.ts:19549
+        // `secondary: { chance: 100, boosts: { def: -1 } }`; no status):
+        "thunderouskick" => (1, -1, 100),
         // 30% -1 Def (contact biters):
         "irontail" => (1, -1, 30),
         "liquidation" | "rocksmash" => (1, -1, 30),
@@ -22950,6 +22961,83 @@ mod tests {
             assert!(
                 matches!(b.p2.team[0].status, Status::Paralysis),
                 "Nuzzle must paralyze on seed {seed} (100% secondary)",
+            );
+        }
+    }
+
+    #[test]
+    fn secondary_chance_table_corrections() {
+        // Nuzzle-audit fixes — verify the corrected per-slug table entries
+        // against PS data/moves.ts:
+        //   - thunderouskick (19549): `secondary: { chance: 100,
+        //     boosts: { def: -1 } }` — 100% Def -1, NO paralysis.
+        //   - smog (17042): `secondary: { chance: 40, status: 'psn' }`.
+        //   - poisonsting (13533): `secondary: { chance: 30, status: 'psn' }`.
+        //   - poisontail (13550) / crosspoison (3187): `chance: 10` psn.
+        // Thunderous Kick must NOT appear in the status_secondary table.
+        assert_eq!(
+            super::status_secondary("thunderouskick"), None,
+            "Thunderous Kick has no status secondary (not paralysis)",
+        );
+        assert_eq!(
+            super::stat_drop_secondary("thunderouskick"), Some((1, -1, 100)),
+            "Thunderous Kick = 100% Def -1",
+        );
+        assert_eq!(
+            super::status_secondary("smog"), Some((Status::Poison, 40)),
+            "Smog 40% psn",
+        );
+        assert_eq!(
+            super::status_secondary("poisonsting"), Some((Status::Poison, 30)),
+            "Poison Sting 30% psn",
+        );
+        assert_eq!(
+            super::status_secondary("poisontail"), Some((Status::Poison, 10)),
+            "Poison Tail 10% psn",
+        );
+        assert_eq!(
+            super::status_secondary("crosspoison"), Some((Status::Poison, 10)),
+            "Cross Poison 10% psn",
+        );
+        // Phantom slugs removed: `force` and `lightningbird` do not exist
+        // in PS data/moves.ts, so they must not resolve to any secondary.
+        assert_eq!(super::status_secondary("force"), None, "no phantom `force` arm");
+        assert_eq!(
+            super::status_secondary("lightningbird"), None,
+            "no phantom `lightningbird` arm",
+        );
+    }
+
+    #[test]
+    fn thunderous_kick_always_drops_def_never_paralyzes() {
+        // PS data/moves.ts:19549 — Thunderous Kick's only secondary is a
+        // guaranteed Def -1 drop. Sweep seeds firing it at a passive target
+        // and confirm Def drops every time and paralysis NEVER applies.
+        let p1_json = r#"[
+            {"species":"zamazenta","level":50,"ability":"dauntlessshield","item":"","nature":"jolly","moves":["thunderouskick","crunch","closecombat","irondefense"]}
+        ]"#;
+        // Toxapex resists Fighting and is extremely bulky (252 HP / 252 Def)
+        // so it survives every hit — including crits — keeping the target
+        // alive for the guaranteed secondary on all seeds.
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"bold","moves":["recover","scald","toxic","haze"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        for seed in 0u64..64 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "target must survive on seed {seed}");
+            assert_eq!(
+                b.p2.team[0].boosts[1], -1,
+                "Thunderous Kick must drop Def by 1 on seed {seed} (100% secondary)",
+            );
+            assert!(
+                matches!(b.p2.team[0].status, Status::None),
+                "Thunderous Kick must NEVER paralyze on seed {seed}",
             );
         }
     }
