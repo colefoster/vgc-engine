@@ -175,7 +175,7 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         attacker_total_fainted_allies: 0,
         attacker_stats: None,
         defender_stats: None,
-        pursuit_doubled: false,
+        pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
     };
     let lo = calculate_damage(a, d, mid, ctx(DamageContext::MIN_ROLL));
     let hi = calculate_damage(a, d, mid, ctx(DamageContext::MAX_ROLL));
