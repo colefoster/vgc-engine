@@ -7063,23 +7063,12 @@ impl Battle {
             }
             data::move_id::DRAGONCHEER => {
                 // PS data/moves.ts:4056 (dragoncheer, num 913) — Status,
-                // target: adjacentAlly, sets the `dragoncheer` volatile on
-                // the partner. Its `onModifyCritRatio` adds +2 if the
-                // recipient is a Dragon-type, else +1. PS captures the
-                // dragon-type check in `effectState.hasDragonType` at apply
-                // time (`onStart`): the boost does NOT change if the ally
-                // later Terastallizes into Dragon (DarkFE research, cited in
-                // PS source). We fold the resolved contribution into
-                // `crit_stage_volatile` — the same channel Focus Energy /
-                // Scope Lens / Super Luck feed into `effective_crit_stage`
-                // (pokemon.rs) — capturing the boost now.
-                //
-                // Fails outside Doubles (no adjacent ally) and when the
-                // partner is missing / fainted. PS `onStart` also returns
-                // false if the ally already holds the `focusenergy`
-                // volatile, and `addVolatile` is a no-op when `dragoncheer`
-                // is already present (no stacking) — guard both so a second
-                // Dragon Cheer doesn't re-bump the crit stage.
+                // target: adjacentAlly. Adds +2 crit stages if the recipient
+                // is a Dragon-type at apply time, else +1 (folded into the
+                // crit_stage_volatile channel that Focus Energy / Scope Lens
+                // feed; cleared on switch-out). Fails in Singles and when the
+                // partner is missing/fainted; no-op if the ally already has
+                // Dragon Cheer or Focus Energy (no stacking).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dragon_Cheer_(move)>.
                 let n = self.format().active_count() as u8;
                 if n < 2 {
@@ -7104,6 +7093,57 @@ impl Battle {
                     });
                     p.crit_stage_volatile = p.crit_stage_volatile.saturating_add(boost);
                 }
+            }
+            data::move_id::COACHING => {
+                // PS data/moves.ts:coaching (num 811) — target: adjacentAlly,
+                // boosts {atk:1, def:1} to the partner. Fails in Singles and
+                // when the partner slot is empty/fainted.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Coaching_(move)>.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let ally_slot = actor_slot ^ 1;
+                let ally_alive = self
+                    .side(actor_side)
+                    .active_mon(ally_slot as usize)
+                    .is_some_and(|p| p.is_alive());
+                if !ally_alive {
+                    return;
+                }
+                let boosts: &[(u8, i8)] = &[(0, 1), (1, 1)];
+                self.apply_boosts(actor_side, ally_slot, boosts, actor_side, actor_slot);
+                // Mirror Herb on a foe copies an opposing stat rise.
+                crate::item::try_consume_mirror_herb_on_foe_boost(
+                    self, actor_side, ally_slot, boosts,
+                );
+            }
+            data::move_id::DECORATE => {
+                // PS data/moves.ts:decorate (num 777) — target: "normal",
+                // boosts {atk:2, spa:2}. Lands on the chosen target (an ally
+                // in Doubles; the foe in Singles, matching PS).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Decorate_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                let boosts: &[(u8, i8)] = &[(0, 2), (2, 2)];
+                self.apply_boosts(tside, tslot, boosts, actor_side, actor_slot);
+                // Mirror Herb on a foe (relative to the boosted mon) copies
+                // the stat rise — e.g. Decorate aimed at an opponent.
+                crate::item::try_consume_mirror_herb_on_foe_boost(
+                    self, tside, tslot, boosts,
+                );
             }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
@@ -18055,6 +18095,86 @@ mod tests {
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
         assert!(!b.p1.team[0].helping_handed_this_turn());
+    }
+
+    #[test]
+    fn coaching_boosts_ally_atk_and_def() {
+        // Doubles: P1 slot 0 (Incineroar) Coaches its ally Garchomp
+        // (slot 1). PS data/moves.ts:coaching → ally gains +1 Atk, +1 Def.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"blaze","nature":"adamant","moves":["coaching","fakeout","knockoff","flareblitz"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let atk_before = b.p1.team[1].boosts[0];
+        let def_before = b.p1.team[1].boosts[1];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[0], atk_before + 1, "ally gains +1 Atk");
+        assert_eq!(b.p1.team[1].boosts[1], def_before + 1, "ally gains +1 Def");
+        // The user (Coach) is unaffected — Coaching is ally-target, not self.
+        assert_eq!(b.p1.team[0].boosts[0], 0, "coach Atk unchanged");
+        assert_eq!(b.p1.team[0].boosts[1], 0, "coach Def unchanged");
+    }
+
+    #[test]
+    fn coaching_no_op_in_singles() {
+        // No adjacent ally — Coaching (target: adjacentAlly) fails and
+        // must not boost the user or panic on the partner-slot calc.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"blaze","nature":"adamant","moves":["coaching","fakeout","knockoff","flareblitz"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 0, "no self Atk boost in singles");
+        assert_eq!(b.p1.team[0].boosts[1], 0, "no self Def boost in singles");
+    }
+
+    #[test]
+    fn decorate_boosts_ally_atk_and_spa() {
+        // Doubles: Alcremie (slot 0) Decorates its ally Garchomp (slot 1).
+        // PS data/moves.ts:decorate → target gains +2 Atk, +2 SpA.
+        let p1_json = r#"[
+            {"species":"alcremie","level":50,"ability":"aromaveil","nature":"modest","moves":["decorate","dazzlinggleam","mysticalfire","recover"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let atk_before = b.p1.team[1].boosts[0];
+        let spa_before = b.p1.team[1].boosts[2];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[0], atk_before + 2, "ally gains +2 Atk");
+        assert_eq!(b.p1.team[1].boosts[2], spa_before + 2, "ally gains +2 SpA");
     }
 
     #[test]
