@@ -2536,6 +2536,104 @@ impl Battle {
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
         }
 
+        // Priority-block abilities — Dazzling / Queenly Majesty / Armor Tail.
+        // PS `data/abilities.ts` dazzling(854)/queenlymajesty(3706)/
+        // armortail(215) share one `onFoeTryMove(target, source, move)`:
+        //   const targetAllExceptions = ['perishsong','flowershield','rototiller'];
+        //   if (move.target === 'foeSide' ||
+        //       (move.target === 'all' && !targetAllExceptions.includes(move.id)))
+        //     return;
+        //   const holder = this.effectState.target;
+        //   if ((source.isAlly(holder) || move.target === 'all')
+        //       && move.priority > 0.1) {
+        //     this.attrLastMove('[still]');
+        //     this.add('cant', holder, 'ability: <name>', move, `[of] ${target}`);
+        //     return false;
+        //   }
+        //   flags: { breakable: 1 },
+        // A foe attempting a positive-priority move that targets the holder's
+        // SIDE (the holder or its ally — `source` in the event is the move's
+        // target) is blocked outright. PS's `TryMove` event fires in `runMove`
+        // AFTER `deductPP` (sim/battle-actions.ts:282 deduct, :488 TryMove), so
+        // PP — including any Pressure surcharge already taken above — is spent;
+        // we simply `return`. `move.priority` here is PS's getActionSpeed-
+        // written value (Prankster's `onModifyPriority` +1 is baked in), so we
+        // read the SAME effective priority the order sort used (order.rs):
+        // base priority + Prankster (status moves) + Grassy Glide. The `> 0.1`
+        // threshold deliberately excludes the +0.1 fractional bumps (Quick
+        // Claw / Custap), so those never trip the block. `breakable: 1` — an
+        // attacker with Mold Breaker / Teravolt / Turboblaze bypasses it.
+        // Self/ally-targeted priority moves on the holder's own side never fire
+        // this (the holder is a FOE of the user) and `foeSide` hazards are an
+        // explicit PS exception. Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Dazzling_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Queenly_Majesty_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Armor_Tail_(Ability)>
+        {
+            // Effective priority — mirror order.rs's integer bumps.
+            let mut eff_priority = m.priority as i32;
+            if m.category == 2 && attacker.ability_id == data::ability_id::PRANKSTER {
+                eff_priority += 1;
+            }
+            if move_id == data::move_id::GRASSYGLIDE
+                && matches!(self.terrain, crate::terrain::Terrain::Grassy)
+                && attacker.is_grounded()
+            {
+                eff_priority += 1;
+            }
+            if eff_priority > 0 {
+                let opp = actor_side.opposing();
+                // Does the move reach the protected (opposing) side? PS's
+                // `source.isAlly(holder)` means the move's target sits on the
+                // holder's side. `all` (12, minus the three field-wide
+                // exceptions) hits everyone; `foeSide` (11) is excluded;
+                // self/ally codes target the user's own side.
+                let targets_protected_side = match m.target {
+                    // normal / adjacentFoe / any / randomNormal — honor an
+                    // explicit slot; auto-resolved singles default to a foe.
+                    0 | 4 | 10 | 13 => match target {
+                        Some(t) => t.side == opp,
+                        None => true,
+                    },
+                    // allAdjacent / allAdjacentFoes — spread reaching foes.
+                    5 | 6 => true,
+                    // `all` minus Perish Song / Flower Shield / Rototiller.
+                    12 => !matches!(
+                        move_id,
+                        data::move_id::PERISHSONG
+                            | data::move_id::FLOWERSHIELD
+                            | data::move_id::ROTOTILLER
+                    ),
+                    _ => false,
+                };
+                if targets_protected_side {
+                    let attacker_breaks_mold = matches!(
+                        attacker.ability_id,
+                        data::ability_id::MOLDBREAKER
+                            | data::ability_id::TERAVOLT
+                            | data::ability_id::TURBOBLAZE
+                    );
+                    if !attacker_breaks_mold {
+                        let n = self.format().active_count() as u8;
+                        let blocked = (0..n).any(|slot| {
+                            self.side(opp).active_mon(slot as usize).is_some_and(|mon| {
+                                mon.is_alive()
+                                    && matches!(
+                                        mon.effective_ability_id(),
+                                        data::ability_id::DAZZLING
+                                            | data::ability_id::QUEENLYMAJESTY
+                                            | data::ability_id::ARMORTAIL
+                                    )
+                            })
+                        });
+                        if blocked {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         // Protean / Libero — PS `data/abilities.ts:3452` / `:2273`
         // `onPrepareHit(source, target, move)`:
         //   if (this.effectState.protean) return;            // once per switch-in
@@ -14505,6 +14603,162 @@ mod tests {
         );
         assert!(matches!(b.p2.team[0].status, Status::Burn),
             "control mon is burned by Will-O-Wisp");
+    }
+
+    // --- Priority-block abilities: Dazzling / Queenly Majesty / Armor Tail ---
+    // PS data/abilities.ts dazzling/queenlymajesty/armortail onFoeTryMove.
+
+    #[test]
+    fn armor_tail_blocks_priority_move_at_holder() {
+        // Farigiraf @ Armor Tail. A foe's Fake Out (priority +3) must FAIL
+        // (no damage). Control: the same mon with a non-priority-block
+        // ability (Sap Sipper) takes the hit, proving the move works.
+        let attacker = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"],"evs":{"atk":252}}
+        ]"#;
+        let blocker = r#"[
+            {"species":"farigiraf","level":50,"ability":"armortail","nature":"relaxed","moves":["psychic","trickroom","helpinghand","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let control = r#"[
+            {"species":"farigiraf","level":50,"ability":"sapsipper","nature":"relaxed","moves":["psychic","trickroom","helpinghand","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Blocked: Fake Out does nothing.
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(blocker).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, before, "Armor Tail blocks Fake Out (no damage)");
+
+        // Control: without the ability, Fake Out lands.
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(control).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < before, "control mon is hit by Fake Out");
+    }
+
+    #[test]
+    fn priority_block_ignores_nonpriority_and_mold_breaker() {
+        // Non-priority move (Knock Off, priority 0) is unaffected by Armor
+        // Tail; and a Mold Breaker attacker's Fake Out bypasses it.
+        let blocker = r#"[
+            {"species":"farigiraf","level":50,"ability":"armortail","nature":"relaxed","moves":["psychic","trickroom","helpinghand","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Knock Off (move_slot 1, priority 0) — lands.
+        let attacker = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"],"evs":{"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(blocker).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < before, "non-priority Knock Off is not blocked");
+
+        // Mold Breaker attacker — Fake Out bypasses Armor Tail.
+        let breaker = r#"[
+            {"species":"incineroar","level":50,"ability":"moldbreaker","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"],"evs":{"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(breaker).unwrap();
+        let p2 = TeamBuilder::from_json(blocker).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < before, "Mold Breaker bypasses Armor Tail");
+    }
+
+    #[test]
+    fn dazzling_and_queenly_majesty_cover_the_side() {
+        // Dazzling (singles): Bruxish blocks a foe's Fake Out on itself.
+        let attacker = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"],"evs":{"atk":252}}
+        ]"#;
+        let dazzler = r#"[
+            {"species":"bruxish","level":50,"ability":"dazzling","nature":"adamant","moves":["psychicfangs","waterfall","crunch","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(attacker).unwrap();
+        let p2 = TeamBuilder::from_json(dazzler).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, before, "Dazzling blocks Fake Out");
+
+        // Queenly Majesty (doubles): Tsareena protects its ALLY. The foe
+        // aims Fake Out at the plain ally (slot 1); it must still fail
+        // because Queenly Majesty covers the whole side.
+        let atk_dbl = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"],"evs":{"atk":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]}
+        ]"#;
+        let queen_side = r#"[
+            {"species":"tsareena","level":50,"ability":"queenlymajesty","nature":"adamant","moves":["powerwhip","playrough","triplekick","protect"],"evs":{"atk":252}},
+            {"species":"tauros","level":50,"ability":"intimidate","nature":"adamant","moves":["bodyslam","earthquake","rockslide","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(atk_dbl).unwrap();
+        let p2 = TeamBuilder::from_json(queen_side).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+        let before = b.p2.team[1].current_hp; // the plain ally (Tauros)
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P2, slot: 1 }) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p2.team[1].current_hp, before,
+            "Queenly Majesty protects the whole side (ally Fake Out blocked)");
+    }
+
+    #[test]
+    fn priority_block_allows_user_own_side_and_blocks_foe_prankster() {
+        // Prankster-boosted status move AIMED AT the foe is blocked (the
+        // boost raises priority to +1). But a Prankster side move on the
+        // user's OWN side (Tailwind) is never blocked — it doesn't target
+        // the holder's side.
+        let whimsi = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["charm","tailwind","moonblast","encore"],"evs":{"spe":252}}
+        ]"#;
+        let blocker = r#"[
+            {"species":"farigiraf","level":50,"ability":"armortail","nature":"relaxed","moves":["psychic","trickroom","helpinghand","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Charm (Prankster +1, targets foe) — blocked: no Atk drop.
+        let p1 = TeamBuilder::from_json(whimsi).unwrap();
+        let p2 = TeamBuilder::from_json(blocker).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 0,
+            "Armor Tail blocks Prankster-boosted Charm aimed at the holder");
+
+        // Tailwind (user's own side) — not blocked.
+        let p1 = TeamBuilder::from_json(whimsi).unwrap();
+        let p2 = TeamBuilder::from_json(blocker).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.tailwind_turns, 3,
+            "user-side Tailwind is not blocked by a foe's Armor Tail");
     }
 
     #[test]
