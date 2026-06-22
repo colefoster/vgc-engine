@@ -5991,6 +5991,47 @@ impl Battle {
             }
         }
 
+        // 13. Salt Cure residual. PS data/moves.ts:15638 (saltcure)
+        //     condition `onResidualOrder: 13`, `onResidual`:
+        //       this.damage(pokemon.baseMaxhp / (pokemon.hasType(['Water','Steel']) ? 4 : 8));
+        //     i.e. the holder loses 1/8 max HP each end of turn, doubled to
+        //     1/4 if it is currently Water- OR Steel-type. We read the live
+        //     types via `effective_types()` so Tera / type-override changes
+        //     are respected (PS's `hasType` reads the active type set). The
+        //     chip is indirect damage routed through `this.damage` with the
+        //     `saltcure` condition as the effect, so Magic Guard blocks it
+        //     (PS data/abilities.ts:2455 `onDamage` returns false for any
+        //     non-Move effect). The volatile is indefinite — no counter to
+        //     tick — and clears on switch-out via the blanket
+        //     `volatiles.clear()`. Type codes: Water = 2, Steel = 16.
+        //     Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive()
+                        && m.volatiles.has(crate::pokemon::VolatileKind::SaltCure) =>
+                    {
+                        let (types, num) = m.effective_types();
+                        let water_or_steel =
+                            (0..num as usize).any(|i| matches!(types[i], 2 | 16));
+                        let denom = if water_or_steel { 4 } else { 8 };
+                        ((m.stats.hp / denom).max(1), crate::ability::has_magic_guard(m))
+                    }
+                    _ => (0, false),
+                };
+                if chip == 0 || magic_guard {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.current_hp = m.current_hp.saturating_sub(chip);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                }
+            }
+        }
+
         // 28. Late item residuals (Sticky Barb — order 28, sub-order 3).
         // Fires AFTER status DOT (9-10) so a fatal burn shadows the
         // Sticky Barb tick, matching PS.
@@ -8357,6 +8398,29 @@ fn apply_secondary_effect(
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() {
                 t.set_throat_chop(2);
+            }
+        }
+    }
+    // Salt Cure — PS data/moves.ts:15638 (saltcure)
+    //   secondary: { chance: 100, volatileStatus: 'saltcure' }
+    // A 100%-chance secondary that adds the `saltcure` volatile to the
+    // target on every hit. Like Throat Chop, PS's `chance: 100` secondary
+    // short-circuits the `randomChance` roll, so we apply it without
+    // consuming a PRNG draw (preserving oracle alignment). The volatile is
+    // indefinite (cleared on switch-out via the blanket `volatiles.clear()`);
+    // the end-of-turn residual chip is applied in `resolve_end_of_turn`.
+    // addVolatile is a no-op when the target is already salt-cured (PS
+    // returns false on re-add). Covert Cloak (gated above) already vetoes
+    // the whole secondary. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
+    if move_slug == "saltcure" {
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::SaltCure) {
+                let _ = t.volatiles.add(crate::pokemon::Volatile {
+                    kind: crate::pokemon::VolatileKind::SaltCure,
+                    turns_remaining: 0,
+                    payload: 0,
+                });
             }
         }
     }
@@ -10890,6 +10954,109 @@ mod tests {
         assert!(
             !b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed),
             "Venusaur (Grass) should be immune to Leech Seed"
+        );
+    }
+
+    // Salt Cure residual chip. PS data/moves.ts:15638 (saltcure):
+    //   onResidual: this.damage(baseMaxhp / (hasType(['Water','Steel']) ? 4 : 8))
+    // We use a two-turn protocol to isolate the residual from the move's
+    // own (RNG-variable) hit damage: turn 1 applies Salt Cure, turn 2 the
+    // attacker uses a self-targeting status move (Iron Defense) so the only
+    // HP change to the salt-cured target is the end-of-turn chip.
+    #[test]
+    fn salt_cure_chips_neutral_one_eighth() {
+        let p1_json = r#"[
+            {"species":"garganacl","level":50,"ability":"purifyingsalt","item":"","nature":"impish","moves":["saltcure","irondefense","recover","stoneedge"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Snorlax (Normal) — neither Water nor Steel → 1/8 chip.
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["amnesia","bodyslam","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let snorlax_max = b.p2.team[0].stats.hp;
+        // Turn 1: apply Salt Cure; target uses a self-buff (no HP change).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert!(
+            b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::SaltCure),
+            "Salt Cure volatile should be applied on hit"
+        );
+        let hp_after_t1 = b.p2.team[0].current_hp;
+        // Turn 2: attacker uses Iron Defense (self) so the only HP change to
+        // the target is the Salt Cure chip.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        let expected_chip = (snorlax_max / 8).max(1);
+        assert_eq!(
+            b.p2.team[0].current_hp, hp_after_t1 - expected_chip,
+            "Neutral-type target should lose 1/8 max HP to Salt Cure"
+        );
+    }
+
+    #[test]
+    fn salt_cure_chips_steel_one_quarter() {
+        let p1_json = r#"[
+            {"species":"garganacl","level":50,"ability":"purifyingsalt","item":"","nature":"impish","moves":["saltcure","irondefense","recover","stoneedge"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Skarmory (Steel/Flying) — Steel-type → doubled 1/4 chip.
+        let p2_json = r#"[
+            {"species":"skarmory","level":50,"ability":"sturdy","item":"","nature":"impish","moves":["irondefense","spikes","bravebird","roost"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let skarmory_max = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::SaltCure));
+        let hp_after_t1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        let expected_chip = (skarmory_max / 4).max(1);
+        assert_eq!(
+            b.p2.team[0].current_hp, hp_after_t1 - expected_chip,
+            "Steel-type target should lose 1/4 max HP to Salt Cure"
+        );
+    }
+
+    #[test]
+    fn salt_cure_magic_guard_negates_chip() {
+        let p1_json = r#"[
+            {"species":"garganacl","level":50,"ability":"purifyingsalt","item":"","nature":"impish","moves":["saltcure","irondefense","recover","stoneedge"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Clefable (Magic Guard) — indirect Salt Cure chip is blocked.
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"","nature":"bold","moves":["calmmind","moonblast","softboiled","thunderbolt"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert!(
+            b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::SaltCure),
+            "Magic Guard blocks the chip but the volatile is still applied"
+        );
+        let hp_after_t1 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, hp_after_t1,
+            "Magic Guard should negate the Salt Cure residual chip"
         );
     }
 
