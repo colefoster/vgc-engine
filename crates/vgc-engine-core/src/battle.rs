@@ -1272,6 +1272,43 @@ impl Battle {
         true
     }
 
+    /// Set field weather from a manual weather-setting move (Sunny Day /
+    /// Rain Dance / Sandstorm / Snowscape) cast by `actor_slot` on
+    /// `actor_side`.
+    ///
+    /// Mirrors PS `field.setWeather`: setting the weather that is already
+    /// active fails (PS returns `false` when `this.weather === status.id`),
+    /// so we no-op / no-extend in that case. Base duration is 5 turns, or 8
+    /// when the user holds the matching weather rock — PS
+    /// `data/items.ts:{heat,damp,smooth,icy}rock` `onModifyDuration` returns
+    /// 8 when `effect.id` is the corresponding move. Same shape as the
+    /// ability weather path (`ability.rs`) and Chilly Reception's Icy Rock
+    /// extension; both route weather through `field.setWeather`.
+    fn set_weather_from_move(
+        &mut self,
+        w: crate::weather::Weather,
+        actor_side: SideRef,
+        actor_slot: u8,
+    ) {
+        if self.weather == w {
+            return;
+        }
+        self.weather = w;
+        let item_id = self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .map(|m| m.item_id)
+            .unwrap_or(u16::MAX);
+        let extended = matches!(
+            (w, item_id),
+            (crate::weather::Weather::Rain, data::item_id::DAMPROCK)
+                | (crate::weather::Weather::Sun, data::item_id::HEATROCK)
+                | (crate::weather::Weather::Sand, data::item_id::SMOOTHROCK)
+                | (crate::weather::Weather::Snow, data::item_id::ICYROCK)
+        );
+        self.weather_turns = if extended { 8 } else { 5 };
+    }
+
     /// Stealth Rock damage on switch-in. PS:
     ///   damage = maxhp * 2^typeMod / 8
     /// where `typeMod = clamp(runEffectiveness(stealthrock), -6, 6)`.
@@ -7114,6 +7151,33 @@ impl Battle {
                         a.set_pending_self_switch(true);
                     }
                 }
+            }
+            data::move_id::SUNNYDAY
+            | data::move_id::RAINDANCE
+            | data::move_id::SANDSTORM
+            | data::move_id::SNOWSCAPE => {
+                // Manual weather-setting moves. PS `data/moves.ts`:
+                //   sunnyday  → `weather: 'sunnyday'`  (Sun)
+                //   raindance → `weather: 'raindance'` (Rain)
+                //   sandstorm → `weather: 'sandstorm'` (Sand)
+                //   snowscape → `weather: 'snowscape'` (Snow — gen-9 rename
+                //               of Hail; sets Snow, not Hail)
+                // Each routes through `field.setWeather`: no-op if that
+                // weather is already active, else 5 turns (8 with the
+                // matching weather rock). See `set_weather_from_move`.
+                // Bulbapedia:
+                //   <https://bulbapedia.bulbagarden.net/wiki/Sunny_Day_(move)>
+                //   <https://bulbapedia.bulbagarden.net/wiki/Rain_Dance_(move)>
+                //   <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>
+                //   <https://bulbapedia.bulbagarden.net/wiki/Snowscape_(move)>
+                let w = match move_id {
+                    data::move_id::SUNNYDAY => crate::weather::Weather::Sun,
+                    data::move_id::RAINDANCE => crate::weather::Weather::Rain,
+                    data::move_id::SANDSTORM => crate::weather::Weather::Sand,
+                    data::move_id::SNOWSCAPE => crate::weather::Weather::Snow,
+                    _ => unreachable!(),
+                };
+                self.set_weather_from_move(w, actor_side, actor_slot);
             }
             data::move_id::BELLYDRUM | data::move_id::FILLETAWAY | data::move_id::CLANGOROUSSOUL => {
                 // PS data/moves.ts: each pays HP up-front, then applies a
@@ -21903,6 +21967,39 @@ mod tests {
         // Abomasnow Snow Warning + Icy Rock → 8.
         assert_eq!(mk("abomasnow", "snowwarning", "leftovers"), 5);
         assert_eq!(mk("abomasnow", "snowwarning", "icyrock"), 8);
+    }
+
+    #[test]
+    fn rain_dance_sets_rain_five_turns_eight_with_damp_rock() {
+        // Pelipper uses Rain Dance: sets Rain for 5 turns base, 8 holding
+        // Damp Rock. PS data/moves.ts:raindance → field.setWeather +
+        // data/items.ts:damprock onModifyDuration → 8.
+        let mk = |item: &str| -> (crate::weather::Weather, u8) {
+            let p1_json = format!(r#"[
+                {{"species":"pelipper","level":50,"ability":"drizzle","item":"{item}","nature":"modest","moves":["raindance","scald","hurricane","protect"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","crunch","sleeptalk","rest"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            // Clear any Drizzle-set weather so we observe the move's own set.
+            b.weather = crate::weather::Weather::None;
+            b.weather_turns = 0;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            (b.weather, b.weather_turns)
+        };
+        let (w_plain, turns_plain) = mk("leftovers");
+        assert_eq!(w_plain, crate::weather::Weather::Rain, "Rain Dance sets Rain");
+        // One end-of-turn decrement runs after the move, so 5 → 4.
+        assert_eq!(turns_plain, 4, "5-turn rain, post-turn decrement → 4");
+        let (w_rock, turns_rock) = mk("damprock");
+        assert_eq!(w_rock, crate::weather::Weather::Rain, "Rain Dance sets Rain with Damp Rock");
+        assert_eq!(turns_rock, 7, "8-turn rain with Damp Rock, post-turn decrement → 7");
     }
 
     #[test]
