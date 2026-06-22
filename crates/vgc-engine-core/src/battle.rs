@@ -7966,7 +7966,10 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         "icefang" => (Status::Freeze, 10),
         // Paralysis 30%:
         "discharge" | "bodyslam" | "force" | "thunderouskick"
-        | "nuzzle" | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
+        | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
+        // Paralysis 100% — Nuzzle (PS data/moves.ts:nuzzle
+        // `secondary: { chance: 100, status: 'par' }`):
+        "nuzzle" => (Status::Paralysis, 100),
         // Poison 30%:
         "sludgebomb" | "sludgewave" | "sludge" | "gunkshot" | "poisonjab"
         | "smog" => (Status::Poison, 30),
@@ -22194,6 +22197,37 @@ mod tests {
             super::status_secondary("icefang"), Some((Status::Freeze, 10)),
             "Ice Fang 10% frz",
         );
+    }
+
+    #[test]
+    fn nuzzle_always_paralyzes() {
+        // PS data/moves.ts:nuzzle — `secondary: { chance: 100, status: 'par' }`.
+        // Nuzzle paralyzes its target on EVERY hit, not 30%. Assert the
+        // table entry, then sweep seeds firing Nuzzle at a non-Electric,
+        // non-Ground target (Snorlax) and confirm 100% paralysis.
+        assert_eq!(
+            super::status_secondary("nuzzle"), Some((Status::Paralysis, 100)),
+            "Nuzzle 100% par",
+        );
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"timid","moves":["nuzzle","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","bodyslam","crunch","earthquake"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        for seed in 0u64..64 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(
+                matches!(b.p2.team[0].status, Status::Paralysis),
+                "Nuzzle must paralyze on seed {seed} (100% secondary)",
+            );
+        }
     }
 
     #[test]
