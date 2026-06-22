@@ -582,6 +582,13 @@ impl Battle {
             if active.throat_chop_turns() > 0 && m.is_sound {
                 continue;
             }
+            // Taunt lockout: every Status-category move is unselectable
+            // while taunted (Me First excepted). PS data/moves.ts:taunt
+            // condition onDisableMove — disables each moveSlot whose
+            // move.category === 'Status' && id !== 'mefirst'.
+            if active.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
+                continue;
+            }
             // Assault Vest: status moves disallowed.
             if is_assault_vest && m.category == 2 {
                 continue;
@@ -879,6 +886,10 @@ impl Battle {
                     // condition, onResidualOrder 22 — counts down each end
                     // of turn, ends at 0 (2-turn lockout).
                     mon.tick_throat_chop();
+                    // Taunt tick. PS data/moves.ts:taunt condition,
+                    // onResidualOrder 15 — counts down each end of turn,
+                    // ends at 0 (3-turn lockout).
+                    mon.tick_taunt();
                 }
             }
             // Tailwind / future side-condition timers.
@@ -1689,6 +1700,16 @@ impl Battle {
         // sound moves are exempt in PS, but the gen-9 data dump strips
         // Z/Max so the exemption is a no-op here.
         if attacker.throat_chop_turns() > 0 && m.is_sound {
+            return;
+        }
+
+        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
+        // (priority 5): a Status-category move cannot be used while taunted
+        // (Me First excepted). Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a status move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`.
+        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
             return;
         }
 
@@ -2546,6 +2567,7 @@ impl Battle {
                         move_id,
                         Some(Target { side: actor_side, slot: actor_slot }),
                         Some((actor_side, actor_slot)),
+                        pending_kind,
                         will_act,
                     );
                     // Throat Spray etc. key off the user; the original
@@ -2554,7 +2576,7 @@ impl Battle {
                     return;
                 }
             }
-            self.resolve_status_move(actor_side, actor_slot, m, move_id, target, will_act);
+            self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
             // Throat Spray: sound-flag status moves (Sing, Heal Bell,
             // Roar of Time... Growl) trigger the +1 SpA on the user.
             self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
@@ -5983,9 +6005,12 @@ impl Battle {
         m: &data::MoveDef,
         move_id: u16,
         target: Option<Target>,
+        pending_kind: &[[u8; 2]; 2],
         will_act: bool,
     ) {
-        self.resolve_status_move_inner(actor_side, actor_slot, m, move_id, target, None, will_act)
+        self.resolve_status_move_inner(
+            actor_side, actor_slot, m, move_id, target, None, pending_kind, will_act,
+        )
     }
 
     /// Core status-move resolver. `forced_target` overrides the
@@ -5994,6 +6019,7 @@ impl Battle {
     /// SPECIFIC original attacker (doubles), with the bouncer as the new
     /// source (`actor_side`/`actor_slot`). For every non-bounce caller
     /// `forced_target` is `None` and behavior is byte-identical to PR-334.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_status_move_inner(
         &mut self,
         actor_side: SideRef,
@@ -6002,6 +6028,7 @@ impl Battle {
         move_id: u16,
         target: Option<Target>,
         forced_target: Option<(SideRef, u8)>,
+        pending_kind: &[[u8; 2]; 2],
         will_act: bool,
     ) {
         // Resolve the explicit opposing target slot ONCE (PR-334). For the
@@ -6548,6 +6575,62 @@ impl Battle {
                     crate::item::try_consume_mental_herb(self, opp, slot);
                     return;
                 }
+            }
+            data::move_id::TAUNT => {
+                // Taunt — PS data/moves.ts:taunt, volatileStatus 'taunt',
+                // condition `duration: 3`. Locks the target out of Status-
+                // category moves (onDisableMove / onBeforeMove). The
+                // `onStart` callback bumps the duration to 4 when the target
+                // has already acted this turn (`target.activeTurns &&
+                // !this.queue.willMove(target)`) so it still loses three
+                // status-move turns. Re-application onto an already-taunted
+                // mon is a no-op (PS `addVolatile` returns false). Blocked by
+                // Aroma Veil (breakable by Mold Breaker) and cured by Mental
+                // Herb on apply. Accuracy 100 — always passes, but draws at
+                // the PS site. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Taunt_(move)>.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_alive()) {
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                // Already taunted — PS addVolatile('taunt') is a no-op.
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.taunt_turns() > 0) {
+                    return;
+                }
+                // Aroma Veil — holder/partner immunity (PS abilities.ts:234
+                // `onAllyTryAddVolatile`); breakable by a Mold-Breaker user.
+                let taunt_src_breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.effective_ability_slug(),
+                        "moldbreaker" | "teravolt" | "turboblaze"
+                    ));
+                if self.side_has_aroma_veil(ts, taunt_src_breaks_mold) {
+                    return;
+                }
+                // PS onStart duration bump: +1 when the target has already
+                // acted this turn (it's been active AND has no pending move
+                // left — its `pending_kind` byte is no longer a move). This
+                // keeps the lockout at three future status-move turns even
+                // when the Taunt user is slower than its target.
+                let target_already_acted = self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.turns_active != 0)
+                    && {
+                        let k = pending_kind[ts as usize][(tslot as usize).min(1)];
+                        k != 1 && k != 2
+                    };
+                let dur = if target_already_acted { 4 } else { 3 };
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    t.set_taunt(dur);
+                }
+                // Mental Herb cures Taunt on application (PS onUpdate).
+                crate::item::try_consume_mental_herb(self, ts, tslot);
             }
             data::move_id::AFTERYOU => {
                 // After You — make the target act immediately next this turn.
@@ -20834,6 +20917,93 @@ mod tests {
         assert!(
             lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
             "sound move selectable again after lockout clears",
+        );
+    }
+
+    #[test]
+    fn taunt_locks_status_moves_and_expires() {
+        // Taunt (Dark status) locks the target out of every Status-category
+        // move for its duration: the target's status moves (Calm Mind,
+        // Soft-Boiled) vanish from legal_choices and fail if forced, while
+        // its damaging moves (Seismic Toss, Flamethrower) stay selectable.
+        // PS data/moves.ts:taunt condition (duration 3): applied with a
+        // faster user, the target still has a pending move this turn so no
+        // +1 bump, the counter starts at 3 and ticks down each end of turn.
+        let p1_json = r#"[
+            {"species":"weavile","level":50,"ability":"pressure","nature":"jolly","moves":["taunt","iceshard","swordsdance","protect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        // P2: bulky, slow Blissey. Seismic Toss (slot 0, physical) and
+        // Flamethrower (slot 3, special) are damaging; Calm Mind (slot 1)
+        // and Soft-Boiled (slot 2) are Status.
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","calmmind","softboiled","flamethrower"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Before Taunt: Calm Mind (status, slot 1) is selectable.
+        let lc0 = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc0.iter().any(|c| matches!(c, Choice::Move { move_slot: 1, .. })),
+            "status move selectable before Taunt",
+        );
+
+        // P1 (faster) Taunts P2 while P2 still has a pending move this turn
+        // -> no duration bump (3). End-of-turn tick -> 2.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].is_alive(), "Blissey alive after Taunt");
+        assert_eq!(b.p2.team[0].taunt_turns(), 2, "duration 3 applied, ticked to 2");
+
+        // Turn 2: both status moves (slots 1, 2) are filtered out; both
+        // damaging moves (slots 0, 3) remain selectable.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().all(|c| !matches!(c, Choice::Move { move_slot: 1, .. } | Choice::Move { move_slot: 2, .. })),
+            "status moves absent from legal_choices while taunted",
+        );
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. }))
+                && lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 3, .. })),
+            "damaging moves still selectable while taunted",
+        );
+
+        // Forcing the status move Calm Mind (slot 1) does nothing — no SpA
+        // boost, no PP spent (guard returns before the PP-spend site).
+        let pp_before = b.p2.team[0].pp[1];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p2.team[0].boosts[3], 0, "forced Calm Mind applied no SpA boost while taunted");
+        assert_eq!(b.p2.team[0].pp[1], pp_before, "forced status move spent no PP");
+        // End of turn 2 tick: 2 -> 1, still taunted.
+        assert_eq!(b.p2.team[0].taunt_turns(), 1, "ticked to 1 after turn 2");
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().all(|c| !matches!(c, Choice::Move { move_slot: 1, .. })),
+            "status move still locked on turn 3",
+        );
+
+        // Turn 3: end-of-turn tick 1 -> 0, lockout clears.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].taunt_turns(), 0, "Taunt expired after 3 turns");
+        assert!(
+            !b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Taunt),
+            "Taunt volatile removed",
+        );
+
+        // Turn 4: status moves are selectable again.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 1, .. })),
+            "status move selectable again after Taunt clears",
         );
     }
 
