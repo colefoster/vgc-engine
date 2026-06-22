@@ -739,6 +739,21 @@ pub struct Pokemon {
     /// move (in the accuracy block). Reset to `false` on switch-out
     /// alongside the other single-turn volatiles.
     pub micle_next_move: bool,
+    /// Commander (Tatsugiri) — `true` while this mon is inside its ally
+    /// Dondozo's mouth. PS `data/conditions.ts:commanding` volatile.
+    /// While set the holder cannot act (auto-passes — PS `onBeforeTurn`
+    /// `cancelAction`), cannot be targeted or hit (PS
+    /// `hitStepInvulnerabilityEvent` returns false + `onInvulnerability:
+    /// false`), and cannot switch / be dragged out (PS `onTrapPokemon` /
+    /// `onDragOut`). Set in `Battle::commander_update`; cleared when the
+    /// Dondozo ally is no longer alive (release) and on switch-out.
+    pub commanding: bool,
+    /// Commander (Dondozo) — `true` once this mon has received the +2-to-
+    /// all-stats command from a Tatsugiri ally. PS
+    /// `data/conditions.ts:commanded` volatile (its `onStart` applies the
+    /// boost). Acts as the once-per-pairing guard so the boost is not
+    /// re-applied on subsequent switch-in updates. Cleared on switch-out.
+    pub commanded: bool,
 }
 
 impl Pokemon {
@@ -817,6 +832,8 @@ impl Pokemon {
             protean_used: false,
             disguise_busted: false,
             micle_next_move: false,
+            commanding: false,
+            commanded: false,
         }
     }
 
