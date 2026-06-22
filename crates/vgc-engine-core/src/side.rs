@@ -2,9 +2,10 @@
 
 use crate::format::Format;
 use crate::pokemon::Pokemon;
+use serde::{Deserialize, Serialize};
 
 /// Identifies one of the two sides of the field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum SideRef {
     P1 = 0,
@@ -25,7 +26,7 @@ impl SideRef {
 ///
 /// `active[i] == 255` means "this active slot is empty" (every active mon
 /// fainted with no replacement available — battle ends).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Side {
     pub team: Vec<Pokemon>,
     /// Indices into `team`. Length = `format.active_count()`.
@@ -39,7 +40,7 @@ pub struct Side {
 /// Each field is `0` when the condition is not active; otherwise the
 /// number of turns remaining (decremented at end of step). Future PRs
 /// add reflect/lightscreen/auroraveil/spikes/stickyweb here.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SideConditions {
     /// Tailwind: doubles speed of all mons on this side. PS duration 4
     /// (counted at end of step — so Tailwind used on turn N is active

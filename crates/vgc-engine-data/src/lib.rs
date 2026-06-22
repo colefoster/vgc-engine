@@ -22,7 +22,7 @@
 /// PS reference: `sim/pokemon.ts:339-341` (gender assignment),
 /// `sim/dex-species.ts:313-316` (`species.gender`). Bulbapedia:
 /// <https://bulbapedia.bulbagarden.net/wiki/Gender>.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Gender {
     Male,
     Female,

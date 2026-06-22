@@ -25,9 +25,10 @@ use crate::order::{action_order, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
 use crate::rng::Rng;
 use crate::side::{Side, SideRef};
+use serde::{Deserialize, Serialize};
 use vgc_engine_data as data;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleConfig {
     pub format: Format,
     pub seed: u64,
@@ -116,7 +117,7 @@ pub enum StepResult {
     Ended { winner: Option<SideRef> },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
     pub config: BattleConfig,
     pub p1: Side,

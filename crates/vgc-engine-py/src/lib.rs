@@ -10,6 +10,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use vgc_engine_core as core;
 
 fn map_team_err(e: core::TeamLoadError) -> PyErr {
@@ -19,6 +20,44 @@ fn map_team_err(e: core::TeamLoadError) -> PyErr {
 /// (kind, actor_slot, move_slot_or_team_index, target_side, target_slot).
 /// `-1` for unused fields.
 type LegalChoice = (String, u8, u8, i8, i8);
+
+/// Map a `StepResult` to the wire-level string the Python layer expects.
+fn step_result_str(r: core::StepResult) -> &'static str {
+    match r {
+        core::StepResult::Continue => "continue",
+        core::StepResult::Ended { winner: Some(core::SideRef::P1) } => "p1_win",
+        core::StepResult::Ended { winner: Some(core::SideRef::P2) } => "p2_win",
+        core::StepResult::Ended { winner: None } => "tie",
+    }
+}
+
+/// Decode `(target_side, target_slot)` (as emitted by `legal_choices`)
+/// back into an optional `Target`. A negative side or slot = no target.
+fn target_from(target_side: i8, target_slot: i8) -> Option<core::Target> {
+    if target_side < 0 || target_slot < 0 {
+        return None;
+    }
+    let side = if target_side == 0 { core::SideRef::P1 } else { core::SideRef::P2 };
+    Some(core::Target { side, slot: target_slot as u8 })
+}
+
+/// Convert one `legal_choices`-shaped tuple back into a core `Choice`,
+/// so a caller can round-trip: read a legal choice → pass it to `step_move`.
+fn choice_from_tuple(c: &LegalChoice) -> PyResult<core::Choice> {
+    let (kind, actor_slot, arg, ts, tl) = (c.0.as_str(), c.1, c.2, c.3, c.4);
+    Ok(match kind {
+        "move" => core::Choice::Move { actor_slot, move_slot: arg, target: target_from(ts, tl) },
+        "tera" => {
+            core::Choice::Terastallize { actor_slot, move_slot: arg, target: target_from(ts, tl) }
+        }
+        "mega" => {
+            core::Choice::MegaEvolve { actor_slot, move_slot: arg, target: target_from(ts, tl) }
+        }
+        "switch" => core::Choice::Switch { actor_slot, team_index: arg },
+        "pass" => core::Choice::Pass { actor_slot },
+        other => return Err(PyValueError::new_err(format!("unknown choice kind: {other}"))),
+    })
+}
 
 #[pyclass(name = "Battle")]
 pub struct PyBattle {
@@ -105,6 +144,93 @@ impl PyBattle {
             core::StepResult::Ended { winner: Some(core::SideRef::P2) } => "p2_win",
             core::StepResult::Ended { winner: None } => "tie",
         })
+    }
+
+    /// Execute one full turn from explicit per-side choice lists.
+    ///
+    /// `p1_choices` / `p2_choices` are lists of the same 5-tuple shape
+    /// `legal_choices` returns — `(kind, actor_slot, arg, target_side,
+    /// target_slot)` — so a caller round-trips: read legal choices, pick
+    /// one per active slot, pass them straight back here. `kind` is one of
+    /// `"move"`, `"tera"`, `"mega"`, `"switch"`, `"pass"`. Doubles take up
+    /// to two choices per side (one per active slot); singles take one.
+    /// Returns the step result string (`"continue"` / `"p1_win"` /
+    /// `"p2_win"` / `"tie"`). This is the general stepping primitive;
+    /// `step_pass` / `step_switch` remain as convenience helpers.
+    #[pyo3(signature = (p1_choices, p2_choices))]
+    fn step_move(
+        &mut self,
+        p1_choices: Vec<LegalChoice>,
+        p2_choices: Vec<LegalChoice>,
+    ) -> PyResult<&'static str> {
+        let p1: Vec<core::Choice> =
+            p1_choices.iter().map(choice_from_tuple).collect::<PyResult<_>>()?;
+        let p2: Vec<core::Choice> =
+            p2_choices.iter().map(choice_from_tuple).collect::<PyResult<_>>()?;
+        Ok(step_result_str(self.inner.step(&p1, &p2)))
+    }
+
+    /// Deep-copy the battle into an independent `Battle`. Mutating the
+    /// clone (or the original) never affects the other — for MCTS-style
+    /// state branching in mimikyu.
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+
+    /// `copy.deepcopy(battle)` support — same as `clone()`. The `_memo`
+    /// arg is accepted and ignored (the state has no shared sub-objects
+    /// to track).
+    #[pyo3(signature = (_memo = None))]
+    fn __deepcopy__(&self, _memo: Option<PyObject>) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+
+    /// `copy.copy(battle)` support — `Battle` has no interior sharing, so
+    /// a shallow copy is a full independent clone too.
+    fn __copy__(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+
+    /// Serialize the full battle state to bincode bytes (compact, fast).
+    /// Round-trips via `Battle.from_bytes`.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = bincode::serialize(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("serialize failed: {e}")))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Reconstruct a battle from bincode bytes produced by `to_bytes`.
+    #[staticmethod]
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        let inner: core::Battle = bincode::deserialize(data)
+            .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
+        Ok(Self { inner })
+    }
+
+    /// Serialize the full battle state to a JSON string. Slower / larger
+    /// than `to_bytes` but human-inspectable; round-trips via `from_json`.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner)
+            .map_err(|e| PyValueError::new_err(format!("to_json failed: {e}")))
+    }
+
+    /// Reconstruct a battle from a JSON string produced by `to_json`.
+    #[staticmethod]
+    fn from_json(data: &str) -> PyResult<Self> {
+        let inner: core::Battle = serde_json::from_str(data)
+            .map_err(|e| PyValueError::new_err(format!("from_json failed: {e}")))?;
+        Ok(Self { inner })
+    }
+
+    /// Current HP of the active mon in `(side, slot)`, or `None` if the
+    /// slot is empty. Convenience accessor for asserting move effects.
+    fn active_hp(&self, side: u8, slot: u8) -> PyResult<Option<u16>> {
+        let s = match side {
+            0 => core::SideRef::P1,
+            1 => core::SideRef::P2,
+            _ => return Err(PyValueError::new_err("side must be 0 or 1")),
+        };
+        Ok(self.inner.side(s).active_mon(slot as usize).map(|m| m.current_hp))
     }
 
     /// Return a list of (kind, actor_slot, move_slot_or_team_index, target_side, target_slot)

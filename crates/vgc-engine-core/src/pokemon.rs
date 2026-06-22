@@ -23,7 +23,7 @@ pub enum Stat {
 
 /// Persistent status condition. Volatile statuses (confusion, taunt, ...)
 /// will live in a separate bitset on `Pokemon` once mechanics need them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Status {
     #[default]
     None,
@@ -164,7 +164,7 @@ impl StatSpread {
 
 /// Final, post-calculation stats. HP is current max; the 5 others are the
 /// "level-50, EV/IV/nature applied" values used by the damage formula.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FinalStats {
     pub hp: u16,
     pub atk: u16,
@@ -199,7 +199,7 @@ impl FinalStats {
 /// `crit_stage_volatile`, `semi_invuln`,
 /// `charging_turns`, `must_recharge`, `lockin_turns`) into this
 /// registry is staged per-volatile in follow-up PRs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum VolatileKind {
     #[default]
@@ -380,7 +380,7 @@ pub enum VolatileKind {
     ThroatChop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Volatile {
     pub kind: VolatileKind,
     /// Turns until the volatile is cleared at end of turn. Set on
@@ -404,7 +404,7 @@ pub struct Volatile {
 /// `present` bit `i` is set iff a volatile with discriminant `i` is in the
 /// store. `VolatileKind` is `#[repr(u8)]` with 52 sequential variants
 /// (0..=51), so a `u64` holds one bit per kind with room to spare.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VolatileSet {
     pub items: [Volatile; 8],
     pub len: u8,
@@ -501,7 +501,7 @@ impl VolatileSet {
 }
 
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pokemon {
     pub species_id: u16,
     pub level: u8,
