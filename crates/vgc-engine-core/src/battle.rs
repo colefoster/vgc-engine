@@ -509,6 +509,81 @@ impl Battle {
         }
     }
 
+    /// Commander (Tatsugiri signature). PS `data/abilities.ts:commander`
+    /// `onUpdate` + the `commanding` / `commanded` volatiles in
+    /// `data/conditions.ts`. In doubles, when a Tatsugiri holding Commander
+    /// shares the field with an ally Dondozo, the Tatsugiri enters the
+    /// Dondozo's mouth: it is marked `commanding` (can't act / be targeted /
+    /// switch) and the Dondozo is marked `commanded` and gains +2 to every
+    /// stat (PS `commanded.onStart` → `this.boost({atk,def,spa,spd,spe: 2})`).
+    ///
+    /// Called from `ability::on_switch_in` (so it fires whenever either half
+    /// of the pair enters — matching PS `onAnySwitchIn` / `onStart`) and at
+    /// the start of `step()` (so the pair is released when the Dondozo
+    /// faints — PS `onUpdate`: `if (!ally.fainted) return; removeVolatile`).
+    /// Idempotent: the `commanding` / `commanded` flags guard against
+    /// re-triggering, and the +2 boost is applied exactly once per pairing.
+    /// Alloc-free.
+    pub(crate) fn commander_update(&mut self, side: SideRef) {
+        // Doubles-only (PS `if (this.gameType !== 'doubles') return;`).
+        if self.format().active_count() < 2 {
+            return;
+        }
+        for slot in 0u8..2 {
+            let ally_slot = 1 - slot;
+            // The acting half must be a Tatsugiri with Commander. PS keys the
+            // handler on the ability and checks `baseSpecies === 'Tatsugiri'`;
+            // all Tatsugiri formes share national-dex num 978.
+            let (is_commander_tatsu, commanding) = match self.side(side).active_mon(slot as usize) {
+                Some(m) => (
+                    m.ability_id == data::ability_id::COMMANDER
+                        && data::SPECIES[m.species_id as usize].num == 978,
+                    m.commanding,
+                ),
+                None => continue,
+            };
+            if !is_commander_tatsu {
+                continue;
+            }
+            // Is the ally a live Dondozo (national-dex num 977)?
+            let ally_is_live_dondozo = self
+                .side(side)
+                .active_mon(ally_slot as usize)
+                .is_some_and(|a| a.is_alive() && data::SPECIES[a.species_id as usize].num == 977);
+            if !commanding {
+                // Trigger: both present & alive, Dondozo not already commanded.
+                let tatsu_alive = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.is_alive());
+                let ally_uncommanded = self
+                    .side(side)
+                    .active_mon(ally_slot as usize)
+                    .is_some_and(|a| !a.commanded);
+                if tatsu_alive && ally_is_live_dondozo && ally_uncommanded {
+                    if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        t.commanding = true;
+                    }
+                    if let Some(d) = self.side_mut(side).active_mon_mut(ally_slot as usize) {
+                        d.commanded = true;
+                    }
+                    // +2 to Atk/Def/SpA/SpD/Spe on the Dondozo. Source is the
+                    // Dondozo itself (PS calls `this.boost` with no source on
+                    // the `commanded` volatile's `onStart`), so this is an
+                    // unreflectable self-origin positive boost.
+                    self.apply_boosts(side, ally_slot, &[(0, 2), (1, 2), (2, 2), (3, 2), (4, 2)], side, ally_slot);
+                }
+            } else if !ally_is_live_dondozo {
+                // Release: the Dondozo ally is gone/fainted (PS `onUpdate`
+                // removes `commanding` once `ally.fainted`). The Tatsugiri
+                // returns to normal play (its slot is no longer in the mouth).
+                if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    t.commanding = false;
+                }
+            }
+        }
+    }
+
     /// Legal choices for one active slot on one side.
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let s = self.side(side);
@@ -516,6 +591,12 @@ impl Battle {
         let Some(active) = s.active_mon(slot) else {
             return vec![Choice::Pass { actor_slot }];
         };
+        // Commander: a Tatsugiri inside its Dondozo's mouth cannot act. PS
+        // auto-passes the slot (`side.ts` `getChoiceIndex` skips slots whose
+        // `volatiles['commanding']` is set) — it can't move or switch.
+        if active.commanding {
+            return vec![Choice::Pass { actor_slot }];
+        }
         if !active.is_alive() {
             let switches: Vec<Choice> = s
                 .switch_candidates(slot)
@@ -599,7 +680,9 @@ impl Battle {
                     if self
                         .side(side.opposing())
                         .active_mon(opp_slot as usize)
-                        .is_some_and(|m| m.is_alive())
+                        // A commanding Tatsugiri can't be chosen as a target
+                        // (PS: it's untargetable while in the mouth).
+                        .is_some_and(|m| m.is_alive() && !m.commanding)
                     {
                         let target = Some(Target { side: side.opposing(), slot: opp_slot });
                         out.push(Choice::Move { actor_slot, move_slot: i as u8, target });
@@ -786,12 +869,15 @@ impl Battle {
                 idx += 1;
                 continue;
             }
-            // Skip if the actor has fainted earlier this turn.
-            let actor_alive = self
+            // Skip if the actor has fainted earlier this turn, or is a
+            // commanding Tatsugiri (PS `commanding.onBeforeTurn` cancels its
+            // action). `legal_choices` already auto-passes a commanding slot,
+            // so this only fires if a caller hand-built a Move for it.
+            let actor_can_act = self
                 .side(action.side)
                 .active_mon(action.actor_slot as usize)
-                .is_some_and(|m| m.is_alive());
-            if !actor_alive {
+                .is_some_and(|m| m.is_alive() && !m.commanding);
+            if !actor_can_act {
                 idx += 1;
                 continue;
             }
@@ -956,6 +1042,14 @@ impl Battle {
                 }
             }
         }
+
+        // Commander release: if a Dondozo fainted this turn, free its
+        // commanding Tatsugiri so it can act/switch on the next request
+        // (PS `commander.onUpdate` removes `commanding` once the ally is
+        // fainted). Re-runs the pairing check on both sides; idempotent for
+        // intact pairs.
+        self.commander_update(SideRef::P1);
+        self.commander_update(SideRef::P2);
 
         self.turn = self.turn.saturating_add(1);
         let p1_dead = self.p1.is_defeated();
@@ -1242,6 +1336,8 @@ impl Battle {
             incoming.protean_used = false; // Protean / Libero once-per-switch latch resets.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
             incoming.micle_next_move = false; // Micle Berry accuracy latch clears on switch-out.
+            incoming.commanding = false; // Commander (Tatsugiri) volatile clears on switch-out.
+            incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
             // `twoturnmove` / `lockedmove` / `mustrecharge` volatiles
@@ -3065,6 +3161,12 @@ impl Battle {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
             };
+            // A commanding Tatsugiri can never be hit (PS
+            // `hitStepInvulnerabilityEvent` returns false for it). Belt-and-
+            // braces alongside `enumerate_targets`, which already excludes it.
+            if defender.commanding {
+                continue;
+            }
 
             // No Guard for this attacker/defender pair — true if EITHER end
             // holds No Guard (PS `onAnyAccuracy` / `onAnyInvulnerability`
@@ -5256,7 +5358,12 @@ impl Battle {
     fn resolve_status_target(&self, opp: SideRef) -> Option<(SideRef, u8)> {
         let n = self.format().active_count() as u8;
         (0..n)
-            .find(|&slot| self.side(opp).active_mon(slot as usize).is_some_and(|m| m.is_alive()))
+            // A commanding Tatsugiri can't be the target of a status move.
+            .find(|&slot| {
+                self.side(opp)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.is_alive() && !m.commanding)
+            })
             .map(|slot| (opp, slot))
     }
 
@@ -7834,8 +7941,15 @@ fn enumerate_targets(
 ) -> TargetBuf {
     let opp = actor_side.opposing();
     let active_n = battle.format().active_count() as u8;
+    // A commanding Tatsugiri (inside its Dondozo's mouth) is untargetable —
+    // it's excluded from every target list (single-target fallback, spread,
+    // and ally targets). PS `commanding.onInvulnerability: false` +
+    // `hitStepInvulnerabilityEvent` returning false for the slot.
     let alive = |side: SideRef, slot: u8| -> bool {
-        battle.side(side).active_mon(slot as usize).is_some_and(|m| m.is_alive())
+        battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.is_alive() && !m.commanding)
     };
     match m.target {
         // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
@@ -24853,5 +24967,86 @@ mod tests {
         b.try_set_status(SideRef::P1, 0, Status::Burn);
         assert!(matches!(b.p1.team[0].status, Status::Burn),
             "Limber should not block burn (only par)");
+    }
+
+    #[test]
+    fn commander_pairs_tatsugiri_with_dondozo() {
+        // Doubles lead: Tatsugiri (Commander) + Dondozo. On switch-in the
+        // Tatsugiri enters the Dondozo's mouth: it is marked `commanding`
+        // (can't act, can't be targeted) and the Dondozo gets +2 to every
+        // stat and is marked `commanded`.
+        // PS data/abilities.ts:commander + data/conditions.ts:commanded.
+        let p1_json = r#"[
+            {"species":"tatsugiri","level":50,"ability":"commander","nature":"hardy","moves":["surf","dracometeor","mudshot","protect"]},
+            {"species":"dondozo","level":50,"ability":"unaware","nature":"hardy","moves":["wavecrash","bodypress","earthquake","protect"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"hardy","moves":["earthquake","dragonclaw","aerialace","ironhead"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+
+        // Tatsugiri (slot 0) is commanding; Dondozo (slot 1) is commanded.
+        assert!(b.p1.team[0].commanding, "Tatsugiri should be commanding");
+        assert!(b.p1.team[1].commanded, "Dondozo should be commanded");
+
+        // Dondozo has +2 to Atk/Def/SpA/SpD/Spe.
+        assert_eq!(
+            &b.p1.team[1].boosts[0..5],
+            &[2, 2, 2, 2, 2],
+            "Dondozo should have +2 to all five battle stats"
+        );
+
+        // The commanding Tatsugiri can only Pass — no moves/switches offered.
+        let tatsu_choices = b.legal_choices(SideRef::P1, 0);
+        assert_eq!(
+            tatsu_choices,
+            vec![Choice::Pass { actor_slot: 0 }],
+            "commanding Tatsugiri must only be able to Pass"
+        );
+
+        // The opponent cannot target the commanding Tatsugiri (slot 0): every
+        // offered single-target Move points at the Dondozo (slot 1), never
+        // slot 0.
+        let foe_choices = b.legal_choices(SideRef::P2, 0);
+        let targets_tatsu = foe_choices.iter().any(|c| {
+            matches!(
+                c,
+                Choice::Move { target: Some(Target { side: SideRef::P1, slot: 0 }), .. }
+            )
+        });
+        assert!(!targets_tatsu, "commanding Tatsugiri must not be targetable");
+        let targets_dondozo = foe_choices.iter().any(|c| {
+            matches!(
+                c,
+                Choice::Move { target: Some(Target { side: SideRef::P1, slot: 1 }), .. }
+            )
+        });
+        assert!(targets_dondozo, "Dondozo should still be a legal target");
+    }
+
+    #[test]
+    fn commander_no_trigger_without_dondozo_ally() {
+        // Tatsugiri (Commander) without a Dondozo ally does not command —
+        // it acts normally. PS `onUpdate` requires the ally to be Dondozo.
+        let p1_json = r#"[
+            {"species":"tatsugiri","level":50,"ability":"commander","nature":"hardy","moves":["surf","dracometeor","mudshot","protect"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"hardy","moves":["earthquake","dragonclaw","aerialace","ironhead"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert!(!b.p1.team[0].commanding, "no Dondozo ally → no command");
+        assert!(
+            b.legal_choices(SideRef::P1, 0).len() > 1,
+            "ungated Tatsugiri should have real choices"
+        );
     }
 }
