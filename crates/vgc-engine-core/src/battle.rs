@@ -165,6 +165,13 @@ pub struct Battle {
     /// Pursuit user does not act twice. PS analog: `this.queue.cancelMove`
     /// in the `pursuit` condition. Reset at the top of every `step`.
     pursuit_consumed: [[bool; 2]; 2],
+    /// Set by a successful Ally Switch resolution to the side whose two
+    /// active slots were just swapped, so the `step` move loop can re-point
+    /// the still-unprocessed action tail (actions + targets are bound to
+    /// the Pokémon, not the board slot — PS swaps the mon objects). Always
+    /// `None` between resolutions. Copy field, hot-loop safe. PS
+    /// `data/moves.ts:allyswitch` (`this.swapPosition`).
+    ally_switch_pending: Option<SideRef>,
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -216,6 +223,7 @@ impl Battle {
             pending_queue_reorder: None,
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
+            ally_switch_pending: None,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -835,6 +843,43 @@ impl Battle {
             if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
                 order.reorder_remaining(idx, rside, rslot, to_front);
             }
+            // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
+            // binds queued actions and their targets to the Pokémon object,
+            // so they "follow the mon" across the swap; our queue is
+            // slot-keyed, so re-point the still-unprocessed tail: flip the
+            // actor slot of `sw_side`'s remaining actions, flip any target
+            // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
+            // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
+            // Without this the switcher would act twice and its ally never
+            // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
+            if let Some(sw_side) = self.ally_switch_pending.take() {
+                for a in &mut order.as_mut_slice()[idx + 1..] {
+                    if a.side == sw_side {
+                        a.actor_slot ^= 1;
+                    }
+                    match &mut a.choice {
+                        Choice::Move { actor_slot, target, .. }
+                        | Choice::Terastallize { actor_slot, target, .. }
+                        | Choice::MegaEvolve { actor_slot, target, .. } => {
+                            if a.side == sw_side {
+                                *actor_slot ^= 1;
+                            }
+                            if let Some(t) = target {
+                                if t.side == sw_side {
+                                    t.slot ^= 1;
+                                }
+                            }
+                        }
+                        Choice::Switch { actor_slot, .. } | Choice::Pass { actor_slot } => {
+                            if a.side == sw_side {
+                                *actor_slot ^= 1;
+                            }
+                        }
+                    }
+                }
+                pending_kind[sw_side as usize].swap(0, 1);
+                self.pursuit_consumed[sw_side as usize].swap(0, 1);
+            }
             idx += 1;
         }
 
@@ -886,6 +931,11 @@ impl Battle {
                     // condition, onResidualOrder 22 — counts down each end
                     // of turn, ends at 0 (2-turn lockout).
                     mon.tick_throat_chop();
+                    // Ally Switch tick. PS data/moves.ts:allyswitch
+                    // condition, duration 2 — counts down each end of turn,
+                    // ends at 0, so the consecutive-use chain breaks once a
+                    // turn passes without re-using the move.
+                    mon.tick_ally_switch();
                     // Taunt tick. PS data/moves.ts:taunt condition,
                     // onResidualOrder 15 — counts down each end of turn,
                     // ends at 0 (3-turn lockout).
@@ -6388,6 +6438,62 @@ impl Battle {
                         p.set_helping_handed(true);
                     }
                 }
+            }
+            data::move_id::ALLYSWITCH => {
+                // PS data/moves.ts:allyswitch (num 502) — priority +2,
+                // target: self. The user swaps board positions with its
+                // ally (`onHit` → `this.swapPosition`). Fails in Singles
+                // (no ally) and when the partner slot is empty or fainted
+                // (`onHit`: `if (!target || target.fainted) success = false`).
+                //
+                // Consecutive-use penalty (PS `condition`, `duration: 2`,
+                // `counterMax: 729`): the first use in a chain always
+                // succeeds; each successive turn it is re-used the move has
+                // a `randomChance(1, counter)` success roll where `counter`
+                // starts at 3 and triples per consecutive success (3 → 9 →
+                // … → 729). A failed roll deletes the volatile, resetting
+                // the chain to 100%; a one-turn gap lets the duration-2
+                // volatile expire, also resetting it (PS `onRestart`).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ally_Switch_(move)>.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let partner_slot = (actor_slot ^ 1) as usize;
+                let partner_alive = self
+                    .side(actor_side)
+                    .active_mon(partner_slot)
+                    .is_some_and(|p| p.is_alive());
+                if !partner_alive {
+                    return;
+                }
+                // `counter == 0` → no active chain: first use always succeeds
+                // and draws nothing (PS `onStart` sets the counter without
+                // rolling). Otherwise roll `randomChance(1, counter)` ≡
+                // `range(counter) == 0`.
+                let counter = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .map(|a| a.ally_switch_counter())
+                    .unwrap_or(0);
+                if counter != 0 && self.rng.range(counter) != 0 {
+                    if let Some(a) =
+                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                    {
+                        a.clear_ally_switch();
+                    }
+                    return;
+                }
+                // Success: refresh the chain volatile on the user (it rides
+                // with the Pokémon across the swap), then swap the two
+                // active-slot pointers. The step loop re-points the
+                // remaining action tail off `ally_switch_pending`.
+                let next_counter = if counter == 0 { 3 } else { (counter * 3).min(729) };
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_ally_switch_volatile(next_counter);
+                }
+                self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
+                self.ally_switch_pending = Some(actor_side);
             }
             data::move_id::RAGEPOWDER | data::move_id::FOLLOWME => {
                 // Doubles-only redirection. PS data/moves.ts:
@@ -21265,6 +21371,181 @@ mod tests {
         assert!(
             lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
             "sound move selectable again after lockout clears",
+        );
+    }
+
+    #[test]
+    fn ally_switch_swaps_active_slots_and_state_rides_with_the_mon() {
+        // Ally Switch (priority +2) swaps the user and its ally's board
+        // positions. The engine only swaps the slot->team-index pointers, so
+        // every per-Pokémon state (boosts, status, HP, volatiles) rides with
+        // the mon automatically. PS data/moves.ts:allyswitch (swapPosition).
+        assert_eq!(
+            data::MOVES[data::move_id::ALLYSWITCH as usize].priority, 2,
+            "gen-9 Ally Switch is priority +2 (PS data/moves.ts:allyswitch)",
+        );
+
+        // P1 slot 0 (indeedee) knows Ally Switch (slot 0); slot 1 (armarouge)
+        // boosts with Swords Dance (no RNG draw). P2 both Calm Mind (no draw,
+        // no damage) so nothing faints or shifts positions.
+        let p1_json = r#"[
+            {"species":"indeedee","level":50,"ability":"innerfocus","nature":"timid","moves":["allyswitch","calmmind"],"evs":{"spe":252}},
+            {"species":"armarouge","level":50,"ability":"flashfire","nature":"modest","moves":["calmmind","allyswitch"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["calmmind"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["calmmind"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+
+        assert_eq!(b.p1.active, [0, 1], "slot 0 = indeedee (team 0), slot 1 = armarouge (team 1)");
+        let s0 = b.p1.active_mon(0).unwrap().species_id;
+        let s1 = b.p1.active_mon(1).unwrap().species_id;
+        assert_ne!(s0, s1);
+
+        // Stamp distinguishing per-mon state on the slot-0 occupant.
+        b.p1.team[0].boosts[0] = 2; // +2 Atk on indeedee
+        b.p1.team[0].status = crate::pokemon::Status::Burn;
+
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // indeedee: Ally Switch
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None }, // armarouge: Calm Mind
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+
+        // Positions swapped: indeedee now slot 1, armarouge slot 0.
+        assert_eq!(b.p1.active, [1, 0], "active slot pointers swapped");
+        assert_eq!(b.p1.active_mon(0).unwrap().species_id, s1, "ally now in slot 0");
+        assert_eq!(b.p1.active_mon(1).unwrap().species_id, s0, "user now in slot 1");
+
+        // The +2 Atk and Burn rode along with indeedee into slot 1.
+        assert_eq!(b.p1.active_mon(1).unwrap().boosts[0], 2, "boost rode with the mon");
+        assert_eq!(
+            b.p1.active_mon(1).unwrap().status,
+            crate::pokemon::Status::Burn,
+            "status rode with the mon",
+        );
+        assert_eq!(b.p1.active_mon(0).unwrap().boosts[0], 0, "ally's own state untouched");
+
+        // The consecutive-use chain volatile sits on the user; next-use
+        // failure denominator is 3 (PS effectState.counter after onStart).
+        assert!(
+            b.p1.active_mon(1).unwrap().volatiles.has(crate::pokemon::VolatileKind::AllySwitch),
+            "chain volatile on the user",
+        );
+        assert_eq!(b.p1.active_mon(1).unwrap().ally_switch_counter(), 3);
+    }
+
+    #[test]
+    fn ally_switch_fails_on_immediate_consecutive_use() {
+        // First use always succeeds (no draw). Re-used the very next turn it
+        // rolls randomChance(1, 3); we force the roll to FAIL with an oracle
+        // Range(1) event (range(3) != 0). PS data/moves.ts:allyswitch onRestart.
+        let p1_json = r#"[
+            {"species":"indeedee","level":50,"ability":"innerfocus","nature":"timid","moves":["allyswitch","swordsdance"],"evs":{"spe":252}},
+            {"species":"armarouge","level":50,"ability":"flashfire","nature":"modest","moves":["swordsdance","allyswitch"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["calmmind"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["calmmind"],"evs":{"hp":252}}
+        ]"#;
+        // OraclePartial: the only `range(n>1)` draw across the two turns is
+        // turn 2's Ally Switch roll (every other move is a no-draw status
+        // move; speed-tie `next_u64` draws fall back to splitmix without
+        // consuming the Range event). Range(1) -> range(3)==1 -> fail.
+        let rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(1)], 0);
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+
+        // Turn 1: first Ally Switch succeeds (counter 0 -> auto, no draw).
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // indeedee Ally Switch
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None }, // armarouge Swords Dance
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert_eq!(b.p1.active, [1, 0], "turn 1 swap succeeded");
+        // indeedee (team 0) is now in slot 1 with an active chain (denom 3).
+        assert_eq!(b.p1.team[0].ally_switch_counter(), 3, "chain armed for the next turn");
+
+        // Turn 2: indeedee re-uses Ally Switch from slot 1; the forced roll
+        // fails so NO swap happens and the chain resets.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // armarouge Swords Dance (now slot 0)
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None }, // indeedee Ally Switch (now slot 1)
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert_eq!(b.p1.active, [1, 0], "consecutive Ally Switch FAILED — positions unchanged");
+        assert!(
+            !b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::AllySwitch),
+            "failed roll cleared the chain volatile (resets to 100%)",
+        );
+        assert_eq!(b.p1.team[0].ally_switch_counter(), 0, "chain reset");
+    }
+
+    #[test]
+    fn ally_switch_repoints_ally_action_so_it_still_acts() {
+        // Ally Switch (+2) resolves before the ally's normal-priority move.
+        // After the slot swap the ally's queued action must "follow the mon"
+        // (PS binds actions to the Pokémon object): without the tail fix-up
+        // the switcher would act twice and the ally never would. We verify
+        // the ally's attack still lands on its foe target.
+        let p1_json = r#"[
+            {"species":"indeedee","level":50,"ability":"innerfocus","nature":"timid","moves":["allyswitch","swordsdance"],"evs":{"spe":252}},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["dragonclaw","swordsdance"],"evs":{"atk":252}}
+        ]"#;
+        // P2 mons Calm Mind (no protect, no damage) so Garchomp's Dragon Claw
+        // can connect with P2 slot 0 and nothing KOs the P1 side.
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["calmmind"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["calmmind"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+
+        let foe_max = b.p2.active_mon(0).unwrap().stats.hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // indeedee Ally Switch (+2)
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Garchomp Dragon Claw
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+
+        assert_eq!(b.p1.active, [1, 0], "single swap (switcher did not act twice)");
+        assert!(
+            b.p2.active_mon(0).unwrap().current_hp < foe_max,
+            "the ally's Dragon Claw still resolved on its foe after the swap",
+        );
+        // The chain volatile is on indeedee (the user), not Garchomp.
+        assert!(
+            b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::AllySwitch),
+            "chain volatile on the Ally Switch user",
+        );
+        assert!(
+            !b.p1.team[1].volatiles.has(crate::pokemon::VolatileKind::AllySwitch),
+            "ally did not use Ally Switch",
         );
     }
 
