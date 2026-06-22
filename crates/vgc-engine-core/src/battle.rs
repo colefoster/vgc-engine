@@ -117,6 +117,49 @@ pub enum StepResult {
     Ended { winner: Option<SideRef> },
 }
 
+/// A pending Future Sight / Doom Desire hit, keyed in `Battle::future_pending`
+/// by the TARGET `[side][slot]`. PS stores this as a `futuremove`
+/// slotCondition on the target slot (`data/moves.ts:futuresight` /
+/// `doomdesire` + the shared `futuremove` condition in
+/// `data/conditions.ts:379-423`). Only the move identity is snapshotted; at
+/// resolution PS re-uses the LIVE original source Pokémon (`data.source`) as
+/// attacker — so its current stats / STAB / ability apply, not a frozen copy.
+/// We mirror that by storing the source's side + stable team index and
+/// recomputing damage against whoever occupies the target slot at resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FutureEffect {
+    /// End-of-turn countdown. Set to 3 when the move is used; decremented
+    /// once per end-of-turn; the hit lands the turn it reaches 0 — i.e. at
+    /// the end of the turn two turns after use (PS `endingTurn = turn+1`,
+    /// fires when `getOverflowedTurnCount() >= endingTurn`).
+    pub turns: u8,
+    /// Source side (0 = P1, 1 = P2).
+    pub source_side: u8,
+    /// Stable index into the source side's `team` of the original user.
+    /// Used to fetch the LIVE source at resolution even if it has switched
+    /// out — matches PS keeping the `data.source` object reference.
+    pub source_team_idx: u8,
+    /// The future move (`FUTURESIGHT` or `DOOMDESIRE`) — provides BP / type.
+    pub move_id: u16,
+}
+
+/// A pending Wish heal, keyed in `Battle::wish_pending` by the WISHER's
+/// `[side][slot]`. PS stores this as a `Wish` slotCondition on the user's
+/// slot (`data/moves.ts:wish` lines 20925-20961). The heal amount is
+/// snapshotted from the wisher (`effectState.hp = source.maxhp / 2`) at use
+/// time; at resolution it heals whoever currently occupies that slot (the
+/// replacement, if the wisher switched out), and is cancelled by Heal Block
+/// on the receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WishEffect {
+    /// End-of-turn countdown. Set to 2 when used; the heal lands when it
+    /// reaches 0 — the end of the turn AFTER use (PS skips the use-turn's
+    /// residual via `getOverflowedTurnCount() <= startingTurn`).
+    pub turns: u8,
+    /// Snapshotted heal amount: `floor(wisher.maxhp / 2)`.
+    pub heal: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
     pub config: BattleConfig,
@@ -172,6 +215,18 @@ pub struct Battle {
     /// `None` between resolutions. Copy field, hot-loop safe. PS
     /// `data/moves.ts:allyswitch` (`this.swapPosition`).
     ally_switch_pending: Option<SideRef>,
+    /// Delayed-effect queue for Future Sight / Doom Desire, indexed
+    /// `[target_side][target_slot]`. Fixed-capacity (2 sides × 2 slots) so
+    /// it never allocates in `step()`; `None` = no pending hit on that slot.
+    /// At most one future move per slot (PS `addSlotCondition` fails if one
+    /// already pends). See [`FutureEffect`].
+    future_pending: [[Option<FutureEffect>; 2]; 2],
+    /// Delayed-effect queue for Wish, indexed `[wisher_side][wisher_slot]`.
+    /// Same fixed-capacity, alloc-free shape as `future_pending`. A slot may
+    /// hold BOTH a pending Wish (here) AND a pending future move (foe's
+    /// Future Sight) — PS tracks them as independent slotConditions. See
+    /// [`WishEffect`].
+    wish_pending: [[Option<WishEffect>; 2]; 2],
     rng: Rng,
     turn: u32,
     ended: Option<Option<SideRef>>,
@@ -224,6 +279,8 @@ impl Battle {
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             ally_switch_pending: None,
+            future_pending: [[None; 2]; 2],
+            wish_pending: [[None; 2]; 2],
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2534,6 +2591,46 @@ impl Battle {
             }
             // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
+        }
+
+        // Future Sight / Doom Desire — delayed damaging moves. PS
+        // `data/moves.ts:futuresight` (6391-6425) / `doomdesire` (3846-3877)
+        // run an `onTry` that calls `addSlotCondition(target, 'futuremove')`
+        // on the TARGET slot and returns `NOT_FAIL` WITHOUT hitting now; the
+        // hit lands two turns later (shared `futuremove` condition,
+        // `data/conditions.ts:379-423`, `onResidualOrder: 3`). PP is already
+        // charged above (PS deducts before the move's `onTry`). We intercept
+        // here — BEFORE the Protean / Libero block below — because PS's
+        // Protean explicitly skips moves with `flags['futuremove']`. Fails
+        // (no enqueue) if a future move already pends on that slot
+        // (`addSlotCondition` returns false). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Future_Sight_(move)>.
+        if matches!(move_id, data::move_id::FUTURESIGHT | data::move_id::DOOMDESIRE) {
+            let opp = actor_side.opposing();
+            let tslot = match target {
+                Some(Target { side, slot }) if side == opp => slot,
+                _ => {
+                    let n = self.format().active_count() as u8;
+                    (0..n)
+                        .find(|&s| {
+                            self.side(opp)
+                                .active_mon(s as usize)
+                                .is_some_and(|p| p.is_alive())
+                        })
+                        .unwrap_or(0)
+                }
+            };
+            // Fail if a future move already pends on the target slot.
+            if self.future_pending[opp as usize][tslot as usize].is_none() {
+                let src_idx = self.side(actor_side).active[actor_slot as usize];
+                self.future_pending[opp as usize][tslot as usize] = Some(FutureEffect {
+                    turns: 3,
+                    source_side: actor_side as u8,
+                    source_team_idx: src_idx,
+                    move_id,
+                });
+            }
+            return;
         }
 
         // Protean / Libero — PS `data/abilities.ts:3452` / `:2273`
@@ -5927,6 +6024,104 @@ impl Battle {
         cure_status_berry_if_matching(self, side, slot);
     }
 
+    /// Deliver one Future Sight / Doom Desire hit at end-of-turn. The
+    /// attacker is the LIVE original source (fetched by stored side + stable
+    /// team index, even if it has switched out — PS keeps the `data.source`
+    /// reference); the defender is whoever currently occupies the target
+    /// slot. Damage flows through the normal [`calculate_damage`] (type
+    /// effectiveness, STAB, weather / terrain / screens / auras) — PS runs the
+    /// full `trySpreadMoveHit` pipeline. Crit and attacker item-BP multipliers
+    /// (Life Orb, Expert Belt) are intentionally not applied to this residual
+    /// hit; future moves are vanishingly rare in the corpus and the coupling
+    /// isn't worth it. PS `data/conditions.ts:394-422`.
+    fn resolve_future_hit(&mut self, tside: SideRef, tslot: u8, entry: FutureEffect) {
+        // Skip if the target slot is empty or its occupant fainted.
+        let target_alive = self
+            .side(tside)
+            .active_mon(tslot as usize)
+            .is_some_and(|m| m.is_alive());
+        if !target_alive {
+            return;
+        }
+        let src_side = if entry.source_side == 0 { SideRef::P1 } else { SideRef::P2 };
+        let src_idx = entry.source_team_idx as usize;
+        // Source must still exist on the team.
+        if self.side(src_side).team.get(src_idx).is_none() {
+            return;
+        }
+        // PS fails the hit if `target === data.source`. Cross-side future
+        // moves can never share a Pokémon, but guard for completeness.
+        if src_side == tside
+            && self.side(src_side).active[tslot as usize] as usize == src_idx
+        {
+            return;
+        }
+
+        // Damage-context scalars — gathered before borrowing attacker/defender.
+        let weather = self.effective_weather();
+        let (fairy_aura_active, dark_aura_active, aura_break_active) = scan_aura_field(self);
+        let attacker_total_fainted_allies = self.side(src_side).total_fainted();
+        let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
+        let def_conds = self.side(tside).conditions;
+        let def_grounded = self
+            .side(tside)
+            .active_mon(tslot as usize)
+            .is_some_and(|d| d.is_grounded());
+        let active_terrain = if def_grounded {
+            self.terrain
+        } else {
+            crate::terrain::Terrain::None
+        };
+        // This residual hit isn't part of the recorded move-phase RNG stream
+        // the golden harness feeds, so don't consume from the oracle hint
+        // queue. OraclePartial / Splitmix draw deterministically; strict
+        // Oracle uses a fixed mid bucket rather than popping an unrelated
+        // event.
+        let roll = match &self.rng {
+            Rng::Oracle(_) => 7,
+            _ => self.rng.damage_roll(),
+        };
+
+        let dmg = {
+            let attacker = &self.side(src_side).team[src_idx];
+            let defender = match self.side(tside).active_mon(tslot as usize) {
+                Some(d) => d,
+                None => return,
+            };
+            calculate_damage(
+                attacker,
+                defender,
+                entry.move_id,
+                DamageContext {
+                    crit: false,
+                    roll,
+                    is_spread: false,
+                    weather,
+                    terrain: active_terrain,
+                    defender_has_reflect: def_conds.reflect_turns > 0,
+                    defender_has_light_screen: def_conds.light_screen_turns > 0,
+                    defender_has_aurora_veil: def_conds.aurora_veil_turns > 0,
+                    is_doubles,
+                    fairy_aura_active,
+                    dark_aura_active,
+                    aura_break_active,
+                    attacker_total_fainted_allies,
+                    attacker_stats: None,
+                    defender_stats: None,
+                    pursuit_doubled: false,
+                },
+            )
+        };
+        if dmg > 0 {
+            if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                d.current_hp = d.current_hp.saturating_sub(dmg);
+                if d.current_hp == 0 {
+                    d.fainted = true;
+                }
+            }
+        }
+    }
+
     /// End-of-turn residuals: damage / heal sources that fire each turn
     /// after move resolution. Currently: item residuals (Leftovers),
     /// status DOT (burn/poison/toxic), sand weather damage. Subsequent
@@ -6005,6 +6200,71 @@ impl Battle {
                             m.fainted = true;
                         }
                     }
+                }
+            }
+        }
+
+        // 3. Future Sight / Doom Desire delivery — PS `data/conditions.ts`
+        //    `futuremove` `onResidualOrder: 3`. Fires after weather chip but
+        //    BEFORE Wish (4), Leftovers (5), and all status chip (>=9). Each
+        //    pending entry's countdown ticks here; the hit lands the turn it
+        //    reaches 0 (two turns after use). Damage is recomputed against the
+        //    LIVE source vs the current slot occupant.
+        for tside in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count();
+            for tslot in 0..n {
+                let entry = match self.future_pending[tside as usize][tslot] {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let remaining = entry.turns.saturating_sub(1);
+                if remaining > 0 {
+                    if let Some(e) = self.future_pending[tside as usize][tslot].as_mut() {
+                        e.turns = remaining;
+                    }
+                    continue;
+                }
+                // Time's up: clear the slot, then deliver the hit.
+                self.future_pending[tside as usize][tslot] = None;
+                self.resolve_future_hit(tside, tslot as u8, entry);
+            }
+        }
+
+        // 4. Wish heal — PS `data/moves.ts:wish` `onResidualOrder: 4`. After
+        //    future-move damage, before Leftovers / status chip. Heals the
+        //    CURRENT occupant of the wisher's slot (a switch-in inherits it);
+        //    cancelled by Heal Block on the receiver (PS `onTryHeal`); skipped
+        //    if the slot is empty or its occupant fainted.
+        for wside in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count();
+            for wslot in 0..n {
+                let entry = match self.wish_pending[wside as usize][wslot] {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let remaining = entry.turns.saturating_sub(1);
+                if remaining > 0 {
+                    if let Some(e) = self.wish_pending[wside as usize][wslot].as_mut() {
+                        e.turns = remaining;
+                    }
+                    continue;
+                }
+                self.wish_pending[wside as usize][wslot] = None;
+                let blocked = self
+                    .side(wside)
+                    .active_mon(wslot)
+                    .map(|m| {
+                        !m.is_alive()
+                            || m.volatiles
+                                .get(crate::pokemon::VolatileKind::HealBlock)
+                                .is_some()
+                    })
+                    .unwrap_or(true);
+                if blocked {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(wside).active_mon_mut(wslot) {
+                    m.current_hp = m.current_hp.saturating_add(entry.heal).min(m.stats.hp);
                 }
             }
         }
@@ -7857,6 +8117,25 @@ impl Battle {
                     a.set_sleep_turns(3);
                 }
             }
+            data::move_id::WISH => {
+                // Wish — delayed self/slot heal. PS data/moves.ts:wish
+                // (20925-20961): a `Wish` slotCondition on the USER's slot.
+                // `onStart` snapshots `effectState.hp = source.maxhp / 2`
+                // (integer floor, from the WISHER); the heal fires at the END
+                // of the NEXT turn (`onResidualOrder: 4`) on whoever then
+                // occupies that slot — the replacement, if the wisher switched
+                // out. Fails (no effect) if a Wish already pends on this slot
+                // (`addSlotCondition` returns false). PP was already charged
+                // upstream. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Wish_(move)>.
+                if self.wish_pending[actor_side as usize][actor_slot as usize].is_none() {
+                    if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+                        let heal = a.stats.hp / 2;
+                        self.wish_pending[actor_side as usize][actor_slot as usize] =
+                            Some(WishEffect { turns: 2, heal });
+                    }
+                }
+            }
             data::move_id::RECOVER | data::move_id::SOFTBOILED | data::move_id::SLACKOFF
             | data::move_id::MILKDRINK | data::move_id::ROOST
             | data::move_id::SYNTHESIS | data::move_id::MORNINGSUN
@@ -8995,6 +9274,151 @@ mod tests {
 
     fn t(side: SideRef, slot: u8) -> Target {
         Target { side, slot }
+    }
+
+    // ---- Delayed-effect subsystem: Wish / Future Sight / Doom Desire ----
+
+    fn singles(p1_json: &str, p2_json: &str) -> Battle {
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2)
+    }
+
+    #[test]
+    fn wish_heals_slot_two_turns_later_even_after_switch() {
+        // Wisher (gardevoir) uses Wish, then switches to a hurt teammate
+        // (blissey). PS: the heal lands at the END of the turn AFTER use,
+        // on whoever then occupies the slot, for floor(WISHER.maxhp / 2).
+        let p1 = r#"[
+            {"species":"gardevoir","level":50,"ability":"synchronize","nature":"timid","moves":["wish","splash","calmmind","moonblast"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled","splash","calmmind","seismictoss"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+
+        let wisher_max = b.p1.team[0].stats.hp;
+        let expected_heal = wisher_max / 2;
+        // Hurt the benched receiver so the heal is observable (and uncapped).
+        b.p1.team[1].current_hp = 1;
+
+        // Turn 1: P1 uses Wish (self), P2 splashes.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.wish_pending[0][0].is_some(), "Wish enqueued on P1 slot 0");
+        assert_eq!(b.wish_pending[0][0].unwrap().heal, expected_heal);
+        assert_eq!(b.p1.team[1].current_hp, 1, "receiver not healed yet (turn 1)");
+
+        // Turn 2: P1 switches to blissey (receiver). End of turn 2 the Wish
+        // resolves on the slot's new occupant.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.wish_pending[0][0].is_none(), "Wish consumed at end of turn 2");
+        assert_eq!(
+            b.p1.team[1].current_hp,
+            1 + expected_heal,
+            "switch-in healed for floor(WISHER maxhp / 2)"
+        );
+    }
+
+    #[test]
+    fn second_wish_on_pending_slot_fails() {
+        // A second Wish on a slot that already has one pending must FAIL
+        // (no re-enqueue, no reset of the timer) — PS `addSlotCondition`
+        // returns false. Observable: the heal still lands on the ORIGINAL
+        // schedule (end of turn 2), not delayed to turn 3.
+        let p1 = r#"[
+            {"species":"gardevoir","level":50,"ability":"synchronize","nature":"timid","moves":["wish","splash","calmmind","moonblast"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+        b.p1.team[0].current_hp = 1;
+
+        // Turn 1: Wish.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.wish_pending[0][0].is_some());
+        assert_eq!(b.wish_pending[0][0].unwrap().turns, 1, "ticked once after turn 1");
+
+        // Turn 2: Wish AGAIN while one is pending — must be a no-op enqueue.
+        // The original (turns==1) ticks to 0 and heals at end of this turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(
+            b.wish_pending[0][0].is_none(),
+            "original Wish resolved on schedule; the 2nd did not reset the timer"
+        );
+        assert!(b.p1.team[0].current_hp > 1, "wisher healed at end of turn 2");
+    }
+
+    #[test]
+    fn future_sight_strikes_target_two_turns_later_with_typing() {
+        // Future Sight deals NO damage on use; the hit lands at the end of
+        // the turn two turns later, as Psychic special damage. A Dark-type
+        // target is immune (type effectiveness applies at resolution).
+        let attacker = r#"[
+            {"species":"gardevoir","level":50,"ability":"synchronize","item":"choicespecs","nature":"modest","evs":{"spa":252},"moves":["futuresight","splash","calmmind","moonblast"]}
+        ]"#;
+        let neutral_target = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","evs":{"hp":252},"moves":["splash","swordsdance","dragondance","irondefense"]}
+        ]"#;
+        let dark_target = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","evs":{"hp":252},"moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+
+        // Neutral target: takes damage exactly at end of turn 3.
+        let mut b = singles(attacker, neutral_target);
+        let before = b.p2.team[0].current_hp;
+        // Turn 1: Future Sight (no immediate damage).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.future_pending[1][0].is_some(), "Future Sight enqueued on target slot");
+        assert_eq!(b.p2.team[0].current_hp, before, "no damage on use (turn 1)");
+        // Turn 2: still pending, no damage.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, before, "no damage on turn 2");
+        // Turn 3: the hit lands at end of turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.future_pending[1][0].is_none(), "Future Sight consumed at end of turn 3");
+        assert!(
+            b.p2.team[0].current_hp < before,
+            "neutral (Psychic-vulnerable) target struck two turns later"
+        );
+
+        // Dark-type target: Psychic is immune → no damage at resolution.
+        let mut b2 = singles(attacker, dark_target);
+        let dark_before = b2.p2.team[0].current_hp;
+        for turn in 0..3 {
+            let p1_move = if turn == 0 { 0 } else { 1 };
+            let target = if turn == 0 { Some(t(SideRef::P2, 0)) } else { None };
+            b2.step(
+                &[Choice::Move { actor_slot: 0, move_slot: p1_move, target }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+        }
+        assert_eq!(
+            b2.p2.team[0].current_hp, dark_before,
+            "Dark-type target is immune to the Psychic Future Sight hit"
+        );
     }
 
     #[test]
