@@ -204,6 +204,15 @@ impl FinalStats {
 pub enum VolatileKind {
     #[default]
     None = 0,
+    /// Taunt lockout (PS `data/moves.ts:taunt` `condition`, `duration: 3`).
+    /// Applied to the target by the Taunt move. While present, every
+    /// Status-category move (`MoveDef::category == 2`, except Me First) is
+    /// undisplayable — filtered out of `legal_choices` (PS `onDisableMove`)
+    /// and made to fail if somehow dispatched (PS `onBeforeMove`). The
+    /// duration is bumped to 4 on apply when the target has already acted
+    /// this turn (PS `onStart`: `activeTurns && !willMove`). Decremented each
+    /// end of turn alongside Disable / Throat Chop (PS `onResidualOrder 15`);
+    /// drops at 0. Payload unused.
     Taunt,
     Disable,
     Confusion,
@@ -1390,6 +1399,52 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::ThroatChop);
+        }
+    }
+
+    /// Remaining Taunt turns. `0` if not taunted. While > 0 the holder
+    /// cannot select or use Status-category moves. PS
+    /// `data/moves.ts:taunt` condition `duration: 3`.
+    #[inline]
+    pub fn taunt_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Taunt)
+            .map(|v| v.turns_remaining)
+            .unwrap_or(0)
+    }
+
+    /// Apply the Taunt lockout for `turns` (PS uses `duration: 3`, bumped
+    /// to 4 on apply if the target has already acted this turn). Re-
+    /// application replaces (PS `addVolatile` resets the duration).
+    /// `turns == 0` clears instead.
+    #[inline]
+    pub fn set_taunt(&mut self, turns: u8) {
+        if turns == 0 {
+            self.volatiles.remove(VolatileKind::Taunt);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::Taunt,
+                turns_remaining: turns,
+                payload: 0,
+            });
+        }
+    }
+
+    /// End-of-turn Taunt countdown — mirrors `tick_throat_chop`. PS
+    /// `data/moves.ts:taunt` condition `onResidualOrder 15`.
+    #[inline]
+    pub fn tick_taunt(&mut self) {
+        let Some(pos) = self.volatiles.position(VolatileKind::Taunt) else { return };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::Taunt);
         }
     }
 
