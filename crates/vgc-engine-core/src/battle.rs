@@ -1030,7 +1030,11 @@ impl Battle {
         // |move| event BEFORE the |switch| event for the same slot in
         // a turn, so the runner naturally orders them this way.
         let mut moved_slot: [bool; 2] = [false; 2];
-        let mut switched_slots: Vec<u8> = Vec::new();
+        // Newly-switched-in slots, bounded by active_count (≤ 2 in doubles).
+        // Fixed stack array + count — no heap, so `step()` stays alloc-free
+        // (AGENTS.md rule 4).
+        let mut switched_slots: [u8; 2] = [0; 2];
+        let mut n_switched = 0usize;
         for c in choices {
             match *c {
                 Choice::Move { actor_slot, .. }
@@ -1048,8 +1052,11 @@ impl Battle {
                     // Pursuit interception — an opposing Pursuit user hits
                     // this voluntary switcher BEFORE it leaves, at 2× BP.
                     self.try_pursuit_interception(side, actor_slot, opp_choices);
-                    if self.do_switch(side, actor_slot, team_index) {
-                        switched_slots.push(actor_slot);
+                    if self.do_switch(side, actor_slot, team_index)
+                        && n_switched < switched_slots.len()
+                    {
+                        switched_slots[n_switched] = actor_slot;
+                        n_switched += 1;
                     }
                 }
                 Choice::Pass { .. } => {}
@@ -1061,7 +1068,7 @@ impl Battle {
         // Hazards already fired in `do_switch`. Forme change (e.g.
         // Ogerpon mask transformations, Aegislash Blade/Shield) is a
         // separate per-species concern still TBD.
-        for slot in switched_slots {
+        for &slot in &switched_slots[..n_switched] {
             crate::ability::on_switch_in(self, side, slot);
             crate::item::on_switch_in(self, side, slot);
         }
@@ -1504,7 +1511,14 @@ impl Battle {
             // Build "deferred" set: Switches that came AFTER a Move for
             // the same slot. Identical predicate as apply_switches above.
             let mut moved_slot: [bool; 2] = [false; 2];
-            let mut deferred: Vec<(u8, u8)> = Vec::new();
+            // Deferred (actor_slot, team_index) follow-up switches. Only
+            // slots < 2 are ever pushed, so a fixed 2-entry stack array
+            // suffices — no heap, keeping `step()` alloc-free (AGENTS.md
+            // rule 4). `consumed` is the fixed-array analogue of the prior
+            // `Vec::remove(pos)`: each deferred entry is popped at most once.
+            let mut deferred: [(u8, u8); 2] = [(0, 0); 2];
+            let mut consumed: [bool; 2] = [false; 2];
+            let mut n_deferred = 0usize;
             for c in choices {
                 match *c {
                     Choice::Move { actor_slot, .. }
@@ -1515,15 +1529,20 @@ impl Battle {
                         }
                     }
                     Choice::Switch { actor_slot, team_index } => {
-                        if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
-                            deferred.push((actor_slot, team_index));
+                        if (actor_slot as usize) < 2
+                            && moved_slot[actor_slot as usize]
+                            && n_deferred < deferred.len()
+                        {
+                            deferred[n_deferred] = (actor_slot, team_index);
+                            n_deferred += 1;
                         }
                     }
                     Choice::Pass { .. } => {}
                 }
             }
             let n = self.format().active_count() as u8;
-            let mut switched_slots: Vec<u8> = Vec::new();
+            let mut switched_slots: [u8; 2] = [0; 2];
+            let mut n_switched = 0usize;
             for slot in 0..n {
                 let pending = self
                     .side(side)
@@ -1537,15 +1556,22 @@ impl Battle {
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     m.set_pending_self_switch(false);
                 }
-                // Find the first deferred switch matching this slot and
-                // pop it. If none is queued, the switch silently fails.
-                let Some(pos) = deferred.iter().position(|&(s, _)| s == slot) else { continue };
-                let (_, team_index) = deferred.remove(pos);
-                if self.do_switch(side, slot, team_index) {
-                    switched_slots.push(slot);
+                // Find the first unconsumed deferred switch matching this
+                // slot and pop it. If none is queued, the switch silently
+                // fails.
+                let Some(pos) = (0..n_deferred)
+                    .find(|&i| !consumed[i] && deferred[i].0 == slot)
+                else {
+                    continue;
+                };
+                consumed[pos] = true;
+                let team_index = deferred[pos].1;
+                if self.do_switch(side, slot, team_index) && n_switched < switched_slots.len() {
+                    switched_slots[n_switched] = slot;
+                    n_switched += 1;
                 }
             }
-            for slot in switched_slots {
+            for &slot in &switched_slots[..n_switched] {
                 crate::ability::on_switch_in(self, side, slot);
                 crate::item::on_switch_in(self, side, slot);
             }
