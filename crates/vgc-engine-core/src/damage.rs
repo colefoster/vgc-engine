@@ -1419,6 +1419,26 @@ pub fn calculate_damage(
         a = (a * 6144 / 4096).max(1);
     }
 
+    // Huge Power / Pure Power — PS `data/abilities.ts:hugepower` / `purepower`:
+    //   onModifyAtkPriority: 5,
+    //   onModifyAtk(atk) { return this.chainModify(2); }
+    // Doubles the holder's effective Attack stat (physical reads only —
+    // `onModifyAtk`). NOT in PS's breakable list — Mold Breaker does NOT
+    // bypass an own offensive ability. ×2 = chainModify(2) = 8192/4096,
+    // exact in pokeRound, so plain ×2 matches PS bit-for-bit. Powers the
+    // top Reg M Megas: Mega Mawile (Huge Power) and Mega Medicham (Pure
+    // Power), plus Azumarill / Diggersby. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Huge_Power_(Ability)> /
+    // <https://bulbapedia.bulbagarden.net/wiki/Pure_Power_(Ability)>.
+    if physical
+        && matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::HUGEPOWER | data::ability_id::PUREPOWER
+        )
+    {
+        a = (a * 2).max(1);
+    }
+
     // Marvel Scale — PS `data/abilities.ts:marvelscale`:
     //   onModifyDef(def, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -2808,6 +2828,65 @@ mod tests {
         let ratio_x100 = (gt_phys as u32) * 100 / (base_phys.max(1) as u32);
         assert!((146..=154).contains(&ratio_x100),
             "Gorilla Tactics ≈ ×1.5 Atk, got ×{ratio_x100}/100");
+    }
+
+    #[test]
+    fn huge_pure_power_double_physical_atk_only() {
+        // Huge Power / Pure Power ×2 Atk on physical moves; special moves
+        // unaffected (onModifyAtk only). PS data/abilities.ts:hugepower /
+        // purepower → chainModify(2). Mega Medicham (Pure Power) and Mega
+        // Mawile / Azumarill (Huge Power) depend on this.
+        let mut atk = make_mon("medicham", 50, "hardy",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 252, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false });
+        let phys = move_id("earthquake"); // physical
+        let spec = move_id("psychic"); // special
+        let base_phys = mk(&atk, phys);
+        let base_spec = mk(&atk, spec);
+        for slug in ["purepower", "hugepower"] {
+            let id = data::ABILITIES.iter()
+                .position(|a| a.slug == slug).unwrap() as u16;
+            atk.ability_id = id;
+            let boosted_phys = mk(&atk, phys);
+            let boosted_spec = mk(&atk, spec);
+            // ×2 Atk is linear in damage's base term; expect ~2× (rounding slack).
+            let ratio_x100 = (boosted_phys as u32) * 100 / (base_phys.max(1) as u32);
+            assert!((196..=204).contains(&ratio_x100),
+                "{slug} ≈ ×2 physical Atk, got ×{ratio_x100}/100");
+            assert_eq!(boosted_spec, base_spec,
+                "{slug} must NOT touch special damage");
+        }
+    }
+
+    #[test]
+    fn pure_power_matches_calc_oracle() {
+        // Independent calc-oracle check (@smogon/calc, neutral nature):
+        //   "252 Atk Pure Power Medicham-Mega Drain Punch vs. 0 HP / 0 Def
+        //    Snorlax: 306-360 (130.2 - 153.1%)"
+        // Neutral nature on both sides so the engine matches the calc's
+        // nature-less default. roll 0 = 85% (min), roll 15 = 100% (max).
+        let mut atk = make_mon("medichammega", 50, "hardy",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 0 });
+        atk.ability_id = data::ability_id::PUREPOWER;
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |roll: u8| calculate_damage(&atk, &def, move_id("drainpunch"),
+            DamageContext { crit: false, roll, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false });
+        assert_eq!(mk(DamageContext::MIN_ROLL), 306, "calc min roll");
+        assert_eq!(mk(DamageContext::MAX_ROLL), 360, "calc max roll");
     }
 
     #[test]
