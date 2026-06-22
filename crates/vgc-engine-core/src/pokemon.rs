@@ -387,6 +387,18 @@ pub enum VolatileKind {
     /// end of turn alongside Disable / Encore (PS `onResidualOrder 22`);
     /// drops at 0. Payload unused.
     ThroatChop,
+    /// Ally Switch consecutive-use tracker (PS `data/moves.ts:allyswitch`
+    /// `condition`, `duration: 2`, `counterMax: 729`). Added/refreshed on
+    /// every successful Ally Switch use. `payload` holds the failure-roll
+    /// denominator for the NEXT consecutive use (PS `effectState.counter`):
+    /// `3` after the first success, then ×3 per consecutive success, capped
+    /// at `729` (= 3^6). While present, a fresh Ally Switch use is a
+    /// `randomChance(1, payload)` success roll (PS `onRestart`); on a failed
+    /// roll the volatile is deleted and the move fails. `turns_remaining`
+    /// carries the duration so the chain breaks the moment a turn passes
+    /// without re-using the move (ticked end-of-turn alongside Throat Chop).
+    /// Cleared on switch-out (`volatiles.clear()`).
+    AllySwitch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1416,6 +1428,54 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::ThroatChop);
+        }
+    }
+
+    /// Failure-roll denominator for the next consecutive Ally Switch use,
+    /// or `0` if no `AllySwitch` volatile is active (the next use is the
+    /// start of a chain and always succeeds). PS `effectState.counter`.
+    #[inline]
+    pub fn ally_switch_counter(&self) -> u32 {
+        self.volatiles.get(VolatileKind::AllySwitch).map(|v| v.payload).unwrap_or(0)
+    }
+
+    /// Add/refresh the Ally Switch consecutive-use volatile with the given
+    /// next-use denominator (PS `addVolatile` resetting `duration` to 2 on
+    /// `onStart`/`onRestart`). Re-application replaces.
+    #[inline]
+    pub fn set_ally_switch_volatile(&mut self, next_counter: u32) {
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::AllySwitch,
+            turns_remaining: 2,
+            payload: next_counter,
+        });
+    }
+
+    /// Drop the Ally Switch volatile (PS `delete pokemon.volatiles['allyswitch']`
+    /// on a failed consecutive-use roll — the chain resets to 100%).
+    #[inline]
+    pub fn clear_ally_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::AllySwitch);
+    }
+
+    /// End-of-turn Ally Switch countdown — mirrors `tick_throat_chop`. PS
+    /// `data/moves.ts:allyswitch` condition `duration: 2`: the volatile
+    /// survives the use-turn and the immediately following turn, so using
+    /// the move on two consecutive turns keeps the chain alive while a
+    /// one-turn gap lets it expire (counter resets to 100%).
+    #[inline]
+    pub fn tick_ally_switch(&mut self) {
+        let Some(pos) = self.volatiles.position(VolatileKind::AllySwitch) else { return };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::AllySwitch);
         }
     }
 
