@@ -597,7 +597,7 @@ mod tests {
                 fairy_aura_active: false, dark_aura_active: false, aura_break_active: false,
                 attacker_total_fainted_allies: 0,
                 attacker_stats: None, defender_stats: None,
-                pursuit_doubled: false,
+                pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));

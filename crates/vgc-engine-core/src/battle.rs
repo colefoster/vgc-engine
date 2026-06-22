@@ -4120,6 +4120,40 @@ impl Battle {
             // derivation from team state; see `Side::total_fainted`.
             let attacker_total_fainted_allies =
                 self.side(actor_side).total_fainted();
+            // Ally damage-boost abilities — Power Spot / Battery / Steely
+            // Spirit. PS fires these via `onAllyBasePower` from every holder
+            // on the attacker's side. Power Spot / Battery gate on
+            // `attacker !== holder` (partner slot only); Steely Spirit has
+            // no such gate, so it counts the attacker's own holder too and
+            // stacks ×1.5 per holder. `effective_ability_id` respects Gastro
+            // Acid / Neutralizing Gas suppression. Doubles-relevant; in
+            // singles only a self-Steely-Spirit can fire.
+            let (ally_power_spot, ally_battery, steely_spirit_holders) = {
+                let n = self.format().active_count();
+                let mut power_spot = false;
+                let mut battery = false;
+                let mut steely = 0u8;
+                for s in 0..n {
+                    if let Some(mon) = self.side(actor_side).active_mon(s) {
+                        if !mon.is_alive() {
+                            continue;
+                        }
+                        let ab = mon.effective_ability_id();
+                        if s != actor_slot as usize {
+                            if ab == data::ability_id::POWERSPOT {
+                                power_spot = true;
+                            }
+                            if ab == data::ability_id::BATTERY {
+                                battery = true;
+                            }
+                        }
+                        if ab == data::ability_id::STEELYSPIRIT {
+                            steely += 1;
+                        }
+                    }
+                }
+                (power_spot, battery, steely)
+            };
             // Roll the damage bucket. Oracle / OraclePartial paths may
             // consume a `DamageHint(target)` from their queue and
             // back-solve the matching bucket against the live (min, max)
@@ -4147,6 +4181,7 @@ impl Battle {
                             defender_stats: Some(def_stats_ovr),
                             pursuit_doubled: move_id == data::move_id::PURSUIT
                                 && self.pursuit_intercepting,
+                            ally_power_spot, ally_battery, steely_spirit_holders,
                         };
                         let (lo, hi) = crate::damage::damage_range_in_ctx(
                             &attacker, &defender, move_id, stub_ctx,
@@ -4169,6 +4204,7 @@ impl Battle {
                         defender_stats: Some(def_stats_ovr),
                         pursuit_doubled: move_id == data::move_id::PURSUIT
                             && self.pursuit_intercepting,
+                        ally_power_spot, ally_battery, steely_spirit_holders,
                     },
                 )
             };
@@ -12722,11 +12758,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -15487,11 +15523,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -18933,7 +18969,7 @@ mod tests {
         let mk = |tf: u8| {
             calculate_damage(&p1[0], &p2[0], lr_id, DamageContext {
                 roll: 15,
-                attacker_total_fainted_allies: tf, attacker_stats: None, defender_stats: None, pursuit_doubled: false,
+                attacker_total_fainted_allies: tf, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
                 ..DamageContext::default()
             })
         };
@@ -20399,7 +20435,7 @@ mod tests {
             r#"[{"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychic","shadowball","protect","calmmind"]}]"#,
         ).unwrap();
         let pid = data::move_id::PURSUIT;
-        let single = calculate_damage(&p1[0], &p2[0], pid, DamageContext { roll: 15, pursuit_doubled: false, ..Default::default() });
+        let single = calculate_damage(&p1[0], &p2[0], pid, DamageContext { roll: 15, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, ..Default::default() });
         let doubled = calculate_damage(&p1[0], &p2[0], pid, DamageContext { roll: 15, pursuit_doubled: true, ..Default::default() });
         assert!(single > 0, "Pursuit deals damage normally");
         assert!(doubled > single, "interception BP is higher");
