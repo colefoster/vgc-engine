@@ -4714,6 +4714,29 @@ impl Battle {
             );
         }
 
+        // Scale Shot — PS `data/moves.ts:scaleshot` (line 15785) carries a
+        // top-level `selfBoost: { boosts: { def: -1, spe: 1 } }`, NOT a
+        // per-hit secondary. PS applies it exactly once after the multihit
+        // loop and only if the move connected:
+        //   sim/battle-actions.ts:521
+        //   `if (move.selfBoost && moveResult) this.moveHit(pokemon, pokemon,
+        //    move, move.selfBoost, false, true);`
+        // We gate on `any_damage_dealt > 0` (the move's success proxy) so an
+        // immune / fully-blocked Scale Shot grants no boost. The multihit
+        // count itself is owned by the multihit subsystem; this only applies
+        // the once-after-hits stat change (spe+1, def-1). White Herb / Eject
+        // Pack react to the def drop exactly as for `self_stat_drops`.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scale_Shot_(move)>.
+        if m.slug == "scaleshot" && any_damage_dealt > 0 {
+            self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
+            // Mirror Herb copies the spe raise onto a foe.
+            crate::item::try_consume_mirror_herb_on_foe_boost(
+                self, actor_side, actor_slot, &[(4, 1)],
+            );
+            crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+            let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
+        }
+
         // Move recoil — Flare Blitz / Wild Charge / Brave Bird /
         // Double-Edge / Head Smash / Take Down / Wave Crash, etc.
         // PS sim/battle.ts:2173 gen>4 path:
@@ -8031,6 +8054,53 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
     })
 }
 
+/// Per-slug self-boost secondary: `(boosts, chance%)`. Damaging moves
+/// carrying `secondary: { chance, self: { boosts: { <stat>: +n } } }` in
+/// PS `data/moves.ts` — the user raises its OWN stat(s) on a hit. Boost
+/// indices match `Pokemon::boosts`: 0 atk, 1 def, 2 spa, 3 spd, 4 spe.
+/// Applied to the ATTACKER, not the defender. Serene Grace doubles the
+/// chance (PS doubles `secondary.chance`); Sheer Force strips the whole
+/// secondary (the caller skips `apply_secondary_effect` entirely when the
+/// move is Sheer-Force-boosted — PS deletes `move.secondaries` and with it
+/// the `secondary.self`). PS draws one `random(100)` per secondary
+/// regardless of chance (sim/battle-actions.ts:1364), so even 100% entries
+/// roll one `percent_1_100()`.
+///
+/// PS sources (data/moves.ts):
+///   poweruppunch:13877  chance:100 self.boosts.atk:1
+///   meteormash:11764    chance:20  self.boosts.atk:1
+///   metalclaw:11686     chance:10  self.boosts.atk:1
+///   chargebeam:2318     chance:70  self.boosts.spa:1
+///   fierydance:5237     chance:50  self.boosts.spa:1
+///   flamecharge:5587    chance:100 self.boosts.spe:1
+///   steelwing:17924     chance:10  self.boosts.def:1
+///   ancientpower:396 / silverwind:16462 / ominouswind:13020
+///                       chance:10  self.boosts {atk,def,spa,spd,spe}:1
+/// Scale Shot's self-boost is NOT here — it uses top-level `selfBoost`
+/// (def-1, spe+1) applied once after all multihits; see the caller.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Power-Up_Punch_(move)>.
+fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
+    Some(match slug {
+        // +1 Atk:
+        "poweruppunch" => (&[(0, 1)], 100),
+        "meteormash" => (&[(0, 1)], 20),
+        "metalclaw" => (&[(0, 1)], 10),
+        // +1 SpA:
+        "chargebeam" => (&[(2, 1)], 70),
+        "fierydance" => (&[(2, 1)], 50),
+        // +1 Spe:
+        "flamecharge" => (&[(4, 1)], 100),
+        // +1 Def:
+        "steelwing" => (&[(1, 1)], 10),
+        // +1 to all five main stats (Ancient Power / Silver Wind / Ominous
+        // Wind — the "elemental wind" family):
+        "ancientpower" | "silverwind" | "ominouswind" => {
+            (&[(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)], 10)
+        }
+        _ => return None,
+    })
+}
+
 /// Apply a move's secondary effect to the target. Covers flinch,
 /// status (burn/para/poison), and stat-drop secondaries. PS rolls each
 /// independently and per-target.
@@ -8043,24 +8113,6 @@ fn apply_secondary_effect(
     move_slug: &str,
     rng: &mut Rng,
 ) {
-    // Covert Cloak — PS `data/items.ts:covertcloak`:
-    //   onModifySecondaries(secondaries, target, source, move) {
-    //     return secondaries.filter(s => !!s.self);
-    //   }
-    // Strips every secondary that targets the defender (flinch, status,
-    // stat drops); self-targeted secondaries (e.g. Power-Up Punch's +1
-    // Atk on the user) pass through. All entries in our secondary tables
-    // (status_secondary / flinch_chance / stat_drop_secondary / Tri Attack
-    // / Dire Claw) target the defender, so the gate is total here.
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Covert_Cloak>.
-    let defender_has_covert_cloak = battle
-        .side(target_side)
-        .active_mon(target_slot as usize)
-        .map(|m| m.is_alive() && m.item_id == data::item_id::COVERTCLOAK)
-        .unwrap_or(false);
-    if defender_has_covert_cloak {
-        return;
-    }
     // Serene Grace — PS `data/abilities.ts:serenegrace` (line 4083):
     //   onModifyMovePriority: -2,
     //   onModifyMove(move) {
@@ -8087,6 +8139,48 @@ fn apply_secondary_effect(
     let sg = |chance: u8| -> u8 {
         if serene_grace { (chance as u16 * 2).min(100) as u8 } else { chance }
     };
+    // Self-boost-on-hit secondary — PS `secondary: { chance, self: {
+    // boosts: { <stat>: +n } } }`. The user raises its OWN stat(s); the
+    // boost lands on the ATTACKER, not the defender. This block sits BEFORE
+    // the Covert Cloak gate below because Covert Cloak's `onModifySecondaries`
+    // only strips secondaries that target the defender — `s.self` secondaries
+    // survive the filter (PS `data/items.ts:covertcloak`). One `random(100)`
+    // per secondary regardless of chance (sim/battle-actions.ts:1364), so we
+    // draw one `percent_1_100()` even for the 100% entries (Power-Up Punch,
+    // Flame Charge). All current entries are single-target (`target:"normal"`),
+    // so this fires once per resolution. (Scale Shot's def-1/spe+1 is a
+    // top-level `selfBoost`, applied once after the multihits — handled at the
+    // move-resolution site, not here.)
+    if let Some((boosts, chance)) = self_boost_secondary(move_slug) {
+        if rng.percent_1_100() <= sg(chance) {
+            // Source == target (self): no Mirror Armor reflect, positive
+            // boosts only. Clamps to +6 via the standard helper.
+            battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
+            // Mirror Herb — a foe copies the user's stat raise. PS
+            // `data/items.ts:mirrorherb.onFoeAfterBoost`.
+            crate::item::try_consume_mirror_herb_on_foe_boost(
+                battle, attacker_side, attacker_slot, boosts,
+            );
+        }
+    }
+    // Covert Cloak — PS `data/items.ts:covertcloak`:
+    //   onModifySecondaries(secondaries, target, source, move) {
+    //     return secondaries.filter(s => !!s.self);
+    //   }
+    // Strips every secondary that targets the defender (flinch, status,
+    // stat drops); self-targeted secondaries (handled above) already fired.
+    // The remaining secondary tables (status_secondary / flinch_chance /
+    // stat_drop_secondary / Tri Attack / Dire Claw) all target the defender,
+    // so the gate is total for everything below this point.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Covert_Cloak>.
+    let defender_has_covert_cloak = battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .map(|m| m.is_alive() && m.item_id == data::item_id::COVERTCLOAK)
+        .unwrap_or(false);
+    if defender_has_covert_cloak {
+        return;
+    }
     // PS rolls each secondary independently — a move can in principle
     // have multiple (none currently in our table, but the structure
     // tolerates it).
@@ -8629,6 +8723,66 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
         );
         assert_eq!(b.p1.team[0].pp[0], before - 1);
+    }
+
+    #[test]
+    fn power_up_punch_always_raises_attacker_atk() {
+        // PS data/moves.ts:poweruppunch — `secondary: { chance: 100, self:
+        // { boosts: { atk: 1 } } }`. 100% accuracy + 100% secondary ⇒ +1 Atk
+        // (boost index 0) on the ATTACKER on every connecting hit. Checked
+        // across several seeds so a single unlucky draw can't mask a bug.
+        let p1_json = r#"[
+            {"species":"kangaskhan","level":50,"ability":"scrappy","item":"","nature":"adamant","moves":["poweruppunch","chargebeam","tackle","ember"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0..20 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert_eq!(
+                b.p1.team[0].boosts[0], 1,
+                "Power-Up Punch (100% secondary) must raise attacker Atk by 1 (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn charge_beam_self_boost_is_chance_gated() {
+        // PS data/moves.ts:chargebeam — `secondary: { chance: 70, self:
+        // { boosts: { spa: 1 } } }`. A <100% self-boost must fire on SOME
+        // hits and not others: over many seeds the +1 SpA (boost index 2)
+        // count is strictly between 0 and N, proving the roll is consumed and
+        // respected (contrast: the 100% Power-Up Punch case above).
+        let p1_json = r#"[
+            {"species":"kangaskhan","level":50,"ability":"scrappy","item":"","nature":"modest","moves":["chargebeam","tackle","poweruppunch","ember"],"evs":{"hp":4,"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let n = 100u64;
+        let mut boosted = 0u64;
+        for seed in 0..n {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p1.team[0].boosts[2] == 1 {
+                boosted += 1;
+            }
+        }
+        assert!(
+            boosted > 0 && boosted < n,
+            "Charge Beam (70% secondary) self-boost must be chance-gated, got {boosted}/{n}"
+        );
     }
 
     #[test]
