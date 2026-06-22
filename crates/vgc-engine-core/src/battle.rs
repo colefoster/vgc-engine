@@ -6855,6 +6855,46 @@ impl Battle {
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sticky_Web_(move)>
                 self.side_mut(opp_side).conditions.sticky_web = true;
             }
+            data::move_id::HEALBELL | data::move_id::AROMATHERAPY => {
+                // PS data/moves.ts:8242 `healbell` / :556 `aromatherapy`
+                // onHit: cure the non-volatile status (brn/par/psn/tox/slp/
+                // frz) of EVERY member of the user's party — active AND
+                // benched. Both are Status moves with `target: "allyTeam"`,
+                // `accuracy: true` (never miss). The user itself is always
+                // cured (PS gates the immunity abilities on `ally !== source`).
+                //
+                // Heal Bell carries `flags.sound`: a non-source ally whose
+                // Soundproof is not suppressed is IMMUNE and is NOT cured
+                // (PS lines 8257-8260). This applies to benched allies too —
+                // PS iterates the full `side.pokemon` array and gates on
+                // `hasAbility('soundproof')`. `effective_ability_id()`
+                // returns `u16::MAX` when the ability is suppressed (Gastro
+                // Acid), so a suppressed Soundproof correctly stops blocking.
+                // Aromatherapy has no sound flag, so Soundproof never gates
+                // it. (PS also checks Good as Gold / Sap Sipper / Substitute;
+                // those are out of scope for this party-cure handler and are
+                // not modelled here.)
+                //
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heal_Bell_(move)>
+                //             <https://bulbapedia.bulbagarden.net/wiki/Aromatherapy_(move)>
+                let is_heal_bell = move_id == data::move_id::HEALBELL;
+                let source_idx = self.side(actor_side).active[actor_slot as usize] as usize;
+                let side = self.side_mut(actor_side);
+                for (idx, mon) in side.team.iter_mut().enumerate() {
+                    if !mon.is_alive() {
+                        continue;
+                    }
+                    if is_heal_bell
+                        && idx != source_idx
+                        && mon.effective_ability_id() == data::ability_id::SOUNDPROOF
+                    {
+                        continue;
+                    }
+                    mon.status = Status::None;
+                    mon.set_toxic_counter(0);
+                    mon.set_sleep_turns(0);
+                }
+            }
             data::move_id::DEFOG => {
                 // PS data/moves.ts:defog onHit. Status move, target
                 // "normal" (a foe), `reflectable: 1` (so it IS bounced by
@@ -25491,5 +25531,107 @@ mod tests {
             b.legal_choices(SideRef::P1, 0).len() > 1,
             "ungated Tatsugiri should have real choices"
         );
+    }
+
+    // Heal Bell / Aromatherapy: cure the WHOLE party's non-volatile status
+    // (active + benched). PS data/moves.ts:8242 healbell / :556 aromatherapy.
+    fn run_party_cure(move_slot: u8) -> Battle {
+        // Blissey learns both Heal Bell and Aromatherapy; slot 0 = healbell,
+        // slot 1 = aromatherapy.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["healbell","aromatherapy","softboiled","seismictoss"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        // A passive foe that only buffs itself, so it can't cure/KO our party.
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"unaware","nature":"calm","moves":["calmmind","moonblast","softboiled","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Active user is statused; two BENCHED allies carry status + counters.
+        b.p1.team[0].status = Status::Burn;
+        b.p1.team[1].status = Status::Toxic;
+        b.p1.team[1].set_toxic_counter(3);
+        b.p1.team[2].status = Status::Sleep;
+        b.p1.team[2].set_sleep_turns(2);
+        // P1 uses the cure move (self/side target), P2 just sets up.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        b
+    }
+
+    #[test]
+    fn heal_bell_cures_entire_party() {
+        let b = run_party_cure(0);
+        assert_eq!(b.p1.team[0].status, Status::None, "active user cured");
+        assert_eq!(b.p1.team[1].status, Status::None, "benched ally cured");
+        assert_eq!(b.p1.team[1].toxic_counter(), 0, "toxic counter cleared");
+        assert_eq!(b.p1.team[2].status, Status::None, "second benched ally cured");
+        assert_eq!(b.p1.team[2].sleep_turns(), 0, "sleep counter cleared");
+    }
+
+    #[test]
+    fn aromatherapy_cures_entire_party() {
+        let b = run_party_cure(1);
+        assert_eq!(b.p1.team[0].status, Status::None, "active user cured");
+        assert_eq!(b.p1.team[1].status, Status::None, "benched ally cured");
+        assert_eq!(b.p1.team[1].toxic_counter(), 0, "toxic counter cleared");
+        assert_eq!(b.p1.team[2].status, Status::None, "second benched ally cured");
+        assert_eq!(b.p1.team[2].sleep_turns(), 0, "sleep counter cleared");
+    }
+
+    #[test]
+    fn heal_bell_skips_soundproof_ally_but_cures_user() {
+        // PS healbell onHit: a non-source ally with (unsuppressed) Soundproof
+        // is immune to the cure; the user itself is always cured.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["healbell","aromatherapy","softboiled","seismictoss"]},
+            {"species":"electrode","level":50,"ability":"soundproof","nature":"timid","moves":["thunderbolt","voltswitch","taunt","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"unaware","nature":"calm","moves":["calmmind","moonblast","softboiled","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].status = Status::Burn;
+        b.p1.team[1].status = Status::Poison; // benched Soundproof ally
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::None, "user cured despite being sound move");
+        assert_eq!(
+            b.p1.team[1].status,
+            Status::Poison,
+            "Soundproof ally NOT cured by Heal Bell"
+        );
+    }
+
+    #[test]
+    fn aromatherapy_cures_soundproof_ally() {
+        // Aromatherapy is not a sound move → Soundproof does not block it.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["healbell","aromatherapy","softboiled","seismictoss"]},
+            {"species":"electrode","level":50,"ability":"soundproof","nature":"timid","moves":["thunderbolt","voltswitch","taunt","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"unaware","nature":"calm","moves":["calmmind","moonblast","softboiled","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p1.team[0].status = Status::Burn;
+        b.p1.team[1].status = Status::Poison;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::None, "user cured");
+        assert_eq!(b.p1.team[1].status, Status::None, "Soundproof ally cured by Aromatherapy");
     }
 }
