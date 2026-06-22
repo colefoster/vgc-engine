@@ -4262,54 +4262,61 @@ impl Battle {
                     dmg = ((dmg as u32) * 3072 / 4096).min(u16::MAX as u32) as u16;
                 }
             }
-            // Multi-hit — Double Hit, Population Bomb, Bullet Seed,
-            // Rock Blast, Triple Axel, Tail Slap, Icicle Spear,
-            // Water Shuriken, etc. PS calls calculate_damage per hit
-            // with a fresh damage roll; we approximate by scaling
-            // the single computed damage by hit_count. Mean damage
-            // is preserved; per-hit variance is collapsed. Known
-            // divergences:
-            //   - Sturdy / Focus Sash interact per-hit in PS (a
-            //     2-hit move breaks Sturdy on hit 1, KOs on hit 2).
-            //     Our scaling treats the whole thing as one hit so
-            //     Sturdy / Sash always survive — flagged for a
-            //     per-hit refactor when multihit becomes a
-            //     correctness bottleneck.
-            //   - Triple Axel scales BP by hit index in PS; we use
-            //     base BP × hit_count which slightly underestimates.
-            // Skill Link (`skilllink`): forces hit_count = max for
-            // range multihits. Loaded Dice item (4–10 random for
-            // Population Bomb's per-hit accuracy gate) is
-            // approximated as max hits when held.
+            // Multi-hit hit-count roll — Double Hit, Population Bomb,
+            // Bullet Seed, Rock Blast, Triple Axel, Tail Slap, Icicle
+            // Spear, Scale Shot, Water Shuriken, etc. PS rolls the hit
+            // count ONCE up front, then applies each hit separately
+            // (fresh damage / Sturdy / Focus Sash / Substitute per hit).
+            // The `dmg` computed above is the PER-HIT amount; the per-hit
+            // loop further down (`for hit_idx in 0..hits`) re-applies it.
+            //
+            // PS `sim/battle-actions.ts:859-877` (gen >= 5):
+            //   - [2,5] range: `sample([2×7, 3×7, 4×3, 5×3])` → 35/35/15/15
+            //     for 2/3/4/5 hits (one `random(20)` draw). Loaded Dice
+            //     raises a roll < 4 to `5 - random(2)` (i.e. 4 or 5).
+            //   - Skill Link (`data/abilities.ts:skilllink onModifyMove`)
+            //     rewrites an array multihit to its max, forcing top hits
+            //     and consuming no RNG (the array branch is skipped).
+            //   - Fixed multihit (Population Bomb = 10): Loaded Dice does
+            //     `10 - random(7)` → 4-10 (PS line 876). Per-hit accuracy
+            //     variance (`multiaccuracy`, Population Bomb's 1-10 floor)
+            //     is a separate unmodeled mechanic; we resolve the rolled
+            //     count fully. These draws now mirror PS exactly, so the
+            //     Oracle / PsGen5 stream stays aligned across the count.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multi-strike_move>,
+            //             <https://bulbapedia.bulbagarden.net/wiki/Loaded_Dice>,
+            //             <https://bulbapedia.bulbagarden.net/wiki/Skill_Link_(Ability)>,
+            //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
+            let mut hits: u32 = 1;
             if m.multihit_min > 0 && dmg > 0 {
                 let skill_link = attacker.ability_id == data::ability_id::SKILLLINK;
                 let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
-                let hits: u32 = if m.multihit_min == m.multihit_max {
-                    m.multihit_min as u32
-                } else if skill_link || loaded_dice {
+                hits = if m.multihit_min == m.multihit_max {
+                    // Fixed multihit (Double Hit = 2, Population Bomb = 10).
                     m.multihit_max as u32
+                } else if skill_link {
+                    // Skill Link forces the maximum number of hits (no draw).
+                    m.multihit_max as u32
+                } else if m.multihit_min == 2 && m.multihit_max == 5 {
+                    // gen 5+ weighted 2-5 sample (35/35/15/15).
+                    let r = self.rng.range(20);
+                    let mut h = if r < 7 { 2 } else if r < 14 { 3 } else if r < 17 { 4 } else { 5 };
+                    // Loaded Dice: a roll below 4 becomes `5 - random(2)`
+                    // (= 4 or 5). A roll already >= 4 is left untouched.
+                    if loaded_dice && h < 4 {
+                        h = 5 - self.rng.range(2);
+                    }
+                    h
                 } else {
+                    // Generic range (rare): uniform in [min, max].
                     let span = (m.multihit_max - m.multihit_min + 1) as u32;
                     m.multihit_min as u32 + self.rng.range(span)
                 };
-                // Triple Kick / Triple Axel ramp BP per hit. PS:
-                //   data/moves.ts:triplekick basePowerCallback
-                //     return 10 * move.hit;
-                //   data/moves.ts:tripleaxel basePowerCallback
-                //     return 20 * move.hit;
-                // Hit n's BP = base * n; the total over N hits scales
-                // by 1+2+...+N = N(N+1)/2 rather than just N. Our
-                // single-damage model collapses per-hit variance, so
-                // apply the triangular factor here to recover the
-                // correct mean total damage.
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Triple_Kick_(move)>
-                //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>
-                let hit_multiplier = if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
-                    hits * (hits + 1) / 2
-                } else {
-                    hits
-                };
-                dmg = ((dmg as u32) * hit_multiplier).min(u16::MAX as u32) as u16;
+                // Loaded Dice on a 10-hit move (Population Bomb): 10 - random(7).
+                if loaded_dice && hits == 10 {
+                    hits -= self.rng.range(7);
+                }
+                hits = hits.clamp(1, 10);
             }
             // Thick Fat (Snorlax / Mamoswine / Goodra-H): defender's
             // ability halves the attacker's offensive stat against Fire
@@ -4380,6 +4387,41 @@ impl Battle {
             if let Some(fd) = fixed_dmg_snapshot {
                 dmg = fd;
             }
+
+            // === Multi-hit per-hit application loop ===
+            // PS applies each hit separately (`sim/battle-actions.ts:885`):
+            // Substitute absorption, Sturdy / Focus Sash / Endure capping,
+            // faint, on-damaging-hit abilities/items, secondaries and drain
+            // all run PER HIT. `dmg` above is the per-hit amount; for a
+            // single-hit move `hits == 1` and the body runs exactly once,
+            // identical to the prior behavior. The loop is bounded (`hits`
+            // is clamped to 1..=10) and allocates nothing on the heap.
+            //
+            // Termination: stop once the TARGET has fainted — PS
+            // `if (!pokemon.hp && targets.length === 1) break`
+            // (battle-actions.ts:971), the same condition as the
+            // start-of-hit `targets.every(t => !t?.hp)` guard at :888.
+            // A broken Substitute does NOT stop the move: PS removes the
+            // volatile (substitute `onTryPrimaryHit`, data/moves.ts:18366)
+            // and, because `HIT_SUBSTITUTE === 0` (sim/battle.ts:273) is a
+            // non-`false` value, the multihit loop keeps going — the
+            // remaining hits land on the Pokémon itself. (This is the one
+            // place we follow PS over the brief, which said to stop on a
+            // sub break; PS is the oracle.)
+            let base_hit_dmg = dmg;
+            for hit_idx in 0..hits {
+                // Triple Kick / Triple Axel ramp BP by hit number. PS:
+                //   data/moves.ts:triplekick basePowerCallback `10 * move.hit`
+                //   data/moves.ts:tripleaxel basePowerCallback `20 * move.hit`
+                // Hit n deals `base * n`; every other multihit move deals a
+                // constant per-hit amount. Applying the ramp here (instead
+                // of the old triangular `N(N+1)/2` lump) is what makes the
+                // per-hit Sturdy / Sash interaction correct for these moves.
+                let dmg: u16 = if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
+                    ((base_hit_dmg as u32) * (hit_idx + 1)).min(u16::MAX as u32) as u16
+                } else {
+                    base_hit_dmg
+                };
 
             // Substitute interception. If the defender has a sub up, the
             // sub absorbs the hit (capped at remaining sub HP) and the
@@ -4819,6 +4861,21 @@ impl Battle {
                     }
                 }
             }
+
+                // PS stops a multi-hit move the moment the target faints
+                // (battle-actions.ts:888 / :971). A Substitute that broke
+                // this hit does NOT stop it — the next iteration sees no
+                // sub and lands on the Pokémon. Single-hit moves have
+                // `hits == 1`, so this break is reached at most once.
+                let target_fainted = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .map(|d| !d.is_alive())
+                    .unwrap_or(true);
+                if target_fainted {
+                    break;
+                }
+            } // end multi-hit per-hit loop
         }
 
         // Final Gambit — the user faints after dealing damage equal to
@@ -19173,6 +19230,111 @@ mod tests {
             DamageContext { roll: 15, ..DamageContext::default() });
         assert!(dmg_burned > dmg_clean * 18 / 10,
                 "Hex on burned target should ~2× clean: {dmg_burned} vs {dmg_clean}");
+    }
+
+    // Helper: total HP lost by a bulky Skarmory hit by Smeargle's
+    // multihit. Smeargle's Atk and Skarmory's Def are tuned so each hit
+    // deals exactly 1 HP; because the per-hit damage roll is computed
+    // once and reused per hit (constant per battle), TOTAL HP LOST equals
+    // the number of hits that landed. Skarmory's huge HP keeps it alive
+    // through all 5, so the count is always observable.
+    #[cfg(test)]
+    fn multihit_count_for(item: &str, ability: &str, seed: u64) -> u16 {
+        let p1_json = format!(
+            r#"[{{"species":"smeargle","level":50,"ability":"{ability}","item":"{item}","nature":"hardy","moves":["bulletseed","tackle","tackle","tackle"]}}]"#
+        );
+        let p2_json = r#"[
+            {"species":"skarmory","level":50,"ability":"owntempo","item":"","nature":"bold","moves":["tackle","tackle","tackle","tackle"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+        let hp0 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        hp0 - b.p2.team[0].current_hp
+    }
+
+    #[test]
+    fn focus_sash_no_longer_survives_a_multihit_ko() {
+        // PS applies each hit separately: a multihit move that would KO
+        // breaks Focus Sash on an early hit and a later hit lands the KO
+        // (sim/battle-actions.ts:885 per-hit loop; Focus Sash only saves
+        // a single lethal hit from full HP). Control vs. test:
+        //   - A SINGLE lethal Ice Punch on a Focus Sash holder at full HP
+        //     leaves it on exactly 1 HP (Sash fires).
+        //   - A MULTIHIT Icicle Spear on the same holder KOs it (Sash is
+        //     broken by an early hit; subsequent hits finish the job).
+        // The old single-event approximation capped the whole multihit at
+        // Sash's 1-HP floor, so the holder wrongly SURVIVED — this test
+        // pins the corrected per-hit behavior.
+        let dragonite = r#"[
+            {"species":"dragonite","level":50,"ability":"owntempo","item":"focussash","nature":"hasty","moves":["tackle","tackle","tackle","tackle"]}
+        ]"#;
+        // Control: single-hit lethal Ice Punch -> Sash saves at 1 HP.
+        let weavile_punch = r#"[
+            {"species":"weavile","level":50,"ability":"pressure","item":"choiceband","nature":"adamant","moves":["icepunch","tackle","tackle","tackle"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(weavile_punch).unwrap();
+        let p2 = TeamBuilder::from_json(dragonite).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(!b.p2.team[0].fainted, "single lethal hit should NOT faint a Focus Sash holder");
+        assert_eq!(b.p2.team[0].current_hp, 1, "Focus Sash should leave the holder on exactly 1 HP");
+
+        // Test: multihit Icicle Spear (Skill Link = 5 hits) -> KO through Sash.
+        let weavile_spear = r#"[
+            {"species":"weavile","level":50,"ability":"skilllink","item":"choiceband","nature":"adamant","moves":["iciclespear","tackle","tackle","tackle"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1b = TeamBuilder::from_json(weavile_spear).unwrap();
+        let p2b = TeamBuilder::from_json(dragonite).unwrap();
+        let mut bb = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
+        bb.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(bb.p2.team[0].fainted, "multihit should KO a Focus Sash holder (Sash breaks on an early hit)");
+    }
+
+    #[test]
+    fn loaded_dice_yields_four_or_five_hits() {
+        // PS sim/battle-actions.ts:866 — Loaded Dice rewrites a 2-5
+        // multihit roll below 4 to `5 - random(2)` (i.e. 4 or 5). So the
+        // hit count is always 4 or 5, never 2 or 3, and not pinned to 5.
+        let mut saw_four = false;
+        let mut saw_five = false;
+        for seed in 0..60u64 {
+            let hits = multihit_count_for("loadeddice", "owntempo", seed);
+            assert!(
+                (4..=5).contains(&hits),
+                "Loaded Dice 2-5 multihit must be 4 or 5, got {hits} (seed {seed})"
+            );
+            if hits == 4 { saw_four = true; }
+            if hits == 5 { saw_five = true; }
+        }
+        assert!(saw_four, "Loaded Dice should sometimes roll 4 hits (not always max)");
+        assert!(saw_five, "Loaded Dice should sometimes roll 5 hits");
+    }
+
+    #[test]
+    fn skill_link_forces_max_hits_and_plain_varies() {
+        // PS data/abilities.ts:skilllink rewrites an array multihit to its
+        // max, so a 2-5 move always lands 5 hits. Plain (no Skill Link,
+        // no Loaded Dice) must use the weighted 2-5 distribution and so
+        // produce counts below the max across seeds.
+        for seed in 0..40u64 {
+            let hits = multihit_count_for("", "skilllink", seed);
+            assert_eq!(hits, 5, "Skill Link must force exactly 5 hits (seed {seed})");
+        }
+        // Sanity that the plain path is genuinely a distribution, not a
+        // constant: across seeds we must see at least one roll below 5.
+        let saw_below_max = (0..40u64).any(|seed| multihit_count_for("", "owntempo", seed) < 5);
+        assert!(saw_below_max, "plain 2-5 multihit should sometimes roll fewer than 5 hits");
     }
 
     #[test]
