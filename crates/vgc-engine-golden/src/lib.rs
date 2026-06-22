@@ -937,6 +937,25 @@ pub(crate) fn derive_turns_from_events(
     let mut turn_choices: BTreeMap<u32, BTreeMap<(u8, char), String>> = BTreeMap::new();
     // Turns where someone fainted — bail at the first one.
     let mut faint_turn: Option<u32> = None;
+    // First turn PS resolves via a MID-TURN switch — i.e. a `switch` event
+    // that comes AFTER a `move` event in the same turn. A clean pre-turn
+    // player switch is always emitted at the very START of the turn (before
+    // any move), so "switch after a move" unambiguously means a pivot
+    // self-switch (U-turn / Volt Switch / Baton Pass / Parting Shot, ...)
+    // or an opponent-forced/dragged switch (Roar / Whirlwind / Dragon Tail /
+    // Circle Throw / Red Card). Neither is reproducible by the harness's
+    // one-choice-per-slot replay:
+    //   * pivots need a follow-up replacement choice the harness doesn't feed,
+    //   * forced switches pick the replacement via PS's RNG, which the engine's
+    //     non-bit-exact draw stream won't reproduce.
+    // In both cases the slot occupancy desyncs from PS, so every later
+    // comparison is slot-mismatch NOISE, not a mechanic signal — exactly the
+    // same wall the faint cutoff handles. Stop strictly before this turn too.
+    let mut desync_turn: Option<u32> = None;
+    // Whether a `move` event has been seen yet in the turn currently being
+    // scanned (reset on each turn boundary).
+    let mut move_seen_in_turn: bool = false;
+    let mut scanning_turn: u32 = 0;
 
     for ev in events {
         if ev.turn == 0 {
@@ -972,8 +991,15 @@ pub(crate) fn derive_turns_from_events(
             break;
         }
 
+        // Reset the per-turn move tracker on each turn boundary.
+        if ev.turn != scanning_turn {
+            scanning_turn = ev.turn;
+            move_seen_in_turn = false;
+        }
+
         match ev.kind.as_str() {
             "move" => {
+                move_seen_in_turn = true;
                 let Some((side, slot)) = ev.actor.as_deref().and_then(ps_actor_to_side_slot) else {
                     continue;
                 };
@@ -1004,6 +1030,12 @@ pub(crate) fn derive_turns_from_events(
                 bucket.insert(key, format!("move {}{}", move_slot + 1, target_token));
             }
             "switch" => {
+                // A switch AFTER a move in the same turn is a mid-turn
+                // (pivot or forced) switch the harness can't reproduce —
+                // record the first such turn as the desync boundary.
+                if move_seen_in_turn && desync_turn.is_none() {
+                    desync_turn = Some(ev.turn);
+                }
                 let Some((side, slot)) = ev.actor.as_deref().and_then(ps_actor_to_side_slot) else {
                     continue;
                 };
@@ -1043,13 +1075,20 @@ pub(crate) fn derive_turns_from_events(
         }
     }
 
-    // Cut off STRICTLY BEFORE the faint turn. PS's snapshot for that
-    // turn includes the post-faint replacement (different mon, different
-    // max HP) — comparing it against the engine's still-fainted slot
-    // would always look like a divergence even when the mechanics are
-    // correct. By stopping the turn before, both sides remain aligned
-    // and any reported divergence reflects an actual mechanic bug.
-    let cutoff = faint_turn
+    // Cut off STRICTLY BEFORE the first boundary turn — whichever comes
+    // first of a faint or a mid-turn (pivot/forced) switch. PS's snapshot
+    // for such a turn reflects a post-faint replacement or a swapped-in mon
+    // (different species, different max HP) that the harness can't bring in
+    // the same way, so comparing it against the engine's slot would always
+    // look like a divergence even when the mechanics are correct. By
+    // stopping the turn before, both sides remain aligned and any reported
+    // divergence reflects an actual mechanic bug rather than slot-mismatch
+    // noise.
+    let boundary = [faint_turn, desync_turn]
+        .into_iter()
+        .flatten()
+        .min();
+    let cutoff = boundary
         .map(|t| t.saturating_sub(1))
         .unwrap_or(u32::MAX)
         .min(max_turns);
@@ -1209,6 +1248,101 @@ mod tests {
         let evs = vec![PsRngEvent::Chance { value: false, num: 1, denom: 3 }];
         let out = lower_rng_events(&evs);
         assert!(matches!(out[0], RngEvent::Range(1)));
+    }
+
+    // --- random-play derivation cutoff -----------------------------------
+
+    fn ev(turn: u32, kind: &str, actor: &str, species: &str, name: &str) -> PsEvent {
+        PsEvent {
+            turn,
+            kind: kind.into(),
+            actor: if actor.is_empty() { None } else { Some(actor.into()) },
+            hp: None,
+            max: None,
+            from: None,
+            status: None,
+            stat: None,
+            amount: None,
+            species: if species.is_empty() { None } else { Some(species.into()) },
+            name: if name.is_empty() { None } else { Some(name.into()) },
+            target: None,
+            source: None,
+        }
+    }
+
+    fn test_teams() -> (Vec<Pokemon>, Vec<Pokemon>) {
+        let p1 = TeamBuilder::from_showdown_text(concat!(
+            "Pikachu\nLevel: 50\n- Thunderbolt\n- Volt Switch\n- Quick Attack\n- Iron Tail\n\n",
+            "Raichu\nLevel: 50\n- Thunderbolt\n- Volt Switch\n- Quick Attack\n- Iron Tail\n",
+        ))
+        .expect("p1 team");
+        let p2 = TeamBuilder::from_showdown_text(
+            "Bulbasaur\nLevel: 50\n- Tackle\n- Growl\n- Vine Whip\n- Leech Seed\n",
+        )
+        .expect("p2 team");
+        (p1, p2)
+    }
+
+    #[test]
+    fn derive_stops_before_pivot_self_switch_turn() {
+        // Turn 2 is resolved by a U-turn-style pivot: a `move` on p1a
+        // followed by a `switch` on the same slot in the same turn. That
+        // mid-turn switch isn't reproducible by the harness, so derivation
+        // must stop STRICTLY BEFORE turn 2 — yielding only turn 1.
+        let (p1, p2) = test_teams();
+        let events = vec![
+            ev(0, "switch", "p1a", "Pikachu", ""),
+            ev(0, "switch", "p2a", "Bulbasaur", ""),
+            ev(1, "move", "p1a", "", "Thunderbolt"),
+            ev(1, "move", "p2a", "", "Tackle"),
+            ev(2, "move", "p1a", "", "Volt Switch"),
+            ev(2, "switch", "p1a", "Raichu", ""), // pivot replacement
+            ev(3, "move", "p1a", "", "Thunderbolt"),
+            ev(3, "move", "p2a", "", "Tackle"),
+        ];
+        let turns = derive_turns_from_events(&events, &p1, &p2, 1, 30);
+        assert_eq!(turns.len(), 1, "should retain only turn 1");
+    }
+
+    #[test]
+    fn derive_stops_before_forced_phaze_turn() {
+        // Turn 2: p2a uses Roar (a move), then p1a is dragged out (a switch
+        // AFTER the move). The forced replacement is RNG-picked by PS and
+        // unreproducible, so derivation stops before turn 2.
+        let (p1, p2) = test_teams();
+        let events = vec![
+            ev(0, "switch", "p1a", "Pikachu", ""),
+            ev(0, "switch", "p2a", "Bulbasaur", ""),
+            ev(1, "move", "p1a", "", "Thunderbolt"),
+            ev(1, "move", "p2a", "", "Tackle"),
+            ev(2, "move", "p2a", "", "Roar"),
+            ev(2, "switch", "p1a", "Raichu", ""), // forced/dragged out
+        ];
+        let turns = derive_turns_from_events(&events, &p1, &p2, 1, 30);
+        assert_eq!(turns.len(), 1, "should retain only turn 1");
+    }
+
+    #[test]
+    fn derive_keeps_clean_pre_turn_player_switch() {
+        // A player switch is emitted at the START of the turn (before any
+        // move). That IS reproducible, so it must NOT trigger the cutoff —
+        // both turns are retained and turn 1's p1 action is the switch.
+        let (p1, p2) = test_teams();
+        let events = vec![
+            ev(0, "switch", "p1a", "Pikachu", ""),
+            ev(0, "switch", "p2a", "Bulbasaur", ""),
+            ev(1, "switch", "p1a", "Raichu", ""), // clean: before any move
+            ev(1, "move", "p2a", "", "Tackle"),
+            ev(2, "move", "p1a", "", "Thunderbolt"),
+            ev(2, "move", "p2a", "", "Tackle"),
+        ];
+        let turns = derive_turns_from_events(&events, &p1, &p2, 1, 30);
+        assert_eq!(turns.len(), 2, "clean player switch must not cut the battle");
+        assert_eq!(
+            turns[0].p1,
+            serde_json::Value::String("switch 2".into()),
+            "turn 1 p1 should replay the recorded switch to Raichu",
+        );
     }
 }
 
