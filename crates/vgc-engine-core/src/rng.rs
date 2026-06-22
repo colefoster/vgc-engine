@@ -22,7 +22,9 @@
 /// method (`Rng::range`, `Rng::damage_roll`, ...). The Oracle queue is
 /// strictly typed: a method call must match the next event's variant
 /// or it panics, surfacing the desync immediately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RngEvent {
     /// Tiebreak token from `next_u64` (speed-tie ordering).
     Tiebreak(u64),
@@ -61,7 +63,7 @@ pub enum RngEvent {
 /// known-good correspondence to PS's `random()` semantics.
 ///
 /// PS reference: `sim/prng.ts:235-300` (Gen5RNG class).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PsGen5Rng {
     state: u64,
 }
@@ -109,7 +111,7 @@ impl PsGen5Rng {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleState {
     events: Vec<RngEvent>,
     pos: usize,
@@ -155,7 +157,7 @@ impl OracleState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Rng {
     Splitmix(u64),
     Oracle(OracleState),

@@ -14,3 +14,5 @@ crate-type = ["cdylib"]
 [dependencies]
 vgc-engine-core = { workspace = true }
 pyo3 = { workspace = true }
+bincode = "1"
+serde_json = { workspace = true }
