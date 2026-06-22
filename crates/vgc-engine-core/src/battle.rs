@@ -3116,38 +3116,49 @@ impl Battle {
                 ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
         }
         // Ruin abilities (gen 9 paradox quartet): Tablets of Ruin
-        // (Wo-Chien) / Vessel of Ruin (Chi-Yu) / Sword of Ruin (Chien-Pao) /
-        // Beads of Ruin (Ting-Lu) each lower one stat on every other mon
-        // on the field by x0.75 while the holder is active. PS data/
+        // (Wo-Chien, lowers Atk) / Vessel of Ruin (Chi-Yu, lowers SpA) /
+        // Sword of Ruin (Chien-Pao, lowers Def) / Beads of Ruin (Ting-Lu,
+        // lowers SpD) each lower one stat by x0.75 on EVERY active mon
+        // except the one whose stat is the ability holder itself. PS data/
         // abilities.ts:{tabletsofruin,vesselofruin,swordofruin,beadsofruin}
-        // use `onAnyModify{Atk,SpA,Def,SpD}` with chainModify(0.75); same
-        // side as the holder is excluded via `pokemon === source` /
-        // `source === this.effectState.target`.
-        //
-        // Per the implementation spec we apply the reduction only when
-        // a Ruin source exists on the OPPOSING side, and never stack
-        // multiple sources of the same kind. Mold Breaker does NOT
-        // bypass — Ruin abilities are not in PS's `breakable` list.
+        // use `onAnyModify{Atk,SpA,Def,SpD}` with chainModify(0.75) and
+        // exclude ONLY the stat-owner via `if (source.hasAbility(...)) return;`
+        // / `if (target.hasAbility(...)) return;` — NOT the holder's whole
+        // side, so in doubles a Ruin holder's own ally is affected too. PS
+        // dedupes via `move.ruined{Atk,SpA,Def,SpD}`, so multiple holders of
+        // the SAME ability apply ×0.75 once (no stacking). Mold Breaker does
+        // NOT bypass — Ruin abilities are not in PS's `breakable` list.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Tablets_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Vessel_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Sword_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Beads_of_Ruin_(Ability)>.
-        let side_has_ruin = |b: &Self, side: SideRef, ability_id: u16| -> bool {
+        let field_has_ruin = |b: &Self, ability_id: u16| -> bool {
             let n = b.format().active_count();
-            (0..n).any(|s| {
-                b.side(side).active_mon(s)
-                    .map(|m| m.is_alive() && m.effective_ability_id() == ability_id)
-                    .unwrap_or(false)
+            [SideRef::P1, SideRef::P2].into_iter().any(|side| {
+                (0..n).any(|s| {
+                    b.side(side).active_mon(s)
+                        .map(|m| m.is_alive() && m.effective_ability_id() == ability_id)
+                        .unwrap_or(false)
+                })
             })
         };
-        let opp_side = actor_side.opposing();
         let scale_off_075 = |v: u16| -> u16 {
             (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
-        if side_has_ruin(self, opp_side, data::ability_id::TABLETSOFRUIN) && physical_move {
+        // Offensive Ruin: the attacker is the stat-owner, so it is excluded
+        // only when IT holds the ability (PS `source.hasAbility(...)`); any
+        // other holder on the field — including the attacker's own ally —
+        // still reduces its Atk/SpA.
+        if attacker_ability_id != data::ability_id::TABLETSOFRUIN
+            && field_has_ruin(self, data::ability_id::TABLETSOFRUIN)
+            && physical_move
+        {
             atk_stats_ovr.atk = scale_off_075(atk_stats_ovr.atk);
         }
-        if side_has_ruin(self, opp_side, data::ability_id::VESSELOFRUIN) && special_move {
+        if attacker_ability_id != data::ability_id::VESSELOFRUIN
+            && field_has_ruin(self, data::ability_id::VESSELOFRUIN)
+            && special_move
+        {
             atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
         }
 
@@ -4054,16 +4065,22 @@ impl Battle {
                         .min(u16::MAX as u32)) as u16;
                 }
             }
-            // Ruin: Sword of Ruin (lower opp Def) and Beads of Ruin
-            // (lower opp SpD) apply when a Ruin source sits on the
-            // ATTACKER's side; the holder itself is excluded but in our
-            // simplified model we treat any same-side source as
-            // active. x0.75 per-source, no stacking. See attacker-side
-            // notes above for the PS handler shape and citations.
-            if side_has_ruin(self, actor_side, data::ability_id::SWORDOFRUIN) && m.category == 0 {
+            // Defensive Ruin: Sword of Ruin (×0.75 Def) and Beads of Ruin
+            // (×0.75 SpD). The DEFENDER is the stat-owner, so it is excluded
+            // only when IT holds the ability (PS `target.hasAbility(...)`);
+            // any other holder on the field — including the defender's own
+            // ally — still reduces its Def/SpD. ×0.75 once, no stacking.
+            // See attacker-side notes above for the PS handler shape/cites.
+            if defender.effective_ability_id() != data::ability_id::SWORDOFRUIN
+                && field_has_ruin(self, data::ability_id::SWORDOFRUIN)
+                && m.category == 0
+            {
                 def_stats_ovr.def = scale_off_075(def_stats_ovr.def);
             }
-            if side_has_ruin(self, actor_side, data::ability_id::BEADSOFRUIN) && m.category == 1 {
+            if defender.effective_ability_id() != data::ability_id::BEADSOFRUIN
+                && field_has_ruin(self, data::ability_id::BEADSOFRUIN)
+                && m.category == 1
+            {
                 def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
             }
             // Sandstorm — Rock-type defenders get ×1.5 SpD while Sand
@@ -22213,6 +22230,106 @@ mod tests {
         // drops to ~3/4 of plain. We just check that ruin lowers damage.
         assert!(dmg_ruin < dmg_plain,
                 "Vessel of Ruin lowers SpA-driven damage ({} < {})", dmg_ruin, dmg_plain);
+    }
+
+    #[test]
+    fn sword_of_ruin_lowers_ally_def_but_not_its_own() {
+        // PS data/abilities.ts:swordofruin — onAnyModifyDef chainModify(0.75)
+        // on every active mon EXCEPT the one whose Def is the holder itself
+        // (`if (target.hasAbility('Sword of Ruin')) return;`). In doubles
+        // that INCLUDES the holder's own ally. We assert two things in one
+        // pair of battles that differ only in the holder's ability:
+        //   (a) the holder's ALLY takes more physical damage (Def ×0.75),
+        //   (b) the holder ITSELF takes identical damage (self-excluded).
+        // Chien-Pao = the Sword of Ruin holder; control swaps its ability
+        // to Pressure (no Def effect, consumes no RNG) so the damage rolls
+        // line up exactly under the same seed.
+        let p1_sword = r#"[
+            {"species":"chienpao","level":50,"ability":"swordofruin","item":"","nature":"impish","moves":["iciclecrash","protect","sacredsword","crunch"],"evs":{"hp":252,"def":252}},
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"impish","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1_ctrl = r#"[
+            {"species":"chienpao","level":50,"ability":"pressure","item":"","nature":"impish","moves":["iciclecrash","protect","sacredsword","crunch"],"evs":{"hp":252,"def":252}},
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"impish","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"clearbody","item":"","nature":"adamant","moves":["dragonclaw","protect","ironhead","aerialace"],"evs":{"atk":252,"spe":252}},
+            {"species":"garchomp","level":50,"ability":"clearbody","item":"","nature":"adamant","moves":["dragonclaw","protect","ironhead","aerialace"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut sword = Battle::new(BattleConfig { format: Format::Doubles, seed: 11 },
+            TeamBuilder::from_json(p1_sword).unwrap(), p2.clone());
+        let mut ctrl = Battle::new(BattleConfig { format: Format::Doubles, seed: 11 },
+            TeamBuilder::from_json(p1_ctrl).unwrap(), p2);
+        let chienpao_full = sword.p1.team[0].current_hp;
+        let snorlax_full = sword.p1.team[1].current_hp;
+        // P2 slot 0 -> Chien-Pao (the holder, slot 0); P2 slot 1 -> Snorlax
+        // (the ally, slot 1). Both single-target physical Dragon Claw.
+        let p2_choices = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+        ];
+        let p1_pass = [Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }];
+        sword.step(&p1_pass, &p2_choices);
+        ctrl.step(&p1_pass, &p2_choices);
+        let dmg_holder_sword = chienpao_full - sword.p1.team[0].current_hp;
+        let dmg_holder_ctrl = chienpao_full - ctrl.p1.team[0].current_hp;
+        let dmg_ally_sword = snorlax_full - sword.p1.team[1].current_hp;
+        let dmg_ally_ctrl = snorlax_full - ctrl.p1.team[1].current_hp;
+        assert!(dmg_ally_sword > 0 && dmg_ally_ctrl > 0 && dmg_holder_sword > 0,
+                "all hits should deal damage");
+        // (a) Ally's Def reduced ×0.75 -> takes MORE damage with Sword up.
+        assert!(dmg_ally_sword > dmg_ally_ctrl,
+                "Sword of Ruin lowers its ALLY's Def ({} > {})", dmg_ally_sword, dmg_ally_ctrl);
+        // (b) Holder's own Def NOT reduced -> identical damage to control.
+        assert_eq!(dmg_holder_sword, dmg_holder_ctrl,
+                "Sword of Ruin does NOT lower its own Def ({} == {})",
+                dmg_holder_sword, dmg_holder_ctrl);
+    }
+
+    #[test]
+    fn guard_dog_gains_plus_one_atk_when_intimidated() {
+        // PS data/abilities.ts:guarddog onTryBoost — deletes the Intimidate
+        // Atk drop AND grants the holder +1 Atk (this.boost({atk: 1})).
+        // Incineroar's Intimidate fires at battle start onto a Guard Dog
+        // Mabosstiff; net result is +1 Atk, not 0 and not -1.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"mabosstiff","level":50,"ability":"guarddog","item":"","nature":"adamant","moves":["crunch","playrough","firefang","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], 1,
+                "Guard Dog gains +1 Atk when intimidated (drop blocked + counter-boost)");
+    }
+
+    #[test]
+    fn wind_rider_gains_plus_one_atk_switching_in_under_tailwind() {
+        // PS data/abilities.ts:windrider onStart — if the holder's side has
+        // Tailwind up on switch-in, boost atk +1. Lead Pelipper, lay
+        // Tailwind on P1's side, then switch Brambleghast (Wind Rider) in.
+        let p1_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["hurricane","tailwind","surf","protect"]},
+            {"species":"brambleghast","level":50,"ability":"windrider","item":"","nature":"adamant","moves":["powerwhip","shadowball","strengthsap","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"impish","moves":["bodyslam","rest","sleeptalk","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Tailwind is already up on P1's side when Brambleghast switches in.
+        b.p1.conditions.tailwind_turns = 4;
+        assert_eq!(b.p1.team[1].boosts[0], 0, "no boost before switch-in");
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[0], 1,
+                "Wind Rider gains +1 Atk switching in under Tailwind");
     }
 
     #[test]
