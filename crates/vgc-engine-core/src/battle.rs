@@ -7061,6 +7061,70 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::COACHING => {
+                // PS data/moves.ts:coaching (num 811) — accuracy `true`,
+                // target: adjacentAlly, `boosts: { atk: 1, def: 1 }`. The
+                // user buffs its partner's Attack and Defense by one stage
+                // each. Single-target on the ally slot only, so it fails
+                // outright in Singles (no adjacent ally) and when the
+                // partner slot is empty / fainted — PS resolves an
+                // `adjacentAlly` move to no legal target and the move fails.
+                // The boosts are positive, so Clear Body / White Smoke (which
+                // only gate drops) never block them; Contrary would invert
+                // them but is not modelled engine-wide (see line ~1703).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Coaching_(move)>.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let ally_slot = actor_slot ^ 1;
+                let ally_alive = self
+                    .side(actor_side)
+                    .active_mon(ally_slot as usize)
+                    .is_some_and(|p| p.is_alive());
+                if !ally_alive {
+                    return;
+                }
+                let boosts: &[(u8, i8)] = &[(0, 1), (1, 1)];
+                self.apply_boosts(actor_side, ally_slot, boosts, actor_side, actor_slot);
+                // Mirror Herb on a foe copies an opposing stat rise.
+                crate::item::try_consume_mirror_herb_on_foe_boost(
+                    self, actor_side, ally_slot, boosts,
+                );
+            }
+            data::move_id::DECORATE => {
+                // PS data/moves.ts:decorate (num 777) — accuracy `true`,
+                // target: "normal", `boosts: { atk: 2, spa: 2 }`. Alcremie's
+                // signature: raises the target's Attack and Sp. Atk by two
+                // stages each. Because the PS target is `normal` (not
+                // `adjacentAlly`), it lands on the chosen target — usually an
+                // ally in Doubles, but in Singles the only legal target is the
+                // opposing foe, so it buffs the opponent (matching PS). The
+                // boosts are positive, so Clear Body / White Smoke don't block
+                // them; Contrary would invert but isn't modelled here.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Decorate_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                let boosts: &[(u8, i8)] = &[(0, 2), (2, 2)];
+                self.apply_boosts(tside, tslot, boosts, actor_side, actor_slot);
+                // Mirror Herb on a foe (relative to the boosted mon) copies
+                // the stat rise — e.g. Decorate aimed at an opponent.
+                crate::item::try_consume_mirror_herb_on_foe_boost(
+                    self, tside, tslot, boosts,
+                );
+            }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
                 // target: self. The user swaps board positions with its
@@ -17938,6 +18002,86 @@ mod tests {
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
         assert!(!b.p1.team[0].helping_handed_this_turn());
+    }
+
+    #[test]
+    fn coaching_boosts_ally_atk_and_def() {
+        // Doubles: P1 slot 0 (Incineroar) Coaches its ally Garchomp
+        // (slot 1). PS data/moves.ts:coaching → ally gains +1 Atk, +1 Def.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"blaze","nature":"adamant","moves":["coaching","fakeout","knockoff","flareblitz"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let atk_before = b.p1.team[1].boosts[0];
+        let def_before = b.p1.team[1].boosts[1];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[0], atk_before + 1, "ally gains +1 Atk");
+        assert_eq!(b.p1.team[1].boosts[1], def_before + 1, "ally gains +1 Def");
+        // The user (Coach) is unaffected — Coaching is ally-target, not self.
+        assert_eq!(b.p1.team[0].boosts[0], 0, "coach Atk unchanged");
+        assert_eq!(b.p1.team[0].boosts[1], 0, "coach Def unchanged");
+    }
+
+    #[test]
+    fn coaching_no_op_in_singles() {
+        // No adjacent ally — Coaching (target: adjacentAlly) fails and
+        // must not boost the user or panic on the partner-slot calc.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"blaze","nature":"adamant","moves":["coaching","fakeout","knockoff","flareblitz"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 0, "no self Atk boost in singles");
+        assert_eq!(b.p1.team[0].boosts[1], 0, "no self Def boost in singles");
+    }
+
+    #[test]
+    fn decorate_boosts_ally_atk_and_spa() {
+        // Doubles: Alcremie (slot 0) Decorates its ally Garchomp (slot 1).
+        // PS data/moves.ts:decorate → target gains +2 Atk, +2 SpA.
+        let p1_json = r#"[
+            {"species":"alcremie","level":50,"ability":"aromaveil","nature":"modest","moves":["decorate","dazzlinggleam","mysticalfire","recover"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let atk_before = b.p1.team[1].boosts[0];
+        let spa_before = b.p1.team[1].boosts[2];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].boosts[0], atk_before + 2, "ally gains +2 Atk");
+        assert_eq!(b.p1.team[1].boosts[2], spa_before + 2, "ally gains +2 SpA");
     }
 
     #[test]
