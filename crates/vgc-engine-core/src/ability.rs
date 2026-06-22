@@ -125,9 +125,8 @@ fn blocks_intimidate(ability_id: u16) -> bool {
             | data::ability_id::OWNTEMPO
             | data::ability_id::OBLIVIOUS
             | data::ability_id::SCRAPPY
-            | data::ability_id::GUARDDOG // gen 9 Houndstone — actually atk +1 on intimidate (counter-trigger);
-                        // including here as a blocker for the drop is correct, but the +1
-                        // counter is deferred to its own PR.
+            | data::ability_id::GUARDDOG // gen 9 Okidogi/Mabosstiff — blocks the Intimidate
+                        // Atk drop; the +1 Atk counter-boost is applied at the Intimidate site.
     )
 }
 
@@ -550,6 +549,20 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Wind Rider — PS `data/abilities.ts:windrider` `onStart`:
+    //   if (pokemon.side.sideConditions['tailwind']) this.boost({atk: 1}, ...)
+    // On switch-in, if the holder's own side already has Tailwind up, it
+    // gains +1 Atk. (The on-hit wind-move absorb and the
+    // onAllySideConditionStart trigger when Tailwind is set live are
+    // handled elsewhere; this covers the switch-into-active-Tailwind case.)
+    // Brambleghast signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Wind_Rider_(Ability)>.
+    if ability_id == data::ability_id::WINDRIDER
+        && battle.side(side).conditions.tailwind_turns > 0
+    {
+        battle.apply_boosts(side, slot, &[(0, 1)], side, slot);
+    }
+
     if ability_id == data::ability_id::INTIMIDATE {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful
@@ -591,6 +604,18 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
             }
             if blocks_intimidate(target_ability) {
+                // Guard Dog — PS `data/abilities.ts:guarddog` `onTryBoost`:
+                //   if (effect.name === 'Intimidate' && boost.atk) {
+                //     delete boost.atk;
+                //     this.boost({atk: 1}, target, target, null, false, true);
+                //   }
+                // It not only vetoes Intimidate's Atk drop (handled by
+                // `blocks_intimidate`) but ALSO grants the holder +1 Atk
+                // (self-boost). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Guard_Dog_(Ability)>.
+                if target_ability == data::ability_id::GUARDDOG {
+                    battle.apply_boosts(opp, s, &[(0, 1)], opp, s);
+                }
                 continue;
             }
             // Clear Amulet (held item) ALSO vetoes Intimidate's atk drop
