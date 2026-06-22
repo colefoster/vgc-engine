@@ -2608,6 +2608,16 @@ impl Battle {
         //     iterate slot order on the foe side and pick the first
         //     `redirecting_is_powder == true` carrier, falling back
         //     to the first `redirecting_this_turn` carrier.
+        //
+        // `redirected` records whether this higher-priority Follow Me /
+        // Rage Powder pass claimed the move. PS resolves redirection in a
+        // `priorityEvent` (sim/pokemon.ts:835) that returns on the FIRST
+        // handler to yield a target, and Follow Me / Rage Powder carry
+        // `onFoeRedirectTargetPriority: 1` while Lightning Rod / Storm
+        // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
+        // a powder/follow-me redirect wins, and the ability pass below is
+        // skipped when `redirected` is already set.
+        let mut redirected = false;
         if self.format().active_count() >= 2
             && matches!(m.target, 0 | 4 | 10)
             && targets.len() == 1
@@ -2652,8 +2662,102 @@ impl Battle {
                         }
                         if !blocked {
                             targets = TargetBuf::single((opp, rslot));
+                            redirected = true;
                         }
                     }
+                }
+            }
+        }
+
+        // Lightning Rod / Storm Drain redirection (doubles). PS
+        // `data/abilities.ts:lightningrod` (num 31) and `:stormdrain`
+        // (num 114) `onAnyRedirectTarget`:
+        //   onAnyRedirectTarget(target, source, source2, move) {
+        //     if (move.type !== 'Electric' || move.flags['pledgecombo']) return;
+        //     const redirectTarget = ['randomNormal','adjacentFoe']
+        //       .includes(move.target) ? 'normal' : move.target;
+        //     if (this.validTarget(this.effectState.target, source, redirectTarget)) {
+        //       ...
+        //       return this.effectState.target;
+        //     }
+        //   }
+        // Storm Drain is identical with `move.type === 'Water'`. Because
+        // the handler is `onAny*`, it pulls a matching-type single-target
+        // move aimed at ANY other mon (a foe, or the holder's own ally)
+        // toward the ability holder, regardless of which side the holder
+        // is on relative to the attacker. It runs at the default
+        // RedirectTarget priority (0), BELOW Follow Me / Rage Powder
+        // (priority 1) — hence the `!redirected` guard above.
+        // Gates:
+        //   - Doubles only; single-target codes 0/4/10 (same set the
+        //     powder pass uses). adjacentFoe (4) maps to `normal` in PS;
+        //     `any` (10) stays `any`. In doubles every slot is adjacent,
+        //     so the holder is always a valid redirect target.
+        //   - Move type must match: Electric (3) -> Lightning Rod,
+        //     Water (2) -> Storm Drain.
+        //   - Holder must be alive and is identified by
+        //     `effective_ability_id()`, so Gastro Acid / Neutralizing Gas
+        //     suppression disables redirection.
+        //   - Never the attacker itself, and never a no-op onto the move's
+        //     existing target.
+        //   - Lightning Rod / Storm Drain carry `flags: { breakable: 1 }`,
+        //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
+        //     the redirect (the move keeps its chosen target).
+        //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
+        //     and IGNORE all redirection; those abilities/moves are not
+        //     implemented yet, so no gate is added here (a future PR owns
+        //     them — see PS sim/battle.ts:2456).
+        //   - Speed-tie among multiple holders: PS sorts RedirectTarget
+        //     handlers by speed (fastest first), `effectOrder` for true
+        //     ties (sim/battle.ts:997). We pick the highest effective
+        //     Speed, deterministic P1-before-P2 slot order on ties.
+        // Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
+        if !redirected
+            && self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let want_ability = match m.type_ {
+                3 => Some(data::ability_id::LIGHTNINGROD),
+                2 => Some(data::ability_id::STORMDRAIN),
+                _ => None,
+            };
+            let attacker_breaks_mold = matches!(
+                attacker.ability_id,
+                data::ability_id::MOLDBREAKER
+                    | data::ability_id::TERAVOLT
+                    | data::ability_id::TURBOBLAZE
+            );
+            if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
+                let orig = targets[0];
+                let n = self.format().active_count() as u8;
+                let mut best: Option<(SideRef, u8)> = None;
+                let mut best_spe = 0u16;
+                for side in [SideRef::P1, SideRef::P2] {
+                    let tailwind = self.side(side).conditions.tailwind_turns > 0;
+                    for slot in 0..n {
+                        // Never redirect onto the attacker, and skip a
+                        // no-op onto the move's existing target.
+                        if (side == actor_side && slot == actor_slot) || (side, slot) == orig {
+                            continue;
+                        }
+                        let Some(p) = self.side(side).active_mon(slot as usize) else {
+                            continue;
+                        };
+                        if !p.is_alive() || p.effective_ability_id() != want {
+                            continue;
+                        }
+                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
+                        if best.is_none() || spe > best_spe {
+                            best = Some((side, slot));
+                            best_spe = spe;
+                        }
+                    }
+                }
+                if let Some(holder) = best {
+                    targets = TargetBuf::single(holder);
                 }
             }
         }
@@ -3401,9 +3505,10 @@ impl Battle {
                             // PS `data/abilities.ts:lightningrod` —
                             // `onTryHit` returns null on Electric moves
                             // and applies `this.boost({spa: 1}, target)`.
-                            // Doubles redirection is deferred (PS
-                            // `onAnyRedirectTarget`). Pikachu / Marowak-
-                            // Alola / Rhyperior. Bulbapedia:
+                            // Doubles redirection (`onAnyRedirectTarget`)
+                            // is handled in the target-resolution step
+                            // above. Pikachu / Marowak-Alola / Rhyperior.
+                            // Bulbapedia:
                             // <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>.
                             self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                             continue;
@@ -3415,8 +3520,9 @@ impl Battle {
 
             // Storm Drain — Water-type immunity + SpA +1 on absorb. PS
             // `data/abilities.ts:stormdrain` mirrors Lightning Rod with
-            // Water type (= 2). Doubles redirection deferred. Gastrodon /
-            // Lanturn / Lumineon. Bulbapedia:
+            // Water type (= 2). Doubles redirection handled in the
+            // target-resolution step above. Gastrodon / Lanturn /
+            // Lumineon. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
             if m.type_ == 2 {
                 let def_ability = defender.ability_id;
@@ -18960,6 +19066,94 @@ mod tests {
         assert_eq!(
             b.p1.team[1].current_hp, garchomp_hp_before,
             "Garchomp should be untouched"
+        );
+    }
+
+    #[test]
+    fn lightning_rod_redirects_partner_targeted_electric_move() {
+        // Doubles: P1 Raichu aims Thunderbolt at P2's Snorlax, but P2's
+        // partner has Lightning Rod — the move is pulled to the holder,
+        // which absorbs it (no damage) and gains +1 SpA. PS
+        // data/abilities.ts:lightningrod onAnyRedirectTarget.
+        let p1_json = r#"[
+            {"species":"raichu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","grassknot"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","crunch","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"lightningrod","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","substitute"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let snorlax_hp_before = b.p2.team[0].current_hp;
+        let rod_hp_before = b.p2.team[1].current_hp;
+        let rod_spa_before = b.p2.team[1].boosts[2];
+        // Raichu Thunderbolt targets P2 slot 0 (Snorlax); P2 passes.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, snorlax_hp_before,
+            "Snorlax should be untouched — Thunderbolt redirected to Lightning Rod"
+        );
+        assert_eq!(
+            b.p2.team[1].current_hp, rod_hp_before,
+            "Lightning Rod holder absorbs the redirected Electric move (no damage)"
+        );
+        assert_eq!(
+            b.p2.team[1].boosts[2], rod_spa_before + 1,
+            "Lightning Rod holder gains +1 SpA on absorbing the redirected move"
+        );
+    }
+
+    #[test]
+    fn mold_breaker_bypasses_lightning_rod_redirection() {
+        // Same setup, but the attacker has Mold Breaker — Lightning Rod
+        // is `breakable: 1`, so the redirect is skipped and Snorlax
+        // takes the hit while the holder stays untouched / unboosted.
+        let p1_json = r#"[
+            {"species":"raichu","level":50,"ability":"moldbreaker","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","grassknot"]},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","crunch","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"lightningrod","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","substitute"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let snorlax_hp_before = b.p2.team[0].current_hp;
+        let rod_hp_before = b.p2.team[1].current_hp;
+        let rod_spa_before = b.p2.team[1].boosts[2];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p2.team[0].current_hp < snorlax_hp_before,
+            "Mold Breaker bypasses Lightning Rod — Snorlax takes the hit"
+        );
+        assert_eq!(
+            b.p2.team[1].current_hp, rod_hp_before,
+            "Lightning Rod holder untouched (move was not redirected)"
+        );
+        assert_eq!(
+            b.p2.team[1].boosts[2], rod_spa_before,
+            "Lightning Rod holder gains no SpA (redirection bypassed)"
         );
     }
 
