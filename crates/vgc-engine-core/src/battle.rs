@@ -7061,6 +7061,50 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::DRAGONCHEER => {
+                // PS data/moves.ts:4056 (dragoncheer, num 913) — Status,
+                // target: adjacentAlly, sets the `dragoncheer` volatile on
+                // the partner. Its `onModifyCritRatio` adds +2 if the
+                // recipient is a Dragon-type, else +1. PS captures the
+                // dragon-type check in `effectState.hasDragonType` at apply
+                // time (`onStart`): the boost does NOT change if the ally
+                // later Terastallizes into Dragon (DarkFE research, cited in
+                // PS source). We fold the resolved contribution into
+                // `crit_stage_volatile` — the same channel Focus Energy /
+                // Scope Lens / Super Luck feed into `effective_crit_stage`
+                // (pokemon.rs) — capturing the boost now.
+                //
+                // Fails outside Doubles (no adjacent ally) and when the
+                // partner is missing / fainted. PS `onStart` also returns
+                // false if the ally already holds the `focusenergy`
+                // volatile, and `addVolatile` is a no-op when `dragoncheer`
+                // is already present (no stacking) — guard both so a second
+                // Dragon Cheer doesn't re-bump the crit stage.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Dragon_Cheer_(move)>.
+                let n = self.format().active_count() as u8;
+                if n < 2 {
+                    return;
+                }
+                let partner_slot = (actor_slot ^ 1) as usize;
+                if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot) {
+                    if !p.is_alive()
+                        || p.volatiles.has(crate::pokemon::VolatileKind::DragonCheer)
+                        || p.volatiles.has(crate::pokemon::VolatileKind::FocusEnergy)
+                    {
+                        return;
+                    }
+                    // Dragon = type index 14 (data crate TYPE_NAMES order).
+                    let (types, num_types) = p.effective_types();
+                    let is_dragon = (0..num_types as usize).any(|i| types[i] == 14);
+                    let boost: u8 = if is_dragon { 2 } else { 1 };
+                    let _ = p.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::DragonCheer,
+                        turns_remaining: 0, // indefinite; cleared on switch-out.
+                        payload: boost as u32, // resolved crit-stage contribution.
+                    });
+                    p.crit_stage_volatile = p.crit_stage_volatile.saturating_add(boost);
+                }
+            }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
                 // target: self. The user swaps board positions with its
@@ -10291,6 +10335,69 @@ mod tests {
         assert_eq!(b.p1.team[0].species_id, data::species_id::CHARIZARDMEGAX, "slot 0 mega'd");
         assert_eq!(b.p1.team[1].species_id, data::species_id::KANGASKHAN, "slot 1 stayed base — permit spent");
         assert!(b.p1.conditions.mega_used);
+    }
+
+    #[test]
+    fn dragon_cheer_raises_ally_crit_stage() {
+        // PS data/moves.ts:4056 — Dragon Cheer raises the adjacent ally's
+        // crit ratio by +1 (non-Dragon ally) or +2 (Dragon-type ally),
+        // captured at apply time. We model the contribution as
+        // `crit_stage_volatile` on the ally + a tracking DragonCheer volatile.
+
+        // Non-Dragon ally (Snorlax) → +1.
+        let p1_json = r#"[
+            {"species":"dragonite","level":50,"ability":"multiscale","item":"","nature":"adamant","moves":["dragoncheer","dragonclaw","earthquake","roost"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","thunderwave","toxic"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","thunderwave","toxic"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].crit_stage_volatile, 1,
+            "Dragon Cheer gives a non-Dragon ally +1 crit stage");
+        assert_eq!(b.p1.team[1].effective_crit_stage(), 1);
+        assert!(b.p1.team[1].volatiles.has(crate::pokemon::VolatileKind::DragonCheer),
+            "ally carries the dragoncheer volatile");
+
+        // Dragon-type ally (Garchomp) → +2.
+        let p1_json = r#"[
+            {"species":"dragonite","level":50,"ability":"multiscale","item":"","nature":"adamant","moves":["dragoncheer","dragonclaw","earthquake","roost"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].crit_stage_volatile, 2,
+            "Dragon Cheer gives a Dragon-type ally +2 crit stage");
+        assert_eq!(b.p1.team[1].effective_crit_stage(), 2);
+
+        // No-stack: a second Dragon Cheer must not re-bump the crit stage.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p1.team[1].crit_stage_volatile, 2,
+            "re-using Dragon Cheer does not stack the crit stage");
     }
 
     #[test]
