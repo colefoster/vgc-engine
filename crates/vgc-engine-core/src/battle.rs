@@ -8858,6 +8858,16 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         | "psychic" | "shadowball" | "bugbuzz" => (3, -1, 10),
         // 10% -1 Atk:
         "aurorabeam" => (0, -1, 10),
+        // 100% -1 Atk. Lunge (PS data/moves.ts:10608
+        // `secondary: { chance: 100, boosts: { atk: -1 } }`,
+        // target:"normal"). Breaking Swipe (PS data/moves.ts:1789, same
+        // secondary but target:"allAdjacentFoes" — a spread move; the
+        // per-target loop at ~3415 calls apply_secondary_effect once per
+        // hit target, so the drop lands on every foe it hits).
+        "lunge" | "breakingswipe" => (0, -1, 100),
+        // 100% -1 Spe. Pounce (PS data/moves.ts:13633
+        // `secondary: { chance: 100, boosts: { spe: -1 } }`, target:"normal").
+        "pounce" => (4, -1, 100),
         _ => return None,
     })
 }
@@ -23916,6 +23926,91 @@ mod tests {
                 matches!(b.p2.team[0].status, Status::None),
                 "Thunderous Kick must NEVER paralyze on seed {seed}",
             );
+        }
+    }
+
+    #[test]
+    fn stat_drop_secondary_breaking_swipe_pounce_lunge_table() {
+        // PS data/moves.ts:
+        //   lunge:10608          secondary { chance:100, boosts: { atk:-1 } }
+        //   breakingswipe:1789   secondary { chance:100, boosts: { atk:-1 } }
+        //                        (target:"allAdjacentFoes" — spread)
+        //   pounce:13633         secondary { chance:100, boosts: { spe:-1 } }
+        // Boost indices: 0 atk, 4 spe.
+        assert_eq!(super::stat_drop_secondary("lunge"), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("breakingswipe"), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("pounce"), Some((4, -1, 100)));
+    }
+
+    #[test]
+    fn lunge_and_pounce_always_drop_their_stat() {
+        // Lunge = 100% Atk -1, Pounce = 100% Spe -1 (PS data/moves.ts
+        // 10608 / 13633). Sweep seeds at a bulky passive target and confirm
+        // the right stat drops every time and the other is untouched.
+        let p1_json = r#"[
+            {"species":"golisopod","level":50,"ability":"emergencyexit","item":"","nature":"adamant","moves":["lunge","pounce","liquidation","protect"],"evs":{"atk":252,"hp":4,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"bold","moves":["recover","scald","toxic","haze"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        for seed in 0u64..48 {
+            // Lunge (move slot 0) — Atk -1.
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Lunge target must survive seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[0], -1, "Lunge -1 Atk seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[4], 0, "Lunge leaves Spe seed {seed}");
+
+            // Pounce (move slot 1) — Spe -1.
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Pounce target must survive seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[4], -1, "Pounce -1 Spe seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[0], 0, "Pounce leaves Atk seed {seed}");
+        }
+    }
+
+    #[test]
+    fn breaking_swipe_drops_atk_on_both_foes_in_doubles() {
+        // PS data/moves.ts:1789 — Breaking Swipe is target:"allAdjacentFoes"
+        // with a 100% Atk -1 secondary. In doubles the spread hit drops Attack
+        // on BOTH foes: the per-target resolution loop calls
+        // apply_secondary_effect once per hit target.
+        let p1_json = r#"[
+            {"species":"kommoo","level":50,"ability":"bulletproof","item":"","nature":"adamant","moves":["breakingswipe","protect","closecombat","poisonjab"],"evs":{"atk":252,"hp":4,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"bold","moves":["recover","scald","toxic","haze"],"evs":{"hp":252,"def":252,"spd":4}},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","thunderwave","toxic"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0u64..32 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Pass { actor_slot: 1 },
+                ],
+                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            );
+            assert!(
+                b.p2.team[0].is_alive() && b.p2.team[1].is_alive(),
+                "both foes must survive Breaking Swipe seed {seed}",
+            );
+            assert_eq!(b.p2.team[0].boosts[0], -1, "foe slot 0 Atk -1 seed {seed}");
+            assert_eq!(b.p2.team[1].boosts[0], -1, "foe slot 1 Atk -1 seed {seed}");
         }
     }
 
