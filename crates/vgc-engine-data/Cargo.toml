@@ -9,6 +9,7 @@ description = "Build-time data tables generated from @pkmn/dex JSON"
 build = "build.rs"
 
 [dependencies]
+serde = { workspace = true }
 
 [build-dependencies]
 serde = { workspace = true }
