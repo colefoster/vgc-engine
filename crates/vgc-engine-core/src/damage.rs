@@ -817,6 +817,13 @@ pub fn calculate_damage(
             data::ability_id::PIXILATE => Some(17),   // Fairy
             data::ability_id::REFRIGERATE => Some(5), // Ice
             data::ability_id::GALVANIZE => Some(3),   // Electric
+            // Dragonize (Pokémon Champions, Mega Feraligatr) — the same
+            // -ate machinery: Normal moves become Dragon (=14) and gain the
+            // shared ×1.2 typeChangerBoost. Mechanic verified at
+            // serebii.net/pokemonchampions/newabilities.shtml ("The Pokémon's
+            // Normal-type moves become Dragon-type moves and their power is
+            // boosted by 20%.").
+            data::ability_id::DRAGONIZE => Some(14),  // Dragon
             _ => None,
         };
         if let Some(t) = ate_type {
@@ -930,6 +937,19 @@ pub fn calculate_damage(
     // volatile directly. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
     if move_type == 1 && attacker.volatiles.has(crate::pokemon::VolatileKind::FlashFire) {
+        bp = bp * 6144 / 4096;
+    }
+
+    // Fire Mane (Pokémon Champions, Mega Pyroar) — a flat same-type power
+    // boost (NOT an -ate conversion): the holder's Fire-type moves (type
+    // code 1) gain ×1.5 power. Same shape as the existing type-boost
+    // abilities; ×1.5 = 6144/4096 in chainModify space. Verified at
+    // serebii.net/pokemonchampions/newabilities.shtml ("Boosts the power of
+    // the Pokémon's Fire-type moves by 50%.").
+    if move_type == 1
+        && attacker.ability_id != u16::MAX
+        && attacker.ability_id == data::ability_id::FIREMANE
+    {
         bp = bp * 6144 / 4096;
     }
 
@@ -1580,7 +1600,23 @@ pub fn calculate_damage(
     }
 
     // Weather — PS step 3. ×1.5 / ×0.5 for water/fire under Rain/Sun.
-    let (wn, wd) = ctx.weather.damage_mult(move_type);
+    //
+    // Mega Sol (Pokémon Champions, Mega Meganium) — "even when the sunlight
+    // has not turned harsh, the Pokémon can use its moves as if the weather
+    // were harsh sunlight" (serebii.net/pokemonchampions/newabilities.shtml).
+    // We model the verified damage-side effect: the Mega Sol holder's own
+    // offensive moves apply Sun's weather multiplier (Fire ×1.5, Water ×0.5)
+    // regardless of the actual field weather. Keyed on the ATTACKER so it only
+    // affects this user's moves, not damage it takes. (Out of scope here:
+    // Solar Beam's skipped charge / Chlorophyll / Growth — non-damage effects.)
+    let effective_weather = if attacker.ability_id != u16::MAX
+        && attacker.ability_id == data::ability_id::MEGASOL
+    {
+        crate::weather::Weather::Sun
+    } else {
+        ctx.weather
+    };
+    let (wn, wd) = effective_weather.damage_mult(move_type);
     if wn != wd {
         dmg = dmg * wn / wd;
     }
@@ -2914,6 +2950,111 @@ mod tests {
         assert!(px_ghost > 0, "Pixilate makes Hyper Voice Fairy — hits Ghost");
         assert!(px_neutral > ctrl_neutral,
             "Pixilate ×1.2 BP raises neutral-target damage (ctrl {ctrl_neutral}, px {px_neutral})");
+    }
+
+    #[test]
+    fn dragonize_changes_normal_to_dragon_and_boosts_bp() {
+        // Dragonize (Mega Feraligatr) is the -ate machinery: Normal moves
+        // become Dragon AND gain ×1.2. Attacker is Alakazam (Psychic — neither
+        // Normal nor Dragon) so STAB never confounds either assertion.
+        let mut atk = make_mon("alakazam", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let ghost = make_mon("gengar", 50, "timid", StatSpread::ZERO);
+        let neutral = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, d: &Pokemon| calculate_damage(a, d, move_id("hypervoice"),
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        // Control (no ability): Normal Hyper Voice is immune vs Ghost.
+        let ctrl_ghost = mk(&atk, &ghost);
+        let ctrl_neutral = mk(&atk, &neutral);
+        assert_eq!(ctrl_ghost, 0, "Normal Hyper Voice is immune vs Ghost");
+        atk.ability_id = data::ability_id::DRAGONIZE;
+        let dz_ghost = mk(&atk, &ghost);
+        let dz_neutral = mk(&atk, &neutral);
+        assert!(dz_ghost > 0, "Dragonize makes Hyper Voice Dragon — hits Ghost");
+        assert!(dz_neutral > ctrl_neutral,
+            "Dragonize ×1.2 BP raises damage (ctrl {ctrl_neutral}, dz {dz_neutral})");
+    }
+
+    #[test]
+    fn fire_mane_boosts_fire_moves_only() {
+        // Fire Mane (Mega Pyroar) — ×1.5 to the holder's Fire moves; other
+        // types untouched. Defender Snorlax (Normal) is neutral to both moves.
+        let mut atk = make_mon("alakazam", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        let fire = move_id("flamethrower");
+        let elec = move_id("thunderbolt");
+        let ctrl_fire = mk(&atk, fire);
+        let ctrl_elec = mk(&atk, elec);
+        atk.ability_id = data::ability_id::FIREMANE;
+        let fm_fire = mk(&atk, fire);
+        let fm_elec = mk(&atk, elec);
+        assert!(fm_fire > ctrl_fire,
+            "Fire Mane boosts Fire moves (ctrl {ctrl_fire}, fm {fm_fire})");
+        assert_eq!(fm_elec, ctrl_elec, "Fire Mane must NOT touch non-Fire moves");
+    }
+
+    #[test]
+    fn mega_sol_acts_as_sun_for_users_moves() {
+        // Mega Sol (Mega Meganium) — the holder's moves resolve as if harsh
+        // sun is up even with no weather: Fire ×1.5, Water ×0.5. Snorlax
+        // (Normal) is neutral to both so only the weather mult differs.
+        let mut atk = make_mon("alakazam", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        let fire = move_id("flamethrower");
+        let water = move_id("surf");
+        let ctrl_fire = mk(&atk, fire);
+        let ctrl_water = mk(&atk, water);
+        atk.ability_id = data::ability_id::MEGASOL;
+        let ms_fire = mk(&atk, fire);
+        let ms_water = mk(&atk, water);
+        assert!(ms_fire > ctrl_fire,
+            "Mega Sol boosts Fire as in sun (ctrl {ctrl_fire}, ms {ms_fire})");
+        assert!(ms_water < ctrl_water,
+            "Mega Sol halves Water as in sun (ctrl {ctrl_water}, ms {ms_water})");
+    }
+
+    #[test]
+    fn champions_mega_formes_have_their_new_abilities() {
+        // Each Champions Mega forme's MEGA_STONES row reports the new ability.
+        use data::{ability_id as ab, species_id as sp};
+        let pairs = [
+            (sp::MEGANIUMMEGA, ab::MEGASOL),
+            (sp::FERALIGATRMEGA, ab::DRAGONIZE),
+            (sp::EXCADRILLMEGA, ab::PIERCINGDRILL),
+            (sp::EELEKTROSSMEGA, ab::EELEVATE),
+            (sp::PYROARMEGA, ab::FIREMANE),
+            (sp::SCOVILLAINMEGA, ab::SPICYSPRAY),
+        ];
+        for (forme, ability) in pairs {
+            let row = data::MEGA_STONES.iter().find(|m| m.mega_species_id == forme)
+                .unwrap_or_else(|| panic!("no MEGA_STONES row for forme {forme}"));
+            assert_eq!(row.mega_ability_id, ability,
+                "mega forme {forme} should report ability {ability}");
+        }
     }
 
     #[test]

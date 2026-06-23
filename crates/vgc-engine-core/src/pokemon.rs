@@ -1861,7 +1861,15 @@ impl Pokemon {
         if flying && !negate_type_immunity {
             return false;
         }
-        if self.effective_ability_id() == data::ability_id::LEVITATE && !ignore_levitate {
+        // Eelevate (Pokémon Champions, Mega Eelektross) grants Levitate's
+        // grounding immunity in addition to its on-KO boost. Serebii: "The
+        // Pokémon floats off the ground, making it immune to Ground-type
+        // moves, as well as the Spikes, Toxic Spikes, and Sticky Web statuses."
+        // (serebii.net/pokemonchampions/newabilities.shtml)
+        let ab = self.effective_ability_id();
+        if (ab == data::ability_id::LEVITATE || ab == data::ability_id::EELEVATE)
+            && !ignore_levitate
+        {
             return false;
         }
         if self.effective_item_id() == data::item_id::AIRBALLOON {

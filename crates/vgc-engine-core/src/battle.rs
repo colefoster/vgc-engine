@@ -4155,8 +4155,29 @@ impl Battle {
             // Protect interception (single-target codes only; spread
             // hits each target independently and Protect intercepts the
             // single hit on the protected slot — already handled here).
+            //
+            // Piercing Drill (Pokémon Champions, Mega Excadrill) — "When the
+            // Pokémon uses contact moves, it can hit even targets that are
+            // protecting themselves, dealing 1/4 of the damage that the move
+            // would otherwise deal." (serebii.net/pokemonchampions/newabilities.shtml).
+            // Only the holder's damaging CONTACT moves punch through; non-contact
+            // moves, status moves, and every other user are still fully blocked
+            // (and the side-wide Mat/Wide/Quick Guards above are unaffected —
+            // the verified text covers self-Protect/Detect only). The 1/4
+            // reduction is applied to the final damage below.
+            let mut piercing_drill_quarter = false;
             if defender.is_protected_this_turn() && is_targeting_move(m.target) {
-                continue;
+                let pierces = damaging
+                    && attacker_ability_id == data::ability_id::PIERCINGDRILL
+                    && crate::damage::move_makes_contact(
+                        &data::MOVES[move_id as usize],
+                        &attacker,
+                    );
+                if pierces {
+                    piercing_drill_quarter = true;
+                } else {
+                    continue;
+                }
             }
 
             if !damaging {
@@ -5016,7 +5037,7 @@ impl Battle {
                 // constant per-hit amount. Applying the ramp here (instead
                 // of the old triangular `N(N+1)/2` lump) is what makes the
                 // per-hit Sturdy / Sash interaction correct for these moves.
-                let dmg: u16 = if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
+                let mut dmg: u16 = if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
                     ((base_hit_dmg as u32) * (hit_idx + 1)).min(u16::MAX as u32) as u16
                 } else {
                     base_hit_dmg
@@ -5036,6 +5057,12 @@ impl Battle {
             // sub HP is unchanged. Same exemption applies to moves with
             // the `authentic` flag (Hyperspace Hole etc.) and to
             // Infiltrator users; both deferred to their own PRs.
+            // Piercing Drill broke through the target's Protect: the move
+            // lands for 1/4 of the damage it would otherwise deal (applied to
+            // the fully-modified final damage). See the Protect block above.
+            if piercing_drill_quarter {
+                dmg /= 4;
+            }
             let sub_hp_pre = defender.substitute_hp();
             let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug);
             let effective_dmg = if hit_sub {
@@ -5372,7 +5399,11 @@ impl Battle {
                     "moxie" => {
                         self.apply_boosts(actor_side, actor_slot, &[(0, 1)], actor_side, actor_slot);
                     }
-                    "beastboost" => {
+                    // Eelevate (Pokémon Champions, Mega Eelektross) shares
+                    // Beast Boost's on-KO trigger: "When the Pokémon knocks
+                    // out a target with an attack, its highest stat is boosted
+                    // by 1 stage." (serebii.net/pokemonchampions/newabilities.shtml).
+                    "beastboost" | "eelevate" => {
                         // PS reads the attacker's current stats / stages
                         // at faint time (PS `getBestStat(false, true)`).
                         let idx = self
@@ -17099,6 +17130,117 @@ mod tests {
             }
         }
         assert!(landed, "Hypnosis should sometimes land on a Grass type within 40 seeds");
+    }
+
+    #[test]
+    fn eelevate_grants_ground_immunity() {
+        // Eelevate (Mega Eelektross) grants Levitate's grounding immunity.
+        // A Snorlax (normally grounded) with Eelevate takes 0 from Earthquake;
+        // the same Snorlax with an inert ability takes damage.
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let run = |ability: &str| {
+            let p1_json = format!(
+                r#"[{{"species":"snorlax","level":50,"ability":"{ability}","nature":"hardy","moves":["bodyslam","protect","rest","yawn"],"evs":{{"hp":252,"def":252}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+            let max = b.p1.team[0].stats.hp;
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            (max, b.p1.team[0].current_hp)
+        };
+        let (max_e, hp_e) = run("eelevate");
+        assert_eq!(hp_e, max_e, "Eelevate is immune to Earthquake (ground)");
+        let (max_c, hp_c) = run("thickfat");
+        assert!(hp_c < max_c, "grounded control DOES take Earthquake damage");
+    }
+
+    #[test]
+    fn eelevate_boosts_highest_stat_on_ko() {
+        // Eelevate shares Beast Boost's on-KO trigger: +1 to highest stat
+        // when it knocks out a target. Garchomp OHKOs frail Magikarp with
+        // Earthquake and should gain a stat boost.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"eelevate","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"magikarp","level":50,"ability":"swiftswim","nature":"hardy","moves":["splash","tackle","flail","bounce"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].fainted, "Magikarp should be KO'd by Earthquake");
+        let boosted = b.p1.team[0].boosts.iter().filter(|&&x| x >= 1).count();
+        assert_eq!(boosted, 1, "Eelevate raises exactly one (highest) stat by +1 on KO");
+    }
+
+    #[test]
+    fn spicy_spray_burns_attacker_on_hit() {
+        // Spicy Spray (Mega Scovillain) burns the attacker when the holder
+        // takes damage from a move — non-contact moves included, no roll.
+        // Garchomp (Dragon/Ground, burnable) Earthquakes the Spicy Spray
+        // holder and ends up burned.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"spicyspray","nature":"hardy","moves":["bodyslam","protect","rest","yawn"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(matches!(b.p2.team[0].status, Status::Burn),
+            "Spicy Spray burns the attacker (non-contact Earthquake)");
+    }
+
+    #[test]
+    fn piercing_drill_hits_through_protect_for_quarter() {
+        // Piercing Drill (Mega Excadrill) — contact moves break Protect for
+        // 1/4 damage. Iron Head (contact) vs a protecting Snorlax: with
+        // Piercing Drill it chips ~1/4; with an inert ability it's fully
+        // blocked; vs an unprotected target it deals full damage.
+        let p2_protect = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","rest","yawn"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let run = |ability: &str, p2_move: u8| {
+            let p1_json = format!(
+                r#"[{{"species":"excadrill","level":50,"ability":"{ability}","nature":"adamant","moves":["ironhead","earthquake","protect","rockslide"],"evs":{{"atk":252,"spe":252,"hp":4}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_protect).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 2 }, p1, p2);
+            let max = b.p2.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Iron Head
+                &[Choice::Move { actor_slot: 0, move_slot: p2_move, target: None }],
+            );
+            (max, b.p2.team[0].current_hp)
+        };
+        // Piercing Drill vs Protect (move_slot 0 = Protect on p2).
+        let (max_p, hp_pierced) = run("piercingdrill", 0);
+        let dmg_pierced = max_p - hp_pierced;
+        // Inert ability (Sand Rush) vs Protect — fully blocked.
+        let (max_c, hp_ctrl) = run("sandrush", 0);
+        // Piercing Drill vs an unprotected target (move_slot 1 = Body Slam).
+        let (max_f, hp_full) = run("piercingdrill", 1);
+        let dmg_full = max_f - hp_full;
+        assert_eq!(hp_ctrl, max_c, "non-Piercing-Drill contact move is fully blocked by Protect");
+        assert!(dmg_pierced > 0, "Piercing Drill punches through Protect");
+        assert!(dmg_pierced * 3 < dmg_full,
+            "Piercing Drill deals ~1/4 damage (pierced {dmg_pierced}, full {dmg_full})");
     }
 
     #[test]
