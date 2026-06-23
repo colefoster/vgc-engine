@@ -6,8 +6,8 @@
     3,
     4
   ],
-  "p1team": "Weavile\nAbility: Pressure\nLevel: 100\nEVs: 252 Atk / 4 Def / 252 Spe\nAdamant Nature\n- Megahorn",
-  "p2team": "Garganacl @ Leftovers\nAbility: Purifying Salt\nLevel: 100\nEVs: 252 HP / 252 Def / 4 SpD\nBold Nature\n- Splash",
+  "p1team": "Weavile\nAbility: Pressure\nLevel: 100\nEVs: 252 Atk / 252 Spe\nAdamant Nature\n- Megahorn",
+  "p2team": "Garganacl @ Leftovers\nAbility: Purifying Salt\nLevel: 100\nEVs: 252 HP / 252 Def\nBold Nature\n- Splash",
   "turns": [
     {
       "turn": 1,
@@ -51,13 +51,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 345,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     },
@@ -103,13 +159,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 279,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     },
@@ -155,13 +267,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 208,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     },
@@ -207,13 +375,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 149,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     },
@@ -259,13 +483,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 79,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     },
@@ -295,13 +575,69 @@
           "hp": 281,
           "maxhp": 281,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "pressure"
         },
         "p2a": {
           "hp": 104,
           "maxhp": 404,
           "fainted": false,
-          "status": null
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": "leftovers",
+          "ability": "purifyingsalt"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
         }
       }
     }

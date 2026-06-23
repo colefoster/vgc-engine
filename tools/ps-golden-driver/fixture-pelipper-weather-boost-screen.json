@@ -1,64 +1,29 @@
 {
   "format": "gen9customgame",
   "seed": [
-    1,
-    2,
-    3,
-    4
+    7,
+    7,
+    7,
+    7
   ],
-  "p1team": "Weavile\nAbility: Pressure\nLevel: 100\nEVs: 252 Atk / 4 Def / 252 Spe\nAdamant Nature\n- Crunch",
-  "p2team": "Garganacl @ Leftovers\nAbility: Purifying Salt\nLevel: 100\nEVs: 252 HP / 252 Def / 4 SpD\nBold Nature\n- Splash",
+  "p1team": "Pelipper\nAbility: Drizzle\nLevel: 100\nModest Nature\n- Swords Dance\n- Reflect\n- Tackle\n- Light Screen",
+  "p2team": "Snorlax\nAbility: Thick Fat\nLevel: 100\nCareful Nature\nEVs: 252 HP / 252 SpD\n- Splash",
   "turns": [
     {
       "turn": 1,
       "choices": {
         "p1": [
-          "move 1"
+          "move 4"
         ],
         "p2": [
           "move 1"
         ]
       },
-      "draws": [
-        {
-          "turn": 1,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "accuracy",
-          "value": true,
-          "raw_is_bool": true
-        },
-        {
-          "turn": 1,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "crit",
-          "value": false
-        },
-        {
-          "turn": 1,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "damage",
-          "value": 13
-        },
-        {
-          "turn": 1,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "secondary",
-          "value": 57,
-          "raw_is_bool": false
-        }
-      ],
+      "draws": [],
       "state": {
         "p1a": {
-          "hp": 281,
-          "maxhp": 281,
+          "hp": 261,
+          "maxhp": 261,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -71,11 +36,11 @@
             "evasion": 0
           },
           "item": null,
-          "ability": "pressure"
+          "ability": "drizzle"
         },
         "p2a": {
-          "hp": 345,
-          "maxhp": 404,
+          "hp": 524,
+          "maxhp": 524,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -87,12 +52,12 @@
             "accuracy": 0,
             "evasion": 0
           },
-          "item": "leftovers",
-          "ability": "purifyingsalt"
+          "item": null,
+          "ability": "thickfat"
         }
       },
       "field": {
-        "weather": null,
+        "weather": "rain",
         "terrain": null,
         "trickRoom": false,
         "gravity": false,
@@ -102,7 +67,7 @@
       "sides": {
         "p1": {
           "reflect": false,
-          "lightScreen": false,
+          "lightScreen": true,
           "auroraVeil": false,
           "tailwind": false,
           "safeguard": false,
@@ -136,46 +101,28 @@
           "move 1"
         ]
       },
-      "draws": [
-        {
-          "turn": 2,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "accuracy",
-          "value": true,
-          "raw_is_bool": true
-        },
-        {
-          "turn": 2,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "crit",
-          "value": false
-        },
-        {
-          "turn": 2,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "damage",
-          "value": 12
-        },
-        {
-          "turn": 2,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "secondary",
-          "value": 82,
-          "raw_is_bool": false
-        }
-      ],
+      "draws": [],
       "state": {
         "p1a": {
-          "hp": 281,
-          "maxhp": 281,
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 2,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 524,
+          "maxhp": 524,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -188,28 +135,11 @@
             "evasion": 0
           },
           "item": null,
-          "ability": "pressure"
-        },
-        "p2a": {
-          "hp": 285,
-          "maxhp": 404,
-          "fainted": false,
-          "status": null,
-          "boosts": {
-            "atk": 0,
-            "def": 0,
-            "spa": 0,
-            "spd": 0,
-            "spe": 0,
-            "accuracy": 0,
-            "evasion": 0
-          },
-          "item": "leftovers",
-          "ability": "purifyingsalt"
+          "ability": "thickfat"
         }
       },
       "field": {
-        "weather": null,
+        "weather": "rain",
         "terrain": null,
         "trickRoom": false,
         "gravity": false,
@@ -219,7 +149,7 @@
       "sides": {
         "p1": {
           "reflect": false,
-          "lightScreen": false,
+          "lightScreen": true,
           "auroraVeil": false,
           "tailwind": false,
           "safeguard": false,
@@ -247,7 +177,7 @@
       "turn": 3,
       "choices": {
         "p1": [
-          "move 1"
+          "move 3"
         ],
         "p2": [
           "move 1"
@@ -258,7 +188,7 @@
           "turn": 3,
           "actor": "p1a",
           "target": "p2a",
-          "move": "crunch",
+          "move": "tackle",
           "decision": "accuracy",
           "value": true,
           "raw_is_bool": true
@@ -267,7 +197,7 @@
           "turn": 3,
           "actor": "p1a",
           "target": "p2a",
-          "move": "crunch",
+          "move": "tackle",
           "decision": "crit",
           "value": false
         },
@@ -275,24 +205,32 @@
           "turn": 3,
           "actor": "p1a",
           "target": "p2a",
-          "move": "crunch",
+          "move": "tackle",
           "decision": "damage",
-          "value": 1
-        },
-        {
-          "turn": 3,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "secondary",
-          "value": 84,
-          "raw_is_bool": false
+          "value": 10
         }
       ],
       "state": {
         "p1a": {
-          "hp": 281,
-          "maxhp": 281,
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 2,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -305,28 +243,11 @@
             "evasion": 0
           },
           "item": null,
-          "ability": "pressure"
-        },
-        "p2a": {
-          "hp": 214,
-          "maxhp": 404,
-          "fainted": false,
-          "status": null,
-          "boosts": {
-            "atk": 0,
-            "def": 0,
-            "spa": 0,
-            "spd": 0,
-            "spe": 0,
-            "accuracy": 0,
-            "evasion": 0
-          },
-          "item": "leftovers",
-          "ability": "purifyingsalt"
+          "ability": "thickfat"
         }
       },
       "field": {
-        "weather": null,
+        "weather": "rain",
         "terrain": null,
         "trickRoom": false,
         "gravity": false,
@@ -336,7 +257,7 @@
       "sides": {
         "p1": {
           "reflect": false,
-          "lightScreen": false,
+          "lightScreen": true,
           "auroraVeil": false,
           "tailwind": false,
           "safeguard": false,
@@ -370,46 +291,28 @@
           "move 1"
         ]
       },
-      "draws": [
-        {
-          "turn": 4,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "accuracy",
-          "value": true,
-          "raw_is_bool": true
-        },
-        {
-          "turn": 4,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "crit",
-          "value": false
-        },
-        {
-          "turn": 4,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "damage",
-          "value": 2
-        },
-        {
-          "turn": 4,
-          "actor": "p1a",
-          "target": "p2a",
-          "move": "crunch",
-          "decision": "secondary",
-          "value": 93,
-          "raw_is_bool": false
-        }
-      ],
+      "draws": [],
       "state": {
         "p1a": {
-          "hp": 281,
-          "maxhp": 281,
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 4,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -422,11 +325,76 @@
             "evasion": 0
           },
           "item": null,
-          "ability": "pressure"
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": "rain",
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": true,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 5,
+      "choices": {
+        "p1": [
+          "move 4"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 4,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
         },
         "p2a": {
-          "hp": 145,
-          "maxhp": 404,
+          "hp": 479,
+          "maxhp": 524,
           "fainted": false,
           "status": null,
           "boosts": {
@@ -438,8 +406,90 @@
             "accuracy": 0,
             "evasion": 0
           },
-          "item": "leftovers",
-          "ability": "purifyingsalt"
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 6,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 6,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
         }
       },
       "field": {
@@ -480,8 +530,8 @@
   ],
   "_meta": {
     "ok": true,
-    "lastTurn": 5,
-    "totalDraws": 16,
+    "lastTurn": 7,
+    "totalDraws": 3,
     "errors": []
   }
 }
