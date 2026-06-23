@@ -246,6 +246,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vgc-engine-conformance"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vgc-engine-core",
+ "vgc-engine-data",
+]
+
+[[package]]
 name = "vgc-engine-core"
 version = "0.0.1"
 dependencies = [
