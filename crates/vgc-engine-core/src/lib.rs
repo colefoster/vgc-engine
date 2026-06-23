@@ -42,7 +42,7 @@ pub use pokemon::{
 };
 pub use rng::{Rng, RngEvent};
 pub use side::{Side, SideRef};
-pub use team::{build_member, TeamBuilder, TeamLoadError, TeamMember};
+pub use team::{boosted_max_pp, build_member, TeamBuilder, TeamLoadError, TeamMember};
 pub use team_export::parse_showdown_export;
 pub use terrain::Terrain;
 pub use weather::Weather;

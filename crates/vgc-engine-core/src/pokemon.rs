@@ -1765,6 +1765,30 @@ impl Pokemon {
         }
     }
 
+    /// Remaining Confusion turns (stored in the volatile `payload`). `0`
+    /// if not confused. Read-only accessor for the Python observation API.
+    #[inline]
+    pub fn confusion_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Confusion)
+            .map(|v| v.payload as u8)
+            .unwrap_or(0)
+    }
+
+    /// `true` if this mon is seeded by Leech Seed. Read-only accessor for
+    /// the Python observation API.
+    #[inline]
+    pub fn has_leech_seed(&self) -> bool {
+        self.volatiles.has(VolatileKind::LeechSeed)
+    }
+
+    /// `true` if this mon is under Salt Cure. Read-only accessor for the
+    /// Python observation API.
+    #[inline]
+    pub fn has_salt_cure(&self) -> bool {
+        self.volatiles.has(VolatileKind::SaltCure)
+    }
+
     /// `true` while a `VolatileKind::Redirect` volatile is on this mon
     /// (this mon used Rage Powder / Follow Me this turn).
     #[inline]

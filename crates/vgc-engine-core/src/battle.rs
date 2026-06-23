@@ -436,6 +436,21 @@ impl Battle {
         }
     }
 
+    /// `true` if any slot on `side` has a pending Wish heal (keyed by the
+    /// wisher's slot). Read-only accessor for the Python observation API.
+    #[inline]
+    pub fn has_wish_pending(&self, side: SideRef) -> bool {
+        self.wish_pending[side as usize].iter().any(Option::is_some)
+    }
+
+    /// `true` if any slot on `side` has a pending Future Sight / Doom Desire
+    /// hit incoming (keyed by the target's slot). Read-only accessor for the
+    /// Python observation API.
+    #[inline]
+    pub fn has_future_pending(&self, side: SideRef) -> bool {
+        self.future_pending[side as usize].iter().any(Option::is_some)
+    }
+
     /// Swap a live mon's species to a battle forme in place.
     ///
     /// Mutates only `species_id` (and, when `recompute_stats`, the five
