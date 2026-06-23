@@ -4538,7 +4538,22 @@ impl Battle {
             let crit_stage = attacker
                 .effective_crit_stage()
                 .saturating_add(m.crit_stage_delta);
-            let crit = if fixed_damage.is_some() {
+            // Shell Armor / Battle Armor — the DEFENDER is immune to crits.
+            // PS data/abilities.ts:shellarmor / battlearmor both expose
+            //   `onCriticalHit: false`, which vetoes the crit regardless of
+            //   the attacker's crit stage. Use `effective_ability_id()` so
+            //   Gastro Acid / Neutralizing Gas suppression re-enables crits
+            //   (neither armor is on PS's unsuppressable list). Both abilities
+            //   carry `flags: { breakable: 1 }`, so Mold Breaker / Teravolt /
+            //   Turboblaze bypass the immunity (`attacker_breaks_mold`).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Armor_(Ability)>
+            //   and <https://bulbapedia.bulbagarden.net/wiki/Battle_Armor_(Ability)>.
+            let crit_immune = !attacker_breaks_mold
+                && matches!(
+                    defender.effective_ability_id(),
+                    data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
+                );
+            let crit = if fixed_damage.is_some() || crit_immune {
                 false
             } else {
                 self.rng.crit_with_stage(crit_stage)
@@ -28925,6 +28940,81 @@ mod tests {
         assert_eq!(
             b.p1.team[0].boosts[0], 2,
             "Opportunist copied the opponent's +2 Atk",
+        );
+    }
+
+    #[test]
+    fn shell_armor_and_battle_armor_grant_crit_immunity() {
+        // PS data/abilities.ts:shellarmor / battlearmor — both expose
+        // `onCriticalHit: false`, vetoing crits against the holder. Both
+        // carry `flags: { breakable: 1 }`, so Mold Breaker bypasses them.
+        // Bulbapedia: Shell_Armor_(Ability) / Battle_Armor_(Ability).
+        //
+        // Detection: force a GUARANTEED crit on the attacker
+        // (crit_stage_volatile = 3 → PS stage 3+ always crits) and compare
+        // the defender's HP loss against a control with a neutral ability.
+        // A crit applies ×1.5; with the same seed (same damage-roll index)
+        // the crit arm always removes strictly more HP. Shell/Battle Armor
+        // must collapse the loss to the no-crit control value; Mold Breaker
+        // must restore the crit-sized loss.
+        //
+        // Garchomp Dragon Claw vs Snorlax: neutral, non-OHKO, no ability
+        // interactions on either side for this matchup.
+        fn hp_loss(def_ability: &str, atk_ability: &str) -> u16 {
+            let p1_json = format!(
+                r#"[{{"species":"garchomp","level":50,"ability":"{atk_ability}","item":"","nature":"adamant","moves":["dragonclaw","earthquake","protect","ironhead"],"evs":{{"atk":252}}}}]"#
+            );
+            let p2_json = format!(
+                r#"[{{"species":"snorlax","level":50,"ability":"{def_ability}","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","headbutt"],"evs":{{"hp":252}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(&p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            // Guaranteed crit on the attacker (stage 3+ always crits).
+            b.p1.team[0].crit_stage_volatile = 3;
+            assert!(b.p1.team[0].effective_crit_stage() >= 3, "setup: stage 3 crit");
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            before - b.p2.team[0].current_hp
+        }
+
+        // Baseline crit: neutral defender (Thick Fat is irrelevant vs Dragon).
+        let crit_loss = hp_loss("thickfat", "roughskin");
+        // Shell Armor / Battle Armor defender → crit vetoed → strictly less.
+        let shell_loss = hp_loss("shellarmor", "roughskin");
+        let battle_loss = hp_loss("battlearmor", "roughskin");
+        assert!(
+            shell_loss < crit_loss,
+            "Shell Armor must veto the crit (shell {shell_loss} < crit {crit_loss})"
+        );
+        assert!(
+            battle_loss < crit_loss,
+            "Battle Armor must veto the crit (battle {battle_loss} < crit {crit_loss})"
+        );
+        // The armor arms should land the SAME (no-crit) damage as each other.
+        assert_eq!(shell_loss, battle_loss, "both armors collapse to the no-crit roll");
+
+        // Mold Breaker on the attacker bypasses the immunity → crit lands
+        // again, matching the neutral-defender crit damage.
+        let shell_vs_mold = hp_loss("shellarmor", "moldbreaker");
+        let battle_vs_mold = hp_loss("battlearmor", "moldbreaker");
+        // Control: Mold Breaker against a neutral defender (no immunity to
+        // break) crits identically — isolates that the delta is the veto.
+        let neutral_vs_mold = hp_loss("thickfat", "moldbreaker");
+        assert!(
+            shell_vs_mold > shell_loss,
+            "Mold Breaker restores the crit through Shell Armor ({shell_vs_mold} > {shell_loss})"
+        );
+        assert_eq!(
+            shell_vs_mold, neutral_vs_mold,
+            "Mold Breaker crit through Shell Armor == unguarded crit"
+        );
+        assert_eq!(
+            battle_vs_mold, neutral_vs_mold,
+            "Mold Breaker crit through Battle Armor == unguarded crit"
         );
     }
 }
