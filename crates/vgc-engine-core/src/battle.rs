@@ -532,6 +532,37 @@ impl Battle {
         // Corviknight signature. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Mirror_Armor_(Ability)>.
         let is_self_source = source_side == target_side && source_slot == target_slot;
+        // Mist — PS data/moves.ts:mist `condition.onTryBoost`:
+        //   if (source && target !== source) { for (i in boost) if (boost[i] < 0) delete boost[i]; }
+        // A stat REDUCTION from a source other than the target itself is
+        // deleted while the target's side has Mist up. Self-drops (the
+        // holder's own moves) and all positive boosts pass through. This
+        // runs BEFORE Mirror Armor: PS's `onTryBoost` (Mist) fires before
+        // the boost is delivered, so a Misted drop is simply removed and
+        // never reaches the reflect path. Infiltrator bypass deferred
+        // (parity with the screens). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Mist_(move)>.
+        let mist_blocks = !is_self_source && self.side(target_side).conditions.mist_turns > 0;
+        // When Mist is up, strip the negative deltas and keep only the
+        // positives in a fixed-size stack buffer (≤ 7 stat indices — no
+        // heap allocation in step()). If nothing positive remains, the
+        // whole boost is a no-op.
+        let mut mist_buf = [(0u8, 0i8); 7];
+        let deltas: &[(u8, i8)] = if mist_blocks {
+            let mut k = 0usize;
+            for &(idx, delta) in deltas {
+                if delta > 0 && k < mist_buf.len() {
+                    mist_buf[k] = (idx, delta);
+                    k += 1;
+                }
+            }
+            if k == 0 {
+                return;
+            }
+            &mist_buf[..k]
+        } else {
+            deltas
+        };
         let target_mirror_armor = !is_self_source
             && self
                 .side(target_side)
@@ -1125,6 +1156,11 @@ impl Battle {
                 side.conditions.light_screen_turns.saturating_sub(1);
             side.conditions.aurora_veil_turns =
                 side.conditions.aurora_veil_turns.saturating_sub(1);
+            // Safeguard / Mist — 5-turn status / stat-drop screens. Same
+            // end-of-step tick as Reflect (PS onSideResidual, duration 5).
+            side.conditions.safeguard_turns =
+                side.conditions.safeguard_turns.saturating_sub(1);
+            side.conditions.mist_turns = side.conditions.mist_turns.saturating_sub(1);
             // Wide Guard / Quick Guard are explicit 1-turn boolean
             // side conditions — clear at end of turn so the next
             // turn's spread / priority moves go through normally.
@@ -1697,8 +1733,15 @@ impl Battle {
             Outcome::Absorb => {
                 self.side_mut(side).conditions.toxic_spikes_layers = 0;
             }
-            Outcome::Poison => self.try_set_status(side, slot, Status::Poison),
-            Outcome::Toxic => self.try_set_status(side, slot, Status::Toxic),
+            // Toxic Spikes — PS `toxicspikes.onSwitchIn` sets the status
+            // with `pokemon.side.foe.active[0]` as source, so Safeguard on
+            // the switching-in mon's side vetoes it.
+            Outcome::Poison => {
+                self.try_set_status_from(side, slot, Status::Poison, side.opposing())
+            }
+            Outcome::Toxic => {
+                self.try_set_status_from(side, slot, Status::Toxic, side.opposing())
+            }
         }
     }
 
@@ -5729,7 +5772,8 @@ impl Battle {
         if is_powder && self.target_is_powder_immune(tside, tslot) {
             return;
         }
-        self.try_set_status(tside, tslot, Status::Sleep);
+        // Foe-targeting sleep move: Safeguard on the target's side vetoes it.
+        self.try_set_status_from(tside, tslot, Status::Sleep, tside.opposing());
     }
 
     /// Throat Spray — PS `data/items.ts:throatspray`
@@ -5796,7 +5840,9 @@ impl Battle {
     /// the first opposing active.
     fn apply_status_to_target(&mut self, tside: SideRef, tslot: u8, status: Status) {
         if self.side(tside).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
-            self.try_set_status(tside, tslot, status);
+            // Foe-targeting status move: source is on the opposing side, so
+            // Safeguard on the target's side vetoes it.
+            self.try_set_status_from(tside, tslot, status, tside.opposing());
         }
     }
 
@@ -6160,7 +6206,31 @@ impl Battle {
         if any_light_clay { 8 } else { 5 }
     }
 
+    /// Self-sourced status entry point (Rest, Flame/Toxic Orb, etc.).
+    /// Equivalent to PS's `pokemon.setStatus(status)` with no external
+    /// source — Safeguard never vetoes a self-inflicted status.
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
+        self.try_set_status_from(side, slot, status, side);
+    }
+
+    /// Status application that carries the SOURCE side, so Safeguard can
+    /// veto opponent-inflicted status. PS data/moves.ts:safeguard
+    /// `condition.onSetStatus`: when the affected mon's side has Safeguard
+    /// and the effect's source is not the target itself (`target !==
+    /// source`), the status is interrupted (returns null). Self-inflicted
+    /// status passes (`try_set_status` delegates here with `source_side ==
+    /// side`). Infiltrator bypass deferred (parity with the screens).
+    pub(crate) fn try_set_status_from(
+        &mut self,
+        side: SideRef,
+        slot: u8,
+        status: Status,
+        source_side: SideRef,
+    ) {
+        // Safeguard veto — opponent-sourced status only.
+        if source_side != side && self.side(side).conditions.safeguard_turns > 0 {
+            return;
+        }
         let (immune, terrain_blocks_sleep, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
@@ -7160,6 +7230,28 @@ impl Battle {
                 let s = self.side_mut(actor_side);
                 if s.conditions.tailwind_turns == 0 {
                     s.conditions.tailwind_turns = 4;
+                }
+            }
+            data::move_id::SAFEGUARD => {
+                // Side condition: 5-turn timer. Fails if already up.
+                // PS data/moves.ts:safeguard `sideCondition` with
+                // `condition.duration: 5`. NOT extended by Light Clay
+                // (durationCallback only bumps to 7 for Persistent — that
+                // ability is not modelled, so always 5). The status veto
+                // itself fires in `try_set_status_from`.
+                let s = self.side_mut(actor_side);
+                if s.conditions.safeguard_turns == 0 {
+                    s.conditions.safeguard_turns = 5;
+                }
+            }
+            data::move_id::MIST => {
+                // Side condition: 5-turn timer. Fails if already up. PS
+                // data/moves.ts:mist `sideCondition` with `condition.
+                // duration: 5`. The negative-boost veto fires in
+                // `apply_boosts`.
+                let s = self.side_mut(actor_side);
+                if s.conditions.mist_turns == 0 {
+                    s.conditions.mist_turns = 5;
                 }
             }
             data::move_id::WIDEGUARD | data::move_id::QUICKGUARD => {
@@ -8352,7 +8444,7 @@ impl Battle {
                 // Powder gate: Grass / Overcoat / Safety Goggles.
                 if let Some((opp, slot)) = opp_target {
                     if self.target_is_powder_immune(opp, slot) { return; }
-                    self.try_set_status(opp, slot, Status::Poison);
+                    self.try_set_status_from(opp, slot, Status::Poison, actor_side);
                 }
             }
             data::move_id::PARTINGSHOT => {
@@ -9343,7 +9435,9 @@ fn apply_secondary_effect(
     }
     if let Some((status, chance)) = status_secondary(move_slug) {
         if rng.percent_1_100() <= sg(chance) {
-            battle.try_set_status(target_side, target_slot, status);
+            // Move secondary: the attacker is the source, so Safeguard on
+            // the target's side vetoes it.
+            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
         }
     }
     // Confuse secondary — PS `secondary: { chance, volatileStatus:
@@ -9376,12 +9470,15 @@ fn apply_secondary_effect(
                         || t.effective_ability_id() == data::ability_id::OWNTEMPO
                         // Misty Terrain — PS data/moves.ts:12183 blocks
                         // confusion on grounded, non-semi-invulnerable
-                        // targets. (Safeguard also blocks it in PS, but
-                        // Safeguard is not yet modelled as a side
-                        // condition here — no mon can have it, so the
-                        // check is a no-op and is omitted.)
+                        // targets.
                         || (matches!(battle.terrain, crate::terrain::Terrain::Misty)
                             && t.is_grounded())
+                        // Safeguard — PS safeguard `onTryAddVolatile` vetoes
+                        // opponent-inflicted confusion. This secondary's
+                        // source is the attacker (opposing side), so the
+                        // target's Safeguard blocks it.
+                        || (attacker_side != target_side
+                            && battle.side(target_side).conditions.safeguard_turns > 0)
                 })
                 .unwrap_or(true);
             if !blocked {
@@ -9447,7 +9544,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Freeze,
             };
-            battle.try_set_status(target_side, target_slot, status);
+            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
         }
     }
     if move_slug == "direclaw" {
@@ -9458,7 +9555,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Sleep,
             };
-            battle.try_set_status(target_side, target_slot, status);
+            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
         }
     }
     // Throat Chop — PS data/moves.ts:throatchop
@@ -14206,6 +14303,156 @@ mod tests {
         );
         // Second Tailwind should fail; counter still ticks down → 2.
         assert_eq!(b.p1.conditions.tailwind_turns, 2);
+    }
+
+    #[test]
+    fn safeguard_blocks_opponent_status_self_status_works() {
+        // P1 Umbreon sets Safeguard; the foe's Thunder Wave and Spore both
+        // fail to land status while it is up, but Umbreon's own Rest (a
+        // self-inflicted sleep) still works. PS data/moves.ts:safeguard
+        // `condition.onSetStatus` vetoes opponent-sourced status only.
+        let p1_json = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","item":"","nature":"calm","moves":["safeguard","rest","foulplay","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        // Smeargle (faster than Umbreon) so the status move always resolves
+        // first, with Safeguard already up.
+        let p2_json = r#"[
+            {"species":"smeargle","level":50,"ability":"owntempo","item":"","nature":"jolly","moves":["tackle","thunderwave","spore","protect"],"evs":{"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // T1: Umbreon Safeguard; Smeargle Tackle (chips Umbreon so Rest can
+        // later fire from below-max HP).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.conditions.safeguard_turns, 4, "Safeguard set to 5, ticked to 4");
+        assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp, "Umbreon chipped by Tackle");
+        // T2: Smeargle Thunder Wave — blocked by Safeguard.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(matches!(b.p1.team[0].status, Status::None), "Thunder Wave blocked by Safeguard");
+        // T3: Smeargle Spore — blocked by Safeguard.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert!(matches!(b.p1.team[0].status, Status::None), "Spore blocked by Safeguard");
+        assert_eq!(b.p1.conditions.safeguard_turns, 2, "still active going into T4");
+        // T4: Umbreon Rest — self-inflicted sleep applies despite Safeguard.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(matches!(b.p1.team[0].status, Status::Sleep), "self-status Rest works under Safeguard");
+    }
+
+    #[test]
+    fn safeguard_expires_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","item":"","nature":"calm","moves":["safeguard","rest","foulplay","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"smeargle","level":50,"ability":"owntempo","item":"","nature":"jolly","moves":["tackle","thunderwave","spore","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // 5 → 4 after the turn it was used; then 3/2/1/0 over four more turns.
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.conditions.safeguard_turns, expected);
+        }
+        // With Safeguard gone, Spore (100% accuracy) now lands.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert!(matches!(b.p1.team[0].status, Status::Sleep), "status lands once Safeguard expires");
+    }
+
+    #[test]
+    fn mist_blocks_opponent_stat_drop_self_drop_works() {
+        // P1 Milotic sets Mist. A switched-in Intimidate fails to lower
+        // Milotic's Attack, but Milotic's own Close Combat self-drop
+        // (def/spd -1) still applies. PS data/moves.ts:mist
+        // `condition.onTryBoost` deletes only opponent-sourced negative
+        // boosts. (Growl/Leer-style stat-drop status moves aren't modelled
+        // yet; Intimidate is the canonical opponent-sourced drop and shares
+        // the same `apply_boosts` choke point.)
+        let p1_json = r#"[
+            {"species":"milotic","level":50,"ability":"marvelscale","item":"","nature":"bold","moves":["mist","closecombat","recover","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","protect","toxic"],"evs":{"hp":252}},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"careful","moves":["fakeout","flareblitz","knockoff","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // T1: Milotic Mist; Blissey idles.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.conditions.mist_turns, 4, "Mist set to 5, ticked to 4");
+        // T2: Milotic Close Combat (self def/spd -1); Blissey idles.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 0, "Atk untouched");
+        assert_eq!(b.p1.team[0].boosts[1], -1, "Close Combat self Def drop applies under Mist");
+        assert_eq!(b.p1.team[0].boosts[3], -1, "Close Combat self SpD drop applies under Mist");
+        // T3: P2 switches in Incineroar — Intimidate targets Milotic's Atk
+        // but is blocked by Mist.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 0, "Intimidate's Atk drop blocked by Mist");
+    }
+
+    #[test]
+    fn mist_expires_after_five_turns() {
+        let p1_json = r#"[
+            {"species":"milotic","level":50,"ability":"marvelscale","item":"","nature":"bold","moves":["mist","scald","recover","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","protect","toxic"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"careful","moves":["fakeout","flareblitz","knockoff","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Pass { actor_slot: 0 }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p1.conditions.mist_turns, expected);
+        }
+        // Mist gone — a switched-in Intimidate now lowers Milotic's Attack.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], -1, "Intimidate lowers Atk once Mist expires");
     }
 
     #[test]
