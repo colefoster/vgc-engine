@@ -1431,6 +1431,62 @@ impl Pokemon {
         }
     }
 
+    /// Remaining Heal Block turns. `0` if not heal-blocked. While > 0 the
+    /// holder cannot gain HP from any healing source (Recover-class moves,
+    /// drain, Leftovers/Black Sludge, berries, Wish, Leech Seed, Poison
+    /// Heal, …) and heal-flagged moves fail outright. PS Heal Block
+    /// condition `data/moves.ts:healblock` (`duration: 5`, overridden to 2
+    /// by Psychic Noise's `durationCallback`).
+    #[inline]
+    pub fn heal_block_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::HealBlock)
+            .map(|v| v.turns_remaining)
+            .unwrap_or(0)
+    }
+
+    /// True while the Heal Block volatile is active. Mirrors PS Heal Block's
+    /// `onTryHeal` (returns `false`) — every heal into this mon is vetoed.
+    #[inline]
+    pub fn is_heal_blocked(&self) -> bool {
+        self.volatiles.has(VolatileKind::HealBlock)
+    }
+
+    /// Apply the Heal Block lockout for `turns`. Re-application replaces
+    /// (PS `addVolatile` resets the duration; Psychic Noise's `onRestart`
+    /// is a no-op refresh). `turns == 0` clears instead.
+    #[inline]
+    pub fn set_heal_block(&mut self, turns: u8) {
+        if turns == 0 {
+            self.volatiles.remove(VolatileKind::HealBlock);
+        } else {
+            self.volatiles.add(Volatile {
+                kind: VolatileKind::HealBlock,
+                turns_remaining: turns,
+                payload: 0,
+            });
+        }
+    }
+
+    /// End-of-turn Heal Block countdown — mirrors `tick_throat_chop`. PS
+    /// Heal Block condition `onResidualOrder 20` — counts down each end of
+    /// turn, ends at 0. Cleared on switch-out via the blanket volatile reset.
+    #[inline]
+    pub fn tick_heal_block(&mut self) {
+        let Some(pos) = self.volatiles.position(VolatileKind::HealBlock) else { return };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::HealBlock);
+        }
+    }
+
     /// Failure-roll denominator for the next consecutive Ally Switch use,
     /// or `0` if no `AllySwitch` volatile is active (the next use is the
     /// start of a chain and always succeeds). PS `effectState.counter`.
