@@ -49,7 +49,7 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     if !m.makes_contact {
         return false;
     }
-    if m.is_punch && attacker.item_id == data::item_id::PUNCHINGGLOVE {
+    if m.is_punch && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE {
         return false;
     }
     // Protective Pads — PS `data/items.ts:protectivepads`
@@ -72,7 +72,7 @@ pub fn move_makes_contact(m: &data::MoveDef, attacker: &Pokemon) -> bool {
     // which is a strict negative for the attacker, so PS users mostly
     // pair the item with non-contact-incentivized abilities.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protective_Pads>.
-    if attacker.item_id == data::item_id::PROTECTIVEPADS {
+    if attacker.effective_item_id() == data::item_id::PROTECTIVEPADS {
         return false;
     }
     true
@@ -973,8 +973,7 @@ pub fn calculate_damage(
     // in battle.rs / ability.rs / item.rs).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Punching_Glove>.
     if m.is_punch
-        && attacker.item_id != u16::MAX
-        && attacker.item_id == data::item_id::PUNCHINGGLOVE
+        && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE
     {
         bp = bp * 4506 / 4096;
     }
@@ -1114,8 +1113,10 @@ pub fn calculate_damage(
     // share the same multiplier — gen 9 keeps it at ×1.2, identical to
     // the type-boost rocks. Bulbapedia hub:
     //   <https://bulbapedia.bulbagarden.net/wiki/Type-enhancing_item>.
-    if attacker.item_id != u16::MAX {
-        let item_type: i32 = match attacker.item_id {
+    // `effective_item_id()` is `u16::MAX` under Magic Room — suppresses the
+    // type-boost item's effect without removing the item.
+    if attacker.effective_item_id() != u16::MAX {
+        let item_type: i32 = match attacker.effective_item_id() {
             data::item_id::SILKSCARF     => 0,   // Normal
             data::item_id::CHARCOAL      => 1,   // Fire
             data::item_id::MYSTICWATER   => 2,   // Water
@@ -1189,9 +1190,9 @@ pub fn calculate_damage(
     //   <https://bulbapedia.bulbagarden.net/wiki/Wellspring_Mask>
     //   <https://bulbapedia.bulbagarden.net/wiki/Hearthflame_Mask>
     //   <https://bulbapedia.bulbagarden.net/wiki/Cornerstone_Mask>
-    if attacker.item_id != u16::MAX {
+    if attacker.effective_item_id() != u16::MAX {
         let species_slug = attacker.species().slug;
-        let mask_match = match attacker.item_id {
+        let mask_match = match attacker.effective_item_id() {
             data::item_id::WELLSPRINGMASK  => species_slug.starts_with("ogerponwellspring"),
             data::item_id::HEARTHFLAMEMASK => species_slug.starts_with("ogerponhearthflame"),
             data::item_id::CORNERSTONEMASK => species_slug.starts_with("ogerponcornerstone"),
@@ -1219,10 +1220,10 @@ pub fn calculate_damage(
     // by matching the species slug prefix. None of these orbs is
     // breakable; Mold Breaker does NOT bypass. Bulbapedia hub:
     //   <https://bulbapedia.bulbagarden.net/wiki/Adamant_Orb>.
-    if attacker.item_id != u16::MAX {
+    if attacker.effective_item_id() != u16::MAX {
         let species_slug = attacker.species().slug;
         // (item, carrier prefix, secondary boosted type — Dragon=14 is always one).
-        let orb_match = match attacker.item_id {
+        let orb_match = match attacker.effective_item_id() {
             data::item_id::ADAMANTORB  => species_slug.starts_with("dialga")    && (move_type == 14 || move_type == 16),
             data::item_id::LUSTROUSORB => species_slug.starts_with("palkia")    && (move_type == 14 || move_type == 2),
             data::item_id::GRISEOUSORB => species_slug.starts_with("giratina")  && (move_type == 14 || move_type == 13),
