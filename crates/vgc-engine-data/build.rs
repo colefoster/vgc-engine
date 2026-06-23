@@ -47,6 +47,62 @@ fn slugify(s: &str) -> String {
         .collect()
 }
 
+/// One Pokémon Champions mega-forme data correction.
+struct MegaFix {
+    /// Slugified mega-forme name (matches the pokedex key / `slugify(name)`).
+    forme: &'static str,
+    /// Corrected slot-0 ability **slug** (already slugified), or "" to leave
+    /// the dump's ability untouched. MUST exist in the abilities dump, else the
+    /// mega row would be silently dropped at resolve time — all slugs below are
+    /// verified present in `~/Dev/localdex/data/abilities.json`.
+    ability: &'static str,
+    /// Corrected base Attack stat, or 0 to leave the dump's value untouched.
+    atk: u8,
+}
+
+/// --- Pokémon Champions mega-forme data corrections ---
+///
+/// The @pkmn / PS dex dump assigns each Champions Mega Evolution its BASE
+/// species' ability (e.g. Mega Dragonite gets Inner Focus, not Multiscale)
+/// instead of the mega's intended Champions ability, and Mega Starmie's base
+/// Attack is wrong (140, should be 100). We do NOT edit the shared upstream
+/// JSON (`~/Dev/localdex`, consumed by other tools); instead we override the
+/// affected forme rows here, after the dump is read and before the resolve/emit
+/// step. Ability fixes are applied in the MEGA_STONES loop; stat fixes in the
+/// SPECIES emit loop.
+///
+/// Megas whose correct Champions ability needs a brand-new, not-yet-implemented
+/// ability are intentionally OMITTED (applying an unresolvable slug would drop
+/// the mega row): Meganium (Mega Sol), Feraligatr (Dragonize), Excadrill
+/// (Piercing Drill), Eelektross (Eelevate), Pyroar (Fire Mane), Scovillain
+/// (Spicy Spray). Those are a separate follow-up.
+///
+/// Source: serebii.net/pokedex-champions/<species>/ (per-forme ability + stats).
+const MEGA_FORME_FIXES: &[MegaFix] = &[
+    MegaFix { forme: "raichumegax", ability: "electricsurge", atk: 0 },
+    MegaFix { forme: "raichumegay", ability: "noguard", atk: 0 },
+    MegaFix { forme: "clefablemega", ability: "magicbounce", atk: 0 },
+    MegaFix { forme: "dragonitemega", ability: "multiscale", atk: 0 },
+    MegaFix { forme: "skarmorymega", ability: "stalwart", atk: 0 },
+    MegaFix { forme: "staraptormega", ability: "contrary", atk: 0 },
+    MegaFix { forme: "froslassmega", ability: "snowwarning", atk: 0 },
+    MegaFix { forme: "emboarmega", ability: "moldbreaker", atk: 0 },
+    MegaFix { forme: "scolipedemega", ability: "shellarmor", atk: 0 },
+    MegaFix { forme: "scraftymega", ability: "intimidate", atk: 0 },
+    MegaFix { forme: "chandeluremega", ability: "infiltrator", atk: 0 },
+    MegaFix { forme: "golurkmega", ability: "unseenfist", atk: 0 },
+    MegaFix { forme: "floettemega", ability: "fairyaura", atk: 0 },
+    MegaFix { forme: "meowsticmmega", ability: "trace", atk: 0 },
+    MegaFix { forme: "meowsticfmega", ability: "trace", atk: 0 },
+    MegaFix { forme: "dragalgemega", ability: "regenerator", atk: 0 },
+    MegaFix { forme: "hawluchamega", ability: "noguard", atk: 0 },
+    MegaFix { forme: "crabominablemega", ability: "ironfist", atk: 0 },
+    MegaFix { forme: "falinksmega", ability: "defiant", atk: 0 },
+    MegaFix { forme: "glimmoramega", ability: "adaptability", atk: 0 },
+    MegaFix { forme: "victreebelmega", ability: "innardsout", atk: 0 },
+    MegaFix { forme: "starmiemega", ability: "hugepower", atk: 100 },
+];
+
 /// SCREAMING_SNAKE_CASE-ish Rust identifier for a dex slug, used as the
 /// name of a generated id constant (`ability_id::INTIMIDATE`, etc.).
 ///
@@ -669,6 +725,12 @@ fn main() {
         species_consts.push((const_ident(slug), species_consts.len()));
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
+        // Champions mega-forme base-stat correction (see MEGA_FORME_FIXES);
+        // currently only Mega Starmie's Attack (140 → 100).
+        let atk = MEGA_FORME_FIXES
+            .iter()
+            .find(|fx| fx.forme == slug.as_str() && fx.atk != 0)
+            .map_or(bs.atk, |fx| fx.atk as u32);
         let weight_dg = ((s.weight_kg * 10.0).round().max(0.0)).min(u16::MAX as f64) as u16;
         let is_nfe = !s.evos.is_empty();
         // PS `species.gender`: "M"/"F"/"N" are fixed; absent ⇒ ratio'd
@@ -686,7 +748,7 @@ fn main() {
             rust_str_lit(&s.name),
             rust_str_lit(slug),
             t[0], t[1], nt,
-            clamp(bs.hp), clamp(bs.atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
+            clamp(bs.hp), clamp(atk), clamp(bs.def), clamp(bs.spa), clamp(bs.spd), clamp(bs.spe),
             weight_dg,
             is_nfe,
             gender,
@@ -733,12 +795,22 @@ fn main() {
             ) else {
                 continue;
             };
-            // Mega forme's slot-0 ability, resolved to an ability index.
-            let ability_idx = species
-                .get(&forme_slug)
-                .and_then(|sp| sp.abilities.get("0"))
-                .map(|a| slugify(a))
-                .and_then(|a_slug| ability_slug_to_idx.get(&a_slug).copied());
+            // Mega forme's slot-0 ability, resolved to an ability index. A
+            // Champions correction (MEGA_FORME_FIXES) overrides the dump's
+            // (wrong, base-species) ability when present; else fall back to the
+            // dump's slot-0 ability.
+            let ability_slug = MEGA_FORME_FIXES
+                .iter()
+                .find(|fx| forme_slug == fx.forme && !fx.ability.is_empty())
+                .map(|fx| fx.ability.to_string())
+                .or_else(|| {
+                    species
+                        .get(&forme_slug)
+                        .and_then(|sp| sp.abilities.get("0"))
+                        .map(|a| slugify(a))
+                });
+            let ability_idx =
+                ability_slug.and_then(|a_slug| ability_slug_to_idx.get(&a_slug).copied());
             let Some(ability_idx) = ability_idx else { continue };
             mega_rows.push((item_idx, base_idx, forme_idx, ability_idx));
         }

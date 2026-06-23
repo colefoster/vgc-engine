@@ -29078,4 +29078,40 @@ mod tests {
             "Mold Breaker crit through Battle Armor == unguarded crit"
         );
     }
+
+    /// Pokémon Champions mega-forme data corrections (build.rs MEGA_FORME_FIXES).
+    /// The dex dump assigns each Champions mega its BASE species' ability; the
+    /// override table replaces them with the correct Champions ability (and
+    /// fixes Mega Starmie's base Attack). Source: serebii.net/pokedex-champions.
+    #[test]
+    fn champions_mega_forme_corrections() {
+        // Table index of a species by slug (== the id used in MEGA_STONES).
+        let species_idx = |slug: &str| -> u16 {
+            data::SPECIES
+                .iter()
+                .position(|s| s.slug == slug)
+                .unwrap_or_else(|| panic!("species {slug} not in table")) as u16
+        };
+        // The mega forme's resolved ability slug, via its MEGA_STONES row.
+        let mega_ability_slug = |forme_slug: &str| -> &'static str {
+            let mid = species_idx(forme_slug);
+            let row = data::MEGA_STONES
+                .iter()
+                .find(|m| m.mega_species_id == mid)
+                .unwrap_or_else(|| panic!("no MEGA_STONES row for {forme_slug} — row dropped?"));
+            data::ABILITIES[row.mega_ability_id as usize].slug
+        };
+
+        // A few corrected abilities across the override table.
+        assert_eq!(mega_ability_slug("dragonitemega"), "multiscale");
+        assert_eq!(mega_ability_slug("skarmorymega"), "stalwart");
+        assert_eq!(mega_ability_slug("starmiemega"), "hugepower");
+        assert_eq!(mega_ability_slug("golurkmega"), "unseenfist");
+        assert_eq!(mega_ability_slug("meowsticmmega"), "trace");
+        assert_eq!(mega_ability_slug("meowsticfmega"), "trace");
+
+        // Mega Starmie base Attack corrected 140 -> 100.
+        let starmie = &data::SPECIES[species_idx("starmiemega") as usize];
+        assert_eq!(starmie.base_stats[1], 100, "Mega Starmie base Atk should be 100");
+    }
 }
