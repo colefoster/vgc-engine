@@ -10,8 +10,215 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict, PyList};
 use vgc_engine_core as core;
+
+/// Stable lowercase slug for a weather state.
+fn weather_slug(w: core::Weather) -> &'static str {
+    match w {
+        core::Weather::None => "none",
+        core::Weather::Rain => "rain",
+        core::Weather::Sun => "sun",
+        core::Weather::Sand => "sand",
+        core::Weather::Snow => "snow",
+    }
+}
+
+/// Stable lowercase slug for a terrain state.
+fn terrain_slug(t: core::Terrain) -> &'static str {
+    match t {
+        core::Terrain::None => "none",
+        core::Terrain::Electric => "electric",
+        core::Terrain::Grassy => "grassy",
+        core::Terrain::Psychic => "psychic",
+        core::Terrain::Misty => "misty",
+    }
+}
+
+/// Stable lowercase slug for a persistent status condition.
+fn status_slug(s: core::Status) -> &'static str {
+    match s {
+        core::Status::None => "none",
+        core::Status::Sleep => "sleep",
+        core::Status::Freeze => "freeze",
+        core::Status::Paralysis => "paralysis",
+        core::Status::Burn => "burn",
+        core::Status::Poison => "poison",
+        core::Status::Toxic => "toxic",
+    }
+}
+
+/// Lowercase type slug for a 0..=17 type code (`data::TYPE_NAMES`).
+fn type_slug(code: u8) -> String {
+    core::data::TYPE_NAMES
+        .get(code as usize)
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Build the per-mon observation dict for an active Pokémon.
+fn observe_active_mon<'py>(
+    py: Python<'py>,
+    m: &core::Pokemon,
+    slot: usize,
+    side_tera_used: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("slot", slot)?;
+    d.set_item("species", m.species().slug)?;
+    d.set_item("fainted", m.fainted)?;
+    d.set_item("hp", m.current_hp)?;
+    d.set_item("max_hp", m.stats.hp)?;
+    d.set_item("status", status_slug(m.status))?;
+    // Single counter for the active status: Toxic stage or sleep turns; 0 otherwise.
+    let status_counter: u8 = match m.status {
+        core::Status::Toxic => m.toxic_counter(),
+        core::Status::Sleep => m.sleep_turns(),
+        _ => 0,
+    };
+    d.set_item("status_counter", status_counter)?;
+
+    // boosts[7] order in core: [atk, def, spa, spd, spe, acc, eva].
+    let boosts = PyDict::new(py);
+    boosts.set_item("atk", m.boosts[0])?;
+    boosts.set_item("def", m.boosts[1])?;
+    boosts.set_item("spa", m.boosts[2])?;
+    boosts.set_item("spd", m.boosts[3])?;
+    boosts.set_item("spe", m.boosts[4])?;
+    boosts.set_item("acc", m.boosts[5])?;
+    boosts.set_item("eva", m.boosts[6])?;
+    d.set_item("boosts", boosts)?;
+
+    // Live (post-Tera / type_override) types.
+    let (types, n_types) = m.effective_types();
+    let types_list = PyList::empty(py);
+    for &code in types.iter().take(n_types as usize) {
+        types_list.append(type_slug(code))?;
+    }
+    d.set_item("types", types_list)?;
+
+    // Effective ability ("" if suppressed) and item (None if suppressed / itemless).
+    d.set_item("ability", m.effective_ability_slug())?;
+    let item_id = m.effective_item_id();
+    let item: Option<&'static str> = if item_id == u16::MAX {
+        None
+    } else {
+        core::data::ITEMS.get(item_id as usize).map(|i| i.slug)
+    };
+    d.set_item("item", item)?;
+    d.set_item("tera_used", side_tera_used)?;
+    d.set_item("is_terastallized", m.terastallized)?;
+
+    // Move slots: skip empty (u16::MAX) slots. max_pp is the PP-maxed cap the
+    // engine builds with (boosted_max_pp), matching the starting PP.
+    let moves_list = PyList::empty(py);
+    for i in 0..4 {
+        let mid = m.moves[i];
+        if mid == u16::MAX {
+            continue;
+        }
+        let md = PyDict::new(py);
+        md.set_item("id", core::data::MOVES[mid as usize].slug)?;
+        md.set_item("pp", m.pp[i])?;
+        md.set_item("max_pp", core::boosted_max_pp(mid))?;
+        moves_list.append(md)?;
+    }
+    d.set_item("moves", moves_list)?;
+
+    // Volatiles the engine actually models (turn-counters in turns, flags in bool).
+    let vol = PyDict::new(py);
+    vol.set_item("substitute_hp", m.substitute_hp())?;
+    vol.set_item("taunt", m.taunt_turns())?;
+    vol.set_item("encore", m.encore_turns())?;
+    vol.set_item("disable", m.disable_turns())?;
+    vol.set_item("confusion", m.confusion_turns())?;
+    vol.set_item("throat_chop", m.throat_chop_turns())?;
+    vol.set_item("heal_block", m.heal_block_turns())?;
+    vol.set_item("perish", m.perish_turns())?;
+    vol.set_item("leech_seed", m.has_leech_seed())?;
+    vol.set_item("salt_cure", m.has_salt_cure())?;
+    vol.set_item("protect", m.is_protected_this_turn())?;
+    d.set_item("volatiles", vol)?;
+
+    Ok(d)
+}
+
+/// Build the lightweight bench-mon dict (enough for switch decisions).
+fn observe_bench_mon<'py>(
+    py: Python<'py>,
+    team_index: usize,
+    m: &core::Pokemon,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("team_index", team_index)?;
+    d.set_item("species", m.species().slug)?;
+    d.set_item("hp", m.current_hp)?;
+    d.set_item("max_hp", m.stats.hp)?;
+    d.set_item("status", status_slug(m.status))?;
+    d.set_item("fainted", m.fainted)?;
+    Ok(d)
+}
+
+/// Build the full per-side observation dict.
+fn observe_side<'py>(
+    py: Python<'py>,
+    battle: &core::Battle,
+    s: core::SideRef,
+) -> PyResult<Bound<'py, PyDict>> {
+    let side = battle.side(s);
+    let c = &side.conditions;
+    let n_active = battle.format().active_count();
+
+    let d = PyDict::new(py);
+    d.set_item("side", s as u8)?;
+
+    let conditions = PyDict::new(py);
+    conditions.set_item("reflect", c.reflect_turns)?;
+    conditions.set_item("light_screen", c.light_screen_turns)?;
+    conditions.set_item("aurora_veil", c.aurora_veil_turns)?;
+    conditions.set_item("tailwind", c.tailwind_turns)?;
+    conditions.set_item("safeguard", c.safeguard_turns)?;
+    conditions.set_item("mist", c.mist_turns)?;
+    // Stealth Rock / Sticky Web are binary; Spikes / Toxic Spikes are layer counts.
+    conditions.set_item("stealth_rock", c.stealth_rock)?;
+    conditions.set_item("spikes", c.spikes_layers)?;
+    conditions.set_item("toxic_spikes", c.toxic_spikes_layers)?;
+    conditions.set_item("sticky_web", c.sticky_web)?;
+    conditions.set_item("wish_pending", battle.has_wish_pending(s))?;
+    conditions.set_item("future_pending", battle.has_future_pending(s))?;
+    d.set_item("conditions", conditions)?;
+
+    // Active slots — present occupants only.
+    let active = PyList::empty(py);
+    let mut active_idxs: Vec<u8> = Vec::new();
+    for slot in 0..n_active {
+        if let Some(m) = side.active_mon(slot) {
+            active.append(observe_active_mon(py, m, slot, c.tera_used)?)?;
+        }
+        let idx = side.active[slot];
+        if idx != u8::MAX {
+            active_idxs.push(idx);
+        }
+    }
+    d.set_item("active", active)?;
+
+    // Bench — every team member not currently in an active slot.
+    let bench = PyList::empty(py);
+    for (i, m) in side.team.iter().enumerate() {
+        if active_idxs.contains(&(i as u8)) {
+            continue;
+        }
+        bench.append(observe_bench_mon(py, i, m)?)?;
+    }
+    d.set_item("bench", bench)?;
+
+    // Force-switch hint: an active slot is empty while the side is still alive.
+    let must_act =
+        (0..n_active).any(|slot| side.active[slot] == u8::MAX) && !side.is_defeated();
+    d.set_item("must_act", must_act)?;
+
+    Ok(d)
+}
 
 fn map_team_err(e: core::TeamLoadError) -> PyErr {
     PyValueError::new_err(format!("{e}"))
@@ -295,6 +502,97 @@ impl PyBattle {
             .side(s)
             .active_mon(slot as usize)
             .map(|m| m.species().slug.to_string()))
+    }
+
+    /// Structured full-state observation as a nested Python dict.
+    ///
+    /// Full-info (both sides exposed — mimikyu masks itself if it needs
+    /// hidden-info play). One `PyDict` is built per call; far cheaper than
+    /// `to_json` + parse. Action enumeration stays in `legal_choices`.
+    ///
+    /// Schema (stable contract):
+    /// ```text
+    /// {
+    ///   "turn": int,
+    ///   "format": "singles" | "doubles",
+    ///   "weather":  {"kind": str, "turns": int},
+    ///   "terrain":  {"kind": str, "turns": int},
+    ///   "field":    {"trick_room": int, "gravity": int,
+    ///                "magic_room": int, "wonder_room": int},   # remaining turns, 0 = off
+    ///   "sides": [
+    ///     {
+    ///       "side": int,
+    ///       "must_act": bool,                                  # an active slot is empty (force switch)
+    ///       "conditions": {
+    ///         "reflect": int, "light_screen": int, "aurora_veil": int, "tailwind": int,
+    ///         "safeguard": int, "mist": int,                   # remaining turns
+    ///         "stealth_rock": bool, "spikes": int,             # spikes/toxic_spikes are layer counts
+    ///         "toxic_spikes": int, "sticky_web": bool,
+    ///         "wish_pending": bool, "future_pending": bool
+    ///       },
+    ///       "active": [
+    ///         {
+    ///           "slot": int, "species": str, "fainted": bool,
+    ///           "hp": int, "max_hp": int,
+    ///           "status": str, "status_counter": int,          # toxic stage / sleep turns; 0 otherwise
+    ///           "boosts": {"atk":int,"def":int,"spa":int,"spd":int,"spe":int,"acc":int,"eva":int},
+    ///           "types": [str, ...],                           # live (post-Tera) types
+    ///           "ability": str,                                # "" if suppressed
+    ///           "item": str | None,                            # effective item; None if itemless/suppressed
+    ///           "tera_used": bool,                             # this side has spent its Tera
+    ///           "is_terastallized": bool,                      # this mon is currently Terastallized
+    ///           "moves": [{"id": str, "pp": int, "max_pp": int}, ...],   # empty slots omitted
+    ///           "volatiles": {
+    ///             "substitute_hp": int, "taunt": int, "encore": int, "disable": int,
+    ///             "confusion": int, "throat_chop": int, "heal_block": int, "perish": int,
+    ///             "leech_seed": bool, "salt_cure": bool, "protect": bool
+    ///           }
+    ///         }, ...
+    ///       ],
+    ///       "bench": [
+    ///         {"team_index": int, "species": str, "hp": int, "max_hp": int,
+    ///          "status": str, "fainted": bool}, ...
+    ///       ]
+    ///     },
+    ///     { ... side 1 ... }
+    ///   ]
+    /// }
+    /// ```
+    fn observe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let b = &self.inner;
+        let root = PyDict::new(py);
+        root.set_item("turn", b.turn())?;
+        root.set_item(
+            "format",
+            match b.format() {
+                core::Format::Singles => "singles",
+                core::Format::Doubles => "doubles",
+            },
+        )?;
+
+        let weather = PyDict::new(py);
+        weather.set_item("kind", weather_slug(b.weather))?;
+        weather.set_item("turns", b.weather_turns)?;
+        root.set_item("weather", weather)?;
+
+        let terrain = PyDict::new(py);
+        terrain.set_item("kind", terrain_slug(b.terrain))?;
+        terrain.set_item("turns", b.terrain_turns)?;
+        root.set_item("terrain", terrain)?;
+
+        let field = PyDict::new(py);
+        field.set_item("trick_room", b.trick_room_turns)?;
+        field.set_item("gravity", b.gravity_turns)?;
+        field.set_item("magic_room", b.magic_room_turns)?;
+        field.set_item("wonder_room", b.wonder_room_turns)?;
+        root.set_item("field", field)?;
+
+        let sides = PyList::empty(py);
+        sides.append(observe_side(py, b, core::SideRef::P1)?)?;
+        sides.append(observe_side(py, b, core::SideRef::P2)?)?;
+        root.set_item("sides", sides)?;
+
+        Ok(root)
     }
 
     fn __repr__(&self) -> String {
