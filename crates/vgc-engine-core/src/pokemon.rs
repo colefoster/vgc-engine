@@ -762,6 +762,13 @@ pub struct Pokemon {
     /// move (in the accuracy block). Reset to `false` on switch-out
     /// alongside the other single-turn volatiles.
     pub micle_next_move: bool,
+    /// Unburden (PS `data/abilities.ts:unburden`) — `true` once this mon's
+    /// held item has been used up or taken away. While set AND the mon is
+    /// currently itemless, `order::effective_speed` doubles its Speed
+    /// (PS's `unburden` volatile + its `onModifySpe` chainModify(2), which
+    /// only fires when `!pokemon.item`). Reset to `false` on switch-out
+    /// (PS `onEnd`); naturally stops applying if the mon regains an item.
+    pub unburden_active: bool,
     /// Commander (Tatsugiri) — `true` while this mon is inside its ally
     /// Dondozo's mouth. PS `data/conditions.ts:commanding` volatile.
     /// While set the holder cannot act (auto-passes — PS `onBeforeTurn`
@@ -856,6 +863,7 @@ impl Pokemon {
             protean_used: false,
             disguise_busted: false,
             micle_next_move: false,
+            unburden_active: false,
             commanding: false,
             commanded: false,
         }

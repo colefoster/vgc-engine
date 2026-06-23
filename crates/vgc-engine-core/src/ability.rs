@@ -1591,6 +1591,32 @@ pub fn on_damaging_hit(
         battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Poison);
     }
 
+    // Toxic Chain — PS `data/abilities.ts:5082`:
+    //   onSourceDamagingHit(damage, target, source, move) {
+    //     // Despite not being a secondary, Shield Dust / Covert Cloak block it
+    //     if (target.hasAbility('shielddust') || target.hasItem('covertcloak')) return;
+    //     if (this.randomChance(3, 10)) target.trySetStatus('tox', source);
+    //   }
+    // The ATTACKER holds Toxic Chain; on ANY damaging hit (not contact-
+    // gated, unlike Poison Touch) there is a 30% chance to badly-poison the
+    // target. The Shield Dust ability / Covert Cloak item on the target
+    // block the effect, and — per PS's `return` before `randomChance` — also
+    // suppress the RNG draw entirely. One draw per unblocked hit keeps the
+    // oracle stream aligned. Gliscor / Pecharunt signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Chain_(Ability)>.
+    if attacker_ability_id == data::ability_id::TOXICCHAIN && target_alive {
+        let blocked = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|m| {
+                m.effective_ability_id() == data::ability_id::SHIELDDUST
+                    || m.effective_item_id() == data::item_id::COVERTCLOAK
+            });
+        if !blocked && rng.percent_1_100() <= 30 {
+            battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Toxic);
+        }
+    }
+
     // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a
     // contact hit, swap abilities between holder and attacker (unless
     // the attacker's ability is in the un-swappable list). Coverage
@@ -1642,6 +1668,67 @@ pub fn on_damaging_hit(
             {
                 t.ability_id = attacker_id;
             }
+        }
+    }
+}
+
+/// Item-loss ability triggers. Call **once** at a point where the mon at
+/// (`side`, `slot`) has just *used up* its held item (a berry eaten, an
+/// herb / seed / Focus Sash consumed). Drives the two abilities that key
+/// off "the item left":
+///
+/// * **Unburden** (PS `data/abilities.ts:unburden` `onAfterUseItem` /
+///   `onTakeItem`): latch `unburden_active` on the holder so
+///   [`crate::order::effective_speed`] doubles its Speed while itemless.
+/// * **Symbiosis** (PS `data/abilities.ts:4829` `onAllyAfterUseItem`): a
+///   partner holding Symbiosis with a spare item immediately hands that
+///   item to the now-itemless mon (PS timing: right after the ally's item
+///   is used). The donor giving its item away can itself trip its own
+///   Unburden.
+///
+/// Heap-free — touches at most the holder and one ally slot.
+pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Unburden — latch on the mon that just lost its item.
+    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+        if m.is_alive() && m.ability_id == data::ability_id::UNBURDEN {
+            m.unburden_active = true;
+        }
+    }
+    // Symbiosis only passes an item when the consumer now holds none.
+    let needs_item = battle
+        .side(side)
+        .active_mon(slot as usize)
+        .is_some_and(|m| m.is_alive() && m.item_id == u16::MAX);
+    if !needs_item {
+        return;
+    }
+    let n = battle.format().active_count() as u8;
+    for partner_slot in 0..n {
+        if partner_slot == slot {
+            continue;
+        }
+        let (has_symbiosis, partner_item) =
+            match battle.side(side).active_mon(partner_slot as usize) {
+                Some(p) if p.is_alive() => (
+                    p.effective_ability_id() == data::ability_id::SYMBIOSIS,
+                    p.item_id,
+                ),
+                _ => (false, u16::MAX),
+            };
+        if has_symbiosis && partner_item != u16::MAX {
+            // Donor parts with its own item (which can latch the donor's
+            // Unburden, mirroring PS's `takeItem` → `onTakeItem`).
+            if let Some(p) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
+                p.item_id = u16::MAX;
+                if p.ability_id == data::ability_id::UNBURDEN {
+                    p.unburden_active = true;
+                }
+            }
+            // Recipient receives the donated item.
+            if let Some(r) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                r.item_id = partner_item;
+            }
+            break;
         }
     }
 }
