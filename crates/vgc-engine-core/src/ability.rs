@@ -384,6 +384,34 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         }
     }
 
+    // Costar (Flamigo signature): on switch-in, copy the ally's entire
+    // stat-stage array onto the holder. PS `data/abilities.ts:688`:
+    //   onStart(pokemon) {
+    //     const ally = pokemon.allies()[0];
+    //     if (!ally) return;
+    //     for (i in ally.boosts) pokemon.boosts[i] = ally.boosts[i];
+    //     // (+ copies dragoncheer/focusenergy/gmaxchistrike/laserfocus
+    //     //  crit volatiles — deferred; the boost copy is the core effect)
+    //   }
+    // Absolute copy (not additive) of all seven stages [atk, def, spa,
+    // spd, spe, acc, eva]. Doubles-only — singles has no ally. No-op if the
+    // ally has fainted (PS `allies()` excludes fainted mons). The crit-
+    // volatile copy (Focus Energy etc.) is deferred. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Costar_(Ability)>.
+    if ability_id == data::ability_id::COSTAR && battle.format().active_count() > 1 {
+        let partner_slot = if slot == 0 { 1 } else { 0 };
+        let ally_boosts = battle
+            .side(side)
+            .active_mon(partner_slot as usize)
+            .filter(|m| m.is_alive())
+            .map(|m| m.boosts);
+        if let Some(boosts) = ally_boosts {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.boosts = boosts;
+            }
+        }
+    }
+
     // Embody Aspect (Ogerpon Tera forms): on switch-in while
     // Terastallized, raise one stat by +1. PS handler in
     // `data/abilities.ts:embodyaspect{teal/wellspring/hearthflame/cornerstone}`:
@@ -763,6 +791,44 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         Some(m) if m.is_alive() => (m.ability_id, m.switched_in_this_turn()),
         _ => return,
     };
+
+    // Cud Chew (Farigiraf signature) — PS `data/abilities.ts:732`:
+    //   onResidualOrder: 28, onResidualSubOrder: 2,
+    //   onResidual(pokemon) {
+    //     if (!effectState.berry || !pokemon.hp) return;
+    //     if (--effectState.counter <= 0) {
+    //       const item = effectState.berry;
+    //       this.singleEvent('Eat', item, ...); this.runEvent('EatItem', ...);
+    //       delete effectState.berry; delete effectState.counter;
+    //     }
+    //   }
+    // A Berry eaten by the holder is re-eaten ONE more time at the end of
+    // the turn AFTER the one it was eaten on. The counter is set to 2 on
+    // eat (item.rs); here we decrement each end-of-turn and re-apply the
+    // Berry's onEat effect when it reaches 0. The re-eat ignores the HP
+    // gate (PS calls the Berry's `onEat` directly), and the item itself is
+    // already gone. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Cud_Chew_(Ability)>.
+    if ability_id == data::ability_id::CUDCHEW {
+        let pending = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .map(|m| (m.cud_chew_berry, m.cud_chew_counter));
+        if let Some((berry, counter)) = pending {
+            if berry != u16::MAX && counter > 0 {
+                let next = counter - 1;
+                if next == 0 {
+                    crate::item::cud_chew_reeat(battle, side, slot, berry, rng);
+                    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                        m.cud_chew_berry = u16::MAX;
+                        m.cud_chew_counter = 0;
+                    }
+                } else if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                    m.cud_chew_counter = next;
+                }
+            }
+        }
+    }
 
     // Slow Start counter — decrement at end of turn while > 0.
     // PS keeps a turn counter on the slowstart volatile; we mirror

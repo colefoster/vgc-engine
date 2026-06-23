@@ -777,6 +777,17 @@ pub struct Pokemon {
     /// boost). Acts as the once-per-pairing guard so the boost is not
     /// re-applied on subsequent switch-in updates. Cleared on switch-out.
     pub commanded: bool,
+    /// Cud Chew (Farigiraf signature) — the item id of the Berry this mon
+    /// ate, scheduled to be re-eaten one more time at the end of the NEXT
+    /// turn. `u16::MAX` = nothing pending. PS `data/abilities.ts:732`
+    /// stores the eaten berry on `effectState.berry`; we latch the id here.
+    /// Cleared on switch-out and after the re-eat fires.
+    pub cud_chew_berry: u16,
+    /// Cud Chew countdown. Set to 2 when a Berry is eaten; decremented in
+    /// `ability::on_residual` each end-of-turn. The re-eat fires when it
+    /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
+    /// mirroring PS `effectState.counter`.
+    pub cud_chew_counter: u8,
 }
 
 impl Pokemon {
@@ -858,6 +869,8 @@ impl Pokemon {
             micle_next_move: false,
             commanding: false,
             commanded: false,
+            cud_chew_berry: u16::MAX,
+            cud_chew_counter: 0,
         }
     }
 

@@ -396,6 +396,121 @@ pub fn on_after_damage(
             battle.apply_boosts(side, slot, &[(chosen, 2)], side, slot);
         }
     }
+
+    // Cud Chew — PS `data/abilities.ts:732` `onEatItem`: when the holder
+    // eats a Berry, store it on `effectState.berry` with `counter = 2` so
+    // it is re-eaten one more time at the end of the next turn. We detect
+    // the eat by snapshotting the pre-hook (effective) item — a Berry —
+    // and confirming the slot is now empty. The `bugbite`/`pluck` exclusion
+    // in PS doesn't apply here (those steal-and-eat off the holder, a
+    // different path). The re-eat fires in `ability::on_residual`.
+    if item_id != u16::MAX && data::ITEMS[item_id as usize].is_berry {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.item_id == u16::MAX && m.ability_id == data::ability_id::CUDCHEW {
+                m.cud_chew_berry = item_id;
+                m.cud_chew_counter = 2;
+            }
+        }
+    }
+}
+
+/// Cud Chew re-eat — re-apply a Berry's `onEat` effect for the Cud Chew
+/// (Farigiraf) end-of-turn second eat. The Berry has already been consumed
+/// (item slot empty) and the HP gate does NOT apply: PS
+/// `data/abilities.ts:732` calls the Berry's `onEat` directly via
+/// `singleEvent('Eat', ...)` / `runEvent('EatItem', ...)`, bypassing the
+/// `onUpdate`/`onResidual` HP triggers. We mirror each Berry's `onEat`
+/// below; berries with no combat-relevant `onEat` are a no-op.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cud_Chew_(Ability)>.
+pub fn cud_chew_reeat(
+    battle: &mut Battle,
+    side: SideRef,
+    slot: u8,
+    berry_id: u16,
+    rng: &mut crate::rng::Rng,
+) {
+    // Heal berries — fixed-fraction heal regardless of current HP (capped
+    // at max). Heal Block vetoes recovery (PS `onTryHeal`). Sitrus 1/4,
+    // Oran flat 10, Figy-family 1/3.
+    if berry_id == data::item_id::SITRUSBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if !m.is_heal_blocked() {
+                let heal = (m.stats.hp / 4).max(1);
+                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            }
+        }
+        return;
+    }
+    if berry_id == data::item_id::ORANBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if !m.is_heal_blocked() {
+                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+            }
+        }
+        return;
+    }
+    if matches!(
+        berry_id,
+        data::item_id::FIGYBERRY
+            | data::item_id::WIKIBERRY
+            | data::item_id::MAGOBERRY
+            | data::item_id::AGUAVBERRY
+            | data::item_id::IAPAPABERRY
+    ) {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if !m.is_heal_blocked() {
+                let heal = (m.stats.hp / 3).max(1);
+                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            }
+        }
+        return;
+    }
+    // Pinch stat berries — +1 to one stat (atk=0 def=1 spa=2 spd=3 spe=4).
+    let pinch = match berry_id {
+        data::item_id::LIECHIBERRY => Some(0u8),
+        data::item_id::GANLONBERRY => Some(1),
+        data::item_id::PETAYABERRY => Some(2),
+        data::item_id::APICOTBERRY => Some(3),
+        data::item_id::SALACBERRY => Some(4),
+        _ => None,
+    };
+    if let Some(stat_idx) = pinch {
+        battle.apply_boosts(side, slot, &[(stat_idx, 1)], side, slot);
+        return;
+    }
+    // Lansat Berry — +2 crit stage (Focus Energy).
+    if berry_id == data::item_id::LANSATBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.crit_stage_volatile = 2;
+        }
+        return;
+    }
+    // Micle Berry — set the next-move accuracy latch.
+    if berry_id == data::item_id::MICLEBERRY {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.micle_next_move = true;
+        }
+        return;
+    }
+    // Starf Berry — +2 to a random unmaxed combat stat (PS iteration order).
+    if berry_id == data::item_id::STARFBERRY {
+        let boosts = match battle.side(side).active_mon(slot as usize) {
+            Some(m) => m.boosts,
+            None => return,
+        };
+        let mut cands: [u8; 5] = [0; 5];
+        let mut n = 0usize;
+        for i in 0u8..5 {
+            if boosts[i as usize] < 6 {
+                cands[n] = i;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            let chosen = cands[rng.range(n as u32) as usize];
+            battle.apply_boosts(side, slot, &[(chosen, 2)], side, slot);
+        }
+    }
 }
 
 /// Leppa Berry — PS `data/items.ts:leppaberry` (line 3347).
