@@ -88,7 +88,7 @@ pub fn try_consume_type_resist_berry(
     defender_species: &data::SpeciesDef,
 ) -> bool {
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return false,
     };
     // Unnerve on the opposing side suppresses all Berry effects (resist
@@ -168,7 +168,7 @@ pub fn on_before_damage(
     rng: &mut crate::rng::Rng,
 ) -> Option<u16> {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return None,
     };
     if item_id == data::item_id::FOCUSSASH {
@@ -236,7 +236,7 @@ pub fn on_after_damage(
     rng: &mut crate::rng::Rng,
 ) {
     let (item_id, max, current) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.item_id, m.stats.hp, m.current_hp),
+        Some(m) if m.is_alive() => (m.effective_item_id(), m.stats.hp, m.current_hp),
         _ => return,
     };
     // Every item handled here is an HP-triggered Berry (Sitrus, Oran, the
@@ -411,7 +411,7 @@ pub fn on_after_damage(
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Leppa_Berry>.
 pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
     let (item_id, ripen) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.item_id, m.effective_ability_id() == data::ability_id::RIPEN),
+        Some(m) if m.is_alive() => (m.effective_item_id(), m.effective_ability_id() == data::ability_id::RIPEN),
         _ => return,
     };
     if item_id != data::item_id::LEPPABERRY {
@@ -459,7 +459,7 @@ pub fn on_attacker_contact_hit(
     attacker_slot: u8,
 ) {
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => m.item_id,
+        Some(m) => m.effective_item_id(),
         None => return,
     };
     // Sticky Barb — PS `data/items.ts:stickybarb`
@@ -552,7 +552,7 @@ pub fn on_damaging_hit(
     // alive (Jaboca recoil into a fainted defender's attacker would be
     // wrong-headed).
     let raw_item_id = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => m.item_id,
+        Some(m) => m.effective_item_id(),
         None => return,
     };
     if raw_item_id == data::item_id::AIRBALLOON {
@@ -564,7 +564,7 @@ pub fn on_damaging_hit(
         }
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     // Berries handled in this hook (Enigma, Kee, Maranga, Rowap, Jaboca)
@@ -845,7 +845,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
 /// sites in `battle.rs` / `ability.rs` (matches `onTerrainChange`).
 pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     use crate::terrain::Terrain;
@@ -886,7 +886,7 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
 pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     use crate::pokemon::VolatileKind as VK;
     let (item_id, confused) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.item_id, m.volatiles.has(VK::Confusion)),
+        Some(m) if m.is_alive() => (m.effective_item_id(), m.volatiles.has(VK::Confusion)),
         _ => return,
     };
     if item_id != data::item_id::PERSIMBERRY || !confused {
@@ -922,7 +922,7 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
         return;
     }
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     if item_id != data::item_id::ROOMSERVICE {
@@ -948,7 +948,7 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Blunder_Policy>.
 pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     if item_id != data::item_id::BLUNDERPOLICY {
@@ -980,7 +980,7 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
 /// <https://bulbapedia.bulbagarden.net/wiki/Mental_Herb>.
 pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     if item_id != data::item_id::MENTALHERB {
@@ -1206,7 +1206,7 @@ pub fn try_consume_mirror_herb_on_foe_boost(
 
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     if item_id != data::item_id::WHITEHERB {
@@ -1231,7 +1231,7 @@ pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u
 /// Called from `Battle::resolve_end_of_turn` for each active mon.
 pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     if item_id == data::item_id::LEFTOVERS {
@@ -1294,7 +1294,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
 /// (order 28), so a fatal burn shadows the Sticky Barb tick.
 pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
     let item_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.item_id,
+        Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
     };
     // Sticky Barb — PS `data/items.ts:stickybarb` onResidual:

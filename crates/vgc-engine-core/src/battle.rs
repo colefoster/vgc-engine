@@ -185,6 +185,24 @@ pub struct Battle {
     /// `gravity` flag (Fly, Bounce, Jump Kick, Splash, Magnet Rise,
     /// Telekinesis, …) are disabled / fail.
     pub gravity_turns: u8,
+    /// Magic Room remaining turns (0 = inactive). Battle-wide field
+    /// pseudo-weather (PS `data/moves.ts:magicroom`, duration 5). While
+    /// active, every Pokémon's held-item EFFECT is suppressed (PS
+    /// `Pokemon.ignoringItem()` returns true; `sim/pokemon.ts:888`). The
+    /// item is NOT removed — only its effect is muted — so we mark each
+    /// active mon's `item_suppressed` flag on start/end and on switch-in,
+    /// and item-effect reads route through `effective_item_id()`. Toggles
+    /// off if Magic Room is used again while active (`onFieldRestart`).
+    pub magic_room_turns: u8,
+    /// Wonder Room remaining turns (0 = inactive). Battle-wide field
+    /// pseudo-weather (PS `data/moves.ts:wonderroom`, duration 5). While
+    /// active, every Pokémon's Def and SpD *base* stats are swapped for the
+    /// damage formula (PS `Pokemon.calculateStat` swaps `storedStats` before
+    /// applying boosts; `sim/pokemon.ts:569`). The defensive boost STAGE
+    /// stays keyed to the move's category (a special hit still applies the
+    /// SpD stage, on the swapped Def base). Toggles off if reused while
+    /// active (`onFieldRestart`).
+    pub wonder_room_turns: u8,
     /// Transient within-turn action-queue reorder request set by After You /
     /// Quash and consumed by the `step` action loop after each move
     /// resolves. `Some((side, slot, to_front))` re-positions the pending
@@ -275,6 +293,8 @@ impl Battle {
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
             gravity_turns: 0,
+            magic_room_turns: 0,
+            wonder_room_turns: 0,
             pending_queue_reorder: None,
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
@@ -1119,6 +1139,29 @@ impl Battle {
         if self.trick_room_turns > 0 {
             self.trick_room_turns -= 1;
         }
+        // Magic Room field pseudo-weather ticks down each end-of-turn
+        // (PS `data/moves.ts:magicroom` condition, `onFieldResidual`).
+        // On expiry, clear the per-mon item-suppression flag on every
+        // active mon so held-item effects come back live next turn.
+        if self.magic_room_turns > 0 {
+            self.magic_room_turns -= 1;
+            if self.magic_room_turns == 0 {
+                let n = self.format().active_count() as u8;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for s in 0..n {
+                        if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
+                            mon.item_suppressed = false;
+                        }
+                    }
+                }
+            }
+        }
+        // Wonder Room field pseudo-weather ticks down each end-of-turn
+        // (PS `data/moves.ts:wonderroom` condition, `onFieldResidual`). No
+        // per-mon state — the Def/SpD swap is read live in the damage calc.
+        if self.wonder_room_turns > 0 {
+            self.wonder_room_turns -= 1;
+        }
         // Gravity field pseudo-weather ticks down each end-of-turn
         // (PS `data/moves.ts:gravity` condition, `onFieldResidual`).
         // On expiry, drop the grounding marker from every active mon.
@@ -1399,6 +1442,7 @@ impl Battle {
             }
         }
         let gravity_active = self.gravity_turns > 0;
+        let magic_room_active = self.magic_room_turns > 0;
         let s = self.side_mut(side);
         if (actor_slot as usize) < s.active.len()
             && (team_index as usize) < s.team.len()
@@ -1471,6 +1515,12 @@ impl Battle {
                     payload: 0,
                 });
             }
+            // Magic Room suppresses the held-item EFFECT of every active mon
+            // live (PS `Pokemon.ignoringItem()`), so a mon switching in while
+            // it is up inherits the suppression. `item_suppressed` is a plain
+            // field (not a volatile), so the blanket `volatiles.clear()` above
+            // does not touch it — set it explicitly to the current field state.
+            incoming.item_suppressed = magic_room_active;
         } else {
             return false;
         }
@@ -3169,8 +3219,11 @@ impl Battle {
         // FAILS outright if the resolved target holds no item. The item is
         // never removed or consumed (PS's `onTryHit` only emits a flavor
         // `-activate`). A target whose item was already knocked off / used
-        // has `effective_item_id() == u16::MAX`, so Poltergeist fails there
-        // too. `target: "normal"` (single target), so `targets[0]` is the
+        // has `item_id == u16::MAX`, so Poltergeist fails there
+        // too. PS reads raw `target.item` (presence), NOT `ignoringItem()`,
+        // so Poltergeist still works while Magic Room suppresses the item's
+        // EFFECT — hence the raw `item_id` read here, not `effective_item_id()`.
+        // `target: "normal"` (single target), so `targets[0]` is the
         // one resolved foe. PP was already deducted in the standard block
         // above (matching PS, which deducts in `useMove` before the failing
         // `onTry`), so we simply return on failure — no damage, target HP
@@ -3180,7 +3233,7 @@ impl Battle {
             let has_item = targets.first().is_some_and(|&(ts, tslot)| {
                 self.side(ts)
                     .active_mon(tslot as usize)
-                    .is_some_and(|t| t.effective_item_id() != u16::MAX)
+                    .is_some_and(|t| t.item_id != u16::MAX)
             });
             if !has_item {
                 return;
@@ -3211,7 +3264,11 @@ impl Battle {
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
         // type-matched, etc.
-        let attacker_item_id = attacker.item_id;
+        // `effective_item_id()` reports `u16::MAX` under Magic Room (PS
+        // `Pokemon.ignoringItem()`), so this single read suppresses every
+        // attacker-item damage effect below (Life Orb, Choice Band/Specs,
+        // Expert Belt, Muscle Band, Wise Glasses, Wide/Zoom Lens, …) at once.
+        let attacker_item_id = attacker.effective_item_id();
         // Life Orb — PS `data/items.ts:lifeorb` applies
         // `chainModify([5324, 4096])` via `modify`, which is *not* equal
         // to a plain ×1.3 truncate. PS form (sim/battle.ts:2345
@@ -3770,8 +3827,8 @@ impl Battle {
                 // ordering. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Bright_Powder>,
                 // <https://bulbapedia.bulbagarden.net/wiki/Lax_Incense>.
-                if defender.item_id == data::item_id::BRIGHTPOWDER
-                    || defender.item_id == data::item_id::LAXINCENSE
+                if defender.effective_item_id() == data::item_id::BRIGHTPOWDER
+                    || defender.effective_item_id() == data::item_id::LAXINCENSE
                 {
                     eff_acc = eff_acc * 3686 / 4096;
                 }
@@ -4240,7 +4297,20 @@ impl Battle {
             // Apply Assault Vest spd boost to the defender if the attack
             // is special (×1.5 spd; physical untouched).
             let mut def_stats_ovr = defender.stats;
-            if defender.item_id == data::item_id::ASSAULTVEST && m.category == 1 {
+            // Wonder Room — swap the defender's Def and SpD *base* stats
+            // before any defensive multiplier is applied (PS
+            // `Pokemon.calculateStat` swaps `storedStats` first;
+            // `sim/pokemon.ts:569`). The category-keyed multipliers below
+            // (Assault Vest spd, Eviolite, Ruin, Sandstorm, Paradox) and the
+            // boost STAGE in the damage formula stay keyed to the move's
+            // category, so a special hit ends up applying the SpD stage and
+            // SpD multipliers on top of the (swapped-in) Def base — matching
+            // PS, which keys its `ModifyDef`/`ModifySpD` events on the
+            // category `defenseStat` after the base swap.
+            if self.wonder_room_turns > 0 {
+                core::mem::swap(&mut def_stats_ovr.def, &mut def_stats_ovr.spd);
+            }
+            if defender.effective_item_id() == data::item_id::ASSAULTVEST && m.category == 1 {
                 def_stats_ovr.spd = ((def_stats_ovr.spd as u32 * 3 / 2)
                     .min(u16::MAX as u32)) as u16;
             }
@@ -4251,7 +4321,7 @@ impl Battle {
             // (different slots), but does stack with paradox booster
             // ×1.3 above (PS chains both modifiers).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Eviolite>.
-            if defender.item_id == data::item_id::EVIOLITE && defender.species().is_nfe {
+            if defender.effective_item_id() == data::item_id::EVIOLITE && defender.species().is_nfe {
                 if m.category == 0 {
                     def_stats_ovr.def = ((def_stats_ovr.def as u32 * 3 / 2)
                         .min(u16::MAX as u32)) as u16;
@@ -6233,11 +6303,22 @@ impl Battle {
             _ => self.rng.damage_roll(),
         };
 
+        let wonder_room = self.wonder_room_turns > 0;
         let dmg = {
             let attacker = &self.side(src_side).team[src_idx];
             let defender = match self.side(tside).active_mon(tslot as usize) {
                 Some(d) => d,
                 None => return,
+            };
+            // Wonder Room swaps the defender's Def/SpD base stats even for a
+            // delayed Future Sight / Doom Desire hit (read live at strike
+            // time). Build a swapped snapshot only while it is active.
+            let def_stats_ovr = if wonder_room {
+                let mut s = defender.stats;
+                core::mem::swap(&mut s.def, &mut s.spd);
+                Some(s)
+            } else {
+                None
             };
             calculate_damage(
                 attacker,
@@ -6258,7 +6339,7 @@ impl Battle {
                     aura_break_active,
                     attacker_total_fainted_allies,
                     attacker_stats: None,
-                    defender_stats: None,
+                    defender_stats: def_stats_ovr,
                     pursuit_doubled: false,
                     // A delayed Future Sight/Doom Desire hit resolves from a
                     // slot condition, not a live ally context — no Power Spot /
@@ -6985,6 +7066,35 @@ impl Battle {
                         }
                     }
                 }
+            }
+            data::move_id::MAGICROOM => {
+                // Magic Room — PS `data/moves.ts:magicroom` (pseudoWeather,
+                // duration 5). Toggle: if already active, `onFieldRestart`
+                // removes it (ends early); else set to 5. While active every
+                // active mon's held-item EFFECT is suppressed via the per-mon
+                // `item_suppressed` flag (PS `Pokemon.ignoringItem()` returns
+                // true; `sim/pokemon.ts:888`) — the item is NOT removed, only
+                // muted, so we flip the flag on every active mon both ways.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Room_(move)>.
+                let active = self.magic_room_turns > 0;
+                self.magic_room_turns = if active { 0 } else { 5 };
+                let n = self.format().active_count() as u8;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for s in 0..n {
+                        if let Some(mon) = self.side_mut(side).active_mon_mut(s as usize) {
+                            mon.item_suppressed = !active;
+                        }
+                    }
+                }
+            }
+            data::move_id::WONDERROOM => {
+                // Wonder Room — PS `data/moves.ts:wonderroom` (pseudoWeather,
+                // duration 5). Toggle: `onFieldRestart` removes it if already
+                // active, else set to 5. The Def/SpD base-stat swap is read
+                // live from `wonder_room_turns` in the damage calc — no
+                // per-mon state to maintain here.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wonder_Room_(move)>.
+                self.wonder_room_turns = if self.wonder_room_turns > 0 { 0 } else { 5 };
             }
             data::move_id::TAILWIND => {
                 // Side condition: 4-turn timer. Fails if already up.
@@ -26558,5 +26668,267 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].status, Status::None, "user cured");
         assert_eq!(b.p1.team[1].status, Status::None, "Soundproof ally cured by Aromatherapy");
+    }
+
+    // ---- Magic Room / Wonder Room: 5-turn field pseudo-weathers ----
+    //
+    // PS `data/moves.ts:magicroom` (duration 5; `onFieldRestart` ends it
+    // early) suppresses every active mon's held-item EFFECT via
+    // `Pokemon.ignoringItem()` (`sim/pokemon.ts:888`) — the item is NOT
+    // removed, only muted. PS `data/moves.ts:wonderroom` (duration 5;
+    // `onFieldRestart` toggle-off) swaps each mon's Def/SpD BASE stat in
+    // the damage calc, with the boost STAGE still keyed to the requested
+    // stat (PS `calculateStat`, `sim/pokemon.ts:560-579` → answer (a):
+    // base swapped, boost name unchanged).
+
+    #[test]
+    fn magic_room_suppresses_leftovers_then_resumes() {
+        // Leftovers' end-of-turn 1/16 heal is an item EFFECT, so it is muted
+        // while Magic Room is up (item kept) and resumes once it expires.
+        let p1 = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["magicroom","splash","calmmind","seismictoss"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+        let maxhp = b.p1.team[0].stats.hp;
+        let heal = (maxhp / 16).max(1);
+        // Sit well below max so the heal never caps and deltas are exact.
+        let low = maxhp - heal * 4;
+
+        let splash = |b: &mut Battle| {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+        };
+
+        // Control — Leftovers heals normally while Magic Room is inactive.
+        b.p1.team[0].current_hp = low;
+        splash(&mut b);
+        assert_eq!(
+            b.p1.team[0].current_hp,
+            low + heal,
+            "Leftovers heals 1/16 with no Magic Room"
+        );
+
+        // Turn 1 — use Magic Room; the heal is suppressed this end-of-turn.
+        b.p1.team[0].current_hp = low;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // magicroom
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.magic_room_turns > 0, "Magic Room active after use");
+        assert!(
+            b.p1.team[0].item_suppressed,
+            "active mon's held-item effect flagged suppressed"
+        );
+        assert_eq!(
+            b.p1.team[0].current_hp, low,
+            "Leftovers heal muted while Magic Room is up"
+        );
+
+        // Two more clearly-active turns: still no heal.
+        for _ in 0..2 {
+            b.p1.team[0].current_hp = low;
+            splash(&mut b);
+            assert_eq!(
+                b.p1.team[0].current_hp, low,
+                "Leftovers stays muted mid Magic Room"
+            );
+        }
+
+        // Run out the rest of the duration, then confirm the heal returns.
+        while b.magic_room_turns > 0 {
+            splash(&mut b);
+        }
+        assert!(
+            !b.p1.team[0].item_suppressed,
+            "suppression flag cleared on Magic Room expiry"
+        );
+        b.p1.team[0].current_hp = low;
+        splash(&mut b);
+        assert_eq!(
+            b.p1.team[0].current_hp,
+            low + heal,
+            "Leftovers heal resumes after Magic Room expires"
+        );
+    }
+
+    #[test]
+    fn magic_room_sets_five_turns_and_toggles_off_on_reuse() {
+        let p1 = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["magicroom","splash","calmmind","seismictoss"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+
+        // Turn 1 — set up Magic Room (5 turns, ticks once to 4 end-of-turn).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.magic_room_turns, 4, "set to 5, ticked once at end of turn");
+        assert!(b.p1.team[0].item_suppressed);
+
+        // Turn 2 — reuse while active ends it early (PS `onFieldRestart`).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.magic_room_turns, 0, "reuse ends Magic Room early");
+        assert!(
+            !b.p1.team[0].item_suppressed,
+            "item suppression cleared on toggle-off"
+        );
+    }
+
+    #[test]
+    fn magic_room_expires_after_five_turns() {
+        let p1 = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["magicroom","splash","calmmind","seismictoss"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+
+        // Use Magic Room, then count down: 5 -> 4 (use turn), then 3,2,1,0.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.magic_room_turns, expected, "Magic Room ticks down each turn");
+        }
+        assert_eq!(b.magic_room_turns, 0, "Magic Room expired after 5 turns");
+    }
+
+    #[test]
+    fn wonder_room_sets_five_turns_and_toggles_off_on_reuse() {
+        let p1 = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"calm","moves":["wonderroom","splash","calmmind","moonblast"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.wonder_room_turns, 4, "Wonder Room set to 5, ticked once");
+
+        // Reuse while active ends it early (PS `onFieldRestart`).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.wonder_room_turns, 0, "reuse ends Wonder Room early");
+    }
+
+    #[test]
+    fn wonder_room_expires_after_five_turns() {
+        let p1 = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"calm","moves":["wonderroom","splash","calmmind","moonblast"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["splash","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        for expected in [3u8, 2, 1, 0] {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.wonder_room_turns, expected, "Wonder Room ticks down each turn");
+        }
+        assert_eq!(b.wonder_room_turns, 0, "Wonder Room expired after 5 turns");
+    }
+
+    #[test]
+    fn wonder_room_swaps_def_and_spd_for_special_damage() {
+        // A special hit normally targets the defender's SpD. Under Wonder
+        // Room it uses the swapped-in Def BASE stat instead. Aggron
+        // (Def 180 >> SpD 60) therefore takes far LESS special damage with
+        // Wonder Room up. Two same-seed battles isolate the swap from RNG —
+        // both consume identical crit/damage rolls, so the only difference
+        // is the defensive stat read.
+        let atk = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","nature":"modest","evs":{"spa":252},"moves":["shadowball","moonblast","splash","calmmind"]}
+        ]"#;
+        let def = r#"[
+            {"species":"aggron","level":50,"ability":"heavymetal","nature":"hardy","moves":["splash","irondefense","stealthrock","earthquake"]}
+        ]"#;
+
+        let hp_loss = |wonder: bool| -> u16 {
+            let mut b = singles(atk, def);
+            // Oversized HP pool so neither hit faints (a faint would clamp
+            // the loss). Damage magnitude is independent of max HP.
+            b.p2.team[0].stats.hp = 5000;
+            b.p2.team[0].current_hp = 5000;
+            if wonder {
+                b.wonder_room_turns = 5;
+            }
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // shadowball
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            5000 - b.p2.team[0].current_hp
+        };
+
+        let normal = hp_loss(false);
+        let wr = hp_loss(true);
+        assert!(
+            normal > 0 && wr > 0,
+            "both hits dealt damage (normal={normal}, wr={wr})"
+        );
+        assert!(
+            wr < normal,
+            "Wonder Room raises effective defense (Def 180 > SpD 60): wr={wr} normal={normal}"
+        );
+        // Def 180 vs SpD 60 ≈ 3× — require at least a 2× reduction so the
+        // swap (not noise) is unmistakable.
+        assert!(
+            wr * 2 < normal,
+            "Wonder Room roughly triples effective SpD: wr={wr} normal={normal}"
+        );
+    }
+
+    #[test]
+    fn magic_and_wonder_room_survive_serde_round_trip() {
+        let p1 = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"calm","moves":["magicroom","splash","calmmind","seismictoss"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"umbreon","level":50,"ability":"synchronize","nature":"calm","moves":["wonderroom","moonlight","calmmind","foulplay"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+        b.magic_room_turns = 3;
+        b.wonder_room_turns = 5;
+        b.p1.team[0].item_suppressed = true;
+
+        let json = serde_json::to_string(&b).expect("serialize");
+        let b2: Battle = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(b2.magic_room_turns, 3, "magic_room_turns round-trips");
+        assert_eq!(b2.wonder_room_turns, 5, "wonder_room_turns round-trips");
+        assert!(
+            b2.p1.team[0].item_suppressed,
+            "item_suppressed round-trips"
+        );
     }
 }
