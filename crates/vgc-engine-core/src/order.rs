@@ -364,6 +364,27 @@ fn schedule_move(
             } else {
                 0i8
             };
+            // Quick Draw — PS `data/abilities.ts:3725`:
+            //   onFractionalPriorityPriority: -1,
+            //   onFractionalPriority(priority, pokemon, target, move) {
+            //     if (move.category !== "Status" && this.randomChance(3, 10))
+            //       return 0.1;
+            //   }
+            // 30% chance the holder acts first within its priority bracket,
+            // independent of Speed, on a non-Status move. We model the +0.1
+            // bump as the "first in bracket" sub-bucket (frac = -1), the same
+            // mechanism Custap Berry uses. PS's handler runs at fractional
+            // priority -1 (last), so when it fires it overrides any other
+            // fractional-priority result. One `percent_1_100()` draw per
+            // eligible turn (Quick Draw holder + non-Status move), consumed
+            // unconditionally so the RNG stream stays aligned regardless of
+            // outcome. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Quick_Draw_(Ability)>.
+            let frac = if m.ability_id == data::ability_id::QUICKDRAW && category != 2 {
+                if rng.percent_1_100() <= 30 { -1i8 } else { frac }
+            } else {
+                frac
+            };
             (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
         }
         None => (0, 0, 0),
@@ -819,6 +840,55 @@ mod tests {
         let first_move = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
         assert_eq!(first_move.side, SideRef::P1,
                    "Garchomp must outpace Lagging-Tail Flutter Mane");
+    }
+
+    #[test]
+    fn quick_draw_sometimes_moves_slower_holder_first() {
+        // Snorlax (slow, base 30 Spe) holds Quick Draw vs faster Garchomp
+        // (base 102), both priority-0 damaging moves. Quick Draw is a ~30%
+        // Speed-independent first-in-bracket bump, so over many seeds the
+        // slow holder must win the bracket on SOME seeds (Quick Draw fired)
+        // and lose on others (it didn't) — proving it's probabilistic, not
+        // a flat priority grant.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"quickdraw","item":"","nature":"careful","moves":["bodyslam","crunch","sleeptalk","earthquake"],"evs":{"hp":252,"spd":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","rockslide","ironhead"],"evs":{"spe":252,"atk":252}},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(BattleConfig::default(), p1, p2);
+        let p1c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2c = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let mut holder_first = 0;
+        let mut foe_first = 0;
+        for seed in 0..300u64 {
+            let mut rng = Rng::new(seed);
+            let order = action_order(&b, &p1c, &p2c, &mut rng);
+            let fm = order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
+            if fm.side == SideRef::P1 {
+                holder_first += 1;
+            } else {
+                foe_first += 1;
+            }
+        }
+        assert!(
+            holder_first > 0,
+            "Quick Draw should fire on some seeds (slow holder moves first): {holder_first}/300"
+        );
+        assert!(
+            foe_first > 0,
+            "Quick Draw must NOT fire every seed (faster Garchomp wins otherwise): {foe_first}/300"
+        );
     }
 
     #[test]
