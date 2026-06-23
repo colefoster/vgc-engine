@@ -23,6 +23,7 @@
 /// strictly typed: a method call must match the next event's variant
 /// or it panics, surfacing the desync immediately.
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RngEvent {
@@ -42,6 +43,116 @@ pub enum RngEvent {
     PercentRoll(u8),
     /// Crit hit/miss.
     Crit(bool),
+}
+
+/// A compact slot reference shared by the keyed oracle. `0..=3` map to
+/// `p1a, p1b, p2a, p2b` (i.e. `side * 2 + slot`); `NO_SLOT` (0xFF) is the
+/// sentinel for "self / field / no specific target".
+pub type SlotRef = u8;
+/// Sentinel slot ref — self-targeting / field draws with no attributable target.
+pub const NO_SLOT: SlotRef = 0xFF;
+
+/// The kind of decision a draw resolves. Used as part of the keyed
+/// oracle's lookup key so that the engine and the PS driver can agree
+/// on *which* randomized decision a recorded outcome belongs to,
+/// independent of how many raw PRNG draws either side makes. Crit and
+/// Damage are implied by the draw method; Accuracy vs. Secondary (both
+/// `percent_1_100` on the engine side) are disambiguated by the battle
+/// via [`Rng::set_decision`] before the draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RngDecision {
+    /// Hit/miss accuracy check (engine: `percent_1_100`; PS: `random(100)` /
+    /// `randomChance(acc, 100)` inside the accuracy step).
+    Accuracy,
+    /// Critical-hit roll.
+    Crit,
+    /// 16-bucket damage roll.
+    Damage,
+    /// Secondary-effect proc (status/flinch/boost chance).
+    Secondary,
+    /// Generic `range(n)` draw not otherwise classified (multi-hit count,
+    /// status duration, confusion self-hit, …). Refined in later phases.
+    Range,
+    /// Speed-tie / ordering tiebreak (`next_u64`).
+    Tiebreak,
+}
+
+/// The semantic key under which a randomized outcome is recorded and
+/// later looked up. Order- and count-independent: an engine-only extra
+/// draw simply misses the table and takes a deterministic fallback
+/// without shifting any other lookup (the failure mode the flat
+/// positional queue suffers from — see `docs/ps-comparison-harness-design.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RngKey {
+    pub turn: u32,
+    pub actor: SlotRef,
+    pub target: SlotRef,
+    /// Engine numeric move id (`data::move_id::*`). The conformance runner
+    /// maps PS move slugs to this id when building the table, so the engine
+    /// can key on the id it already has in scope — no slug lookup in the
+    /// draw path.
+    pub move_id: u16,
+    pub decision: RngDecision,
+}
+
+/// Backing state for [`Rng::OracleKeyed`]: a table of pre-recorded
+/// outcomes keyed by [`RngKey`], a live draw context the battle updates
+/// as it resolves moves, a Splitmix fallback for unmatched draws, and a
+/// running count of how many draws missed the table (a health metric —
+/// a high count means the keying / draw-site tagging needs attention).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyedState {
+    table: HashMap<RngKey, VecDeque<RngEvent>>,
+    ctx_turn: u32,
+    ctx_actor: SlotRef,
+    ctx_target: SlotRef,
+    ctx_move: u16,
+    ctx_decision: RngDecision,
+    fallback: u64,
+    unmatched: u32,
+}
+
+impl KeyedState {
+    fn key(&self, decision: RngDecision) -> RngKey {
+        RngKey {
+            turn: self.ctx_turn,
+            actor: self.ctx_actor,
+            target: self.ctx_target,
+            move_id: self.ctx_move,
+            decision,
+        }
+    }
+
+    /// Pop the next recorded outcome for `decision` under the current
+    /// context, in FIFO order (so repeats — multi-hit accuracy, N
+    /// secondaries — resolve in the order PS recorded them). Returns
+    /// `None` on a table miss WITHOUT counting it; callers route a miss
+    /// through [`KeyedState::miss`].
+    fn take(&mut self, decision: RngDecision) -> Option<RngEvent> {
+        let key = self.key(decision);
+        self.table.get_mut(&key).and_then(|q| q.pop_front())
+    }
+
+    /// Advance the Splitmix fallback WITHOUT counting a miss. Used for
+    /// draws that are engine-internal and not PS-recorded outcomes we're
+    /// validating — chiefly the per-action speed-tie *nonce* (`next_u64`),
+    /// which the engine draws for every action to keep sort keys unique
+    /// even when speeds differ and PS draws nothing. A genuine tie whose
+    /// order matters surfaces as a state divergence in the differ, not
+    /// here, so excluding it keeps `unmatched` measuring only real
+    /// outcome draws (accuracy/crit/damage/secondary/range).
+    fn fallback(&mut self) -> u64 {
+        Rng::splitmix_step(&mut self.fallback)
+    }
+
+    /// Record a table miss and advance the Splitmix fallback. Every
+    /// counted fallback in the `OracleKeyed` arms routes through here so
+    /// `unmatched` stays accurate and the fallback stream is
+    /// byte-identical to a same-seeded `Splitmix`.
+    fn miss(&mut self) -> u64 {
+        self.unmatched += 1;
+        self.fallback()
+    }
 }
 
 /// Bit-exact port of Pokémon Showdown's `sim/prng.ts:Gen5RNG` — the
@@ -172,6 +283,14 @@ pub enum Rng {
     /// every site — the corpus harness can ditch the oracle queue and
     /// score against the engine's own deterministic playthrough.
     PsGen5(PsGen5Rng),
+    /// Keyed outcome oracle (conformance harness). Each draw is resolved
+    /// by a *semantic* key (turn + actor + move + target + decision)
+    /// rather than by queue position, so the injection is independent of
+    /// how many raw draws each engine makes. A keyed miss takes a
+    /// deterministic Splitmix fallback and bumps `unmatched` without
+    /// disturbing any other lookup. See
+    /// `docs/ps-comparison-harness-design.md`.
+    OracleKeyed(KeyedState),
 }
 
 impl Rng {
@@ -203,6 +322,56 @@ impl Rng {
         Self::PsGen5(PsGen5Rng::new(seed))
     }
 
+    /// Keyed-oracle constructor for the conformance harness. `table`
+    /// maps each [`RngKey`] to its FIFO queue of recorded outcomes (the
+    /// runner converts PS-recorded draws — including the PS→engine
+    /// damage-bucket flip — before populating it). `fallback_seed` seeds
+    /// the Splitmix stream used for any draw that misses the table.
+    pub fn oracle_keyed(table: HashMap<RngKey, VecDeque<RngEvent>>, fallback_seed: u64) -> Self {
+        Self::OracleKeyed(KeyedState {
+            table,
+            ctx_turn: 0,
+            ctx_actor: NO_SLOT,
+            ctx_target: NO_SLOT,
+            ctx_move: 0,
+            ctx_decision: RngDecision::Range,
+            fallback: fallback_seed,
+            unmatched: 0,
+        })
+    }
+
+    /// Set the move-resolution context that subsequent keyed draws are
+    /// attributed to. No-op for every non-`OracleKeyed` variant, so the
+    /// battle can call it unconditionally at its draw-site choke points
+    /// without branching (and production `Splitmix` battles pay nothing).
+    pub fn set_move_context(&mut self, turn: u32, actor: SlotRef, move_id: u16, target: SlotRef) {
+        if let Rng::OracleKeyed(k) = self {
+            k.ctx_turn = turn;
+            k.ctx_actor = actor;
+            k.ctx_move = move_id;
+            k.ctx_target = target;
+        }
+    }
+
+    /// Set the decision class for the *next* ambiguous draw — used to
+    /// distinguish Accuracy from Secondary (both `percent_1_100` on the
+    /// engine side). No-op for non-`OracleKeyed` variants.
+    pub fn set_decision(&mut self, decision: RngDecision) {
+        if let Rng::OracleKeyed(k) = self {
+            k.ctx_decision = decision;
+        }
+    }
+
+    /// Number of keyed draws that missed the table and fell back to
+    /// Splitmix. `Some(0)` on a clean `OracleKeyed` replay; `None` for
+    /// every other variant. A health metric for the conformance harness.
+    pub fn unmatched_draws(&self) -> Option<u32> {
+        match self {
+            Rng::OracleKeyed(k) => Some(k.unmatched),
+            _ => None,
+        }
+    }
+
     /// For Oracle / OraclePartial variants, return `(consumed, total)` —
     /// how many events the engine has popped from the queue vs. how
     /// many PS originally recorded. Splitmix returns `None`.
@@ -213,7 +382,8 @@ impl Rng {
     /// is unreliable signal.
     pub fn oracle_pops(&self) -> Option<(usize, usize)> {
         match self {
-            Rng::Splitmix(_) | Rng::PsGen5(_) => None,
+            // OracleKeyed is positionless — use `unmatched_draws` instead.
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) => None,
             Rng::Oracle(state) | Rng::OraclePartial { state, .. } => {
                 Some((state.pos, state.events.len()))
             }
@@ -256,6 +426,13 @@ impl Rng {
             // PS is 32-bit; widen to u64 for next_u64 callers (mostly
             // tiebreak / coin_flip / range fallbacks).
             Rng::PsGen5(rng) => rng.next() as u64,
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Tiebreak) {
+                Some(RngEvent::Tiebreak(v)) => v,
+                // Uncounted: the speed-tie nonce is engine-internal (drawn
+                // per action even with no tie); a real tie's order shows up
+                // in the state diff, not the unmatched metric.
+                _ => k.fallback(),
+            },
         }
     }
 
@@ -281,7 +458,7 @@ impl Rng {
                 Rng::Splitmix(_) => {
                     let _ = self.next_u64();
                 }
-                Rng::Oracle(_) | Rng::OraclePartial { .. } => {
+                Rng::Oracle(_) | Rng::OraclePartial { .. } | Rng::OracleKeyed(_) => {
                     // PS doesn't draw at `randomChance(1, 1)` sites.
                 }
                 Rng::PsGen5(_) => {
@@ -318,6 +495,10 @@ impl Rng {
             }
             // Bit-exact PS `random(n)` semantics from PR-209's port.
             Rng::PsGen5(rng) => rng.random_n(n),
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Range) {
+                Some(RngEvent::Range(v)) if v < n => v,
+                _ => (k.miss() as u32) % n,
+            },
         }
     }
 
@@ -351,7 +532,10 @@ impl Rng {
             Rng::PsGen5(rng) => rng.random_n(2) as u8,
             Rng::Splitmix(_)
             | Rng::Oracle(_)
-            | Rng::OraclePartial { .. } => 0,
+            | Rng::OraclePartial { .. }
+            // PS gender draws bypass the `Battle.random` patch, so they're
+            // absent from the recorded table — don't draw, mirror Oracle.
+            | Rng::OracleKeyed(_) => 0,
         }
     }
 
@@ -422,7 +606,9 @@ impl Rng {
     /// draw rather than forcing an out-of-range bucket.
     pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
         match self {
-            Rng::Splitmix(_) | Rng::PsGen5(_) => self.damage_roll(),
+            // OracleKeyed stores the exact engine-convention bucket, so
+            // there's nothing to back-solve — defer to `damage_roll`.
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) => self.damage_roll(),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -474,6 +660,13 @@ impl Rng {
             }
             // PS `random(16)` returns 0..=15 — bit-exact.
             Rng::PsGen5(rng) => rng.random_n(16) as u8,
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Damage) {
+                Some(RngEvent::DamageRoll(v)) => {
+                    debug_assert!(v < 16);
+                    v
+                }
+                _ => (k.miss() & 0xF) as u8,
+            },
         }
     }
 
@@ -503,6 +696,16 @@ impl Rng {
             // `random(100) < N` — adding 1 to the PS draw makes both
             // sides land on the same hit threshold).
             Rng::PsGen5(rng) => (rng.random_n(100) as u8) + 1,
+            // Decision (Accuracy vs Secondary) comes from the context the
+            // battle set via `set_decision` — both are `percent_1_100` here
+            // but distinct sites on the PS side.
+            Rng::OracleKeyed(k) => {
+                let decision = k.ctx_decision;
+                match k.take(decision) {
+                    Some(RngEvent::PercentRoll(v)) => v,
+                    _ => ((k.miss() % 100) as u8) + 1,
+                }
+            }
         }
     }
 
@@ -540,6 +743,18 @@ impl Rng {
                     }
                 }
             }
+            // Honor a recorded crit outcome if PS drew one at this site;
+            // otherwise mirror the deterministic stage table (stage 3+ is a
+            // guaranteed crit PS never rolls, so it counts no miss).
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Crit) {
+                Some(RngEvent::Crit(v)) => v,
+                _ => match stage {
+                    0 => (k.miss() as u32) % 24 == 0,
+                    1 => (k.miss() as u32) % 8 == 0,
+                    2 => (k.miss() as u32) % 2 == 0,
+                    _ => true,
+                },
+            },
         }
     }
 
@@ -563,6 +778,10 @@ impl Rng {
                     ((Self::splitmix_step(fallback) as u32) % 24) == 0
                 }
             }
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Crit) {
+                Some(RngEvent::Crit(v)) => v,
+                _ => (k.miss() as u32) % 24 == 0,
+            },
         }
     }
 }
@@ -1014,5 +1233,122 @@ mod tests {
             (rate - expected).abs() < 0.01,
             "crit rate {rate} too far from 1/24"
         );
+    }
+
+    // ---- keyed oracle (conformance harness) -------------------------------
+
+    fn key(turn: u32, actor: SlotRef, target: SlotRef, mv: u16, d: RngDecision) -> RngKey {
+        RngKey { turn, actor, target, move_id: mv, decision: d }
+    }
+
+    fn table(entries: Vec<(RngKey, Vec<RngEvent>)>) -> HashMap<RngKey, VecDeque<RngEvent>> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn oracle_keyed_resolves_each_decision_under_context() {
+        // p1a (0) uses move id 7 on p2a (2), turn 1. Record one outcome
+        // per decision class and verify each draw site reads its own.
+        let mut t = table(vec![
+            (key(1, 0, 2, 7, RngDecision::Crit), vec![RngEvent::Crit(true)]),
+            (key(1, 0, 2, 7, RngDecision::Damage), vec![RngEvent::DamageRoll(15)]),
+            (key(1, 0, 2, 7, RngDecision::Accuracy), vec![RngEvent::PercentRoll(3)]),
+            (key(1, 0, 2, 7, RngDecision::Secondary), vec![RngEvent::PercentRoll(99)]),
+        ]);
+        // shuffle insertion order doesn't matter for a HashMap; build rng.
+        let _ = &mut t;
+        let mut r = Rng::oracle_keyed(t, 0xDEAD);
+        r.set_move_context(1, 0, 7, 2);
+
+        // Crit and Damage are keyed by method.
+        assert!(r.crit_with_stage(0), "recorded crit honored");
+        assert_eq!(r.damage_roll(), 15, "recorded damage bucket honored");
+        // Accuracy and Secondary share percent_1_100 — decision picks.
+        r.set_decision(RngDecision::Accuracy);
+        assert_eq!(r.percent_1_100(), 3);
+        r.set_decision(RngDecision::Secondary);
+        assert_eq!(r.percent_1_100(), 99);
+        assert_eq!(r.unmatched_draws(), Some(0), "no fallbacks taken");
+    }
+
+    #[test]
+    fn oracle_keyed_repeats_resolve_fifo() {
+        // Two secondaries under one key resolve in recorded order.
+        let t = table(vec![(
+            key(2, 2, 0, 11, RngDecision::Secondary),
+            vec![RngEvent::PercentRoll(10), RngEvent::PercentRoll(80)],
+        )]);
+        let mut r = Rng::oracle_keyed(t, 1);
+        r.set_move_context(2, 2, 11, 0);
+        r.set_decision(RngDecision::Secondary);
+        assert_eq!(r.percent_1_100(), 10);
+        assert_eq!(r.percent_1_100(), 80);
+        // Third draw misses the now-empty queue and falls back.
+        let third = r.percent_1_100();
+        assert!((1..=100).contains(&third));
+        assert_eq!(r.unmatched_draws(), Some(1));
+    }
+
+    #[test]
+    fn oracle_keyed_miss_falls_back_and_counts() {
+        // Empty table → every draw is an unmatched fallback, but still a
+        // valid in-range value (and the fallback stream equals Splitmix).
+        let mut r = Rng::oracle_keyed(HashMap::new(), 0x1234_5678);
+        r.set_move_context(1, 0, 1, 2);
+        let mut pure = Rng::new(0x1234_5678);
+        r.set_decision(RngDecision::Accuracy);
+        assert_eq!(r.percent_1_100(), pure.percent_1_100());
+        assert_eq!(r.damage_roll(), pure.damage_roll());
+        // Crit also misses (empty table) → fallback matches pure Splitmix.
+        assert_eq!(r.crit(), pure.crit());
+        assert_eq!(r.unmatched_draws(), Some(3));
+    }
+
+    #[test]
+    fn oracle_keyed_is_order_and_count_independent() {
+        // The core property: an engine-only EXTRA draw (one the table has
+        // no entry for) must NOT shift a later matched lookup. Positional
+        // queues fail exactly here.
+        let t = table(vec![
+            (key(1, 0, 2, 5, RngDecision::Crit), vec![RngEvent::Crit(true)]),
+            (key(1, 0, 2, 5, RngDecision::Damage), vec![RngEvent::DamageRoll(9)]),
+        ]);
+        let mut r = Rng::oracle_keyed(t, 7);
+        r.set_move_context(1, 0, 5, 2);
+        // Engine makes an UNRECORDED accuracy draw first (table has none).
+        r.set_decision(RngDecision::Accuracy);
+        let _ = r.percent_1_100(); // miss → fallback, must not disturb below
+        // The recorded crit + damage still resolve to their recorded values.
+        assert!(r.crit_with_stage(0));
+        assert_eq!(r.damage_roll(), 9);
+        assert_eq!(r.unmatched_draws(), Some(1), "only the accuracy draw missed");
+    }
+
+    #[test]
+    fn oracle_keyed_context_switch_reattributes() {
+        // Same decision+move, different turn → different key, no bleed.
+        let t = table(vec![
+            (key(1, 0, 2, 3, RngDecision::Damage), vec![RngEvent::DamageRoll(0)]),
+            (key(2, 0, 2, 3, RngDecision::Damage), vec![RngEvent::DamageRoll(15)]),
+        ]);
+        let mut r = Rng::oracle_keyed(t, 9);
+        r.set_move_context(1, 0, 3, 2);
+        assert_eq!(r.damage_roll(), 0);
+        r.set_move_context(2, 0, 3, 2);
+        assert_eq!(r.damage_roll(), 15);
+        assert_eq!(r.unmatched_draws(), Some(0));
+    }
+
+    #[test]
+    fn oracle_keyed_range_n1_does_not_consume_or_miss() {
+        // range(1) is elided (PS never draws at denom 1) — no table touch,
+        // no unmatched bump.
+        let mut r = Rng::oracle_keyed(HashMap::new(), 0);
+        r.set_move_context(1, 0, 1, 2);
+        assert_eq!(r.range(1), 0);
+        assert_eq!(r.unmatched_draws(), Some(0));
     }
 }

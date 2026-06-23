@@ -1,6 +1,6 @@
 # Design: PS Comparison Harness — a keyed-outcome correctness oracle
 
-Status: **proposed** (2026-06-23). Not yet implemented. Supersedes synth-score as the primary breadth correctness signal once built.
+Status: **Phase 0 SHIPPED** (2026-06-23). Supersedes synth-score as the primary breadth correctness signal once built out. The keyed-injection approach is validated end-to-end: `Rng::OracleKeyed` + battle.rs draw-site wiring (`crates/vgc-engine-core`), the `vgc-engine-conformance` runner/differ, and the `tools/ps-golden-driver/conformance-driver.js` capture. Five real PS battles replay through the engine and match PS **exactly, 0 unmatched draws** — across varied damage rolls, a real accuracy miss, a secondary proc, Leftovers residual, heal-on-miss, and a faint. See `docs/conformance-key-contract.md` for the cross-language key spec. Phases 1–4 below remain.
 
 ## TL;DR / recommendation
 
@@ -65,7 +65,7 @@ Key change vs. the golden harness: **PS plays once and we record its resolved ch
 
 ## Phased plan
 
-- **Phase 0 — Tracer bullet (~3-4d):** keyed injection end-to-end on ONE simple singles battle (no switches/faints, 1 damaging move + 1 secondary). Add `Rng::OracleKeyed` + minimal `RngContext` (crit/damage/accuracy/secondary). Gate: exact match + `unmatched_draws == 0`. **De-risks the biggest unknown — do keys reconstruct deterministically on both sides.**
+- **Phase 0 — Tracer bullet — ✅ DONE (2026-06-23):** keyed injection end-to-end on real singles battles. Shipped `Rng::OracleKeyed` (semantic key = turn+actor+move+target+decision, not positional) + draw-site context wiring at the per-target loop choke point (one `set_move_context` covers accuracy/crit/damage/secondary; secondary inherits via the `mem::replace` of `self.rng`). Gate MET: 5 real PS battles match exactly, `unmatched_draws == 0`. Key learnings: the per-action speed-tie nonce (`next_u64`) is an engine-internal draw PS doesn't make → uncounted fallback so it doesn't pollute the health metric; engine emits `self.turn + 1` (it increments at end of `step`) to match PS's 1-based turn; accuracy is bool-only from PS (synthesized pass/fail), secondary gives the raw 0..99.
 - **Phase 1 — Choice replay incl. switches/faints (~3-4d):** capture + replay PS resolved choices verbatim → battles run to natural completion. Gate: 30-turn doubles battle matches or localizes a real divergence.
 - **Phase 2 — Full state diff (~4-5d):** expand snapshot to all §state fields via `Battle.serialize`; NOT_MODELLED allow-list. Gate: field-complete diff on scenario suite, no false positives.
 - **Phase 3 — Breadth + categorization + metric (~3-4d):** batch N seeds (amortize ~60s dex load), aggregate/categorize/de-dup, headline metric + per-mechanic table, `cargo run -p vgc-engine-conformance` CLI. Gate: N=1000 ranked punch list, stable across reruns.
