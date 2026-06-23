@@ -1,5 +1,17 @@
 # Missing systems
 
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> List move dispatch arms: `grep -roE 'move_id::[A-Z_0-9]+\s*=>' crates/vgc-engine-core/src/battle.rs | sort -u`
+> Check one move: `grep -rn 'move_id::SLUG' crates/vgc-engine-core/src/`
+> Last reconciled: 2026-06-23.
+
+**2026-06-23 reconcile:** this file was badly stale — many entries marked "not
+implemented" had in fact shipped (Tera, Mega, charge/recharge moves, lock-in,
+delayed moves, force-switch, Counter-class, hazard control, Spikes/Sticky Web,
+Trick/Switcheroo/Bestow, stat-swaps, Wish, Heal Bell, Perish Song, Sleep
+Talk, Fling, and more). Statuses below are corrected with file:line evidence.
+Genuinely-absent systems are flagged **GAP (confirmed absent)**.
+
 Major structural gaps where no scaffolding exists yet. Each entry needs at minimum a new state field on `Pokemon` / `Side` / `Battle` plus a pipeline hook.
 
 > **Recently-shipped subsystems (verified 2026-06-19).** Several entries below were "not implemented" but landed in PRs 309–317 and are now live primitives other mechanics consume:
@@ -24,7 +36,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/conditions.ts:terastallize`, `sim/pokemon.ts:terastallize`, `data/moves.ts:terablast`.
 
-**Status**: not implemented.
+**Status**: shipped — `Choice::Terastallize` (`choice.rs:49`); ordering in `order.rs` (`Choice::Terastallize` arms ~469/502); flag set at `battle.rs:2067` (`a.terastallized = true`); Tera-STAB / Tera-type damage branch at `battle.rs:5307`; `tera_type` parsed in `team.rs:205`. Tera Blast / Tera Starstorm / Stellar STAB landed in PR-163 (see `moves.md`).
 
 ### Mega Evolution
 
@@ -36,7 +48,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `sim/pokemon.ts:canMegaEvo`, `data/items.ts:charizarditey`.
 
-**Status**: not implemented.
+**Status**: shipped — `Choice::MegaEvolve` (`choice.rs:66`); offered in `legal_choices` when `mega_used` permit is unspent and `data::mega_stone_for(item, species)` matches (`battle.rs:800`, pushed at `battle.rs:881`); ordering in `order.rs`. Mega-stone → mega-form table exists in the data dump.
 
 ## Multi-turn / charge moves
 
@@ -50,7 +62,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:solarbeam,electroshot,meteorbeam,phantomforce`.
 
-**Status**: not implemented.
+**Status**: shipped — charge/release wired at `battle.rs:2704` for Solar Beam, Solar Blade, Sky Attack, Razor Wind, Skull Bash, Meteor Beam, Electro Shot (`charging_turns` / `charging_move_slot`; release skips PP deduct). Per-charge stat boosts land per-move (Meteor Beam +1 SpA, PR-424). `semi_invuln_code_for(m.slug)` handles Dig/Dive/Fly/Bounce semi-invuln. Power-Herb instant-charge handled separately. Remaining nuance per-move (e.g. Sun-skips-charge predicates) verified within those move PRs.
 
 ### Recharge moves
 
@@ -62,7 +74,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:hyperbeam,gigatonhammer,bloodmoon`.
 
-**Status**: not implemented.
+**Status**: shipped — `must_recharge` set on hit at `battle.rs:5732` for Hyper Beam, Giga Impact, Blast Burn, Hydro Cannon, Frenzy Plant, Rock Wrecker, Roar of Time, Prismatic Laser, Eternabeam, Meteor Assault. The Gigaton Hammer / Blood Moon "can't use twice in a row" lockout (no recharge) shipped separately in PR-134 (see `moves.md`).
 
 ### Lock-in moves (Outrage / Petal Dance / Thrash)
 
@@ -74,7 +86,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:outrage,petaldance,thrash`.
 
-**Status**: not implemented.
+**Status**: shipped — lock-in at `battle.rs:5666` for Outrage / Petal Dance / Thrash via `lockin_turns` (random 2-or-3 duration), with the natural-end confusion drop-out pre-rolled to match PS draw order (`conf_dur_roll`, `battle.rs:5682`). Confusion volatile itself is shipped (see below).
 
 ### Delayed moves (Future Sight / Doom Desire)
 
@@ -84,7 +96,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:futuresight,doomdesire`, `data/conditions.ts:futuremove`.
 
-**Status**: not implemented.
+**Status**: shipped — Future Sight / Doom Desire delayed-attack queue + end-of-turn fire wired at `battle.rs:2955` (`matches!(move_id, FUTURESIGHT | DOOMDESIRE)`).
 
 ## Volatiles missing entirely
 
@@ -110,7 +122,12 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/conditions.ts:taunt,disable,torment,healblock,imprison,embargo`.
 
-**Status**: partial — all six exist as `VolatileKind` variants (`pokemon.rs`: `Taunt`, `Disable`, `Torment`, `HealBlock`, `Imprison`, `Embargo`). **Disable is fully applied** via `Pokemon::set_disable` / `disabled_move` (PR-311; consumed by Cursed Body PR-331 and the choice-validation gate). The other five have the volatile slot + turn-counter wired but still lack full effect plumbing (Taunt status-move gate at action-selection, Torment same-move lockout, Heal Block heal-gate, Imprison/Embargo gates) and their setter moves. Encore is implemented — PR-28.
+**Status**: partial — all six exist as `VolatileKind` variants (`pokemon.rs`: `Taunt`, `Disable`, `Torment`, `HealBlock`, `Imprison`, `Embargo`). Shipped as of 2026-06-23:
+- **Taunt** — fully applied. Setter arm `move_id::TAUNT` in `battle.rs`; status-move gate at action-selection at `battle.rs:845` (`taunt_turns() > 0 && m.category == 2`, Me First excepted).
+- **Disable** — fully applied via `Pokemon::set_disable` / `disabled_move` (PR-311; consumed by Cursed Body PR-331 and the choice-validation gate).
+- **Heal Block** — heal-gate shipped: selection gate at `battle.rs:853` (`heal_block_turns() > 0 && m.is_heal`), resolve-time gate at `battle.rs:2148`, countdown at `battle.rs:1236`. (Setter move — no dedicated `HEALBLOCK` dispatch arm found; the volatile-set path may be ability/effect-driven only.)
+
+Still gaps (volatile slot + counter exist, but no functional effect plumbing or setter move found): **Torment** (same-move lockout), **Imprison** (`imprison` appears only in fixture-team JSON, no logic), **Embargo** (no references at all). Encore is implemented — PR-28.
 
 ## Entry hazards / removal
 
@@ -134,9 +151,11 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:spikes,toxicspikes,stickyweb`.
 
-**Status**: partial.
-- **Toxic Spikes — shipped (PR-309).** `SideConditions::toxic_spikes_layers` (`side.rs:95`); applied on switch-in via `Battle::apply_toxic_spikes_to` (`battle.rs:1001`) including 2-layer Toxic upgrade and Poison-type absorb. The Toxic Debris ability (PR-327) lays a layer.
-- **Spikes + Sticky Web — not implemented.** No `spikes_layers` / `sticky_web` fields yet (only a TODO comment at `side.rs:41`).
+**Status**: shipped (all three layered hazards).
+- **Toxic Spikes (PR-309).** `SideConditions::toxic_spikes_layers` (`side.rs:132`); applied on switch-in via `Battle::apply_toxic_spikes_to` (`battle.rs:1001`) including 2-layer Toxic upgrade and Poison-type absorb. The Toxic Debris ability (PR-327) lays a layer.
+- **Spikes — shipped.** `SideConditions::spikes_layers` (`side.rs:142`); setter arm `move_id::SPIKES` at `battle.rs:7947`.
+- **Sticky Web — shipped.** `SideConditions::sticky_web` (`side.rs:152`); setter arm `move_id::STICKYWEB` at `battle.rs:7959`.
+- Remaining nuance: Heavy Boots / ground-immunity edge cases per the switch-in pipeline note below.
 
 ### Hazard control
 
@@ -146,7 +165,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:rapidspin,defog,courtchange,tidyup,mortalspin`.
 
-**Status**: not implemented.
+**Status**: shipped — Rapid Spin + Mortal Spin clear the user's side at `battle.rs:5934` (`matches!(move_id, RAPIDSPIN | MORTALSPIN)`, gated on damage dealt); Defog (`move_id::DEFOG`), Court Change (`move_id::COURTCHANGE`), and Tidy Up (`move_id::TIDYUP`) all have dedicated dispatch arms in `battle.rs`. Per-move secondary nuance (Rapid Spin +1 Spe, Mortal Spin poison, Defog -1 Eva / screen clear) verified within those move PRs.
 
 ## Self-boost status moves
 
@@ -176,7 +195,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **What it is**: Belly Drum spends 50% max HP for +6 Atk (fails below 50% HP). Fillet Away spends 50% max HP for +2 Atk/SpA/Spe. Stockpile (1-3 stacks +1 Def +1 SpD per use), Swallow (consume stacks to heal), Spit Up (consume stacks for damage). Clangorous Soul / Blaze: 33% max HP for +1 all offensive stats.
 
-**Status**: partial — Belly Drum, Fillet Away, Clangorous Soul shipped PR-112; Stockpile / Swallow / Spit Up still open (stack volatile).
+**Status**: partial — Belly Drum (`move_id::BELLYDRUM`), Fillet Away (`move_id::FILLETAWAY`), Clangorous Soul (`move_id::CLANGOROUSSOUL`) all have dedicated arms (PR-112). Stockpile / Swallow / Spit Up are **GAP (confirmed absent 2026-06-23)** — no `STOCKPILE` / `SWALLOW` / `SPITUP` references in `crates/` (stack volatile not built).
 
 ### Stuff Cheeks
 
@@ -186,7 +205,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:stuffcheeks`.
 
-**Status**: not implemented.
+**Status**: GAP (confirmed absent 2026-06-23) — no `move_id::STUFFCHEEKS` reference anywhere in `crates/`.
 
 ## Counter-class moves
 
@@ -198,7 +217,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:counter,mirrorcoat,metalburst`.
 
-**Status**: not implemented.
+**Status**: shipped — all three have dedicated dispatch arms in `battle.rs` (`move_id::COUNTER`, `move_id::MIRRORCOAT`, `move_id::METALBURST`). Per-source damage attribution (the `attacked_by` table noted under "Action queue / pipeline refactors") is still only partial, so the source/category gating may diverge from PS in multi-hit-same-turn edge cases.
 
 ## Switching / order manipulation
 
@@ -212,7 +231,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:whirlwind,roar,dragontail,circlethrow`.
 
-**Status**: not implemented.
+**Status**: shipped — status phazers Whirlwind / Roar drag for a random bench replacement at `battle.rs:8491` (priority -6, bypasses Substitute, DragOut blockers honored). Damaging phazers Dragon Tail / Circle Throw force-switch after damage at `battle.rs:6002` (Suction Cups / Guard Dog / Ingrain blockers + Mold Breaker bypass, fizzle on no eligible bench).
 
 ### Pursuit
 
@@ -222,7 +241,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:pursuit`.
 
-**Status**: not implemented.
+**Status**: partial — the 2× BP-on-switching-foe path exists (`DamageContext::pursuit_doubled`, applied at `damage.rs:762`), but no `move_id::PURSUIT` interception arm was found in `battle.rs`, so the "resolve before the switch" queue-intercept wiring is unconfirmed / likely still missing. Treat the damage doubling as done, the intercept as a gap.
 
 ### After You / Quash / Me First
 
@@ -232,13 +251,13 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:afteryou,quash,mefirst`.
 
-**Status**: not implemented.
+**Status**: partial — **After You** (`move_id::AFTERYOU` arm at `battle.rs:8276`) and **Quash** (`move_id::QUASH` dedicated arm) are shipped, both rewriting the resolved action order. **Me First** is **GAP (confirmed absent)** — `MEFIRST` appears only in exclusion lists (Taunt status-move gate at `battle.rs:845` and the Encore/copy exempt list at `battle.rs:8186`), with no functional implementation.
 
 ### Speed Swap / Power Swap / Guard Swap / Heart Swap
 
 **What it is**: Speed Swap swaps raw Spe stats between user and target. Power/Guard/Heart Swap swap stat-stage boosts of the relevant categories.
 
-**Status**: not implemented.
+**Status**: shipped — all four share one dispatch arm at `battle.rs:8343` (`SPEEDSWAP | POWERSWAP | GUARDSWAP | HEARTSWAP`): Speed Swap swaps raw `spe`, Power Swap swaps atk+spa stages, Guard Swap swaps def+spd stages, Heart Swap swaps all stages; all bypass Substitute with no accuracy roll.
 
 ## Item / ability swap
 
@@ -250,7 +269,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:trick,switcheroo,bestow`.
 
-**Status**: not implemented.
+**Status**: shipped — Trick / Switcheroo swap held items via the shared arm at `battle.rs:8320` (`TRICK | SWITCHEROO`, using `swap_held_items`); Bestow has its own `move_id::BESTOW` dispatch arm. The full PS ban list (Mega Stones, Z-Crystals, Arceus plates, etc.) may not be exhaustively gated — verify against `data/moves.ts` if a corpus divergence surfaces.
 
 ### Skill Swap / Role Play / Entrainment / Worry Seed / Simple Beam / Gastro Acid
 
@@ -260,7 +279,7 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:skillswap,roleplay,entrainment,worryseed,simplebeam,gastroacid`.
 
-**Status**: not implemented.
+**Status**: partial — **Skill Swap** is shipped (`move_id::SKILLSWAP` dedicated arm in `battle.rs`). **Role Play / Entrainment / Worry Seed / Simple Beam / Gastro Acid** are all **GAP (confirmed absent 2026-06-23)** — zero references in `crates/`. (Note: runtime ability override/suppression primitives do exist for other abilities, so these are slug-arm gaps, not infrastructure gaps.)
 
 ## Healing
 
@@ -284,13 +303,13 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:wish`.
 
-**Status**: not implemented.
+**Status**: shipped — `move_id::WISH` dedicated dispatch arm in `battle.rs` (per-slot delayed heal delivered at end of next turn).
 
 ### Pain Split / Endeavor / Final Gambit
 
 **What it is**: Pain Split averages user's and target's current HP. Endeavor sets target's HP equal to user's HP (fails if user >= target). Final Gambit deals damage = user's current HP and faints the user.
 
-**Status**: partial — Pain Split shipped PR-111; Endeavor / Final Gambit need damage-callback plumbing, deferred.
+**Status**: shipped — all three have dedicated dispatch arms in `battle.rs`: `move_id::PAINSPLIT` (PR-111), `move_id::ENDEAVOR`, `move_id::FINALGAMBIT`. (Previously logged as partial; Endeavor / Final Gambit have since landed.)
 
 ### Memento / Healing Wish / Lunar Dance
 
@@ -302,13 +321,13 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **PS reference**: `data/moves.ts:memento,healingwish,lunardance`.
 
-**Status**: not implemented.
+**Status**: GAP (confirmed absent 2026-06-23) — no `MEMENTO` / `HEALINGWISH` / `LUNARDANCE` references in `crates/`. (Note: Lunar *Blessing* — a different move — is shipped, `move_id::LUNARBLESSING`; don't confuse it with Lunar Dance.)
 
 ### Floral Healing / Heal Pulse / Pollen Puff (ally branch)
 
 **What it is**: Heal Pulse heals target 50%. Floral Healing heals 50% (66% in Grassy Terrain). Pollen Puff: on foe deal damage, on ally heal 50%.
 
-**Status**: not implemented.
+**Status**: partial — **Heal Pulse** shipped (`move_id::HEALPULSE` dedicated arm). **Pollen Puff** ally-heal branch shipped (PR-54, see `moves.md`). **Floral Healing** is **GAP (confirmed absent)** — no `FLORALHEALING` reference in `crates/`.
 
 ### Strength Sap
 
@@ -328,51 +347,51 @@ Major structural gaps where no scaffolding exists yet. Each entry needs at minim
 
 **Depends on**: `Pokemon::drowsy: bool`. End-of-turn tick.
 
-**Status**: not implemented.
+**Status**: GAP (confirmed absent 2026-06-23) — no `YAWN` reference in `crates/`.
 
 ### Magic Coat / Snatch
 
 **What it is**: Magic Coat: 1-turn volatile that reflects status moves back at the user. Snatch: 1-turn volatile that steals self-targeted boost moves.
 
-**Status**: not implemented.
+**Status**: GAP (confirmed absent 2026-06-23) — no `MAGICCOAT` / `SNATCH` references in `crates/`.
 
 ### Fling
 
 **What it is**: Throws held item at target; BP and side-effect determined by held item (Iron Ball 130, Flame Orb burns, Light Ball paralyzes, King's Rock flinches, etc.). Item is consumed.
 
-**Status**: not implemented.
+**Status**: shipped — `move_id::FLING` gated on a flingable held item (`fling_bp != 255`) at `battle.rs:3276`; per-item BP computed in `damage.rs:598` (and bp==0 exception list at `damage.rs:497`); item consumed + on-hit effect applied at `battle.rs:6041`.
 
 ### Acupressure
 
 **What it is**: Targets self or ally, randomly boosts one of 7 stats by +2. RNG-heavy and rare; flagged for completeness.
 
-**Status**: not implemented.
+**Status**: GAP (confirmed absent 2026-06-23) — no `ACUPRESSURE` reference in `crates/`.
 
 ### Sleep Talk / Snore
 
 **What it is**: Sleep Talk: randomly picks a non-status non-Sleep-Talk move from the user's moveset and uses it; only succeeds while asleep. Snore: 50-BP Normal sound move that only works while asleep, 30% flinch.
 
-**Why it matters**: Snorlax `bodyslam/rest/sleeptalk/crunch` is a top-20 fixture team in the engine. Sleep Talk currently no-ops, so Snorlax stalls forever post-Rest.
+**Why it matters**: Snorlax `bodyslam/rest/sleeptalk/crunch` is a top-20 fixture team in the engine.
 
-**Status**: not implemented.
+**Status**: shipped — `move_id::SLEEPTALK` has a dedicated dispatch arm; the asleep-only gate excludes both Sleep Talk and Snore from the "still asleep → skip" branch at `battle.rs:2208` (`!matches!(move_id, SLEEPTALK | SNORE)`).
 
 ### Heal Bell / Aromatherapy / Safeguard / Mist
 
 **What it is**: Heal Bell: cures team status. Aromatherapy: same (sound-based, blocked by Soundproof). Safeguard: 5-turn side condition immunity to status. Mist: 5-turn side condition immunity to stat drops.
 
-**Status**: not implemented.
+**Status**: shipped — Heal Bell / Aromatherapy share the team-cure arm at `battle.rs:7968` (`HEALBELL | AROMATHERAPY`); Safeguard (`move_id::SAFEGUARD`) and Mist (`move_id::MIST`) each have dedicated dispatch arms.
 
 ### Perish Song
 
 **What it is**: 3-turn countdown on all mons on the field (except Soundproof). Counts down at end of turn; mons with 0 left faint.
 
-**Status**: not implemented.
+**Status**: shipped — `move_id::PERISHSONG` dedicated dispatch arm in `battle.rs`.
 
 ### Copycat / Mimic / Sketch / Assist / Mirror Move / Nature Power / Metronome
 
 **What it is**: Move-source manipulators. Copycat repeats the last move used by anyone. Mimic learns target's last move. Sketch permanently learns target's last move. Assist uses a random non-banned move from a teammate. Mirror Move uses the target's last move. Nature Power becomes the terrain-specific move. Metronome uses a random move.
 
-**Status**: not implemented. (Currently filtered as "non-copycat-able" in the sound-move list.)
+**Status**: GAP (confirmed absent 2026-06-23) — Copycat / Mimic / Sketch / Assist / Mirror Move / Nature Power / Metronome appear **only** in the Encore/copy *exempt* list at `battle.rs:8183-8187` (i.e. they're flagged as non-repeatable), with no functional dispatch arm. None redirect/copy a move yet.
 
 ## Action queue / pipeline refactors
 
@@ -396,7 +415,7 @@ These aren't single mechanics — they're prerequisites that block many of the a
 
 **What it is**: `Pokemon::charging_turns: u8`, `Pokemon::charging_move_slot: u8`, `Pokemon::semi_invuln: SemiInvuln` (Dig / Dive / Fly / Bounce / Phantom Force / Shadow Force have different hit-through tables). `must_recharge: bool` for Hyper Beam family. Choice-lock-like loop for Outrage / Petal Dance / Thrash with confusion drop-out.
 
-**Status**: not implemented.
+**Status**: shipped — all the state fields now exist and are consumed: `charging_turns` / `charging_move_slot` (charge moves, `battle.rs:2704`), `semi_invuln_code_for` (semi-invuln table), `must_recharge` (Hyper Beam family, `battle.rs:5732`), `lockin_turns` (Outrage / Petal Dance / Thrash with confusion drop-out, `battle.rs:5666`). This refactor is effectively done.
 
 ### Switch-in pipeline ordering
 

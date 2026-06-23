@@ -1,5 +1,18 @@
 # Architecture / refactor debt
 
+> ⚠️ **Source is authoritative — these status docs rot. Verify before trusting any status below.**
+> Counts: abilities `grep -rhoE 'ability_id::[A-Z_0-9]+' crates/vgc-engine-core/src/|sort -u|wc -l`; items `item_id`; moves `move_id` (same pattern).
+> Last reconciled: 2026-06-23.
+
+> **Reconciliation note (2026-06-23):** every structural entry below is already
+> marked `shipped — PR-N` and was spot-checked as accurate. Mega Evolution
+> state/mechanic (not tracked here — see `champions-impl-plan.md`) is also
+> shipped: `Choice::MegaEvolve` (`choice.rs:66`), `Side::mega_used`
+> (`side.rs:161`), post-mega same-turn speed ordering (`order.rs:136,470,503`).
+> The only remaining non-shipped items are sub-bullets explicitly flagged
+> "consumer TODO" / "still missing" under **Move data fields** and **Effective
+> ability accessor** (incremental call-site migration).
+
 Internal engine structure that's known to need rework before certain mechanic clusters become tractable. Pure-Rust debt — no behavioral gap by itself, but blocks gaps elsewhere.
 
 ## State representation

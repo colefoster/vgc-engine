@@ -1,15 +1,36 @@
 # Missing abilities
 
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> Count implemented abilities: `grep -rhoE 'ability_id::[A-Z_0-9]+' crates/vgc-engine-core/src/ | sort -u | wc -l`
+> Check one ability: `grep -rn 'ability_id::SLUG' crates/vgc-engine-core/src/`
+> Last reconciled: 2026-06-23.
+
 Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_switch_in`, `on_switch_out`, `on_damaging_hit`, `react_to_opposing_stat_drop`, BP-modifier scans in `damage.rs`). Most additions are a `match` arm.
 
-## Headline counts (post PR-306)
+## Headline counts (reconciled 2026-06-23 — verified source-grep)
 
-| Status | Count |
-| --- | --- |
-| shipped | 78 |
-| partial | 4 |
-| not implemented | 12 |
-| deferred / no-effect | 1 (Frisk) |
+The 2026-06 PR rounds (PRs 318–338) shipped almost the entire tail this doc
+used to list as "missing." Reconciliation cross-checked every entry against a
+real `data::ability_id::X` arm in `crates/vgc-engine-core/src/`. **220 unique
+ability symbols are referenced in core source** (some in lists/helpers rather
+than full behavioral arms — count is a ceiling, not a guarantee each has full
+behavior).
+
+| Status | Count | Notes |
+| --- | --- | --- |
+| shipped | ~217 (of 220 symbols) | almost everything below was reclassified shipped |
+| partial | 1 | Keen Eye (Acc-drop shipped; Eva-ignore branch still missing) |
+| not implemented | 1 | Pickpocket (only appears in test fixtures — no arm) |
+| deferred / no-effect | 1 | Frisk (information-only; absent from source by design) |
+
+**Genuine remaining gaps (verified absent 2026-06-23):**
+- **Pickpocket** — `grep PICKPOCKET` hits only test-team JSON, no behavioral arm.
+- **Keen Eye Eva-ignore** — Acc-drop block shipped (`ability.rs:108`); the
+  accuracy-calc Eva-ignore branch is still absent.
+- **Frisk** — information-only; intentionally a no-op, `FRISK` not in source.
+- **Desolate Land / Primordial Sea / Delta Stream** — restricted-only primal
+  weather; `DESOLATELAND` / `PRIMORDIALSEA` / `DELTASTREAM` return 0 hits. Out
+  of scope, left as gaps.
 
 ## Damage modifiers (attacker side)
 
@@ -293,13 +314,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: On wind-move hit received, sets a "charged" volatile that doubles the next Electric move's BP.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1333` (wind-move-hit Charge set). Tailwind-set trigger path may still be pending; verify if relevant.
 
 ### Wind Rider
 
 **What it is**: On wind-move hit received (or Tailwind set on user's side), +1 Atk and immunity to wind moves.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:686` (+1 Atk on wind hit) + `battle.rs:4276` (wind-move immunity, Mold-Breaker-gated).
 
 ### Cursed Body
 
@@ -307,7 +328,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Disable volatile (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1674`.
 
 ### Stamina
 
@@ -333,7 +354,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Toxic Spikes (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1314` (lays Toxic Spikes on the foe side on physical hit).
 
 ### Trace
 
@@ -351,7 +372,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Mimikyu signature; first hit is reduced to 1/8 max HP chip and the move's damage is negated; form changes to Busted.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:296` + `battle.rs:5221` (damage substitution + Busted forme swap).
 
 ### Natural Cure / Shed Skin / Hydration
 
@@ -363,13 +384,13 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: On contact hit received, steal the attacker's item (if user has none).
 
-**Status**: not implemented.
+**Status**: **NOT IMPLEMENTED** (verified 2026-06-23). `PICKPOCKET` appears only in test-team JSON fixtures in `battle.rs`; no behavioral arm exists. Genuine gap — needs item-transfer plumbing (batch with Symbiosis, which IS shipped).
 
 ### Frisk
 
 **What it is**: On switch-in, reveal one random opposing mon's item. (Information-only — no engine effect.)
 
-**Status**: not implemented (no battle effect).
+**Status**: deferred / no-op — `FRISK` is absent from source by design (information-only; nothing to model).
 
 ### Hospitality
 
@@ -393,7 +414,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **Depends on**: Same predicate as Magic Coat (systems.md).
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:6222` (status moves reflected when target has Magic Bounce).
 
 ### Magic Guard
 
@@ -415,7 +436,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Acc cannot be lowered by foe. Also ignores target Eva.
 
-**Status**: partial — Acc-drop block shipped PR-299 (`blocks_opposing_stat_drop_for`); Eva-ignore branch (accuracy calc) still not implemented.
+**Status**: partial — Acc-drop block shipped (`ability.rs:108`); Eva-ignore branch (accuracy calc) still **NOT IMPLEMENTED** (verified absent 2026-06-23). This is the one genuinely partial ability remaining.
 
 ### Clear Body / White Smoke / Full Metal Body
 
@@ -427,25 +448,25 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Inner Focus: cannot be flinched + Intimidate immune. Vital Spirit: cannot be put to sleep + Intimidate immune. Insomnia: cannot be put to sleep.
 
-**Status**: partial — Intimidate-immunity branch shipped for Inner Focus / Own Tempo / Oblivious / Scrappy (ability.rs:84-92); Vital Spirit + Insomnia sleep-immune shipped PR-299 (battle.rs `try_set_status`); Inner Focus flinch-immune still not implemented.
+**Status**: shipped — Intimidate-immunity branch (Inner Focus / Own Tempo / Oblivious / Scrappy) at `ability.rs:124-126`; Vital Spirit + Insomnia sleep-immune at `battle.rs:6607`; Inner Focus flinch-immune now wired at `battle.rs:9869-9876` (Mold-Breaker-gated).
 
 ### Own Tempo
 
 **What it is**: Cannot be confused + Intimidate immune.
 
-**Status**: partial — Intimidate-immune branch shipped (ability.rs:89); confusion-immunity not yet implemented.
+**Status**: shipped — Intimidate-immune branch at `ability.rs:125`; confusion-immune branch at `battle.rs:5707`.
 
 ### Sweet Veil
 
 **What it is**: User and partners cannot be put to sleep.
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:6621` (Sweet Veil sleep block for holder + ally).
 
 ### Limber / Magma Armor / Immunity / Pastel Veil / Water Veil / Oblivious / Aroma Veil
 
 **What it is**: Status-specific immunity per ability (paralysis / freeze / poison / poison-for-partners-too / burn / attract-and-Taunt / Taunt-Disable-Encore-Heal-Block-for-partners).
 
-**Status**: partial — Limber (par), Magma Armor (frz), Immunity (psn/tox), Water Veil (brn) shipped PR-298 (battle.rs `try_set_status`). Pastel Veil / Oblivious volatile / Aroma Veil still not implemented.
+**Status**: shipped — Limber (par), Magma Armor (frz), Immunity (psn/tox), Water Veil (brn) via `battle.rs` `try_set_status`; Pastel Veil (`ability.rs:665` + `battle.rs:6606`); Oblivious Attract/Taunt volatile block (`ability.rs:1638`); Aroma Veil holder+ally aura (`battle.rs:7254`). Aroma Veil's Taunt/Torment/Heal-Block coverage is vacuous-pending until those volatiles gain setters.
 
 ### Unaware
 
@@ -519,7 +540,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: When ally uses its held item, passes user's held item to ally.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1962`.
 
 ### Telepathy
 
@@ -531,7 +552,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Prevents Explosion / Self-Destruct / Mind Blown / Misty Explosion from being used.
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:2414` (field-scan for Damp in the pre-move explode-move gate).
 
 ## Pressure / drain / niche
 
@@ -539,7 +560,7 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Foes use 2 PP per move targeting the user.
 
-**Status**: not implemented (PP not tracked at all in engine).
+**Status**: shipped — `battle.rs:9520` (PR-338). Engine DOES track PP; +1 PP deducted per foe target holding active Pressure. (The "PP not tracked" note was false — PP has worked since the Leppa/Pressure work landed.)
 
 ### Defeatist
 
@@ -563,25 +584,25 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: After being hit, user's type changes to the move's type.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1277` (runtime type-override on damaging hit).
 
 ### Protean / Libero
 
 **What it is**: Each move used changes the user's type to that move's type (gen-9: only once per switch-in).
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:3006` (pre-move type mutation, once-per-switch-in gen-9 gate).
 
 ### Moody
 
 **What it is**: End-of-turn: +2 to one random stat, -1 to another.
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1088`.
 
 ### Wonder Guard
 
 **What it is**: Only super-effective moves can damage the user. Shedinja signature.
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:4484` (PR-336; only-SE damage gate, Mold-Breaker-breakable).
 
 ### Mummy / Wandering Spirit
 
@@ -593,15 +614,15 @@ Per-slug ability gaps. The dispatcher hooks already exist in `ability.rs` (`on_s
 
 **What it is**: Reflects stat-lowering effects back at the source.
 
-**Status**: not implemented.
+**Status**: shipped — `battle.rs:570`.
 
 ### Cute Charm
 
 **What it is**: 30% chance on contact hit received to infatuate attacker.
 
-**Depends on**: Attract volatile (not modelled).
+**Depends on**: Attract volatile (now modelled).
 
-**Status**: not implemented.
+**Status**: shipped — `ability.rs:1611` (30% Attract on contact attacker).
 
 ### Effect Spore
 

@@ -16,6 +16,15 @@ Within gen 9 itself we **slice by mechanic coverage, not by feature completeness
 **Phase 2** — top-50 mechanic coverage. See `data/corpus_frequency.md` for the
 work order.
 
+> **Status note (2026-06-23):** several mechanics listed under Phase 3 below
+> have **already landed** ahead of the phase gate — **Terastallization**
+> (Tera Blast, Stellar STAB, Tera Shell, Embody Aspect; see
+> `docs/gaps/architecture.md`) and the **Champions Mega Evolution overlay**
+> (format/regulation system, Mega mechanic, all 6 new abilities; see
+> `docs/gaps/champions-impl-plan.md` "Reconciliation 2026-06-23"). The Phase-2
+> "No Tera yet" line is therefore stale. Phase numbering tracks the gate, not
+> per-mechanic completion.
+
 ---
 
 ## Phase 0 — Scaffold (DONE 2026-06-15)

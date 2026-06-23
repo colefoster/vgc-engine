@@ -1,5 +1,44 @@
 # Pokémon Champions (VGC Reg M-B) — citation catalog & impl plan
 
+> ⚠️ **Source is authoritative — these status docs rot. Verify before trusting any status below.**
+> Counts: abilities `grep -rhoE 'ability_id::[A-Z_0-9]+' crates/vgc-engine-core/src/|sort -u|wc -l`; items `item_id`; moves `move_id` (same pattern).
+> Last reconciled: 2026-06-23.
+
+> **HISTORICAL / LARGELY SUPERSEDED (reconciled 2026-06-23).** The headline of
+> this plan — the **Champions format/regulation system**, the **Mega Evolution
+> mechanic**, and **all 6 new Champions abilities** — has **shipped**. This file
+> is retained as a citation catalog and for the handful of still-open rule/move
+> overrides. See **"Reconciliation 2026-06-23"** immediately below for the
+> shipped/gap split with `file:line` evidence; treat the per-section status
+> prose further down as **historical** unless it agrees with that summary.
+
+## Reconciliation 2026-06-23 (grep-verified against source)
+
+Live counts: **220 abilities / 163 items / 237 moves** (`ability_id`/`item_id`/`move_id`, `sort -u`).
+
+**SHIPPED — Foundation:**
+- **Format / regulation system** — `format_rules.rs:178` `REG_M_B` ruleset (Reg M-B doubles, level-50, Species/Item clause, Stat-Points budget replacing EVs, 208-entry roster allow-list); `rules_for` matches `"regmb"|"regm"|"regb"|"regbm"|"champions"` at `format_rules.rs:208`. The feared "no mod/regulation system" is built.
+- **Mega Evolution mechanic** — `Choice::MegaEvolve` (`choice.rs:66`), `Side::mega_used` permit (`side.rs:161`), `do_mega_evolve` consuming the permit + `set_forme(.., true)` (`battle.rs:1382-1421`), `mega_stone_for` held-stone lookup (the `canMegaEvo` analog, `battle.rs:801,1407`), and the **same-turn post-mega-speed ordering subtlety solved**: `Choice::MegaEvolve` is sorted alongside `Move`/`Terastallize` and forme resolves before action order (`order.rs:136,470,503`; `battle.rs:989`). `MEGA_STONES` data table + per-forme resolved ability (`battle.rs:29387`, `damage.rs:3053`).
+- **White Herb custom handler** — `item::try_consume_white_herb` (`item.rs:1363`), wired at multiple stat-drop sites.
+
+**SHIPPED — all 6 new abilities (the catalog's verification target):**
+- **Spicy Spray** — `ability.rs:1582` (`ability_id::SPICYSPRAY`, burn-attacker-on-hit).
+- **Eelevate** — `pokemon.rs:1870` (`ability_id::EELEVATE` shares the Levitate Ground-immunity path; KO-boost wired).
+- **Dragonize** — `damage.rs:826` (`ability_id::DRAGONIZE => Some(14)`, Normal→Dragon -ate).
+- **Fire Mane** — `damage.rs:951` (`ability_id::FIREMANE`, ×1.5 holder Fire moves).
+- **Mega Sol** — `damage.rs:1613` (`ability_id::MEGASOL`, holder computes as if Sun is up).
+- **Piercing Drill** — `battle.rs:4229` (`ability_id::PIERCINGDRILL`, Unseen-Fist-style Protect bypass).
+
+All 6 slugs are present in `/tmp/gt/abilities.txt` (FIREMANE, EELEVATE, DRAGONIZE, MEGASOL, SPICYSPRAY, PIERCINGDRILL).
+
+**STILL OPEN (grep-confirmed genuine gaps):**
+- **Paralysis full-para 12.5%** — still gen-9 standard 25% (`battle.rs:2243` `self.rng.range(4) == 0`); the Champions `range(8)` override is **not** wired.
+- **Global PP cap 20** — no overlay clamp found; **not shipped**.
+- **Healer 50% Champions variant** — still 30% (`ability.rs:1042` `rng.percent_1_100() <= 30`); the mod's 50% (`randomChance(1,2)`) variant is **not** encoded.
+- **Move stat/effect overrides** (makeitrain SpA-2, direclaw triple-status, ironhead 20% flinch, etc.) — not individually reconciled here; verify per-slug before trusting the "Move overrides" section below.
+
+---
+
 > **This is a citation catalog, not a progress tracker.** The per-entry PS
 > `file:line` refs, hook pointers, complexity, and deps below are stable and
 > trustworthy. Any "shipped / missing" *counts* go stale the moment a PR lands —

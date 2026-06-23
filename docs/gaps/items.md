@@ -1,20 +1,29 @@
 # Missing items
 
-Item-slot gaps. The dispatcher in `item.rs` is shallow (only Sitrus Berry has a real on-damage arm); most items get checked inline in `battle.rs` / `damage.rs`. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> Count implemented items: `grep -rhoE 'item_id::[A-Z_0-9]+' crates/vgc-engine-core/src/ | sort -u | wc -l`
+> Check one item: `grep -rn 'item_id::SLUG' crates/vgc-engine-core/src/`
+> A few items use **string-literal** arms, not `item_id::` constants (King's Rock,
+> Razor Fang, Scope Lens, Razor Claw) — grep the lowercase slug for those.
+> Last reconciled: 2026-06-23.
 
-## Headline counts (refreshed 2026-06-19, post PR-308)
+Item-slot gaps. Smogon usage figures are from `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt`.
 
-At least **146 implemented** of ~223 gen-9-relevant held items (per the
-slug-grep audit in `items-missing-audit.md`). ~20 competitively-meaningful
-held items remain (see that file's refreshed remaining list). The per-mechanic
-catalog below is the citation body; its shipping-order entries are annotated
-DONE where landed.
+## Headline counts (reconciled 2026-06-23)
+
+**163** items have `item_id::` match arms (grep above), plus **4** more via
+string-literal arms (King's Rock, Razor Fang, Scope Lens, Razor Claw) → **~167
+distinct items with real behavior**. After a grep sweep against core source,
+only **4 competitively-meaningful items remain unimplemented**: Normal Gem,
+Binding Band, Grip Claw, and the Metronome *item*. The older "~20 remaining"
+figure was stale — 18 of those 20 are shipped (see `items-missing-audit.md`).
 
 | Status | Count |
 | --- | --- |
-| implemented (engine slug grep) | ~146 |
-| competitively-meaningful remaining | ~20 |
-| system-blocked (trapping / PP / forme-lock) | ~6 |
+| implemented (`item_id::` arms) | 163 |
+| implemented (string-literal arms) | 4 |
+| genuine remaining gaps | 4 (Normal Gem, Binding Band, Grip Claw, Metronome item) |
+| system-blocked (partial-trap dep) | 2 (Binding Band, Grip Claw) |
 
 ## Damage modifiers
 
