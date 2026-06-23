@@ -58,6 +58,26 @@ pub struct SideConditions {
     /// the moment of use; otherwise the move fails. Duration 5
     /// (8 with Light Clay — deferred). Same bypass rules.
     pub aurora_veil_turns: u8,
+    /// Safeguard: for 5 turns, this side is protected from non-volatile
+    /// status (brn/par/psn/tox/slp/frz) and confusion inflicted by an
+    /// opponent. PS data/moves.ts:safeguard / its `condition` (duration
+    /// 5) `onSetStatus` + `onTryAddVolatile`: a status whose source is
+    /// not the target itself is vetoed (`target !== source`). Self-
+    /// inflicted status (Rest, Flame/Toxic Orb) still applies. Synchronize
+    /// and contact-ability statuses (Static/Effect Spore/Poison Point) are
+    /// blocked. NOT extended by Light Clay (only screens are). Same
+    /// end-of-step tick model as Reflect: set to 5 on use; active for
+    /// N..=N+4; expires end of N+4. Infiltrator bypass deferred (parity
+    /// with the screens, which also defer it).
+    pub safeguard_turns: u8,
+    /// Mist: for 5 turns, this side is protected from stat-stage
+    /// REDUCTIONS caused by an opponent. PS data/moves.ts:mist `condition`
+    /// (duration 5) `onTryBoost`: negative boosts from a source other than
+    /// the target are deleted (`source && target !== source`). Self-drops
+    /// (the holder's own moves) still apply; positive boosts always apply.
+    /// Same tick model as Reflect. Infiltrator bypass deferred (parity
+    /// with the screens).
+    pub mist_turns: u8,
     /// Wide Guard: 1-turn side condition that blocks incoming spread
     /// moves (`target: allAdjacent` / `allAdjacentFoes`). PS
     /// data/moves.ts:wideguard sets `sideCondition: 'wideguard'`
