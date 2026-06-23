@@ -11,9 +11,12 @@
 //! constant plus a `rules_for` arm.
 //!
 //! The flagship ruleset is [`REG_M_B`] (Pokémon Champions, Regulation M / B
-//! doubles): bring-6-pick-4, level 50, Species & Item clause, 508-EV cap,
-//! Terastallization banned, Mega Evolution legal, and restricted legendaries /
-//! mythicals / paradox / Treasures of Ruin banned.
+//! doubles): bring-6-pick-4, level 50, Species & Item clause, 510-EV cap,
+//! Terastallization banned, Mega Evolution legal, and species legality gated by
+//! an authoritative 208-entry national-dex **allow-list** (the Champions roster
+//! — see [`REG_M_B_LEGAL_SPECIES`]). The allow-list subsumes the old
+//! tag-derived bans (restricted / mythical / paradox / Treasures of Ruin),
+//! since none of those Pokémon are on the roster.
 //!
 //! Behaviour mirrors PS's `sim/team-validator.ts` where reasonable:
 //!   * EV total / per-stat cap — `validateStats` (team-validator.ts:1132).
@@ -62,6 +65,14 @@ pub struct FormatRules {
     /// When `false`, a set that *specifies* a Tera type is illegal
     /// (Terastallization is unusable in-format).
     pub tera_allowed: bool,
+    /// Authoritative species allow-list, keyed by **base national-dex `num`**
+    /// (regional formes and megas share their base's `num`, so they are legal
+    /// iff the base is listed). When `Some`, this is the *only* species-legality
+    /// gate: a set whose `num` is absent is illegal (and the tag-derived bans
+    /// below become redundant). When `None`, species legality falls back to the
+    /// tag bans + [`extra_banned_num`]. Stored sorted for binary search; a new
+    /// format supplies its own slice.
+    pub legal_species: Option<&'static [u16]>,
     /// Ban species tagged "Restricted Legendary".
     pub ban_restricted: bool,
     /// Ban species tagged "Mythical".
@@ -99,23 +110,54 @@ pub struct FormatRules {
 /// Source: `data/pokedex.json` `num`; Bulbapedia "Treasures of Ruin".
 const TREASURES_OF_RUIN: &[u16] = &[1001, 1002, 1003, 1004];
 
+/// Pokémon Champions — Reg M-B legal-species allow-list, by **base national-dex
+/// `num`** (208 entries, sorted ascending for binary search).
+///
+/// Champions ships a curated roster: legendaries / mythicals / paradox / the
+/// Treasures of Ruin simply aren't in the game, so this allow-list *is* the
+/// species gate and subsumes the tag-based bans. No species is restricted /
+/// banned this season — inclusion is the only legality test. Regional formes
+/// and megas share their base's `num` and are legal iff the base is listed.
+///
+/// Source: Serebii Pokémon Champions Pokédex
+/// (<https://www.serebii.net/pokemonchampions/pokemon.shtml>); cross-checked
+/// vs MetaVGC and pokemon.com's Reg M-B announcement (2026-06, high confidence).
+pub const REG_M_B_LEGAL_SPECIES: &[u16] = &[
+    3, 6, 9, 15, 18, 24, 25, 26, 36, 38, 45, 59, 65, 68, 71, 80, 94, 115, 121,
+    127, 128, 130, 132, 134, 135, 136, 142, 143, 149, 154, 157, 160, 168, 181,
+    184, 186, 196, 197, 199, 205, 208, 211, 212, 214, 227, 229, 248, 254, 257,
+    260, 279, 282, 302, 303, 306, 308, 310, 319, 323, 324, 334, 350, 351, 354,
+    358, 359, 362, 376, 389, 392, 395, 398, 405, 407, 409, 411, 428, 442, 445,
+    448, 450, 454, 460, 461, 464, 470, 471, 472, 473, 475, 478, 479, 497, 500,
+    503, 505, 510, 512, 514, 516, 518, 530, 531, 534, 545, 547, 553, 560, 563,
+    569, 571, 579, 584, 587, 604, 609, 614, 618, 623, 635, 637, 652, 655, 658,
+    660, 663, 666, 668, 670, 671, 675, 676, 678, 681, 683, 685, 687, 689, 691,
+    693, 695, 697, 699, 700, 701, 702, 706, 707, 709, 711, 713, 715, 724, 727,
+    730, 733, 740, 745, 748, 750, 752, 758, 763, 765, 766, 778, 780, 784, 823,
+    841, 842, 844, 855, 858, 861, 866, 867, 869, 870, 877, 887, 899, 900, 902,
+    903, 904, 908, 911, 914, 925, 934, 936, 937, 939, 952, 956, 959, 964, 968,
+    970, 972, 979, 981, 983, 1000, 1013, 1018, 1019,
+];
+
 /// Pokémon Champions — Regulation M / Regulation B doubles.
 ///
-/// Tera BANNED, Mega LEGAL, no restricted legendaries / mythicals / paradox /
-/// Treasures of Ruin. (Memory: `project_regmb_format_scope`.)
+/// Tera BANNED, Mega LEGAL. Species legality is the authoritative
+/// [`REG_M_B_LEGAL_SPECIES`] allow-list (by base dex `num`); the tag-derived
+/// bans (`ban_restricted` / `ban_mythical` / `ban_paradox`) and
+/// `extra_banned_num` are retained as a harmless secondary check but are
+/// **redundant** under the allow-list (none of those Pokémon are on the
+/// roster). (Memory: `project_regmb_format_scope`.)
 ///
-/// NOTE (best-effort banlist): a precise "Champions roster" allow-list is not
-/// available in the data, so "any non-Champions species" cannot be enforced by
-/// inclusion. We enforce the tag-derived bans (restricted/mythical/paradox) +
-/// curated Treasures of Ruin. TODO: add a Champions roster allow-list if/when a
-/// source is available.
+/// EV rules for Champions are **unconfirmed**; we assume standard VGC (EV total
+/// ≤ 510, ≤ 252 / stat, IVs 0–31) and match PS's 510 total cap.
 pub const REG_M_B: FormatRules = FormatRules {
     id: "regmb",
     name: "Pokémon Champions Reg M-B (Doubles)",
     min_team_size: 4,
     max_team_size: 6,
     required_level: Some(50),
-    ev_total_limit: 508,
+    // Champions EV rules unconfirmed — standard VGC assumed (PS uses 510).
+    ev_total_limit: 510,
     ev_per_stat_limit: 252,
     iv_max: 31,
     min_moves: 1,
@@ -123,6 +165,7 @@ pub const REG_M_B: FormatRules = FormatRules {
     species_clause: true,
     item_clause: true,
     tera_allowed: false,
+    legal_species: Some(REG_M_B_LEGAL_SPECIES),
     ban_restricted: true,
     ban_mythical: true,
     ban_paradox: true,
@@ -341,7 +384,23 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
             continue;
         };
 
-        // Banned species.
+        // Banned species. When the format has an allow-list, inclusion is the
+        // authoritative (and only meaningful) gate — a species whose base dex
+        // `num` is absent is not in the format. The tag-derived bans below are
+        // then redundant (no banned tag survives the allow-list) but kept as a
+        // harmless secondary check for formats that supply no allow-list.
+        if let Some(allow) = rules.legal_species {
+            if allow.binary_search(&sp.num).is_err() {
+                push(
+                    &mut v,
+                    Rule::BannedSpecies,
+                    format!(
+                        "{} (dex #{}) is not in the {} legal-species list",
+                        sp.name, sp.num, rules.name
+                    ),
+                );
+            }
+        }
         let ban_reason = if rules.ban_restricted && sp.restricted {
             Some("a Restricted Legendary")
         } else if rules.ban_mythical && sp.mythical {
@@ -353,8 +412,15 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
         } else {
             None
         };
+        // Only report a tag ban if the allow-list didn't already flag the set,
+        // to avoid two violations for the same species.
+        let allow_flagged = rules
+            .legal_species
+            .is_some_and(|a| a.binary_search(&sp.num).is_err());
         if let Some(reason) = ban_reason {
-            push(&mut v, Rule::BannedSpecies, format!("{} is {}, which is banned in {}", sp.name, reason, rules.name));
+            if !allow_flagged {
+                push(&mut v, Rule::BannedSpecies, format!("{} is {}, which is banned in {}", sp.name, reason, rules.name));
+            }
         }
 
         // Species Clause (by dex num — covers alternate formes).
@@ -438,10 +504,11 @@ mod tests {
         incin.evs = StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 };
         incin.moves = vec!["Fake Out".into(), "Flare Blitz".into(), "Parting Shot".into(), "Knock Off".into()];
 
-        let mut amoong = base("Amoonguss");
-        amoong.ability = Some("Regenerator".into());
-        amoong.item = Some("Rocky Helmet".into());
-        amoong.moves = vec!["Spore".into(), "Rage Powder".into(), "Pollen Puff".into(), "Protect".into()];
+        // Talonflame (#663) is on the Champions roster; Amoonguss (#591) is not.
+        let mut tflame = base("Talonflame");
+        tflame.ability = Some("Gale Wings".into());
+        tflame.item = Some("Rocky Helmet".into());
+        tflame.moves = vec!["Brave Bird".into(), "Tailwind".into(), "Roost".into(), "Protect".into()];
 
         let mut chomp = base("Garchomp");
         chomp.ability = Some("Rough Skin".into());
@@ -455,7 +522,7 @@ mod tests {
         tini.item = Some("Choice Band".into());
         tini.moves = vec!["Extreme Speed".into(), "Tera Blast".into(), "Stomping Tantrum".into(), "Ice Spinner".into()];
 
-        vec![incin, amoong, chomp, tini]
+        vec![incin, tflame, chomp, tini]
     }
 
     fn rules_of(team: &[TeamMember]) -> Vec<Rule> {
@@ -545,13 +612,82 @@ mod tests {
     }
 
     #[test]
-    fn ev_total_over_508() {
+    fn ev_total_over_cap() {
         let mut team = legal_team();
-        // 252×3 = 756 > 508 total, but each stat is within the 252 per-stat cap.
+        // 252×3 = 756 > 510 total, but each stat is within the 252 per-stat cap.
         team[0].evs = StatSpread { hp: 252, atk: 252, def: 252, spa: 0, spd: 0, spe: 0 };
         let rs = rules_of(&team);
         assert!(rs.contains(&Rule::EvTotal));
         assert!(!rs.contains(&Rule::EvPerStat));
+    }
+
+    #[test]
+    fn ev_total_cap_is_510() {
+        // Champions EV rules are unconfirmed; we assume standard VGC (PS = 510).
+        assert_eq!(REG_M_B.ev_total_limit, 510);
+        // 510 total is legal; 511 is not.
+        let mut team = legal_team();
+        team[0].evs = StatSpread { hp: 252, atk: 252, def: 6, spa: 0, spd: 0, spe: 0 };
+        assert!(!rules_of(&team).contains(&Rule::EvTotal), "510 EVs should be legal");
+        team[0].evs = StatSpread { hp: 252, atk: 252, def: 7, spa: 0, spd: 0, spe: 0 };
+        assert!(rules_of(&team).contains(&Rule::EvTotal), "511 EVs should be illegal");
+    }
+
+    #[test]
+    fn allowlist_has_208_sorted_unique_entries() {
+        assert_eq!(REG_M_B_LEGAL_SPECIES.len(), 208);
+        assert!(
+            REG_M_B_LEGAL_SPECIES.windows(2).all(|w| w[0] < w[1]),
+            "allow-list must be strictly ascending (sorted + unique) for binary_search"
+        );
+    }
+
+    #[test]
+    fn legal_champions_species_pass() {
+        // Incineroar (#727) and Garganacl (#934) are both on the roster.
+        let mut team = legal_team();
+        team[0] = base("Garganacl");
+        team[0].ability = Some("Purifying Salt".into());
+        team[0].item = Some("Leftovers".into());
+        team[0].moves = vec!["Salt Cure".into(), "Recover".into(), "Protect".into()];
+        assert!(!rules_of(&team).contains(&Rule::BannedSpecies), "Garganacl should be in-format");
+    }
+
+    #[test]
+    fn species_not_in_champions_is_flagged() {
+        // Bulbasaur (#1) is in the National Dex but NOT on the Champions roster.
+        let mut team = legal_team();
+        team[0] = base("Bulbasaur");
+        team[0].ability = Some("Overgrow".into());
+        team[0].item = Some("Eviolite".into());
+        team[0].moves = vec!["Tackle".into()];
+        assert!(rules_of(&team).contains(&Rule::BannedSpecies), "Bulbasaur is not in Champions");
+    }
+
+    #[test]
+    fn restricted_flagged_via_allowlist_not_tag() {
+        // Miraidon (#1008, a restricted legendary) is absent from the allow-list,
+        // so it is flagged purely by the allow-list — independent of the tag ban.
+        let mut team = legal_team();
+        team[0] = base("Miraidon");
+        team[0].ability = Some("Hadron Engine".into());
+        team[0].item = Some("Choice Specs".into());
+        team[0].moves = vec!["Electro Drift".into()];
+        assert!(!REG_M_B_LEGAL_SPECIES.contains(&1008), "Miraidon should not be in the roster");
+        assert!(rules_of(&team).contains(&Rule::BannedSpecies));
+    }
+
+    #[test]
+    fn mega_forme_of_legal_base_passes() {
+        // Mega Charizard Y shares base dex #006 (Charizard is on the roster),
+        // so the mega forme is legal by inheriting the base's num.
+        let mut team = legal_team();
+        team[0] = base("Charizard-Mega-Y");
+        team[0].ability = Some("Drought".into());
+        team[0].item = Some("Charizardite Y".into());
+        team[0].moves = vec!["Heat Wave".into(), "Protect".into()];
+        let rs = rules_of(&team);
+        assert!(!rs.contains(&Rule::BannedSpecies), "Mega Charizard Y should be in-format: {:?}", rs);
     }
 
     #[test]
@@ -650,12 +786,12 @@ Careful Nature
 - Parting Shot
 - Knock Off
 
-Amoonguss @ Rocky Helmet
-Ability: Regenerator
+Talonflame @ Rocky Helmet
+Ability: Gale Wings
 Level: 50
-- Spore
-- Rage Powder
-- Pollen Puff
+- Brave Bird
+- Tailwind
+- Roost
 - Protect
 
 Garchomp @ Life Orb
