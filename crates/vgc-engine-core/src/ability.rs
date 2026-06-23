@@ -591,6 +591,43 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         battle.apply_boosts(side, slot, &[(0, 1)], side, slot);
     }
 
+    // Supersweet Syrup (Dipplin / Hydrapple) — PS `data/abilities.ts:4704`
+    // `onStart`:
+    //   if (pokemon.syrupTriggered) return;
+    //   pokemon.syrupTriggered = true;
+    //   for (const target of pokemon.adjacentFoes()) {
+    //     if (target.volatiles['substitute']) this.add('-immune', target);
+    //     else this.boost({ evasion: -1 }, target, pokemon, null, true);
+    //   }
+    // The FIRST time the holder switches in (once per battle, latched on
+    // the persistent `syrup_triggered` flag), every adjacent foe loses one
+    // evasion stage (boost index 6). A foe hiding behind a Substitute is
+    // immune. In singles `adjacentFoes()` is the single opposing active; in
+    // doubles it is both. The latch is NOT cleared on switch-out, so
+    // re-entering the holder does nothing. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Supersweet_Syrup_(Ability)>.
+    if ability_id == data::ability_id::SUPERSWEETSYRUP {
+        let already = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| m.syrup_triggered);
+        if !already {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.syrup_triggered = true;
+            }
+            let opp = side.opposing();
+            let n = battle.format().active_count() as u8;
+            for s in 0..n {
+                let drop = battle.side(opp).active_mon(s as usize).is_some_and(|t| {
+                    t.is_alive() && t.substitute_hp() == 0
+                });
+                if drop {
+                    battle.apply_boosts(opp, s, &[(6, -1)], side, slot);
+                }
+            }
+        }
+    }
+
     if ability_id == data::ability_id::INTIMIDATE {
         // Lower atk of every alive adjacent opposing active by 1 stage,
         // unless their ability blocks the drop. After each successful

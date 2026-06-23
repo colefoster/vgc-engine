@@ -3148,8 +3148,33 @@ impl Battle {
         // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
         // a powder/follow-me redirect wins, and the ability pass below is
         // skipped when `redirected` is already set.
+        //
+        // Stalwart / Propeller Tail / Snipe Shot — PS `sim/battle.ts:2450`
+        // `getTarget` resolves `tracksTarget` BEFORE the RedirectTarget
+        // event ever runs:
+        //   let tracksTarget = move.tracksTarget;
+        //   if (pokemon.hasAbility(['stalwart','propellertail'])) tracksTarget = true;
+        //   if (tracksTarget && originalTarget?.isActive) return originalTarget;
+        // (PS hardcodes the ability check here because Stalwart/Propeller
+        // Tail set `move.tracksTarget` in `onModifyMove`, which fires AFTER
+        // getTarget.) A "tracking" move ignores ALL redirection — Follow Me,
+        // Rage Powder, Lightning Rod, and Storm Drain — and strikes its
+        // originally chosen target. Snipe Shot carries the move-level
+        // `tracksTarget: true` flag (PS `data/moves.ts:17143`). We compute it
+        // once and skip BOTH redirect passes when set. Uses the attacker's
+        // EFFECTIVE ability so Gastro Acid / Neutralizing Gas suppression
+        // also disables the bypass. Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Stalwart_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Propeller_Tail_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Snipe_Shot_(move)>
+        let tracks_target = matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
+        ) || move_id == data::move_id::SNIPESHOT;
+
         let mut redirected = false;
-        if self.format().active_count() >= 2
+        if !tracks_target
+            && self.format().active_count() >= 2
             && matches!(m.target, 0 | 4 | 10)
             && targets.len() == 1
         {
@@ -3235,9 +3260,9 @@ impl Battle {
         //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
         //     the redirect (the move keeps its chosen target).
         //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
-        //     and IGNORE all redirection; those abilities/moves are not
-        //     implemented yet, so no gate is added here (a future PR owns
-        //     them — see PS sim/battle.ts:2456).
+        //     and IGNORE all redirection; this whole pass is skipped via
+        //     the `!tracks_target` guard below (computed above the powder
+        //     pass — see PS sim/battle.ts:2456).
         //   - Speed-tie among multiple holders: PS sorts RedirectTarget
         //     handlers by speed (fastest first), `effectOrder` for true
         //     ties (sim/battle.ts:997). We pick the highest effective
@@ -3246,6 +3271,7 @@ impl Battle {
         //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
         //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
         if !redirected
+            && !tracks_target
             && self.format().active_count() >= 2
             && matches!(m.target, 0 | 4 | 10)
             && targets.len() == 1
@@ -21721,6 +21747,130 @@ mod tests {
             b.p1.team[1].current_hp, garchomp_hp_before,
             "Garchomp should be untouched"
         );
+    }
+
+    #[test]
+    fn stalwart_ignores_follow_me_redirection() {
+        // Doubles: P1 Indeedee-F uses Follow Me (+2) to draw single-target
+        // attacks. The P2 attacker has Stalwart (`tracksTarget`), so its
+        // move ignores the redirect and strikes its CHOSEN target (P1
+        // Garchomp), NOT the Follow Me user. PS sim/battle.ts:2456.
+        let p1_json = r#"[
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"focussash","nature":"calm","moves":["followme","psychic","dazzlinggleam","helpinghand"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","crunch","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hasty","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Stalwart on the attacker (Duraludon/Archaludon's ability).
+        b.p2.team[0].ability_id = data::ability_id::STALWART;
+        let indeedee_hp_before = b.p1.team[0].current_hp;
+        let garchomp_hp_before = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert_eq!(
+            b.p1.team[0].current_hp, indeedee_hp_before,
+            "Indeedee untouched — Stalwart ignores Follow Me redirection"
+        );
+        assert!(
+            b.p1.team[1].current_hp < garchomp_hp_before,
+            "Garchomp (the chosen target) takes the Stalwart attacker's hit"
+        );
+    }
+
+    #[test]
+    fn propeller_tail_ignores_lightning_rod_redirection() {
+        // Doubles: P1 Raichu (Propeller Tail) aims Thunderbolt at P2 Snorlax;
+        // P2's partner Pikachu has Lightning Rod. Normally the Electric move
+        // is pulled to the Rod holder, but Propeller Tail's `tracksTarget`
+        // ignores ability redirection too — the move strikes Snorlax and the
+        // Rod holder neither absorbs it nor gains SpA. PS sim/battle.ts:2456.
+        let p1_json = r#"[
+            {"species":"raichu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","grassknot"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","crunch","rest","earthquake"]},
+            {"species":"pikachu","level":50,"ability":"lightningrod","item":"","nature":"timid","moves":["thunderbolt","quickattack","irontail","substitute"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Propeller Tail on the attacker (Inteleon's HA).
+        b.p1.team[0].ability_id = data::ability_id::PROPELLERTAIL;
+        let snorlax_hp_before = b.p2.team[0].current_hp;
+        let rod_hp_before = b.p2.team[1].current_hp;
+        let rod_spa_before = b.p2.team[1].boosts[2];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(
+            b.p2.team[0].current_hp < snorlax_hp_before,
+            "Snorlax (chosen target) takes the hit — Propeller Tail ignores Lightning Rod"
+        );
+        assert_eq!(
+            b.p2.team[1].current_hp, rod_hp_before,
+            "Lightning Rod holder untouched (move not redirected)"
+        );
+        assert_eq!(
+            b.p2.team[1].boosts[2], rod_spa_before,
+            "Lightning Rod holder gains no SpA (move not absorbed)"
+        );
+    }
+
+    #[test]
+    fn supersweet_syrup_drops_foe_evasion_once_per_battle() {
+        // Hydrapple's first send-out lowers EVERY adjacent foe's evasion by
+        // 1 (boost index 6), once per battle. Switching it out and back in
+        // does NOT re-trigger (persistent `syrup_triggered` latch). PS
+        // data/abilities.ts:4704.
+        let p1_json = r#"[
+            {"species":"hydrapple","level":50,"ability":"supersweetsyrup","item":"","nature":"modest","moves":["dragonpulse","gigadrain","recover","protect"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"focussash","nature":"modest","moves":["hurricane","weatherball","tailwind","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"choicespecs","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Both foes dropped -1 evasion on the syrup user's initial send-out.
+        assert_eq!(b.p2.team[0].boosts[6], -1, "foe 0 evasion -1 on syrup switch-in");
+        assert_eq!(b.p2.team[1].boosts[6], -1, "foe 1 evasion -1 on syrup switch-in");
+        assert!(b.p1.team[0].syrup_triggered, "latch set after first trigger");
+        // Switch Hydrapple out (slot 0 -> Pelipper) then back in.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        // No second drop — still -1, not -2.
+        assert_eq!(b.p2.team[0].boosts[6], -1, "foe 0 evasion unchanged on re-entry");
+        assert_eq!(b.p2.team[1].boosts[6], -1, "foe 1 evasion unchanged on re-entry");
     }
 
     #[test]
