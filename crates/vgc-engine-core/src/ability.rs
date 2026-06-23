@@ -1457,7 +1457,15 @@ pub fn on_damaging_hit(
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
             if attacker_alive && rng.percent_1_100() <= 30 {
-                battle.try_set_status(attacker_side, attacker_slot, status);
+                // Contact-ability status (Static/Flame Body/Poison Point):
+                // the ABILITY HOLDER (the defender) is the source, so
+                // Safeguard on the attacker's side vetoes it.
+                battle.try_set_status_from(
+                    attacker_side,
+                    attacker_slot,
+                    status,
+                    attacker_side.opposing(),
+                );
             }
         }
     }
@@ -1616,7 +1624,14 @@ pub fn on_damaging_hit(
                     None
                 };
                 if let Some(s) = to_apply {
-                    battle.try_set_status(attacker_side, attacker_slot, s);
+                    // Effect Spore: the holder (defender) is the source, so
+                    // Safeguard on the attacker's side vetoes it.
+                    battle.try_set_status_from(
+                        attacker_side,
+                        attacker_slot,
+                        s,
+                        attacker_side.opposing(),
+                    );
                 }
             }
         }
@@ -1691,7 +1706,14 @@ pub fn on_damaging_hit(
         && target_alive
         && rng.percent_1_100() <= 30
     {
-        battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Poison);
+        // Poison Touch: the ATTACKER holds it and is the source, so
+        // Safeguard on the target's side vetoes it.
+        battle.try_set_status_from(
+            target_side,
+            target_slot,
+            crate::pokemon::Status::Poison,
+            target_side.opposing(),
+        );
     }
 
     // Toxic Chain — PS `data/abilities.ts:5082`:
