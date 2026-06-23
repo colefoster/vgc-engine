@@ -1,0 +1,537 @@
+{
+  "format": "gen9customgame",
+  "seed": [
+    7,
+    7,
+    7,
+    7
+  ],
+  "p1team": "Pelipper\nAbility: Drizzle\nLevel: 100\nModest Nature\n- Swords Dance\n- Reflect\n- Tackle\n- Light Screen",
+  "p2team": "Snorlax\nAbility: Thick Fat\nLevel: 100\nCareful Nature\nEVs: 252 HP / 252 SpD\n- Splash",
+  "turns": [
+    {
+      "turn": 1,
+      "choices": {
+        "p1": [
+          "move 4"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 524,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": "rain",
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": true,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 2,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 524,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": "rain",
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": true,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "choices": {
+        "p1": [
+          "move 3"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "tackle",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "tackle",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "tackle",
+          "decision": "damage",
+          "value": 10
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 2,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": "rain",
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": true,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 4,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 4,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": "rain",
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": true,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 5,
+      "choices": {
+        "p1": [
+          "move 4"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 4,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    },
+    {
+      "turn": 6,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [],
+      "state": {
+        "p1a": {
+          "hp": 261,
+          "maxhp": 261,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 6,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "drizzle"
+        },
+        "p2a": {
+          "hp": 479,
+          "maxhp": 524,
+          "fainted": false,
+          "status": null,
+          "boosts": {
+            "atk": 0,
+            "def": 0,
+            "spa": 0,
+            "spd": 0,
+            "spe": 0,
+            "accuracy": 0,
+            "evasion": 0
+          },
+          "item": null,
+          "ability": "thickfat"
+        }
+      },
+      "field": {
+        "weather": null,
+        "terrain": null,
+        "trickRoom": false,
+        "gravity": false,
+        "magicRoom": false,
+        "wonderRoom": false
+      },
+      "sides": {
+        "p1": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        },
+        "p2": {
+          "reflect": false,
+          "lightScreen": false,
+          "auroraVeil": false,
+          "tailwind": false,
+          "safeguard": false,
+          "mist": false,
+          "stealthRock": false,
+          "spikes": 0,
+          "toxicSpikes": 0,
+          "stickyWeb": false
+        }
+      }
+    }
+  ],
+  "_meta": {
+    "ok": true,
+    "lastTurn": 7,
+    "totalDraws": 3,
+    "errors": []
+  }
+}
