@@ -1130,6 +1130,9 @@ impl Battle {
             // turn's spread / priority moves go through normally.
             side.conditions.wide_guard_this_turn = false;
             side.conditions.quick_guard_this_turn = false;
+            // Mat Block / Crafty Shield — same 1-turn side guards.
+            side.conditions.mat_block_this_turn = false;
+            side.conditions.crafty_shield_this_turn = false;
             // Round chain marker — also 1-turn. PS clears at end of
             // turn so the next turn's first Round is back to 60 BP.
             side.conditions.round_used_this_turn = false;
@@ -2945,6 +2948,57 @@ impl Battle {
                     }
                 }
             }
+            // Crafty Shield — PS data/moves.ts:craftyshield
+            // `condition.onTryHit` (onTryHitPriority 3, so it runs before
+            // Magic Bounce): a STATUS move aimed at a mon on the shielded
+            // side is blocked unless `move.target` is `self` (1) or `all`
+            // (12). We resolve the move's single target the same way the
+            // Good as Gold gate above does (explicit target, or the lone
+            // living foe in singles); allAdjacentFoes (6) spread status is
+            // covered separately against the opposing side. Side-guard
+            // family — no stall counter, no Prankster interaction.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Crafty_Shield_(move)>.
+            if !matches!(m.target, 1 | 12) {
+                let cs_blocked = if matches!(m.target, 6) {
+                    // allAdjacentFoes status spread (e.g. Growl) — blocked
+                    // if the foe side is shielded.
+                    self.side(actor_side.opposing())
+                        .conditions
+                        .crafty_shield_this_turn
+                } else {
+                    let resolved: Option<(SideRef, u8)> = match target {
+                        Some(t) => Some((t.side, t.slot)),
+                        None => {
+                            let opp = actor_side.opposing();
+                            let n = self.format().active_count() as u8;
+                            let mut count = 0u8;
+                            let mut only = 0u8;
+                            for slot in 0..n {
+                                if self
+                                    .side(opp)
+                                    .active_mon(slot as usize)
+                                    .is_some_and(|t| t.is_alive())
+                                {
+                                    count += 1;
+                                    only = slot;
+                                }
+                            }
+                            if count == 1 { Some((opp, only)) } else { None }
+                        }
+                    };
+                    match resolved {
+                        Some((tside, tslot)) => {
+                            let is_self = tside == actor_side && tslot == actor_slot;
+                            !is_self
+                                && self.side(tside).conditions.crafty_shield_this_turn
+                        }
+                        None => false,
+                    }
+                };
+                if cs_blocked {
+                    return;
+                }
+            }
             // Magic Bounce — PS `data/abilities.ts:2392` magicbounce.
             //   onTryHit(target, source, move) {
             //     if (target === source || move.hasBounced ||
@@ -3922,6 +3976,22 @@ impl Battle {
             // blocked.
             if self.side(tside).conditions.quick_guard_this_turn
                 && m.priority > 0
+            {
+                continue;
+            }
+            // Mat Block — whole-side Protect against DAMAGING moves.
+            // PS data/moves.ts:matblock `condition.onTryHit` lets
+            // self-targeted moves and Protect-bypassing moves through
+            // (`checkMoveBypassesProtect(move, source, target, false)`
+            // returns true for status moves and protect-ignoring moves),
+            // so only damaging moves that respect Protect are blocked.
+            // We mirror the Protect interception below (`is_targeting_move`
+            // = the Protect-blockable target codes) but apply it side-wide
+            // and gated to damaging hits. `damaging` is already computed
+            // for this resolution.
+            if self.side(tside).conditions.mat_block_this_turn
+                && damaging
+                && is_targeting_move(m.target)
             {
                 continue;
             }
@@ -7203,6 +7273,34 @@ impl Battle {
                     let c = a.stall_counter().saturating_add(1).min(6);
                     a.set_stall(c, true);
                 }
+            }
+            data::move_id::MATBLOCK => {
+                // PS data/moves.ts:matblock. `onTry` fails when
+                // `source.activeMoveActions > 1` ("Mat Block only works on
+                // your first turn out") — equivalent to Fake Out's
+                // `turns_active == 0` gate (turns_active is 0 on the mon's
+                // first action after switch-in, incremented end of turn).
+                // Unlike Wide / Quick Guard, Mat Block has NO `onHitSide`
+                // and does NOT call StallMove, so it neither rolls nor bumps
+                // the Protect stall counter — it just sets the side flag.
+                // PP was already deducted upstream, so a failed cast still
+                // costs PP (matches PS, which deducts before `onTry`).
+                let first_turn_out = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .map(|a| a.turns_active == 0)
+                    .unwrap_or(false);
+                if !first_turn_out {
+                    return;
+                }
+                self.side_mut(actor_side).conditions.mat_block_this_turn = true;
+            }
+            data::move_id::CRAFTYSHIELD => {
+                // PS data/moves.ts:craftyshield. `onTry` is just
+                // `!!this.queue.willAct()` — no first-turn restriction and
+                // no stall counter (no `onHitSide`). We always set the flag;
+                // the block fires at incoming-status-move dispatch.
+                self.side_mut(actor_side).conditions.crafty_shield_this_turn = true;
             }
             data::move_id::HELPINGHAND => {
                 // PS data/moves.ts:helpinghand — priority +5,
@@ -21003,6 +21101,125 @@ mod tests {
                    "Quick Guard should block Fake Out damage");
         assert!(!b.p1.team[1].flinched_this_turn(),
                 "Fake Out flinch must not stick when Quick Guard blocks the hit");
+    }
+
+    #[test]
+    fn mat_block_blocks_single_target_damage_side_wide_first_turn() {
+        // Doubles: P1 slot 0 (fast Flutter Mane) uses Mat Block on the
+        // first turn out (turns_active == 0). P2 Garchomp uses Dragon
+        // Claw (single-target) into P1 slot 1 (Snorlax). Mat Block
+        // protects the WHOLE side from damaging hits — including a
+        // single-target move aimed at the partner (this is what sets it
+        // apart from Wide Guard, which only stops spread).
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["matblock","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let lax_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Mat Block
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Dragon Claw into Snorlax
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert_eq!(b.p1.team[1].current_hp, lax_hp,
+                   "Mat Block must protect the partner from a single-target damaging move");
+        // Flag cleared at end of turn.
+        assert!(!b.p1.conditions.mat_block_this_turn);
+    }
+
+    #[test]
+    fn mat_block_fails_when_not_first_turn_out() {
+        // Mat Block only works on the user's first turn out
+        // (PS onTry: activeMoveActions > 1 fails). Advance one turn so
+        // turns_active becomes 1, then Mat Block fails and the incoming
+        // damaging move lands.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["matblock","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Turn 1: harmless moves to advance turns_active.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }, // Moonblast
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Pass { actor_slot: 0 },
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert_eq!(b.p1.team[0].turns_active, 1, "Flutter Mane out 1 turn");
+        let lax_hp = b.p1.team[1].current_hp;
+        // Turn 2: Mat Block should FAIL (not first turn) → Dragon Claw lands.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Mat Block (fails)
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Dragon Claw into Snorlax
+                Choice::Pass { actor_slot: 1 },
+            ],
+        );
+        assert!(!b.p1.conditions.mat_block_this_turn,
+                "Mat Block must not set its side flag on a non-first turn");
+        assert!(b.p1.team[1].current_hp < lax_hp,
+                "Dragon Claw should land once Mat Block fails on turn 2");
+    }
+
+    #[test]
+    fn crafty_shield_blocks_status_but_not_damage() {
+        // Doubles: P1 slot 0 (Flutter Mane) uses Crafty Shield
+        // (priority +3, resolves first). P2 slot 0 Thunder Wave into
+        // P1 slot 1 (Snorlax) — STATUS, blocked. P2 slot 1 Garchomp
+        // Dragon Claw into P1 slot 1 — DAMAGING, still lands.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["craftyshield","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pelipper","level":50,"ability":"drizzle","item":"","nature":"modest","moves":["thunderwave","hurricane","weatherball","tailwind"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let lax_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Crafty Shield
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Thunder Wave (blocked)
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Dragon Claw (lands)
+            ],
+        );
+        assert_eq!(b.p1.team[1].status, Status::None,
+                   "Crafty Shield must block Thunder Wave (status move)");
+        assert!(b.p1.team[1].current_hp < lax_hp,
+                "Crafty Shield must NOT block a damaging move (Dragon Claw)");
+        assert!(!b.p1.conditions.crafty_shield_this_turn,
+                "Crafty Shield flag cleared at end of turn");
     }
 
     #[test]

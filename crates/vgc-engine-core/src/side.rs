@@ -70,6 +70,22 @@ pub struct SideConditions {
     /// Sucker Punch on its own user — gated check happens at
     /// per-target resolution.
     pub quick_guard_this_turn: bool,
+    /// Mat Block: 1-turn side condition that blocks incoming DAMAGING
+    /// moves aimed at this side. PS data/moves.ts:matblock
+    /// `condition.onTryHit` lets self-targeted moves and Protect-
+    /// bypassing moves through (it calls `checkMoveBypassesProtect`
+    /// with `blockStatus = false`, so status moves pass), i.e. it is a
+    /// whole-side Protect for damaging hits. Unlike Protect it does NOT
+    /// roll or bump the stall counter; the move's own `onTry` restricts
+    /// it to the user's first turn out (`activeMoveActions > 1` fails).
+    pub mat_block_this_turn: bool,
+    /// Crafty Shield: 1-turn side condition that blocks incoming STATUS
+    /// moves aimed at this side. PS data/moves.ts:craftyshield
+    /// `condition.onTryHit` returns (does not block) when the move is
+    /// `target: 'self'` / `'all'` or `category !== 'Status'`. No
+    /// first-turn restriction and no stall counter — `onTry` is just
+    /// `!!this.queue.willAct()`.
+    pub crafty_shield_this_turn: bool,
     /// Round chain marker — set when any mon on this side resolves a
     /// Round move this turn. PS data/moves.ts:round `onBasePower` reads
     /// `this.queue.willMove(ally) && ally.willMove === round` to detect
