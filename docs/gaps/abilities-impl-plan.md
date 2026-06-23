@@ -1,5 +1,17 @@
 # Abilities — citation catalog
 
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> Count implemented abilities: `grep -rhoE 'ability_id::[A-Z_0-9]+' crates/vgc-engine-core/src/ | sort -u | wc -l`
+> Check one ability: `grep -rn 'ability_id::SLUG' crates/vgc-engine-core/src/`
+> Last reconciled: 2026-06-23.
+>
+> **HISTORICAL / near-complete work-order.** As of the 2026-06-23 reconciliation
+> almost every entry below has shipped (verified against real `ability_id::X`
+> arms in `crates/vgc-engine-core/src/`). The only genuine open work is **Keen
+> Eye's Eva-ignore branch** and **Pickpocket** (no arm — appears only in test
+> fixtures). Frisk is a deliberate no-op. The PS `file:line` refs and hook
+> pointers remain useful; treat the shipping order as done.
+
 > **This is a citation catalog, not a progress tracker.** The per-entry PS
 > `file:line` refs, hook pointers, complexity, and deps below are stable and
 > trustworthy. Any "shipped / missing" *counts* go stale the moment a PR lands —
@@ -8,9 +20,10 @@
 > Last audit: 2026-06-19. PS line numbers are from
 > `/tmp/pokemon-showdown-research/data/abilities.ts` (gen-9 head).
 
-## Status snapshot (2026-06-19 audit — verified source-grep)
+## Status snapshot (reconciled 2026-06-23 — verified source-grep)
 
-Round 10 shipped almost everything. The short tail below is what is left.
+Round 10 shipped almost everything. The only genuine gaps left are **Pickpocket**
+(no arm) and **Keen Eye's Eva-ignore branch**; everything else below shipped.
 
 **SHIPPED this round (PRs 318–335):** Own Tempo, Inner Focus, Damp, Pastel
 Veil, Sweet Veil, Moody, Color Change, Protean, Libero, Toxic Debris, Wind
@@ -23,8 +36,16 @@ prior-round shipped set (bigpecks, keeneye-acc, vitalspirit, insomnia, limber,
 magmaarmor, immunity, waterveil, cloudnine, airlock, healer, cottondown,
 poisontouch, slowstart, truant, shadowshield, rattled, + ~28 earlier).
 
-**REMAINING — the short tail:**
-- **Wonder Guard** — SHIPPED (PR-336). Only-SE damage gate in the
+**REMAINING — genuine open gaps (verified 2026-06-23):**
+- **Pickpocket** — **NOT IMPLEMENTED.** `grep -rn ability_id::PICKPOCKET
+  crates/vgc-engine-core/src/` returns no behavioral arm (slug appears only in
+  test-team JSON in `battle.rs`). Needs item-transfer plumbing. **Symbiosis,
+  its batch-mate, IS shipped** (`ability.rs:1962`).
+- **Keen Eye Eva-ignore** — Acc-drop block shipped (`ability.rs:108`); the
+  accuracy-calc Eva-ignore branch is still absent.
+
+**REMAINING — the short tail (all now SHIPPED, kept for citation):**
+- **Wonder Guard** — SHIPPED (PR-336, `battle.rs:4484`). Only-SE damage gate in the
   move-immunity block; Mold-Breaker-breakable; status / Struggle / indirect
   damage unaffected.
 - **Aroma Veil** — SHIPPED for every reachable volatile (PR-337): immunity
@@ -79,7 +100,8 @@ labelled "batch".
 11. **Cotton Down** — `on_damaging_hit` arm with -1 Spe to all foes.
 12. **Wind Rider + Wind Power** — needs wind-move tag table; ship together.
 13. **Toxic Debris** — depends on Toxic Spikes (systems.md); blocked until hazard wired.
-14. **Pickpocket / Symbiosis** — item-transfer plumbing; medium.
+14. **Symbiosis** — SHIPPED (`ability.rs:1962`). **Pickpocket** — still NOT
+    IMPLEMENTED (no arm; item-transfer plumbing still needed).
 15. **Healer** — residual partner-cure; small.
 16. **Color Change / Protean / Libero** — runtime type mutation; medium-hard.
 17. **Cursed Body** — needs Disable volatile; blocked.

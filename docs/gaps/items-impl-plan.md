@@ -1,12 +1,26 @@
 # Items — citation catalog
 
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> Count implemented items: `grep -rhoE 'item_id::[A-Z_0-9]+' crates/vgc-engine-core/src/ | sort -u | wc -l`
+> Check one item: `grep -rn 'item_id::SLUG' crates/vgc-engine-core/src/`
+> A few items use **string-literal** arms (King's Rock, Razor Fang, Scope Lens,
+> Razor Claw) — grep the lowercase slug for those.
+> Last reconciled: 2026-06-23.
+
+> **🗂 HISTORICAL / SUPERSEDED (2026-06-23).** This work-order is essentially
+> **complete** — its entire "remaining work" tail has shipped. Grep-verified,
+> only **4 items remain unimplemented**:
+> **Normal Gem** (`normalgem`), **Binding Band** (`bindingband`), **Grip Claw**
+> (`gripclaw`), and the **Metronome *item*** (`metronome`; the move exists, the
+> item does not). Binding Band + Grip Claw are blocked on the partial-trap
+> system. Everything else below labeled "missing"/"trivial"/"small"/"hard" is
+> **SHIPPED** — see `items-missing-audit.md` for the grep-cited status table.
+> The per-entry PS `file:line` refs below are retained as citations only.
+
 > **This is a citation catalog, not a progress tracker.** The per-entry PS
 > `file:line` refs, hook pointers, complexity, and deps are stable. Any
-> "shipped / missing" *counts* go stale the moment a PR lands — **do not trust
-> the summary table; regenerate status with an audit pass** (grep `item.rs`
-> against the slug list) before relying on it. PS line numbers are from
-> `/tmp/pokemon-showdown-research/data/items.ts` (gen-9 head). No status
-> snapshot here yet — run an items audit when you need current counts.
+> "shipped / missing" *counts* go stale the moment a PR lands. PS line numbers
+> are from `/tmp/pokemon-showdown-research/data/items.ts` (gen-9 head).
 
 ## Summary table
 
@@ -58,10 +72,13 @@ Griseous trio each split into separate entries.)
 9. **Adrenaline Orb** — **DONE (PR-307).** needs Intimidate-trigger hook; high VGC leverage.
 10. **Mirror Herb** — **DONE (PR-308).** opposing-boost-copy consumable. Medium but signature.
 
-After those, mop up the speed/priority/accuracy/utility singles (Quick Claw,
+After those, the speed/priority/accuracy/utility singles (Quick Claw,
 Lagging Tail, King's Rock, Razor Fang, Zoom Lens, Focus Band, Shed Shell,
-Float Stone, Ring Target, etc.) — **this tail (~20 items) is the actual
-remaining work**; citation entries for each are below.
+Float Stone, Ring Target, etc.) were the "mop up" tail — **all SHIPPED as of
+2026-06-23** (grep-verified; see banner at top and `items-missing-audit.md`).
+The only items the tail did *not* deliver are **Normal Gem**, **Binding Band**,
+**Grip Claw** (Binding Band + Grip Claw blocked on partial-trap), and the
+**Metronome item**. The citation entries below are retained as PS references.
 
 ---
 

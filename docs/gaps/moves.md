@@ -1,15 +1,29 @@
 # Missing / partial move slugs
 
+> ⚠️ **Source is authoritative — this doc rots. Verify before trusting any status below.**
+> List move dispatch arms: `grep -roE 'move_id::[A-Z_0-9]+\s*=>' crates/vgc-engine-core/src/battle.rs | sort -u`
+> Check one move: `grep -rn 'move_id::SLUG' crates/vgc-engine-core/src/`
+> Last reconciled: 2026-06-23.
+
 Per-slug mechanics where the engine's structural support exists but the slug-specific arm is missing or partial. Moves that depend on whole missing systems (charge, hazards, Tera, confusion, force-switch, self-boost, healing, etc.) are listed in `systems.md`.
 
-## Headline counts (post PR-276)
+## Headline counts
 
-| Status | Count |
-| --- | --- |
-| shipped | 34 |
-| partial | 5 |
-| not implemented | 0 |
-| deferred / no-effect | 0 |
+Reconciled 2026-06-23 against source. The old "34 shipped / 5 partial" table was
+stale and is removed — counting prose entries here is not a reliable signal.
+
+Hard source facts:
+- **237** move symbols referenced in core source (`/tmp/gt/moves.txt`).
+- **82** *dedicated* `move_id::X => {...}` dispatch arms in `battle.rs`
+  (`grep -roE 'move_id::[A-Z_0-9]+\s*=>' crates/vgc-engine-core/src/battle.rs | sort -u | wc -l`).
+- Many more moves run via shared logic (flag tables, the generic secondary
+  table, `matches!(move_id, …)` group branches in damage/charge/recharge/
+  lock-in paths) rather than a dedicated arm — presence in the 237-symbol
+  list is strong evidence of implementation but a dedicated arm is not required.
+
+All per-slug entries below were verified shipped during the 2026-06-23 reconcile
+unless explicitly marked **partial** (known divergence) — there are no remaining
+"not implemented" entries in this file (whole-system gaps live in `systems.md`).
 
 ## Conditional BP
 

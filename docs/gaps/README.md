@@ -1,5 +1,23 @@
 # Engine missing-mechanic catalog
 
+> ⚠️ **Source is authoritative — these status docs rot. Verify before trusting any status below.**
+> Counts: abilities `grep -rhoE 'ability_id::[A-Z_0-9]+' crates/vgc-engine-core/src/|sort -u|wc -l`; items `item_id`; moves `move_id` (same pattern).
+> Last reconciled: 2026-06-23. Live counts then: **220 abilities / 163 items / 237 moves**.
+
+> **Status reconciliation 2026-06-23 (grep-verified):**
+> - `champions-impl-plan.md` — **largely SHIPPED / superseded.** The Champions
+>   format/regulation system, the Mega Evolution mechanic, and **all 6 new
+>   Champions abilities** (Fire Mane, Eelevate, Dragonize, Mega Sol, Spicy Spray,
+>   Piercing Drill) are implemented in source. Remaining open: paralysis-12.5%
+>   override, global PP-cap-20, Healer-50% Champions variant, and per-slug move
+>   overrides. See that file's "Reconciliation 2026-06-23" block.
+> - `architecture.md` — **all structural entries shipped**; only incremental
+>   consumer-migration sub-bullets remain. Header carries the verification note.
+> - `systems.md` / `moves.md` / `abilities.md` / `items.md` — **not individually
+>   re-verified in this pass**; many entries marked "not implemented" here are
+>   likely stale (grep the relevant `*_id::SLUG` arm before trusting). Reconcile
+>   on next sweep.
+
 Source of truth for what the engine doesn't yet do. Each file lists per-mechanic descriptions and current status (`not implemented` / `partial — note` / `shipped — PR-N`). Updated as PRs land.
 
 Cross-reference: `docs/PLAN.md` for the phase roadmap, `docs/interactions.md` for gen-9 mechanic edge cases that need research *before* implementation, `data/smogon-stats/2026-05/gen9championsvgc2026regma-1760.txt` for usage figures that justify priority.
