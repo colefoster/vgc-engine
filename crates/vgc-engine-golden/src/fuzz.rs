@@ -394,9 +394,9 @@ pub struct FuzzReport {
     pub capped: u32,
     pub total_steps: u64,
     /// Of the `capped` battles, how many ended in a PP-exhaustion stall (every
-    /// alive active mon out of usable moves — the engine doesn't enumerate
-    /// Struggle, so they Pass forever). These are an *expected*, flagged
-    /// outcome of random play, not an invariant breach.
+    /// alive active mon out of usable moves with only `Pass` available). Since
+    /// `legal_choices` enumerates Struggle in that situation (matching PS), this
+    /// should be ~0; a non-zero count flags a regression in that path.
     pub pp_exhaustion_stalls: u32,
     /// Distinct invariant violations (seed-tagged). Capped to keep memory
     /// bounded; `violations_total` is the true count.
@@ -420,9 +420,9 @@ struct Outcome {
 
 /// True iff no alive active mon on either side has any `Move`/`Terastallize`/
 /// `MegaEvolve` choice left — i.e. progress is impossible because every
-/// fighter is out of usable moves (PP-exhaustion; the engine doesn't offer
-/// Struggle). This classifies the dominant turn-cap cause so a genuine
-/// livelock would still stand out.
+/// fighter is reduced to `Pass`. With Struggle enumeration this should never
+/// happen (Struggle is a `Choice::Move`); the classifier remains so a genuine
+/// livelock or any regression in the Struggle path would still stand out.
 fn is_pp_exhaustion_stall(battle: &Battle, active: usize) -> bool {
     for side in [SideRef::P1, SideRef::P2] {
         let s = match side {

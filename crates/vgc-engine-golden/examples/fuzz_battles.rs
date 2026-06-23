@@ -174,7 +174,8 @@ fn main() {
     if report.capped > 0 {
         eprintln!(
             "flagged (non-fatal): {} battle(s) hit the {}-turn cap, {} of them PP-exhaustion \
-             stalls (engine doesn't enumerate Struggle when all PP run out — see report).",
+             stalls (a mon stuck on Pass with no usable move; should be ~0 now that \
+             legal_choices enumerates Struggle).",
             report.capped, args.max_turns, report.pp_exhaustion_stalls,
         );
     }

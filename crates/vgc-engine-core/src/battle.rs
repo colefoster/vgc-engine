@@ -801,6 +801,12 @@ impl Battle {
             && data::mega_stone_for(active.item_id, active.species_id).is_some();
 
         let mut out = Vec::with_capacity(8);
+        // PS `sim/pokemon.ts` `getMoves` tracks `hasValidMove`; if every
+        // moveslot is unselectable (`disabled`, which includes `pp <= 0`) it
+        // returns `[]`, and `getMoveRequestData` then forces Struggle. We
+        // mirror that: flag whether any move survives the selection filters
+        // below and, if none does, offer Struggle instead (see after loop).
+        let mut has_usable_move = false;
         for (i, &move_id) in active.moves.iter().enumerate() {
             if move_id == u16::MAX || active.pp.get(i).copied().unwrap_or(0) == 0 {
                 continue;
@@ -851,6 +857,11 @@ impl Battle {
             if is_assault_vest && m.category == 2 {
                 continue;
             }
+            // Survived every selection filter — this is a selectable move, so
+            // PS's `hasValidMove` is set and Struggle will NOT be offered. (PS
+            // sets the flag at the "not disabled" point, independent of whether
+            // a legal target currently exists.)
+            has_usable_move = true;
             let needs_pick = matches!(m.target, 0 | 4 | 10);
             if needs_pick {
                 for opp_slot in 0..self.config.format.active_count() as u8 {
@@ -878,6 +889,31 @@ impl Battle {
                 }
                 if can_mega {
                     out.push(Choice::MegaEvolve { actor_slot, move_slot: i as u8, target: None });
+                }
+            }
+        }
+        // Struggle — PS `sim/pokemon.ts:1109` `getMoveRequestData`: when
+        // `getMoves` found no selectable move it forces
+        // `[{ move: 'Struggle', target: 'randomNormal' }]`. We offer Struggle
+        // ONLY as a last resort (no usable move), never alongside real moves.
+        // Struggle is `target: randomNormal` (single foe); we enumerate one
+        // choice per alive, non-commanding opposing slot, exactly like a
+        // single-target move in doubles. No Tera/Mega variants — Struggle is a
+        // forced fallback, not a freely chosen move. Resolution maps the
+        // `STRUGGLE_MOVE_SLOT` sentinel back to `data::move_id::STRUGGLE`.
+        if !has_usable_move {
+            for opp_slot in 0..self.config.format.active_count() as u8 {
+                if self
+                    .side(side.opposing())
+                    .active_mon(opp_slot as usize)
+                    .is_some_and(|m| m.is_alive() && !m.commanding)
+                {
+                    let target = Some(Target { side: side.opposing(), slot: opp_slot });
+                    out.push(Choice::Move {
+                        actor_slot,
+                        move_slot: crate::choice::STRUGGLE_MOVE_SLOT,
+                        target,
+                    });
                 }
             }
         }
@@ -1007,16 +1043,23 @@ impl Battle {
                     | Choice::Terastallize { actor_slot, move_slot, .. }
                     | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
-                        if let Some(a) = self.side(side_ref).active_mon(actor_slot as usize) {
-                            if let Some(mid) = a.moves.get(move_slot as usize).copied() {
-                                if mid != u16::MAX {
-                                    let cat = data::MOVES[mid as usize].category;
-                                    queue.entries[s][slot] = ActionQueueEntry {
-                                        kind: if cat == 2 { ActionKind::StatusMove } else { ActionKind::DamagingMove },
-                                        move_id: mid,
-                                    };
-                                }
-                            }
+                        // Struggle (sentinel slot) is a damaging move; map the
+                        // sentinel to `move_id::STRUGGLE` so opposing Sucker
+                        // Punch / Encore read the correct `pending_kind` byte.
+                        let mid = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                            data::move_id::STRUGGLE
+                        } else {
+                            self.side(side_ref)
+                                .active_mon(actor_slot as usize)
+                                .and_then(|a| a.moves.get(move_slot as usize).copied())
+                                .unwrap_or(u16::MAX)
+                        };
+                        if mid != u16::MAX {
+                            let cat = data::MOVES[mid as usize].category;
+                            queue.entries[s][slot] = ActionQueueEntry {
+                                kind: if cat == 2 { ActionKind::StatusMove } else { ActionKind::DamagingMove },
+                                move_id: mid,
+                            };
                         }
                     }
                     Choice::Switch { actor_slot, .. } => {
@@ -2036,9 +2079,18 @@ impl Battle {
             Some(m) => m,
             None => return,
         };
-        let move_id = match attacker.moves.get(move_slot as usize).copied() {
-            Some(id) if id != u16::MAX => id,
-            _ => return,
+        // Struggle is dispatched via the `STRUGGLE_MOVE_SLOT` sentinel (it is
+        // not a real moveslot). Map it to `move_id::STRUGGLE`; all the
+        // slot-keyed bookkeeping below (`pp.get(slot)`, `locked_move_slot`,
+        // `disabled_move_slot`, …) naturally no-ops for the out-of-range slot,
+        // matching PS: Struggle costs no PP and is exempt from move-locks.
+        let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+            data::move_id::STRUGGLE
+        } else {
+            match attacker.moves.get(move_slot as usize).copied() {
+                Some(id) if id != u16::MAX => id,
+                _ => return,
+            }
         };
         let m = &data::MOVES[move_id as usize];
 
@@ -2518,10 +2570,16 @@ impl Battle {
         if attacker.lockin_turns > 0 && attacker.lockin_move_slot != 255 {
             move_slot = attacker.lockin_move_slot;
         }
-        // Re-resolve move-data if the slot got overridden.
-        let move_id = match attacker.moves.get(move_slot as usize).copied() {
-            Some(id) if id != u16::MAX => id,
-            _ => return,
+        // Re-resolve move-data if the slot got overridden. The Struggle
+        // sentinel slot has no entry in `moves`, so map it back to
+        // `move_id::STRUGGLE` here too (a lock-in never targets the sentinel).
+        let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+            data::move_id::STRUGGLE
+        } else {
+            match attacker.moves.get(move_slot as usize).copied() {
+                Some(id) if id != u16::MAX => id,
+                _ => return,
+            }
         };
         // Local mutable copy so per-slug onModifyMove hooks (Shell Side
         // Arm category swap) can patch fields without back-flowing into
@@ -5722,6 +5780,25 @@ impl Battle {
                     if a.current_hp == 0 {
                         a.fainted = true;
                     }
+                }
+            }
+        }
+
+        // Struggle recoil — PS `sim/battle-actions.ts:992` `struggleRecoil`:
+        //   recoilDamage = clampIntRange(trunc(pokemon.maxhp / 4), 1)
+        //   this.battle.directDamage(recoilDamage, pokemon, pokemon, 'strugglerecoil')
+        // The user loses 1/4 of its MAX HP (not damage-dealt). The @pkmn/dex
+        // dump strips the `struggleRecoil` flag, so Struggle's `recoil_num` is
+        // 0 and the generic recoil block above is a no-op — we apply it here by
+        // move id. `directDamage` bypasses the `onDamage` event, so neither
+        // Magic Guard nor Rock Head reduces it.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
+        if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                let recoil = (a.stats.hp / 4).max(1);
+                a.current_hp = a.current_hp.saturating_sub(recoil);
+                if a.current_hp == 0 {
+                    a.fainted = true;
                 }
             }
         }
@@ -24446,6 +24523,76 @@ mod tests {
         );
         assert!(b.p1.conditions.sticky_web, "sticky web bounced onto caster's side");
         assert!(!b.p2.conditions.sticky_web, "Magic Bounce holder's side stays clear");
+    }
+
+    #[test]
+    fn struggle_offered_only_when_no_usable_move_and_deals_recoil() {
+        // PS `sim/pokemon.ts` getMoves/getMoveRequestData: a Pokémon whose
+        // every move is unselectable (here: all PP exhausted) is forced to
+        // Struggle as its sole move option. Struggle deals typeless physical
+        // damage and costs the user 1/4 of its max HP in recoil.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","nature":"jolly","moves":["earthquake","dragonclaw","ironhead","poisonjab"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"corviknight","level":50,"ability":"sturdy","nature":"impish","moves":["bravebird","roost","uturn","defog"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // With full PP, Struggle must NOT be offered (it is a last resort).
+        let lc_full = b.legal_choices(SideRef::P1, 0);
+        assert!(
+            !lc_full.iter().any(|c| matches!(
+                c,
+                Choice::Move { move_slot: crate::choice::STRUGGLE_MOVE_SLOT, .. }
+            )),
+            "Struggle must not appear while real moves are usable",
+        );
+        assert!(
+            lc_full.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "real moves present at full PP",
+        );
+
+        // Drain every move's PP — now no move is selectable.
+        for pp in b.p1.team[0].pp.iter_mut() {
+            *pp = 0;
+        }
+        let lc = b.legal_choices(SideRef::P1, 0);
+        // Single-mon team => no switches. Exactly one choice: Struggle at the
+        // sentinel slot, targeting the lone opponent.
+        assert_eq!(lc.len(), 1, "only Struggle offered (no switches available)");
+        assert!(
+            matches!(
+                lc[0],
+                Choice::Move {
+                    actor_slot: 0,
+                    move_slot: crate::choice::STRUGGLE_MOVE_SLOT,
+                    target: Some(Target { side: SideRef::P2, slot: 0 }),
+                }
+            ),
+            "Struggle enumerated with a valid foe target, got {:?}",
+            lc[0],
+        );
+
+        // Stepping Struggle: damages the foe and costs the user 1/4 max HP.
+        let user_maxhp = b.p1.team[0].stats.hp;
+        let foe_hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[lc[0]],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(
+            b.p2.team[0].current_hp < foe_hp_before,
+            "Struggle dealt damage to the foe",
+        );
+        let expected_recoil = (user_maxhp / 4).max(1);
+        assert_eq!(
+            b.p1.team[0].current_hp,
+            user_maxhp - expected_recoil,
+            "Struggle recoil is 1/4 of the user's max HP",
+        );
     }
 
     #[test]
