@@ -330,6 +330,13 @@ struct SpeciesJson {
     /// stubs that omit it.
     #[serde(default)]
     abilities: BTreeMap<String, String>,
+    /// PS `tags` (`data/tags.ts`): species classification labels such as
+    /// `"Restricted Legendary"`, `"Mythical"`, `"Paradox"`, `"Sub-Legendary"`,
+    /// `"Ultra Beast"`. Surfaced so the format verifier can enforce per-format
+    /// species bans without a hand-maintained list. Formes carry the tag
+    /// directly (e.g. Calyrex-Ice is tagged `"Restricted Legendary"`).
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -751,6 +758,18 @@ fn main() {
     writeln!(f, "    /// the species has a gender ratio and an individual's gender is").unwrap();
     writeln!(f, "    /// rolled 50/50 at battle construction (PS `sample(['M','F'])`).").unwrap();
     writeln!(f, "    pub gender: Gender,").unwrap();
+    writeln!(f, "    /// Legal abilities as `ability_id` table indices: slot 0, slot 1,").unwrap();
+    writeln!(f, "    /// hidden (`\"0\"`/`\"1\"`/`\"H\"` in the PS dump). `u16::MAX` marks an").unwrap();
+    writeln!(f, "    /// absent slot. The format verifier checks a set's ability against").unwrap();
+    writeln!(f, "    /// this; the battle sim does not consult it.").unwrap();
+    writeln!(f, "    pub legal_abilities: [u16; 3],").unwrap();
+    writeln!(f, "    /// PS `tags` includes \"Restricted Legendary\" — banned in").unwrap();
+    writeln!(f, "    /// restricted-free formats (e.g. VGC Reg M-B).").unwrap();
+    writeln!(f, "    pub restricted: bool,").unwrap();
+    writeln!(f, "    /// PS `tags` includes \"Mythical\".").unwrap();
+    writeln!(f, "    pub mythical: bool,").unwrap();
+    writeln!(f, "    /// PS `tags` includes \"Paradox\".").unwrap();
+    writeln!(f, "    pub paradox: bool,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
     writeln!(f, "pub const SPECIES: &[SpeciesDef] = &[").unwrap();
@@ -791,9 +810,27 @@ fn main() {
             Some("N") => "Gender::Genderless",
             _ => "Gender::Random",
         };
+        // Legal abilities as ability-table indices (slot 0, 1, hidden). An
+        // ability dropped by `keep_gen9`, or an absent slot, becomes u16::MAX.
+        let resolve_ability = |key: &str| -> u16 {
+            s.abilities
+                .get(key)
+                .map(|name| slugify(name))
+                .and_then(|sl| ability_slug_to_idx.get(&sl).copied())
+                .map_or(u16::MAX, |i| i as u16)
+        };
+        let legal_abilities = [
+            resolve_ability("0"),
+            resolve_ability("1"),
+            resolve_ability("H"),
+        ];
+        let has_tag = |t: &str| s.tags.iter().any(|x| x == t);
+        let restricted = has_tag("Restricted Legendary");
+        let mythical = has_tag("Mythical");
+        let paradox = has_tag("Paradox");
         writeln!(
             f,
-            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {}, is_nfe: {}, gender: {} }},",
+            "    SpeciesDef {{ num: {}, name: {}, slug: {}, types: [{}, {}], num_types: {}, base_stats: [{}, {}, {}, {}, {}, {}], weight_dg: {}, is_nfe: {}, gender: {}, legal_abilities: [{}, {}, {}], restricted: {}, mythical: {}, paradox: {} }},",
             s.num.max(0) as u16,
             rust_str_lit(&s.name),
             rust_str_lit(slug),
@@ -802,6 +839,8 @@ fn main() {
             weight_dg,
             is_nfe,
             gender,
+            legal_abilities[0], legal_abilities[1], legal_abilities[2],
+            restricted, mythical, paradox,
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

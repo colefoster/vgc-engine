@@ -308,9 +308,32 @@ impl PyBattle {
     }
 }
 
+/// Parse a Pokémon Showdown / Pokepaste team export and verify it against a
+/// format ruleset.
+///
+/// Returns the list of human-readable violation strings — **empty** iff the
+/// team is fully legal for `format`. Raises `ValueError` on an unknown format
+/// or an unparseable paste.
+///
+///   import vgc_engine
+///   problems = vgc_engine.parse_and_verify(paste_text, format="regmb")
+///   assert problems == []   # legal team
+#[pyfunction]
+#[pyo3(signature = (team_text, format = "regmb"))]
+fn parse_and_verify(team_text: &str, format: &str) -> PyResult<Vec<String>> {
+    let rules = core::rules_for(format)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown format: {format}")))?;
+    let team = core::parse_showdown_export(team_text).map_err(map_team_err)?;
+    Ok(match core::verify_team(&team, rules) {
+        Ok(()) => Vec::new(),
+        Err(violations) => violations.iter().map(|v| v.to_string()).collect(),
+    })
+}
+
 #[pymodule]
 fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBattle>()?;
+    m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

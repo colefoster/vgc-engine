@@ -10,6 +10,7 @@ pub use vgc_engine_data::Gender;
 
 mod choice;
 mod format;
+pub mod format_rules;
 mod pokemon;
 mod side;
 mod team;
@@ -31,6 +32,9 @@ pub use damage::{
     TypeEff,
 };
 pub use format::Format;
+pub use format_rules::{
+    rules_for, verify_showdown_text, verify_team, FormatRules, Rule, Violation, REG_M_B,
+};
 pub use order::{action_order, effective_speed, ScheduledAction};
 pub use pokemon::{
     compute_stats, nature_by_id, nature_by_slug, nature_id, nature_id_by_slug, FinalStats,

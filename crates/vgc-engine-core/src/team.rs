@@ -91,7 +91,7 @@ fn default_level() -> u8 { 50 }
 fn default_nature() -> String { "serious".to_string() }
 fn default_ivs() -> StatSpread { StatSpread::MAX_IV }
 
-fn slugify(s: &str) -> String {
+pub(crate) fn slugify(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
