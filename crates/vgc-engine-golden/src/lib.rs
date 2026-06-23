@@ -41,6 +41,9 @@ pub use explore::{
     run_explore_with_mode, ExploreDivergence, ExploreMode, ExploreReport,
 };
 
+pub mod fuzz;
+pub use fuzz::{run_fuzz, FuzzOptions, FuzzReport, LearnsetCache};
+
 use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
     Target, TeamBuilder,
