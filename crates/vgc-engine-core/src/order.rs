@@ -221,6 +221,22 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     } else {
         after_item
     };
+    // Unburden — PS `data/abilities.ts:unburden` (line 5227). The
+    // `unburden` volatile is latched (`unburden_active`) when the holder's
+    // item is used up or taken; its `onModifySpe` returns chainModify(2)
+    // ONLY while `!pokemon.item`. So we double the holder's Speed when the
+    // latch is set AND it is currently itemless — a regained item silently
+    // suspends the boost (the latch persists until switch-out). Hawlucha /
+    // Sceptile / Hitmonlee signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unburden_(Ability)>.
+    let after_unburden = if mon.ability_id == data::ability_id::UNBURDEN
+        && mon.unburden_active
+        && mon.item_id == u16::MAX
+    {
+        after_paradox * 2
+    } else {
+        after_paradox
+    };
     // Weather speed abilities — PS `data/abilities.ts` `onModifySpe`
     // returns `this.chainModify(2)` for Swift Swim under Rain,
     // Chlorophyll under Sun, Sand Rush under Sand, Slush Rush under Snow.
@@ -233,7 +249,7 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
             | (data::ability_id::SANDRUSH, Weather::Sand)
             | (data::ability_id::SLUSHRUSH, Weather::Snow)
     );
-    let after_weather = if weather_double { after_paradox * 2 } else { after_paradox };
+    let after_weather = if weather_double { after_unburden * 2 } else { after_unburden };
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
     let after_slowstart = if mon.ability_id == data::ability_id::SLOWSTART
