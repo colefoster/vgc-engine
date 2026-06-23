@@ -6663,6 +6663,26 @@ impl Battle {
             }
         }
 
+        // 24. Perish Song. PS `data/moves.ts:perishsong` condition,
+        //     `onResidualOrder: 24` — fires after the status/Salt-Cure
+        //     chip (order 13) but before the late item (28) and ability
+        //     (28) residuals. Each active mon under the `perishsong`
+        //     volatile decrements its counter; when it reaches 0 the mon
+        //     faints (PS `onEnd`: `target.faint()`). The counter is the PS
+        //     `duration` (4 on apply); a mon added this turn ticks 4 → 3
+        //     here, so the player-visible perish count reads 3 → 2 → 1 → 0.
+        //     No RNG, no allocation. Cleared on switch-out via the blanket
+        //     `volatiles.clear()`. Bulbapedia:
+        //     <https://bulbapedia.bulbagarden.net/wiki/Perish_Song_(move)>.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.tick_perish_song();
+                }
+            }
+        }
+
         // 28. Late item residuals (Sticky Barb — order 28, sub-order 3).
         // Fires AFTER status DOT (9-10) so a fatal burn shadows the
         // Sticky Barb tick, matching PS.
@@ -7409,6 +7429,57 @@ impl Battle {
                 swap_cond!(toxic_spikes_layers);
                 swap_cond!(spikes_layers);
                 swap_cond!(sticky_web);
+            }
+            data::move_id::PERISHSONG => {
+                // Perish Song — PS `data/moves.ts:perishsong` `onHitField`.
+                // Status move, `target: "all"` (the whole field), `accuracy:
+                // true` (never misses, no roll). `flags: { sound, distance,
+                // bypasssub, metronome }` — NOT reflectable, and `bypasssub`
+                // means a Substitute does not block it. PS iterates
+                // `this.getAllActive()` and, for each mon that passes the
+                // Invulnerability / TryHit checks and does NOT already have
+                // the volatile, calls `addVolatile('perishsong')` (perish
+                // count 3 shown, internal `duration: 4`). All four active
+                // mons — including the user and its ally — are affected.
+                //
+                // Soundproof — PS `data/abilities.ts:soundproof`
+                // `onTryHit`: `if (target !== source && move.flags['sound'])
+                // return null;` — so a Soundproof mon is immune UNLESS it is
+                // the move's source itself (a Soundproof user still perishes
+                // its own self). `flags: { breakable: 1 }`, so a Mold Breaker
+                // / Teravolt / Turboblaze user bypasses the immunity. We do
+                // not model the semi-invulnerability (Fly/Dig) miss check.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Perish_Song_(move)>.
+                let breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.ability_id,
+                        data::ability_id::MOLDBREAKER
+                            | data::ability_id::TERAVOLT
+                            | data::ability_id::TURBOBLAZE
+                    ));
+                let n = self.format().active_count() as u8;
+                for s in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n {
+                        let immune = match self.side(s).active_mon(slot as usize) {
+                            Some(mon) if mon.is_alive() => {
+                                let is_source = s == actor_side && slot == actor_slot;
+                                !is_source
+                                    && !breaks_mold
+                                    && mon.effective_ability_id()
+                                        == data::ability_id::SOUNDPROOF
+                            }
+                            _ => true, // empty / fainted slot — skip
+                        };
+                        if immune {
+                            continue;
+                        }
+                        if let Some(mon) = self.side_mut(s).active_mon_mut(slot as usize) {
+                            mon.set_perish_song();
+                        }
+                    }
+                }
             }
             data::move_id::ENCORE => {
                 // Locks the first alive opposing target into its last-
@@ -11843,6 +11914,130 @@ mod tests {
         );
         // Volatile persists across turns.
         assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
+    }
+
+    #[test]
+    fn perish_song_applies_three_count_to_all_active_then_faints() {
+        // PS data/moves.ts:perishsong onHitField — hits ALL active mons
+        // (including the user); `duration: 4`; the condition's
+        // onResidualOrder-24 tick decrements each end of turn and faints
+        // the holder at 0. The player-visible perish count reads
+        // 3 → 2 → 1 → 0 over the four residual phases after use (the
+        // use-turn residual ticks 4 → 3).
+        let p1_json = r#"[
+            {"species":"politoed","level":50,"ability":"waterabsorb","item":"","nature":"calm","moves":["perishsong","calmmind","scald","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"lapras","level":50,"ability":"waterabsorb","item":"","nature":"calm","moves":["calmmind","icebeam","protect","perishsong"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+
+        // Turn 1: P1 Perish Song, P2 Calm Mind.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Both active mons (incl. the user) carry the volatile; count 3
+        // after the use-turn tick (4 → 3); both still alive.
+        assert_eq!(b.p1.team[0].perish_turns(), 3, "user perished, count 3");
+        assert_eq!(b.p2.team[0].perish_turns(), 3, "foe perished, count 3");
+        assert!(b.p1.team[0].is_alive() && b.p2.team[0].is_alive());
+
+        // Two more end-of-turns: 3 → 2 → 1, both still alive.
+        for expected in [2u8, 1] {
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p1.team[0].perish_turns(), expected);
+            assert_eq!(b.p2.team[0].perish_turns(), expected);
+            assert!(b.p1.team[0].is_alive() && b.p2.team[0].is_alive());
+        }
+
+        // Third extra end-of-turn (fourth residual after use): 1 → 0,
+        // both faint.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(!b.p1.team[0].is_alive(), "user fainted at perish count 0");
+        assert!(!b.p2.team[0].is_alive(), "foe fainted at perish count 0");
+    }
+
+    #[test]
+    fn perish_song_soundproof_is_immune_but_user_perishes() {
+        // PS abilities.ts:soundproof onTryHit: `if (target !== source &&
+        // move.flags['sound']) return null;` — a non-source Soundproof mon
+        // is immune to Perish Song (sound move), but a Soundproof user
+        // still perishes itself (target === source).
+        let p1_json = r#"[
+            {"species":"politoed","level":50,"ability":"waterabsorb","item":"","nature":"calm","moves":["perishsong","calmmind","scald","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"electrode","level":50,"ability":"soundproof","item":"","nature":"timid","moves":["calmmind","thunderbolt","protect","voltswitch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].perish_turns(), 3, "Perish Song user perishes itself");
+        assert_eq!(b.p2.team[0].perish_turns(), 0, "Soundproof foe is immune");
+        assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PerishSong));
+    }
+
+    #[test]
+    fn perish_song_cleared_on_switch_out() {
+        // Switching a Perish-Songed mon back IN clears its perish counter:
+        // the counter ticks only on ACTIVE mons (a benched mon is never
+        // decremented and never faints), and `do_switch`'s blanket
+        // `incoming.volatiles.clear()` wipes the `perishsong` volatile on
+        // re-entry. So a mon that pivots out before its count hits 0
+        // returns fresh. PS clears the volatile on switch-out (the benched
+        // mon comes back clean either way — observably identical).
+        //
+        // The sequence is kept tight so the lone opposing Snorlax (which
+        // also caught the Perish Song on turn 1) does NOT faint mid-test:
+        // Snorlax ticks 4→3 (turn 1) → 2 (turn 2) → 1 (turn 3), still
+        // alive when Politoed returns. A longer filler loop would faint it,
+        // end the battle, and silently swallow the switch-back step.
+        let p1_json = r#"[
+            {"species":"politoed","level":50,"ability":"waterabsorb","item":"","nature":"calm","moves":["perishsong","calmmind","scald","protect"],"evs":{"hp":252,"spd":252}},
+            {"species":"lapras","level":50,"ability":"waterabsorb","item":"","nature":"calm","moves":["calmmind","icebeam","protect","perishsong"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["calmmind","bodyslam","protect","rest"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        // Turn 1: Politoed Perish Songs; count 3 on Politoed.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].perish_turns(), 3);
+        // Turn 2: Politoed switches out to Lapras. The benched Politoed
+        // KEEPS its volatile (count stays 3 — benched mons are not ticked),
+        // so it neither counts down nor faints while off the field.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].perish_turns(), 3, "benched mon's counter is not ticked");
+        assert!(b.p1.team[0].is_alive(), "benched mon does not perish");
+        // Turn 3: bring Politoed back in — re-entry wipes the volatile.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].perish_turns(), 0, "switch reset cleared the perish counter");
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::PerishSong));
+        assert!(b.p1.team[0].is_alive(), "returning mon is fresh — no longer perishing");
     }
 
     #[test]

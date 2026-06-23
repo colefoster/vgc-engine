@@ -1431,6 +1431,63 @@ impl Pokemon {
         }
     }
 
+    /// Remaining Perish Song count. `0` if not under Perish Song. PS stores
+    /// this as the volatile's `duration` (`data/moves.ts:perishsong`
+    /// condition, `duration: 4`). The value displayed to a player as the
+    /// "perish count" equals this number AFTER each end-of-turn decrement,
+    /// so it reads 3 → 2 → 1 → 0(faint) over the four residual phases that
+    /// follow application (the use-turn residual ticks 4 → 3).
+    #[inline]
+    pub fn perish_turns(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::PerishSong)
+            .map(|v| v.turns_remaining)
+            .unwrap_or(0)
+    }
+
+    /// Apply Perish Song to this mon. PS `data/moves.ts:perishsong`
+    /// `onHitField` only adds the volatile when the mon does not already
+    /// have it (`!pokemon.volatiles['perishsong']` — no reset), so this is
+    /// a no-op if already perished. `duration: 4` (see `perish_turns`).
+    #[inline]
+    pub fn set_perish_song(&mut self) {
+        if self.volatiles.has(VolatileKind::PerishSong) {
+            return;
+        }
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PerishSong,
+            turns_remaining: 4,
+            payload: 0,
+        });
+    }
+
+    /// End-of-turn Perish Song countdown — mirrors `tick_throat_chop` but
+    /// faints the holder when the counter reaches 0. PS
+    /// `data/moves.ts:perishsong` condition `onResidualOrder: 24`,
+    /// `onEnd`: `target.faint()`. Returns `true` if the mon fainted on
+    /// this tick so the caller can run faint bookkeeping.
+    #[inline]
+    pub fn tick_perish_song(&mut self) -> bool {
+        let Some(pos) = self.volatiles.position(VolatileKind::PerishSong) else {
+            return false;
+        };
+        let rem = {
+            let v = &mut self.volatiles.items[pos];
+            if v.turns_remaining == 0 {
+                return false;
+            }
+            v.turns_remaining -= 1;
+            v.turns_remaining
+        };
+        if rem == 0 {
+            self.volatiles.remove(VolatileKind::PerishSong);
+            self.current_hp = 0;
+            self.fainted = true;
+            return true;
+        }
+        false
+    }
+
     /// Failure-roll denominator for the next consecutive Ally Switch use,
     /// or `0` if no `AllySwitch` volatile is active (the next use is the
     /// start of a chain and always succeeds). PS `effectState.counter`.
