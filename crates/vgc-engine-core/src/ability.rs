@@ -277,13 +277,111 @@ fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Abilities PS flags `cantsuppress` — they cannot be turned off by
+/// Neutralizing Gas (or Gastro Acid). These are form-locking / identity
+/// abilities whose loss would corrupt the mon's state. PS list lives as
+/// the `flags: { ..., cantsuppress: 1 }` declarations in
+/// `data/abilities.ts`; `sim/pokemon.ts:Pokemon#ignoringAbility` early-
+/// returns `false` for any of them (line 869). Neutralizing Gas itself is
+/// on the list — a holder never suppresses its own ability, nor a second
+/// NG holder's. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Neutralizing_Gas_(Ability)>.
+fn is_unsuppressable_ability(ability_id: u16) -> bool {
+    matches!(
+        ability_id,
+        data::ability_id::ASONEGLASTRIER
+            | data::ability_id::ASONESPECTRIER
+            | data::ability_id::BATTLEBOND
+            | data::ability_id::COMATOSE
+            | data::ability_id::DISGUISE
+            | data::ability_id::GULPMISSILE
+            | data::ability_id::ICEFACE
+            | data::ability_id::MULTITYPE
+            | data::ability_id::NEUTRALIZINGGAS
+            | data::ability_id::POWERCONSTRUCT
+            | data::ability_id::RKSSYSTEM
+            | data::ability_id::SCHOOLING
+            | data::ability_id::SHIELDSDOWN
+            | data::ability_id::STANCECHANGE
+            | data::ability_id::TERASHIFT
+            | data::ability_id::ZENMODE
+            | data::ability_id::ZEROTOHERO
+    )
+}
+
+/// Re-evaluate Neutralizing Gas suppression across the whole field.
+///
+/// Neutralizing Gas (Galarian Weezing signature, PS `data/abilities.ts:
+/// neutralizinggas`) suppresses EVERY other active Pokémon's ability while
+/// a holder is on the field. PS implements this in
+/// `sim/pokemon.ts:Pokemon#ignoringAbility` (line 864): a mon ignores its
+/// own ability whenever some active mon has `ability === 'neutralizinggas'`
+/// (and isn't itself Gastro-Acid'd / transformed / ending). We model it by
+/// setting each affected mon's `ability_suppressed` flag — the same flag
+/// Gastro Acid uses — so the existing `effective_ability_id()` consumers
+/// (damage calc, switch-in dispatch, redirection, …) transparently see no
+/// ability.
+///
+/// Exemptions, matching PS `ignoringAbility`:
+///   - The NG holder(s) keep their ability (NG is `cantsuppress`).
+///   - `cantsuppress`-flagged abilities are immune (`is_unsuppressable_ability`).
+///   - Ability Shield holders are immune (PS `-block` branch in
+///     `neutralizinggas.onSwitchIn` and `hasItem('Ability Shield')` in
+///     `ignoringAbility`).
+///
+/// Called on every switch-in (after the incoming mon is placed) — the
+/// roster change that brings an NG holder onto, or a fresh mon into, the
+/// field. When the last holder leaves, `ng_active` is false and every flag
+/// clears, restoring abilities. Alloc-free: a fixed 2×N scan.
+///
+/// NOTE: this reuses the single `ability_suppressed` bool, which is
+/// currently written only here (Gastro Acid the move is not yet
+/// implemented). When Gastro Acid lands, the two suppression sources must
+/// be tracked independently so lifting NG doesn't also lift a Gastro Acid.
+pub(crate) fn recompute_neutralizing_gas(battle: &mut Battle) {
+    let n = battle.format().active_count() as u8;
+    // Any active Neutralizing Gas holder? NG is `cantsuppress`, so its own
+    // flag is never set — a raw `ability_id` read is correct here (and
+    // avoids the recursion PS guards against with the `!hasAbility` note).
+    let ng_active = [SideRef::P1, SideRef::P2].into_iter().any(|s| {
+        (0..n).any(|slot| {
+            battle.side(s).active_mon(slot as usize).is_some_and(|m| {
+                m.is_alive() && m.ability_id == data::ability_id::NEUTRALIZINGGAS
+            })
+        })
+    });
+    for s in [SideRef::P1, SideRef::P2] {
+        for slot in 0..n {
+            let suppress = match battle.side(s).active_mon(slot as usize) {
+                Some(m) if m.is_alive() => {
+                    ng_active
+                        && !is_unsuppressable_ability(m.ability_id)
+                        && !has_ability_shield(m)
+                }
+                _ => false,
+            };
+            if let Some(m) = battle.side_mut(s).active_mon_mut(slot as usize) {
+                m.ability_suppressed = suppress;
+            }
+        }
+    }
+}
+
 /// Run all on-switch-in ability hooks for a single newly-active Pokémon.
 ///
 /// Called from Battle::new (for initial sendouts) and from
 /// apply_switches (for mid-battle switches).
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Neutralizing Gas: re-evaluate field-wide ability suppression BEFORE
+    // dispatching this mon's switch-in ability. If an NG holder is already
+    // out, the incoming mon is now suppressed and its on-switch-in effect
+    // (Intimidate, weather, terrain, …) must not fire; if THIS mon is the
+    // NG holder, every other active mon becomes suppressed going forward.
+    // Reading `effective_ability_id()` below makes the dispatch honor the
+    // flag for free.
+    recompute_neutralizing_gas(battle);
     let ability_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) => m.ability_id,
+        Some(m) => m.effective_ability_id(),
         None => return,
     };
     // Weather-setting abilities. Gen 9: 5-turn duration; weather rocks
