@@ -11,8 +11,10 @@
 //! constant plus a `rules_for` arm.
 //!
 //! The flagship ruleset is [`REG_M_B`] (Pokémon Champions, Regulation M / B
-//! doubles): bring-6-pick-4, level 50, Species & Item clause, 510-EV cap,
-//! Terastallization banned, Mega Evolution legal, and species legality gated by
+//! doubles): bring-6-pick-4, level 50, Species & Item clause, the Champions
+//! **Stat Points** budget (66 SP total / 32 SP per stat, IVs standardized at
+//! 31 — see [`ev_to_sp`]), Terastallization banned, Mega Evolution legal, and
+//! species legality gated by
 //! an authoritative 208-entry national-dex **allow-list** (the Champions roster
 //! — see [`REG_M_B_LEGAL_SPECIES`]). The allow-list subsumes the old
 //! tag-derived bans (restricted / mythical / paradox / Treasures of Ruin),
@@ -49,12 +51,25 @@ pub struct FormatRules {
     pub max_team_size: usize,
     /// Exact level every set must be at. `None` = unrestricted.
     pub required_level: Option<u8>,
-    /// Max sum of EVs across the six stats.
+    /// Classic-EV budget: max sum of EVs across the six stats. Only consulted
+    /// when [`FormatRules::sp_budget`] is `None` (i.e. formats that still use
+    /// the EV/IV system). Pokémon Champions uses the SP budget instead.
     pub ev_total_limit: u16,
-    /// Max EVs in any single stat.
+    /// Pokémon Champions **Stat Points** budget: when `Some(n)`, the per-set
+    /// EV total rule is replaced by `sum over stats of ev_to_sp(EV_stat) ≤ n`.
+    /// Reg M-B uses `Some(66)`. `None` = classic EV total ([`ev_total_limit`]).
+    pub sp_budget: Option<u16>,
+    /// Max EVs in any single stat. For Champions this encodes the **32-SP
+    /// per-stat cap**: 32 SP ↔ 252 EV (see [`ev_to_sp`]), so the limit stays
+    /// 252 and is framed as the 32-SP cap.
     pub ev_per_stat_limit: u16,
-    /// Max legal IV in any stat.
+    /// Max legal IV in any stat (classic 0–31 range check). Used when
+    /// [`FormatRules::ivs_fixed_31`] is `false`.
     pub iv_max: u8,
+    /// Pokémon Champions removed IVs and standardizes them at 31 on every
+    /// stat. When `true`, every IV must equal 31 (any other value is illegal);
+    /// the [`iv_max`] range check is then bypassed.
+    pub ivs_fixed_31: bool,
     /// Inclusive move-count bounds per set.
     pub min_moves: usize,
     pub max_moves: usize,
@@ -148,18 +163,30 @@ pub const REG_M_B_LEGAL_SPECIES: &[u16] = &[
 /// **redundant** under the allow-list (none of those Pokémon are on the
 /// roster). (Memory: `project_regmb_format_scope`.)
 ///
-/// EV rules for Champions are **unconfirmed**; we assume standard VGC (EV total
-/// ≤ 510, ≤ 252 / stat, IVs 0–31) and match PS's 510 total cap.
+/// Pokémon Champions replaced EVs/IVs with **Stat Points (SP)**: 66 SP total
+/// per Pokémon, a hard 32-SP cap per stat, and IVs removed/standardized at 31.
+/// Natures are unchanged. Teams are still imported in PS/Pokepaste (EV/IV)
+/// format, so we validate them against the SP system via [`ev_to_sp`]:
+///   * per-stat: `ev_to_sp(EV) ≤ 32` ⇔ EV ≤ 252 ([`ev_per_stat_limit`]);
+///   * total:    `sum ev_to_sp(EV_stat) ≤ 66` ([`sp_budget`]);
+///   * IVs:      every IV must be 31 ([`ivs_fixed_31`]).
+///
+/// Sources: genpkm.com "Pokémon Champions: No IVs, Stat Points Competitive
+/// Guide" (2026); screenrant.com "Pokémon Champions EV/IV Explanation";
+/// gamespot.com Champions stat-change coverage.
 pub const REG_M_B: FormatRules = FormatRules {
     id: "regmb",
     name: "Pokémon Champions Reg M-B (Doubles)",
     min_team_size: 4,
     max_team_size: 6,
     required_level: Some(50),
-    // Champions EV rules unconfirmed — standard VGC assumed (PS uses 510).
+    // Champions uses Stat Points, not classic EVs: 66 SP total, 32 SP/stat
+    // (= 252 EV/stat), IVs fixed at 31. `ev_total_limit` is unused here.
     ev_total_limit: 510,
+    sp_budget: Some(66),
     ev_per_stat_limit: 252,
     iv_max: 31,
+    ivs_fixed_31: true,
     min_moves: 1,
     max_moves: 4,
     species_clause: true,
@@ -191,6 +218,8 @@ pub enum Rule {
     ItemClause,
     Level,
     EvTotal,
+    /// Exceeds the Pokémon Champions Stat-Points budget (sum of per-stat SP).
+    StatPoints,
     EvPerStat,
     Iv,
     MoveCount,
@@ -234,6 +263,26 @@ fn member_label(i: usize, m: &TeamMember) -> String {
         format!("set {}", i + 1)
     } else {
         m.species.clone()
+    }
+}
+
+/// Convert a per-stat **EV** value (as imported from a PS/Pokepaste team) into
+/// Pokémon Champions **Stat Points** at the fixed level 50.
+///
+/// Champions replaced EV training with Stat Points: the **first** point in a
+/// stat costs 4 EVs, each **additional** point costs 8 EVs. So for an EV value
+/// `E`: `SP = 0` if `E < 4`, else `(E + 4) / 8` (integer division). Boundaries:
+/// `0→0`, `4→1`, `12→2`, `252→32` (the 32-SP per-stat cap). At level 50 the
+/// battle stats are unchanged (IV 31 + 8 EV already = +1 point), so this is a
+/// verifier-only conversion.
+///
+/// Source: genpkm.com "Pokémon Champions: No IVs, Stat Points Competitive
+/// Guide" (2026).
+pub fn ev_to_sp(ev: u16) -> u16 {
+    if ev < 4 {
+        0
+    } else {
+        (ev + 4) / 8
     }
 }
 
@@ -302,10 +351,20 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
             }
         }
 
-        // --- EVs.
-        let total = ev_total(m);
-        if total > rules.ev_total_limit {
-            push(&mut v, Rule::EvTotal, format!("{} total EVs exceeds the limit of {}", total, rules.ev_total_limit));
+        // --- EVs / Stat Points (total budget).
+        // Champions formats (sp_budget = Some) use the Stat-Points budget:
+        // sum of ev_to_sp(EV_stat) ≤ 66. Other formats use the classic EV
+        // total cap. The per-stat cap (32 SP ⇔ 252 EV) is enforced for both.
+        if let Some(budget) = rules.sp_budget {
+            let sp_used: u16 = ev_array(m).iter().map(|&ev| ev_to_sp(ev)).sum();
+            if sp_used > budget {
+                push(&mut v, Rule::StatPoints, format!("exceeds {} Stat Points: used {}", budget, sp_used));
+            }
+        } else {
+            let total = ev_total(m);
+            if total > rules.ev_total_limit {
+                push(&mut v, Rule::EvTotal, format!("{} total EVs exceeds the limit of {}", total, rules.ev_total_limit));
+            }
         }
         for (s, &ev) in ev_array(m).iter().enumerate() {
             if ev > rules.ev_per_stat_limit {
@@ -314,8 +373,15 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
         }
 
         // --- IVs.
+        // Champions removed adjustable IVs and standardizes them at 31; any
+        // other value is illegal (ivs_fixed_31). Other formats keep the
+        // generic 0..=iv_max range check.
         for (s, &iv) in iv_array(m).iter().enumerate() {
-            if iv > rules.iv_max {
+            if rules.ivs_fixed_31 {
+                if iv != 31 {
+                    push(&mut v, Rule::Iv, format!("Champions standardizes IVs at 31; IV {} on {} is not allowed", iv, STAT_NAMES[s]));
+                }
+            } else if iv > rules.iv_max {
                 push(&mut v, Rule::Iv, format!("IV {} in {} is above the maximum of {}", iv, STAT_NAMES[s], rules.iv_max));
             }
         }
@@ -612,25 +678,70 @@ mod tests {
     }
 
     #[test]
-    fn ev_total_over_cap() {
+    fn ev_to_sp_boundaries() {
+        // first point = 4 EV, each additional point = 8 EV → SP = (E+4)/8, 0 if E<4.
+        assert_eq!(ev_to_sp(0), 0);
+        assert_eq!(ev_to_sp(3), 0);
+        assert_eq!(ev_to_sp(4), 1);
+        assert_eq!(ev_to_sp(8), 1);
+        assert_eq!(ev_to_sp(12), 2);
+        assert_eq!(ev_to_sp(252), 32);
+    }
+
+    #[test]
+    fn champions_uses_sp_budget() {
+        // Reg M-B enforces the 66 Stat-Points budget, not a classic EV total.
+        assert_eq!(REG_M_B.sp_budget, Some(66));
+        assert!(REG_M_B.ivs_fixed_31);
+    }
+
+    #[test]
+    fn stat_points_over_budget() {
         let mut team = legal_team();
-        // 252×3 = 756 > 510 total, but each stat is within the 252 per-stat cap.
+        // 252/252/252 = 32+32+32 = 96 SP > 66, but each stat is within the
+        // 32-SP (252-EV) per-stat cap → StatPoints fires, EvPerStat does not.
         team[0].evs = StatSpread { hp: 252, atk: 252, def: 252, spa: 0, spd: 0, spe: 0 };
         let rs = rules_of(&team);
-        assert!(rs.contains(&Rule::EvTotal));
+        assert!(rs.contains(&Rule::StatPoints));
         assert!(!rs.contains(&Rule::EvPerStat));
     }
 
     #[test]
-    fn ev_total_cap_is_510() {
-        // Champions EV rules are unconfirmed; we assume standard VGC (PS = 510).
-        assert_eq!(REG_M_B.ev_total_limit, 510);
-        // 510 total is legal; 511 is not.
+    fn stat_points_budget_boundary() {
+        // 252/252/4 = 32+32+1 = 65 SP ≤ 66 → legal.
         let mut team = legal_team();
-        team[0].evs = StatSpread { hp: 252, atk: 252, def: 6, spa: 0, spd: 0, spe: 0 };
-        assert!(!rules_of(&team).contains(&Rule::EvTotal), "510 EVs should be legal");
-        team[0].evs = StatSpread { hp: 252, atk: 252, def: 7, spa: 0, spd: 0, spe: 0 };
-        assert!(rules_of(&team).contains(&Rule::EvTotal), "511 EVs should be illegal");
+        team[0].evs = StatSpread { hp: 252, atk: 252, def: 4, spa: 0, spd: 0, spe: 0 };
+        assert!(!rules_of(&team).contains(&Rule::StatPoints), "65 SP should be legal");
+        // 252/252/12 = 32+32+2 = 66 SP → still legal (exactly at the cap).
+        team[0].evs = StatSpread { hp: 252, atk: 252, def: 12, spa: 0, spd: 0, spe: 0 };
+        assert!(!rules_of(&team).contains(&Rule::StatPoints), "66 SP should be legal");
+        // 252/252/20 = 32+32+3 = 67 SP → illegal.
+        team[0].evs = StatSpread { hp: 252, atk: 252, def: 20, spa: 0, spd: 0, spe: 0 };
+        assert!(rules_of(&team).contains(&Rule::StatPoints), "67 SP should be illegal");
+    }
+
+    #[test]
+    fn legal_champions_spread_passes() {
+        // A realistic spread: 252/252 in two stats + 4 elsewhere = 65 SP, all
+        // IVs 31 → no EV/SP/IV violations.
+        let mut team = legal_team();
+        team[0].evs = StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 };
+        team[0].ivs = StatSpread::MAX_IV;
+        let rs = rules_of(&team);
+        assert!(!rs.contains(&Rule::StatPoints), "65 SP spread flagged: {:?}", rs);
+        assert!(!rs.contains(&Rule::Iv), "all-31 IVs flagged: {:?}", rs);
+    }
+
+    #[test]
+    fn iv_not_31_is_flagged() {
+        // Champions standardizes IVs at 31; a 0-Atk IV (classic min-Atk trick)
+        // is illegal in-format.
+        let mut team = legal_team();
+        team[0].ivs = StatSpread { hp: 31, atk: 0, def: 31, spa: 31, spd: 31, spe: 31 };
+        assert!(rules_of(&team).contains(&Rule::Iv), "IV != 31 must be flagged");
+        // 30-IV is also illegal (only 31 is allowed).
+        team[0].ivs = StatSpread { hp: 30, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+        assert!(rules_of(&team).contains(&Rule::Iv));
     }
 
     #[test]
