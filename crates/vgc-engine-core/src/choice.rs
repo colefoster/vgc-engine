@@ -5,6 +5,17 @@ use crate::side::SideRef;
 /// Move slot 0..=3 on the active Pokémon.
 pub type MoveSlot = u8;
 
+/// Sentinel `move_slot` value denoting **Struggle**. A Pokémon's real moves
+/// occupy slots `0..=3`; PS does not model Struggle as a moveslot but offers
+/// it as the sole option when every selectable move is unusable (all PP gone,
+/// disabled, taunted-out, choice-locked into a 0-PP move, …). PS
+/// `sim/pokemon.ts` `getMoves`/`getMoveRequestData` returns `[Struggle]` in
+/// that case. We reuse [`Choice::Move`] with this sentinel slot so the
+/// existing move-resolution path runs Struggle; `legal_choices`,
+/// `schedule_move` (order.rs) and `resolve_move_with_pending` map the slot to
+/// `data::move_id::STRUGGLE`.
+pub const STRUGGLE_MOVE_SLOT: MoveSlot = 4;
+
 /// Absolute targeting: which side + which active-slot.
 ///
 /// PS uses relative targeting in the protocol (`-1`, `+2`), but internally

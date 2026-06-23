@@ -288,7 +288,15 @@ fn schedule_move(
     let mon = battle.side(side).active_mon(actor_slot as usize);
     let (priority, frac_pri, speed) = match mon {
         Some(m) => {
-            let mid = m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX);
+            // Struggle is dispatched via the `STRUGGLE_MOVE_SLOT` sentinel,
+            // not a real moveslot; map it so its priority (0) and category
+            // (Physical) drive ordering correctly (e.g. so a Prankster holder
+            // does NOT get the +1 status bump on Struggle).
+            let mid = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                data::move_id::STRUGGLE
+            } else {
+                m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
+            };
             let (base_pri, category) = if mid == u16::MAX {
                 (0i32, 2u8)
             } else {
