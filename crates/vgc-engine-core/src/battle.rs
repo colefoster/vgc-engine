@@ -2046,6 +2046,20 @@ impl Battle {
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
         if attacker.flinched_this_turn() {
+            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
+            //   onFlinch(pokemon) { this.boost({spe: 1}); }
+            // When the holder is stopped by flinch it gains +1 Speed. PS
+            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
+            // (the same gate that returns inaction), so the boost lands as
+            // the holder is prevented from moving. We use the effective
+            // ability so Gastro Acid / Neutralizing Gas suppression applies.
+            // Self-boost (source == holder), so it bypasses Mist / Mirror
+            // Armor and can be raised normally up to the +6 stage cap.
+            // Lucario / Mega Mewtwo X signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
+            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
+                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+            }
             return;
         }
 
@@ -11460,6 +11474,53 @@ mod tests {
         assert!(
             !target_moved(control),
             "control target without Inner Focus should flinch (no damage dealt)"
+        );
+    }
+
+    #[test]
+    fn steadfast_gains_speed_on_flinch() {
+        // PS data/abilities.ts:steadfast onFlinch: this.boost({spe: 1}).
+        // A Steadfast holder that is stopped by flinch gains +1 Speed; a
+        // control with a different ability flinches but gets no boost.
+        // Iron Hands uses Fake Out (100% flinch, +3 priority) so it lands
+        // before the slower Lucario can act, flinching it.
+        let attacker = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        // Lucario slowed (Brave + 0 Spe) so Fake Out resolves first.
+        let steadfast = r#"[
+            {"species":"lucario","level":50,"ability":"steadfast","item":"","nature":"brave","moves":["closecombat","extremespeed","meteormash","swordsdance"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+        // Control: Justified still flinches (no flinch-immunity), but has
+        // no onFlinch boost — isolates the Steadfast effect.
+        let control = r#"[
+            {"species":"lucario","level":50,"ability":"justified","item":"","nature":"brave","moves":["closecombat","extremespeed","meteormash","swordsdance"],"evs":{"atk":252,"hp":252}}
+        ]"#;
+
+        // Returns the target Lucario's Speed boost stage after eating a
+        // 100%-flinch Fake Out.
+        let spe_stage_after_flinch = |target_json: &str| -> i8 {
+            let p1 = TeamBuilder::from_json(attacker).unwrap();
+            let p2 = TeamBuilder::from_json(target_json).unwrap();
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: 3 },
+                p1,
+                p2,
+            );
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }],
+            );
+            b.p2.team[0].boosts[4]
+        };
+
+        assert_eq!(
+            spe_stage_after_flinch(steadfast), 1,
+            "Steadfast holder should gain +1 Speed when flinched"
+        );
+        assert_eq!(
+            spe_stage_after_flinch(control), 0,
+            "control (Justified) should flinch but gain no Speed"
         );
     }
 
