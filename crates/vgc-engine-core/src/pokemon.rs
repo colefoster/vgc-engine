@@ -753,6 +753,15 @@ pub struct Pokemon {
     /// stays busted), and the forme change is permanent. Initialised
     /// `false`; only ever set `true`. PS data/abilities.ts:960.
     pub disguise_busted: bool,
+    /// Supersweet Syrup (Dipplin / Hydrapple) once-per-battle latch. PS
+    /// `data/abilities.ts:4704` keys this off `pokemon.syrupTriggered`: the
+    /// FIRST time the holder switches in, it lowers every adjacent foe's
+    /// evasion by 1, then sets the flag so it never fires again — even
+    /// across later switch-outs and back in. Like `disguise_busted` this is
+    /// stored on the mon itself (not an effectState volatile), so it is
+    /// deliberately NOT cleared by the blanket switch-in reset. Initialised
+    /// `false`; only ever set `true`. PS data/abilities.ts:4704.
+    pub syrup_triggered: bool,
     /// Micle Berry one-shot accuracy latch. PS `data/items.ts:micleberry`
     /// (line 4067): on the HP-trigger eat, the holder gains the `micleberry`
     /// volatile, which on its NEXT non-OHKO move multiplies that move's
@@ -855,6 +864,7 @@ impl Pokemon {
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,
+            syrup_triggered: false,
             micle_next_move: false,
             commanding: false,
             commanded: false,
