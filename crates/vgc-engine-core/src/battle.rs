@@ -735,6 +735,14 @@ impl Battle {
             if active.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
                 continue;
             }
+            // Heal Block lockout: every heal-flagged move is unselectable
+            // while heal-blocked. PS Heal Block condition `data/moves.ts:
+            // healblock` onDisableMove — disables each moveSlot whose move
+            // has `flags['heal']` (Recover, Roost, Rest, Wish, Synthesis,
+            // …). Z/Max exemptions are stripped from the gen-9 data dump.
+            if active.heal_block_turns() > 0 && m.is_heal {
+                continue;
+            }
             // Assault Vest: status moves disallowed.
             if is_assault_vest && m.category == 2 {
                 continue;
@@ -1074,6 +1082,11 @@ impl Battle {
                     // condition, onResidualOrder 22 — counts down each end
                     // of turn, ends at 0 (2-turn lockout).
                     mon.tick_throat_chop();
+                    // Heal Block tick. PS Heal Block condition
+                    // `data/moves.ts:healblock`, onResidualOrder 20 — counts
+                    // down each end of turn, ends at 0 (2-turn lockout when
+                    // applied by Psychic Noise's `durationCallback`).
+                    mon.tick_heal_block();
                     // Ally Switch tick. PS data/moves.ts:allyswitch
                     // condition, duration 2 — counts down each end of turn,
                     // ends at 0, so the consecutive-use chain breaks once a
@@ -1903,6 +1916,18 @@ impl Battle {
         // sound moves are exempt in PS, but the gen-9 data dump strips
         // Z/Max so the exemption is a no-op here.
         if attacker.throat_chop_turns() > 0 && m.is_sound {
+            return;
+        }
+
+        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
+        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
+        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
+        // while heal-blocked. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a heal move here, so it fails. No PP is consumed
+        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
+        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
+        if attacker.heal_block_turns() > 0 && m.is_heal {
             return;
         }
 
@@ -3446,13 +3471,13 @@ impl Battle {
             // When the chosen target is an adjacent ally, the move
             // heals 50% of the ally's max HP (rounded down) and deals
             // no damage. We branch here as a slug-special-case to keep
-            // the per-target damage path untouched. Heal Block does
-            // NOT block this in our model (deferred); PS gates via
-            // `onTryHeal`.
+            // the per-target damage path untouched. A Heal-Blocked ally
+            // gains no HP — PS gates the heal via the ally's `onTryHeal`
+            // (Heal Block returns `null` for Pollen Puff specifically).
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pollen_Puff_(move)>.
             if move_id == data::move_id::POLLENPUFF && tside == actor_side && tslot != actor_slot {
                 if let Some(ally) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                    if ally.is_alive() && ally.current_hp < ally.stats.hp {
+                    if ally.is_alive() && ally.current_hp < ally.stats.hp && !ally.is_heal_blocked() {
                         let heal = (ally.stats.hp / 2).max(1);
                         ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
                     }
@@ -5103,7 +5128,12 @@ impl Battle {
                         }
                     }
                 } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if a.is_alive() {
+                    // Heal Block on the drainer vetoes only the heal — the
+                    // target still took the damage above. PS routes the drain
+                    // recovery through the attacker's `onTryHeal`, which Heal
+                    // Block returns `false` for. (Liquid Ooze's damage branch,
+                    // above, is unaffected — it's damage, not a heal.)
+                    if a.is_alive() && !a.is_heal_blocked() {
                         let max = a.stats.hp;
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
                     }
@@ -5388,7 +5418,8 @@ impl Battle {
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
         if attacker_item_id == data::item_id::SHELLBELL && any_damage_dealt > 0 && damaging {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if a.is_alive() {
+                // Heal Block vetoes the Shell Bell recovery (PS `onTryHeal`).
+                if a.is_alive() && !a.is_heal_blocked() {
                     let heal = (any_damage_dealt as u32 / 8).max(1) as u16;
                     let max = a.stats.hp;
                     a.current_hp = ((a.current_hp as u32) + heal as u32).min(max as u32) as u16;
@@ -6487,7 +6518,9 @@ impl Battle {
                         .side_mut(source_side)
                         .active_mon_mut(source_slot as usize)
                     {
-                        if s.is_alive() {
+                        // The Leech Seed chip still drains the target, but a
+                        // Heal-Blocked seeder gains no HP (PS `onTryHeal`).
+                        if s.is_alive() && !s.is_heal_blocked() {
                             s.current_hp = s.current_hp.saturating_add(actual).min(s.stats.hp);
                         }
                     }
@@ -6547,8 +6580,13 @@ impl Battle {
                 }
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     if poison_heal {
-                        let heal = (m.stats.hp / 8).max(1);
-                        m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                        // Poison Heal still cancels the poison/toxic damage
+                        // (PS `onDamage` returns false), but Heal Block vetoes
+                        // the 1/8 recovery via the holder's `onTryHeal`.
+                        if !m.is_heal_blocked() {
+                            let heal = (m.stats.hp / 8).max(1);
+                            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                        }
                         // Toxic counter does NOT tick when Poison Heal
                         // absorbs the damage (PS returns before the
                         // increment).
@@ -9185,6 +9223,27 @@ fn apply_secondary_effect(
                     turns_remaining: 0,
                     payload: 0,
                 });
+            }
+        }
+    }
+    // Psychic Noise — PS data/moves.ts:14085 (psychicnoise)
+    //   secondary: { chance: 100, volatileStatus: 'healblock' }
+    // A 100%-chance secondary that adds the `healblock` volatile to the
+    // target on every hit. The Heal Block condition's `durationCallback`
+    // (data/moves.ts:8288) returns 2 specifically for Psychic Noise (vs the
+    // default 5), so the lockout is 2 turns. Like Throat Chop / Salt Cure,
+    // PS's `chance: 100` secondary short-circuits the `randomChance` roll, so
+    // we apply it without consuming a PRNG draw (preserving oracle
+    // alignment). `addVolatile` is a no-op when the target is already
+    // heal-blocked (PS `onRestart` for Psychic Noise returns without
+    // refreshing). Covert Cloak (gated at the top of this fn) already vetoes
+    // the whole secondary. It's a sound move, so Soundproof / a substitute
+    // already vetoed the hit upstream. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Psychic_Noise_(move)>.
+    if move_slug == "psychicnoise" {
+        if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.is_alive() && t.heal_block_turns() == 0 {
+                t.set_heal_block(2);
             }
         }
     }
@@ -22605,6 +22664,138 @@ mod tests {
         assert!(
             lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
             "sound move selectable again after lockout clears",
+        );
+    }
+
+    #[test]
+    fn psychic_noise_applies_heal_block_blocks_recover_and_expires() {
+        // Psychic Noise (Psychic special, 75 BP) carries a 100% secondary
+        // that applies the `healblock` volatile for 2 turns (PS
+        // data/moves.ts:14085 + the Heal Block condition's durationCallback
+        // at data/moves.ts:8288 returns 2 for Psychic Noise). While
+        // heal-blocked the target's heal-flagged moves vanish from
+        // legal_choices and fail if forced; the lockout counts down each end
+        // of turn and clears after 2 turns, restoring Recover.
+        let p1_json = r#"[
+            {"species":"indeedee","level":50,"ability":"innerfocus","nature":"timid","moves":["psychicnoise","calmmind","protect"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["recover","scald","toxic","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Give Toxapex room to recover later (high enough to survive a
+        // STAB super-effective Psychic Noise, low enough that Recover shows).
+        b.p2.team[0].current_hp = (b.p2.team[0].stats.hp * 3 / 4).max(1);
+
+        // Before: Recover (heal-flagged, slot 0) is selectable.
+        let lc0 = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc0.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "Recover selectable before Heal Block",
+        );
+
+        // Turn 1: Indeedee (faster) Psychic Noise -> Toxapex applies Heal
+        // Block; Toxapex Scalds back (no Recover yet).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].is_alive(), "Toxapex survived Psychic Noise");
+        assert!(
+            b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::HealBlock),
+            "Heal Block volatile applied",
+        );
+        // Applied 2, ticked once at end of turn -> 1.
+        assert_eq!(b.p2.team[0].heal_block_turns(), 1, "heal block applied (2), ticked to 1");
+
+        // Turn 2: Recover is filtered from legal_choices while heal-blocked.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().all(|c| !matches!(c, Choice::Move { move_slot: 0, .. })),
+            "Recover absent from legal_choices while heal-blocked",
+        );
+        // Force Recover anyway: it must fail — no HP gained, no PP spent.
+        // Indeedee just boosts (Calm Mind) so Toxapex takes no more damage.
+        let hp_before = b.p2.team[0].current_hp;
+        let pp_before = b.p2.team[0].pp[0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, hp_before, "heal-blocked Recover restored no HP");
+        assert_eq!(b.p2.team[0].pp[0], pp_before, "failed Recover spent no PP");
+        // End of turn 2 tick: 1 -> 0, lockout clears.
+        assert_eq!(b.p2.team[0].heal_block_turns(), 0, "heal block expired after 2 turns");
+        assert!(
+            !b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::HealBlock),
+            "HealBlock volatile removed",
+        );
+
+        // Turn 3: Recover works again now that Heal Block is gone.
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(
+            lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. })),
+            "Recover selectable again after Heal Block clears",
+        );
+        let hp_before = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].current_hp > hp_before, "Recover heals once Heal Block expires");
+    }
+
+    #[test]
+    fn heal_blocked_leftovers_does_not_restore_hp() {
+        // Heal Block's `onTryHeal` vetoes passive item recovery: a
+        // heal-blocked Leftovers holder gains no end-of-turn HP until the
+        // 2-turn lockout expires, after which Leftovers heals normally.
+        let p1_json = r#"[
+            {"species":"indeedee","level":50,"ability":"innerfocus","nature":"timid","moves":["psychicnoise","calmmind","protect"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["amnesia","bodyslam","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Lower Snorlax well below max so Leftovers has room to heal.
+        b.p2.team[0].current_hp = (b.p2.team[0].stats.hp / 2).max(1);
+
+        // Turn 1: Psychic Noise applies Heal Block (+ chip). Snorlax just
+        // boosts (Amnesia) so Indeedee never takes damage and survives.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].heal_block_turns(), 1, "heal block applied (2), ticked to 1");
+        let hp_after_t1 = b.p2.team[0].current_hp;
+
+        // Turn 2: nobody damages Snorlax; Leftovers must NOT heal while
+        // heal-blocked (its residual fires before the heal-block tick).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, hp_after_t1,
+            "Leftovers restored no HP while heal-blocked",
+        );
+        assert_eq!(b.p2.team[0].heal_block_turns(), 0, "heal block expired after 2 turns");
+
+        // Turn 3: Heal Block gone -> Leftovers heals at end of turn.
+        let hp_before_t3 = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(
+            b.p2.team[0].current_hp > hp_before_t3,
+            "Leftovers heals once Heal Block expires",
         );
     }
 
