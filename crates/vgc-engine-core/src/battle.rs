@@ -8683,6 +8683,102 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::HEALPULSE => {
+                // Heal Pulse — PS data/moves.ts:8401 (num 505). target: "any".
+                // onHit heals the TARGET (foe OR ally) 50% of max HP, rounded
+                // UP: `success = !!this.heal(Math.ceil(target.baseMaxhp * 0.5))`.
+                // The ceil is the wart here — unlike Recover's floored
+                // `heal:[1,2]`. With Mega Launcher the factor becomes 0.75 via
+                // `this.heal(this.modify(target.baseMaxhp, 0.75))`; PS `modify`
+                // is `tr((tr(value*modifier)+2047)/4096)` with modifier=3072
+                // (round-half-down to 4096ths). PS routes the gain through the
+                // recipient's `onTryHeal`, so a Heal-Blocked recipient gains
+                // nothing. `legal_choices` already strips this (heal-flagged)
+                // move from a heal-blocked USER, so only the recipient's block
+                // is checked here. Singles with no explicit slot falls back to
+                // the lone living foe (`opp_target`).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Heal_Pulse_(move)>.
+                let recipient = match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => opp_target,
+                };
+                if let Some((rside, rslot)) = recipient {
+                    let mega = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .is_some_and(|u| {
+                            u.is_alive()
+                                && u.effective_ability_id() == data::ability_id::MEGALAUNCHER
+                        });
+                    if let Some(r) = self.side_mut(rside).active_mon_mut(rslot as usize) {
+                        if r.is_alive() && r.current_hp < r.stats.hp && !r.is_heal_blocked() {
+                            let max = r.stats.hp as u32;
+                            let heal = if mega {
+                                ((max * 3072 + 2047) / 4096).max(1)
+                            } else {
+                                max.div_ceil(2).max(1)
+                            } as u16;
+                            r.current_hp = (r.current_hp as u32 + heal as u32).min(max) as u16;
+                        }
+                    }
+                }
+            }
+            data::move_id::LIFEDEW
+            | data::move_id::JUNGLEHEALING
+            | data::move_id::LUNARBLESSING => {
+                // Party heals — PS data/moves.ts: lifedew:10288 (num 791),
+                // junglehealing:9858 (num 816), lunarblessing:10548 (num 849).
+                // All carry target: "allies", so PS runs each move's onHit on
+                // the USER and every adjacent ALLY, healing 25% of max HP.
+                // Jungle Healing / Lunar Blessing additionally `cureStatus()`
+                // (clear the non-volatile status) on each recipient.
+                //
+                // Rounding (gen 9, `gen < 5 ? Math.floor : Math.round`):
+                //   Life Dew uses `heal:[1,4]` → Math.round(maxhp/4),
+                //     i.e. floor((maxhp + 2) / 4).
+                //   Jungle/Lunar use `this.heal(this.modify(maxhp, 0.25))` →
+                //     (maxhp*1024 + 2047) / 4096 (round-half-down to 4096ths).
+                //   These differ from each other only at the exact .5 boundary,
+                //   so both formulas are honored verbatim.
+                // Heal Block vetoes only the HP gain (PS `onTryHeal`); the
+                // status cure is NOT blocked and runs even on a heal-blocked
+                // ally. A heal-blocked USER cannot select these (heal flag,
+                // `legal_choices`). Cure mirrors the Heal Bell arm above.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Life_Dew_(move)>
+                //             <https://bulbapedia.bulbagarden.net/wiki/Jungle_Healing_(move)>
+                //             <https://bulbapedia.bulbagarden.net/wiki/Lunar_Blessing_(move)>.
+                let is_life_dew = move_id == data::move_id::LIFEDEW;
+                let cures = matches!(
+                    move_id,
+                    data::move_id::JUNGLEHEALING | data::move_id::LUNARBLESSING
+                );
+                let n = self.format().active_count() as u8;
+                for slot in [actor_slot, actor_slot ^ 1] {
+                    if slot >= n {
+                        continue;
+                    }
+                    if let Some(p) = self.side_mut(actor_side).active_mon_mut(slot as usize) {
+                        if !p.is_alive() {
+                            continue;
+                        }
+                        if !p.is_heal_blocked() && p.current_hp < p.stats.hp {
+                            let max = p.stats.hp as u32;
+                            let heal = if is_life_dew {
+                                (max + 2) / 4
+                            } else {
+                                (max * 1024 + 2047) / 4096
+                            }
+                            .max(1) as u16;
+                            p.current_hp = (p.current_hp as u32 + heal as u32).min(max) as u16;
+                        }
+                        if cures {
+                            p.status = Status::None;
+                            p.set_toxic_counter(0);
+                            p.set_sleep_turns(0);
+                        }
+                    }
+                }
+            }
             _ => {
                 // Self-boost status moves — PS data/moves.ts: each
                 // listed move has `target: "self"` (or `target: "allies"`
@@ -22431,6 +22527,173 @@ mod tests {
         );
         let expected = (1u32 + (max as u32 * 2 / 3)).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Moonlight heals 2/3 in Sun");
+    }
+
+    #[test]
+    fn heal_pulse_heals_target_fifty_percent() {
+        // PS data/moves.ts:8401 healpulse — heals the (any) target
+        // Math.ceil(maxhp * 0.5). Here the user pulses the opposing
+        // (pre-damaged) foe.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["healpulse","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["recover","scald","toxic","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        let max = b.p2.team[0].stats.hp as u32;
+        let expected = (1u32 + max.div_ceil(2)).min(max) as u16;
+        assert_eq!(b.p2.team[0].current_hp, expected, "Heal Pulse heals target 50% (ceil)");
+    }
+
+    #[test]
+    fn heal_pulse_blocked_recipient_not_healed() {
+        // A Heal-Blocked recipient gains nothing (PS routes the heal
+        // through the target's onTryHeal).
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["healpulse","moonblast","psyshock","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["recover","scald","toxic","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.p2.team[0].set_heal_block(5);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 1, "heal-blocked recipient gains no HP");
+    }
+
+    #[test]
+    fn life_dew_heals_both_allies_25() {
+        // PS data/moves.ts:10288 lifedew — heal:[1,4], target "allies".
+        // Both the user and its ally heal Math.round(maxhp/4).
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["lifedew","protect","bodyslam","rest"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["protect","softboiled","seismictoss","calmmind"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["protect","scald","toxic","recover"]},
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["protect","scald","toxic","recover"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let max0 = b.p1.team[0].stats.hp as u32;
+        let max1 = b.p1.team[1].stats.hp as u32;
+        b.p1.team[0].current_hp = (max0 / 2) as u16;
+        b.p1.team[1].current_hp = (max1 / 2) as u16;
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        let exp0 = ((max0 / 2) + (max0 + 2) / 4).min(max0) as u16;
+        let exp1 = ((max1 / 2) + (max1 + 2) / 4).min(max1) as u16;
+        assert_eq!(b.p1.team[0].current_hp, exp0, "Life Dew heals user 25%");
+        assert_eq!(b.p1.team[1].current_hp, exp1, "Life Dew heals ally 25%");
+    }
+
+    #[test]
+    fn life_dew_blocked_ally_not_healed() {
+        // A heal-blocked ALLY heals nothing; the (un-blocked) user still does.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["lifedew","protect","bodyslam","rest"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["protect","softboiled","seismictoss","calmmind"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["protect","scald","toxic","recover"]},
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["protect","scald","toxic","recover"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let max0 = b.p1.team[0].stats.hp as u32;
+        let max1 = b.p1.team[1].stats.hp as u32;
+        b.p1.team[0].current_hp = (max0 / 2) as u16;
+        b.p1.team[1].current_hp = (max1 / 2) as u16;
+        b.p1.team[1].set_heal_block(5);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        let exp0 = ((max0 / 2) + (max0 + 2) / 4).min(max0) as u16;
+        assert_eq!(b.p1.team[0].current_hp, exp0, "Life Dew heals un-blocked user 25%");
+        assert_eq!(b.p1.team[1].current_hp, (max1 / 2) as u16, "heal-blocked ally gains no HP");
+    }
+
+    #[test]
+    fn jungle_healing_heals_and_cures_status() {
+        // PS data/moves.ts:9858 junglehealing — this.modify(maxhp,0.25)
+        // heal PLUS cureStatus. Burned, pre-damaged user heals + cures.
+        let p1_json = r#"[
+            {"species":"zarude","level":50,"ability":"leafguard","nature":"adamant","moves":["junglehealing","powerwhip","darkestlariat","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["recover","scald","toxic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp as u32;
+        b.p1.team[0].current_hp = (max / 2) as u16;
+        b.p1.team[0].status = Status::Burn;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        let heal = (max * 1024 + 2047) / 4096;
+        let expected = ((max / 2) + heal).min(max) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Jungle Healing heals 25%");
+        assert_eq!(b.p1.team[0].status, Status::None, "Jungle Healing cures status");
+    }
+
+    #[test]
+    fn lunar_blessing_heals_and_cures_status() {
+        // PS data/moves.ts:10548 lunarblessing — Cresselia signature,
+        // identical heal+cure to Jungle Healing.
+        let p1_json = r#"[
+            {"species":"cresselia","level":50,"ability":"levitate","nature":"bold","moves":["lunarblessing","moonblast","psyshock","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","nature":"calm","moves":["recover","scald","toxic","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp as u32;
+        b.p1.team[0].current_hp = (max / 2) as u16;
+        b.p1.team[0].status = Status::Poison;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        let heal = (max * 1024 + 2047) / 4096;
+        let expected = ((max / 2) + heal).min(max) as u16;
+        assert_eq!(b.p1.team[0].current_hp, expected, "Lunar Blessing heals 25%");
+        assert_eq!(b.p1.team[0].status, Status::None, "Lunar Blessing cures status");
     }
 
     #[test]
