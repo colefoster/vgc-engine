@@ -8,7 +8,8 @@
 //!      [`REG_M_B_LEGAL_SPECIES`], or the full dex), a random legal ability
 //!      (from the species' `legal_abilities`), 1–4 learnset-legal moves (gated
 //!      by [`data::species_can_learn`]), a random held item, random nature,
-//!      legal EVs (≤510 total / ≤252 per stat) and IVs (0–31), level 50.
+//!      legal Stat Points (≤66 SP total / ≤32 SP per stat as EVs) and IVs
+//!      fixed at 31 (Champions standardizes IVs), level 50.
 //!      The team loads into the engine and (in Champions mode) passes
 //!      [`verify_team`] against [`REG_M_B`].
 //!
@@ -119,27 +120,31 @@ fn candidate_species(champions_only: bool) -> Vec<u16> {
 // ---------------------------------------------------------------------------
 
 fn random_evs(rng: &mut Rng) -> StatSpread {
-    // Random legal spread: ≤252 per stat, ≤510 total. Assign in a random stat
-    // order so the budget isn't biased toward HP.
+    // Champions Stat Points: ≤66 SP total, ≤32 SP per stat. Allocate SP in a
+    // random stat order, then convert to EVs (first point costs 4 EV, each
+    // additional 8 → EV(S) = 8*S - 4 for S≥1; 32 SP ↔ 252 EV). This round-trips
+    // exactly through the verifier's `ev_to_sp`, so generated teams stay legal
+    // under the SP budget (`Rule::StatPoints`).
     let mut idx = [0usize, 1, 2, 3, 4, 5];
     for i in (1..6).rev() {
         let j = rng.range((i + 1) as u32) as usize;
         idx.swap(i, j);
     }
     let mut arr = [0u8; 6];
-    let mut budget: u16 = 510;
+    let mut budget: u16 = 66; // Stat Points
     for &s in &idx {
-        let cap = budget.min(252);
-        let v = if cap == 0 { 0 } else { rng.range((cap + 1) as u32) as u16 };
-        arr[s] = v as u8;
-        budget -= v;
+        let cap = budget.min(32);
+        let sp = if cap == 0 { 0 } else { rng.range((cap + 1) as u32) as u16 };
+        budget -= sp;
+        arr[s] = if sp == 0 { 0 } else { (8 * sp - 4) as u8 };
     }
     StatSpread { hp: arr[0], atk: arr[1], def: arr[2], spa: arr[3], spd: arr[4], spe: arr[5] }
 }
 
-fn random_ivs(rng: &mut Rng) -> StatSpread {
-    let mut iv = || rng.range(32) as u8; // 0..=31
-    StatSpread { hp: iv(), atk: iv(), def: iv(), spa: iv(), spd: iv(), spe: iv() }
+fn random_ivs(_rng: &mut Rng) -> StatSpread {
+    // Champions standardizes IVs at 31 (no adjustable IVs); the verifier's
+    // `Rule::Iv` requires all 31, so generate them fixed.
+    StatSpread { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }
 }
 
 fn random_item_slug(rng: &mut Rng, used: &[u16]) -> Option<String> {
