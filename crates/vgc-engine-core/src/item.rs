@@ -247,10 +247,13 @@ pub fn on_after_damage(
     }
     if item_id == data::item_id::SITRUSBERRY && current * 2 <= max {
         // Heal 25% max HP, consume berry. PS data/items.ts:sitrusberry —
-        // gen 6+ heals 1/4 max (was 30 flat HP in gen 4).
+        // gen 6+ heals 1/4 max (was 30 flat HP in gen 4). Under Heal Block
+        // the berry is still eaten but `onTryHeal` vetoes the recovery.
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            let heal = (m.stats.hp / 4).max(1);
-            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            if !m.is_heal_blocked() {
+                let heal = (m.stats.hp / 4).max(1);
+                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            }
             m.item_id = u16::MAX;
         }
     }
@@ -289,7 +292,10 @@ pub fn on_after_damage(
     // <https://bulbapedia.bulbagarden.net/wiki/Oran_Berry>.
     if item_id == data::item_id::ORANBERRY && current * 2 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+            // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
+            if !m.is_heal_blocked() {
+                m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
+            }
             m.item_id = u16::MAX;
         }
     }
@@ -313,8 +319,11 @@ pub fn on_after_damage(
     );
     if figy_family && current * 4 <= max {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            let heal = (m.stats.hp / 3).max(1);
-            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
+            if !m.is_heal_blocked() {
+                let heal = (m.stats.hp / 3).max(1);
+                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            }
             m.item_id = u16::MAX;
         }
     }
@@ -635,8 +644,11 @@ pub fn on_damaging_hit(
             use crate::damage::TypeEff;
             if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                    let heal = (t.stats.hp / 4).max(1);
-                    t.current_hp = t.current_hp.saturating_add(heal).min(t.stats.hp);
+                    // Eaten even under Heal Block; `onTryHeal` vetoes the heal.
+                    if !t.is_heal_blocked() {
+                        let heal = (t.stats.hp / 4).max(1);
+                        t.current_hp = t.current_hp.saturating_add(heal).min(t.stats.hp);
+                    }
                     t.item_id = u16::MAX;
                 }
             }
@@ -1235,10 +1247,13 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => return,
     };
     if item_id == data::item_id::LEFTOVERS {
-        // Heal 1/16 max HP, capped at max.
+        // Heal 1/16 max HP, capped at max. Heal Block vetoes the recovery
+        // (PS Heal Block `onTryHeal`).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            let heal = (m.stats.hp / 16).max(1);
-            m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            if !m.is_heal_blocked() {
+                let heal = (m.stats.hp / 16).max(1);
+                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+            }
         }
     }
     // Black Sludge — PS `data/items.ts:blacksludge`:
@@ -1260,8 +1275,11 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         let magic_guard = crate::ability::has_magic_guard(mon);
         if is_poison {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                let heal = (m.stats.hp / 16).max(1);
-                m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                // Heal Block vetoes the recovery (PS Heal Block `onTryHeal`).
+                if !m.is_heal_blocked() {
+                    let heal = (m.stats.hp / 16).max(1);
+                    m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                }
             }
         } else if !magic_guard {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
