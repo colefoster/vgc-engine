@@ -71,11 +71,11 @@ struct MegaFix {
 /// step. Ability fixes are applied in the MEGA_STONES loop; stat fixes in the
 /// SPECIES emit loop.
 ///
-/// Megas whose correct Champions ability needs a brand-new, not-yet-implemented
-/// ability are intentionally OMITTED (applying an unresolvable slug would drop
-/// the mega row): Meganium (Mega Sol), Feraligatr (Dragonize), Excadrill
-/// (Piercing Drill), Eelektross (Eelevate), Pyroar (Fire Mane), Scovillain
-/// (Spicy Spray). Those are a separate follow-up.
+/// Megas whose correct Champions ability is a brand-new one absent from the
+/// dump — Meganium (Mega Sol), Feraligatr (Dragonize), Excadrill (Piercing
+/// Drill), Eelektross (Eelevate), Pyroar (Fire Mane), Scovillain (Spicy Spray)
+/// — are now registered in `EXTRA_ABILITIES` above (which gives them ability
+/// ids), so their fixes are included at the bottom of this table.
 ///
 /// Source: serebii.net/pokedex-champions/<species>/ (per-forme ability + stats).
 const MEGA_FORME_FIXES: &[MegaFix] = &[
@@ -101,6 +101,43 @@ const MEGA_FORME_FIXES: &[MegaFix] = &[
     MegaFix { forme: "glimmoramega", ability: "adaptability", atk: 0 },
     MegaFix { forme: "victreebelmega", ability: "innardsout", atk: 0 },
     MegaFix { forme: "starmiemega", ability: "hugepower", atk: 100 },
+    // Champions Mega abilities registered in EXTRA_ABILITIES above. These slugs
+    // resolve only because we appended them to the ABILITIES table.
+    MegaFix { forme: "meganiummega", ability: "megasol", atk: 0 },
+    MegaFix { forme: "feraligatrmega", ability: "dragonize", atk: 0 },
+    MegaFix { forme: "excadrillmega", ability: "piercingdrill", atk: 0 },
+    MegaFix { forme: "eelektrossmega", ability: "eelevate", atk: 0 },
+    MegaFix { forme: "pyroarmega", ability: "firemane", atk: 0 },
+    MegaFix { forme: "scovillainmega", ability: "spicyspray", atk: 0 },
+];
+
+/// One brand-new ability that does NOT exist in the @pkmn / PS dex dump.
+struct ExtraAbility {
+    /// Slugified ability name (the key used by `MEGA_FORME_FIXES.ability` and
+    /// by `ability_by_slug`).
+    slug: &'static str,
+    /// Display name.
+    name: &'static str,
+}
+
+/// --- Pokémon Champions Mega abilities absent from the dex dump ---
+///
+/// The six Champions Mega Evolutions below each gain a brand-new ability that
+/// the @pkmn / PS dump has no row for, so they have no `ability_id`. We append
+/// them to the `ABILITIES` table AFTER every dump-derived row, so all existing
+/// `ability_id::*` indices stay stable and these get fresh trailing ids. Each
+/// is then wired to its mega forme in `MEGA_FORME_FIXES` (the forme row would be
+/// dropped at resolve time if its ability slug didn't exist — hence registered
+/// here first). We do NOT edit the shared upstream JSON (`~/Dev/localdex`).
+///
+/// Source: serebii.net/pokemonchampions/newabilities.shtml
+const EXTRA_ABILITIES: &[ExtraAbility] = &[
+    ExtraAbility { slug: "megasol", name: "Mega Sol" },
+    ExtraAbility { slug: "dragonize", name: "Dragonize" },
+    ExtraAbility { slug: "piercingdrill", name: "Piercing Drill" },
+    ExtraAbility { slug: "eelevate", name: "Eelevate" },
+    ExtraAbility { slug: "firemane", name: "Fire Mane" },
+    ExtraAbility { slug: "spicyspray", name: "Spicy Spray" },
 ];
 
 /// SCREAMING_SNAKE_CASE-ish Rust identifier for a dex slug, used as the
@@ -620,6 +657,19 @@ fn main() {
             a.num.max(0) as u16,
             rust_str_lit(&a.name),
             rust_str_lit(slug),
+        ).unwrap();
+    }
+    // Brand-new Champions Mega abilities the dump lacks. Appended last so the
+    // dump-derived ids above are untouched (these take fresh trailing indices).
+    for ea in EXTRA_ABILITIES {
+        ability_slug_to_idx.insert(ea.slug.to_string(), ability_consts.len());
+        ability_consts.push((const_ident(ea.slug), ability_consts.len()));
+        writeln!(
+            f,
+            "    AbilityDef {{ num: {}, name: {}, slug: {} }},",
+            0,
+            rust_str_lit(ea.name),
+            rust_str_lit(ea.slug),
         ).unwrap();
     }
     writeln!(f, "];").unwrap();

@@ -1567,6 +1567,32 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Spicy Spray (Pokémon Champions, Mega Scovillain) — "When the Pokémon
+    // takes damage from a move, it burns the attacker."
+    // (serebii.net/pokemonchampions/newabilities.shtml). Unlike Flame Body
+    // this is NOT contact-gated and has no chance roll (always burns), so it
+    // draws no RNG. It fires even when the holder faints from the hit (the
+    // hook is still invoked on a KO hit), and — because `on_damaging_hit` runs
+    // only on real HP damage to the holder — it naturally does not trigger
+    // when the holder is behind a Substitute. The holder is the status source
+    // (so the attacker's Safeguard vetoes it); `try_set_status_from` enforces
+    // the usual immunity gates (Fire-type / already-statused / Sub on the
+    // attacker). Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Spicy_Spray_(Ability)>.
+    if ability_id == data::ability_id::SPICYSPRAY {
+        let attacker_alive = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.is_alive());
+        if attacker_alive {
+            battle.try_set_status_from(
+                attacker_side,
+                attacker_slot,
+                crate::pokemon::Status::Burn,
+                attacker_side.opposing(),
+            );
+        }
+    }
     // Cute Charm — PS `data/abilities.ts:788` `onDamagingHit`:
     //   if (this.checkMoveMakesContact(move, source, target)) {
     //     if (this.randomChance(3, 10)) {
