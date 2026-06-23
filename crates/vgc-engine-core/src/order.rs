@@ -364,6 +364,25 @@ fn schedule_move(
             } else {
                 0i8
             };
+            // Mycelium Might — PS `data/abilities.ts:myceliummight`
+            //   onFractionalPriorityPriority: -1,
+            //   onFractionalPriority(priority, pokemon, target, move) {
+            //     if (move.category === 'Status') return -0.1;
+            //   }
+            // A Status move used by a Mycelium Might holder always moves
+            // LAST within its priority bracket (same sub-bucket as Lagging
+            // Tail / Full Incense). The `-0.1` fractional priority maps to
+            // our `+1` "last in bracket" sub-bucket. The companion
+            // ignore-ability half lives in `battle.rs`. Toedscool /
+            // Toedscruel signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Mycelium_Might_(Ability)>.
+            let frac = if category == 2
+                && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT
+            {
+                1i8
+            } else {
+                frac
+            };
             (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
         }
         None => (0, 0, 0),
@@ -614,6 +633,49 @@ mod tests {
         let dry = effective_speed(&mon, false, crate::weather::Weather::None);
         let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
         assert_eq!(sun, dry * 2);
+    }
+
+    #[test]
+    fn mycelium_might_status_move_moves_last_in_bracket() {
+        // Mycelium Might (Toedscruel) — a Status move always resolves LAST
+        // in its priority bracket, even against a SLOWER foe. PS
+        // `onFractionalPriority` returns -0.1 for Status moves. The faster
+        // MM user must come AFTER the slower foe's status move.
+        let p1_json = r#"[
+            {"species":"toedscruel","level":50,"ability":"myceliummight","item":"","nature":"timid","moves":["growl","sludgebomb","protect","spore"],"evs":{"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"torkoal","level":50,"ability":"shellarmor","item":"","nature":"quiet","moves":["growl","lavaplume","protect","yawn"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let b = Battle::new(
+            BattleConfig { format: crate::format::Format::Singles, seed: 1 },
+            p1,
+            p2,
+        );
+        let mut rng = Rng::new(0);
+
+        // Sanity: the MM user (Toedscruel, base 100) outspeeds Torkoal
+        // (base 20), so any "foe first" result is purely the MM penalty.
+        assert!(
+            effective_speed(&b.p1.team[0], false, b.weather)
+                > effective_speed(&b.p2.team[0], false, b.weather),
+            "Toedscruel must outspeed Torkoal for the test to be meaningful",
+        );
+
+        // Both use Growl (Status, priority 0). MM forces P1 last.
+        let p1c = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let p2c = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }];
+        let order = action_order(&b, &p1c, &p2c, &mut rng);
+        assert_eq!(order[0].side, SideRef::P2, "slower foe's status move resolves first");
+        assert_eq!(order[1].side, SideRef::P1, "Mycelium Might user's status move moves last");
+
+        // Control: a DAMAGING move from the MM user is unaffected — it goes
+        // first by speed (the fractional penalty is Status-only).
+        let p1d = [Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }];
+        let order2 = action_order(&b, &p1d, &p2c, &mut rng);
+        assert_eq!(order2[0].side, SideRef::P1, "damaging move from MM user is not delayed");
     }
 
     #[test]

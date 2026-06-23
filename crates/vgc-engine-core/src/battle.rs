@@ -584,12 +584,65 @@ impl Battle {
                     }
                 }
             }
+            self.mirror_to_opportunist(target_side, target_slot, deltas);
             return;
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
                 *stage = (*stage + delta).clamp(-6, 6);
+            }
+        }
+        self.mirror_to_opportunist(target_side, target_slot, deltas);
+    }
+
+    /// Opportunist — PS `data/abilities.ts:opportunist` `onFoeAfterBoost`.
+    /// When an opposing Pokémon's stat stage(s) RISE, the Opportunist holder
+    /// copies the same positive boosts onto itself (Klawf / Cyclizar). PS
+    /// accumulates the foe's positive boosts in `effectState` and re-applies
+    /// them on a later event (after the move / switch-in / mega / tera /
+    /// residual); we copy immediately, which lands the holder on the same
+    /// final stages. The copy is written straight to the holder's `boosts`
+    /// array — NOT routed back through `apply_boosts` — so it can't chain
+    /// into a second Opportunist (or any other boost reaction). This mirrors
+    /// PS's `if (effect?.name === 'Opportunist' || effect?.name === 'Mirror
+    /// Herb') return;` guard, which stops the copied boost from re-triggering
+    /// the loop. Negative and zero deltas are ignored (only RISES are
+    /// copied). Bulbapedia:
+    /// <https://bulbapedia.bulbagarden.net/wiki/Opportunist_(Ability)>.
+    fn mirror_to_opportunist(
+        &mut self,
+        boosted_side: SideRef,
+        _boosted_slot: u8,
+        deltas: &[(u8, i8)],
+    ) {
+        if !deltas.iter().any(|&(_, d)| d > 0) {
+            return;
+        }
+        // Opportunist reacts to a FOE's boost — scan the side opposing the
+        // boosted mon. The boosted mon could be on either side (it may be an
+        // Opportunist holder's foe, OR the holder's own teammate's foe), so
+        // the holder is always found on `boosted_side.opposing()`.
+        let opp = boosted_side.opposing();
+        let n = self.format().active_count() as u8;
+        for slot in 0..n {
+            let is_holder = self
+                .side(opp)
+                .active_mon(slot as usize)
+                .is_some_and(|m| {
+                    m.is_alive()
+                        && m.effective_ability_id() == data::ability_id::OPPORTUNIST
+                });
+            if !is_holder {
+                continue;
+            }
+            if let Some(m) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                for &(idx, delta) in deltas {
+                    if delta > 0 {
+                        let stage = &mut m.boosts[idx as usize];
+                        *stage = (*stage + delta).clamp(-6, 6);
+                    }
+                }
             }
         }
     }
@@ -2898,11 +2951,19 @@ impl Battle {
             // signature. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Good_as_Gold_(Ability)>.
             if is_targeting_move(m.target) {
+                // Mycelium Might — PS `data/abilities.ts:myceliummight`
+                // `onModifyMove` sets `move.ignoreAbility = true` for Status
+                // moves, so the move bypasses the target's ability exactly
+                // like Mold Breaker. This whole block only runs for Status
+                // moves (`m.category == 2`), so MYCELIUMMIGHT joins the
+                // mold-breaker set unconditionally here. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Mycelium_Might_(Ability)>.
                 let attacker_breaks_mold = matches!(
                     attacker.ability_id,
                     data::ability_id::MOLDBREAKER
                         | data::ability_id::TERAVOLT
                         | data::ability_id::TURBOBLAZE
+                        | data::ability_id::MYCELIUMMIGHT
                 );
                 if !attacker_breaks_mold {
                     // Resolve the move's effective single target. An explicit
@@ -3199,12 +3260,17 @@ impl Battle {
                 2 => Some(data::ability_id::STORMDRAIN),
                 _ => None,
             };
+            // Mycelium Might makes Status moves ignore the target's ability,
+            // including redirect abilities (Lightning Rod / Storm Drain are
+            // `breakable`, which Mold Breaker bypasses). Gated on Status
+            // category since this block also runs for damaging moves.
             let attacker_breaks_mold = matches!(
                 attacker.ability_id,
                 data::ability_id::MOLDBREAKER
                     | data::ability_id::TERAVOLT
                     | data::ability_id::TURBOBLAZE
-            );
+            ) || (m.category == 2
+                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
             if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
                 let orig = targets[0];
                 let n = self.format().active_count() as u8;
@@ -3356,10 +3422,15 @@ impl Battle {
         // already exist on `move.category` at each defender-ability
         // site. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Mold_Breaker_(Ability)>.
+        // Mycelium Might also sets `ignoreAbility` for Status moves (PS
+        // `onModifyMove`); gate on Status category so damaging moves are
+        // unaffected. Damage-path defender checks below already gate on
+        // `move.category`, so this only ever bites the status-move
+        // defender-ability sites.
         let attacker_breaks_mold = matches!(
             attacker_ability_id,
             data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
-        );
+        ) || (m.category == 2 && attacker_ability_id == data::ability_id::MYCELIUMMIGHT);
         // No Guard (attacker side) — PS data/abilities.ts:2960 `noguard`.
         // `onAnyAccuracy` returns `true` (always hit) and
         // `onAnyInvulnerability` returns 0 (ignore semi-invuln) whenever
@@ -27637,6 +27708,141 @@ mod tests {
         assert!(
             b2.p1.team[0].item_suppressed,
             "item_suppressed round-trips"
+        );
+    }
+
+    // ---- Neutralizing Gas / Mycelium Might / Opportunist ----
+
+    #[test]
+    fn neutralizing_gas_suppresses_foe_intimidate() {
+        // A Galarian Weezing (Neutralizing Gas) already on the field
+        // suppresses an opposing Intimidate user's switch-in Atk drop. PS
+        // `sim/pokemon.ts:ignoringAbility` returns true for the Arcanine, so
+        // its Intimidate `onStart` reads as no-ability and never fires.
+        let ng = r#"[
+            {"species":"weezinggalar","level":50,"ability":"neutralizinggas","item":"","nature":"bold","moves":["sludgebomb","protect","willowisp","painsplit"]}
+        ]"#;
+        let intim = r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["flareblitz","extremespeed","protect","willowisp"]}
+        ]"#;
+        let b = singles(ng, intim);
+        assert_eq!(
+            b.p1.team[0].boosts[0], 0,
+            "Neutralizing Gas suppressed the foe's Intimidate — no Atk drop",
+        );
+
+        // Control: same Intimidate user vs a NON-NG lead drops Atk by 1.
+        let plain = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","protect","rest","crunch"]}
+        ]"#;
+        let c = singles(plain, intim);
+        assert_eq!(
+            c.p1.team[0].boosts[0], -1,
+            "control: Intimidate drops Atk when no Neutralizing Gas is out",
+        );
+    }
+
+    #[test]
+    fn neutralizing_gas_spares_unsuppressable_ability() {
+        // While Neutralizing Gas is active, an ordinary ability reads as
+        // suppressed (effective id = sentinel), but a `cantsuppress`
+        // ability (Disguise) keeps working, and the NG holder keeps its own.
+        let p1 = r#"[
+            {"species":"weezinggalar","level":50,"ability":"neutralizinggas","item":"","nature":"bold","moves":["sludgebomb","protect","willowisp","painsplit"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","protect","rest","crunch"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"mimikyu","level":50,"ability":"disguise","item":"","nature":"jolly","moves":["playrough","shadowsneak","swordsdance","protect"]},
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderbolt","voltswitch","protect","grassknot"]}
+        ]"#;
+        let p1t = TeamBuilder::from_json(p1).unwrap();
+        let p2t = TeamBuilder::from_json(p2).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1t, p2t);
+
+        // NG holder keeps its own ability (NG is itself cantsuppress).
+        assert_eq!(
+            b.p1.team[0].effective_ability_id(),
+            data::ability_id::NEUTRALIZINGGAS,
+            "Neutralizing Gas does not suppress itself",
+        );
+        // Disguise is cantsuppress → still effective.
+        assert_eq!(
+            b.p2.team[0].effective_ability_id(),
+            data::ability_id::DISGUISE,
+            "Disguise (cantsuppress) survives Neutralizing Gas",
+        );
+        // Static is an ordinary ability → suppressed to the sentinel.
+        assert_eq!(
+            b.p2.team[1].effective_ability_id(),
+            u16::MAX,
+            "ordinary ability (Static) is suppressed under Neutralizing Gas",
+        );
+        // The NG holder's own teammate is suppressed too.
+        assert_eq!(
+            b.p1.team[1].effective_ability_id(),
+            u16::MAX,
+            "an ally's ordinary ability is suppressed under Neutralizing Gas",
+        );
+    }
+
+    #[test]
+    fn mycelium_might_status_move_ignores_target_ability() {
+        // Mycelium Might makes a Status move ignore the target's ability, so
+        // Spore (100% accuracy) pierces Good as Gold (which would normally
+        // block status moves) and puts the target to sleep. PS `onModifyMove`
+        // sets `move.ignoreAbility = true` for Status moves.
+        let mm = r#"[
+            {"species":"toedscruel","level":50,"ability":"myceliummight","item":"","nature":"timid","moves":["growl","sludgebomb","protect","spore"],"evs":{"spe":252}}
+        ]"#;
+        let gag = r#"[
+            {"species":"gholdengo","level":50,"ability":"goodasgold","item":"","nature":"modest","moves":["nastyplot","shadowball","protect","recover"]}
+        ]"#;
+        let mut b = singles(mm, gag);
+        // P1 Spore (slot 3) at the foe; P2 Nasty Plot (self, harmless).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(
+            b.p2.team[0].status, Status::Sleep,
+            "Mycelium Might's Spore ignored Good as Gold and inflicted sleep",
+        );
+
+        // Control: a non-Mycelium-Might Spore is blocked by Good as Gold.
+        let plain = r#"[
+            {"species":"toedscruel","level":50,"ability":"regenerator","item":"","nature":"timid","moves":["growl","sludgebomb","protect","spore"],"evs":{"spe":252}}
+        ]"#;
+        let mut c = singles(plain, gag);
+        c.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(
+            c.p2.team[0].status, Status::None,
+            "control: Good as Gold blocks Spore without Mycelium Might",
+        );
+    }
+
+    #[test]
+    fn opportunist_copies_opponent_boost() {
+        // Opportunist (Klawf) copies an opponent's stat RISES. The foe uses
+        // Swords Dance (+2 Atk) and the Opportunist holder mirrors +2 Atk.
+        let klawf = r#"[
+            {"species":"klawf","level":50,"ability":"opportunist","item":"","nature":"adamant","moves":["rockslide","protect","swordsdance","irondefense"]}
+        ]"#;
+        let booster = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["swordsdance","earthquake","protect","ironhead"]}
+        ]"#;
+        let mut b = singles(klawf, booster);
+        // P1 protects (no self-boost); P2 uses Swords Dance.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 2, "Garchomp's own Swords Dance landed");
+        assert_eq!(
+            b.p1.team[0].boosts[0], 2,
+            "Opportunist copied the opponent's +2 Atk",
         );
     }
 }
