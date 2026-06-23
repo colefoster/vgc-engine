@@ -133,13 +133,25 @@ impl KeyedState {
         self.table.get_mut(&key).and_then(|q| q.pop_front())
     }
 
-    /// Record a table miss and advance the Splitmix fallback, returning
-    /// the raw draw. Every fallback in the `OracleKeyed` arms routes
-    /// through here so `unmatched` stays accurate and the fallback
-    /// stream is byte-identical to a same-seeded `Splitmix`.
+    /// Advance the Splitmix fallback WITHOUT counting a miss. Used for
+    /// draws that are engine-internal and not PS-recorded outcomes we're
+    /// validating — chiefly the per-action speed-tie *nonce* (`next_u64`),
+    /// which the engine draws for every action to keep sort keys unique
+    /// even when speeds differ and PS draws nothing. A genuine tie whose
+    /// order matters surfaces as a state divergence in the differ, not
+    /// here, so excluding it keeps `unmatched` measuring only real
+    /// outcome draws (accuracy/crit/damage/secondary/range).
+    fn fallback(&mut self) -> u64 {
+        Rng::splitmix_step(&mut self.fallback)
+    }
+
+    /// Record a table miss and advance the Splitmix fallback. Every
+    /// counted fallback in the `OracleKeyed` arms routes through here so
+    /// `unmatched` stays accurate and the fallback stream is
+    /// byte-identical to a same-seeded `Splitmix`.
     fn miss(&mut self) -> u64 {
         self.unmatched += 1;
-        Rng::splitmix_step(&mut self.fallback)
+        self.fallback()
     }
 }
 
@@ -416,7 +428,10 @@ impl Rng {
             Rng::PsGen5(rng) => rng.next() as u64,
             Rng::OracleKeyed(k) => match k.take(RngDecision::Tiebreak) {
                 Some(RngEvent::Tiebreak(v)) => v,
-                _ => k.miss(),
+                // Uncounted: the speed-tie nonce is engine-internal (drawn
+                // per action even with no tie); a real tie's order shows up
+                // in the state diff, not the unmatched metric.
+                _ => k.fallback(),
             },
         }
     }
@@ -1287,8 +1302,8 @@ mod tests {
         r.set_decision(RngDecision::Accuracy);
         assert_eq!(r.percent_1_100(), pure.percent_1_100());
         assert_eq!(r.damage_roll(), pure.damage_roll());
-        assert!(!r.crit() || true); // consumes a fallback either way
-        let _ = pure.crit();
+        // Crit also misses (empty table) → fallback matches pure Splitmix.
+        assert_eq!(r.crit(), pure.crit());
         assert_eq!(r.unmatched_draws(), Some(3));
     }
 
