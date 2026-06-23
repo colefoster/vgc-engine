@@ -23,7 +23,7 @@ use crate::damage::{calculate_damage, DamageContext};
 use crate::format::Format;
 use crate::order::{action_order, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
-use crate::rng::Rng;
+use crate::rng::{Rng, RngDecision};
 use crate::side::{Side, SideRef};
 use serde::{Deserialize, Serialize};
 use vgc_engine_data as data;
@@ -321,6 +321,12 @@ impl Battle {
 
     pub fn turn(&self) -> u32 {
         self.turn
+    }
+
+    /// Read-only access to the battle's RNG. Used by the conformance harness
+    /// to read `unmatched_draws()` after an `Rng::OracleKeyed` replay.
+    pub fn rng(&self) -> &Rng {
+        &self.rng
     }
 
     pub fn seed(&self) -> u64 {
@@ -3783,6 +3789,22 @@ impl Battle {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
             };
+            // Conformance keyed-oracle context: attribute every randomized
+            // draw made resolving this (attacker, move, target) hit — the
+            // accuracy roll (below), crit, damage, and (via the mem::replace
+            // that carries `self.rng`'s state into the local `rng`) the
+            // secondary roll. No-op for every non-OracleKeyed variant.
+            // Slot refs are `side*2 + slot` (p1a=0, p1b=1, p2a=2, p2b=3).
+            // `self.turn` is incremented at the END of `step` (line ~1367),
+            // so during turn N's resolution it still reads N-1; PS's
+            // `this.turn` is N. Emit `+1` so engine and PS keys agree on a
+            // 1-based turn.
+            self.rng.set_move_context(
+                self.turn + 1,
+                (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot,
+                move_id,
+                (match tside { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tslot,
+            );
             // A commanding Tatsugiri can never be hit (PS
             // `hitStepInvulnerabilityEvent` returns false for it). Belt-and-
             // braces alongside `enumerate_targets`, which already excludes it.
@@ -4174,6 +4196,7 @@ impl Battle {
                 if self.gravity_turns > 0 {
                     eff_acc = eff_acc * 6840 / 4096;
                 }
+                self.rng.set_decision(RngDecision::Accuracy);
                 let roll = self.rng.percent_1_100() as u32;
                 if roll > eff_acc {
                     // Blunder Policy — the holder's own move missed due to
@@ -5499,6 +5522,10 @@ impl Battle {
                 && crate::damage::move_is_sheer_force_boosted(m);
             if alive_post && !hit_sub && !sheer_force_strip {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                // The keyed context set at the loop top travelled in with the
+                // mem::replace; tag the decision so percent draws here key as
+                // Secondary (not the Accuracy set before the accuracy roll).
+                rng.set_decision(RngDecision::Secondary);
                 apply_secondary_effect(self, tside, tslot, actor_side, actor_slot, m.slug, &mut rng);
                 self.rng = rng;
             }
@@ -10381,6 +10408,70 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2)
+    }
+
+    #[test]
+    fn oracle_keyed_forces_crit_damage_and_secondary_in_a_real_turn() {
+        // End-to-end proof of the keyed-oracle engine half (Phase 0): inject
+        // a hand-built outcome table into a real battle and show the engine
+        // resolves its randomized draws from the table, not its own PRNG.
+        //
+        // Houndoom (fast; Flash Fire is inert here) uses Crunch on Blissey
+        // (slow, bulky → survives the hit so the secondary can apply). Crunch
+        // is 100% acc, physical, with a 20% chance to drop the target's Def.
+        // Distinct speeds ⇒ no speed-tie draw, so the only randomized draws in
+        // the turn are this hit's accuracy / crit / damage / secondary — all
+        // four keyed. Running the SAME turn twice with different injected
+        // outcomes must produce correspondingly different results, with zero
+        // table misses each time.
+        use crate::rng::{RngDecision, RngEvent, RngKey};
+        use std::collections::{HashMap, VecDeque};
+
+        let p1_json = r#"[{"species":"houndoom","level":50,"ability":"flashfire","nature":"hasty","moves":["crunch","splash","splash","splash"]}]"#;
+        let p2_json = r#"[{"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["splash","splash","splash","splash"]}]"#;
+
+        // Returns (damage dealt to Blissey, Blissey's Def stage, unmatched draws).
+        let run = |crit: bool, dmg_bucket: u8, secondary_pct: u8| -> (u16, i8, Option<u32>) {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mv = p1[0].moves[0]; // Crunch, numeric move id
+            let key = |d| RngKey { turn: 1, actor: 0, target: 2, move_id: mv, decision: d };
+            let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+            // Accuracy roll 50 ≤ 100 ⇒ hit. Crit + damage bucket as injected.
+            table.insert(key(RngDecision::Accuracy), VecDeque::from([RngEvent::PercentRoll(50)]));
+            table.insert(key(RngDecision::Crit), VecDeque::from([RngEvent::Crit(crit)]));
+            table.insert(key(RngDecision::Damage), VecDeque::from([RngEvent::DamageRoll(dmg_bucket)]));
+            table.insert(key(RngDecision::Secondary), VecDeque::from([RngEvent::PercentRoll(secondary_pct)]));
+            let rng = Rng::oracle_keyed(table, 7);
+            let mut b = Battle::with_rng(
+                BattleConfig { format: Format::Singles, seed: 7 },
+                rng,
+                p1,
+                p2,
+            );
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            let dealt = hp0 - b.p2.team[0].current_hp;
+            (dealt, b.p2.team[0].boosts[1], b.rng.unmatched_draws())
+        };
+
+        // Run A: no crit, min damage bucket, secondary misses (99 > 20).
+        let (dmg_a, def_a, un_a) = run(false, 0, 99);
+        // Run B: crit, max damage bucket, secondary procs (1 ≤ 20).
+        let (dmg_b, def_b, un_b) = run(true, 15, 1);
+
+        assert_eq!(un_a, Some(0), "run A: every draw resolved from the table");
+        assert_eq!(un_b, Some(0), "run B: every draw resolved from the table");
+        assert!(dmg_a > 0 && dmg_b > 0, "both hits landed (forced accuracy pass)");
+        assert!(
+            dmg_b > dmg_a,
+            "crit + max roll (B={dmg_b}) must out-damage no-crit + min roll (A={dmg_a})"
+        );
+        assert_eq!(def_a, 0, "run A: injected secondary missed → no Def drop");
+        assert_eq!(def_b, -1, "run B: injected secondary procced → Def -1");
     }
 
     #[test]
