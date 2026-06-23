@@ -73,3 +73,37 @@ request them in the same order PS rolled them — true for the linear hit pipeli
 clean Phase-0 replay is `Some(0)`. Any miss means either an engine-only extra
 draw (safe — took a deterministic fallback, no cascade) or a keying bug (the
 PS-recorded outcome was never consumed). The runner reports it per battle.
+
+## Per-turn state schema (the diff surface)
+
+Each turn record carries `state` (per active slot), `field`, and `sides`. The
+runner compares each captured field against the engine; fields the record omits
+(`boosts`/`ability` absent, or `field`/`sides` absent) are skipped so partial
+captures don't false-positive. Tokens are **normalized** on both sides — the
+driver maps PS ids to them, the runner maps the engine enums to them.
+
+```jsonc
+"state": { "p1a": {
+  "hp": 281, "maxhp": 281, "fainted": false,
+  "status": "par"|"brn"|"slp"|"frz"|"psn"|"tox"|null,   // engine Status enum
+  "boosts": {"atk":0,"def":0,"spa":0,"spd":0,"spe":0,"accuracy":0,"evasion":0},
+  "item": "leftovers"|null,                              // engine sentinel = u16::MAX / blank slug
+  "ability": "purifyingsalt"                             // effective_ability_id slug
+}},
+"field": { "weather": "rain"|"sun"|"sand"|"snow"|null,   // raindance/primordialsea→rain, etc.
+           "terrain": "electric"|"grassy"|"psychic"|"misty"|null,
+           "trickRoom": false, "gravity": false, "magicRoom": false, "wonderRoom": false },
+"sides": { "p1": { "reflect":false,"lightScreen":false,"auroraVeil":false,"tailwind":false,
+                   "safeguard":false,"mist":false,"stealthRock":false,"spikes":0,
+                   "toxicSpikes":0,"stickyWeb":false }, "p2": { … } }
+```
+
+The engine reads these from: `Pokemon.{status,boosts,effective_item_id,effective_ability_id}`;
+`Battle.{weather,terrain,trick_room_turns,gravity_turns,magic_room_turns,wonder_room_turns}`
+(raw, not `effective_weather` — PS's `field.weather` is also pre-suppression);
+`Side.conditions.{reflect,light_screen,aurora_veil,tailwind,safeguard,mist}_turns > 0`,
+`.{stealth_rock,sticky_web}`, `.{spikes,toxic_spikes}_layers`.
+
+Still NOT in the diff (follow-up): PP per slot, volatiles (Substitute/Leech
+Seed/confusion/Taunt-Encore-Disable turns/Protect), current types/forme,
+Wish/Future-Sight pending, Tera-used.

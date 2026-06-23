@@ -20,7 +20,8 @@ use serde::Deserialize;
 use vgc_engine_core::data;
 use vgc_engine_core::rng::{Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
 use vgc_engine_core::{
-    Battle, BattleConfig, Choice, Format, SideRef, StepResult, Target, TeamBuilder,
+    Battle, BattleConfig, Choice, Format, Pokemon, SideRef, Status, StepResult, Target,
+    TeamBuilder, Terrain, Weather,
 };
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,12 @@ pub struct TurnRecord {
     /// Post-turn state keyed by slot ref ("p1a", "p2b", …).
     #[serde(default)]
     pub state: HashMap<String, MonState>,
+    /// Field state (weather/terrain/room). Absent → field diff skipped.
+    #[serde(default)]
+    pub field: Option<FieldState>,
+    /// Per-side conditions (screens/hazards/tailwind). Absent → skipped.
+    #[serde(default)]
+    pub sides: Option<SideStates>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,13 +66,113 @@ pub struct SideChoices {
     pub p2: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct MonState {
     pub hp: u16,
     #[serde(default)]
     pub maxhp: u16,
     #[serde(default)]
     pub fainted: bool,
+    /// PS status string ("par"/"brn"/"slp"/"frz"/"psn"/"tox") or null.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Stat-stage boosts; absent → not compared.
+    #[serde(default)]
+    pub boosts: Option<Boosts>,
+    /// Held item slug (null = no item). Compared whenever `state` is present.
+    #[serde(default)]
+    pub item: Option<String>,
+    /// Ability slug; absent → not compared (always present in real captures).
+    #[serde(default)]
+    pub ability: Option<String>,
+}
+
+/// Stat-stage boosts in PS key order; `accuracy`/`evasion` included for
+/// completeness (the engine tracks all seven at `boosts[5]`/`boosts[6]`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Boosts {
+    #[serde(default)]
+    pub atk: i8,
+    #[serde(default)]
+    pub def: i8,
+    #[serde(default)]
+    pub spa: i8,
+    #[serde(default)]
+    pub spd: i8,
+    #[serde(default)]
+    pub spe: i8,
+    #[serde(default)]
+    pub accuracy: i8,
+    #[serde(default)]
+    pub evasion: i8,
+}
+
+impl Boosts {
+    /// The engine's `[i8; 7]` boost array is `[atk, def, spa, spd, spe, acc, eva]`.
+    fn from_engine(b: [i8; 7]) -> Self {
+        Boosts {
+            atk: b[0],
+            def: b[1],
+            spa: b[2],
+            spd: b[3],
+            spe: b[4],
+            accuracy: b[5],
+            evasion: b[6],
+        }
+    }
+}
+
+/// Normalized field state (tokens, not raw PS ids — see the contract doc).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldState {
+    /// "rain"/"sun"/"sand"/"snow" or null.
+    #[serde(default)]
+    pub weather: Option<String>,
+    /// "electric"/"grassy"/"psychic"/"misty" or null.
+    #[serde(default)]
+    pub terrain: Option<String>,
+    #[serde(default)]
+    pub trick_room: bool,
+    #[serde(default)]
+    pub gravity: bool,
+    #[serde(default)]
+    pub magic_room: bool,
+    #[serde(default)]
+    pub wonder_room: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SideStates {
+    #[serde(default)]
+    pub p1: SideState,
+    #[serde(default)]
+    pub p2: SideState,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SideState {
+    #[serde(default)]
+    pub reflect: bool,
+    #[serde(default)]
+    pub light_screen: bool,
+    #[serde(default)]
+    pub aurora_veil: bool,
+    #[serde(default)]
+    pub tailwind: bool,
+    #[serde(default)]
+    pub safeguard: bool,
+    #[serde(default)]
+    pub mist: bool,
+    #[serde(default)]
+    pub stealth_rock: bool,
+    #[serde(default)]
+    pub spikes: u8,
+    #[serde(default)]
+    pub toxic_spikes: u8,
+    #[serde(default)]
+    pub sticky_web: bool,
 }
 
 /// One recorded randomized outcome. `value` is the RAW PS value (bool for
@@ -95,10 +202,11 @@ pub struct DrawRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divergence {
     pub turn: u32,
+    /// The locus: a slot ref ("p1a"), "field", or "p1"/"p2" for side state.
     pub slot: String,
     pub field: &'static str,
-    pub engine: i64,
-    pub ps: i64,
+    pub engine: String,
+    pub ps: String,
 }
 
 #[derive(Debug, Clone)]
@@ -305,8 +413,188 @@ fn parse_side_choices(
 }
 
 // ---------------------------------------------------------------------------
+// Engine-state -> normalized token mappers (must mirror the driver's tokens)
+// ---------------------------------------------------------------------------
+
+fn status_token(s: Status) -> Option<&'static str> {
+    match s {
+        Status::None => None,
+        Status::Sleep => Some("slp"),
+        Status::Freeze => Some("frz"),
+        Status::Paralysis => Some("par"),
+        Status::Burn => Some("brn"),
+        Status::Poison => Some("psn"),
+        Status::Toxic => Some("tox"),
+    }
+}
+
+fn weather_token(w: Weather) -> Option<&'static str> {
+    match w {
+        Weather::None => None,
+        Weather::Rain => Some("rain"),
+        Weather::Sun => Some("sun"),
+        Weather::Sand => Some("sand"),
+        Weather::Snow => Some("snow"),
+    }
+}
+
+fn terrain_token(t: Terrain) -> Option<&'static str> {
+    match t {
+        Terrain::None => None,
+        Terrain::Electric => Some("electric"),
+        Terrain::Grassy => Some("grassy"),
+        Terrain::Psychic => Some("psychic"),
+        Terrain::Misty => Some("misty"),
+    }
+}
+
+/// Held-item slug, or `None` for an empty/consumed item slot. The engine's
+/// no-item sentinel is `u16::MAX` (like empty move slots); a blank slug is
+/// also treated as no item.
+fn item_slug(mon: &Pokemon) -> Option<&'static str> {
+    let id = mon.effective_item_id();
+    if id == u16::MAX {
+        return None;
+    }
+    let slug = data::ITEMS[id as usize].slug;
+    (!slug.is_empty()).then_some(slug)
+}
+
+fn ability_slug(mon: &Pokemon) -> Option<&'static str> {
+    let id = mon.effective_ability_id();
+    if id == u16::MAX {
+        return None;
+    }
+    let slug = data::ABILITIES[id as usize].slug;
+    (!slug.is_empty()).then_some(slug)
+}
+
+/// `None`/`Some("x")` rendered as a stable string for divergence display and
+/// comparison (engine and PS both fold "absent" to "none").
+fn opt_token(t: Option<&str>) -> String {
+    t.unwrap_or("none").to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Replay + diff
 // ---------------------------------------------------------------------------
+
+/// Compare one turn's engine state against the PS record. Returns the first
+/// divergence (slots in fixed p1a,p1b,p2a,p2b order, then field, then sides)
+/// or `None` if everything captured matches. Fields the record omits
+/// (`boosts`/`ability` absent, or `field`/`sides` absent) are skipped — a
+/// NOT_MODELLED-style allowance so partial captures don't false-positive.
+fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String> {
+    let div = |slot: &str, field: &'static str, engine: String, ps: String| Divergence {
+        turn: turn.turn,
+        slot: slot.to_string(),
+        field,
+        engine,
+        ps,
+    };
+
+    // Per-mon state, in deterministic slot order.
+    let mut slots: Vec<&String> = turn.state.keys().collect();
+    slots.sort();
+    for slot_ref in slots {
+        let expected = &turn.state[slot_ref];
+        let Some((side, slot)) = decode_slot_ref(slot_ref) else {
+            return Err(format!("bad state slot ref {slot_ref:?}"));
+        };
+        let mon = match side {
+            SideRef::P1 => b.p1.active_mon(slot),
+            SideRef::P2 => b.p2.active_mon(slot),
+        };
+        let (eng_hp, eng_fainted) = match mon {
+            Some(m) => (m.current_hp, m.fainted || m.current_hp == 0),
+            None => (0, true),
+        };
+        if eng_hp != expected.hp {
+            return Ok(Some(div(slot_ref, "hp", eng_hp.to_string(), expected.hp.to_string())));
+        }
+        if eng_fainted != expected.fainted {
+            return Ok(Some(div(slot_ref, "fainted", eng_fainted.to_string(), expected.fainted.to_string())));
+        }
+        // A fainted/empty slot has no further comparable mon state.
+        let Some(mon) = mon.filter(|_| !eng_fainted) else {
+            continue;
+        };
+        // status (engine None and PS null both fold to "none").
+        let eng_status = opt_token(status_token(mon.status));
+        let ps_status = opt_token(expected.status.as_deref());
+        if eng_status != ps_status {
+            return Ok(Some(div(slot_ref, "status", eng_status, ps_status)));
+        }
+        // item (None = no item on both sides).
+        let eng_item = opt_token(item_slug(mon));
+        let ps_item = opt_token(expected.item.as_deref());
+        if eng_item != ps_item {
+            return Ok(Some(div(slot_ref, "item", eng_item, ps_item)));
+        }
+        // ability — compared only when the record carries it.
+        if let Some(ps_ability) = &expected.ability {
+            let eng_ability = opt_token(ability_slug(mon));
+            if &eng_ability != ps_ability {
+                return Ok(Some(div(slot_ref, "ability", eng_ability, ps_ability.clone())));
+            }
+        }
+        // boosts — compared only when the record carries them.
+        if let Some(ps_boosts) = expected.boosts {
+            let eng_boosts = Boosts::from_engine(mon.boosts);
+            if eng_boosts != ps_boosts {
+                return Ok(Some(div(
+                    slot_ref,
+                    "boosts",
+                    format!("{eng_boosts:?}"),
+                    format!("{ps_boosts:?}"),
+                )));
+            }
+        }
+    }
+
+    // Field state.
+    if let Some(f) = &turn.field {
+        let checks: [(&'static str, String, String); 6] = [
+            ("weather", opt_token(weather_token(b.weather)), opt_token(f.weather.as_deref())),
+            ("terrain", opt_token(terrain_token(b.terrain)), opt_token(f.terrain.as_deref())),
+            ("trick_room", (b.trick_room_turns > 0).to_string(), f.trick_room.to_string()),
+            ("gravity", (b.gravity_turns > 0).to_string(), f.gravity.to_string()),
+            ("magic_room", (b.magic_room_turns > 0).to_string(), f.magic_room.to_string()),
+            ("wonder_room", (b.wonder_room_turns > 0).to_string(), f.wonder_room.to_string()),
+        ];
+        for (name, eng, ps) in checks {
+            if eng != ps {
+                return Ok(Some(div("field", name, eng, ps)));
+            }
+        }
+    }
+
+    // Per-side conditions.
+    if let Some(sides) = &turn.sides {
+        for (label, side_ref, ps) in [("p1", SideRef::P1, &sides.p1), ("p2", SideRef::P2, &sides.p2)] {
+            let c = &b.side(side_ref).conditions;
+            let checks: [(&'static str, String, String); 10] = [
+                ("reflect", (c.reflect_turns > 0).to_string(), ps.reflect.to_string()),
+                ("light_screen", (c.light_screen_turns > 0).to_string(), ps.light_screen.to_string()),
+                ("aurora_veil", (c.aurora_veil_turns > 0).to_string(), ps.aurora_veil.to_string()),
+                ("tailwind", (c.tailwind_turns > 0).to_string(), ps.tailwind.to_string()),
+                ("safeguard", (c.safeguard_turns > 0).to_string(), ps.safeguard.to_string()),
+                ("mist", (c.mist_turns > 0).to_string(), ps.mist.to_string()),
+                ("stealth_rock", c.stealth_rock.to_string(), ps.stealth_rock.to_string()),
+                ("spikes", c.spikes_layers.to_string(), ps.spikes.to_string()),
+                ("toxic_spikes", c.toxic_spikes_layers.to_string(), ps.toxic_spikes.to_string()),
+                ("sticky_web", c.sticky_web.to_string(), ps.sticky_web.to_string()),
+            ];
+            for (name, eng, psv) in checks {
+                if eng != psv {
+                    return Ok(Some(div(label, name, eng, psv)));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
 
 /// Replay a PS-driven battle into the engine under keyed-outcome injection and
 /// diff per-turn state. Stops reporting at the first divergence (downstream
@@ -327,43 +615,14 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
 
     let mut matched_turns = 0u32;
     let mut divergence = None;
-    'turns: for turn in &battle.turns {
+    for turn in &battle.turns {
         let p1c = parse_side_choices(&turn.choices.p1, SideRef::P1)?;
         let p2c = parse_side_choices(&turn.choices.p2, SideRef::P2)?;
         let result = b.step(&p1c, &p2c);
 
-        for (slot_ref, expected) in &turn.state {
-            let Some((side, slot)) = decode_slot_ref(slot_ref) else {
-                return Err(format!("bad state slot ref {slot_ref:?}"));
-            };
-            let mon = match side {
-                SideRef::P1 => b.p1.active_mon(slot),
-                SideRef::P2 => b.p2.active_mon(slot),
-            };
-            let (eng_hp, eng_fainted) = match mon {
-                Some(m) => (m.current_hp, m.fainted || m.current_hp == 0),
-                None => (0, true),
-            };
-            if eng_hp != expected.hp {
-                divergence = Some(Divergence {
-                    turn: turn.turn,
-                    slot: slot_ref.clone(),
-                    field: "hp",
-                    engine: eng_hp as i64,
-                    ps: expected.hp as i64,
-                });
-                break 'turns;
-            }
-            if eng_fainted != expected.fainted {
-                divergence = Some(Divergence {
-                    turn: turn.turn,
-                    slot: slot_ref.clone(),
-                    field: "fainted",
-                    engine: eng_fainted as i64,
-                    ps: expected.fainted as i64,
-                });
-                break 'turns;
-            }
+        if let Some(d) = diff_turn(&b, turn)? {
+            divergence = Some(d);
+            break;
         }
         matched_turns += 1;
         if matches!(result, StepResult::Ended { .. }) {
@@ -462,6 +721,8 @@ mod tests {
                     draw("damage", 0.into(), false),
                 ],
                 state: HashMap::new(),
+                field: None,
+                sides: None,
             }],
         };
         let (table, unresolved) = build_table(&b);
@@ -487,6 +748,8 @@ mod tests {
                 choices: SideChoices { p1: vec![], p2: vec![] },
                 draws: vec![d],
                 state: HashMap::new(),
+                field: None,
+                sides: None,
             }],
         };
         let (table, unresolved) = build_table(&b);
@@ -560,6 +823,8 @@ mod tests {
                 // PS damage roll 0 = max; crit; secondary roll 0 = proc.
                 draws: crunch_draws(true, 0, 0),
                 state: HashMap::new(),
+                field: None,
+                sides: None,
             }],
         };
         let report = replay(&battle).expect("replay ok");
@@ -578,7 +843,7 @@ mod tests {
         let mut state = HashMap::new();
         state.insert(
             "p2a".to_string(),
-            MonState { hp: 60000, maxhp: 0, fainted: false }, // impossible HP
+            MonState { hp: 60000, ..Default::default() }, // impossible HP
         );
         let battle = PsBattle {
             format: "gen9customgame".into(),
@@ -593,6 +858,8 @@ mod tests {
                 },
                 draws: crunch_draws(false, 15, 99),
                 state,
+                field: None,
+                sides: None,
             }],
         };
         let report = replay(&battle).expect("replay ok");
@@ -600,6 +867,61 @@ mod tests {
         assert_eq!(d.turn, 1);
         assert_eq!(d.slot, "p2a");
         assert_eq!(d.field, "hp");
-        assert_eq!(d.ps, 60000);
+        assert_eq!(d.ps, "60000");
+    }
+
+    /// The widened differ catches field-state and boost divergences (not just
+    /// HP), and passes when a fresh battle matches a default record.
+    #[test]
+    fn diff_turn_catches_field_and_boost_divergences() {
+        let p1 = TeamBuilder::from_showdown_text(P1_TEAM).unwrap();
+        let p2 = TeamBuilder::from_showdown_text(P2_TEAM).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp1 = b.p1.active_mon(0).unwrap().current_hp;
+        let hp2 = b.p2.active_mon(0).unwrap().current_hp;
+
+        // Fresh battle (no weather, no boosts) matches an all-default record.
+        let mut ok_state = HashMap::new();
+        ok_state.insert("p1a".to_string(), MonState { hp: hp1, ..Default::default() });
+        ok_state.insert("p2a".to_string(), MonState { hp: hp2, ..Default::default() });
+        let ok = TurnRecord {
+            turn: 1,
+            choices: SideChoices { p1: vec![], p2: vec![] },
+            draws: vec![],
+            state: ok_state,
+            field: Some(FieldState::default()),
+            sides: Some(SideStates::default()),
+        };
+        assert!(diff_turn(&b, &ok).unwrap().is_none(), "fresh state matches");
+
+        // A claimed weather of "rain" diverges from the engine's none.
+        let weather = TurnRecord {
+            turn: 1,
+            choices: SideChoices { p1: vec![], p2: vec![] },
+            draws: vec![],
+            state: HashMap::new(),
+            field: Some(FieldState { weather: Some("rain".into()), ..Default::default() }),
+            sides: None,
+        };
+        let d = diff_turn(&b, &weather).unwrap().expect("weather diverges");
+        assert_eq!((d.slot.as_str(), d.field), ("field", "weather"));
+        assert_eq!((d.engine.as_str(), d.ps.as_str()), ("none", "rain"));
+
+        // A claimed +2 Atk boost diverges from the engine's 0.
+        let mut bstate = HashMap::new();
+        bstate.insert(
+            "p1a".to_string(),
+            MonState { hp: hp1, boosts: Some(Boosts { atk: 2, ..Default::default() }), ..Default::default() },
+        );
+        let boost = TurnRecord {
+            turn: 1,
+            choices: SideChoices { p1: vec![], p2: vec![] },
+            draws: vec![],
+            state: bstate,
+            field: None,
+            sides: None,
+        };
+        let d = diff_turn(&b, &boost).unwrap().expect("boosts diverge");
+        assert_eq!((d.slot.as_str(), d.field), ("p1a", "boosts"));
     }
 }

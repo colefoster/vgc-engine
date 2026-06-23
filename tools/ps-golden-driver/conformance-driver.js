@@ -183,6 +183,39 @@ function patchRng(draws) {
 }
 
 // --- per-turn state snapshot ---------------------------------------------
+//
+// All three snapshots read the live, omniscient `Battle` object. PS field
+// citations (dist/sim, line numbers from the loaded build):
+//
+//   per-mon:
+//     pokemon.status     pokemon.js:152 / :1275  ("" | "slp"|"frz"|"par"|"brn"|"psn"|"tox")
+//     pokemon.boosts     pokemon.js:186          {atk,def,spa,spd,spe,accuracy,evasion}
+//     pokemon.item       pokemon.js:190 / :1405  (item id slug; "" when consumed, :1332/:1368/:1382)
+//     pokemon.ability    pokemon.js:188 / :1440  (ability id slug)
+//   field:
+//     field.weather      field.js:38 / :76       (weather id; "" when none)
+//     field.terrain      field.js:40 / :139      (terrain id; "" when none)
+//     field.pseudoWeather field.js:42            (keyed by pseudo-weather id)
+//   sides:
+//     side.sideConditions side.js:92 / :220      (keyed by sideCondition id)
+//     .layers            data/moves.js:17546 (spikes) / :19801 (toxicspikes)
+
+// PS weather id -> normalized token.
+const WEATHER_TOKEN = {
+  raindance: 'rain', primordialsea: 'rain',
+  sunnyday: 'sun', desolateland: 'sun',
+  sandstorm: 'sand',
+  snow: 'snow', snowscape: 'snow', hail: 'snow',
+};
+// PS terrain id -> normalized token.
+const TERRAIN_TOKEN = {
+  electricterrain: 'electric',
+  grassyterrain: 'grassy',
+  psychicterrain: 'psychic',
+  mistyterrain: 'misty',
+};
+
+const ZERO_BOOSTS = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 };
 
 function snapshotState(battle) {
   const out = {};
@@ -193,12 +226,68 @@ function snapshotState(battle) {
       if (!p) continue;
       const ref = slotRef(p);
       if (!ref) continue;
+      // boosts: copy onto a fully-defaulted object so every key is present.
+      const boosts = Object.assign({}, ZERO_BOOSTS);
+      if (p.boosts) {
+        for (const k of Object.keys(ZERO_BOOSTS)) {
+          if (typeof p.boosts[k] === 'number') boosts[k] = p.boosts[k];
+        }
+      }
       out[ref] = {
         hp: p.hp,
         maxhp: p.maxhp,
         fainted: !!p.fainted,
-        status: p.status || null,
+        status: p.status || null,    // "" -> null
+        boosts,
+        item: p.item || null,        // consumed/empty "" -> null
+        ability: p.ability || null,
       };
+    }
+  }
+  return out;
+}
+
+// Top-level per-turn field snapshot (normalized tokens).
+function snapshotField(battle) {
+  const f = (battle && battle.field) || null;
+  const pw = (f && f.pseudoWeather) || {};
+  return {
+    weather: (f && WEATHER_TOKEN[f.weather]) || null,
+    terrain: (f && TERRAIN_TOKEN[f.terrain]) || null,
+    trickRoom: !!pw.trickroom,
+    gravity: !!pw.gravity,
+    magicRoom: !!pw.magicroom,
+    wonderRoom: !!pw.wonderroom,
+  };
+}
+
+// One side's side-condition snapshot.
+function snapshotSideConditions(side) {
+  const sc = (side && side.sideConditions) || {};
+  const spikes = sc.spikes ? (sc.spikes.layers || 0) : 0;
+  const toxicSpikes = sc.toxicspikes ? (sc.toxicspikes.layers || 0) : 0;
+  return {
+    reflect: !!sc.reflect,
+    lightScreen: !!sc.lightscreen,
+    auroraVeil: !!sc.auroraveil,
+    tailwind: !!sc.tailwind,
+    safeguard: !!sc.safeguard,
+    mist: !!sc.mist,
+    stealthRock: !!sc.stealthrock,
+    spikes,
+    toxicSpikes,
+    stickyWeb: !!sc.stickyweb,
+  };
+}
+
+// Top-level per-turn sides snapshot, keyed p1/p2 (by side.id).
+function snapshotSides(battle) {
+  const out = { p1: snapshotSideConditions(null), p2: snapshotSideConditions(null) };
+  if (!battle || !battle.sides) return out;
+  for (const side of battle.sides) {
+    if (!side || !side.id) continue;
+    if (side.id === 'p1' || side.id === 'p2') {
+      out[side.id] = snapshotSideConditions(side);
     }
   }
   return out;
@@ -383,7 +472,14 @@ async function runJob(job) {
   const sides = getPlayerStreams(stream);
   const logChunks = [];
   let currentTurn = 0;
-  const stateByTurn = {}; // turn -> snapshot (end-of-turn)
+  const stateByTurn = {}; // turn -> per-slot snapshot (end-of-turn)
+  const fieldByTurn = {}; // turn -> field snapshot (end-of-turn)
+  const sidesByTurn = {}; // turn -> sides snapshot (end-of-turn)
+  const snapTurn = (turn, battle) => {
+    stateByTurn[turn] = snapshotState(battle);
+    fieldByTurn[turn] = snapshotField(battle);
+    sidesByTurn[turn] = snapshotSides(battle);
+  };
 
   const drainOmni = (async () => {
     for await (const chunk of sides.omniscient) {
@@ -394,7 +490,7 @@ async function runJob(job) {
           if (Number.isFinite(n)) {
             // |turn|N is printed once turn N-1 has fully resolved and PS is
             // paused awaiting input, so the live battle reflects end-of-(N-1).
-            if (n > 1) stateByTurn[n - 1] = snapshotState(stream.battle);
+            if (n > 1) snapTurn(n - 1, stream.battle);
             currentTurn = n;
             if (currentTurn > maxTurns) {
               try { sides.omniscient.write('>forcetie'); } catch (_) {}
@@ -428,7 +524,7 @@ async function runJob(job) {
   }
 
   // Final snapshot: end of the last turn that actually played.
-  stateByTurn[currentTurn] = snapshotState(stream.battle);
+  snapTurn(currentTurn, stream.battle);
 
   // --- assemble the per-turn output -------------------------------------
   const drawsByTurn = {};
@@ -453,6 +549,8 @@ async function runJob(job) {
     choices: choicesByTurn[t] || { p1: [], p2: [] },
     draws: drawsByTurn[t] || [],
     state: stateByTurn[t] || {},
+    field: fieldByTurn[t] || snapshotField(null),
+    sides: sidesByTurn[t] || snapshotSides(null),
   })).filter((t) =>
     // Drop phantom trailing turns: the forcetie/battle-end turn records the
     // picker's choices but produces no draws and no live state.
