@@ -1,0 +1,315 @@
+{
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1team": "Weavile\nAbility: Pressure\nLevel: 100\nEVs: 252 Atk / 4 Def / 252 Spe\nAdamant Nature\n- Megahorn",
+  "p2team": "Garganacl @ Leftovers\nAbility: Purifying Salt\nLevel: 100\nEVs: 252 HP / 252 Def / 4 SpD\nBold Nature\n- Splash",
+  "turns": [
+    {
+      "turn": 1,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "damage",
+          "value": 13
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 345,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "damage",
+          "value": 6
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 279,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "damage",
+          "value": 1
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 208,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 4,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "damage",
+          "value": 13
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 149,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 5,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 5,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 5,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 5,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "damage",
+          "value": 2
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 79,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 6,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 6,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "megahorn",
+          "decision": "accuracy",
+          "value": false,
+          "raw_is_bool": true
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 104,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    }
+  ],
+  "_meta": {
+    "ok": true,
+    "lastTurn": 7,
+    "totalDraws": 16,
+    "errors": []
+  }
+}

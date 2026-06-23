@@ -1,0 +1,263 @@
+{
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1team": "Weavile\nAbility: Pressure\nLevel: 100\nEVs: 252 Atk / 4 Def / 252 Spe\nAdamant Nature\n- Crunch",
+  "p2team": "Garganacl @ Leftovers\nAbility: Purifying Salt\nLevel: 100\nEVs: 252 HP / 252 Def / 4 SpD\nBold Nature\n- Splash",
+  "turns": [
+    {
+      "turn": 1,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "damage",
+          "value": 13
+        },
+        {
+          "turn": 1,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "secondary",
+          "value": 57,
+          "raw_is_bool": false
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 345,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "damage",
+          "value": 12
+        },
+        {
+          "turn": 2,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "secondary",
+          "value": 82,
+          "raw_is_bool": false
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 285,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "damage",
+          "value": 1
+        },
+        {
+          "turn": 3,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "secondary",
+          "value": 84,
+          "raw_is_bool": false
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 214,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    },
+    {
+      "turn": 4,
+      "choices": {
+        "p1": [
+          "move 1"
+        ],
+        "p2": [
+          "move 1"
+        ]
+      },
+      "draws": [
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "accuracy",
+          "value": true,
+          "raw_is_bool": true
+        },
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "crit",
+          "value": false
+        },
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "damage",
+          "value": 2
+        },
+        {
+          "turn": 4,
+          "actor": "p1a",
+          "target": "p2a",
+          "move": "crunch",
+          "decision": "secondary",
+          "value": 93,
+          "raw_is_bool": false
+        }
+      ],
+      "state": {
+        "p1a": {
+          "hp": 281,
+          "maxhp": 281,
+          "fainted": false,
+          "status": null
+        },
+        "p2a": {
+          "hp": 145,
+          "maxhp": 404,
+          "fainted": false,
+          "status": null
+        }
+      }
+    }
+  ],
+  "_meta": {
+    "ok": true,
+    "lastTurn": 5,
+    "totalDraws": 16,
+    "errors": []
+  }
+}
