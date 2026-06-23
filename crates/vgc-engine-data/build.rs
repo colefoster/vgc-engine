@@ -9,7 +9,7 @@
 //!   @pkmn/dex JSON dump (see ~/Dev/localdex)
 //!   Type chart cross-checked against PS `data/typechart.ts`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -337,6 +337,18 @@ struct SpeciesJson {
     /// directly (e.g. Calyrex-Ice is tagged `"Restricted Legendary"`).
     #[serde(default)]
     tags: Vec<String>,
+    /// PS `prevo`: the species **name** this one evolves from (e.g.
+    /// Charizard.prevo = "Charmeleon"). Absent for base-stage species. Drives
+    /// the learnset pre-evolution chain-walk — a mon can use any move its
+    /// pre-evolutions could learn.
+    #[serde(default)]
+    prevo: Option<String>,
+    /// PS `baseSpecies`: for an alternate forme, the base species **name**
+    /// (e.g. Charizard-Mega-X.baseSpecies = "Charizard"). Absent on base
+    /// formes. Mega formes have NO learnset of their own, so we merge the base
+    /// species' learnset; cosmetic/battle formes likewise share the base pool.
+    #[serde(default, rename = "baseSpecies")]
+    base_species: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -438,10 +450,56 @@ fn keep_gen9<'a, T>(
     out
 }
 
+/// Per-species learnset as parsed from `learnsets.json`: move-slug → list of
+/// source codes (e.g. `["9M", "9L30", "8M"]`). The codes encode generation +
+/// method (M=TM/HM, L=level-up, E=egg, T=tutor, S=event, V=Virtual Console,
+/// R=reminder/relearn, D=Dream World). We treat a move as legal if it appears
+/// under ANY method in ANY gen — a transfer-legal (HOME) VGC validator does not
+/// restrict by acquisition method, so the codes themselves are not stored.
+type LearnsetMap = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+/// Recursively collect every learnable move id for `slug`, walking the
+/// pre-evolution (`prevo`) chain and the base-forme (`baseSpecies`) link, and
+/// inserting each resolvable move's table index into `out`.
+///
+/// Mirrors PS `sim/team-validator.ts` `checkCanLearn`, which walks
+/// `species.prevo` and falls back to the base species' learnset for formes that
+/// have none (megas, cosmetic/battle formes). `visited` guards against cycles
+/// and redundant work. Moves not present in the emitted `MOVES` table (filtered
+/// by `keep_gen9`) are skipped — they can never appear in a validated set
+/// (unknown moves are rejected earlier by the verifier).
+fn collect_learnset(
+    slug: &str,
+    species: &BTreeMap<String, SpeciesJson>,
+    learnsets: &LearnsetMap,
+    move_slug_to_idx: &BTreeMap<String, usize>,
+    out: &mut BTreeSet<u16>,
+    visited: &mut BTreeSet<String>,
+) {
+    if !visited.insert(slug.to_string()) {
+        return;
+    }
+    if let Some(ls) = learnsets.get(slug) {
+        for mv in ls.keys() {
+            if let Some(&idx) = move_slug_to_idx.get(mv.as_str()) {
+                out.insert(idx as u16);
+            }
+        }
+    }
+    if let Some(sp) = species.get(slug) {
+        if let Some(prevo) = &sp.prevo {
+            collect_learnset(&slugify(prevo), species, learnsets, move_slug_to_idx, out, visited);
+        }
+        if let Some(base) = &sp.base_species {
+            collect_learnset(&slugify(base), species, learnsets, move_slug_to_idx, out, visited);
+        }
+    }
+}
+
 fn main() {
     let dex = dex_dir();
     println!("cargo:rerun-if-env-changed=VGC_DEX_DIR");
-    for f in ["moves.json", "abilities.json", "items.json", "pokedex.json", "typechart.json"] {
+    for f in ["moves.json", "abilities.json", "items.json", "pokedex.json", "typechart.json", "learnsets.json"] {
         let p = dex.join(f);
         println!("cargo:rerun-if-changed={}", p.display());
     }
@@ -451,6 +509,7 @@ fn main() {
     let items: BTreeMap<String, ItemJson> = read_json(&dex.join("items.json"));
     let species: BTreeMap<String, SpeciesJson> = read_json(&dex.join("pokedex.json"));
     let typechart: BTreeMap<String, TypeEntry> = read_json(&dex.join("typechart.json"));
+    let learnsets: LearnsetMap = read_json(&dex.join("learnsets.json"));
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR unset");
     let out_path = Path::new(&out_dir).join("data_tables.rs");
@@ -588,12 +647,15 @@ fn main() {
     writeln!(f).unwrap();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
     let mut move_consts: Vec<(String, usize)> = Vec::new();
+    // slug → emitted table index, for resolving learnset move ids below.
+    let mut move_slug_to_idx: BTreeMap<String, usize> = BTreeMap::new();
     for (slug, m) in &moves_keep {
         // Skip moves whose type isn't in the 18-type set (e.g. "???" placeholder).
         // The constant index must track the emitted-row count, not the
         // position in `moves_keep`, since skipped rows shift later indices.
         let Some(ty) = type_index(&m.type_) else { continue; };
         let move_idx = move_consts.len();
+        move_slug_to_idx.insert((*slug).clone(), move_idx);
         move_consts.push((const_ident(slug), move_idx));
         writeln!(
             f,
@@ -776,6 +838,8 @@ fn main() {
     let mut species_consts: Vec<(String, usize)> = Vec::new();
     // slug → emitted table index, for the mega-stone linkage table below.
     let mut species_slug_to_idx: BTreeMap<String, usize> = BTreeMap::new();
+    // Emitted species slugs in SPECIES-row order, for the learnset pool below.
+    let mut emitted_species_slugs: Vec<String> = Vec::new();
     for (slug, s) in &species_keep {
         let mut t = [0u8; 2];
         let nt = s.types.len().min(2) as u8;
@@ -792,6 +856,7 @@ fn main() {
         // shift later indices (mirrors the MOVES `move_idx` pattern).
         species_slug_to_idx.insert((*slug).clone(), species_consts.len());
         species_consts.push((const_ident(slug), species_consts.len()));
+        emitted_species_slugs.push((*slug).clone());
         let bs = &s.base_stats;
         let clamp = |x: u32| x.min(u8::MAX as u32) as u8;
         // Champions mega-forme base-stat correction (see MEGA_FORME_FIXES);
@@ -846,6 +911,46 @@ fn main() {
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
     emit_id_module(&mut f, "species_id", &species_consts);
+
+    // --- Learnsets: per-species pool of legal move ids, pre-merged at build
+    // time with the pre-evolution chain (`prevo`) and base-forme (`baseSpecies`)
+    // learnsets so the runtime check (`species_can_learn`) is a single binary
+    // search — no chain-walking, no allocation. Source: `@pkmn/dex`
+    // `learnsets.json`; merge logic mirrors PS `sim/team-validator.ts`
+    // `checkCanLearn` (prevo walk + base-species fallback). We are intentionally
+    // permissive (transfer-legal / HOME): a move counts if it appears under ANY
+    // method in ANY gen. Each species' slice is stored sorted for binary search.
+    let mut learn_pool: Vec<u16> = Vec::new();
+    let mut learn_index: Vec<(usize, usize)> = Vec::new();
+    for slug in &emitted_species_slugs {
+        let mut set: BTreeSet<u16> = BTreeSet::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        collect_learnset(slug, &species, &learnsets, &move_slug_to_idx, &mut set, &mut visited);
+        let off = learn_pool.len();
+        learn_pool.extend(set.iter().copied());
+        learn_index.push((off, learn_pool.len() - off));
+    }
+    writeln!(f, "/// Flat pool of legal move ids. Each species' slice is sorted (for").unwrap();
+    writeln!(f, "/// binary search) and pre-merged with its pre-evolution + base-forme").unwrap();
+    writeln!(f, "/// learnsets. Indexed via `LEARNSET_INDEX`. See build.rs for derivation.").unwrap();
+    writeln!(f, "pub const LEARNSET_POOL: &[u16] = &[").unwrap();
+    for chunk in learn_pool.chunks(24) {
+        write!(f, "    ").unwrap();
+        for id in chunk {
+            write!(f, "{}, ", id).unwrap();
+        }
+        writeln!(f).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "/// `(offset, len)` into `LEARNSET_POOL`, indexed by `species_id`.").unwrap();
+    writeln!(f, "/// A species' legal moves are `LEARNSET_POOL[offset..offset+len]`.").unwrap();
+    writeln!(f, "pub const LEARNSET_INDEX: &[(u32, u32)] = &[").unwrap();
+    for (off, len) in &learn_index {
+        writeln!(f, "    ({}, {}),", off, len).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
 
     // --- Mega Evolution linkage: stone item → (base species, mega forme,
     // mega forme's ability). Built from PS/@pkmn `item.megaStone`, which maps
