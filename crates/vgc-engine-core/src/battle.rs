@@ -323,6 +323,12 @@ impl Battle {
         self.turn
     }
 
+    /// Read-only access to the battle's RNG. Used by the conformance harness
+    /// to read `unmatched_draws()` after an `Rng::OracleKeyed` replay.
+    pub fn rng(&self) -> &Rng {
+        &self.rng
+    }
+
     pub fn seed(&self) -> u64 {
         self.config.seed
     }
