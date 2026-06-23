@@ -701,6 +701,17 @@ pub struct Pokemon {
     /// the bool tight for the moment and gate at the consumer when
     /// those abilities are added.
     pub ability_suppressed: bool,
+    /// Held-item EFFECT suppression flag. While `true`, `effective_item_id()`
+    /// reports `u16::MAX` (no item) so every item-effect read short-circuits,
+    /// but the underlying `item_id` is left intact (the item is NOT removed).
+    /// Set on all active Pokémon while Magic Room is up — PS models this via
+    /// `Pokemon.ignoringItem()` returning true when the `magicroom`
+    /// pseudo-weather is active (`sim/pokemon.ts:888`); we collapse that live
+    /// field read into a per-mon bool maintained on Magic Room start/end and
+    /// on switch-in (mirrors the `GravityGrounded` volatile pattern). Item
+    /// PRESENCE reads (Acrobatics, Fling, Knock Off, Poltergeist) keep using
+    /// the raw `item_id`, exactly as PS reads `pokemon.item` for those.
+    pub item_suppressed: bool,
     /// Slow Start turn counter. PS `data/abilities.ts:slowstart` adds
     /// a 5-turn `slowstart` volatile on switch-in; while the volatile
     /// is alive the holder's Atk and Spe are halved. We model that as
@@ -821,6 +832,7 @@ impl Pokemon {
             boosted_stat: 255,
             booster_locked: false,
             ability_suppressed: false,
+            item_suppressed: false,
             crit_stage_volatile: 0,
             last_attacker: (255, 255),
             last_attacker_category: 255,
@@ -862,7 +874,9 @@ impl Pokemon {
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Float_Stone>.
     pub fn effective_weight_dg(&self) -> u32 {
         let base = self.species().weight_dg as u32;
-        if self.item_id == data::item_id::FLOATSTONE {
+        // `effective_item_id()` is `u16::MAX` under Magic Room — Float Stone's
+        // weight halving is an item effect, so it is suppressed (item kept).
+        if self.effective_item_id() == data::item_id::FLOATSTONE {
             (base / 2).max(1)
         } else {
             base
@@ -884,7 +898,9 @@ impl Pokemon {
     /// check — those are gated below in `is_grounded_internal`.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ring_Target>.
     pub fn negates_type_immunity(&self) -> bool {
-        self.item_id == data::item_id::RINGTARGET
+        // Ring Target's immunity-negation is an item effect — suppressed
+        // under Magic Room (`effective_item_id()` reports no item).
+        self.effective_item_id() == data::item_id::RINGTARGET
     }
 
     /// True if the mon is grounded — i.e. terrain effects, Earthquake,
@@ -1034,10 +1050,18 @@ impl Pokemon {
     /// the inline `item_id == u16::MAX ? "" : ITEMS[item_id].slug` pattern
     /// used across the hot path, letting call sites compare against
     /// `data::item_id::*` constants without the slug round-trip. (There is
-    /// no item suppression today, so this is simply the field; it exists
-    /// for call-site symmetry with the ability accessor.)
+    /// for call-site symmetry with the ability accessor.) When
+    /// `item_suppressed` is set (Magic Room — PS `Pokemon.ignoringItem()`
+    /// true while the `magicroom` pseudo-weather is up, `sim/pokemon.ts:888`)
+    /// this reports `u16::MAX` so item-EFFECT reads see no item, while the
+    /// raw `item_id` field is left untouched (the item is suppressed, not
+    /// removed). Presence reads (Acrobatics / Fling / Knock Off / Poltergeist)
+    /// deliberately read `item_id` directly, matching PS's `pokemon.item`.
     #[inline]
     pub fn effective_item_id(&self) -> u16 {
+        if self.item_suppressed {
+            return u16::MAX;
+        }
         self.item_id
     }
 
@@ -1776,7 +1800,7 @@ impl Pokemon {
         // `sim/pokemon.ts:isGrounded()` which checks for `ironball` and
         // returns true before the standard untrue-grounding checks.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Iron_Ball>.
-        if self.item_id == data::item_id::IRONBALL {
+        if self.effective_item_id() == data::item_id::IRONBALL {
             return true;
         }
         // Smack Down / Thousand Arrows grounding — PS
@@ -1800,7 +1824,7 @@ impl Pokemon {
         // Balloon — those are checked after the Flying branch in PS and are
         // unaffected. So a Flying-type Ring Target holder grounds out, while
         // a Levitate / Air Balloon Ring Target holder stays airborne.
-        let negate_type_immunity = self.item_id == data::item_id::RINGTARGET;
+        let negate_type_immunity = self.effective_item_id() == data::item_id::RINGTARGET;
         let s = self.species();
         let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
         if flying && !negate_type_immunity {
@@ -1809,7 +1833,7 @@ impl Pokemon {
         if self.effective_ability_id() == data::ability_id::LEVITATE && !ignore_levitate {
             return false;
         }
-        if self.item_id == data::item_id::AIRBALLOON {
+        if self.effective_item_id() == data::item_id::AIRBALLOON {
             return false;
         }
         true
