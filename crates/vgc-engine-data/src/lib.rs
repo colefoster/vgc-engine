@@ -125,6 +125,30 @@ pub fn is_inert_item(slug: &str) -> bool {
     INERT_ITEMS.binary_search(&slug).is_ok()
 }
 
+/// True iff the species (by `species_id` table index) can legally learn the
+/// move (by `move_id` table index).
+///
+/// Backed by the build-time [`LEARNSET_POOL`] / [`LEARNSET_INDEX`] tables,
+/// which already merge each species' own learnset with its pre-evolution chain
+/// and base-forme learnset (see build.rs). The check is therefore a single
+/// binary search over the species' sorted slice — alloc-free and O(log n).
+///
+/// Permissiveness mirrors a transfer-legal (HOME) VGC validator: a move is
+/// legal if the species (or any pre-evolution / base forme) can learn it via
+/// ANY method in ANY generation. This is intentionally looser than PS's full
+/// `checkCanLearn` (which also enforces egg-move parent chains, event-exclusive
+/// move combinations, and per-generation acquisition rules).
+pub fn species_can_learn(species_id: u16, move_id: u16) -> bool {
+    match LEARNSET_INDEX.get(species_id as usize) {
+        Some(&(off, len)) => {
+            let start = off as usize;
+            let end = start + len as usize;
+            LEARNSET_POOL[start..end].binary_search(&move_id).is_ok()
+        }
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +374,33 @@ mod tests {
         // Genderless (`"N"`).
         assert_eq!(species_by_slug("magnemite").unwrap().gender, Gender::Genderless);
         assert_eq!(species_by_slug("tandemaus").unwrap().gender, Gender::Genderless);
+    }
+
+    /// Learnset membership, the pre-evo chain-walk, and mega base-forme
+    /// fallback. Verified against `~/Dev/localdex/data/learnsets.json`.
+    #[test]
+    fn species_can_learn_resolves_chain_and_mega() {
+        // Own learnset: Charizard learns Flamethrower; it cannot learn Surf.
+        assert!(species_can_learn(species_id::CHARIZARD, move_id::FLAMETHROWER));
+        assert!(!species_can_learn(species_id::CHARIZARD, move_id::SURF));
+
+        // Pre-evolution chain: Dragonite learns Supersonic ONLY via its
+        // pre-evolutions (Dratini / Dragonair) — not in its own learnset.
+        assert!(species_can_learn(species_id::DRAGONITE, move_id::SUPERSONIC));
+
+        // Mega formes have no learnset of their own; they validate against the
+        // base species (merged via `baseSpecies`), including the base's chain.
+        assert!(species_can_learn(species_id::CHARIZARDMEGAX, move_id::FLAMETHROWER));
+        assert!(species_can_learn(species_id::DRAGONITEMEGA, move_id::SUPERSONIC));
+
+        // Negative: Incineroar cannot learn Spore.
+        assert!(!species_can_learn(species_id::INCINEROAR, move_id::SPORE));
+
+        // Index/pool consistency: one slice per species, within bounds.
+        assert_eq!(LEARNSET_INDEX.len(), SPECIES.len());
+        for &(off, len) in LEARNSET_INDEX {
+            assert!((off + len) as usize <= LEARNSET_POOL.len());
+        }
     }
 
     /// Weights round-trip from `@pkmn/dex` `weightkg` into decigrams.
