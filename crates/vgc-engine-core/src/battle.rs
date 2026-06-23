@@ -1503,6 +1503,7 @@ impl Battle {
             incoming.protean_used = false; // Protean / Libero once-per-switch latch resets.
             incoming.crit_stage_volatile = 0; // Focus Energy / Laser Focus clear on switch-out.
             incoming.micle_next_move = false; // Micle Berry accuracy latch clears on switch-out.
+            incoming.unburden_active = false; // Unburden speed-double latch clears on switch-out (PS `onEnd`).
             incoming.commanding = false; // Commander (Tatsugiri) volatile clears on switch-out.
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
@@ -15168,6 +15169,111 @@ mod tests {
             );
             assert_eq!(b.p2.team[0].current_hp, hp_pre, "without Micle the 90-roll misses Stone Edge (80 acc)");
         }
+    }
+
+    #[test]
+    fn toxic_chain_badly_poisons_on_low_roll_not_high_roll() {
+        // PS data/abilities.ts:toxicchain — onSourceDamagingHit: 30% chance
+        // (randomChance(3,10)) to badly-poison the target on any damaging
+        // hit. The attacker holds it. We drive the percent roll directly:
+        // a roll <=30 poisons, a roll >30 does not — proving it fires on
+        // some seeds but not all.
+        let attacker = r#"[
+            {"species":"gliscor","level":50,"ability":"toxicchain","nature":"hardy","item":"","moves":["earthquake","protect","toxic","uturn"]}
+        ]"#;
+        let defender = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        // Low roll (<=30) → badly poisoned.
+        {
+            let p1 = TeamBuilder::from_json(attacker).unwrap();
+            let p2 = TeamBuilder::from_json(defender).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(20)], 0);
+            crate::ability::on_damaging_hit(
+                &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
+            );
+            assert_eq!(
+                b.p2.team[0].status,
+                crate::pokemon::Status::Toxic,
+                "20-roll (<=30) → Toxic Chain badly-poisons the target",
+            );
+        }
+        // High roll (>30) → no status.
+        {
+            let p1 = TeamBuilder::from_json(attacker).unwrap();
+            let p2 = TeamBuilder::from_json(defender).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(55)], 0);
+            crate::ability::on_damaging_hit(
+                &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
+            );
+            assert_eq!(
+                b.p2.team[0].status,
+                crate::pokemon::Status::None,
+                "55-roll (>30) → no poison",
+            );
+        }
+    }
+
+    #[test]
+    fn unburden_doubles_speed_after_berry_eaten() {
+        // PS data/abilities.ts:unburden — the Speed-doubling volatile latches
+        // when the holder's item is used up and applies while itemless. We
+        // eat a Sitrus Berry via on_after_damage and confirm the latch + ×2
+        // Speed.
+        let p1_json = r#"[
+            {"species":"hawlucha","level":50,"ability":"unburden","nature":"jolly","item":"sitrusberry","moves":["acrobatics","closecombat","swordsdance","protect"],"evs":{"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","item":"","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let base_speed = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        assert!(!b.p1.team[0].unburden_active, "latch starts clear (item still held)");
+        assert_eq!(
+            base_speed,
+            crate::order::effective_speed(&b.p1.team[0], false, b.weather),
+            "no doubling while the berry is held",
+        );
+        // Drop to <=50% max HP so Sitrus fires.
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus Berry consumed");
+        assert!(b.p1.team[0].unburden_active, "Unburden latch set when item left");
+        let boosted = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        assert_eq!(boosted, base_speed * 2, "Unburden doubles Speed once itemless");
+    }
+
+    #[test]
+    fn symbiosis_passes_item_to_ally_that_used_its_berry() {
+        // PS data/abilities.ts:symbiosis — onAllyAfterUseItem hands the
+        // holder's own item to the ally that just consumed one. Doubles: the
+        // Symbiosis donor (slot 0) holds a Life Orb; the ally (slot 1) eats
+        // its Sitrus Berry and immediately receives the Life Orb.
+        let p1_json = r#"[
+            {"species":"oranguru","level":50,"ability":"symbiosis","nature":"sassy","item":"lifeorb","moves":["psychic","trickroom","nastyplot","protect"]},
+            {"species":"hawlucha","level":50,"ability":"limber","nature":"jolly","item":"sitrusberry","moves":["acrobatics","closecombat","swordsdance","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].item_id, data::item_id::LIFEORB, "donor starts with Life Orb");
+        // Ally (slot 1) drops to <=50% so its Sitrus fires.
+        b.p1.team[1].current_hp = b.p1.team[1].stats.hp / 2;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 1, &mut crate::rng::Rng::new(0));
+        assert_eq!(
+            b.p1.team[1].item_id,
+            data::item_id::LIFEORB,
+            "ally received the donor's Life Orb via Symbiosis",
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Symbiosis donor gave away its item");
     }
 
     #[test]
