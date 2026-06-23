@@ -143,6 +143,7 @@ pub fn try_consume_type_resist_berry(
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.item_id = u16::MAX;
     }
+    maybe_on_item_consumed(battle, target_side, target_slot, item_id);
     true
 }
 
@@ -181,6 +182,7 @@ pub fn on_before_damage(
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.item_id = u16::MAX;
             }
+            maybe_on_item_consumed(battle, side, slot, item_id);
             return Some(current - 1);
         }
     }
@@ -396,6 +398,28 @@ pub fn on_after_damage(
             battle.apply_boosts(side, slot, &[(chosen, 2)], side, slot);
         }
     }
+    // If any HP-triggered berry above was actually eaten (item went from a
+    // real id at entry to MAX), drive the item-loss ability triggers once:
+    // Unburden's speed latch and Symbiosis's ally hand-off.
+    maybe_on_item_consumed(battle, side, slot, item_id);
+}
+
+/// Shared tail for held-item consumption hooks: if `entry_item` was a real
+/// item that is now gone from the mon at (`side`, `slot`), fire the
+/// item-loss ability triggers exactly once. No-op if the item is still
+/// held (the consume gate didn't fire) or was already absent.
+#[inline]
+fn maybe_on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8, entry_item: u16) {
+    if entry_item == u16::MAX {
+        return;
+    }
+    let gone = battle
+        .side(side)
+        .active_mon(slot as usize)
+        .is_some_and(|m| m.item_id == u16::MAX);
+    if gone {
+        crate::ability::on_item_consumed(battle, side, slot);
+    }
 }
 
 /// Leppa Berry — PS `data/items.ts:leppaberry` (line 3347).
@@ -443,6 +467,7 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
         m.item_id = u16::MAX;
     }
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Defender's held item reacts to an incoming contact hit. Mirrors PS's
@@ -881,6 +906,7 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     // Booster-energy terrain orb self-boost (+1).
     battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Persim Berry — PS `data/items.ts:4513` (persimberry).
@@ -912,6 +938,7 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
         m.volatiles.remove(VK::Confusion);
         m.item_id = u16::MAX;
     }
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Room Service — PS `data/items.ts:5305` (roomservice).
@@ -945,6 +972,7 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     // -1 Speed self-drop (stat index 4).
     battle.apply_boosts(side, slot, &[(4, -1)], side, slot);
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Blunder Policy — PS `sim/battle-actions.ts:740`:
@@ -971,6 +999,7 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
     }
     // +2 Speed self-boost (stat index 4).
     battle.apply_boosts(side, slot, &[(4, 2)], side, slot);
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Run the White Herb check on a single active mon. If holder has
@@ -1012,6 +1041,7 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
             m.item_id = u16::MAX;
         }
     }
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// Reactive switch trigger — Eject Button.
@@ -1236,6 +1266,7 @@ pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u
             m.item_id = u16::MAX;
         }
     }
+    maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
 /// End-of-turn item residual: heals / damage from held items.
