@@ -1502,6 +1502,8 @@ impl Battle {
             incoming.micle_next_move = false; // Micle Berry accuracy latch clears on switch-out.
             incoming.commanding = false; // Commander (Tatsugiri) volatile clears on switch-out.
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
+            incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
+            incoming.cud_chew_counter = 0;
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
             // `twoturnmove` / `lockedmove` / `mustrecharge` volatiles
@@ -4048,6 +4050,20 @@ impl Battle {
                             payload: 0,
                         });
                     }
+                    continue;
+                }
+                // Well-Baked Body — PS `data/abilities.ts:5451` `onTryHit`:
+                //   if (target !== source && move.type === 'Fire') {
+                //     if (!this.boost({ def: 2 })) { /* -immune */ }
+                //     return null;
+                //   }
+                // Fire-type immunity + a self +2 Defense on absorbing the
+                // hit (the immunity still applies even if Def is already
+                // maxed). Def stat index = 1. `flags: { breakable: 1 }` —
+                // Mold Breaker bypasses. Dachsbun signature. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Well-Baked_Body_(Ability)>.
+                if def_ability == data::ability_id::WELLBAKEDBODY && !attacker_breaks_mold {
+                    self.apply_boosts(tside, tslot, &[(1, 2)], tside, tslot);
                     continue;
                 }
             }
@@ -11823,6 +11839,89 @@ mod tests {
         // Should be above 0; not fainted.
         assert!(b.p2.team[0].current_hp > 0);
         let _ = before;
+    }
+
+    #[test]
+    fn well_baked_body_nullifies_fire_and_gains_def() {
+        // Dachsbun is immune to Fire moves; when hit by one it instead
+        // gains +2 Defense and takes no damage. PS `data/abilities.ts:5451`.
+        let p1_json = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"","nature":"timid","moves":["flamethrower","airslash","dragonpulse","roost"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"dachsbun","level":50,"ability":"wellbakedbody","item":"","nature":"impish","moves":["playrough","bodypress","protect","wish"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p2.team[0].stats.hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, max, "Fire move dealt no damage (absorbed)");
+        assert_eq!(b.p2.team[0].boosts[1], 2, "Well-Baked Body grants +2 Defense");
+    }
+
+    #[test]
+    fn costar_copies_ally_boosts_on_switch_in() {
+        // Flamigo's Costar copies the ally's entire stat-stage array on
+        // switch-in. PS `data/abilities.ts:688`. Doubles only.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]},
+            {"species":"flamigo","level":50,"ability":"costar","item":"","nature":"jolly","moves":["bravebird","closecombat","protect","uturn"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        // Give the ally (slot 0) +2 Atk / +1 Def, then re-fire Flamigo's
+        // switch-in to model it entering with the ally already boosted.
+        b.p1.team[0].boosts = [2, 1, 0, 0, 0, 0, 0];
+        b.p1.team[1].boosts = [0; 7];
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 1);
+        assert_eq!(b.p1.team[1].boosts, [2, 1, 0, 0, 0, 0, 0], "Costar copies the ally's boosts");
+    }
+
+    #[test]
+    fn cud_chew_reeats_sitrus_at_end_of_next_turn() {
+        // Farigiraf's Cud Chew re-eats an eaten Berry one more time at the
+        // end of the NEXT turn (heals twice total). PS `data/abilities.ts:732`.
+        let p1_json = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","dazzlinggleam","mysticalfire"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"farigiraf","level":50,"ability":"cudchew","item":"sitrusberry","nature":"sassy","moves":["psychicnoise","foulplay","trickroom","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p2.team[0].stats.hp;
+        // Drop to 60% so the incoming hit pushes it below 50% → Sitrus eats.
+        b.p2.team[0].current_hp = max * 6 / 10;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        // First eat consumed the berry and scheduled the Cud Chew re-eat;
+        // the end-of-turn-1 residual decremented the counter from 2 → 1.
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Sitrus consumed on first eat");
+        assert_eq!(b.p2.team[0].cud_chew_berry, data::item_id::SITRUSBERRY, "re-eat scheduled");
+        assert_eq!(b.p2.team[0].cud_chew_counter, 1, "counter decremented at end of turn 1");
+        // Set HP to a known value so the second heal is uncapped/observable.
+        b.p2.team[0].current_hp = 100;
+        let heal = (max / 4).max(1);
+        // Turn 2: both pass → no damage; end-of-turn re-eat heals again.
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p2.team[0].current_hp, 100 + heal, "Cud Chew re-eats Sitrus (second heal)");
+        assert_eq!(b.p2.team[0].cud_chew_berry, u16::MAX, "re-eat schedule cleared");
+        assert_eq!(b.p2.team[0].cud_chew_counter, 0, "counter cleared after re-eat");
     }
 
     #[test]
