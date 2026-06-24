@@ -533,6 +533,29 @@ impl Battle {
         source_side: SideRef,
         source_slot: u8,
     ) {
+        // Contrary — PS data/abilities.ts:contrary `onChangeBoost`: every
+        // stat change on the holder is inverted. This runs BEFORE Mist /
+        // Clear Body / Mirror Armor (PS `onChangeBoost` precedes `onTryBoost`),
+        // so those see the FLIPPED signs — a Contrary holder's "drops" become
+        // boosts that Mist / Clear Body no longer block, and its "boosts"
+        // become drops. Not breakable; suppressed by Neutralizing Gas via
+        // effective_ability_id. Heap-free `[(u8, i8); 7]` buffer (step() is
+        // alloc-free). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Contrary_(Ability)>.
+        let target_contrary = self
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|m| m.effective_ability_id() == data::ability_id::CONTRARY);
+        let mut contrary_buf = [(0u8, 0i8); 7];
+        let deltas: &[(u8, i8)] = if target_contrary {
+            let n = deltas.len().min(7);
+            for (i, &(idx, delta)) in deltas.iter().take(7).enumerate() {
+                contrary_buf[i] = (idx, -delta);
+            }
+            &contrary_buf[..n]
+        } else {
+            deltas
+        };
         // Mirror Armor — PS `data/abilities.ts:2612` `onTryBoost`:
         //   if (!source || target === source || effect.name === 'Mirror Armor') return;
         //   for (b in boost) if (boost[b] < 0) {
@@ -17149,6 +17172,42 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn contrary_inverts_stat_changes() {
+        // PS data/abilities.ts:contrary — every stat change on the holder is
+        // inverted. Swords Dance (+2 Atk) becomes −2; an opponent's Growl
+        // (−1 Atk) becomes +1.
+        let malamar = r#"[
+            {"species":"malamar","level":50,"ability":"contrary","nature":"adamant","moves":["swordsdance","amnesia","psychocut","superpower"]}
+        ]"#;
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["growl","amnesia","rest","bodyslam"]}
+        ]"#;
+        // Scenario A: Malamar Swords Dance → −2 Atk (inverted).
+        {
+            let p1 = TeamBuilder::from_json(malamar).unwrap();
+            let p2 = TeamBuilder::from_json(snorlax).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            );
+            assert_eq!(b.p1.team[0].boosts[0], -2, "Contrary flips Swords Dance to −2 Atk");
+        }
+        // Scenario B: Snorlax Growl on Malamar → +1 Atk (inverted). Malamar
+        // self-boosts (Amnesia) so Growl isn't Protect-blocked.
+        {
+            let p1 = TeamBuilder::from_json(malamar).unwrap();
+            let p2 = TeamBuilder::from_json(snorlax).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p1.team[0].boosts[0], 1, "Contrary flips Growl to +1 Atk");
+        }
     }
 
     #[test]
