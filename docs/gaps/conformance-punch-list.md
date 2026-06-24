@@ -22,11 +22,18 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   correct. Lesson: trace before "fixing"; the harness shines at Champions data
   deltas (cf. Make It Rain -2).
 
+## SHIPPED (cont.)
+- ✅ **Curse implemented** (both branches). Non-Ghost user → self +1 Atk/+1
+  Def/−1 Spe, no cost. Ghost user → directDamage floor(maxhp/2) to self +
+  `curse` volatile on a foe (fails if already cursed; bypasses Sub; ignores
+  Protect — no protect flag), target loses 1/4 max HP each end of turn
+  (residual order 12, Magic Guard blocks the chip). 3 unit tests. NOTE: the
+  old out_13 entry below referenced the *previous* batch (Trevenant Curse);
+  the regenerated out_13 never uses Curse — its residual turn-2 p2b gap
+  (engine 46 vs ps 145) is an **Excadrill Iron Head damage divergence**
+  (trace-first; see memory `match-real-champions`), not a Curse bug.
+
 ## OPEN — clean, contained (ship next)
-- **Curse (Ghost-type) self-HP cost** — out_13. Trevenant Curse pays 50% max HP
-  (PS 160→80) to curse the target; engine pays nothing. Curse is "not impl"
-  (battle.rs:6874). Non-Ghost Curse = +atk/+def/-spe; Ghost Curse = -50% HP,
-  target loses 25%/turn.
 - **Spiky Shield family share the plain-Protect arm** (battle.rs:~7457) — out_24
   (Fake Out into Spiky Shield: PS chips attacker 1/8 on contact; engine no
   chip). Same arm: Baneful Bunker (poison), King's Shield/Obstruct (−Atk/−Def),
