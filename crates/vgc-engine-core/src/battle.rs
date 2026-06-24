@@ -5090,12 +5090,10 @@ impl Battle {
             if defender.ability_id == data::ability_id::WATERBUBBLE && m.type_ == 1 && dmg > 0 {
                 dmg /= 2;
             }
-            // Knock Off: ×1.5 vs item holders. PS data/moves.ts:knockoff
-            // onBasePower step — applied as a move-level mult here.
-            let knockoff_boost = move_id == data::move_id::KNOCKOFF && defender.item_id != u16::MAX;
-            if knockoff_boost && dmg > 0 {
-                dmg = ((dmg as u32) * 3 / 2).min(u16::MAX as u32) as u16;
-            }
+            // Knock Off's ×1.5 vs item holders is applied at the base-power
+            // stage inside `calculate_damage` (PS data/moves.ts:knockoff
+            // onBasePower chainModify(1.5)), not here on final damage — the
+            // stage difference changes the rounding. Item removal stays below.
 
             // Type-resist berries — Chople (Fighting), Occa (Fire), ...
             // halve damage from a SE hit of the matching type (Chilan
