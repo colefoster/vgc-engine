@@ -9283,6 +9283,49 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::DISABLE => {
+                // PS data/moves.ts:disable — locks the target's LAST-USED
+                // move for 4 turns (`disable` volatile, onResidualOrder 17,
+                // gating move selection + use; the machinery already exists,
+                // shared with Cursed Body). Fails if the target has no last
+                // move, already has a move Disabled (no stacking), or the
+                // last-move slot is out of PP. Aroma Veil on the target's
+                // side blocks it (breakable → a Mold Breaker user bypasses).
+                // Duration 4 matches Cursed Body; PS additionally bumps the
+                // duration by 1 when the target has not acted yet this turn —
+                // a 1-turn tail we don't model.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Disable_(move)>
+                if !self.rolled_accuracy_passed(m) { return; }
+                if let Some((opp, slot)) = opp_target {
+                    let last_slot = self
+                        .side(opp)
+                        .active_mon(slot as usize)
+                        .map(|t| t.last_used_move_slot)
+                        .unwrap_or(255);
+                    let attacker_breaks_mold = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .is_some_and(|a| matches!(
+                            a.effective_ability_id(),
+                            data::ability_id::MOLDBREAKER
+                                | data::ability_id::TERAVOLT
+                                | data::ability_id::TURBOBLAZE
+                        ));
+                    let appliable = last_slot != 255
+                        && (last_slot as usize) < 4
+                        && self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                            t.is_alive()
+                                && t.disabled_move_slot() == 255
+                                && t.pp[last_slot as usize] > 0
+                        })
+                        && !self.side_has_aroma_veil(opp, attacker_breaks_mold);
+                    if appliable {
+                        if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                            t.set_disable(4, last_slot);
+                        }
+                    }
+                }
+            }
             data::move_id::LEECHSEED => {
                 // PS data/moves.ts:10204 leechseed. 90% accuracy,
                 // single-target status, Grass-type immunity, applies
@@ -16889,6 +16932,38 @@ mod tests {
         assert_eq!(run(grounded, true), Status::None, "Spore blocked vs grounded foe under Misty");
         assert_eq!(run(grounded, false), Status::Sleep, "Spore sleeps grounded foe with no terrain");
         assert_eq!(run(airborne, true), Status::Sleep, "Spore still sleeps an airborne foe under Misty");
+    }
+
+    #[test]
+    fn disable_move_locks_targets_last_used_move() {
+        // Fast Jolteon Disables slow Snorlax's last-used move. Disable fails
+        // turn 1 (Snorlax has no last move yet); on turn 2 it locks Snorlax's
+        // Body Slam (slot 0).
+        let jolteon = r#"[
+            {"species":"jolteon","level":50,"ability":"voltabsorb","nature":"timid","moves":["disable","thunderbolt","quickattack","protect"]}
+        ]"#;
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["bodyslam","rest","amnesia","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(jolteon).unwrap();
+        let p2 = TeamBuilder::from_json(snorlax).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Turn 1: Jolteon Disables before Snorlax has used anything → fails.
+        // Snorlax uses Body Slam (slot 0), recording it as its last move.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].disabled_move_slot(), 255, "Disable fails with no last move");
+        assert_eq!(b.p2.team[0].last_used_move_slot, 0, "Snorlax last move = Body Slam (slot 0)");
+        // Turn 2: Jolteon (faster) Disables → locks Body Slam (slot 0) before
+        // Snorlax acts (it uses Amnesia, slot 2).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
+        assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
     }
 
     #[test]
