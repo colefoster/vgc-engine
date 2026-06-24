@@ -6665,8 +6665,13 @@ impl Battle {
             return false;
         }
         // Partial-trap volatile (Bind / Wrap / Fire Spin / Whirlpool / ...):
-        // switch-locked while the volatile is alive.
-        if mon.volatiles.has(crate::pokemon::VolatileKind::PartialTrap) {
+        // switch-locked while the volatile is alive. No Retreat self-traps the
+        // user the same way (PS data/moves.ts:noretreat condition
+        // `onTrapPokemon`). Both sit after the Shed Shell / Ghost free-returns
+        // above, so those still release the user.
+        if mon.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
+            || mon.volatiles.has(crate::pokemon::VolatileKind::NoRetreat)
+        {
             return true;
         }
         // Adjacent-foe trapper abilities.
@@ -9537,6 +9542,36 @@ impl Battle {
                         if t.is_alive() {
                             t.set_type_override(2, None);
                         }
+                    }
+                }
+            }
+            data::move_id::NORETREAT => {
+                // PS data/moves.ts:noretreat — raise all five of the user's
+                // stats by one stage and trap it (NoRetreat volatile, enforced
+                // by is_trapped). Fails outright (no boost, no re-trap) if the
+                // user already holds the volatile — the once-per-switch-in
+                // guard. Self-target. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/No_Retreat_(move)>
+                let already = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| a.volatiles.has(crate::pokemon::VolatileKind::NoRetreat));
+                if !already {
+                    self.apply_boosts(
+                        actor_side,
+                        actor_slot,
+                        &[(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)],
+                        actor_side,
+                        actor_slot,
+                    );
+                    if let Some(a) =
+                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                    {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::NoRetreat,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
                     }
                 }
             }
@@ -17352,6 +17387,33 @@ mod tests {
         };
         assert_eq!(run(true), Status::None, "Leaf Guard blocks Glare in sun");
         assert_eq!(run(false), Status::Paralysis, "Glare paralyzes without sun");
+    }
+
+    #[test]
+    fn no_retreat_boosts_all_stats_and_traps_user() {
+        // PS data/moves.ts:noretreat — +1 to all five stats and trap the user;
+        // a second use fails (no re-boost).
+        let falinks = r#"[
+            {"species":"falinks","level":50,"ability":"defiant","nature":"adamant","moves":["noretreat","closecombat","protect","megahorn"]}
+        ]"#;
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia","rest","bodyslam","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(falinks).unwrap();
+        let p2 = TeamBuilder::from_json(snorlax).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(&b.p1.team[0].boosts[0..5], &[1, 1, 1, 1, 1], "No Retreat raises all five stats");
+        assert!(b.is_trapped(SideRef::P1, 0), "No Retreat traps the user");
+        // Second use fails — no further boost.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 1, "consecutive No Retreat fails (no re-boost)");
     }
 
     #[test]
