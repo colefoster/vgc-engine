@@ -406,7 +406,13 @@ fn parse_side_choices(
     raw: &[String],
     side: SideRef,
 ) -> Result<Vec<Choice>, String> {
+    // PS emits a side's choice as one comma-joined line per turn
+    // ("move 3, move 2" in doubles); some captures use one array element per
+    // slot. Flatten both: split each element on commas, slot = position.
     raw.iter()
+        .flat_map(|line| line.split(','))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .enumerate()
         .map(|(slot, s)| parse_choice(s, slot as u8, side))
         .collect()
