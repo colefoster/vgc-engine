@@ -219,6 +219,10 @@ pub struct BattleReport {
     pub unmatched_draws: u32,
     /// Slugs that didn't resolve to an engine move id (dropped from the table).
     pub unresolved_moves: Vec<String>,
+    /// True if comparison stopped at a mid-turn faint replacement rather than
+    /// at a divergence or the battle's natural end (see [`replay`]). The turns
+    /// before it are validated; the rest are not.
+    pub faint_truncated: bool,
 }
 
 impl BattleReport {
@@ -657,7 +661,19 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
 
     let mut matched_turns = 0u32;
     let mut divergence = None;
+    let mut faint_truncated = false;
     for turn in &battle.turns {
+        // A multi-phase turn — its recorded choices carry more entries than a
+        // side has active slots — means a faint forced a replacement. The
+        // engine replaces at the START of the next turn (turn-granular model),
+        // while PS shows the replacement in THIS turn's end-state, so the two
+        // cannot be compared from here on. Validate everything before it and
+        // stop cleanly. (Each side's choice line is comma-joined per slot, so
+        // a normal turn is one entry; a replacement phase adds a second.)
+        if turn.choices.p1.len() > 1 || turn.choices.p2.len() > 1 {
+            faint_truncated = true;
+            break;
+        }
         let p1c = parse_side_choices(&turn.choices.p1, SideRef::P1)?;
         let p2c = parse_side_choices(&turn.choices.p2, SideRef::P2)?;
         let result = b.step(&p1c, &p2c);
@@ -678,6 +694,7 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
         divergence,
         unmatched_draws,
         unresolved_moves: unresolved,
+        faint_truncated,
     })
 }
 

@@ -50,8 +50,13 @@ fn main() -> ExitCode {
                 }
                 match &report.divergence {
                     None if report.unmatched_draws == 0 => {
+                        let how = if report.faint_truncated {
+                            "CLEAN (to first faint)"
+                        } else {
+                            "CLEAN"
+                        };
                         println!(
-                            "{path}: CLEAN — {} turns matched, 0 unmatched draws",
+                            "{path}: {how} — {} turns matched, 0 unmatched draws",
                             report.matched_turns
                         );
                         clean += 1;
