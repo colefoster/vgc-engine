@@ -5659,28 +5659,36 @@ impl Battle {
 
         // Self stat drops (PS `self.boosts` on the move def). Applies
         // once after the move resolves, regardless of how many targets
-        // were hit. Per PS these fire even if the move missed or was
-        // Protect-blocked — modeled as: any move resolution that got
-        // this far (passed the flinch/Fake-Out/category checks) triggers
-        // the drop. Phase-3 refinement for the Protect-blocks-self
-        // edge case.
+        // were hit — BUT only if the move actually connected. PS's
+        // top-level `self: {boosts}` runs inside `moveHit`, which a miss,
+        // a Protect-block, or a type-immunity all skip (the per-target
+        // loop `continue`s before reaching damage in those cases), so the
+        // user keeps its stats. We gate on the same success proxy Scale
+        // Shot uses below (`any_damage_dealt > 0`, which also counts
+        // Substitute-absorbed hits). Verified against the Champions
+        // conformance harness: Overheat into a Protected target and Close
+        // Combat into a Protected target leave the user's stats unchanged
+        // (every move in `self_stat_drops` is damaging, so this gate is
+        // correct for all of them).
         if let Some(drops) = self_stat_drops(m.slug) {
-            self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
-            // White Herb consumes itself to restore negative stages.
-            crate::item::try_consume_white_herb(self, actor_side, actor_slot);
-            // Eject Pack reacts to the self-drop. PS
-            // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
-            // negative stage change regardless of source; self-drop
-            // moves (Overheat, Leaf Storm, Draco Meteor, Close Combat
-            // etc.) qualify. White Herb runs first per PS handler
-            // order (item priority) — if it cleared the drop, Eject
-            // Pack still fires (PS triggers on the boost CALL, not on
-            // the surviving stage), but the holder is the same mon and
-            // can't hold both items, so the ordering is moot in
-            // practice.
-            let _ = crate::item::try_consume_eject_pack(
-                self, actor_side, actor_slot, true,
-            );
+            if any_damage_dealt > 0 {
+                self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
+                // White Herb consumes itself to restore negative stages.
+                crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+                // Eject Pack reacts to the self-drop. PS
+                // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
+                // negative stage change regardless of source; self-drop
+                // moves (Overheat, Leaf Storm, Draco Meteor, Close Combat
+                // etc.) qualify. White Herb runs first per PS handler
+                // order (item priority) — if it cleared the drop, Eject
+                // Pack still fires (PS triggers on the boost CALL, not on
+                // the surviving stage), but the holder is the same mon and
+                // can't hold both items, so the ordering is moot in
+                // practice.
+                let _ = crate::item::try_consume_eject_pack(
+                    self, actor_side, actor_slot, true,
+                );
+            }
         }
 
         // Scale Shot — PS `data/moves.ts:scaleshot` (line 15785) carries a
@@ -12090,6 +12098,31 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[2], -2, "spa -2");
+    }
+
+    #[test]
+    fn close_combat_into_protect_leaves_user_stats_unchanged() {
+        // PS applies a move's top-level `self: {boosts}` only inside moveHit,
+        // which a Protect-block skips entirely. So Close Combat into a
+        // Protected target must NOT lower the user's Def/SpD. (Found by the
+        // Champions conformance harness: out_36, Staraptor Close Combat into a
+        // Protecting Raichu.)
+        let p1_json = r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","item":"focussash","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["protect","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // p2 Protects; p1 Close Combats into the block.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[1], 0, "def unchanged — move was blocked");
+        assert_eq!(b.p1.team[0].boosts[3], 0, "spd unchanged — move was blocked");
     }
 
     #[test]
