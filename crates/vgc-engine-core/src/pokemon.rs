@@ -399,6 +399,14 @@ pub enum VolatileKind {
     /// without re-using the move (ticked end-of-turn alongside Throat Chop).
     /// Cleared on switch-out (`volatiles.clear()`).
     AllySwitch,
+    /// Destiny Bond — PS `data/moves.ts:destinybond` `volatileStatus`. Set on
+    /// the user when Destiny Bond resolves; if the holder then faints to an
+    /// opposing damaging move BEFORE its next action, that attacker faints
+    /// too. `turns_remaining: 0` (indefinite) so it survives the per-turn
+    /// reset; explicitly removed when the holder uses any non-Destiny-Bond
+    /// move (PS onBeforeMove) and on switch-out (`volatiles.clear()`).
+    /// Payload unused.
+    DestinyBond,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
