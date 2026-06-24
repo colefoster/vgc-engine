@@ -469,6 +469,13 @@ pub fn move_type_in_ctx(
     ctx: &DamageContext,
 ) -> u8 {
     let m = &data::MOVES[move_id as usize];
+    // Liquid Voice — PS data/abilities.ts:liquidvoice `onModifyType`: any
+    // sound move becomes Water. Gated on the sound flag (not Normal-type), so
+    // it precedes the type-specific branches below; none of Tera Blast /
+    // Weather Ball / Terrain Pulse is a sound move, so there is no conflict.
+    if m.is_sound && attacker.ability_id == data::ability_id::LIQUIDVOICE {
+        return 2; // Water
+    }
     if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
         if attacker.terastallized {
             attacker.tera_type
@@ -808,6 +815,22 @@ pub fn calculate_damage(
     } else {
         (m.type_, m.base_power as u32)
     };
+
+    // Liquid Voice — PS `data/abilities.ts:liquidvoice` `onModifyType`:
+    //   if (move.flags['sound'] && !pokemon.volatiles['dynamax'])
+    //     move.type = 'Water';
+    // Every sound move becomes Water (NO base-power boost, unlike the -ate
+    // abilities below). Gated on the sound flag, not the move's type, so
+    // Snarl (Dark) / Bug Buzz (Bug) also become Water — Hyper Voice / Sparkling
+    // Aria / Boomburst likewise. Rebinding `move_type` here drives STAB (Water
+    // mons like Primarina then get ×1.5), the type chart, and downstream
+    // mults. No Dynamax in Reg M-B, so the dynamax carve-out is moot. Mutually
+    // exclusive with the -ate abilities (one ability per mon). Primarina
+    // signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Voice_(Ability)>.
+    if m.is_sound && attacker.ability_id == data::ability_id::LIQUIDVOICE {
+        move_type = 2; // Water
+    }
 
     // -ate abilities — Aerilate / Pixilate / Refrigerate / Galvanize. PS
     // `data/abilities.ts:aerilate` (line 57) and the three siblings share
@@ -3010,6 +3033,43 @@ mod tests {
         assert!(px_ghost > 0, "Pixilate makes Hyper Voice Fairy — hits Ghost");
         assert!(px_neutral > ctrl_neutral,
             "Pixilate ×1.2 BP raises neutral-target damage (ctrl {ctrl_neutral}, px {px_neutral})");
+    }
+
+    #[test]
+    fn liquid_voice_retypes_sound_moves_to_water_with_stab_no_bp_boost() {
+        // Liquid Voice turns sound moves Water (no ×1.2). (1) Type change:
+        // Hyper Voice (Normal) is immune vs Ghost without the ability; with
+        // Liquid Voice it is Water and hits. (2) Water STAB only: on a neutral
+        // target the Liquid Voice damage is ~×1.5 the control (Primarina is
+        // Water → STAB), and NOT ~×1.8 (which would mean a spurious -ate-style
+        // BP boost). Primarina is Water/Fairy, so Normal Hyper Voice gets no
+        // control STAB.
+        let mut atk = make_mon("primarina", 50, "modest",
+            StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 4 });
+        let ghost = make_mon("gengar", 50, "timid", StatSpread::ZERO);
+        let neutral = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, d: &Pokemon| calculate_damage(a, d, move_id("hypervoice"),
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        // Control (Primarina's default ability is not Liquid Voice here): Normal
+        // vs Ghost = immune.
+        let ctrl_ghost = mk(&atk, &ghost);
+        let ctrl_neutral = mk(&atk, &neutral);
+        assert_eq!(ctrl_ghost, 0, "Normal Hyper Voice is immune vs Ghost");
+        let lv_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "liquidvoice").unwrap() as u16;
+        atk.ability_id = lv_id;
+        let lv_ghost = mk(&atk, &ghost);
+        let lv_neutral = mk(&atk, &neutral);
+        assert!(lv_ghost > 0, "Liquid Voice makes Hyper Voice Water — hits Ghost");
+        // ~×1.5 (Water STAB), and decisively below ×1.6 (no -ate ×1.2 stack).
+        assert!(lv_neutral * 100 >= ctrl_neutral * 140 && lv_neutral * 100 <= ctrl_neutral * 160,
+            "Liquid Voice adds Water STAB (~1.5×) but no BP boost (ctrl {ctrl_neutral}, lv {lv_neutral})");
     }
 
     #[test]
