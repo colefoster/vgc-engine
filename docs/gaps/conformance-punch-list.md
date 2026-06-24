@@ -63,10 +63,12 @@ DamageContext):
     removal sites (Knock Off/Trick/Bestow/Magician/Symbiosis/Sticky Barb) clear
     `item_id` directly so a knocked-off item is NOT recoverable. Reset on
     switch-out. Golden corpus zero-divergence preserved.
-  - **Forecast** — Castform weather-forme change. Near-zero usage in Reg M-B;
-    deferred (needs forme + type-change-on-weather wiring).
+  - ✅ **Forecast** (PR #34) — Castform forme/type tracks weather (Sun→Fire,
+    Rain→Water, Snow→Ice, else Normal); refresh_forecast_formes fires at every
+    weather-change site + switch-in. Utility Umbrella edge unmodeled.
   - **Frisk** — WON'T IMPLEMENT: reveals the foe's held item, a pure
-    information effect with NO mechanical battle impact in a headless sim.
+    information effect with NO mechanical battle impact in a headless sim. This
+    is the only remaining "unimplemented" tail item, by design.
 - Remaining 0-unmatched turn-1 gaps: out_f55fe99993 (−13 dmg), boost gaps
   out_b018656fa6 / out_d36156026b.
 
