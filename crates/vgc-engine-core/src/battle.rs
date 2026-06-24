@@ -6920,6 +6920,10 @@ impl Battle {
         if source_side != side && self.side(side).conditions.safeguard_turns > 0 {
             return;
         }
+        // Leaf Guard blanks ALL status under harsh sun (computed up front to
+        // avoid borrowing `self` inside the active-mon match below).
+        let leaf_guard_sun =
+            matches!(self.effective_weather(), crate::weather::Weather::Sun);
         let (immune, terrain_blocks, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
@@ -6969,7 +6973,13 @@ impl Battle {
                 // Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Purifying_Salt_(Ability)>.
                 let purifying_salt_blocks = ab == data::ability_id::PURIFYINGSALT;
-                let ability_status_block = purifying_salt_blocks || match status {
+                // Leaf Guard — PS data/abilities.ts:leafguard `onSetStatus`
+                // returns false for ANY move-inflicted status while the holder
+                // is under harsh sun (Yawn is likewise blocked; its eventual
+                // sleep routes through this same gate). Not breakable.
+                let leaf_guard_blocks =
+                    ab == data::ability_id::LEAFGUARD && leaf_guard_sun;
+                let ability_status_block = purifying_salt_blocks || leaf_guard_blocks || match status {
                     Status::Burn => ab == data::ability_id::WATERBUBBLE || ab == data::ability_id::WATERVEIL,
                     Status::Paralysis => ab == data::ability_id::LIMBER,
                     Status::Freeze => ab == data::ability_id::MAGMAARMOR,
@@ -17128,6 +17138,36 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn leaf_guard_blocks_status_in_sun_only() {
+        // PS data/abilities.ts:leafguard — under harsh sun the holder is
+        // immune to all major statuses. Thunder Wave paralysis is blocked vs
+        // a Leaf Guard Leafeon in sun, lands without sun. (Leafeon is Grass,
+        // not Ground, so it isn't immune to Thunder Wave.)
+        let arbok = r#"[
+            {"species":"arbok","level":50,"ability":"intimidate","nature":"hardy","moves":["thunderwave","crunch","protect","coil"]}
+        ]"#;
+        let leafeon = r#"[
+            {"species":"leafeon","level":50,"ability":"leafguard","nature":"hardy","moves":["swordsdance","leafblade","protect","quickattack"]}
+        ]"#;
+        let run = |sun: bool| -> Status {
+            let p1 = TeamBuilder::from_json(arbok).unwrap();
+            let p2 = TeamBuilder::from_json(leafeon).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            if sun {
+                b.weather = crate::weather::Weather::Sun;
+                b.weather_turns = 5;
+            }
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].status
+        };
+        assert_eq!(run(true), Status::None, "Leaf Guard blocks Glare in sun");
+        assert_eq!(run(false), Status::Paralysis, "Glare paralyzes without sun");
     }
 
     #[test]
