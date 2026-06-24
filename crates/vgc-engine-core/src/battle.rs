@@ -4103,7 +4103,7 @@ impl Battle {
                 || (defender.is_protected_this_turn()
                     && is_targeting_move(m.target)
                     && !(damaging
-                        && attacker_ability_id == data::ability_id::PIERCINGDRILL
+                        && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
                         && crate::damage::move_makes_contact(
                             &data::MOVES[move_id as usize],
                             &attacker,
@@ -4289,7 +4289,7 @@ impl Battle {
             let mut piercing_drill_quarter = false;
             if defender.is_protected_this_turn() && is_targeting_move(m.target) {
                 let pierces = damaging
-                    && attacker_ability_id == data::ability_id::PIERCINGDRILL
+                    && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
                     && crate::damage::move_makes_contact(
                         &data::MOVES[move_id as usize],
                         &attacker,
@@ -12265,9 +12265,10 @@ mod tests {
         // which a Protect-block skips entirely. So Close Combat into a
         // Protected target must NOT lower the user's Def/SpD. (Found by the
         // Champions conformance harness: out_36, Staraptor Close Combat into a
-        // Protecting Raichu.)
+        // Protecting Raichu.) Attacker is Machamp (Guts) — a plain contact
+        // user, NOT Unseen Fist / Piercing Drill, so Protect genuinely blocks.
         let p1_json = r#"[
-            {"species":"urshifu","level":50,"ability":"unseenfist","item":"focussash","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
+            {"species":"machamp","level":50,"ability":"guts","item":"focussash","nature":"adamant","moves":["closecombat","knockoff","bulletpunch","detect"],"evs":{"atk":252,"spe":252,"hp":4}}
         ]"#;
         let p2_json = r#"[
             {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["protect","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
@@ -17658,6 +17659,41 @@ mod tests {
         assert!(dmg_pierced > 0, "Piercing Drill punches through Protect");
         assert!(dmg_pierced * 3 < dmg_full,
             "Piercing Drill deals ~1/4 damage (pierced {dmg_pierced}, full {dmg_full})");
+    }
+
+    #[test]
+    fn unseen_fist_hits_through_protect_for_quarter_in_champions() {
+        // Champions reworks Unseen Fist to match Piercing Drill: the holder's
+        // contact moves break Protect for 1/4 damage (PS data/mods/champions/
+        // abilities.ts + scripts.ts bypassProtect ×0.25). Gen 9 bypasses at
+        // full damage; this is the Champions nerf. Urshifu Close Combat
+        // (contact) vs a protecting Snorlax.
+        let p2_protect = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","rest","yawn"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let run = |ability: &str, p2_move: u8| {
+            let p1_json = format!(
+                r#"[{{"species":"urshifu","level":50,"ability":"{ability}","nature":"adamant","moves":["closecombat","aquajet","protect","rockslide"],"evs":{{"atk":252,"spe":252,"hp":4}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_protect).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 2 }, p1, p2);
+            let max = b.p2.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Close Combat
+                &[Choice::Move { actor_slot: 0, move_slot: p2_move, target: None }],
+            );
+            (max, b.p2.team[0].current_hp)
+        };
+        let (max_p, hp_pierced) = run("unseenfist", 0);
+        let dmg_pierced = max_p - hp_pierced;
+        let (max_c, hp_ctrl) = run("ironfist", 0); // inert here — fully blocked
+        let (max_f, hp_full) = run("unseenfist", 1); // unprotected — full damage
+        let dmg_full = max_f - hp_full;
+        assert_eq!(hp_ctrl, max_c, "non-Unseen-Fist contact move is fully blocked by Protect");
+        assert!(dmg_pierced > 0, "Unseen Fist punches through Protect");
+        assert!(dmg_pierced * 3 < dmg_full,
+            "Unseen Fist deals ~1/4 damage (pierced {dmg_pierced}, full {dmg_full})");
     }
 
     #[test]
