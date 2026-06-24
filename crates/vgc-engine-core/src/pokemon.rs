@@ -407,6 +407,13 @@ pub enum VolatileKind {
     /// move (PS onBeforeMove) and on switch-out (`volatiles.clear()`).
     /// Payload unused.
     DestinyBond,
+    /// No Retreat — PS `data/moves.ts:noretreat` `volatileStatus`. Set on the
+    /// user when No Retreat resolves (after the +1-to-all-stats boost); while
+    /// present the user is trapped (cannot switch, via `is_trapped`). Acts as
+    /// the once-per-mon guard too: a second No Retreat fails while it is held.
+    /// `turns_remaining: 0` (indefinite); cleared on switch-out
+    /// (`volatiles.clear()`). Payload unused.
+    NoRetreat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
