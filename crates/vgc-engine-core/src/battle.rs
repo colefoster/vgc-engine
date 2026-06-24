@@ -586,7 +586,16 @@ impl Battle {
         // never reaches the reflect path. Infiltrator bypass deferred
         // (parity with the screens). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Mist_(move)>.
-        let mist_blocks = !is_self_source && self.side(target_side).conditions.mist_turns > 0;
+        // Infiltrator source ignores the target side's Mist (PS
+        // `move.infiltrates`), just like the screens / Substitute / Safeguard.
+        let source_infiltrates = !is_self_source
+            && self
+                .side(source_side)
+                .active_mon(source_slot as usize)
+                .is_some_and(|m| m.effective_ability_id() == data::ability_id::INFILTRATOR);
+        let mist_blocks = !is_self_source
+            && !source_infiltrates
+            && self.side(target_side).conditions.mist_turns > 0;
         // When Mist is up, strip the negative deltas and keep only the
         // positives in a fixed-size stack buffer (≤ 7 stat indices — no
         // heap allocation in step()). If nothing positive remains, the
@@ -4967,9 +4976,16 @@ impl Battle {
                 def_stats_ovr.spd = scale_off_13(def_stats_ovr.spd);
             }
             let def_conds = self.side(tside).conditions;
-            let defender_has_reflect = def_conds.reflect_turns > 0;
-            let defender_has_light_screen = def_conds.light_screen_turns > 0;
-            let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0;
+            // Infiltrator — PS data/abilities.ts:infiltrator `onModifyMove`
+            // sets `move.infiltrates`, so the attacker's moves ignore the
+            // target side's Reflect / Light Screen / Aurora Veil (and the
+            // Substitute / Safeguard / Mist below). The holder's own screens
+            // are unaffected (this only fires on its outgoing moves).
+            let attacker_infiltrates =
+                attacker.effective_ability_id() == data::ability_id::INFILTRATOR;
+            let defender_has_reflect = def_conds.reflect_turns > 0 && !attacker_infiltrates;
+            let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
+            let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
             // Terrain mult only when defender is grounded — Flying types,
             // Levitate ability, and Air Balloon defenders see plain
@@ -5397,7 +5413,10 @@ impl Battle {
                 dmg /= 4;
             }
             let sub_hp_pre = defender.substitute_hp();
-            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug);
+            // Infiltrator and sound moves both bypass the target's Substitute
+            // (PS: `move.infiltrates` / the `sound` flag let the hit pass
+            // straight through to the mon).
+            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !attacker_infiltrates;
             let effective_dmg = if hit_sub {
                 let absorbed = dmg.min(sub_hp_pre);
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -6939,8 +6958,18 @@ impl Battle {
         source_side: SideRef,
         source_slot: u8,
     ) {
+        // Infiltrator source ignores the target side's Safeguard (PS
+        // `move.infiltrates`). Computed before the Safeguard veto below.
+        let source_has_infiltrator = source_slot != u8::MAX
+            && self
+                .side(source_side)
+                .active_mon(source_slot as usize)
+                .is_some_and(|s| s.effective_ability_id() == data::ability_id::INFILTRATOR);
         // Safeguard veto — opponent-sourced status only.
-        if source_side != side && self.side(side).conditions.safeguard_turns > 0 {
+        if source_side != side
+            && !source_has_infiltrator
+            && self.side(side).conditions.safeguard_turns > 0
+        {
             return;
         }
         // Leaf Guard blanks ALL status under harsh sun (computed up front to
@@ -17172,6 +17201,40 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn infiltrator_bypasses_light_screen() {
+        // PS data/abilities.ts:infiltrator — the holder's moves ignore the
+        // target side's screens. A Chandelure Flamethrower into a Light Screen
+        // deals MORE damage with Infiltrator than without. (Flamethrower is
+        // neutral on Normal Snorlax — Shadow Ball would be Ghost-immune.)
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia","rest","bodyslam","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let run = |infil: bool| -> u16 {
+            let ability = if infil { "infiltrator" } else { "flashfire" };
+            let chandelure = format!(
+                r#"[{{"species":"chandelure","level":50,"ability":"{ability}","nature":"modest","moves":["shadowball","flamethrower","protect","energyball"],"evs":{{"spa":252,"spe":252}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&chandelure).unwrap();
+            let p2 = TeamBuilder::from_json(snorlax).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            b.side_mut(SideRef::P2).conditions.light_screen_turns = 5;
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            hp0 - b.p2.team[0].current_hp
+        };
+        let with_infil = run(true);
+        let without = run(false);
+        assert!(with_infil > 0 && without > 0, "both deal damage");
+        assert!(
+            with_infil > without,
+            "Infiltrator ignores Light Screen → more damage: {with_infil} vs {without}"
+        );
     }
 
     #[test]
