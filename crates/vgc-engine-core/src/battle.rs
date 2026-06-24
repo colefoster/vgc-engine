@@ -9377,6 +9377,30 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::PSYCHUP => {
+                // PS data/moves.ts:psychup — copy the TARGET's stat stages
+                // (and crit-rate volatile) onto the USER. accuracy: true (no
+                // roll), bypasssub. We copy the 7 boost stages and the
+                // crit-stage volatile (Focus Energy / Laser Focus); the
+                // Dynamax/raid-only G-Max Chi Strike + Dragon Cheer copies are
+                // out of scope. Fails (no-op) if the target is gone.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Psych_Up_(move)>
+                if let Some((opp, slot)) = opp_target {
+                    let copied = self
+                        .side(opp)
+                        .active_mon(slot as usize)
+                        .filter(|t| t.is_alive())
+                        .map(|t| (t.boosts, t.crit_stage_volatile));
+                    if let Some((boosts, crit)) = copied {
+                        if let Some(a) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            a.boosts = boosts;
+                            a.crit_stage_volatile = crit;
+                        }
+                    }
+                }
+            }
             data::move_id::DESTINYBOND => {
                 // PS data/moves.ts:destinybond. Self-target (accuracy: true,
                 // no roll). `onPrepareHit` runs `!removeVolatile('destinybond')`
@@ -17038,6 +17062,33 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn psych_up_copies_targets_stat_stages() {
+        let alakazam = r#"[
+            {"species":"alakazam","level":50,"ability":"magicguard","nature":"timid","moves":["psychup","protect","psychic","calmmind"]}
+        ]"#;
+        let garchomp = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["swordsdance","protect","earthquake","dragonclaw"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(alakazam).unwrap();
+        let p2 = TeamBuilder::from_json(garchomp).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Turn 1: Garchomp Swords Dance (+2 Atk); Alakazam Protect.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 2, "Garchomp at +2 Atk");
+        assert_eq!(b.p1.team[0].boosts[0], 0, "Alakazam not yet boosted");
+        // Turn 2: Alakazam Psych Up copies Garchomp's stages; Garchomp Protect
+        // (no boost change).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 2, "Psych Up copied Garchomp's +2 Atk");
     }
 
     fn destiny_bond_setup() -> Battle {
