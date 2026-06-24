@@ -3621,6 +3621,37 @@ impl Battle {
             atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
                 .min(u16::MAX as u32)) as u16;
         }
+        // Pinch abilities — Overgrow / Blaze / Torrent / Swarm. PS
+        // data/abilities.ts: `onModifyAtk` / `onModifySpA`
+        //   if (move.type === '<Type>' && attacker.hp <= attacker.maxhp / 3)
+        //     return this.chainModify(1.5);
+        // ×1.5 to the offensive stat for the matching-type move when the
+        // holder is at ≤ 1/3 max HP. Same stat-scaling mechanism as Choice
+        // Band/Specs (and stacks with them). `hp <= maxhp/3` ⟺ `3·hp ≤ maxhp`
+        // (integer-safe). Uses the move's static type — a pinch-ability holder
+        // can't also carry a type-changing ability, so the only unmodeled edge
+        // is Weather Ball's weather-typing. Not breakable. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Overgrow_(Ability)> et al.
+        let pinch_type = match attacker.ability_id {
+            data::ability_id::OVERGROW => Some(4u8), // Grass
+            data::ability_id::BLAZE => Some(1),      // Fire
+            data::ability_id::TORRENT => Some(2),    // Water
+            data::ability_id::SWARM => Some(6),      // Bug
+            _ => None,
+        };
+        if let Some(pt) = pinch_type {
+            if m.type_ == pt
+                && (attacker.current_hp as u32) * 3 <= attacker.stats.hp as u32
+            {
+                if physical_move {
+                    atk_stats_ovr.atk =
+                        ((atk_stats_ovr.atk as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
+                } else if special_move {
+                    atk_stats_ovr.spa =
+                        ((atk_stats_ovr.spa as u32 * 3 / 2).min(u16::MAX as u32)) as u16;
+                }
+            }
+        }
         // Paradox booster (Protosynthesis / Quark Drive): attacker's
         // boosted_stat (if 0=atk or 2=spa) gets ×1.3007 to the offensive
         // stat used by this move. PS `chainModify([5325, 4096])` with
@@ -24752,6 +24783,43 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn pinch_ability_boosts_matching_type_at_low_hp() {
+        // Blaze ×1.5 on Fire moves when the holder is at ≤1/3 max HP. PS
+        // data/abilities.ts:blaze (Overgrow/Torrent/Swarm share the shape).
+        // Was unimplemented (39 of 100 teams carry a pinch ability).
+        let p1 = r#"[{"species":"charizard","level":50,"ability":"blaze","item":"","nature":"modest","moves":["flamethrower","airslash","dragonpulse","protect"],"evs":{"spa":252}}]"#;
+        let p2 = r#"[{"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"],"evs":{"hp":252,"spd":252}}]"#;
+        let mk = |low_hp: bool| -> u16 {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+                TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+            if low_hp {
+                b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 3; // ≤ 1/3 max
+            }
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let full = mk(false);
+        let low = mk(true);
+        assert!(low > full, "Blaze boosts Fire damage at low HP ({low} > {full})");
+        let ratio = (low as u32) * 1000 / (full.max(1) as u32);
+        assert!((1400..=1600).contains(&ratio), "Blaze ≈×1.5 expected, got ×{}/1000", ratio);
+        // Control: just above 1/3 HP → no boost.
+        let mut c = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+        c.p1.team[0].current_hp = c.p1.team[0].stats.hp / 3 + 1; // > 1/3
+        let before = c.p2.team[0].current_hp;
+        c.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(before - c.p2.team[0].current_hp, full, "no Blaze boost just above 1/3 HP");
     }
 
     #[test]
