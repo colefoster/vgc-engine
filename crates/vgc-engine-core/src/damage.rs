@@ -909,6 +909,20 @@ pub fn calculate_damage(
     if tn != td {
         bp_mod = chain_modify(bp_mod, tn as u64, td as u64);
     }
+    // Grassy Terrain weakens Earthquake/Bulldoze/Magnitude to ×0.5 against a
+    // grounded target — PS data/moves.ts:grassyterrain `onBasePower`
+    // (`chainModify(0.5)`). The caller already gates `ctx.terrain` on the
+    // defender being grounded, so reaching Grassy here means grounded; PS
+    // additionally exempts semi-invulnerable (Dig/Fly) targets.
+    if matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
+        && defender.semi_invuln == 0
+        && matches!(
+            move_id,
+            data::move_id::EARTHQUAKE | data::move_id::BULLDOZE | data::move_id::MAGNITUDE
+        )
+    {
+        bp_mod = chain_modify(bp_mod, 2048, 4096);
+    }
 
     // Technician — PS `data/abilities.ts:technician` (line 4873):
     //   onBasePowerPriority: 30,
@@ -2041,6 +2055,40 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn grassy_terrain_halves_earthquake_on_grounded_target() {
+        // PS grassyterrain onBasePower: Earthquake/Bulldoze/Magnitude ×0.5
+        // vs a grounded target. The caller gates ctx.terrain on grounded, so
+        // passing Terrain::Grassy here means the defender is grounded.
+        let atk = make_mon("garchomp", 50, "hardy", StatSpread::ZERO);
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let eq = move_id("earthquake");
+        let plain = calculate_damage(
+            &atk, &def, eq,
+            DamageContext { roll: 15, ..Default::default() },
+        );
+        let grassy = calculate_damage(
+            &atk, &def, eq,
+            DamageContext { roll: 15, terrain: crate::terrain::Terrain::Grassy, ..Default::default() },
+        );
+        assert!(grassy < plain, "grassy {grassy} should be < plain {plain}");
+        assert!(
+            (grassy as i32 - plain as i32 / 2).abs() <= 2,
+            "grassy {grassy} should be ~half of plain {plain}"
+        );
+        // A non-Ground move (Dragon Claw) is untouched by the halving.
+        let dc = move_id("dragonclaw");
+        let dc_plain = calculate_damage(
+            &atk, &def, dc,
+            DamageContext { roll: 15, ..Default::default() },
+        );
+        let dc_grassy = calculate_damage(
+            &atk, &def, dc,
+            DamageContext { roll: 15, terrain: crate::terrain::Terrain::Grassy, ..Default::default() },
+        );
+        assert_eq!(dc_plain, dc_grassy, "non-Ground move unaffected by Grassy halving");
     }
 
     // Ally damage-boost abilities. We compare final HP damage with the
