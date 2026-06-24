@@ -105,13 +105,16 @@ notation, valid sets). 14 clean / 12 real / 19 cascades. Findings:
   the `calculate_damage` type binding (next to the -ate hook; no BP boost,
   gated on the sound flag not Normal-type). Test
   `liquid_voice_retypes_sound_moves_to_water_with_stab_no_bp_boost`.
-- ⚠️ **out_16 is a FALSE divergence** — engine deals Araquanid Leech Life with
-  Bug STAB (74, ends 119); PS golden recorded 50 (NO STAB, ends 107).
-  @smogon/calc independently confirms STAB applies (72–86), and the Champions
-  mod has no Araquanid override + standard STAB. The PS *capture* is suspect.
-  Re-capture via the stable-ID batch tool (delete `out_<id>.json`, re-run
-  `tools/conformance-batch/run-batch.js`) before treating it as real. NOT Trop
-  Kick (Champions BP 85 already in build.rs:462; engine 61 = PS exact).
+- ✅ **Trop Kick −1 Atk secondary implemented** — out_16 turn 1 now CLEAN
+  (advances to turn 3). Was REAL, not false: re-capturing the PS golden via the
+  new stable-ID tool reproduced 107, so PS is authoritative. Root cause: Trop
+  Kick (100% atk −1, like Lunge) was missing from `stat_drop_secondary`, so
+  Araquanid — Trop Kicked first by the faster Tsareena — kept full Atk and its
+  follow-up Leech Life dealt 74 vs PS 50 (74 × 2/3 ≈ 50). **Lesson:** the trace
+  subagent mis-called this "false" because its @smogon/calc check used 0 boosts
+  and missed Trop Kick's −1; the re-capture (PS = 107 reproducibly) caught it.
+  Trace before trusting "engine matches calc, PS is wrong." Test
+  `trop_kick_lowers_target_atk_by_one`.
 - Untriaged reals: out_12 (Ditto/Imposter + switches), out_06 (T2 freeze
   secondary not applied), out_34 (T2 boosts), deeper-turn out_13/29/01/48.
 
