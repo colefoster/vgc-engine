@@ -10223,8 +10223,12 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // target:"normal"). Breaking Swipe (PS data/moves.ts:1789, same
         // secondary but target:"allAdjacentFoes" — a spread move; the
         // per-target loop at ~3415 calls apply_secondary_effect once per
-        // hit target, so the drop lands on every foe it hits).
-        "lunge" | "breakingswipe" => (0, -1, 100),
+        // hit target, so the drop lands on every foe it hits). Trop Kick
+        // (PS data/moves.ts:tropkick, same 100% atk -1, target:"normal";
+        // Champions BP 85) — was missing, so a slower foe Trop-Kicked before
+        // its own attack still hit at full Atk (conformance out_16: Araquanid
+        // Leech Life 74 vs PS 50).
+        "lunge" | "breakingswipe" | "tropkick" => (0, -1, 100),
         // 100% -1 Spe. Pounce (PS data/moves.ts:13633
         // `secondary: { chance: 100, boosts: { spe: -1 } }`, target:"normal").
         "pounce" => (4, -1, 100),
@@ -15793,6 +15797,22 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate fires on mid-battle switch-in");
+    }
+
+    #[test]
+    fn trop_kick_lowers_target_atk_by_one() {
+        // PS data/moves.ts:tropkick — secondary { chance: 100, boosts:
+        // { atk: -1 } }. Was missing from stat_drop_secondary, so the drop
+        // never landed (conformance out_16). Tsareena (fast) Trop Kicks first.
+        let p1 = r#"[{"species":"tsareena","level":50,"ability":"queenlymajesty","item":"","nature":"jolly","moves":["tropkick","lowkick","protect","tripleaxel"],"evs":{"atk":252,"spe":252}}]"#;
+        let p2 = r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","earthquake"],"evs":{"hp":252,"spd":252}}]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Trop Kick lowers the target's Atk by 1");
     }
 
     #[test]
