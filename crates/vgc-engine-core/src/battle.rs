@@ -9792,8 +9792,10 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         "acidspray" => (3, -2, 100),
         // 100% -1 Acc:
         "mudslap" | "muddywater" => (5, -1, 100),
-        // 30% -1 SpA (Moonblast — #8 by usage):
-        "moonblast" => (2, -1, 30),
+        // Moonblast SpA-drop: Champions rebalances the chance from gen 9's
+        // 30% to 10% (PS data/mods/champions/moves.ts: moonblast
+        // `secondary.chance: 10`). Our target format.
+        "moonblast" => (2, -1, 10),
         // 100% -1 Def — Thunderous Kick (PS data/moves.ts:19549
         // `secondary: { chance: 100, boosts: { def: -1 } }`; no status):
         "thunderouskick" => (1, -1, 100),
@@ -10102,7 +10104,9 @@ fn apply_secondary_effect(
         }
     }
     if move_slug == "direclaw" {
-        if rng.percent_1_100() <= sg(50) {
+        // Champions rebalances Dire Claw's status chance from gen 9's 50% to
+        // 30% (PS data/mods/champions/moves.ts: direclaw `secondary.chance: 30`).
+        if rng.percent_1_100() <= sg(30) {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Poison,
@@ -12179,6 +12183,25 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn champions_move_data_overrides_applied() {
+        // Spot-check the Champions move-data rebalances baked into the MOVES
+        // table by build.rs (vs gen-9 values). See docs/champions-data-deltas.md.
+        let bp = |s: &str| data::move_by_slug(s).unwrap().base_power;
+        let acc = |s: &str| data::move_by_slug(s).unwrap().accuracy;
+        assert_eq!(bp("psyshieldbash"), 90, "gen9 70 -> Champions 90");
+        assert_eq!(bp("beakblast"), 120, "gen9 100 -> 120");
+        assert_eq!(bp("tropkick"), 85, "gen9 70 -> 85");
+        assert_eq!(bp("boltbeak"), 80, "gen9 85 -> 80");
+        assert_eq!(bp("geargrind"), 60, "gen9 50 -> 60");
+        assert_eq!(acc("geargrind"), 90, "gen9 85 -> 90");
+        assert_eq!(acc("crabhammer"), 95, "gen9 90 -> 95");
+        assert_eq!(acc("makeitrain"), 95, "gen9 100 -> 95");
+        assert_eq!(acc("clangoroussoul"), 255, "accuracy: true (can't miss)");
+        assert_eq!(data::move_by_slug("growth").unwrap().type_,
+                   data::move_by_slug("energyball").unwrap().type_, "Growth is now Grass-type");
+    }
 
     #[test]
     fn iron_head_flinch_is_20_percent_in_champions() {
@@ -21601,11 +21624,11 @@ mod tests {
     }
 
     #[test]
-    fn dire_claw_inflicts_one_of_three_statuses_about_half_the_time() {
-        // PS: 50% chance to set psn/par/slp uniformly. Over 300 trials
-        // the total status-inflict rate should land near 50%, and the
-        // distribution across the three statuses should be roughly
-        // even.
+    fn dire_claw_inflicts_one_of_three_statuses_about_a_third_of_the_time() {
+        // Champions: 30% chance to set psn/par/slp uniformly (gen 9 is 50%,
+        // PS data/mods/champions/moves.ts: direclaw `secondary.chance: 30`).
+        // Over 300 trials the total status-inflict rate should land near 30%,
+        // with the distribution across the three statuses roughly even.
         let p1_json = r#"[
             {"species":"sneasler","level":50,"ability":"unburden","item":"","nature":"jolly","moves":["direclaw","closecombat","throatchop","detect"]}
         ]"#;
@@ -21642,11 +21665,11 @@ mod tests {
         let any_status = psn + par + slp;
         let rate = any_status * 100 / trials;
         assert!(
-            rate >= 35 && rate <= 65,
-            "Dire Claw status-inflict rate {rate}% (expected ≈50%) — psn={psn} par={par} slp={slp}"
+            rate >= 18 && rate <= 45,
+            "Dire Claw status-inflict rate {rate}% (expected ≈30%) — psn={psn} par={par} slp={slp}"
         );
         // Each individual status should fire at least a handful of times
-        // — uniformity sanity check (1/6 per status, ~50 expected, demand >5).
+        // — uniformity sanity check (~30 expected per status, demand >5).
         assert!(psn > 5 && par > 5 && slp > 5,
                 "Dire Claw distribution too skewed: psn={psn} par={par} slp={slp}");
     }
