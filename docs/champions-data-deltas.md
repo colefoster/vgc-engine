@@ -1,5 +1,15 @@
 # Pokémon Champions data deltas — the real porting target
 
+> **STATUS (2026-06-24): move audit COMPLETE.** All 22 move-data deltas below
+> (16 base-power + 5 accuracy + Growth→Grass) are ported via a new
+> `champions_move_override` table in `vgc-engine-data/build.rs`; Moonblast
+> (30%→10% SpA) and Dire Claw (50%→30%) chances fixed in battle.rs; Iron Head
+> (20%) and Make It Rain (−2 SpA) were already done. **`toxicthread` is
+> UNIMPLEMENTED** in the engine (a missing move, not a delta — separate gap;
+> Champions value is Spe −2 + poison). Abilities audit still pending (esp.
+> Regenerator, out_05).
+
+
 **Conclusion (verified from the canonical PS `champions` mod, 2026-06-24):**
 Champions' damage *algorithm* is **mainline gen-9, byte-identical** — `getDamage`
 (base formula + base-power `chainModify` event) is inherited unchanged, and the

@@ -432,6 +432,47 @@ fn accuracy_code(v: &serde_json::Value) -> u8 {
     }
 }
 
+/// Pokémon Champions move-data rebalances vs standard gen 9 (PS
+/// `data/mods/champions/moves.ts`). Champions is our TARGET format, but
+/// @pkmn/dex ships gen-9 values, so these are applied as a diff at emit time —
+/// the same override mechanism as `MEGA_FORME_FIXES` for species. Returns
+/// `(base_power, accuracy_code, type)`; a `None` field keeps the gen-9 value.
+/// Secondary-effect CHANCES the engine hardcodes elsewhere (Iron Head flinch
+/// 20%, Moonblast/Toxic Thread stat drops) are fixed in `battle.rs`, not here.
+/// Verified against the mod 2026-06-24 (see docs/champions-data-deltas.md).
+fn champions_move_override(slug: &str) -> (Option<u16>, Option<u8>, Option<&'static str>) {
+    let bp = |b: u16| (Some(b), None, None);
+    let acc = |a: u8| (None, Some(a), None);
+    match slug {
+        // Base-power rebalances:
+        "anchorshot" => bp(90),
+        "appleacid" => bp(90),
+        "beakblast" => bp(120),
+        "boltbeak" => bp(80),
+        "bonerush" => bp(30),
+        "firelash" => bp(90),
+        "firstimpression" => bp(100),
+        "fishiousrend" => bp(80),
+        "gravapple" => bp(90),
+        "infernalparade" => bp(65),
+        "mountaingale" => bp(120),
+        "nightdaze" => bp(90),
+        "psyshieldbash" => bp(90),
+        "spiritshackle" => bp(90),
+        "tropkick" => bp(85),
+        // Accuracy rebalances (255 = `accuracy: true`, can't miss):
+        "crabhammer" => acc(95),
+        "syrupbomb" => acc(90),
+        "makeitrain" => acc(95),
+        "clangoroussoul" => acc(255),
+        // Both base power and accuracy:
+        "geargrind" => (Some(60), Some(90), None),
+        // Type change:
+        "growth" => (None, None, Some("Grass")),
+        _ => (None, None, None),
+    }
+}
+
 fn keep_gen9<'a, T>(
     map: &'a BTreeMap<String, T>,
     get_gen: impl Fn(&T) -> u32,
@@ -653,7 +694,12 @@ fn main() {
         // Skip moves whose type isn't in the 18-type set (e.g. "???" placeholder).
         // The constant index must track the emitted-row count, not the
         // position in `moves_keep`, since skipped rows shift later indices.
-        let Some(ty) = type_index(&m.type_) else { continue; };
+        // Apply Pokémon Champions move-data overrides (diff on top of gen 9).
+        let (champ_bp, champ_acc, champ_type) = champions_move_override(slug);
+        let eff_type: &str = champ_type.unwrap_or(m.type_.as_str());
+        let Some(ty) = type_index(eff_type) else { continue; };
+        let eff_bp = champ_bp.unwrap_or(m.base_power.min(u16::MAX as u32) as u16);
+        let eff_acc = champ_acc.unwrap_or(accuracy_code(&m.accuracy));
         let move_idx = move_consts.len();
         move_slug_to_idx.insert((*slug).clone(), move_idx);
         move_consts.push((const_ident(slug), move_idx));
@@ -665,8 +711,8 @@ fn main() {
             rust_str_lit(slug),
             ty,
             category_code(&m.category),
-            m.base_power.min(u16::MAX as u32) as u16,
-            accuracy_code(&m.accuracy),
+            eff_bp,
+            eff_acc,
             m.pp.min(u8::MAX as u32) as u8,
             m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
             target_code(&m.target),
