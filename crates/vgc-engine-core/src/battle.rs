@@ -24786,6 +24786,27 @@ mod tests {
     }
 
     #[test]
+    fn gluttony_eats_pinch_berry_at_half_hp() {
+        // Salac Berry normally fires at ≤1/4 HP; Gluttony raises it to ≤1/2.
+        // Snorlax @ Salac at ~45% HP takes a tiny hit (Caterpie, faster, moves
+        // first) → on_after_damage checks the berry.
+        let run = |ability: &str| -> (bool, i8) {
+            let p1 = format!(r#"[{{"species":"snorlax","level":50,"ability":"{ability}","item":"salacberry","nature":"careful","moves":["crunch","rest","bodyslam","protect"],"evs":{{"hp":252,"spd":252}}}}]"#);
+            let p2 = r#"[{"species":"caterpie","level":50,"ability":"shielddust","item":"","nature":"hardy","moves":["tackle","stringshot","bugbite","protect"]}]"#;
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+                TeamBuilder::from_json(&p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+            b.p1.team[0].current_hp = b.p1.team[0].stats.hp * 9 / 20; // ~45%
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            (b.p1.team[0].item_id == u16::MAX, b.p1.team[0].boosts[4])
+        };
+        assert_eq!(run("gluttony"), (true, 1), "Gluttony eats Salac at ~45% HP (+1 Spe)");
+        assert_eq!(run("thickfat"), (false, 0), "without Gluttony, Salac waits for ≤1/4 HP");
+    }
+
+    #[test]
     fn weak_armor_drops_def_raises_spe_on_physical_hit_only() {
         // PS weakarmor: physical hit → self -1 Def / +2 Spe; special hit → none.
         let p1 = r#"[{"species":"polteageist","level":50,"ability":"weakarmor","item":"focussash","nature":"timid","moves":["shadowball","storedpower","protect","nastyplot"],"evs":{"spa":252,"spe":252}}]"#;
