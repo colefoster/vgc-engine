@@ -9640,8 +9640,10 @@ fn pressure_extra_pp(
 /// Indices: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
 fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
-        // Close-combat family: -1 def, -1 spd.
-        "closecombat" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
+        // Close-combat family: -1 def, -1 spd. Headlong Rush (Great Tusk's
+        // signature, PS data/moves.ts: `self.boosts {def:-1, spd:-1}`, BP 120,
+        // no Champions override) shares this drop.
+        "closecombat" | "headlongrush" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
         // -2 spa specials. NOTE: Make It Rain is -1 in STANDARD gen9 (PS
         // `data/moves.ts` makeitrain `self.boosts.spa: -1`) but Pokémon
         // Champions — our TARGET format — rebalances it to -2, grouped here
@@ -12098,6 +12100,29 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[2], -2, "spa -2");
+    }
+
+    #[test]
+    fn headlong_rush_drops_user_def_and_spd() {
+        // Headlong Rush self-drops Def/SpD by 1 on hit (PS data/moves.ts:
+        // `self.boosts {def:-1, spd:-1}`). Found missing by the Champions
+        // conformance harness (out_09: Golurk Headlong Rush hit Cofagrigus;
+        // PS dropped Golurk's Def/SpD, the engine left them at 0).
+        let p1_json = r#"[
+            {"species":"greattusk","level":50,"ability":"protosynthesis","item":"focussash","nature":"adamant","moves":["headlongrush","closecombat","rapidspin","protect"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[1], -1, "def -1");
+        assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
     }
 
     #[test]
