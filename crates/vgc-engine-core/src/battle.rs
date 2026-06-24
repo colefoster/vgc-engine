@@ -9759,10 +9759,16 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
 fn flinch_chance(slug: &str) -> Option<u8> {
     Some(match slug {
         "fakeout" => 100,
-        "rockslide" | "airslash" | "ironhead" | "zenheadbutt"
+        // Iron Head is 30% flinch in standard gen 9, but Pokémon Champions —
+        // our TARGET format — rebalances it to 20% (PS data/mods/champions/
+        // moves.ts: ironhead `secondary.chance: 20`). Grouped with the other
+        // 20% flinchers below. (Found via the conformance harness, out_23: a
+        // roll of 20 flinches at 30% but NOT at Champions' 20%, so the engine
+        // wrongly froze the foe's attacker.)
+        "rockslide" | "airslash" | "zenheadbutt"
         | "headbutt" | "bite" | "stomp" | "needleam"
         | "extrasensory" | "astonish" | "hyperfang" => 30,
-        "darkpulse" | "twister" | "dragonrush" | "snore" => 20,
+        "ironhead" | "darkpulse" | "twister" | "dragonrush" | "snore" => 20,
         "icefang" | "thunderfang" | "firefang" | "fireblast"
         | "rollingkick" | "lowkick" | "steamroller" => 10,
         // Heat Wave: 10% BURN, not flinch — handled elsewhere.
@@ -12170,6 +12176,20 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].boosts[1], -1, "def -1");
         assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
+    }
+
+
+
+    #[test]
+    fn iron_head_flinch_is_20_percent_in_champions() {
+        // Champions rebalances Iron Head's flinch from 30% (gen 9) to 20%
+        // (PS data/mods/champions/moves.ts). A roll of 20 flinches at 30% but
+        // not at 20%, which is exactly what the conformance harness caught in
+        // out_23 (the engine wrongly flinched a foe's attacker). Other 30%
+        // flinchers are unchanged.
+        assert_eq!(super::flinch_chance("ironhead"), Some(20));
+        assert_eq!(super::flinch_chance("rockslide"), Some(30));
+        assert_eq!(super::flinch_chance("airslash"), Some(30));
     }
 
     #[test]
