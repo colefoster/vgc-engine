@@ -62,13 +62,21 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   active slots with no "skip just-switched" logic, so this is likely stale —
   needs a fresh repro before any fix.
 
-## OPEN — the rounding tail (low value; off-by-1..3 HP, rarely flips a KO)
-- **out_37** (Blizzard+Fake Out on Aurorus, +3) and **out_32** (Giga Drain, −1):
-  residual rounding after the base-power chain + STAB/weather pokeRound landed.
-  Likely the final `ModifyDamage` chain (Filter/screens/Friend Guard/Life Orb —
-  none of Friend Guard/Life Orb/Expert Belt are implemented in damage.rs yet)
-  not being accumulated into one pokeRound, OR small residuals amplified by
-  ×0.75/÷2. Diminishing returns — this is the bit-exactness tail.
+## SHIPPED (cont.)
+- ✅ **ModifyDamage chain accumulated into one pokeRound** — out_37 (the +3
+  rounding diverger) now CLEAN. `calculate_damage`'s final modifiers (Multiscale,
+  Filter, Tinted Lens, Ice Scales, Punk Rock, Fluffy, screens) were each applied
+  as their own truncating op; PS chains them ALL into one Q12 modifier and
+  applies a single pokeRound. Now accumulated into `dmg_mod` via `chain_modify`
+  and applied once via `apply_modifier`; burn ÷2 moved ahead of the chain to
+  match PS's order. 810 tests green (calc-oracle exactness preserved).
+  - REMAINING for a follow-up: Friend Guard (×0.75 ally, **unimplemented**) and
+    Expert Belt (×1.2) should join this chain, and **Life Orb's ×1.3 is applied
+    in battle.rs:4960 OUTSIDE the chain** (a second pokeRound — double-rounds).
+    Moving it in needs a DamageContext flag.
+  - out_32 is NOT a rounding bug: it carries an unmatched draw (keying cascade),
+    and its "Giga Drain −1" label was the stale-index trap (different battle now,
+    engine 112 vs ps 122 + 1 unmatched).
 - **out_46** Scolipede-Mega takes too little from Dual Wingbeat (mega Def stat
   delta?) — needs a trace (could be another Champions data delta like Iron Head).
 - **out_05** Galar Slowbro ~38 low (partner-missed spread Blizzard + Regenerator)
