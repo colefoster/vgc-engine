@@ -569,6 +569,7 @@ async function runJob(job) {
       lastTurn: currentTurn,
       totalDraws: draws.length,
       errors: sideErrors,
+      log: logChunks.join('\n'),
     },
   };
 }
@@ -618,7 +619,9 @@ function parseArgs(argv) {
   return out;
 }
 
-(async () => {
+module.exports = { runJob };
+
+if (require.main === module) (async () => {
   try {
     const { out, jobPath } = parseArgs(process.argv);
     const job = jobPath ? JSON.parse(fs.readFileSync(jobPath, 'utf8')) : DEMO_JOB;
