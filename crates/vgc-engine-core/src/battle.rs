@@ -7154,6 +7154,41 @@ impl Battle {
             }
         }
 
+        // 12. Curse residual. PS data/moves.ts:3265 curse condition
+        //     `onResidualOrder: 12`, `onResidual`: this.damage(
+        //     pokemon.baseMaxhp / 4) — a cursed mon loses 1/4 max HP each end
+        //     of turn (floor, min 1). Routed through `this.damage` with the
+        //     curse condition as the effect, so Magic Guard blocks it (PS
+        //     `onDamage` returns false for any non-Move effect). No one is
+        //     healed (unlike Leech Seed). The volatile is indefinite (no
+        //     counter to tick) and clears on switch-out via the blanket
+        //     `volatiles.clear()`. Runs after status DOT (order 9) and before
+        //     the partial-trap chip (order 13). Bulbapedia:
+        //     <https://bulbapedia.bulbagarden.net/wiki/Curse_(move)>.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
+                    Some(m)
+                        if m.is_alive()
+                            && m.volatiles.has(crate::pokemon::VolatileKind::Curse) =>
+                    {
+                        ((m.stats.hp / 4).max(1), crate::ability::has_magic_guard(m))
+                    }
+                    _ => (0, false),
+                };
+                if chip == 0 || magic_guard {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    m.current_hp = m.current_hp.saturating_sub(chip);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                }
+            }
+        }
+
         // 13. Partial-trap residual. PS data/conditions.ts:partiallytrapped
         //     onResidualOrder 13. Chip holder 1/8 max HP; decrement
         //     payload counter; remove volatile when it hits 0. Magic
@@ -8745,6 +8780,99 @@ impl Battle {
                         }
                         if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                             t.ability_override = source_eff_id;
+                        }
+                    }
+                }
+            }
+            data::move_id::CURSE => {
+                // Curse — PS data/moves.ts:3265. `accuracy: true` (never
+                // misses), `flags: { bypasssub: 1 }`, NOT reflectable and NO
+                // protect flag. Behaviour forks on the USER's type:
+                //   • Non-Ghost user (`onTryHit` strips the volatile/onHit and
+                //     sets `move.self.boosts`): self Atk +1 / Def +1 / Spe −1,
+                //     no HP cost, no volatile.
+                //   • Ghost user: applies the `curse` volatile to the foe (PS
+                //     `onTryHit` fails the move if the target is already
+                //     cursed) and `onHit` pays `directDamage(maxhp/2)` to the
+                //     user — floor, can faint, ignores Substitute and Magic
+                //     Guard. The volatile chips the target 1/4 max HP each end
+                //     of turn (residual order 12, below).
+                // The Ghost test reads live types so Tera / type-changes are
+                // honoured (Ghost type index = 13). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Curse_(move)>.
+                let is_ghost = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|u| {
+                        let (ts, num) = u.effective_types();
+                        (0..num as usize).any(|i| ts[i] == 13)
+                    });
+                if !is_ghost {
+                    // Non-Ghost: self-target Atk +1 / Def +1 / Spe −1.
+                    self.apply_boosts(
+                        actor_side,
+                        actor_slot,
+                        &[(0, 1), (1, 1), (4, -1)],
+                        actor_side,
+                        actor_slot,
+                    );
+                    // Mirror Herb on a foe copies the Atk/Def rise; White Herb
+                    // / Eject Pack react to the Spe drop — mirror the
+                    // self-boost site's item handling.
+                    crate::item::try_consume_mirror_herb_on_foe_boost(
+                        self,
+                        actor_side,
+                        actor_slot,
+                        &[(0, 1), (1, 1)],
+                    );
+                    crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+                    let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
+                    return;
+                }
+                // Ghost user: pick the target foe (chosen if valid, else the
+                // resolved single-target fallback / bounce target).
+                let tgt = match target {
+                    Some(t)
+                        if forced_target.is_none()
+                            && t.side == opp_side
+                            && self
+                                .side(t.side)
+                                .active_mon(t.slot as usize)
+                                .is_some_and(|mm| mm.is_alive()) =>
+                    {
+                        Some((t.side, t.slot))
+                    }
+                    _ => opp_target,
+                };
+                if let Some((ts, tslot)) = tgt {
+                    // PS fails the whole move (no HP cost) if the target is
+                    // already cursed.
+                    let already = self
+                        .side(ts)
+                        .active_mon(tslot as usize)
+                        .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::Curse));
+                    if !already {
+                        // bypasssub: Substitute does NOT block the volatile.
+                        // Source slot encoded in payload like Leech Seed
+                        // (informational — Curse's residual drains no one).
+                        let source_payload =
+                            ((actor_side as u8 as u32) << 8) | actor_slot as u32;
+                        if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                            let _ = t.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::Curse,
+                                turns_remaining: 0,
+                                payload: source_payload,
+                            });
+                        }
+                        // User pays floor(maxhp/2) — directDamage, can faint.
+                        if let Some(u) =
+                            self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                        {
+                            let cost = (u.stats.hp / 2).max(1);
+                            u.current_hp = u.current_hp.saturating_sub(cost);
+                            if u.current_hp == 0 {
+                                u.fainted = true;
+                            }
                         }
                     }
                 }
@@ -14513,6 +14641,85 @@ mod tests {
         );
         assert!(b.p2.conditions.stealth_rock, "opponent Stealth Rock untouched");
         assert_eq!(b.p2.conditions.spikes_layers, 2, "opponent Spikes untouched");
+    }
+
+    #[test]
+    fn ghost_curse_costs_half_hp_and_chips_target_quarter_each_turn() {
+        // PS data/moves.ts:3265 curse — a Ghost-type user pays floor(maxhp/2)
+        // (directDamage) to lay the `curse` volatile on a foe, which then
+        // loses 1/4 max HP at every end of turn. Curse has no `protect` flag,
+        // so a Protecting target is still cursed and still takes the residual.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["curse","shadowball","sludgebomb","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","crunch","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let gengar_max = b.p1.team[0].current_hp;
+        let snorlax_max = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Snorlax Protect
+        );
+        assert_eq!(b.p1.team[0].current_hp, gengar_max - (gengar_max / 2).max(1),
+                   "Ghost Curse costs the user floor(maxhp/2)");
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Curse),
+                "target is cursed even through Protect (Curse has no protect flag)");
+        assert_eq!(b.p2.team[0].current_hp, snorlax_max - (snorlax_max / 4).max(1),
+                   "cursed target loses 1/4 max HP at end of turn");
+    }
+
+    #[test]
+    fn non_ghost_curse_boosts_self_atk_def_lowers_spe_no_cost() {
+        // PS curse onTryHit: a non-Ghost user instead gets +1 Atk / +1 Def /
+        // −1 Spe, pays no HP, and lays no volatile on a foe.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["curse","bodyslam","crunch","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let snorlax_max = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], // Blissey Softboiled
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 1, "non-Ghost Curse: +1 Atk");
+        assert_eq!(b.p1.team[0].boosts[1], 1, "non-Ghost Curse: +1 Def");
+        assert_eq!(b.p1.team[0].boosts[4], -1, "non-Ghost Curse: −1 Spe");
+        assert_eq!(b.p1.team[0].current_hp, snorlax_max, "non-Ghost Curse costs no HP");
+        assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Curse),
+                "non-Ghost Curse lays no volatile on the foe");
+    }
+
+    #[test]
+    fn magic_guard_blocks_curse_residual() {
+        // The Curse residual routes through `this.damage` with a non-Move
+        // effect, so Magic Guard blocks the chip — but the mon is still cursed.
+        let p1_json = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["curse","shadowball","sludgebomb","protect"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"clefable","level":50,"ability":"magicguard","item":"","nature":"calm","moves":["moonblast","softboiled","protect","calmmind"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let clef_hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Curse),
+                "Magic Guard mon still gets cursed");
+        assert_eq!(b.p2.team[0].current_hp, clef_hp,
+                   "Magic Guard blocks the Curse residual chip");
     }
 
     #[test]
