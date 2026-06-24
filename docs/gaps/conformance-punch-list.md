@@ -44,9 +44,23 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   6 unit tests. NOTE: out_24's residual turn-2 p2a atk −1 gap is a separate
   **Incineroar Intimidate-on-switch-in ordering** bug (both sides double-switch
   the same turn; engine misses the Intimidate on the freshly-switched foe).
-- **Burn residual on a mon that switched in that turn** — out_35. Polteageist
-  switched in, took Heat Wave (eng matches), burned, but end-of-turn burn DOT
-  (1/16 = 8) not applied. Likely residual loop skipping the just-active slot.
+## SHIPPED (cont.)
+- ✅ **Pre-turn switch-in ordering interleaved by leaving mon's Speed** —
+  out_24 turn 2 now CLEAN (advances to a turn-4 HP divergence). `apply_switches`
+  used to resolve ALL of P1's switches + onStart hooks, then all of P2's — so an
+  Intimidator switching in opposite a double-switching foe intimidated the
+  OUTGOING foes. New `apply_pre_turn_switches` gathers both sides' voluntary
+  switches, sorts by the leaving mon's effective Speed (fastest first), and runs
+  swap → hazards → ability/item onStart for each before the next — matching PS's
+  speed-sorted switch actions. Also fixes weather/terrain-setter "fastest wins"
+  on simultaneous switch-ins. Heap-free (≤4 fixed buffer, sort_unstable). Test:
+  `intimidate_on_double_switch_hits_only_the_foe_already_in`.
+
+- **Burn residual on a mon that switched in that turn** — old-batch out_35
+  (Polteageist Heat Wave burn DOT). NOT reproduced in the regenerated batch (new
+  out_35 is an Intimidate/cascade battle). The status-DOT residual loop iterates
+  active slots with no "skip just-switched" logic, so this is likely stale —
+  needs a fresh repro before any fix.
 
 ## OPEN — the rounding tail (low value; off-by-1..3 HP, rarely flips a KO)
 - **out_37** (Blizzard+Fake Out on Aurorus, +3) and **out_32** (Giga Drain, −1):
