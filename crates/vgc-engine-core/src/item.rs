@@ -247,6 +247,16 @@ pub fn on_after_damage(
     if !can_eat_berry(battle, side, item_id) {
         return;
     }
+    // Gluttony — PS data/abilities.ts:gluttony: berries that normally fire at
+    // <=1/4 max HP (the pinch stat berries, Figy family, Micle, Lansat, Starf)
+    // instead fire at <=1/2 HP. Berries already at 1/2 (Sitrus / Oran) are
+    // unaffected. Each ≤1/4 check below reads `quarter` so the holder's
+    // Gluttony raises the trigger to half HP.
+    let gluttony = battle
+        .side(side)
+        .active_mon(slot as usize)
+        .is_some_and(|m| m.effective_ability_id() == data::ability_id::GLUTTONY);
+    let quarter = if gluttony { current * 2 <= max } else { current * 4 <= max };
     if item_id == data::item_id::SITRUSBERRY && current * 2 <= max {
         // Heal 25% max HP, consume berry. PS data/items.ts:sitrusberry —
         // gen 6+ heals 1/4 max (was 30 flat HP in gen 4). Under Heal Block
@@ -280,7 +290,7 @@ pub fn on_after_damage(
         _ => None,
     };
     if let Some(stat_idx) = pinch_entry {
-        if current * 4 <= max {
+        if quarter {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.item_id = u16::MAX;
             }
@@ -319,7 +329,7 @@ pub fn on_after_damage(
             | data::item_id::AGUAVBERRY
             | data::item_id::IAPAPABERRY
     );
-    if figy_family && current * 4 <= max {
+    if figy_family && quarter {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             // Eaten even under Heal Block; `onTryHeal` vetoes the recovery.
             if !m.is_heal_blocked() {
@@ -354,7 +364,7 @@ pub fn on_after_damage(
     // damage.rs/battle.rs accuracy block on the next move. Deterministic
     // eat — no RNG; the boost scales an existing accuracy roll.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
-    if item_id == data::item_id::MICLEBERRY && current * 4 <= max {
+    if item_id == data::item_id::MICLEBERRY && quarter {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.item_id = u16::MAX;
             m.micle_next_move = true;
@@ -367,13 +377,13 @@ pub fn on_after_damage(
     // we set it to 2 — the Focus Energy / Laser Focus / Dire Hit value.
     // Deterministic. Cleared on switch-out alongside Focus Energy.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lansat_Berry>.
-    if item_id == data::item_id::LANSATBERRY && current * 4 <= max {
+    if item_id == data::item_id::LANSATBERRY && quarter {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.item_id = u16::MAX;
             m.crit_stage_volatile = 2;
         }
     }
-    if item_id == data::item_id::STARFBERRY && current * 4 <= max {
+    if item_id == data::item_id::STARFBERRY && quarter {
         let boosts = match battle.side(side).active_mon(slot as usize) {
             Some(m) => m.boosts,
             None => return,
