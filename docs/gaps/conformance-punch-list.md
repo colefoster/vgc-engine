@@ -10,20 +10,28 @@ SHIPPED from this sweep: Cotton Guard +3 / Shelter +2 Def; Apple Acid SpD-1 /
 Night Daze acc-1 / Muddy Water acc 30% (was 100%); Haze (clear all boosts);
 Overgrow/Blaze/Torrent/Swarm pinch ×1.5.
 
-QUEUE (coverage audit, grep-verify each before implementing — the audit had a
-false positive on Last Respects, which IS impl via DamageContext):
-- **Weak Armor** (15 teams) — −1 Def / +2 Spe when hit by a physical move.
-- **Synchronize** (8) — reflect brn/par/psn back onto the inflictor.
-- **Gluttony** (8) — eat pinch berry at ≤1/2 HP (vs 1/4).
-- **Disable** (6), **Destiny Bond** (6), **Yawn** (5) — status moves, no arm.
-- **Beat Up** — fully broken (base_power 0, multihit 0/0 → ~0 dmg).
-- **Knock Off vs a mega stone** — out_179459f0d9 (engine 3 vs ps 57): Knock Off
-  must NOT ×1.5 or remove a holder's own mega stone (Banette + Banettite).
-- Terrain: Grassy/Psychic/Misty unimplemented (only Electric); audit-flagged.
+SHIPPED from the queue (2026-06-24): **Weak Armor** (−1 Def/+2 Spe on physical
+hit), **Gluttony** (≤1/4-HP berries at ≤1/2), **Knock Off vs own mega stone**
+(no ×1.5, no removal — out_179459f0d9 turn 1 now matches).
+
+QUEUE — REMAINING (heavier; need new volatile machinery or plumbing. Grep-verify
+each — the audit false-positived on Last Respects, which IS impl via
+DamageContext):
+- **Synchronize** (8 teams) — reflect brn/par/psn/tox onto the inflictor.
+  Needs `source_slot` threaded through `try_set_status_from` (only carries
+  source_side today) so the reflect targets the right foe in doubles.
+- **Yawn** (5) — drowsy volatile → sleep next end-of-turn. New volatile.
+- **Disable** (6) — lock the target's last move 4 turns. New volatile +
+  move-selection gating.
+- **Destiny Bond** (6) — KO the attacker if the user faints to it. Needs
+  faint-source tracking.
+- **Beat Up** — fully broken (base_power 0, multihit 0/0 → ~0 dmg); needs
+  per-conscious-party-member hits with each member's Atk.
+- Terrain: Grassy / Psychic / Misty unimplemented (only Electric).
 - Lower-usage: Psych Up, Soak, Recycle, Gastro Acid, No Retreat, Contrary,
   Forecast, Frisk, Leaf Guard, Magician, Infiltrator, Corrosion.
-- Remaining 0-unmatched turn-1 damage gaps: out_179459f0d9 (above),
-  out_f55fe99993 (−13), plus boost gaps out_b018656fa6 / out_d36156026b.
+- Remaining 0-unmatched turn-1 gaps: out_f55fe99993 (−13 dmg), boost gaps
+  out_b018656fa6 / out_d36156026b.
 
 ---
 
