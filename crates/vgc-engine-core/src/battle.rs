@@ -24786,6 +24786,27 @@ mod tests {
     }
 
     #[test]
+    fn weak_armor_drops_def_raises_spe_on_physical_hit_only() {
+        // PS weakarmor: physical hit → self -1 Def / +2 Spe; special hit → none.
+        let p1 = r#"[{"species":"polteageist","level":50,"ability":"weakarmor","item":"focussash","nature":"timid","moves":["shadowball","storedpower","protect","nastyplot"],"evs":{"spa":252,"spe":252}}]"#;
+        let p2 = r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["earthquake","icebeam","rest","crunch"],"evs":{"atk":252}}]"#;
+        let run = |atk_move: u8| -> [i8; 7] {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+                TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: atk_move, target: Some(t(SideRef::P1, 0)) }],
+            );
+            b.p1.team[0].boosts
+        };
+        let phys = run(0); // Body Slam (physical)
+        assert_eq!(phys[1], -1, "Weak Armor -1 Def on physical hit");
+        assert_eq!(phys[4], 2, "Weak Armor +2 Spe on physical hit");
+        let spec = run(1); // Ice Beam (special)
+        assert_eq!((spec[1], spec[4]), (0, 0), "no Weak Armor on a special hit");
+    }
+
+    #[test]
     fn pinch_ability_boosts_matching_type_at_low_hp() {
         // Blaze ×1.5 on Fire moves when the holder is at ≤1/3 max HP. PS
         // data/abilities.ts:blaze (Overgrow/Torrent/Swarm share the shape).
