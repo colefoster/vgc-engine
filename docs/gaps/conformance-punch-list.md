@@ -14,13 +14,14 @@ SHIPPED from the queue (2026-06-24): **Weak Armor** (−1 Def/+2 Spe on physical
 hit), **Gluttony** (≤1/4-HP berries at ≤1/2), **Knock Off vs own mega stone**
 (no ×1.5, no removal — out_179459f0d9 turn 1 now matches).
 
+SHIPPED (cont.): **Yawn** (drowsy → sleep end of following turn),
+**Synchronize** (reflect brn/par/psn/tox onto the inflictor; new
+`try_set_status_from_src` carries the source slot — contact-ability sources
+like Flame Body still deferred at MAX).
+
 QUEUE — REMAINING (heavier; need new volatile machinery or plumbing. Grep-verify
 each — the audit false-positived on Last Respects, which IS impl via
 DamageContext):
-- **Synchronize** (8 teams) — reflect brn/par/psn/tox onto the inflictor.
-  Needs `source_slot` threaded through `try_set_status_from` (only carries
-  source_side today) so the reflect targets the right foe in doubles.
-- **Yawn** (5) — drowsy volatile → sleep next end-of-turn. New volatile.
 - **Disable** (6) — lock the target's last move 4 turns. New volatile +
   move-selection gating.
 - **Destiny Bond** (6) — KO the attacker if the user faints to it. Needs
