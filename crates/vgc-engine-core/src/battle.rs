@@ -9540,6 +9540,30 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::GASTROACID => {
+                // PS data/moves.ts:gastroacid — suppress the target's ability
+                // for the rest of its time on the field. `ability_suppressed`
+                // makes effective_ability_id() return the no-ability sentinel;
+                // the switch-in reset (battle.rs:1702) clears it and the
+                // GastroAcid volatile when the mon leaves. PS fails vs
+                // `cantsuppress`/permanent abilities (Multitype, RKS System,
+                // Comatose, Disguise, Ice Face, Zen Mode, …) — that permanence
+                // list is not modeled here (rare in Reg M-B; noted).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gastro_Acid_(move)>
+                if !self.rolled_accuracy_passed(m) { return; }
+                if let Some((opp, slot)) = opp_target {
+                    if let Some(target) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                        if target.is_alive() {
+                            target.ability_suppressed = true;
+                            let _ = target.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::GastroAcid,
+                                turns_remaining: 0,
+                                payload: 0,
+                            });
+                        }
+                    }
+                }
+            }
             data::move_id::DESTINYBOND => {
                 // PS data/moves.ts:destinybond. Self-target (accuracy: true,
                 // no roll). `onPrepareHit` runs `!removeVolatile('destinybond')`
@@ -17328,6 +17352,32 @@ mod tests {
         };
         assert_eq!(run(true), Status::None, "Leaf Guard blocks Glare in sun");
         assert_eq!(run(false), Status::Paralysis, "Glare paralyzes without sun");
+    }
+
+    #[test]
+    fn gastro_acid_suppresses_target_ability() {
+        // PS data/moves.ts:gastroacid — the target's ability is suppressed
+        // (effective_ability_id returns the no-ability sentinel).
+        let muk = r#"[
+            {"species":"muk","level":50,"ability":"stench","nature":"adamant","moves":["gastroacid","poisonjab","protect","knockoff"]}
+        ]"#;
+        let gengar = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","nature":"timid","moves":["nastyplot","shadowball","protect","sludgebomb"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(muk).unwrap();
+        let p2 = TeamBuilder::from_json(gengar).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        assert_ne!(b.p2.team[0].effective_ability_id(), u16::MAX, "Gengar has an ability pre-Gastro");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].ability_suppressed, "Gastro Acid sets ability_suppressed");
+        assert_eq!(
+            b.p2.team[0].effective_ability_id(),
+            u16::MAX,
+            "Gengar's ability is suppressed after Gastro Acid"
+        );
     }
 
     #[test]
