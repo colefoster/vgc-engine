@@ -9452,6 +9452,21 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::SOAK => {
+                // PS data/moves.ts:soak — set the target's typing to pure
+                // Water (type code 2). 100% accuracy. Idempotent if the
+                // target is already pure Water (PS -fails for the animation;
+                // the resulting typing is identical, so we just re-set it).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Soak_(move)>
+                if !self.rolled_accuracy_passed(m) { return; }
+                if let Some((opp, slot)) = opp_target {
+                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                        if t.is_alive() {
+                            t.set_type_override(2, None);
+                        }
+                    }
+                }
+            }
             data::move_id::DESTINYBOND => {
                 // PS data/moves.ts:destinybond. Self-target (accuracy: true,
                 // no roll). `onPrepareHit` runs `!removeVolatile('destinybond')`
@@ -17113,6 +17128,30 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn soak_changes_target_to_pure_water() {
+        // PS data/moves.ts:soak — the target becomes mono-Water.
+        let p1_json = r#"[
+            {"species":"politoed","level":50,"ability":"drizzle","nature":"modest","moves":["soak","scald","protect","icebeam"]}
+        ]"#;
+        // Garchomp (Dragon/Ground) → pure Water.
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","protect","swordsdance"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
+        let (_, n0) = b.p2.team[0].effective_types();
+        assert_eq!(n0, 2, "Garchomp starts dual-typed");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        let (types, n) = b.p2.team[0].effective_types();
+        assert_eq!(n, 1, "Soak makes the target mono-typed");
+        assert_eq!(types[0], 2, "target becomes pure Water (type code 2)");
     }
 
     #[test]
