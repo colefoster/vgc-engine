@@ -7424,6 +7424,46 @@ impl Battle {
             }
         }
 
+        // 23. Yawn. PS `data/moves.ts:yawn` condition `onResidualOrder: 23`,
+        //     `duration: 2` — a drowsy mon falls asleep when the counter
+        //     expires (the end of the turn AFTER Yawn landed: 2→1 on the Yawn
+        //     turn, 1→0 the next). At 0 the target `trySetStatus('slp')` from
+        //     the original user's side, so terrain / ability / Safeguard
+        //     immunity and the already-statused guard all apply at sleep time;
+        //     then the volatile is removed. Sleep duration rolls RNG inside
+        //     `try_set_status_from`. Cleared on switch-out via `volatiles.clear()`.
+        for side in [SideRef::P1, SideRef::P2] {
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let fire = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive() => m
+                        .volatiles
+                        .get(crate::pokemon::VolatileKind::Yawn)
+                        .map(|v| {
+                            let rem = v.turns_remaining.saturating_sub(1);
+                            let src = if (v.payload >> 8) & 0xFF == 0 {
+                                SideRef::P1
+                            } else {
+                                SideRef::P2
+                            };
+                            (rem, src)
+                        }),
+                    _ => None,
+                };
+                let Some((rem, src_side)) = fire else { continue };
+                if rem == 0 {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::Yawn);
+                    }
+                    self.try_set_status_from(side, slot, Status::Sleep, src_side);
+                } else if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if let Some(pos) = m.volatiles.position(crate::pokemon::VolatileKind::Yawn) {
+                        m.volatiles.items[pos].turns_remaining = rem;
+                    }
+                }
+            }
+        }
+
         // 24. Perish Song. PS `data/moves.ts:perishsong` condition,
         //     `onResidualOrder: 24` — fires after the status/Salt-Cure
         //     chip (order 13) but before the late item (28) and ability
@@ -9036,6 +9076,38 @@ impl Battle {
                             if u.current_hp == 0 {
                                 u.fainted = true;
                             }
+                        }
+                    }
+                }
+            }
+            data::move_id::YAWN => {
+                // Yawn — PS data/moves.ts:yawn. Single-target; applies the
+                // `yawn` (drowsy) volatile, which puts the target to sleep at
+                // the END of the FOLLOWING turn (PS `duration: 2`, condition
+                // onResidualOrder 23 → onEnd `trySetStatus('slp')`). PS
+                // onTryHit fails if the target already has a status; the sleep
+                // immunity (terrain / ability / Safeguard) and the
+                // already-statused guard are re-checked at residual time by
+                // `try_set_status_from`, so we only gate the apply on
+                // no-status + not-already-drowsy. Counter 2 in turns_remaining;
+                // source side+slot in payload (for the sleep's source side).
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                if let Some((opp, slot)) = opp_target {
+                    let appliable = self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        t.is_alive()
+                            && matches!(t.status, Status::None)
+                            && !t.volatiles.has(crate::pokemon::VolatileKind::Yawn)
+                    });
+                    if appliable {
+                        let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
+                        if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                            let _ = t.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::Yawn,
+                                turns_remaining: 2,
+                                payload: source_payload,
+                            });
                         }
                     }
                 }
@@ -24788,6 +24860,29 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn yawn_sleeps_target_at_end_of_following_turn() {
+        // PS yawn: drowsy now, asleep at the END of the next turn (duration 2).
+        let p1 = r#"[{"species":"smeargle","level":50,"ability":"owntempo","item":"","nature":"jolly","moves":["yawn","spore","protect","tackle"],"evs":{"spe":252}}]"#;
+        let p2 = r#"[{"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["swordsdance","dragonclaw","earthquake","protect"],"evs":{"atk":252,"spe":252}}]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+        // Turn 1: Yawn → Garchomp; Garchomp Swords Dance (no attack, nobody dies).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::None, "not asleep the turn Yawn lands");
+        assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Yawn), "drowsy applied");
+        // Turn 2: act again; asleep at end of turn.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Sleep, "asleep at end of the following turn");
+        assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Yawn), "drowsy cleared");
     }
 
     #[test]
