@@ -9303,6 +9303,88 @@ impl Battle {
                 }
             }
             _ => {
+                // Foe-stat-lowering STATUS moves (Growl, Leer, Tail Whip,
+                // Tickle, Charm, Screech, Fake Tears, Scary Face, …). PS:
+                // status category targeting a foe (single "normal" or spread
+                // "allAdjacentFoes") with `boosts` on the target. Each move's
+                // own flags drive the gating (`foe_debuff_moves`); reflectable
+                // copies were already bounced upstream by Magic Bounce. The
+                // gating mirrors the Parting Shot / secondary-drop sites:
+                // accuracy roll, Protect (when the move carries the flag),
+                // Substitute (unless the move bypasses it — sound moves do),
+                // per-stat Clear-Body/Hyper-Cutter veto, then White Herb /
+                // Eject Pack / Defiant·Competitive. Found missing by the
+                // Champions conformance harness (out_46: Emolga Tickle).
+                if let Some(fd) = foe_debuff_moves(m.slug) {
+                    if !self.rolled_accuracy_passed(m) {
+                        return;
+                    }
+                    let opp_side = actor_side.opposing();
+                    // Collect ≤ 2 target slots, heap-free. A bounced copy
+                    // (forced_target set) always lands on the one redirected mon.
+                    let mut tgts = [(opp_side, 0u8); 2];
+                    let mut ntgt = 0usize;
+                    if fd.spread && forced_target.is_none() {
+                        let n = self.format().active_count() as u8;
+                        for s in 0..n {
+                            if self.side(opp_side).active_mon(s as usize).is_some_and(|t| t.is_alive()) {
+                                tgts[ntgt] = (opp_side, s);
+                                ntgt += 1;
+                            }
+                        }
+                    } else {
+                        // Single target: the explicitly chosen foe if valid,
+                        // else the resolved `opp_target` (honors a bounce's
+                        // forced_target and the first-foe fallback).
+                        let chosen = match target {
+                            Some(t)
+                                if forced_target.is_none()
+                                    && t.side == opp_side
+                                    && self.side(t.side).active_mon(t.slot as usize).is_some_and(|mm| mm.is_alive()) =>
+                            {
+                                Some((t.side, t.slot))
+                            }
+                            _ => opp_target,
+                        };
+                        if let Some(x) = chosen {
+                            tgts[0] = x;
+                            ntgt = 1;
+                        }
+                    }
+                    for &(ts, tslot) in tgts.iter().take(ntgt) {
+                        // Protect blocks this target (move carries the flag).
+                        if fd.respects_protect
+                            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_protected_this_turn())
+                        {
+                            continue;
+                        }
+                        // Substitute absorbs it unless the move bypasses subs.
+                        if !fd.bypasses_sub
+                            && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0)
+                        {
+                            continue;
+                        }
+                        // Keep only the stats not vetoed per-stat (Clear Body
+                        // vetoes all; Hyper Cutter/Big Pecks/Keen Eye one stat).
+                        let mut buf = [(0u8, 0i8); 7];
+                        let mut k = 0usize;
+                        for &(idx, delta) in fd.boosts {
+                            let blocked = self.side(ts).active_mon(tslot as usize)
+                                .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, idx));
+                            if !blocked {
+                                buf[k] = (idx, delta);
+                                k += 1;
+                            }
+                        }
+                        if k > 0 {
+                            self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
+                            crate::item::try_consume_white_herb(self, ts, tslot);
+                            let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
+                            crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                        }
+                    }
+                    return;
+                }
                 // Self-boost status moves — PS data/moves.ts: each
                 // listed move has `target: "self"` (or `target: "allies"`
                 // for Howl) and `boosts: { stat: n, ... }`. Application
@@ -9428,6 +9510,58 @@ fn sleep_talk_excluded(slug: &str) -> bool {
             | "bounce" | "dig" | "dive" | "fly" | "phantomforce"
             | "shadowforce" | "skullbash" | "skydrop" | "solarblade"
     )
+}
+
+/// A foe-stat-lowering status move's data. Stat indices match
+/// `Pokemon::boosts`: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
+/// Flags are taken verbatim from PS `data/moves.ts` (see `foe_debuff_moves`).
+struct FoeDebuff {
+    /// Stat drops to apply to each target.
+    boosts: &'static [(u8, i8)],
+    /// `target: "allAdjacentFoes"` — hits every adjacent foe (doubles).
+    spread: bool,
+    /// Carries the `protect` flag → a Protecting target blocks it.
+    respects_protect: bool,
+    /// Carries `bypasssub` (every sound move does) → ignores a Substitute.
+    bypasses_sub: bool,
+}
+
+/// Per-slug table of foe-stat-lowering STATUS moves. Accuracy comes from the
+/// move data (rolled at the call site); these only carry the stat drop +
+/// flags. Captivate (gender-gated) and Defog (hazard/screen side effects) are
+/// deliberately excluded — they need their own handlers. PS `data/moves.ts`.
+fn foe_debuff_moves(slug: &str) -> Option<FoeDebuff> {
+    let m = |boosts, spread, respects_protect, bypasses_sub| {
+        Some(FoeDebuff { boosts, spread, respects_protect, bypasses_sub })
+    };
+    match slug {
+        // -atk:
+        "growl" => m(&[(0, -1)], true, true, true), // sound → bypasses sub
+        "babydolleyes" => m(&[(0, -1)], false, true, false),
+        "playnice" => m(&[(0, -1)], false, false, true), // no protect flag
+        "charm" | "featherdance" => m(&[(0, -2)], false, true, false),
+        // -def:
+        "leer" | "tailwhip" => m(&[(1, -1)], true, true, false),
+        "screech" => m(&[(1, -2)], false, true, true), // sound
+        // -spa:
+        "confide" => m(&[(2, -1)], false, false, true), // sound, no protect
+        "eerieimpulse" => m(&[(2, -2)], false, true, false),
+        // -spd:
+        "faketears" => m(&[(3, -2)], false, true, false),
+        "metalsound" => m(&[(3, -2)], false, true, true), // sound
+        // -spe:
+        "scaryface" => m(&[(4, -2)], false, true, false),
+        "cottonspore" | "stringshot" => m(&[(4, -2)], true, true, false),
+        // -acc:
+        "sandattack" | "smokescreen" | "kinesis" | "flash" => m(&[(5, -1)], false, true, false),
+        // -eva:
+        "sweetscent" => m(&[(6, -2)], true, true, false),
+        // -atk -def / -atk -spa:
+        "tickle" => m(&[(0, -1), (1, -1)], false, true, false),
+        "nobleroar" => m(&[(0, -1), (2, -1)], false, true, true), // sound
+        "tearfullook" => m(&[(0, -1), (2, -1)], false, false, false), // no protect
+        _ => return None,
+    }
 }
 
 fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
@@ -12210,6 +12344,75 @@ mod tests {
         assert_eq!(acc("clangoroussoul"), 255, "accuracy: true (can't miss)");
         assert_eq!(data::move_by_slug("growth").unwrap().type_,
                    data::move_by_slug("energyball").unwrap().type_, "Growth is now Grass-type");
+    }
+
+    #[test]
+    fn foe_debuff_status_moves_lower_target_stats_with_gating() {
+        use crate::pokemon::Status;
+        // Single-target: Tickle drops the foe's Atk and Def by 1 each
+        // (out_46). Snorlax has no Clear Body, doesn't Protect.
+        let run = |p1_ability: &str, p1_move: u8, p2_move: u8| {
+            let p1 = format!(r#"[{{"species":"snorlax","level":50,"ability":"{p1_ability}","moves":["tickle","growl","charm","protect"],"evs":{{"hp":252}}}}]"#);
+            let p2 = r#"[{"species":"garchomp","level":50,"ability":"sandveil","moves":["protect","substitute","dragonclaw","ironhead"],"evs":{"hp":252,"spe":252}}]"#;
+            let t1 = TeamBuilder::from_json(&p1).unwrap();
+            let t2 = TeamBuilder::from_json(p2).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, t1, t2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: p1_move, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: p2_move, target: None }],
+            );
+            b.p2.team[0].boosts
+        };
+        // Tickle (move 0) vs Garchomp using Dragon Claw (move 2, no block).
+        let bo = run("thickfat", 0, 2);
+        assert_eq!((bo[0], bo[1]), (-1, -1), "Tickle: atk-1 def-1");
+        // Charm (move 2) → atk-2.
+        let bo = run("thickfat", 2, 2);
+        assert_eq!(bo[0], -2, "Charm: atk-2");
+        // Protect (Garchomp move 0) blocks Tickle entirely.
+        let bo = run("thickfat", 0, 0);
+        assert_eq!((bo[0], bo[1]), (0, 0), "Protect blocks Tickle");
+        // Substitute (Garchomp move 1) blocks Tickle (not a sound move)...
+        let bo = run("thickfat", 0, 1);
+        assert_eq!((bo[0], bo[1]), (0, 0), "Substitute blocks Tickle (non-sound)");
+        // ...but Growl (move 1, sound) bypasses the Substitute.
+        let bo = run("thickfat", 1, 1);
+        assert_eq!(bo[0], -1, "Growl (sound) bypasses Substitute");
+
+        // Clear Body vetoes the drop.
+        let p1 = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["tickle","growl","charm","protect"],"evs":{"hp":252}}]"#;
+        let p2cb = r#"[{"species":"metang","level":50,"ability":"clearbody","moves":["dragonclaw","protect","substitute","ironhead"]}]"#;
+        let t1 = TeamBuilder::from_json(p1).unwrap();
+        let t2 = TeamBuilder::from_json(p2cb).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, t1, t2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 0, "Clear Body vetoes Tickle");
+        let _ = Status::None;
+    }
+
+    #[test]
+    fn growl_in_doubles_lowers_both_foes() {
+        // Growl is allAdjacentFoes — it drops BOTH opposing actives' Atk.
+        let p1 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["growl","tackle","protect","rest"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","moves":["protect","softboiled","seismictoss","sing"],"evs":{"hp":252}}
+        ]"#;
+        let p2 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","moves":["protect","dragonclaw","earthquake","ironhead"],"evs":{"hp":252}},
+            {"species":"tyranitar","level":50,"ability":"sandstream","moves":["protect","crunch","rockslide","earthquake"],"evs":{"hp":252}}
+        ]"#;
+        let t1 = TeamBuilder::from_json(p1).unwrap();
+        let t2 = TeamBuilder::from_json(p2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, t1, t2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], -1, "Growl hit Garchomp");
+        assert_eq!(b.p2.team[1].boosts[0], -1, "Growl hit Tyranitar");
     }
 
     #[test]
