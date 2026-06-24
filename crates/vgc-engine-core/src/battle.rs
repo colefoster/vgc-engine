@@ -17417,6 +17417,36 @@ mod tests {
     }
 
     #[test]
+    fn magician_steals_item_on_damaging_hit() {
+        // PS data/abilities.ts:magician — an item-less holder steals the
+        // target's item on a damaging hit; a holder that already has an item
+        // steals nothing.
+        let blissey = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"leftovers","nature":"bold","moves":["amnesia","softboiled","seismictoss","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let run = |delphox_item: &str| -> (bool, bool) {
+            let delphox = format!(
+                r#"[{{"species":"delphox","level":50,"ability":"magician","item":"{delphox_item}","nature":"modest","moves":["flamethrower","psychic","protect","shadowball"],"evs":{{"spa":252,"spe":252}}}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&delphox).unwrap();
+            let p2 = TeamBuilder::from_json(blissey).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            (b.p1.team[0].item_id != u16::MAX, b.p2.team[0].item_id != u16::MAX)
+        };
+        // Item-less Magician steals the target's Leftovers.
+        let (dx_has, bl_has) = run("");
+        assert!(dx_has, "Magician holder gained the stolen item");
+        assert!(!bl_has, "target lost its item to Magician");
+        // Magician holder that already has an item steals nothing.
+        let (_dx2, bl_has2) = run("lifeorb");
+        assert!(bl_has2, "target keeps its item — Magician holder already holds one");
+    }
+
+    #[test]
     fn gastro_acid_suppresses_target_ability() {
         // PS data/moves.ts:gastroacid — the target's ability is suppressed
         // (effective_ability_id returns the no-ability sentinel).
