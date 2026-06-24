@@ -1039,7 +1039,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 .map(|m| m.is_alive() && !matches!(m.status, crate::pokemon::Status::None))
                 .unwrap_or(false);
             if !ally_statused { continue; }
-            if rng.percent_1_100() <= 30 {
+            // Champions buffs Healer from gen 9's 30% to 50% (PS
+            // data/mods/champions/abilities.ts: healer `randomChance(1, 2)`).
+            if rng.percent_1_100() <= 50 {
                 if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
                     ally.status = crate::pokemon::Status::None;
                 }
