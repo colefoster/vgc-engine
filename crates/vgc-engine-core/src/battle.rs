@@ -8709,6 +8709,14 @@ impl Battle {
                 if let Some((ts, tslot)) = opp_target {
                     let target_alive = self.side(ts).active_mon(tslot as usize)
                         .is_some_and(|t| t.is_alive());
+                    // Skill Swap carries PS's `protect` flag, so a target that
+                    // used Protect/Detect this turn blocks the swap entirely
+                    // (PS `hitStepTryHit` fails the move before `onHit`). Found
+                    // by the Champions conformance harness (out_45: Wyrdeer Skill
+                    // Swaps a Protecting Delphox — PS leaves Delphox's Magician
+                    // intact; the engine had swapped Intimidate onto it).
+                    let target_protected = self.side(ts).active_mon(tslot as usize)
+                        .is_some_and(|t| t.is_protected_this_turn());
                     let source_ability = self.side(actor_side)
                         .active_mon(actor_slot as usize)
                         .map(|s| s.effective_ability_slug())
@@ -8717,6 +8725,7 @@ impl Battle {
                         .map(|t| t.effective_ability_slug())
                         .unwrap_or("");
                     if target_alive
+                        && !target_protected
                         && !ability_fails_skill_swap(source_ability)
                         && !ability_fails_skill_swap(target_ability)
                     {
@@ -12612,10 +12621,12 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
         assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace");
         assert_eq!(b.p2.team[0].effective_ability_slug(), "roughskin");
-        // Jirachi (faster) Skill Swaps into Garchomp.
+        // Jirachi (faster) Skill Swaps into Garchomp. Garchomp uses Dragon
+        // Claw (NOT Protect — a Protecting target would correctly block the
+        // swap; see skill_swap_blocked_by_protect).
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
-            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p1.team[0].effective_ability_slug(), "roughskin", "Jirachi got Rough Skin");
         assert_eq!(b.p2.team[0].effective_ability_slug(), "serenegrace", "Garchomp got Serene Grace");
@@ -12628,6 +12639,29 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].ability_override, u16::MAX, "override reset on switch-out");
         assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace", "Jirachi back to base ability");
+    }
+
+    #[test]
+    fn skill_swap_blocked_by_protect() {
+        // Skill Swap has the `protect` flag, so a Protecting target blocks the
+        // swap entirely — both abilities stay put (Champions conformance out_45).
+        let p1_json = r#"[
+            {"species":"jirachi","level":50,"ability":"serenegrace","item":"","nature":"timid","moves":["skillswap","mudslap","meteorbeam","imprison"],"evs":{"spe":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["earthquake","dragonclaw","protect","ironhead"],"evs":{"spe":252,"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+        // Jirachi Skill Swaps; Garchomp Protects (move_slot 2).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "serenegrace", "Jirachi keeps its ability — Protect blocked the swap");
+        assert_eq!(b.p2.team[0].effective_ability_slug(), "roughskin", "Garchomp keeps Rough Skin");
+        assert_eq!(b.p1.team[0].ability_override, u16::MAX, "no override applied");
     }
 
     #[test]
