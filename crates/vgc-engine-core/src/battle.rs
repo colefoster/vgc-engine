@@ -9835,7 +9835,8 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         // Single-stat:
         "swordsdance" => &[(0, 2)],
         "nastyplot" => &[(2, 2)],
-        "irondefense" | "acidarmor" | "barrier" => &[(1, 2)],
+        "irondefense" | "acidarmor" | "barrier" | "shelter" => &[(1, 2)],
+        "cottonguard" => &[(1, 3)],
         "agility" | "rockpolish" | "autotomize" => &[(4, 2)],
         "amnesia" => &[(3, 2)],
         // Evasion (index 6). PS data/moves.ts: minimize `boosts {evasion:2}`,
@@ -24721,6 +24722,31 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn cotton_guard_and_shelter_raise_defense() {
+        // PS data/moves.ts: cottonguard boosts {def: 3}; shelter {def: 2}.
+        // Both were missing from self_boost_moves (conformance out_87c77aa788
+        // Cotton Guard, out_8412e0cdce Shelter).
+        let run = |slug: &str| -> i8 {
+            let p1_json = format!(r#"[
+                {{"species":"slurpuff","level":50,"ability":"sweetveil","nature":"calm","moves":["{slug}","drainingkiss","afteryou","protect"]}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["seismictoss","softboiled","toxic","protect"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            b.p1.team[0].boosts[1]
+        };
+        assert_eq!(run("cottonguard"), 3, "Cotton Guard +3 Def");
+        assert_eq!(run("shelter"), 2, "Shelter +2 Def");
     }
 
     #[test]
