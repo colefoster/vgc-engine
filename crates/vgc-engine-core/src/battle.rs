@@ -9431,6 +9431,13 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         "irondefense" | "acidarmor" | "barrier" => &[(1, 2)],
         "agility" | "rockpolish" | "autotomize" => &[(4, 2)],
         "amnesia" => &[(3, 2)],
+        // Evasion (index 6). PS data/moves.ts: minimize `boosts {evasion:2}`,
+        // doubleteam `boosts {evasion:1}`, both target self. NOTE: Minimize's
+        // `volatileStatus: 'minimize'` (always-hit + 2x damage from Body Slam
+        // / Stomp / etc.) is a separate interaction, not yet modelled — this
+        // adds only the evasion stage.
+        "minimize" => &[(6, 2)],
+        "doubleteam" => &[(6, 1)],
         "tailglow" => &[(2, 3)],
         "howl" => &[(0, 1)],
         "meditate" | "sharpen" => &[(0, 1)],
@@ -12116,6 +12123,32 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[2], -2, "spa -2");
+    }
+
+    #[test]
+    fn minimize_and_double_team_raise_evasion() {
+        // PS data/moves.ts: minimize +2 evasion, doubleteam +1 (index 6),
+        // target self. Found missing by the Champions conformance harness
+        // (out_26: Sandaconda Minimize — PS evasion +2, engine 0).
+        let p1_json = r#"[
+            {"species":"sandaconda","level":50,"ability":"sandspit","item":"focussash","nature":"impish","moves":["minimize","doubleteam","glare","earthquake"],"evs":{"hp":252,"def":252,"spe":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[6], 2, "Minimize +2 evasion");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[6], 3, "Double Team +1 → +3");
     }
 
     #[test]
