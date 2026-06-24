@@ -10200,8 +10200,23 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         "mysticalfire" | "snarl" => (2, -1, 100),
         // 100% -2 SpD:
         "acidspray" => (3, -2, 100),
-        // 100% -1 Acc:
-        "mudslap" | "muddywater" => (5, -1, 100),
+        // 100% -1 SpD — Apple Acid (PS data/moves.ts:appleacid
+        // `secondary: { chance: 100, boosts: { spd: -1 } }`; Champions BP 90).
+        // Was missing, so the drop never landed (conformance out_90b9a9be38:
+        // Apple Acid's -1 SpD masked a Calm Mind +1 SpD on the target).
+        "appleacid" => (3, -1, 100),
+        // 100% -1 Acc — Mud-Slap only. Muddy Water is 30% (below), NOT 100%;
+        // grouping them here over-applied Muddy Water's accuracy drop
+        // (conformance out_12eeaaaeb4).
+        "mudslap" => (5, -1, 100),
+        // 30% -1 Acc — Muddy Water (PS data/moves.ts:muddywater
+        // `secondary: { chance: 30, boosts: { accuracy: -1 } }`).
+        "muddywater" => (5, -1, 30),
+        // 40% -1 Acc — Night Daze (PS data/moves.ts:nightdaze
+        // `secondary: { chance: 40, boosts: { accuracy: -1 } }`; Champions
+        // BP 90). The accuracy-drop secondary was unimplemented (conformance
+        // out_996efbf242).
+        "nightdaze" => (5, -1, 40),
         // Moonblast SpA-drop: Champions rebalances the chance from gen 9's
         // 30% to 10% (PS data/mods/champions/moves.ts: moonblast
         // `secondary.chance: 10`). Our target format.
@@ -27275,6 +27290,18 @@ mod tests {
             super::stat_drop_secondary("thunderouskick"), Some((1, -1, 100)),
             "Thunderous Kick = 100% Def -1",
         );
+        // Conformance-sweep fixes (100-battle batch):
+        //   - appleacid: 100% SpD -1   (was missing)
+        //   - muddywater: 30% Acc -1   (was wrongly grouped 100% with mudslap)
+        //   - nightdaze: 40% Acc -1    (was missing)
+        assert_eq!(super::stat_drop_secondary("appleacid"), Some((3, -1, 100)),
+            "Apple Acid = 100% SpD -1");
+        assert_eq!(super::stat_drop_secondary("mudslap"), Some((5, -1, 100)),
+            "Mud-Slap stays 100% Acc -1");
+        assert_eq!(super::stat_drop_secondary("muddywater"), Some((5, -1, 30)),
+            "Muddy Water = 30% Acc -1 (not 100%)");
+        assert_eq!(super::stat_drop_secondary("nightdaze"), Some((5, -1, 40)),
+            "Night Daze = 40% Acc -1");
         assert_eq!(
             super::status_secondary("smog"), Some((Status::Poison, 40)),
             "Smog 40% psn",
