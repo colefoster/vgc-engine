@@ -1261,6 +1261,22 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Weak Armor — PS `data/abilities.ts:weakarmor` `onDamagingHit`:
+    //   if (move.category === 'Physical') this.boost({ def: -1, spe: 2 }, target, target);
+    // On taking a PHYSICAL hit the holder self-applies -1 Def / +2 Spe.
+    // Self-inflicted, so Clear Body / Defiant don't interact; White Herb
+    // restores the Def drop (the real Polteageist @ White Herb set). Gated on
+    // the holder surviving (a fainted mon can't be boosted). Empty flags —
+    // Mold Breaker does NOT bypass. Move category Physical = 0. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Weak_Armor_(Ability)>.
+    if ability_id == data::ability_id::WEAKARMOR
+        && target_alive
+        && data::MOVES[move_id as usize].category == 0
+    {
+        battle.apply_boosts(target_side, target_slot, &[(1, -1), (4, 2)], target_side, target_slot);
+        crate::item::try_consume_white_herb(battle, target_side, target_slot);
+    }
+
     // Color Change — PS `data/abilities.ts:553` `onAfterMoveSecondary`:
     //   if (!target.hp) return;
     //   const type = move.type;
