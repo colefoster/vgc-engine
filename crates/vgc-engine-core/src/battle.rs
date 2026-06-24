@@ -3090,6 +3090,51 @@ impl Battle {
                     return;
                 }
             }
+            // Psychic Terrain blocks priority moves against a grounded
+            // opponent — PS data/moves.ts:psychicterrain `onTryHit`
+            // (priority 4, so it runs ahead of Crafty Shield / Magic Bounce
+            // below). For Status moves the only effective-priority bump we
+            // model is Prankster (+1); when that lifts the move above 0 and
+            // the resolved single target is a grounded, non-semi-invulnerable
+            // FOE, the move fails outright. Self/ally/side targets are exempt
+            // (`is_targeting_move` + the `tside != actor_side` test).
+            let eff_priority = m.priority as i32
+                + if attacker.ability_id == data::ability_id::PRANKSTER { 1 } else { 0 };
+            if eff_priority > 0
+                && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+                && is_targeting_move(m.target)
+            {
+                let opp = actor_side.opposing();
+                let n = self.format().active_count() as u8;
+                let resolved: Option<(SideRef, u8)> = match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => {
+                        let mut count = 0u8;
+                        let mut only = 0u8;
+                        for slot in 0..n {
+                            if self
+                                .side(opp)
+                                .active_mon(slot as usize)
+                                .is_some_and(|t| t.is_alive())
+                            {
+                                count += 1;
+                                only = slot;
+                            }
+                        }
+                        if count == 1 { Some((opp, only)) } else { None }
+                    }
+                };
+                if let Some((tside, tslot)) = resolved {
+                    let blocked = tside != actor_side
+                        && self
+                            .side(tside)
+                            .active_mon(tslot as usize)
+                            .is_some_and(|t| t.is_alive() && t.is_grounded() && t.semi_invuln == 0);
+                    if blocked {
+                        return;
+                    }
+                }
+            }
             // Good as Gold — PS `data/abilities.ts:1585` goodasgold.
             //   onTryHit(target, source, move) {
             //     if (move.category === 'Status' && target !== source) {
@@ -3928,6 +3973,25 @@ impl Battle {
                 if !hits_through {
                     continue;
                 }
+            }
+
+            // Psychic Terrain blocks priority moves against a grounded
+            // opponent — PS data/moves.ts:psychicterrain `onTryHit`
+            // (priority 4): the move does nothing to that target. Damaging
+            // priority moves (Quick Attack, Fake Out, Sucker Punch, Bullet
+            // Punch, Ice Shard, Aqua Jet, Extreme Speed, …) never gain a
+            // priority bump here — Prankster only lifts Status moves and
+            // Grassy Glide can't co-occur with Psychic Terrain — so the
+            // move's base priority IS its effective priority. Allies/self
+            // (`tside == actor_side`) and semi-invulnerable targets (already
+            // `continue`d above) are exempt. Checked before the accuracy
+            // roll so no PRNG draw is consumed, matching the Protect path.
+            if m.priority > 0
+                && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+                && tside != actor_side
+                && defender.is_grounded()
+            {
+                continue;
             }
 
             // OHKO moves — Fissure, Horn Drill, Guillotine, Sheer Cold.
@@ -16714,6 +16778,75 @@ mod tests {
             b.p2.team[0].current_hp, p2_before,
             "airborne Togekiss is not healed by Grassy Terrain"
         );
+    }
+
+    #[test]
+    fn psychic_terrain_blocks_priority_damage_on_grounded_foe_only() {
+        // Quick Attack (+1) does nothing to a GROUNDED foe under Psychic
+        // Terrain, but still lands on an AIRBORNE foe and lands normally
+        // when no terrain is up.
+        let pika = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["quickattack","thunderbolt","tackle","feint"]}
+        ]"#;
+        // Foes use a self-targeting boost in slot 0 (no Protect — Protect
+        // would block Quick Attack regardless of terrain and mask the test).
+        let grounded = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["amnesia","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let airborne = r#"[
+            {"species":"togekiss","level":50,"ability":"serenegrace","nature":"hardy","moves":["nastyplot","airslash","roost","defog"]}
+        ]"#;
+        // Helper: run Pikachu's Quick Attack vs the given foe team, with or
+        // without Psychic Terrain, return the foe's HP loss.
+        let run = |foe_json: &str, psychic: bool| -> u16 {
+            let p1 = TeamBuilder::from_json(pika).unwrap();
+            let p2 = TeamBuilder::from_json(foe_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            if psychic {
+                b.terrain = crate::terrain::Terrain::Psychic;
+                b.terrain_turns = 5;
+            }
+            let max = b.p2.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            max - b.p2.team[0].current_hp
+        };
+        assert_eq!(run(grounded, true), 0, "Quick Attack blocked vs grounded foe under Psychic Terrain");
+        assert!(run(grounded, false) > 0, "Quick Attack lands with no terrain");
+        assert!(run(airborne, true) > 0, "Quick Attack lands vs airborne foe even under Psychic Terrain");
+    }
+
+    #[test]
+    fn psychic_terrain_blocks_prankster_status_on_grounded_foe() {
+        // Prankster lifts Leer to +1 priority; under Psychic Terrain it is
+        // blocked against a grounded foe (Def stays 0). Without the terrain
+        // it lands (Def −1).
+        let whim = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["leer","tailwind","moonblast","protect"]}
+        ]"#;
+        // Snorlax self-boosts (Amnesia) rather than Protecting, so the only
+        // thing that can stop Leer is the Psychic Terrain block under test.
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["amnesia","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let run = |psychic: bool| -> i8 {
+            let p1 = TeamBuilder::from_json(whim).unwrap();
+            let p2 = TeamBuilder::from_json(snorlax).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            if psychic {
+                b.terrain = crate::terrain::Terrain::Psychic;
+                b.terrain_turns = 5;
+            }
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].boosts[1]
+        };
+        assert_eq!(run(true), 0, "Prankster Leer blocked by Psychic Terrain (Def unchanged)");
+        assert_eq!(run(false), -1, "Prankster Leer lands with no terrain (Def −1)");
     }
 
     #[test]
