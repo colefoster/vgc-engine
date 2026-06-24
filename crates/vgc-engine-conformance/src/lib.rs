@@ -20,8 +20,8 @@ use serde::Deserialize;
 use vgc_engine_core::data;
 use vgc_engine_core::rng::{Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
 use vgc_engine_core::{
-    Battle, BattleConfig, Choice, Format, Pokemon, SideRef, Status, StepResult, Target,
-    TeamBuilder, Terrain, Weather,
+    build_member, parse_showdown_export, Battle, BattleConfig, Choice, Format, Pokemon, SideRef,
+    Status, StepResult, Target, Terrain, Weather,
 };
 
 // ---------------------------------------------------------------------------
@@ -602,14 +602,50 @@ fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String
     Ok(None)
 }
 
+/// Pokémon Champions Stat-Point → classic-EV conversion. PS's Champions mod
+/// reads a set's `evs` field as **Stat Points** and computes stats with
+/// `max(2·sp − 1, 0)`; the engine is EV-based and uses `floor(ev/4)` (its
+/// design treats `32 SP ↔ 252 EV`, see `format_rules::ev_to_sp`). The two
+/// agree exactly when each SP value is mapped to `8·sp − 4` EVs (the inverse
+/// of `ev_to_sp`), since `floor((8·sp−4)/4) = max(2·sp−1, 0)`. So a Champions
+/// team (SP notation, what PS gets) must have its stat values converted before
+/// the engine builds it. Non-Champions formats pass values through unchanged.
+fn sp_to_ev(sp: u8) -> u8 {
+    if sp == 0 {
+        0
+    } else {
+        (8 * sp as u16 - 4) as u8
+    }
+}
+
+/// Build an engine team from PS-export text. For Champions formats the parsed
+/// `evs` are Stat Points and are converted to EVs (see [`sp_to_ev`]) before the
+/// stats are computed.
+fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
+    let mut members = parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
+    if champions {
+        for m in &mut members {
+            m.evs.hp = sp_to_ev(m.evs.hp);
+            m.evs.atk = sp_to_ev(m.evs.atk);
+            m.evs.def = sp_to_ev(m.evs.def);
+            m.evs.spa = sp_to_ev(m.evs.spa);
+            m.evs.spd = sp_to_ev(m.evs.spd);
+            m.evs.spe = sp_to_ev(m.evs.spe);
+        }
+    }
+    members
+        .iter()
+        .map(|m| build_member(m).map_err(|e| format!("{e:?}")))
+        .collect()
+}
+
 /// Replay a PS-driven battle into the engine under keyed-outcome injection and
 /// diff per-turn state. Stops reporting at the first divergence (downstream
 /// cascades are noise — see the design doc's first-divergence isolation).
 pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
-    let p1 = TeamBuilder::from_showdown_text(&battle.p1team)
-        .map_err(|e| format!("p1 team: {e:?}"))?;
-    let p2 = TeamBuilder::from_showdown_text(&battle.p2team)
-        .map_err(|e| format!("p2 team: {e:?}"))?;
+    let champions = battle.format.contains("champions");
+    let p1 = build_engine_team(&battle.p1team, champions).map_err(|e| format!("p1 team: {e}"))?;
+    let p2 = build_engine_team(&battle.p2team, champions).map_err(|e| format!("p2 team: {e}"))?;
     let (table, unresolved) = build_table(battle);
     let format = if battle.format.contains("doubles") {
         Format::Doubles
@@ -648,6 +684,7 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vgc_engine_core::TeamBuilder;
 
     #[test]
     fn slot_ref_roundtrip() {
