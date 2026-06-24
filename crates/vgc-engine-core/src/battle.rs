@@ -4083,7 +4083,32 @@ impl Battle {
             // Aerial Ace, weather-boosted Hurricane/Thunder/Blizzard) use,
             // so draw order is identical to a sure-hit move.
             let base_acc = if no_guard_pair { 255 } else { base_acc };
-            if base_acc != 255 {
+            // PS evaluates the Protect family at the TryHit step, BEFORE the
+            // accuracy roll, so a move blocked by Protect / Wide Guard / Quick
+            // Guard / Mat Block makes NO accuracy draw. Mirror that: suppress
+            // the wasted accuracy roll when this hit will be blocked below.
+            // The actual blocking still happens at its existing sites
+            // (Wide/Quick/Mat Guard + Protect, ~30 lines down); this only
+            // skips the RNG draw so the sequence matches PS (the conformance
+            // harness keys on this, and it tightens PsGen5 draw parity).
+            // Mirrors those four conditions exactly — keep them in sync.
+            // Piercing Drill (damaging contact) punches through single-target
+            // Protect, so it is NOT treated as blocked here (it still rolls).
+            let protect_blocked = (self.side(tside).conditions.wide_guard_this_turn
+                && matches!(m.target, 5 | 6 | 11))
+                || (self.side(tside).conditions.quick_guard_this_turn && m.priority > 0)
+                || (self.side(tside).conditions.mat_block_this_turn
+                    && damaging
+                    && is_targeting_move(m.target))
+                || (defender.is_protected_this_turn()
+                    && is_targeting_move(m.target)
+                    && !(damaging
+                        && attacker_ability_id == data::ability_id::PIERCINGDRILL
+                        && crate::damage::move_makes_contact(
+                            &data::MOVES[move_id as usize],
+                            &attacker,
+                        )));
+            if base_acc != 255 && !protect_blocked {
                 let acc_stage = attacker.boosts[5] as i32;
                 let eva_stage = defender.boosts[6] as i32;
                 let boost = (acc_stage - eva_stage).clamp(-6, 6);
