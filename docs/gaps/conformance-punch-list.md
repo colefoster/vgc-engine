@@ -19,6 +19,20 @@ SHIPPED (cont.): **Yawn** (drowsy → sleep end of following turn),
 `try_set_status_from_src` carries the source slot — contact-ability sources
 like Flame Body still deferred at MAX).
 
+SHIPPED (cont.) — **Terrain block COMPLETE** (PRs 17–20). The subsystem was
+far more wired than this doc claimed (enum, all 5 surge abilities, durations,
+damage mults, Terrain Pulse all pre-existing); the gaps were:
+- **Terrain-setting moves** (#17): Grassy/Psychic/Misty Terrain *moves* were
+  no-ops (only the surge abilities raised them). Extracted `set_field_terrain`
+  helper; all four moves now route through it.
+- **Grassy Terrain** (#18): EOT 1/16 heal for grounded mons (residual 5a,
+  Heal-Block-aware) + Earthquake/Bulldoze/Magnitude ×0.5 vs grounded targets.
+- **Psychic Terrain** (#19): priority moves (effective priority > 0) blocked
+  vs grounded foes — both damage-loop and Prankster-status paths.
+- **Misty Terrain** (#20): all non-volatile statuses blocked on grounded mons
+  (broadened the status gate; catches Yawn) + Dragon-move ×0.5. Confusion
+  secondary already gated; Outrage self-confuse-under-Misty edge noted.
+
 QUEUE — REMAINING (heavier; need new volatile machinery or plumbing. Grep-verify
 each — the audit false-positived on Last Respects, which IS impl via
 DamageContext):
@@ -28,7 +42,7 @@ DamageContext):
   faint-source tracking.
 - **Beat Up** — fully broken (base_power 0, multihit 0/0 → ~0 dmg); needs
   per-conscious-party-member hits with each member's Atk.
-- Terrain: Grassy / Psychic / Misty unimplemented (only Electric).
+- ~~Terrain: Grassy / Psychic / Misty unimplemented~~ ✅ DONE (PRs 17–20).
 - Lower-usage: Psych Up, Soak, Recycle, Gastro Acid, No Retreat, Contrary,
   Forecast, Frisk, Leaf Guard, Magician, Infiltrator, Corrosion.
 - Remaining 0-unmatched turn-1 gaps: out_f55fe99993 (−13 dmg), boost gaps
