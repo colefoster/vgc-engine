@@ -3645,7 +3645,11 @@ impl Battle {
                     | data::move_id::METALBURST
                     // Fling carries basePower 0 in PS; its real BP comes from
                     // the held item's `fling.basePower` in the damage calc.
-                    | data::move_id::FLING);
+                    | data::move_id::FLING
+                    // Beat Up carries basePower 0 in PS; per-hit BP is
+                    // computed from each eligible member's species base Atk
+                    // (`5 + floor(atk/10)`) inside the multihit loop.
+                    | data::move_id::BEATUP);
 
         // Attacker held-item damage multiplier (PS step 9). Life Orb 1.3×;
         // future PRs add Expert Belt 1.2× on SE hits, Type Plates 1.2×
@@ -5009,6 +5013,10 @@ impl Battle {
             // Fixed-damage moves skip the 16-value damage roll entirely
             // (PS returns before `randomizer`). No draw; the value is the
             // pre-computed `fixed_damage`. Normal moves roll as before.
+            // Captured DamageContext for the optional Beat Up per-hit loop.
+            // Only the non-fixed-damage branch builds it; Beat Up is never a
+            // fixed-damage move, so this is always `Some` when Beat Up runs.
+            let mut beat_up_ctx_opt: Option<DamageContext> = None;
             let mut dmg = if let Some(fd) = fixed_damage {
                 fd
             } else {
@@ -5034,24 +5042,24 @@ impl Battle {
                         self.rng.damage_roll_hint(lo, hi)
                     }
                 };
-                calculate_damage(
-                    &attacker,
-                    &defender,
-                    move_id,
-                    DamageContext {
-                        crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                        terrain: active_terrain,
-                        defender_has_reflect, defender_has_light_screen,
-                        defender_has_aurora_veil, is_doubles,
-                        fairy_aura_active, dark_aura_active, aura_break_active,
-                        attacker_total_fainted_allies,
-                        attacker_stats: Some(atk_stats_ovr),
-                        defender_stats: Some(def_stats_ovr),
-                        pursuit_doubled: move_id == data::move_id::PURSUIT
-                            && self.pursuit_intercepting,
-                        ally_power_spot, ally_battery, steely_spirit_holders,
-                    },
-                )
+                // Hoisted so the Beat Up per-hit loop below can reuse an
+                // IDENTICAL context (same crit/roll/weather/terrain/screens/
+                // auras/stat overrides). DamageContext is Copy.
+                let dmg_ctx = DamageContext {
+                    crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    terrain: active_terrain,
+                    defender_has_reflect, defender_has_light_screen,
+                    defender_has_aurora_veil, is_doubles,
+                    fairy_aura_active, dark_aura_active, aura_break_active,
+                    attacker_total_fainted_allies,
+                    attacker_stats: Some(atk_stats_ovr),
+                    defender_stats: Some(def_stats_ovr),
+                    pursuit_doubled: move_id == data::move_id::PURSUIT
+                        && self.pursuit_intercepting,
+                    ally_power_spot, ally_battery, steely_spirit_holders,
+                };
+                beat_up_ctx_opt = Some(dmg_ctx);
+                calculate_damage(&attacker, &defender, move_id, dmg_ctx)
             };
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
@@ -5064,55 +5072,48 @@ impl Battle {
             // is correct — a fixed-damage hit never reaches that step in
             // PS.)
             let fixed_dmg_snapshot = fixed_damage;
-            // Apply attacker item multiplier (Life Orb). See declaration
-            // above for the pokeRound formula derived from PS's
-            // `modify(chainModify([5324, 4096]))`.
-            if fixed_dmg_snapshot.is_none() && life_orb && dmg > 0 {
-                dmg = (((dmg as u32) * 5324 + 2047) / 4096)
-                    .min(u16::MAX as u32) as u16;
-            }
-            // Expert Belt — ×1.2 BP on super-effective hits (PS
-            // chainModify([4915, 4096]) ≈ ×1.2). PS
-            // `data/items.ts:expertbelt` `onBasePower(bp, user, target, move)`:
-            //   `if (target.runEffectiveness(move) > 0) return this.chainModify([4915, 4096]);`
-            // 2x and 4x both qualify; immune (0x) does not (dmg is 0 by
-            // this point anyway). Applied at the same step as Life Orb
-            // for ordering simplicity — PS runs it as a BP step, but
-            // because multipliers commute with the integer-divides in
-            // the formula's tail, applying it here matches the mean to
-            // within rounding (verified against PS damage calc on
-            // representative cases). Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Expert_Belt>.
-            // Wise Glasses — special moves ×1.1 BP. PS
-            // `data/items.ts:wiseglasses` `onBasePower(bp, user, target, move)`:
-            //   `if (move.category === 'Special') return this.chainModify([4505, 4096]);`
-            // (≈ ×1.10). Applied at the same step as Life Orb /
-            // Expert Belt — multipliers commute with the formula tail
-            // to within rounding. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>.
-            if attacker_item_id == data::item_id::WISEGLASSES && special_move && dmg > 0 {
-                dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
-            }
-            // Muscle Band — physical moves ×1.1 BP. PS
-            // `data/items.ts:muscleband` mirrors Wise Glasses with
-            // `move.category === 'Physical'`. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
-            if attacker_item_id == data::item_id::MUSCLEBAND && physical_move && dmg > 0 {
-                dmg = ((dmg as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
-            }
-            if attacker_item_id == data::item_id::EXPERTBELT && dmg > 0 {
-                let eff = crate::damage::type_effectiveness(
-                    m.type_,
-                    defender.species(),
-                );
-                let se = matches!(
-                    eff,
-                    crate::damage::TypeEff::DoubleX | crate::damage::TypeEff::QuadrupleX
-                );
-                if se {
-                    dmg = ((dmg as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+            // Post-formula attacker-item multipliers — Life Orb (×5324/4096
+            // pokeRound), Wise Glasses (special ×4505/4096), Muscle Band
+            // (physical ×4505/4096) and Expert Belt (super-effective
+            // ×4915/4096). Extracted into a single closure so the normal
+            // single-hit path AND the Beat Up per-hit loop apply an identical
+            // pipeline (single source of truth). PS refs:
+            //   data/items.ts:lifeorb (chainModify([5324,4096]); pokeRound =
+            //     floor((v*5324 + 2047) / 4096));
+            //   data/items.ts:expertbelt onBasePower
+            //     `if (target.runEffectiveness(move) > 0) chainModify([4915,4096])`
+            //     — 2× and 4× both qualify, immune (0×) does not;
+            //   data/items.ts:wiseglasses `move.category === 'Special'` ×4505/4096;
+            //   data/items.ts:muscleband `move.category === 'Physical'` ×4505/4096.
+            // Multipliers commute with the formula tail's integer-divides to
+            // within rounding, so applying them here matches PS's mean.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Life_Orb>,
+            //   <https://bulbapedia.bulbagarden.net/wiki/Expert_Belt>,
+            //   <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>,
+            //   <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
+            let apply_attacker_item_mult = |mut d: u16, apply_life_orb: bool| -> u16 {
+                if apply_life_orb && life_orb && d > 0 {
+                    d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
                 }
-            }
+                if attacker_item_id == data::item_id::WISEGLASSES && special_move && d > 0 {
+                    d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+                }
+                if attacker_item_id == data::item_id::MUSCLEBAND && physical_move && d > 0 {
+                    d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+                }
+                if attacker_item_id == data::item_id::EXPERTBELT && d > 0 {
+                    let eff = crate::damage::type_effectiveness(m.type_, defender.species());
+                    let se = matches!(
+                        eff,
+                        crate::damage::TypeEff::DoubleX | crate::damage::TypeEff::QuadrupleX
+                    );
+                    if se {
+                        d = ((d as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+                    }
+                }
+                d
+            };
+            dmg = apply_attacker_item_mult(dmg, fixed_dmg_snapshot.is_none());
             // Friend Guard — PS `data/abilities.ts:1488`:
             //   onAnyModifyDamage(damage, source, target, move) {
             //     if (target !== this.effectState.target &&
@@ -5198,6 +5199,42 @@ impl Battle {
                     hits -= self.rng.range(7);
                 }
                 hits = hits.clamp(1, 10);
+            }
+            // Beat Up — hit count = number of ELIGIBLE party members on the
+            // user's side, and each hit's BP keys off that member's SPECIES
+            // base Attack. PS data/moves.ts:beatup `onModifyMove`:
+            //   move.allies = pokemon.side.pokemon.filter(
+            //     ally => ally === pokemon || (!ally.fainted && !ally.status));
+            //   move.multihit = move.allies.length;
+            // The active user is ALWAYS eligible (even if statused); other
+            // party members are eligible iff not fainted AND have no major
+            // status. We collect each member's species base Attack into a
+            // heap-free [u16; 6] (the loop below reads `base_atks[hit_idx]`).
+            // gen-5+ Beat Up has NO ally attack-stat override — sim/battle-
+            // actions.ts `getDamage` only special-cased it in gens 2-4 — so
+            // each strike otherwise uses the ACTIVE user's stats (handled by
+            // calculate_beat_up_hit reusing the captured DamageContext).
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Beat_Up_(move)>.
+            let mut beat_up_base_atks: [u16; 6] = [0; 6];
+            if move_id == data::move_id::BEATUP {
+                let mut count: usize = 0;
+                let side = self.side(actor_side);
+                // Team index of the ACTIVE user (always eligible). `active`
+                // maps a battlefield slot to a team-Vec index.
+                let active_idx = side.active[actor_slot as usize] as usize;
+                for (idx, member) in side.team.iter().enumerate() {
+                    if count >= 6 {
+                        break;
+                    }
+                    let is_active = idx == active_idx;
+                    let eligible = is_active
+                        || (!member.fainted && matches!(member.status, Status::None));
+                    if eligible {
+                        beat_up_base_atks[count] = member.species().base_stats[1] as u16;
+                        count += 1;
+                    }
+                }
+                hits = count.max(1) as u32;
             }
             // Thick Fat (Snorlax / Mamoswine / Goodra-H): defender's
             // ability halves the attacker's offensive stat against Fire
@@ -5296,7 +5333,21 @@ impl Battle {
                 // constant per-hit amount. Applying the ramp here (instead
                 // of the old triangular `N(N+1)/2` lump) is what makes the
                 // per-hit Sturdy / Sash interaction correct for these moves.
-                let mut dmg: u16 = if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
+                let mut dmg: u16 = if move_id == data::move_id::BEATUP {
+                    // Beat Up — recompute this strike's damage from the
+                    // hitting member's species base Attack, reusing the
+                    // captured DamageContext (same crit/roll/stat overrides),
+                    // then run the per-hit attacker-item multiplier pipeline
+                    // (Life Orb / Expert Belt / Muscle Band / Wise Glasses).
+                    let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
+                    let raw = crate::damage::calculate_beat_up_hit(
+                        &attacker,
+                        &defender,
+                        ctx,
+                        beat_up_base_atks[hit_idx as usize],
+                    );
+                    apply_attacker_item_mult(raw, true)
+                } else if matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL) {
                     ((base_hit_dmg as u32) * (hit_idx + 1)).min(u16::MAX as u32) as u16
                 } else {
                     base_hit_dmg
@@ -23796,6 +23847,167 @@ mod tests {
         let max_hp = b.p2.team[0].stats.hp;
         assert!(dmg as u32 * 8 >= max_hp as u32,
                 "Triple Axel ramp should land >= 1/8 max HP: dmg={dmg} maxhp={max_hp}");
+    }
+
+    #[test]
+    fn beat_up_hits_once_per_eligible_member() {
+        // PS data/moves.ts:beatup — hit count = number of eligible party
+        // members (active user always counts; others count iff !fainted &&
+        // no major status). We build a 6-mon team of IDENTICAL species so
+        // every hit shares the same per-hit BP, then compare:
+        //   (a) all 6 healthy  → 6 hits
+        //   (b) user + 3 healthy, 2 fainted/statused → 4 hits
+        //   (c) user only (all 5 allies fainted/statused) → 1 hit
+        // Damage should scale 6:4:1 (within ±1 HP rounding), confirming the
+        // hit count tracks eligibility — and the statused USER still counts.
+        // Identical-species team (uniform per-hit BP) with enough base Atk
+        // that even a single hit dents the wall. Garchomp base atk 130 → BP 18.
+        let team_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        // Bulky, non-Dark-immune wall that survives a full 6-hit Beat Up
+        // (Dark is neutral on Normal, and Garchomp's per-hit BP is only 18).
+        let wall_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","protect","flamethrower"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let team = TeamBuilder::from_json(team_json).unwrap();
+        let wall = TeamBuilder::from_json(wall_json).unwrap();
+
+        let run = |setup: &dyn Fn(&mut Battle)| -> u16 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: 7 },
+                team.clone(), wall.clone(),
+            );
+            setup(&mut b);
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            hp0 - b.p2.team[0].current_hp
+        };
+
+        // (a) all 6 eligible.
+        let dmg6 = run(&|_b| {});
+        // (b) members 4 & 5 ineligible (one fainted, one statused) → user+3 = 4.
+        let dmg4 = run(&|b| {
+            b.p1.team[4].fainted = true;
+            b.p1.team[5].status = Status::Paralysis;
+        });
+        // (c) members 1..=5 ineligible (paralysed) → only the active user
+        //     hits. User is left healthy so its per-hit damage is the clean
+        //     single-hit baseline used for the scaling assertions.
+        let dmg1 = run(&|b| {
+            for i in 1..6 {
+                b.p1.team[i].status = Status::Paralysis;
+            }
+        });
+        // (d) like (c) but the ACTIVE user is ALSO statused. PS filter is
+        //     `ally === pokemon || (!ally.fainted && !ally.status)`, so the
+        //     user counts regardless of its own status — Beat Up must still
+        //     land its one hit (Burn halves the physical hit but it is > 0).
+        let dmg1_statused_user = run(&|b| {
+            b.p1.team[0].status = Status::Burn; // active user, still eligible
+            for i in 1..6 {
+                b.p1.team[i].status = Status::Paralysis;
+            }
+        });
+
+        assert!(dmg1 > 0, "single-eligible Beat Up should deal damage");
+        assert!(dmg1_statused_user > 0,
+            "statused active user still counts as an eligible member");
+        // Per-hit damage is uniform (identical species, healthy user), so the
+        // totals scale with the hit count. Allow ±1 HP per hit for rounding.
+        let per = dmg1 as i32;
+        assert!((dmg6 as i32 - per * 6).abs() <= 6,
+            "6-eligible ≈ 6×1-eligible: dmg6={dmg6} per={per}");
+        assert!((dmg4 as i32 - per * 4).abs() <= 4,
+            "4-eligible ≈ 4×1-eligible: dmg4={dmg4} per={per}");
+        assert!(dmg6 > dmg4 && dmg4 > dmg1,
+            "more eligible members ⇒ more damage: {dmg6} > {dmg4} > {dmg1}");
+    }
+
+    #[test]
+    fn beat_up_bp_scales_with_member_base_attack() {
+        // Per-hit BP = 5 + floor(member.species.base_atk / 10). With only the
+        // active user eligible, a high-base-Atk user must out-damage a
+        // low-base-Atk user (both hitting the same wall, same level). We use
+        // the per-hit helper directly so the comparison isolates BP. Garchomp
+        // base atk 130 → BP 18; Meowth base atk 45 → BP 9.
+        use crate::damage::{calculate_beat_up_hit, DamageContext};
+        let strong_json = r#"[
+            {"species":"garchomp","level":50,"ability":"sandveil","item":"","nature":"adamant","moves":["beatup","dragonclaw","earthquake","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let weak_json = r#"[
+            {"species":"meowth","level":50,"ability":"insomnia","item":"","nature":"adamant","moves":["beatup","scratch","growl","bite"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let wall_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","protect","flamethrower"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let strong = TeamBuilder::from_json(strong_json).unwrap();
+        let weak = TeamBuilder::from_json(weak_json).unwrap();
+        let wall = TeamBuilder::from_json(wall_json).unwrap();
+
+        let ctx = DamageContext { roll: 15, ..DamageContext::default() };
+        // Garchomp species base atk (index 1) vs Meowth's.
+        let chomp_base = strong[0].species().base_stats[1] as u16;
+        let meowth_base = weak[0].species().base_stats[1] as u16;
+        assert!(chomp_base > meowth_base, "Garchomp should out-base-atk Meowth");
+
+        let strong_hit = calculate_beat_up_hit(&strong[0], &wall[0], ctx, chomp_base);
+        let weak_hit = calculate_beat_up_hit(&weak[0], &wall[0], ctx, meowth_base);
+        assert!(strong_hit > 0, "a Beat Up hit should be non-trivial");
+        assert!(strong_hit > weak_hit,
+            "higher base-atk member ⇒ higher per-hit damage: {strong_hit} vs {weak_hit}");
+    }
+
+    #[test]
+    fn beat_up_life_orb_extraction_keeps_normal_damage_identical() {
+        // Regression: extracting the post-formula attacker-item multipliers
+        // into `apply_attacker_item_mult` must NOT change a normal Life Orb
+        // move's damage. Same scenario, with and without Life Orb, deals the
+        // expected ratio; the absolute value matches the pre-refactor engine.
+        let lo_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let plain_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let wall_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","protect","flamethrower"],"evs":{"hp":252,"def":252,"spd":4}}
+        ]"#;
+        let lo = TeamBuilder::from_json(lo_json).unwrap();
+        let plain = TeamBuilder::from_json(plain_json).unwrap();
+        let wall = TeamBuilder::from_json(wall_json).unwrap();
+
+        let dmg_with = {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, lo, wall.clone());
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            hp0 - b.p2.team[0].current_hp
+        };
+        let dmg_without = {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, plain, wall);
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            hp0 - b.p2.team[0].current_hp
+        };
+        // Life Orb is ×5324/4096 ≈ ×1.30 (pokeRound), same seed ⇒ same roll.
+        let expected = (((dmg_without as u32) * 5324 + 2047) / 4096) as u16;
+        assert_eq!(dmg_with, expected,
+            "Life Orb damage must match the pokeRound multiplier exactly after extraction: \
+             with={dmg_with} without={dmg_without} expected={expected}");
     }
 
     #[test]
