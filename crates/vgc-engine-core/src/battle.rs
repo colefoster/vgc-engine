@@ -6849,17 +6849,23 @@ impl Battle {
         if source_side != side && self.side(side).conditions.safeguard_turns > 0 {
             return;
         }
-        let (immune, terrain_blocks_sleep, ability_blocks) = match self.side(side).active_mon(slot as usize) {
+        let (immune, terrain_blocks, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
                     return;
                 }
                 // Electric Terrain blocks sleep on grounded mons (gen 7+).
-                // Misty Terrain blocks ALL major statuses (gen 7+, lands
-                // when Misty Terrain ships). PS data/conditions.ts.
-                let e_terrain_blocks = matches!(self.terrain, crate::terrain::Terrain::Electric)
+                // Misty Terrain blocks ALL non-volatile statuses on grounded,
+                // non-semi-invulnerable mons (PS data/moves.ts:mistyterrain
+                // onSetStatus returns false for any move status + Yawn — the
+                // drowsy→sleep conversion is caught here too).
+                let terrain_blocks = (matches!(self.terrain, crate::terrain::Terrain::Electric)
                     && matches!(status, Status::Sleep)
-                    && m.is_grounded();
+                    && m.is_grounded())
+                    || (matches!(self.terrain, crate::terrain::Terrain::Misty)
+                        && !matches!(status, Status::None)
+                        && m.is_grounded()
+                        && m.semi_invuln == 0);
                 // Water Bubble — PS `data/abilities.ts:waterbubble`
                 // `onSetStatus(status, target, source, effect)`:
                 //   if (status.id === 'brn') return false;
@@ -6904,7 +6910,7 @@ impl Battle {
                     Status::Sleep => ab == data::ability_id::VITALSPIRIT || ab == data::ability_id::INSOMNIA,
                     Status::None => false,
                 };
-                (is_type_immune_to_status(m.species(), status), e_terrain_blocks, ability_status_block)
+                (is_type_immune_to_status(m.species(), status), terrain_blocks, ability_status_block)
             }
             _ => return,
         };
@@ -6925,7 +6931,7 @@ impl Battle {
                         .is_some_and(|m| m.is_alive() && m.effective_ability_id() == veil_id)
                 })
         };
-        if immune || terrain_blocks_sleep || ability_blocks || ally_veil_blocks {
+        if immune || terrain_blocks || ability_blocks || ally_veil_blocks {
             return;
         }
         // Sleep duration roll. PS `data/conditions.ts:59` slp.onStart:
@@ -16847,6 +16853,42 @@ mod tests {
         };
         assert_eq!(run(true), 0, "Prankster Leer blocked by Psychic Terrain (Def unchanged)");
         assert_eq!(run(false), -1, "Prankster Leer lands with no terrain (Def −1)");
+    }
+
+    #[test]
+    fn misty_terrain_blocks_status_on_grounded_foe_only() {
+        // PS mistyterrain onSetStatus returns false for a grounded,
+        // non-semi-invulnerable target. Spore (100% acc) fails to sleep a
+        // grounded Snorlax under Misty Terrain, sleeps it with no terrain,
+        // and still sleeps an airborne Togekiss under Misty.
+        let amoonguss = r#"[
+            {"species":"amoonguss","level":50,"ability":"regenerator","nature":"calm","moves":["spore","protect","sludgebomb","clearsmog"]}
+        ]"#;
+        // Grounded / airborne foes self-boost (no Protect) so the only thing
+        // that can stop Spore is the Misty block under test.
+        let grounded = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["amnesia","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let airborne = r#"[
+            {"species":"togekiss","level":50,"ability":"serenegrace","nature":"hardy","moves":["nastyplot","airslash","roost","defog"]}
+        ]"#;
+        let run = |foe_json: &str, misty: bool| -> Status {
+            let p1 = TeamBuilder::from_json(amoonguss).unwrap();
+            let p2 = TeamBuilder::from_json(foe_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            if misty {
+                b.terrain = crate::terrain::Terrain::Misty;
+                b.terrain_turns = 5;
+            }
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].status
+        };
+        assert_eq!(run(grounded, true), Status::None, "Spore blocked vs grounded foe under Misty");
+        assert_eq!(run(grounded, false), Status::Sleep, "Spore sleeps grounded foe with no terrain");
+        assert_eq!(run(airborne, true), Status::Sleep, "Spore still sleeps an airborne foe under Misty");
     }
 
     #[test]
