@@ -1,5 +1,32 @@
 # Conformance punch list (2026-06-24)
 
+## 100-battle stable-ID sweep (2026-06-24, later) — SHIPPED + QUEUE
+
+Ran a 100-battle batch via the new stable-ID tooling
+(`tools/conformance-batch/`, regenerate into `/tmp/confbig`). Clean count
+22 → 24 after the fixes below. Triaged turn-1 / 0-unmatched divergences.
+
+SHIPPED from this sweep: Cotton Guard +3 / Shelter +2 Def; Apple Acid SpD-1 /
+Night Daze acc-1 / Muddy Water acc 30% (was 100%); Haze (clear all boosts);
+Overgrow/Blaze/Torrent/Swarm pinch ×1.5.
+
+QUEUE (coverage audit, grep-verify each before implementing — the audit had a
+false positive on Last Respects, which IS impl via DamageContext):
+- **Weak Armor** (15 teams) — −1 Def / +2 Spe when hit by a physical move.
+- **Synchronize** (8) — reflect brn/par/psn back onto the inflictor.
+- **Gluttony** (8) — eat pinch berry at ≤1/2 HP (vs 1/4).
+- **Disable** (6), **Destiny Bond** (6), **Yawn** (5) — status moves, no arm.
+- **Beat Up** — fully broken (base_power 0, multihit 0/0 → ~0 dmg).
+- **Knock Off vs a mega stone** — out_179459f0d9 (engine 3 vs ps 57): Knock Off
+  must NOT ×1.5 or remove a holder's own mega stone (Banette + Banettite).
+- Terrain: Grassy/Psychic/Misty unimplemented (only Electric); audit-flagged.
+- Lower-usage: Psych Up, Soak, Recycle, Gastro Acid, No Retreat, Contrary,
+  Forecast, Frisk, Leaf Guard, Magician, Infiltrator, Corrosion.
+- Remaining 0-unmatched turn-1 damage gaps: out_179459f0d9 (above),
+  out_f55fe99993 (−13), plus boost gaps out_b018656fa6 / out_d36156026b.
+
+---
+
 Real engine divergences surfaced by the Champions PS-conformance harness on a
 50-battle Reg M-B doubles batch (`/tmp/conf-batch`, teams from
 `~/Dev/mimikyu/data/generated_teams/regmb_random_100`). Each entry is
