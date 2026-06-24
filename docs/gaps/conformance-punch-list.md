@@ -48,6 +48,31 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   — `is_spread` may require >1 target HIT vs PS keeping ×0.75 on a missed
   partner; needs trace. **out_19** (T4) and **out_23 T5** uninvestigated.
 
+## 2026-06-24 — new LEGAL-team batch (regmb_random_100, regenerated)
+
+Re-ran the 50-battle batch on the regenerated legal teams (proper mega-stone
+notation, valid sets). 14 clean / 12 real / 19 cascades. Findings:
+
+- ✅ **Mega base-stat audit CLEAN** — all 100 mega formes' base stats match PS's
+  pokedex.ts exactly; the one localdex discrepancy (Starmie-Mega atk 140 vs 100)
+  is already corrected by `MegaFix starmiemega atk: 100`. So out_46 is NOT a
+  Scolipede-Mega stat bug (that hypothesis is dead).
+- ✅ **Skill Swap blocked by Protect** — out_45 (7b02a6f).
+- 🔴 **MAJOR GAP: foe-stat-lowering STATUS moves are unimplemented** — Growl,
+  Leer, Tail Whip, Charm, Screech, Tickle, Fake Tears, Metal Sound, Scary Face,
+  Feather Dance, Confide, Baby-Doll Eyes, Play Nice, Eerie Impulse, Captivate,
+  Cotton Spore, String Shot, Sand Attack, Smokescreen, etc. — ALL fall through
+  `resolve_status_move_inner`'s default arm to "no effect" (verified empirically:
+  Growl and Tickle both leave the foe at 0 boosts). Found via out_46 (Emolga
+  Tickle on Froslass — PS −1 atk/−1 def, engine 0). Needs a `foe_debuff_moves`
+  table routed through `apply_boosts` (which already does Mist/Mirror Armor/Clear
+  Body) PLUS call-site gating: Protect flag, Substitute block, accuracy, Magic
+  Bounce (reflectable), and White Herb / Eject Pack / Defiant reactions. A
+  meaty, careful PR — implement deliberately, not rushed.
+- Untriaged reals: out_12/out_25 (T1 big HP gaps involving switches + Life
+  Orb/Kangaskhan), out_16 (T1 HP), out_06 (T2 freeze secondary not applied),
+  out_24/out_34 (T2 boosts), deeper-turn out_13/29/01/48.
+
 ## Remaining cascades (harness keying gaps, mostly not engine bugs)
 13 battles still carry `unmatched > 0` at turns 2–5 (out_00, out_08, out_14,
 out_18, out_20, out_21, out_22, out_27, out_34, out_38, out_39, out_42, out_48).
