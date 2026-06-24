@@ -40,24 +40,18 @@ DamageContext):
   move-selection gating.
 - **Destiny Bond** (6) — KO the attacker if the user faints to it. Needs
   faint-source tracking.
-- **Beat Up** — DEFERRED (researched 2026-06-24). Fully broken (base_power 0,
-  multihit_min/max 0/0 → engine skips multihit, hits once for ~0 dmg). CORRECT
-  gen-5+ model (verified against PS sim/battle-actions.ts `getDamage`, which has
-  NO `allies` attack-stat override — the gen-2 per-member-Atk mechanic is gone):
-  it's a plain multihit, one hit per eligible party member (user + non-fainted,
-  non-statused allies), each hit Dark/physical using the ACTIVE user's
-  Atk/level/STAB/ability, with only the per-hit **BP = 5 + floor(ally.baseAtk/10)**
-  varying. Impl plan: add an internal `calculate_damage_with_bp(.., Option<u32>)`
-  that the existing `calculate_damage` delegates to with `None` (zero churn to
-  the 114 call sites); add a Beat Up branch in battle.rs's multihit loop that
-  sets `hits` = eligible count (heap-free `[u16;6]` of base-Atks, NOT a Vec —
-  step() is alloc-free) and recomputes per-hit dmg via the new fn. SNAG to solve
-  first: the ~220-line item-multiplier pipeline (Life Orb/Expert Belt/Muscle
-  Band/Wise Glasses at battle.rs ~5066-5110) is applied to a single pre-loop
-  `dmg`; Beat Up needs those applied per-hit (Atk mods via `atk_stats_ovr`
-  already thread through calculate_damage; the post-formula item mults do not).
-  Own PR + conformance check — don't bolt onto a marathon session; damage.rs is
-  calc-oracle-exact and must stay that way.
+- ✅ **Beat Up** — DONE (PR #24, 2026-06-24). Was fully broken (base_power 0,
+  multihit 0/0, missing from the `damaging` allowlist → ~0 dmg). Implemented as
+  the correct gen-5+ plain multihit (verified vs PS `getDamage`, no `allies`
+  Atk-stat override): one hit per eligible party member (active user always
+  counts, even if statused; others iff `!fainted && no status`), each
+  Dark/physical hit using the ACTIVE user's Atk/level/STAB/ability/item with
+  per-hit **BP = 5 + floor(member.species_base_atk/10)**. `calculate_damage` is
+  now a wrapper over `calculate_damage_with_bp(.., Option<u32>)` (None
+  byte-identical); the post-formula attacker-item multipliers were extracted
+  into one shared closure (single source of truth — normal path stays exact,
+  Beat Up applies them per-hit). Heap-free `[u16;6]`. Regression test asserts
+  Life Orb damage == exact pokeRound. Full workspace green.
 - ~~Terrain: Grassy / Psychic / Misty unimplemented~~ ✅ DONE (PRs 17–20).
 - Lower-usage: Psych Up, Soak, Recycle, Gastro Acid, No Retreat, Contrary,
   Forecast, Frisk, Leaf Guard, Magician, Infiltrator, Corrosion.
