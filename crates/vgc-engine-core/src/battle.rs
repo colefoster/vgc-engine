@@ -7689,6 +7689,21 @@ impl Battle {
                     actor.set_stall(0, true);
                 }
             }
+            data::move_id::HAZE => {
+                // Haze — PS data/moves.ts:haze `onHitField`: clears the stat
+                // stages of EVERY active Pokémon on BOTH sides back to 0
+                // (target "all", no accuracy, no fail check). Only the boost
+                // array is reset — other volatiles (Substitute, etc.) persist.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Haze_(move)>.
+                let n = self.format().active_count() as u8;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n {
+                        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                            m.boosts = [0; 7];
+                        }
+                    }
+                }
+            }
             data::move_id::TRICKROOM => {
                 // Toggle: if active, cancel; else set to 5.
                 if self.trick_room_turns > 0 {
@@ -24737,6 +24752,31 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn haze_clears_all_stat_stages_both_sides() {
+        // PS data/moves.ts:haze onHitField clearBoosts on every active mon,
+        // both sides. Was unimplemented (conformance out_39d6c0803b: a Swords
+        // Dance survived the foe's Haze). Set boosts on both sides, Haze, check
+        // all reset — including the user's own.
+        let p1_json = r#"[
+            {"species":"weezing","level":50,"ability":"levitate","nature":"bold","moves":["haze","sludgebomb","willowisp","protect"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["swordsdance","dragonclaw","earthquake","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].boosts = [2, 1, 0, 0, 0, 0, 0];
+        b.p2.team[0].boosts = [-1, 0, 3, 2, 4, 0, 0];
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Garchomp Protect
+        );
+        assert_eq!(b.p1.team[0].boosts, [0; 7], "Haze clears the user's own boosts");
+        assert_eq!(b.p2.team[0].boosts, [0; 7], "Haze clears the foe's boosts (through Protect)");
     }
 
     #[test]
