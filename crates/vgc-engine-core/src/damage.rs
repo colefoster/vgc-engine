@@ -1825,147 +1825,116 @@ pub fn calculate_damage(
     }
     dmg = eff.apply(dmg);
 
-    // Multiscale / Shadow Shield — PS `data/abilities.ts:multiscale`
-    // (~line 2738) and `data/abilities.ts:shadowshield` (~line 4099).
-    //   onSourceModifyDamage(damage, source, target, move) {
-    //     if (target.hp >= target.maxhp) return this.chainModify(0.5);
-    //   }
-    // Halves incoming damage when defender is at full HP. Multiscale
-    // carries `flags: { breakable: 1 }` (Mold Breaker bypasses);
-    // Shadow Shield is the Lunala signature clone with
-    // `flags: {}` — Mold Breaker does NOT bypass. We honor that by
-    // dropping the mold-break gate when the defender's slug is
-    // `shadowshield`. ×0.5 = mod 2048/4096 (exact, no pokeRound
-    // divergence).
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Multiscale_(Ability)>
-    //             <https://bulbapedia.bulbagarden.net/wiki/Shadow_Shield_(Ability)>.
-    let attacker_breaks_mold = matches!(
-        attacker.effective_ability_id(),
-        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
-    );
-    let def_ab = defender.effective_ability_id();
-    let multiscale_active = (def_ab == data::ability_id::MULTISCALE && !attacker_breaks_mold)
-        || def_ab == data::ability_id::SHADOWSHIELD;
-    if multiscale_active && defender.current_hp >= def_stats.hp {
-        dmg /= 2;
-    }
-
-    // Tinted Lens — PS `data/abilities.ts:tintedlens`
-    //   onModifyDamage(damage, source, target, move) {
-    //     if (target.getMoveHitData(move).typeMod < 0) return this.chainModify(2);
-    //   }
-    // Doubles damage when the move was Not Very Effective (×0.5 or ×0.25
-    // after the type chart). ×2 = mod 8192/4096 (exact). Venomoth,
-    // Sigilyph carry it. Bulbapedia:
-    //   <https://bulbapedia.bulbagarden.net/wiki/Tinted_Lens_(Ability)>.
-    if attacker.effective_ability_id() == data::ability_id::TINTEDLENS
-        && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
-    {
-        dmg *= 2;
-    }
-
-    // Filter / Solid Rock / Prism Armor — PS `data/abilities.ts:filter`,
-    // `:solidrock`, `:prismarmor` all carry the same `onSourceModifyDamage`
-    //   if (target.getMoveHitData(move).typeMod > 0) return this.chainModify(0.75);
-    // ×0.75 (= 3072/4096, exact in pokeRound space) on super-effective
-    // hits. Filter (Mr. Mime / Magmortar) and Solid Rock (Rhyperior /
-    // Tyrantrum-line) are flagged `breakable: 1` — Mold Breaker / Teravolt
-    // / Turboblaze bypass. Prism Armor (Necrozma signature) is NOT
-    // breakable. Bulbapedia:
-    //   <https://bulbapedia.bulbagarden.net/wiki/Filter_(Ability)>
-    //   <https://bulbapedia.bulbagarden.net/wiki/Solid_Rock_(Ability)>
-    //   <https://bulbapedia.bulbagarden.net/wiki/Prism_Armor_(Ability)>
-    let def_ab = defender.effective_ability_id();
-    let se_reducer = match def_ab {
-        data::ability_id::FILTER | data::ability_id::SOLIDROCK => !attacker_breaks_mold,
-        data::ability_id::PRISMARMOR => true,
-        _ => false,
-    };
-    if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
-        dmg = dmg * 3072 / 4096;
-    }
-
-    // Fluffy — PS `data/abilities.ts:fluffy`:
-    //   onSourceModifyDamage(damage, source, target, move) {
-    //     let mod = 1;
-    //     if (move.type === 'Fire') mod *= 2;
-    //     if (move.flags['contact']) mod /= 2;
-    //     return this.chainModify(mod);
-    //   }
-    // Stacking: Fire+contact = x1.0 (mods cancel). Flagged `breakable: 1`
-    // → Mold Breaker / Teravolt / Turboblaze bypass the whole effect.
-    // Long Reach (contact negator) deferred. Stufful / Bewear.
-    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fluffy_(Ability)>.
-    // Ice Scales — PS `data/abilities.ts:icescales`:
-    //   onSourceModifyDamage(damage, source, target, move) {
-    //     if (move.category === 'Special') return this.chainModify(0.5);
-    //   }
-    // ×0.5 incoming Special damage. NOT in PS's breakable list — Mold
-    // Breaker does NOT bypass. Frosmoth signature. Bulbapedia:
-    // <https://bulbapedia.bulbagarden.net/wiki/Ice_Scales_(Ability)>.
-    if def_ab == data::ability_id::ICESCALES && !physical {
-        dmg /= 2;
-    }
-
-    // Punk Rock — incoming sound damage halved. PS:
-    //   onSourceModifyDamage(damage, source, target, move) {
-    //     if (move.flags['sound']) return this.chainModify(0.5);
-    //   }
-    // Flagged `breakable: 1` — Mold Breaker / Teravolt / Turboblaze
-    // bypass. Toxtricity.
-    if def_ab == data::ability_id::PUNKROCK && crate::battle::is_sound_move(m.slug) && !attacker_breaks_mold {
-        dmg /= 2;
-    }
-
-    if def_ab == data::ability_id::FLUFFY && !attacker_breaks_mold {
-        let fire = move_type == 1;
-        let contact = move_makes_contact(m, attacker);
-        if fire && !contact {
-            dmg *= 2;
-        } else if contact && !fire {
-            dmg /= 2;
-        }
-        // fire && contact → mods cancel; neither → no-op.
-    }
-
-    // Burn: physical attackers with burn deal halved damage. Skipped
-    // when the attacker has Guts — PS `data/abilities.ts:guts`:
-    //   onModifyAtk(atk, pokemon) {
-    //     if (pokemon.status) return this.chainModify(1.5);
-    //   }
-    //   onDamage(damage, pokemon, source, effect) {
-    //     // Status-DoT immunity not here; instead PS uses
-    //     // sim/battle.ts: ignoreBurnHalving = (atk modifier) and the
-    //     // burn-halving step bails on Guts.
-    //   }
-    // Facade also bypasses the burn halving (and gets ×2 BP when
-    // statused) — Facade BP handling is in the move-BP block; the
-    // burn-halve skip belongs here.
+    // Burn: physical attackers with burn deal halved damage, applied as
+    // `tr(damage / 2)` BEFORE the ModifyDamage chain — PS
+    // `sim/battle-actions.ts modifyDamage` runs the burn halve immediately
+    // ahead of `runEvent('ModifyDamage')`. ÷2 is exact (no rounding). Skipped
+    // under Guts (PS `data/abilities.ts:guts` onModifyAtk ×1.5 +
+    // ignoreBurnHalving) and by Facade (its ×2 BP lives in the move-BP block;
+    // the burn-halve skip belongs here).
     let attacker_ability = attacker.effective_ability_id();
     let attacker_has_guts = attacker_ability == data::ability_id::GUTS;
     if physical && attacker.status == Status::Burn && !attacker_has_guts && move_id != data::move_id::FACADE {
         dmg /= 2;
     }
 
-    // Screens: Reflect halves physical damage, Light Screen halves
-    // special damage. Singles = ×0.5 (exact), Doubles = PS
-    // `chainModify([2732, 4096])` (= 0.6669921875), NOT ×2/3 (= 0.6666…).
-    // PS `data/moves.ts:reflect / lightscreen / auroraveil`. Apply via
-    // pokeRound: `floor((v * 2732 + 2047) / 4096)`. Plain `*2/3`
-    // truncate disagrees with PS on 83% of values (different ratio AND
-    // wrong rounding). Skipped under crit (PS
-    // sim/battle-actions.ts ignoresScreens). Future: Infiltrator
-    // bypass, Aurora Veil currently treated identically to screens.
+    // --- ModifyDamage chain --------------------------------------------------
+    // PS's `runEvent('ModifyDamage', …)` accumulates EVERY onModifyDamage /
+    // onSourceModifyDamage / onAnyModifyDamage handler (screens, Multiscale,
+    // Filter, Tinted Lens, Ice Scales, Punk Rock, Fluffy, …) into ONE Q12
+    // modifier via `chainModify`, then applies it to the damage with a SINGLE
+    // pokeRound. Applying each as its own truncating op (the previous code)
+    // discarded the fractional bits PS keeps until that final round, which is
+    // the off-by-1..3 HP rounding tail. We accumulate into `dmg_mod` and apply
+    // once below. Intra-chain order follows the previous per-effect order; it
+    // only changes the result when two non-exact modifiers stack (rare) and is
+    // strictly closer to PS than per-step truncation regardless.
+    let mut dmg_mod: u64 = 4096;
+    let attacker_breaks_mold = matches!(
+        attacker.effective_ability_id(),
+        data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+    );
+    let def_ab = defender.effective_ability_id();
+
+    // Multiscale / Shadow Shield — ×0.5 when the defender is at full HP. PS
+    // `data/abilities.ts:multiscale` (~2738) / `:shadowshield` (~4099)
+    // onSourceModifyDamage. Multiscale is `breakable: 1` (Mold Breaker
+    // bypasses); Shadow Shield (Lunala) is not.
+    let multiscale_active = (def_ab == data::ability_id::MULTISCALE && !attacker_breaks_mold)
+        || def_ab == data::ability_id::SHADOWSHIELD;
+    if multiscale_active && defender.current_hp >= def_stats.hp {
+        dmg_mod = chain_modify(dmg_mod, 1, 2);
+    }
+
+    // Tinted Lens — ×2 when the move was Not Very Effective. PS
+    // `data/abilities.ts:tintedlens` onModifyDamage (attacker side). Venomoth /
+    // Sigilyph.
+    if attacker.effective_ability_id() == data::ability_id::TINTEDLENS
+        && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
+    {
+        dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+
+    // Filter / Solid Rock / Prism Armor — ×0.75 (= 3072/4096) on
+    // super-effective hits. PS `:filter` / `:solidrock` / `:prismarmor`
+    // onSourceModifyDamage. Filter / Solid Rock are `breakable: 1` (Mold
+    // Breaker bypasses); Prism Armor (Necrozma) is not.
+    let se_reducer = match def_ab {
+        data::ability_id::FILTER | data::ability_id::SOLIDROCK => !attacker_breaks_mold,
+        data::ability_id::PRISMARMOR => true,
+        _ => false,
+    };
+    if se_reducer && matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+        dmg_mod = chain_modify(dmg_mod, 3, 4); // 3072/4096
+    }
+
+    // Ice Scales — ×0.5 incoming Special. PS `:icescales`
+    // onSourceModifyDamage; NOT breakable. Frosmoth.
+    if def_ab == data::ability_id::ICESCALES && !physical {
+        dmg_mod = chain_modify(dmg_mod, 1, 2);
+    }
+
+    // Punk Rock (defensive half) — ×0.5 incoming sound. PS `:punkrock`
+    // onSourceModifyDamage; `breakable: 1`. Toxtricity.
+    if def_ab == data::ability_id::PUNKROCK
+        && crate::battle::is_sound_move(m.slug)
+        && !attacker_breaks_mold
+    {
+        dmg_mod = chain_modify(dmg_mod, 1, 2);
+    }
+
+    // Fluffy — ×2 vs Fire, ×0.5 vs contact (cancel when both). PS `:fluffy`
+    // onSourceModifyDamage; `breakable: 1`. Long Reach negation deferred.
+    // Stufful / Bewear.
+    if def_ab == data::ability_id::FLUFFY && !attacker_breaks_mold {
+        let fire = move_type == 1;
+        let contact = move_makes_contact(m, attacker);
+        if fire && !contact {
+            dmg_mod = chain_modify(dmg_mod, 2, 1);
+        } else if contact && !fire {
+            dmg_mod = chain_modify(dmg_mod, 1, 2);
+        }
+        // fire && contact → mods cancel; neither → no-op.
+    }
+
+    // Screens: Reflect halves physical, Light Screen special, Aurora Veil
+    // both. Singles ×0.5 (2048/4096), Doubles ×2732/4096 (= 0.6669921875, NOT
+    // ×2/3). PS `data/moves.ts:reflect / lightscreen / auroraveil`
+    // onAnyModifyDamage. Skipped under crit (ignoresScreens). Infiltrator
+    // bypass deferred; Aurora Veil treated identically to a screen.
     let screen_applies = ctx.defender_has_aurora_veil
         || (ctx.defender_has_reflect && physical)
         || (ctx.defender_has_light_screen && !physical);
     if screen_applies && !ctx.crit {
         if ctx.is_doubles {
-            dmg = (dmg * 2732 + 2047) / 4096;
+            dmg_mod = chain_modify(dmg_mod, 2732, 4096);
         } else {
-            dmg /= 2;
+            dmg_mod = chain_modify(dmg_mod, 1, 2);
         }
     }
+
+    // Apply the whole ModifyDamage chain in a single pokeRound (PS parity).
+    dmg = apply_modifier(dmg, dmg_mod);
 
     // Minimum 1 damage on non-immune hits (PS sim/battle-actions.ts).
     dmg.max(1).min(u16::MAX as u32) as u16
