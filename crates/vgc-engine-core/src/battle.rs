@@ -9609,7 +9609,12 @@ fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
         // Close-combat family: -1 def, -1 spd.
         "closecombat" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
-        // -2 spa specials.
+        // -2 spa specials. NOTE: Make It Rain is -1 in STANDARD gen9 (PS
+        // `data/moves.ts` makeitrain `self.boosts.spa: -1`) but Pokémon
+        // Champions — our TARGET format — rebalances it to -2, grouped here
+        // with the Draco-Meteor family. The PS-conformance harness drives
+        // standard gen9 and will flag this as a divergence; it's an expected
+        // Champions delta, NOT an engine bug. See docs (champions deltas).
         "dracometeor" | "overheat" | "leafstorm" | "psychoboost"
         | "fleurcannon" | "makeitrain" => &[(2, -2)],
         // -1 atk -1 def.
@@ -10408,6 +10413,18 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2)
+    }
+
+    #[test]
+    fn make_it_rain_self_drops_spa_by_two_in_champions() {
+        // Pokémon Champions (our TARGET format) rebalances Make It Rain to a
+        // -2 SpA self-drop, matching the Draco-Meteor family. Standard gen9 PS
+        // uses -1; the PS-conformance harness (which drives standard gen9)
+        // therefore flags this as a divergence — an expected Champions delta,
+        // not an engine bug. This test pins the Champions value.
+        assert_eq!(self_stat_drops("makeitrain"), Some(&[(2u8, -2i8)][..]));
+        assert_eq!(self_stat_drops("fleurcannon"), Some(&[(2u8, -2i8)][..]));
+        assert_eq!(self_stat_drops("dracometeor"), Some(&[(2u8, -2i8)][..]));
     }
 
     #[test]
