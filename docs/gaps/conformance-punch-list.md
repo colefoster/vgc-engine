@@ -13,6 +13,14 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
 - ✅ Shell Smash implemented (+White Herb/Eject Pack) — out_02 (4887a61)
 - ✅ Minimize / Double Team raise evasion — out_26 (ff391ee)
 - ✅ driver: per-target keying for spread secondaries (harness fidelity) — out_13 unmasked (a122565)
+- ✅ Champions pokeRound/chainModify damage rounding (base-power chain + weather/STAB) — out_41 T1 (7b3438f)
+- ✅ Knock Off ×1.5 at base-power stage, not final damage — out_44, out_30 (13a2b80)
+- ✅ **Iron Head flinch 20% in Champions (was 30%)** — out_23 (4caade9). NOT a
+  damage bug: the subagent's "Excadrill-Mega High Horsepower deals 0 damage" was
+  a misdiagnosis — a roll of 20 flinched the foe's attacker at 30% but not at
+  Champions' 20%, so the attacker never moved. The move/damage code was always
+  correct. Lesson: trace before "fixing"; the harness shines at Champions data
+  deltas (cf. Make It Rain -2).
 
 ## OPEN — clean, contained (ship next)
 - **Curse (Ghost-type) self-HP cost** — out_13. Trevenant Curse pays 50% max HP
@@ -27,24 +35,18 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   switched in, took Heat Wave (eng matches), burned, but end-of-turn burn DOT
   (1/16 = 8) not applied. Likely residual loop skipping the just-active slot.
 
-## OPEN — delicate, verify carefully (NOT yet shipped)
-- **Cluster A: damage-modifier rounding / stage** — out_41, out_44, out_30,
-  out_32, out_37 (off-by-1..3). Hypothesis (subagent): engine truncates some
-  modifiers (`bp*n/4096`, `dmg*3/2`) instead of PS chainModify→pokeRound, and
-  applies **Knock Off ×1.5 to final damage (battle.rs:~5097) instead of base
-  power**. CAUTION: memory says damage.rs is calc-oracle-exact — the base
-  formula is fine; the bug is specific modifier STAGES/rounding the calc-oracle
-  doesn't exercise. Knock-Off-wrong-stage (out_44, out_30) is the most concrete
-  and testable piece; the rounding-unification is higher-risk.
-- **Cluster D: custom Champions megas** — out_23 (Excadrill-Mega High Horsepower
-  deals 0 — Piercing Drill / forme handling?), out_46 (Scolipede-Mega takes too
-  little from Dual Wingbeat — mega Def stat delta?). Distinct, need engine trace.
-- **Cluster E: spread ×0.75 when partner missed / Regenerator** — out_05.
-  Galar Slowbro ~38 HP low across a partner-missed spread Blizzard + Regenerator
-  switch-out. Candidate latent bug: `is_spread` (damage.rs:125-129) may require
-  >1 target actually HIT, but PS keeps ×0.75 even if the other target
-  missed/fainted/Protected. Needs trace.
-- **out_19** (T4 p2a hp) — deep multi-turn (Knock Off / switches), uninvestigated.
+## OPEN — the rounding tail (low value; off-by-1..3 HP, rarely flips a KO)
+- **out_37** (Blizzard+Fake Out on Aurorus, +3) and **out_32** (Giga Drain, −1):
+  residual rounding after the base-power chain + STAB/weather pokeRound landed.
+  Likely the final `ModifyDamage` chain (Filter/screens/Friend Guard/Life Orb —
+  none of Friend Guard/Life Orb/Expert Belt are implemented in damage.rs yet)
+  not being accumulated into one pokeRound, OR small residuals amplified by
+  ×0.75/÷2. Diminishing returns — this is the bit-exactness tail.
+- **out_46** Scolipede-Mega takes too little from Dual Wingbeat (mega Def stat
+  delta?) — needs a trace (could be another Champions data delta like Iron Head).
+- **out_05** Galar Slowbro ~38 low (partner-missed spread Blizzard + Regenerator)
+  — `is_spread` may require >1 target HIT vs PS keeping ×0.75 on a missed
+  partner; needs trace. **out_19** (T4) and **out_23 T5** uninvestigated.
 
 ## Remaining cascades (harness keying gaps, mostly not engine bugs)
 13 battles still carry `unmatched > 0` at turns 2–5 (out_00, out_08, out_14,
