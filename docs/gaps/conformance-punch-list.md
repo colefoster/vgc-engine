@@ -57,8 +57,12 @@ DamageContext):
 - Lower-usage tail — 9/12 SHIPPED (PRs #23, #25–32): ✅ Psych Up (#23), ✅ Soak
   (#25), ✅ Leaf Guard (#26), ✅ Corrosion (#27), ✅ Contrary (#28), ✅ Infiltrator
   (#29), ✅ Gastro Acid (#30), ✅ No Retreat (#31), ✅ Magician (#32). REMAINING:
-  - **Recycle** — DEFERRED: needs a `consumed_item` field populated at every
-    item-consumption site (berries/Gems/Herbs), a cross-cutting change. Own PR.
+  - ✅ **Recycle** (PR #33) — added a `consumed_item` field (PS `lastItem`) +
+    `Pokemon::consume_item()` helper wired through every genuine-consumption
+    site (berries/herbs/sashes/seeds/eject/Fling/Booster Energy/…); external
+    removal sites (Knock Off/Trick/Bestow/Magician/Symbiosis/Sticky Barb) clear
+    `item_id` directly so a knocked-off item is NOT recoverable. Reset on
+    switch-out. Golden corpus zero-divergence preserved.
   - **Forecast** — Castform weather-forme change. Near-zero usage in Reg M-B;
     deferred (needs forme + type-change-on-weather wiring).
   - **Frisk** — WON'T IMPLEMENT: reveals the foe's held item, a pure
