@@ -6,8 +6,17 @@
 > (30%→10% SpA) and Dire Claw (50%→30%) chances fixed in battle.rs; Iron Head
 > (20%) and Make It Rain (−2 SpA) were already done. **`toxicthread` is
 > UNIMPLEMENTED** in the engine (a missing move, not a delta — separate gap;
-> Champions value is Spe −2 + poison). Abilities audit still pending (esp.
-> Regenerator, out_05).
+> Champions value is Spe −2 + poison).
+>
+> **Abilities audit COMPLETE.** Of the 13 overridden abilities, only 2 are real
+> behavior deltas: **Healer 30%→50%** (fixed) and **Unseen Fist** — Champions
+> reworks it to the Piercing-Drill form (contact moves pierce Protect for 1/4
+> damage, vs gen 9's full-damage bypass); it was unimplemented, now wired into
+> the Piercing Drill path (fixed). The other 11 are `isNonstandard:null`
+> legalizations (6 custom megas) or standard-gen-9 re-declarations
+> (angershell/berserk/disguise/naturalcure/**regenerator** — Regenerator IS
+> implemented and correct, so out_05 is a different bug). Custom mega
+> base-stats (formats-data.ts) not yet audited.
 
 
 **Conclusion (verified from the canonical PS `champions` mod, 2026-06-24):**
