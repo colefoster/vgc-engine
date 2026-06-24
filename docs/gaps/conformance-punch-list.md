@@ -98,9 +98,22 @@ notation, valid sets). 14 clean / 12 real / 19 cascades. Findings:
   Clear Body/Hyper Cutter, White Herb / Eject Pack / Defiant. allAdjacentFoes
   moves hit both foes in doubles. Captivate (gender-gated) + Defog (side
   effects) excluded. out_46 Tickle now matches.
-- Untriaged reals: out_12/out_25 (T1 big HP gaps involving switches + Life
-  Orb/Kangaskhan), out_16 (T1 HP), out_06 (T2 freeze secondary not applied),
-  out_24/out_34 (T2 boosts), deeper-turn out_13/29/01/48.
+- ✅ **Liquid Voice implemented** — out_25 turn 1 now CLEAN (advances to a
+  turn-3 cascade). Primarina's Hyper Voice was treated as Normal (no STAB, 90)
+  vs PS Water (Primarina Water STAB ×1.5 → 135). Sound moves now retype to
+  Water for a Liquid Voice attacker in BOTH `damage.rs::move_type_in_ctx` and
+  the `calculate_damage` type binding (next to the -ate hook; no BP boost,
+  gated on the sound flag not Normal-type). Test
+  `liquid_voice_retypes_sound_moves_to_water_with_stab_no_bp_boost`.
+- ⚠️ **out_16 is a FALSE divergence** — engine deals Araquanid Leech Life with
+  Bug STAB (74, ends 119); PS golden recorded 50 (NO STAB, ends 107).
+  @smogon/calc independently confirms STAB applies (72–86), and the Champions
+  mod has no Araquanid override + standard STAB. The PS *capture* is suspect.
+  Re-capture via the stable-ID batch tool (delete `out_<id>.json`, re-run
+  `tools/conformance-batch/run-batch.js`) before treating it as real. NOT Trop
+  Kick (Champions BP 85 already in build.rs:462; engine 61 = PS exact).
+- Untriaged reals: out_12 (Ditto/Imposter + switches), out_06 (T2 freeze
+  secondary not applied), out_34 (T2 boosts), deeper-turn out_13/29/01/48.
 
 ## Remaining cascades (harness keying gaps, mostly not engine bugs)
 13 battles still carry `unmatched > 0` at turns 2–5 (out_00, out_08, out_14,
