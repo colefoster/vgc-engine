@@ -108,6 +108,10 @@ pub struct KeyedState {
     ctx_target: SlotRef,
     ctx_move: u16,
     ctx_decision: RngDecision,
+    /// The decision of the most recent `take` — for the miss diagnostic, so
+    /// crit/damage misses report their real decision, not the stale
+    /// `ctx_decision` (which only tracks Accuracy/Secondary).
+    last_decision: RngDecision,
     fallback: u64,
     unmatched: u32,
 }
@@ -129,6 +133,7 @@ impl KeyedState {
     /// `None` on a table miss WITHOUT counting it; callers route a miss
     /// through [`KeyedState::miss`].
     fn take(&mut self, decision: RngDecision) -> Option<RngEvent> {
+        self.last_decision = decision;
         let key = self.key(decision);
         self.table.get_mut(&key).and_then(|q| q.pop_front())
     }
@@ -151,6 +156,15 @@ impl KeyedState {
     /// byte-identical to a same-seeded `Splitmix`.
     fn miss(&mut self) -> u64 {
         self.unmatched += 1;
+        // Opt-in diagnostic for the conformance harness: print the key that
+        // missed the table so doubles keying gaps can be traced. Gated on an
+        // env var so it never fires in production or normal test runs.
+        if std::env::var_os("VGC_CONF_DEBUG").is_some() {
+            eprintln!(
+                "UNMATCHED draw: turn={} actor={} target={} move={} decision={:?}",
+                self.ctx_turn, self.ctx_actor, self.ctx_target, self.ctx_move, self.last_decision
+            );
+        }
         self.fallback()
     }
 }
@@ -335,6 +349,7 @@ impl Rng {
             ctx_target: NO_SLOT,
             ctx_move: 0,
             ctx_decision: RngDecision::Range,
+            last_decision: RngDecision::Range,
             fallback: fallback_seed,
             unmatched: 0,
         })
