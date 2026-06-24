@@ -141,7 +141,7 @@ pub fn try_consume_type_resist_berry(
     }
     // Consume the berry.
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.item_id = u16::MAX;
+        t.consume_item();
     }
     maybe_on_item_consumed(battle, target_side, target_slot, item_id);
     true
@@ -180,7 +180,7 @@ pub fn on_before_damage(
         if current == max && incoming >= current {
             // Survive on 1 HP; consume the sash.
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.item_id = u16::MAX;
+                m.consume_item();
             }
             maybe_on_item_consumed(battle, side, slot, item_id);
             return Some(current - 1);
@@ -266,7 +266,7 @@ pub fn on_after_damage(
                 let heal = (m.stats.hp / 4).max(1);
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
     }
     // Pinch stat berries — fire at ≤25% HP (Gluttony ≤50%, deferred).
@@ -292,7 +292,7 @@ pub fn on_after_damage(
     if let Some(stat_idx) = pinch_entry {
         if quarter {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.item_id = u16::MAX;
+                m.consume_item();
             }
             // Self-boost (+1) on the pinch-berry holder.
             battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
@@ -308,7 +308,7 @@ pub fn on_after_damage(
             if !m.is_heal_blocked() {
                 m.current_hp = m.current_hp.saturating_add(10).min(m.stats.hp);
             }
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
     }
     // Figy-family healing berries — PS data/items.ts:
@@ -336,7 +336,7 @@ pub fn on_after_damage(
                 let heal = (m.stats.hp / 3).max(1);
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
     }
     // Starf Berry — PS data/items.ts:starfberry (line 5984): onUpdate eats
@@ -366,7 +366,7 @@ pub fn on_after_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
     if item_id == data::item_id::MICLEBERRY && quarter {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            m.item_id = u16::MAX;
+            m.consume_item();
             m.micle_next_move = true;
         }
     }
@@ -379,7 +379,7 @@ pub fn on_after_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lansat_Berry>.
     if item_id == data::item_id::LANSATBERRY && quarter {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            m.item_id = u16::MAX;
+            m.consume_item();
             m.crit_stage_volatile = 2;
         }
     }
@@ -401,7 +401,7 @@ pub fn on_after_damage(
         // Consume the berry regardless (PS `eatItem` fires on the HP gate);
         // the +2 only applies if at least one stat is unmaxed.
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
         if n > 0 {
             let chosen = cands[rng.range(n as u32) as usize];
@@ -589,7 +589,7 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         let max_pp = crate::team::boosted_max_pp(move_id);
         let added: u8 = if ripen { 20 } else { 10 };
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -718,7 +718,7 @@ pub fn on_damaging_hit(
             .side_mut(target_side)
             .active_mon_mut(target_slot as usize)
         {
-            t.item_id = u16::MAX;
+            t.consume_item();
         }
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
@@ -763,7 +763,7 @@ pub fn on_damaging_hit(
             use crate::damage::TypeEff;
             if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-                    t.item_id = u16::MAX;
+                    t.consume_item();
                 }
                 // Weakness Policy self-boost: +2 Atk, +2 SpA.
                 battle.apply_boosts(target_side, target_slot, &[(0, 2), (2, 2)], target_side, target_slot);
@@ -798,7 +798,7 @@ pub fn on_damaging_hit(
                         let heal = (t.stats.hp / 4).max(1);
                         t.current_hp = t.current_hp.saturating_add(heal).min(t.stats.hp);
                     }
-                    t.item_id = u16::MAX;
+                    t.consume_item();
                 }
             }
         }
@@ -835,7 +835,7 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.item_id = u16::MAX;
+                t.consume_item();
             }
             // Booster-orb self-boost (+1) on the type-matched hit.
             battle.apply_boosts(target_side, target_slot, &[(stat_idx as u8, 1)], target_side, target_slot);
@@ -853,7 +853,7 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.item_id = u16::MAX;
+                t.consume_item();
             }
             // Kee Berry self-boost (+1 Def) on a physical hit.
             battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
@@ -869,7 +869,7 @@ pub fn on_damaging_hit(
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.item_id = u16::MAX;
+                t.consume_item();
             }
             // Maranga Berry self-boost (+1 SpD) on a special hit.
             battle.apply_boosts(target_side, target_slot, &[(3, 1)], target_side, target_slot);
@@ -891,7 +891,7 @@ pub fn on_damaging_hit(
                     .side_mut(target_side)
                     .active_mon_mut(target_slot as usize)
                 {
-                    t.item_id = u16::MAX;
+                    t.consume_item();
                 }
                 if let Some(a) = battle
                     .side_mut(attacker_side)
@@ -925,7 +925,7 @@ pub fn on_damaging_hit(
             .side_mut(target_side)
             .active_mon_mut(target_slot as usize)
         {
-            t.item_id = u16::MAX;
+            t.consume_item();
         }
         if let Some(a) = battle
             .side_mut(attacker_side)
@@ -1026,7 +1026,7 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
     // Booster-energy terrain orb self-boost (+1).
     battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
@@ -1060,7 +1060,7 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         m.volatiles.remove(VK::Confusion);
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -1092,7 +1092,7 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
     // -1 Speed self-drop (stat index 4).
     battle.apply_boosts(side, slot, &[(4, -1)], side, slot);
@@ -1119,7 +1119,7 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
         return;
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
     // +2 Speed self-boost (stat index 4).
     battle.apply_boosts(side, slot, &[(4, 2)], side, slot);
@@ -1162,7 +1162,7 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
             }
         }
         if removed {
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
     }
     maybe_on_item_consumed(battle, side, slot, item_id);
@@ -1214,7 +1214,7 @@ pub(crate) fn try_consume_eject_button(
     }
     // Consume the item, then force-switch.
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.item_id = u16::MAX;
+        t.consume_item();
     }
     battle.force_switch_auto(target_side, target_slot)
 }
@@ -1264,7 +1264,7 @@ pub(crate) fn try_consume_red_card(
     }
     // Consume the card on the holder, then force-switch the attacker.
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.item_id = u16::MAX;
+        t.consume_item();
     }
     battle.force_switch_auto(attacker_side, attacker_slot)
 }
@@ -1313,7 +1313,7 @@ pub(crate) fn try_consume_eject_pack(
         return false;
     }
     if let Some(t) = battle.side_mut(side).active_mon_mut(slot as usize) {
-        t.item_id = u16::MAX;
+        t.consume_item();
     }
     battle.force_switch_auto(side, slot)
 }
@@ -1364,7 +1364,7 @@ pub fn try_consume_mirror_herb_on_foe_boost(
                 }
             }
             if any_positive {
-                t.item_id = u16::MAX;
+                t.consume_item();
             }
         }
     }
@@ -1387,7 +1387,7 @@ pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u
             }
         }
         if any_neg {
-            m.item_id = u16::MAX;
+            m.consume_item();
         }
     }
     maybe_on_item_consumed(battle, side, slot, item_id);

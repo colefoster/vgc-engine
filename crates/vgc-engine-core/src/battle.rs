@@ -1074,7 +1074,7 @@ impl Battle {
                     && crate::item::can_eat_berry(self, side, item_id)
                 {
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
-                        m.item_id = u16::MAX;
+                        m.consume_item();
                     }
                 }
             }
@@ -1710,6 +1710,7 @@ impl Battle {
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.consumed_item = u16::MAX; // Recycle memory (PS `lastItem`) is per-active-stint.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
             // `twoturnmove` / `lockedmove` / `mustrecharge` volatiles
@@ -2829,9 +2830,10 @@ impl Battle {
                     // deducts via the standard PP block.
                 } else if power_herb {
                     // Consume Power Herb, skip charge. PS `useItem` clears
-                    // the item slot — match by setting item_id to MAX.
+                    // the item slot and records `lastItem` — Recycle can
+                    // restore it, so route through `consume_item`.
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.item_id = u16::MAX;
+                        a.consume_item();
                     }
                 } else {
                     // Charge turn: deduct PP (+ Pressure extra, which PS
@@ -6362,8 +6364,11 @@ impl Battle {
                 .unwrap_or(u16::MAX);
             if item_id != u16::MAX {
                 let effect = data::ITEMS[item_id as usize].fling_effect;
+                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
+                // when it clears the item, so a flung item IS recoverable by
+                // Recycle — route through `consume_item`.
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.item_id = u16::MAX;
+                    a.consume_item();
                 }
                 if let Some((ts, tslot)) = drag_target {
                     match effect {
@@ -6436,7 +6441,7 @@ impl Battle {
             return;
         }
         if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
-            a.item_id = u16::MAX;
+            a.consume_item();
         }
         // Self-boost: +1 SpA. Routed through the choke point (source = self).
         self.apply_boosts(side, slot, &[(2, 1)], side, slot);
@@ -9530,6 +9535,30 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::RECYCLE => {
+                // PS data/moves.ts:recycle —
+                //   onHit(pokemon) {
+                //     if (pokemon.item || !pokemon.lastItem) return false;
+                //     const item = pokemon.lastItem;
+                //     pokemon.lastItem = '';
+                //     this.add('-item', pokemon, this.dex.items.get(item), '[from] move: Recycle');
+                //     pokemon.setItem(item);
+                //   }
+                // Self-target, accuracy true. Restores the LAST item the user
+                // genuinely CONSUMED (`consumed_item` ≡ PS `lastItem`) — but
+                // only if the user currently holds nothing. Fails (no-op) if
+                // the user still holds an item OR never consumed one this
+                // active stint. An item removed by Knock Off / Thief / Trick /
+                // Bestow / Magician / Symbiosis / Sticky Barb never set
+                // `consumed_item`, so those are correctly NOT recoverable.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recycle_(move)>
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.item_id == u16::MAX && a.consumed_item != u16::MAX {
+                        a.item_id = a.consumed_item;
+                        a.consumed_item = u16::MAX;
+                    }
+                }
+            }
             data::move_id::SOAK => {
                 // PS data/moves.ts:soak — set the target's typing to pure
                 // Water (type code 2). 100% accuracy. Idempotent if the
@@ -11379,7 +11408,7 @@ fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
         m.status = Status::None;
         m.set_toxic_counter(0);
         m.set_sleep_turns(0);
-        m.item_id = u16::MAX;
+        m.consume_item();
     }
 }
 
@@ -18162,6 +18191,87 @@ mod tests {
         crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].boosts[4], 0, "Salac Berry does NOT fire above 25%");
         assert_ne!(b.p1.team[0].item_id, u16::MAX, "Salac Berry NOT consumed");
+    }
+
+    #[test]
+    fn recycle_restores_a_consumed_berry() {
+        // PS data/moves.ts:recycle — restores the last item the user
+        // genuinely consumed, when it currently holds none. Here Pikachu eats
+        // its Salac Berry at <=25% HP, then Recycle gets it back.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"salacberry","moves":["recycle","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let salac = b.p1.team[0].item_id;
+        assert_ne!(salac, u16::MAX);
+        // Drop HP into the eat band and trigger the berry deterministically.
+        b.p1.team[0].current_hp = (b.p1.team[0].stats.hp / 4).max(1);
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Salac Berry consumed");
+        assert_eq!(b.p1.team[0].consumed_item, salac, "consumed_item remembers the berry");
+        // Restore HP so the berry isn't immediately re-eaten after Recycle.
+        b.p1.team[0].current_hp = b.p1.team[0].stats.hp;
+        // Use Recycle (move slot 0).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].item_id, salac, "Recycle restored the Salac Berry");
+        assert_eq!(b.p1.team[0].consumed_item, u16::MAX, "consumed_item cleared after Recycle");
+    }
+
+    #[test]
+    fn recycle_cannot_recover_a_knocked_off_item() {
+        // The crux: an item removed by Knock Off does NOT set `consumed_item`
+        // (it's an external removal, not a consumption), so Recycle FAILS.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","nature":"careful","moves":["recycle","rest","sleeptalk","headbutt"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"safetygoggles","nature":"adamant","moves":["knockoff","fakeout","flareblitz","partingshot"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "Snorlax holds Sitrus Berry");
+        // Incineroar Knock Off removes Snorlax's berry; Snorlax uses Recycle.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Knocked-off item NOT recovered by Recycle");
+        assert_eq!(
+            b.p1.team[0].consumed_item, u16::MAX,
+            "Knock Off must not set consumed_item",
+        );
+    }
+
+    #[test]
+    fn recycle_fails_when_holder_still_has_an_item() {
+        // PS gate `if (pokemon.item ... ) return false;` — Recycle is a no-op
+        // when the user is still holding an item.
+        let p1_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","item":"sitrusberry","moves":["recycle","quickattack","grassknot","feint"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let held = b.p1.team[0].item_id;
+        assert_ne!(held, u16::MAX);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].item_id, held, "Recycle no-op while holding an item");
+        assert_eq!(b.p1.team[0].consumed_item, u16::MAX, "no consumed item to begin with");
     }
 
     #[test]
