@@ -9611,7 +9611,12 @@ fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
         "closecombat" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
         // -2 spa specials.
         "dracometeor" | "overheat" | "leafstorm" | "psychoboost"
-        | "fleurcannon" | "makeitrain" => &[(2, -2)],
+        | "fleurcannon" => &[(2, -2)],
+        // -1 spa. Make It Rain self-drops SpA by only ONE stage, unlike the
+        // Draco-Meteor family above. PS `data/moves.ts` makeitrain
+        // `self: { boosts: { spa: -1 } }`. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Make_It_Rain_(move)>.
+        "makeitrain" => &[(2, -1)],
         // -1 atk -1 def.
         "superpower" => &[(0, -1), (1, -1)],
         // -1 def -1 spd -1 spe (V-Create).
@@ -10408,6 +10413,17 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2)
+    }
+
+    #[test]
+    fn make_it_rain_self_drops_spa_by_one_not_two() {
+        // Surfaced by the PS-conformance harness (doubles): Make It Rain
+        // self-drops the user's SpA by ONE stage, unlike the Draco-Meteor
+        // family (Overheat/Leaf Storm/Fleur Cannon/Draco Meteor/Psycho Boost)
+        // which drop TWO. PS data/moves.ts makeitrain `self.boosts.spa: -1`.
+        assert_eq!(self_stat_drops("makeitrain"), Some(&[(2u8, -1i8)][..]));
+        assert_eq!(self_stat_drops("fleurcannon"), Some(&[(2u8, -2i8)][..]));
+        assert_eq!(self_stat_drops("dracometeor"), Some(&[(2u8, -2i8)][..]));
     }
 
     #[test]
