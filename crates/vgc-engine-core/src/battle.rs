@@ -6190,10 +6190,10 @@ impl Battle {
                 }
                 if let Some((ts, tslot)) = drag_target {
                     match effect {
-                        1 => self.apply_status_to_target(ts, tslot, Status::Burn),
-                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis),
-                        3 => self.apply_status_to_target(ts, tslot, Status::Poison),
-                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic),
+                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
+                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
+                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
+                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
                         5 => {
                             if let Some(t) =
                                 self.side_mut(ts).active_mon_mut(tslot as usize)
@@ -6298,11 +6298,12 @@ impl Battle {
     /// is resolved by the caller via `resolve_status_target` (PR-334) so a
     /// bounced / redirected move can hit a specific mon rather than always
     /// the first opposing active.
-    fn apply_status_to_target(&mut self, tside: SideRef, tslot: u8, status: Status) {
+    fn apply_status_to_target(&mut self, tside: SideRef, tslot: u8, status: Status, source_slot: u8) {
         if self.side(tside).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
             // Foe-targeting status move: source is on the opposing side, so
-            // Safeguard on the target's side vetoes it.
-            self.try_set_status_from(tside, tslot, status, tside.opposing());
+            // Safeguard on the target's side vetoes it. `source_slot` carries
+            // the inflicting mon so Synchronize can reflect.
+            self.try_set_status_from_src(tside, tslot, status, tside.opposing(), source_slot);
         }
     }
 
@@ -6764,6 +6765,22 @@ impl Battle {
         status: Status,
         source_side: SideRef,
     ) {
+        self.try_set_status_from_src(side, slot, status, source_side, u8::MAX);
+    }
+
+    /// As [`Self::try_set_status_from`] but carries the inflicting mon's slot
+    /// so Synchronize can reflect the status back onto it. `source_slot ==
+    /// u8::MAX` means there is no specific source mon (entry hazards,
+    /// self-inflicted status) → no Synchronize. Used by the foe-targeting
+    /// status moves / secondaries where the attacker slot is known.
+    pub(crate) fn try_set_status_from_src(
+        &mut self,
+        side: SideRef,
+        slot: u8,
+        status: Status,
+        source_side: SideRef,
+        source_slot: u8,
+    ) {
         // Safeguard veto — opponent-sourced status only.
         if source_side != side && self.side(side).conditions.safeguard_turns > 0 {
             return;
@@ -6881,6 +6898,33 @@ impl Battle {
         // status the same way (separate PR). Berry is consumed on cure.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cheri_Berry> etc.
         cure_status_berry_if_matching(self, side, slot);
+
+        // Synchronize — PS `data/abilities.ts:synchronize` `onAfterSetStatus`:
+        // when an OPPONENT inflicts a status on the holder, the same status is
+        // set on that source. PS excludes slp / frz (and toxic-spikes, which
+        // reaches us with `source_slot == u8::MAX`). Toxic reflects as Toxic.
+        // The reflected set uses the holder as ITS source (`source_side =
+        // side`) so Safeguard on the source's side and the already-statused
+        // guard apply; it goes through the plain 4-arg path (source_slot MAX)
+        // so it can't re-trigger Synchronize — no ping-pong (and PS terminates
+        // the same way, since the holder is already statused).
+        if source_slot != u8::MAX
+            && source_side != side
+            && matches!(
+                status,
+                Status::Burn | Status::Paralysis | Status::Poison | Status::Toxic
+            )
+        {
+            let holder_sync = self
+                .side(side)
+                .active_mon(slot as usize)
+                .is_some_and(|m| {
+                    m.is_alive() && m.effective_ability_id() == data::ability_id::SYNCHRONIZE
+                });
+            if holder_sync {
+                self.try_set_status_from(source_side, source_slot, status, side);
+            }
+        }
     }
 
     /// Deliver one Future Sight / Doom Desire hit at end-of-turn. The
@@ -8863,19 +8907,19 @@ impl Battle {
                 // Roll accuracy here so failures behave correctly.
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
-                    self.apply_status_to_target(ts, tslot, Status::Paralysis);
+                    self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
                 }
             }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
-                    self.apply_status_to_target(ts, tslot, Status::Burn);
+                    self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot);
                 }
             }
             data::move_id::TOXIC => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
-                    self.apply_status_to_target(ts, tslot, Status::Toxic);
+                    self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot);
                 }
             }
             data::move_id::SLEEPTALK => {
@@ -10545,7 +10589,7 @@ fn apply_secondary_effect(
         if rng.percent_1_100() <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
             // the target's side vetoes it.
-            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
+            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
     // Confuse secondary — PS `secondary: { chance, volatileStatus:
@@ -10652,7 +10696,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Freeze,
             };
-            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
+            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
     if move_slug == "direclaw" {
@@ -10665,7 +10709,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Sleep,
             };
-            battle.try_set_status_from(target_side, target_slot, status, attacker_side);
+            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
     // Throat Chop — PS data/moves.ts:throatchop
@@ -24860,6 +24904,31 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn synchronize_reflects_status_but_not_sleep() {
+        // PS synchronize onAfterSetStatus: an opponent-inflicted brn/par/psn/
+        // tox is mirrored onto the source; slp/frz are NOT.
+        let holder = r#"[{"species":"espeon","level":50,"ability":"synchronize","item":"","nature":"calm","moves":["calmmind","protect","psychic","storedpower"],"evs":{"hp":252,"spd":252}}]"#;
+        let foe = r#"[{"species":"smeargle","level":50,"ability":"owntempo","item":"","nature":"jolly","moves":["spore","willowisp","protect","tackle"],"evs":{"hp":252,"spe":252}}]"#;
+        let run = |foe_move: u8, seed: u64| -> (Status, Status) {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed },
+                TeamBuilder::from_json(holder).unwrap(), TeamBuilder::from_json(foe).unwrap());
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Espeon Calm Mind (self)
+                &[Choice::Move { actor_slot: 0, move_slot: foe_move, target: Some(t(SideRef::P1, 0)) }],
+            );
+            (b.p1.team[0].status, b.p2.team[0].status)
+        };
+        // Spore (100% acc) → Espeon sleeps, Smeargle does NOT (sleep excluded).
+        let (holder_s, foe_s) = run(0, 1);
+        assert_eq!(holder_s, Status::Sleep, "Espeon slept by Spore");
+        assert_eq!(foe_s, Status::None, "Synchronize does NOT reflect sleep");
+        // Will-O-Wisp burn → reflected (seed chosen so WoW lands).
+        let (holder_b, foe_b) = run(1, 4);
+        assert_eq!(holder_b, Status::Burn, "Espeon burned by Will-O-Wisp");
+        assert_eq!(foe_b, Status::Burn, "Synchronize reflects burn to the inflictor");
     }
 
     #[test]
