@@ -33,11 +33,17 @@ desync). Verify any fix by re-running `cargo run -p vgc-engine-conformance --
   (engine 46 vs ps 145) is an **Excadrill Iron Head damage divergence**
   (trace-first; see memory `match-real-champions`), not a Curse bug.
 
-## OPEN — clean, contained (ship next)
-- **Spiky Shield family share the plain-Protect arm** (battle.rs:~7457) — out_24
-  (Fake Out into Spiky Shield: PS chips attacker 1/8 on contact; engine no
-  chip). Same arm: Baneful Bunker (poison), King's Shield/Obstruct (−Atk/−Def),
-  Burning Bulwark (burn), Silk Trap (−Spe) — all missing their side effect.
+## SHIPPED (cont.)
+- ✅ **Spiky Shield family contact-punish** — out_24 turn-1 now CLEAN. Tag the
+  Protect volatile payload with a `protect_variant` code; on a fully-blocked
+  CONTACT move, `apply_protect_punish` fires the attacker-side effect: Spiky
+  Shield 1/8 chip (Magic-Guard-blocked), Baneful Bunker poison, King's Shield
+  −1 Atk, Obstruct −2 Def, Burning Bulwark burn, Silk Trap −1 Spe. Protector
+  is the boost/status source (Safeguard/Defiant/Clear Body resolve right);
+  contact via `move_makes_contact` so Protective Pads/Punching Glove suppress.
+  6 unit tests. NOTE: out_24's residual turn-2 p2a atk −1 gap is a separate
+  **Incineroar Intimidate-on-switch-in ordering** bug (both sides double-switch
+  the same turn; engine misses the Intimidate on the freshly-switched foe).
 - **Burn residual on a mon that switched in that turn** — out_35. Polteageist
   switched in, took Heat Wave (eng matches), burned, but end-of-turn burn DOT
   (1/16 = 8) not applied. Likely residual loop skipping the just-active slot.

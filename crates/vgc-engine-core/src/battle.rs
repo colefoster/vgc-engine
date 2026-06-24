@@ -4297,6 +4297,19 @@ impl Battle {
                 if pierces {
                     piercing_drill_quarter = true;
                 } else {
+                    // Fully blocked. If the protector used a Spiky Shield
+                    // family move and this move makes contact, punish the
+                    // attacker (PS `condition.onTryHit`: chip / status / stat
+                    // drop on `source`). Plain Protect/Detect (variant 0) is a
+                    // no-op.
+                    let variant = defender.protect_variant();
+                    if variant != 0
+                        && crate::damage::move_makes_contact(&data::MOVES[move_id as usize], &attacker)
+                    {
+                        self.apply_protect_punish(
+                            variant, actor_side, actor_slot, tside, tslot,
+                        );
+                    }
                     continue;
                 }
             }
@@ -6603,6 +6616,83 @@ impl Battle {
     /// Self-sourced status entry point (Rest, Flame/Toxic Orb, etc.).
     /// Equivalent to PS's `pokemon.setStatus(status)` with no external
     /// source — Safeguard never vetoes a self-inflicted status.
+    /// Spiky Shield family contact-punish — PS `condition.onTryHit` on
+    /// spikyshield / banefulbunker / kingsshield / obstruct / burningbulwark
+    /// / silktrap. Fires on the ATTACKER when its CONTACT move is fully
+    /// blocked by the corresponding shield (contact is verified at the call
+    /// site via `move_makes_contact`, so Protective Pads / Punching Glove
+    /// already suppress it). The protector is the status/boost SOURCE so the
+    /// attacker's Safeguard / Defiant / Competitive / Mirror Armor resolve
+    /// correctly. PS data/moves.ts (spikyshield:39 `this.damage(maxhp/8)`,
+    /// banefulbunker `trySetStatus('psn')`, kingsshield `boost({atk:-1})`,
+    /// obstruct `boost({def:-2})`, burningbulwark `trySetStatus('brn')`,
+    /// silktrap `boost({spe:-1})`).
+    fn apply_protect_punish(
+        &mut self,
+        variant: u8,
+        atk_side: SideRef,
+        atk_slot: u8,
+        def_side: SideRef,
+        def_slot: u8,
+    ) {
+        match variant {
+            protect_variant::SPIKY => {
+                // 1/8 max HP chip (floor, min 1), blocked by Magic Guard
+                // (PS `this.damage` with a non-Move effect).
+                let (chip, mg) = match self.side(atk_side).active_mon(atk_slot as usize) {
+                    Some(a) if a.is_alive() => {
+                        ((a.stats.hp / 8).max(1), crate::ability::has_magic_guard(a))
+                    }
+                    _ => return,
+                };
+                if mg {
+                    return;
+                }
+                if let Some(a) = self.side_mut(atk_side).active_mon_mut(atk_slot as usize) {
+                    a.current_hp = a.current_hp.saturating_sub(chip);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
+            protect_variant::BANEFUL => {
+                self.try_set_status_from(atk_side, atk_slot, Status::Poison, def_side);
+            }
+            protect_variant::BURNING => {
+                self.try_set_status_from(atk_side, atk_slot, Status::Burn, def_side);
+            }
+            protect_variant::KINGS | protect_variant::OBSTRUCT | protect_variant::SILK => {
+                let deltas: &[(u8, i8)] = match variant {
+                    protect_variant::KINGS => &[(0, -1)],
+                    protect_variant::OBSTRUCT => &[(1, -2)],
+                    _ => &[(4, -1)],
+                };
+                // Per-stat Clear Body / Hyper Cutter veto, then the White Herb
+                // / Eject Pack / Defiant reactions — mirrors the foe-debuff
+                // status-move site.
+                let mut buf = [(0u8, 0i8); 2];
+                let mut k = 0usize;
+                for &(idx, d) in deltas {
+                    let blocked = self
+                        .side(atk_side)
+                        .active_mon(atk_slot as usize)
+                        .is_some_and(|a| crate::ability::blocks_opposing_stat_drop_for(a, idx));
+                    if !blocked {
+                        buf[k] = (idx, d);
+                        k += 1;
+                    }
+                }
+                if k > 0 {
+                    self.apply_boosts(atk_side, atk_slot, &buf[..k], def_side, def_slot);
+                    crate::item::try_consume_white_herb(self, atk_side, atk_slot);
+                    let _ = crate::item::try_consume_eject_pack(self, atk_side, atk_slot, true);
+                    crate::ability::react_to_opposing_stat_drop(self, atk_side, atk_slot);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
         self.try_set_status_from(side, slot, status, side);
     }
@@ -7525,7 +7615,12 @@ impl Battle {
                     None => return,
                 };
                 if success {
-                    actor.set_protected(true);
+                    // Tag the protect variant so a blocked contact move can
+                    // trigger the family's punish (Spiky Shield 1/8 chip,
+                    // Baneful Bunker poison, King's Shield −1 Atk, Obstruct
+                    // −2 Def, Burning Bulwark burn, Silk Trap −1 Spe). Plain
+                    // Protect/Detect tag 0 (no side effect).
+                    actor.set_protected_variant(protect_variant_for(move_id));
                     let c = actor.stall_counter().saturating_add(1).min(6);
                     actor.set_stall(c, true);
                 } else {
@@ -9638,6 +9733,32 @@ fn sleep_talk_excluded(slug: &str) -> bool {
             | "bounce" | "dig" | "dive" | "fly" | "phantomforce"
             | "shadowforce" | "skullbash" | "skydrop" | "solarblade"
     )
+}
+
+/// Protect-family variant codes stored in the Protect volatile payload, so a
+/// blocked contact move can fire the right Spiky Shield family punish.
+mod protect_variant {
+    pub const PLAIN: u8 = 0;
+    pub const SPIKY: u8 = 1;
+    pub const BANEFUL: u8 = 2;
+    pub const KINGS: u8 = 3;
+    pub const OBSTRUCT: u8 = 4;
+    pub const BURNING: u8 = 5;
+    pub const SILK: u8 = 6;
+}
+
+/// Map a protect-family move id to its [`protect_variant`] code. Plain
+/// Protect / Detect (and the side-wide guards) carry no side effect → PLAIN.
+fn protect_variant_for(move_id: u16) -> u8 {
+    match move_id {
+        data::move_id::SPIKYSHIELD => protect_variant::SPIKY,
+        data::move_id::BANEFULBUNKER => protect_variant::BANEFUL,
+        data::move_id::KINGSSHIELD => protect_variant::KINGS,
+        data::move_id::OBSTRUCT => protect_variant::OBSTRUCT,
+        data::move_id::BURNINGBULWARK => protect_variant::BURNING,
+        data::move_id::SILKTRAP => protect_variant::SILK,
+        _ => protect_variant::PLAIN,
+    }
 }
 
 /// A foe-stat-lowering status move's data. Stat indices match
@@ -14720,6 +14841,126 @@ mod tests {
                 "Magic Guard mon still gets cursed");
         assert_eq!(b.p2.team[0].current_hp, clef_hp,
                    "Magic Guard blocks the Curse residual chip");
+    }
+
+    #[test]
+    fn spiky_shield_chips_contact_attacker_one_eighth_not_non_contact() {
+        // PS data/moves.ts:spikyshield onTryHit — a blocked CONTACT move
+        // chips the attacker 1/8 max HP; a non-contact move is blocked with
+        // no chip. First Protect always succeeds (stall counter 0).
+        let atk = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthpower","protect","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let def = r#"[
+            {"species":"chesnaught","level":50,"ability":"bulletproof","item":"","nature":"impish","moves":["spikyshield","ironhead","drainpunch","leechseed"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Contact: Dragon Claw → 1/8 chip.
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def).unwrap());
+        let chomp_max = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, chomp_max - (chomp_max / 8).max(1),
+                   "Spiky Shield chips a contact attacker 1/8 max HP");
+        // Non-contact: Earth Power → blocked, no chip.
+        let mut c = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def).unwrap());
+        let chomp_max_c = c.p1.team[0].current_hp;
+        c.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(c.p1.team[0].current_hp, chomp_max_c,
+                   "Spiky Shield does NOT chip a non-contact attacker");
+    }
+
+    #[test]
+    fn protective_pads_prevents_spiky_shield_chip() {
+        // checkMoveMakesContact returns false under Protective Pads, so no
+        // contact-punish fires.
+        let atk = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"protectivepads","nature":"jolly","moves":["dragonclaw","earthpower","protect","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let def = r#"[
+            {"species":"chesnaught","level":50,"ability":"bulletproof","item":"","nature":"impish","moves":["spikyshield","ironhead","drainpunch","leechseed"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def).unwrap());
+        let chomp_max = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, chomp_max,
+                   "Protective Pads suppresses the Spiky Shield contact chip");
+    }
+
+    #[test]
+    fn baneful_bunker_poisons_contact_attacker() {
+        let atk = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthpower","protect","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let def = r#"[
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"bold","moves":["banefulbunker","scald","recover","toxic"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def).unwrap());
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::Poison,
+                   "Baneful Bunker poisons a contact attacker");
+    }
+
+    #[test]
+    fn burning_bulwark_burns_contact_attacker() {
+        let atk = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthpower","protect","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let def = r#"[
+            {"species":"ceruledge","level":50,"ability":"flashfire","item":"","nature":"adamant","moves":["burningbulwark","bitterblade","shadowsneak","swordsdance"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+            TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def).unwrap());
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].status, Status::Burn,
+                   "Burning Bulwark burns a contact attacker");
+    }
+
+    #[test]
+    fn kings_shield_obstruct_silk_trap_lower_attacker_stats_on_contact() {
+        // King's Shield −1 Atk, Obstruct −2 Def, Silk Trap −1 Spe — applied
+        // to the attacker when its contact move is blocked.
+        let atk = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","earthpower","protect","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let run = |def_json: &str, def_move: u8| {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 },
+                TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(def_json).unwrap());
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: def_move, target: None }],
+            );
+            b.p1.team[0].boosts
+        };
+        let aegislash = r#"[
+            {"species":"aegislash","level":50,"ability":"stancechange","item":"","nature":"brave","moves":["kingsshield","shadowball","shadowsneak","ironhead"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let obstagoon = r#"[
+            {"species":"obstagoon","level":50,"ability":"guts","item":"","nature":"adamant","moves":["obstruct","knockoff","facade","closecombat"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let spidops = r#"[
+            {"species":"spidops","level":50,"ability":"insomnia","item":"","nature":"impish","moves":["silktrap","stickyweb","knockoff","circlethrow"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        assert_eq!(run(aegislash, 0)[0], -1, "King's Shield lowers attacker Atk by 1");
+        assert_eq!(run(obstagoon, 0)[1], -2, "Obstruct lowers attacker Def by 2");
+        assert_eq!(run(spidops, 0)[4], -1, "Silk Trap lowers attacker Spe by 1");
     }
 
     #[test]
