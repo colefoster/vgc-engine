@@ -5460,8 +5460,13 @@ impl Battle {
             // a Substitute (PS: knock-off effect requires the hit to
             // reach the holder).
             if move_id == data::move_id::KNOCKOFF && !hit_sub {
+                // Sticky Hold and a Substitute block removal; so does an
+                // unremovable item — the holder's own Mega Stone (PS
+                // `onTakeItem` false). Matches the no-boost gate in damage.rs.
                 let can_knock = self.side(tside).active_mon(tslot as usize)
-                    .is_some_and(|m| m.is_alive() && m.ability_id != data::ability_id::STICKYHOLD);
+                    .is_some_and(|m| m.is_alive()
+                        && m.ability_id != data::ability_id::STICKYHOLD
+                        && data::mega_stone_for(m.item_id, m.species_id).is_none());
                 if can_knock {
                     if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         t.item_id = u16::MAX;
@@ -24783,6 +24788,33 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn knock_off_no_boost_or_removal_vs_own_mega_stone() {
+        // Knock Off neither ×1.5-boosts nor removes a holder's own Mega Stone
+        // (PS canKnockOffItem false). vs a normal item it does both.
+        // (Conformance out_179459f0d9: Knock Off into Banette @ Banettite.)
+        let run = |item: &str| -> (u16, bool, bool) {
+            let p1 = r#"[{"species":"mew","level":50,"ability":"synchronize","item":"","nature":"hardy","moves":["knockoff","psychic","protect","softboiled"],"evs":{"hp":252}}]"#;
+            let p2 = format!(r#"[{{"species":"banette","level":50,"ability":"insomnia","item":"{item}","nature":"bold","moves":["shadowclaw","nightshade","destinybond","willowisp"],"evs":{{"hp":252,"def":252}}}}]"#);
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+                TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(&p2).unwrap());
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }], // Night Shade (fixed 50, no contact)
+            );
+            let dmg = before.saturating_sub(b.p2.team[0].current_hp);
+            let kept = b.p2.team[0].item_id != u16::MAX;
+            (dmg, kept, b.p2.team[0].is_alive())
+        };
+        let (mega_dmg, mega_kept, mega_alive) = run("banettite");
+        let (norm_dmg, norm_kept, norm_alive) = run("lumberry");
+        assert!(mega_alive && norm_alive, "Banette must survive both for a fair compare");
+        assert!(mega_kept, "own Mega Stone is NOT knocked off");
+        assert!(!norm_kept, "a normal item IS knocked off");
+        assert!(mega_dmg < norm_dmg, "no ×1.5 vs a Mega Stone ({mega_dmg} < {norm_dmg})");
     }
 
     #[test]
