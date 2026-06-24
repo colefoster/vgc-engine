@@ -1170,7 +1170,8 @@ impl Pokemon {
         self.volatiles.has(VolatileKind::Protect)
     }
 
-    /// Set or clear the Protect volatile (duration-1).
+    /// Set or clear the Protect volatile (duration-1). Plain Protect/Detect
+    /// store variant 0; the Spiky Shield family use [`set_protected_variant`].
     #[inline]
     pub fn set_protected(&mut self, on: bool) {
         if on {
@@ -1182,6 +1183,30 @@ impl Pokemon {
         } else {
             self.volatiles.remove(VolatileKind::Protect);
         }
+    }
+
+    /// Set the Protect volatile, tagging which protect-family move laid it so
+    /// the contact-punish (Spiky Shield chip, Baneful Bunker poison, King's
+    /// Shield −Atk, Obstruct −Def, Burning Bulwark burn, Silk Trap −Spe) can
+    /// fire when a contact move is blocked. Variant codes are defined by
+    /// `ProtectVariant` in `battle.rs`.
+    #[inline]
+    pub fn set_protected_variant(&mut self, variant: u8) {
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::Protect,
+            turns_remaining: 0,
+            payload: variant as u32,
+        });
+    }
+
+    /// Which protect-family move laid the active Protect volatile (0 = plain
+    /// Protect/Detect/no side effect). Reads the volatile payload.
+    #[inline]
+    pub fn protect_variant(&self) -> u8 {
+        self.volatiles
+            .get(VolatileKind::Protect)
+            .map(|v| v.payload as u8)
+            .unwrap_or(0)
     }
 
     /// `true` while a `VolatileKind::Flinch` volatile is on this mon.
