@@ -58,7 +58,8 @@ notation, valid sets). 14 clean / 12 real / 19 cascades. Findings:
   is already corrected by `MegaFix starmiemega atk: 100`. So out_46 is NOT a
   Scolipede-Mega stat bug (that hypothesis is dead).
 - ✅ **Skill Swap blocked by Protect** — out_45 (7b02a6f).
-- 🔴 **MAJOR GAP: foe-stat-lowering STATUS moves are unimplemented** — Growl,
+- ✅ **foe-stat-lowering STATUS moves implemented** (a544cc1) — `foe_debuff_moves`
+  table (21 moves) + full gating; out_46 Tickle now matches. Was: 🔴 GAP — — Growl,
   Leer, Tail Whip, Charm, Screech, Tickle, Fake Tears, Metal Sound, Scary Face,
   Feather Dance, Confide, Baby-Doll Eyes, Play Nice, Eerie Impulse, Captivate,
   Cotton Spore, String Shot, Sand Attack, Smokescreen, etc. — ALL fall through
