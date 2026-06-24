@@ -1001,8 +1001,7 @@ impl Battle {
         // force-switch (Roar/Whirlwind/Dragon Tail/Circle Throw) switches
         // are NOT intercepted (they don't run through `apply_switches`'
         // voluntary path).
-        self.apply_switches(SideRef::P1, p1_choices, p2_choices);
-        self.apply_switches(SideRef::P2, p2_choices, p1_choices);
+        self.apply_pre_turn_switches(p1_choices, p2_choices);
 
         // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
         //     between switch resolution and move ordering. Transforming
@@ -1446,56 +1445,74 @@ impl Battle {
         crate::ability::on_switch_in(self, side, actor_slot);
     }
 
-    fn apply_switches(&mut self, side: SideRef, choices: &[Choice], opp_choices: &[Choice]) {
-        // A Switch that comes AFTER a Move for the same actor_slot in
-        // the same choice array is a self-switch follow-up (U-turn /
-        // Volt Switch / Parting Shot / Teleport / Chilly Reception);
-        // it is consumed later by `apply_self_switches` once the move
-        // has resolved and set `pending_self_switch`. PS emits the
-        // |move| event BEFORE the |switch| event for the same slot in
-        // a turn, so the runner naturally orders them this way.
-        let mut moved_slot: [bool; 2] = [false; 2];
-        // Newly-switched-in slots, bounded by active_count (≤ 2 in doubles).
-        // Fixed stack array + count — no heap, so `step()` stays alloc-free
-        // (AGENTS.md rule 4).
-        let mut switched_slots: [u8; 2] = [0; 2];
-        let mut n_switched = 0usize;
-        for c in choices {
-            match *c {
-                Choice::Move { actor_slot, .. }
-                | Choice::Terastallize { actor_slot, .. }
-                | Choice::MegaEvolve { actor_slot, .. } => {
-                    if (actor_slot as usize) < 2 {
-                        moved_slot[actor_slot as usize] = true;
+    /// Resolve every voluntary pre-turn switch from both sides, interleaved by
+    /// the OUTGOING (currently-active, leaving) mon's effective Speed —
+    /// fastest first — firing each switch-in's `onStart` (Intimidate, weather
+    /// / terrain setters, …) and item `onStart` IMMEDIATELY as that mon
+    /// enters. PS speed-sorts pre-turn switch actions by the leaving mon's
+    /// Speed and runs each one to completion (swap → hazards → onStart) before
+    /// the next, so when two sides both switch the same turn an Intimidator
+    /// hits a foe that already entered (slower leaver) but not one that enters
+    /// after it (faster leaver). Doing all of P1 then all of P2 used to
+    /// intimidate the wrong (outgoing) foes.
+    ///
+    /// A Switch that comes AFTER a Move for the same actor_slot is a
+    /// self-switch follow-up (U-turn / Volt Switch / Parting Shot / Teleport /
+    /// Chilly Reception); it is consumed later by `apply_self_switches` and is
+    /// skipped here. Heap-free: fixed ≤4 buffer, in-place sort (AGENTS.md #4).
+    fn apply_pre_turn_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        // Gather (outgoing_speed, side, actor_slot, team_index).
+        let mut acts: [(u16, SideRef, u8, u8); 4] = [(0, SideRef::P1, 0, 0); 4];
+        let mut n = 0usize;
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            let mut moved_slot: [bool; 2] = [false; 2];
+            for c in choices {
+                match *c {
+                    Choice::Move { actor_slot, .. }
+                    | Choice::Terastallize { actor_slot, .. }
+                    | Choice::MegaEvolve { actor_slot, .. } => {
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
+                        }
                     }
+                    Choice::Switch { actor_slot, team_index } => {
+                        if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
+                            continue; // self-switch follow-up; handled post-move
+                        }
+                        let tw = self.side(side).conditions.tailwind_turns > 0;
+                        let spd = self
+                            .side(side)
+                            .active_mon(actor_slot as usize)
+                            .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                            .unwrap_or(0);
+                        if n < acts.len() {
+                            acts[n] = (spd, side, actor_slot, team_index);
+                            n += 1;
+                        }
+                    }
+                    Choice::Pass { .. } => {}
                 }
-                Choice::Switch { actor_slot, team_index } => {
-                    if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
-                        // Deferred self-switch follow-up; skip for now.
-                        continue;
-                    }
-                    // Pursuit interception — an opposing Pursuit user hits
-                    // this voluntary switcher BEFORE it leaves, at 2× BP.
-                    self.try_pursuit_interception(side, actor_slot, opp_choices);
-                    if self.do_switch(side, actor_slot, team_index)
-                        && n_switched < switched_slots.len()
-                    {
-                        switched_slots[n_switched] = actor_slot;
-                        n_switched += 1;
-                    }
-                }
-                Choice::Pass { .. } => {}
             }
         }
-        // Run on-switch-in ability hooks for each newly-active mon,
-        // then item hooks. PS canonical order:
-        //   hazards → ability `onStart` → item `onStart` → forme change.
-        // Hazards already fired in `do_switch`. Forme change (e.g.
-        // Ogerpon mask transformations, Aegislash Blade/Shield) is a
-        // separate per-species concern still TBD.
-        for &slot in &switched_slots[..n_switched] {
-            crate::ability::on_switch_in(self, side, slot);
-            crate::item::on_switch_in(self, side, slot);
+        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4).
+        // PS breaks Speed ties at random, which we do not model; the unstable
+        // sort leaves ties in an unspecified order.
+        acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for &(_, side, actor_slot, team_index) in &acts[..n] {
+            let opp_choices = match side {
+                SideRef::P1 => p2_choices,
+                SideRef::P2 => p1_choices,
+            };
+            // Pursuit interception — an opposing Pursuit user hits this
+            // voluntary switcher BEFORE it leaves, at 2× BP.
+            self.try_pursuit_interception(side, actor_slot, opp_choices);
+            if self.do_switch(side, actor_slot, team_index) {
+                // Switch-in `onStart` fires immediately as this mon enters
+                // (PS order: hazards — already in do_switch — then ability
+                // then item onStart). Forme changes remain a per-species TBD.
+                crate::ability::on_switch_in(self, side, actor_slot);
+                crate::item::on_switch_in(self, side, actor_slot);
+            }
         }
     }
 
@@ -15776,6 +15793,46 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate fires on mid-battle switch-in");
+    }
+
+    #[test]
+    fn intimidate_on_double_switch_hits_only_the_foe_already_in() {
+        // PS orders pre-turn switches by the LEAVING mon's Speed (fastest
+        // first) and runs each switch-in's onStart immediately. Incineroar
+        // (P1b, leaving Garchomp spe 102) enters between the foe leaving
+        // Talonflame (126 → Tinkaton, already in) and the foe leaving Snorlax
+        // (30 → Toxapex, enters after). So Intimidate hits Tinkaton (p2a) but
+        // NOT Toxapex (p2b). A naive "all swaps then all abilities" model
+        // would intimidate both; "P1 side then P2 side" would intimidate
+        // neither fresh foe.
+        let p1 = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"","nature":"hardy","moves":["protect","thunderbolt"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"hardy","moves":["protect","earthquake"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"hardy","moves":["protect","knockoff"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"hardy","moves":["protect","bodyslam"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"talonflame","level":50,"ability":"flamebody","item":"","nature":"hardy","moves":["protect","bravebird"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"hardy","moves":["protect","bodyslam"]},
+            {"species":"tinkaton","level":50,"ability":"moldbreaker","item":"","nature":"hardy","moves":["protect","gigatonhammer"]},
+            {"species":"toxapex","level":50,"ability":"regenerator","item":"","nature":"hardy","moves":["protect","scald"]}
+        ]"#;
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Pikachu Protect
+                Choice::Switch { actor_slot: 1, team_index: 2 },            // Garchomp → Incineroar
+            ],
+            &[
+                Choice::Switch { actor_slot: 0, team_index: 2 },            // Talonflame → Tinkaton
+                Choice::Switch { actor_slot: 1, team_index: 3 },            // Snorlax → Toxapex
+            ],
+        );
+        assert_eq!(b.p2.team[2].boosts[0], -1,
+                   "foe that switched in BEFORE the Intimidator (faster leaver) is intimidated");
+        assert_eq!(b.p2.team[3].boosts[0], 0,
+                   "foe that switched in AFTER the Intimidator (slower leaver) is NOT intimidated");
     }
 
     #[test]
