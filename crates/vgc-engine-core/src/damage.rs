@@ -252,6 +252,44 @@ pub fn apply_boost(stat: u32, stage: i8) -> u32 {
     }
 }
 
+/// Pokémon Champions / mainline gen-9 damage rounding — a faithful port of
+/// PS's `Battle.chainModify` + `Battle.modify` (`sim/battle.ts:2334`,`:2345`),
+/// which the cartridge and Champions both use (round-half-DOWN, "pokeRound").
+/// This is NOT PS-mimicry: web-verified that Champions rounds non-integers to
+/// the nearest integer, ties down (game8.co / Bulbapedia "Damage"), exactly
+/// what these functions compute.
+///
+/// A modifier is held as a Q12 fixed-point integer (`4096` = ×1). Multiple
+/// modifiers of the SAME event (e.g. every `onBasePower` boost) accumulate via
+/// [`chain_modify`] into one value, then apply ONCE through [`apply_modifier`]
+/// — matching PS's `runEvent`, which sums the chain and calls `modify` a single
+/// time. Applying each modifier separately (truncating as it goes) is what the
+/// old code did and is what produced the off-by-one HP the conformance harness
+/// caught.
+#[inline]
+pub(crate) fn chain_modify(modifier: u64, num: u64, den: u64) -> u64 {
+    // PS: nextMod = trunc(num * 4096 / den); modifier = (prev*next + 2048) >> 12.
+    let next = num * 4096 / den;
+    (modifier * next + 2048) >> 12
+}
+
+/// Apply an accumulated Q12 `modifier` to `value` with PS `modify` rounding:
+/// `floor((value * modifier + 2048 - 1) / 4096)` (pokeRound, ties down). A
+/// `modifier` of exactly `4096` (×1) returns `value` unchanged.
+#[inline]
+pub(crate) fn apply_modifier(value: u32, modifier: u64) -> u32 {
+    ((value as u64 * modifier + 2047) / 4096) as u32
+}
+
+/// PS `modify(value, num/den)` for a SINGLE modifier — pokeRound (ties down).
+/// The Q12 modifier is `trunc(num * 4096 / den)`, exactly as PS computes it.
+/// Use for the post-formula steps PS applies via `modify` (spread, weather,
+/// STAB); crit and type-effectiveness use plain `trunc` in PS, not this.
+#[inline]
+pub(crate) fn modify(value: u32, num: u64, den: u64) -> u32 {
+    apply_modifier(value, num * 4096 / den)
+}
+
 /// Type effectiveness of `move_type` vs `defender`. Considers all of the
 /// defender's types (1 or 2).
 pub fn type_effectiveness(move_type: u8, defender: &data::SpeciesDef) -> TypeEff {
@@ -839,10 +877,14 @@ pub fn calculate_damage(
     // Terrain::None when the defender isn't grounded (or, for gen 9
     // Misty/Psychic terrain that gates on the USER being grounded, see
     // those terrain arms when shipped).
+    // Accumulated `onBasePower` modifier (Q12, 4096 = ×1). Every base-power
+    // boost below chains into this and is applied ONCE, with pokeRound, at the
+    // end of the block — matching PS/Champions (`runEvent` sums the chain, then
+    // one `modify`). See `chain_modify` / `apply_modifier`.
+    let mut bp_mod: u64 = 4096;
     let (tn, td) = ctx.terrain.damage_mult(move_type);
     if tn != td {
-        // pokeRound: floor((v * n + d/2 - 1) / d). For d=4096 → +2047.
-        bp = (bp * tn + td / 2 - 1) / td;
+        bp_mod = chain_modify(bp_mod, tn as u64, td as u64);
     }
 
     // Technician — PS `data/abilities.ts:technician` (line 4873):
@@ -863,18 +905,18 @@ pub fn calculate_damage(
     // own offensive ability. Scizor (Bullet Punch) / Breloom (Mach Punch) /
     // Scizor-Mega signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Technician_(Ability)>.
-    if bp <= 60
+    if apply_modifier(bp, bp_mod) <= 60
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::TECHNICIAN
     {
-        bp = bp * 3 / 2;
+        bp_mod = chain_modify(bp_mod, 3, 2);
     }
 
     // -ate ×1.2 BP — deferred from the type-rebind above so it lands at PS's
     // `onBasePowerPriority: 23`, i.e. AFTER Technician (30). ×1.2 = 4915/4096
     // (pokeRound). Fires only when the type was actually changed.
     if ate_boost {
-        bp = (bp * 4915 + 2047) / 4096;
+        bp_mod = chain_modify(bp_mod, 4915, 4096);
     }
 
     // Sheer Force base-power boost — ×5325/4096 (≈1.3) on any move PS
@@ -885,7 +927,7 @@ pub fn calculate_damage(
     // chainModify([5325, 4096]) only when that flag is set.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sheer_Force_(Ability)>.
     if attacker_has_sheer_force(attacker) && move_is_sheer_force_boosted(m) {
-        bp = bp * 5325 / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
     // Helping Hand — ×1.5 BP on the recipient's next damaging move.
@@ -896,7 +938,7 @@ pub fn calculate_damage(
     // the same target in one turn) is not modelled — Doubles only
     // has one ally.
     if attacker.helping_handed_this_turn() {
-        bp = bp * 3 / 2;
+        bp_mod = chain_modify(bp_mod, 3, 2);
     }
 
     // Charge — ×2 BP on the holder's next Electric move. PS
@@ -906,7 +948,7 @@ pub fn calculate_damage(
     // once the Electric move resolves (battle.rs onAfterMove analog).
     // Electric type index = 3.
     if move_type == 3 && attacker.is_charged() {
-        bp = bp * 2;
+        bp_mod = chain_modify(bp_mod, 2, 1);
     }
 
     // Expanding Force — PS data/moves.ts:expandingforce
@@ -923,7 +965,7 @@ pub fn calculate_damage(
         && matches!(ctx.terrain, crate::terrain::Terrain::Psychic)
         && attacker.is_grounded()
     {
-        bp = bp * 3 / 2;
+        bp_mod = chain_modify(bp_mod, 3, 2);
     }
 
     // Flash Fire — PS `data/abilities.ts:flashfire` adds the
@@ -937,7 +979,7 @@ pub fn calculate_damage(
     // volatile directly. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
     if move_type == 1 && attacker.volatiles.has(crate::pokemon::VolatileKind::FlashFire) {
-        bp = bp * 6144 / 4096;
+        bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
     // Fire Mane (Pokémon Champions, Mega Pyroar) — a flat same-type power
@@ -950,7 +992,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::FIREMANE
     {
-        bp = bp * 6144 / 4096;
+        bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
     // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
@@ -963,7 +1005,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::SANDFORCE
     {
-        bp = bp * 5325 / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
     // Iron Fist — PS `data/abilities.ts:ironfist` `onBasePower`
@@ -975,7 +1017,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::IRONFIST
     {
-        bp = bp * 4915 / 4096;
+        bp_mod = chain_modify(bp_mod, 4915, 4096);
     }
 
     // Punching Glove — PS `data/items.ts:punchingglove`:
@@ -995,7 +1037,7 @@ pub fn calculate_damage(
     if m.is_punch
         && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE
     {
-        bp = bp * 4506 / 4096;
+        bp_mod = chain_modify(bp_mod, 4506, 4096);
     }
 
     // Mega Launcher — PS `data/abilities.ts:megalauncher` `onBasePower`
@@ -1007,7 +1049,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::MEGALAUNCHER
     {
-        bp = bp * 6144 / 4096;
+        bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
     // Strong Jaw — PS `data/abilities.ts:strongjaw` `onBasePower`
@@ -1018,7 +1060,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::STRONGJAW
     {
-        bp = bp * 6144 / 4096;
+        bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
     // Sharpness — PS `data/abilities.ts:sharpness` (line 4129)
@@ -1034,7 +1076,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::SHARPNESS
     {
-        bp = bp * 6144 / 4096;
+        bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
     // Tough Claws — PS `data/abilities.ts:toughclaws` `onBasePower`
@@ -1046,7 +1088,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::TOUGHCLAWS
     {
-        bp = bp * 5325 / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
     // Supreme Overlord — PS `data/abilities.ts:supremeoverlord`
@@ -1065,7 +1107,7 @@ pub fn calculate_damage(
         const POW_MOD: [u32; 6] = [4096, 4506, 4915, 5325, 5734, 6144];
         let n = POW_MOD[fallen];
         if n != 4096 {
-            bp = bp * n / 4096;
+            bp_mod = chain_modify(bp_mod, n as u64, 4096);
         }
     }
 
@@ -1079,7 +1121,7 @@ pub fn calculate_damage(
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::RECKLESS
     {
-        bp = bp * 4915 / 4096;
+        bp_mod = chain_modify(bp_mod, 4915, 4096);
     }
 
     // Ally damage-boost abilities — Power Spot / Battery / Steely Spirit.
@@ -1098,13 +1140,13 @@ pub fn calculate_damage(
     // gate excludes the holder's own moves). 5325/4096, pokeRound rounding.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Power_Spot_(Ability)>.
     if ctx.ally_power_spot {
-        bp = (bp * 5325 + 2047) / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
     // Battery — PS `data/abilities.ts:332`: identical to Power Spot but
     // additionally gated on `move.category === 'Special'`. Special = 1.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Battery_(Ability)>.
     if ctx.ally_battery && m.category == 1 {
-        bp = (bp * 5325 + 2047) / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
     // Steely Spirit — PS `data/abilities.ts:4581`:
     //   onAllyBasePower(basePower, attacker, defender, move) {
@@ -1118,7 +1160,7 @@ pub fn calculate_damage(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Steely_Spirit_(Ability)>.
     if move_type == 16 {
         for _ in 0..ctx.steely_spirit_holders {
-            bp = (bp * 6144 + 2047) / 4096;
+            bp_mod = chain_modify(bp_mod, 6144, 4096);
         }
     }
 
@@ -1187,7 +1229,7 @@ pub fn calculate_damage(
         if item_type as i32 == move_type as i32 && item_type >= 0 {
             // pokeRound: floor((v * 4915 + 2047) / 4096). PS's `chainModify`
             // routes through `modify()` which is pokeRound-rounding.
-            bp = (bp * 4915 + 2047) / 4096;
+            bp_mod = chain_modify(bp_mod, 4915, 4096);
         }
     }
 
@@ -1219,7 +1261,7 @@ pub fn calculate_damage(
             _ => false,
         };
         if mask_match {
-            bp = (bp * 4915 + 2047) / 4096;
+            bp_mod = chain_modify(bp_mod, 4915, 4096);
         }
     }
 
@@ -1270,7 +1312,7 @@ pub fn calculate_damage(
             _ => false,
         };
         if orb_match {
-            bp = (bp * 4915 + 2047) / 4096;
+            bp_mod = chain_modify(bp_mod, 4915, 4096);
         }
     }
 
@@ -1285,7 +1327,7 @@ pub fn calculate_damage(
     if crate::battle::is_sound_move(m.slug)
         && attacker.effective_ability_id() == data::ability_id::PUNKROCK
     {
-        bp = (bp * 5325 + 2047) / 4096;
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
     // Aura abilities — Fairy Aura on Fairy moves, Dark Aura on Dark
@@ -1299,8 +1341,12 @@ pub fn calculate_damage(
         || (ctx.dark_aura_active && move_type == 15);
     if aura_hits {
         let (n, d) = if ctx.aura_break_active { (3072u32, 4096u32) } else { (5448, 4096) };
-        bp = bp * n / d;
+        bp_mod = chain_modify(bp_mod, n as u64, d as u64);
     }
+
+    // Apply the accumulated `onBasePower` chain once, with pokeRound — the
+    // single point where every base-power modifier above lands on `bp`.
+    bp = apply_modifier(bp, bp_mod);
 
     // Photon Geyser / Light That Burns the Sky — `onModifyMove` PS sets
     // category to 'Physical' iff atk > spa (PS uses the *boosted* atk
@@ -1618,7 +1664,8 @@ pub fn calculate_damage(
     };
     let (wn, wd) = effective_weather.damage_mult(move_type);
     if wn != wd {
-        dmg = dmg * wn / wd;
+        // PS applies weather via `modify` (pokeRound), not plain truncate.
+        dmg = modify(dmg, wn as u64, wd as u64);
     }
 
 
@@ -1676,8 +1723,8 @@ pub fn calculate_damage(
             // ×2 (over-rides the regular ×1.5 / Adaptability path).
             dmg = dmg * 2;
         } else {
-            // ×1.2 ≈ 4915/4096.
-            dmg = dmg * 4915 / 4096;
+            // ×1.2 ≈ 4915/4096 (PS `modify`, pokeRound).
+            dmg = modify(dmg, 4915, 4096);
         }
     } else if is_stab {
         let tera_boosted_stab = attacker.terastallized
@@ -1688,15 +1735,16 @@ pub fn calculate_damage(
             && attacker.ability_id == data::ability_id::ADAPTABILITY;
         if tera_boosted_stab {
             if adaptability {
-                // ×2.25 = 9/4. PS returns 2.25 from onModifySTAB.
-                dmg = dmg * 9 / 4;
+                // ×2.25 = 9/4. PS returns 2.25 from onModifySTAB (modify).
+                dmg = modify(dmg, 9, 4);
             } else {
                 dmg = dmg * 2;
             }
         } else if adaptability {
             dmg = dmg * 2;
         } else {
-            dmg = dmg * 3 / 2;
+            // Standard STAB ×1.5 — PS `modify(dmg, 1.5)`, pokeRound.
+            dmg = modify(dmg, 3, 2);
         }
     }
 
