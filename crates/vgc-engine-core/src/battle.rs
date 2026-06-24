@@ -2374,6 +2374,20 @@ impl Battle {
             }
         }
 
+        // Destiny Bond clears the moment its holder executes any move other
+        // than Destiny Bond itself — PS data/moves.ts:destinybond condition
+        // onBeforeMove (priority -1). Placed AFTER the can-act gates (a
+        // flinched / asleep / fully-paralyzed holder that fails to move keeps
+        // the volatile, matching PS) and before the move's own effect, so the
+        // holder's protection lapses for THIS turn whether the move lands or
+        // fails. Re-using Destiny Bond skips removal here so its arm's
+        // consecutive-use guard still sees the prior volatile.
+        if move_id != data::move_id::DESTINYBOND {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.volatiles.remove(crate::pokemon::VolatileKind::DestinyBond);
+            }
+        }
+
         // 1e-bis. Stance Change — PS `data/abilities.ts:stancechange`
         //   onModifyMove(move, attacker) {
         //     if (attacker.species.baseSpecies !== 'Aegislash' ||
@@ -4100,6 +4114,7 @@ impl Battle {
                     }
                 }
                 any_damage_dealt = any_damage_dealt.saturating_add(capped);
+                self.apply_destiny_bond_counter_faint(actor_side, actor_slot, tside, tslot);
                 continue;
             }
 
@@ -5517,6 +5532,11 @@ impl Battle {
                     }
                 }
             }
+
+            // Destiny Bond — if this hit fainted a holder of the volatile,
+            // the attacker faints too (PS onFaint). Fires after the damage /
+            // item hooks above so the target's faint state is settled.
+            self.apply_destiny_bond_counter_faint(actor_side, actor_slot, tside, tslot);
 
             // Knock Off item removal — after damage, after Sitrus etc.,
             // skip if target fainted (item removed via faint is moot),
@@ -6993,6 +7013,37 @@ impl Battle {
                 });
             if holder_sync {
                 self.try_set_status_from(source_side, source_slot, status, side);
+            }
+        }
+    }
+
+    /// Destiny Bond counter-faint — PS data/moves.ts:destinybond condition
+    /// `onFaint`: when a Pokémon holding the `destinybond` volatile faints to
+    /// an OPPOSING Pokémon's damaging move, that attacker faints too. Called
+    /// right after a damaging hit's faint-detection in the move loop. Self /
+    /// ally hits are excluded by the side check; future-move hits never call
+    /// this (they have no live attacker), matching PS's `!futuremove` guard.
+    fn apply_destiny_bond_counter_faint(
+        &mut self,
+        attacker_side: SideRef,
+        attacker_slot: u8,
+        target_side: SideRef,
+        target_slot: u8,
+    ) {
+        if attacker_side == target_side {
+            return;
+        }
+        let triggered = self
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|d| d.fainted && d.volatiles.has(crate::pokemon::VolatileKind::DestinyBond));
+        if !triggered {
+            return;
+        }
+        if let Some(a) = self.side_mut(attacker_side).active_mon_mut(attacker_slot as usize) {
+            if a.is_alive() {
+                a.current_hp = 0;
+                a.fainted = true;
             }
         }
     }
@@ -9323,6 +9374,29 @@ impl Battle {
                         if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                             t.set_disable(4, last_slot);
                         }
+                    }
+                }
+            }
+            data::move_id::DESTINYBOND => {
+                // PS data/moves.ts:destinybond. Self-target (accuracy: true,
+                // no roll). `onPrepareHit` runs `!removeVolatile('destinybond')`
+                // — the consecutive-use guard: if the user STILL holds the
+                // volatile (used Destiny Bond last turn and hasn't acted since,
+                // so the onBeforeMove clear skipped it because this move IS
+                // Destiny Bond), the move FAILS and the volatile is removed;
+                // otherwise the volatile is set on the user. The faint-back is
+                // wired in `apply_destiny_bond_counter_faint` at the damage site.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Destiny_Bond_(move)>
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.volatiles.has(crate::pokemon::VolatileKind::DestinyBond) {
+                        // Consecutive use → remove and fail (no-op effect).
+                        a.volatiles.remove(crate::pokemon::VolatileKind::DestinyBond);
+                    } else {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::DestinyBond,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
                     }
                 }
             }
@@ -16964,6 +17038,76 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    fn destiny_bond_setup() -> Battle {
+        // Fast Gengar (Destiny Bond) vs slow Snorlax. Snorlax's attacking
+        // slot 0 is Earthquake — Ground hits Ghost/Poison Gengar (Normal
+        // moves like Body Slam are immune vs the Ghost type).
+        let gengar = r#"[
+            {"species":"gengar","level":50,"ability":"cursedbody","nature":"timid","moves":["destinybond","shadowball","sludgebomb","protect"]}
+        ]"#;
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["earthquake","amnesia","rest","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(gengar).unwrap();
+        let p2 = TeamBuilder::from_json(snorlax).unwrap();
+        Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2)
+    }
+
+    #[test]
+    fn destiny_bond_faints_attacker_that_kos_the_holder() {
+        let mut b = destiny_bond_setup();
+        b.p1.team[0].current_hp = 1; // Gengar will be KO'd by Body Slam
+        // Gengar (faster) uses Destiny Bond → volatile set; Snorlax Body Slam
+        // KOs Gengar → Destiny Bond faints Snorlax too.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p1.team[0].fainted, "Gengar fainted to Body Slam");
+        assert!(b.p2.team[0].fainted, "Destiny Bond fainted the attacker (Snorlax)");
+    }
+
+    #[test]
+    fn destiny_bond_clears_when_holder_acts_again() {
+        let mut b = destiny_bond_setup();
+        // Turn 1: Gengar sets Destiny Bond; Snorlax just boosts (no KO).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::DestinyBond));
+        // Turn 2: Gengar (faster) uses Shadow Ball — Destiny Bond clears as it
+        // acts — then Snorlax KOs the 1-HP Gengar. No faint-back.
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p1.team[0].fainted, "Gengar fainted");
+        assert!(!b.p2.team[0].fainted, "Destiny Bond already cleared — attacker survives");
+    }
+
+    #[test]
+    fn destiny_bond_consecutive_use_fails() {
+        let mut b = destiny_bond_setup();
+        // Turn 1: Destiny Bond sets the volatile.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::DestinyBond));
+        // Turn 2: Destiny Bond again → onPrepareHit removes the volatile and
+        // the move fails (no protection this turn).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert!(
+            !b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
+            "consecutive Destiny Bond fails and clears the volatile"
+        );
     }
 
     #[test]
