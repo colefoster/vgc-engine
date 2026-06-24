@@ -6924,6 +6924,15 @@ impl Battle {
         // avoid borrowing `self` inside the active-mon match below).
         let leaf_guard_sun =
             matches!(self.effective_weather(), crate::weather::Weather::Sun);
+        // Corrosion (Salazzle) — PS data/abilities.ts:corrosion: a poisoning
+        // SOURCE ignores the target's Steel/Poison TYPE immunity (it does NOT
+        // bypass ability immunity like Immunity / Pastel Veil). Computed up
+        // front from the source mon's effective ability.
+        let source_has_corrosion = source_slot != u8::MAX
+            && self
+                .side(source_side)
+                .active_mon(source_slot as usize)
+                .is_some_and(|s| s.effective_ability_id() == data::ability_id::CORROSION);
         let (immune, terrain_blocks, ability_blocks) = match self.side(side).active_mon(slot as usize) {
             Some(m) if m.is_alive() => {
                 if !matches!(m.status, Status::None) {
@@ -6991,7 +7000,9 @@ impl Battle {
                     Status::Sleep => ab == data::ability_id::VITALSPIRIT || ab == data::ability_id::INSOMNIA,
                     Status::None => false,
                 };
-                (is_type_immune_to_status(m.species(), status), terrain_blocks, ability_status_block)
+                let type_immune = is_type_immune_to_status(m.species(), status)
+                    && !(matches!(status, Status::Poison | Status::Toxic) && source_has_corrosion);
+                (type_immune, terrain_blocks, ability_status_block)
             }
             _ => return,
         };
@@ -17138,6 +17149,33 @@ mod tests {
         );
         assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "Disable locks Snorlax's Body Slam");
         assert_eq!(b.p2.team[0].disable_turns(), 3, "4-turn Disable, one EOT tick applied");
+    }
+
+    #[test]
+    fn corrosion_poisons_steel_types() {
+        // PS data/abilities.ts:corrosion — a Corrosion source ignores the
+        // target's Steel/Poison type immunity to poison. Salazzle is a
+        // Poison-type, so its Toxic auto-hits (no accuracy roll). A pure-Steel
+        // Registeel is toxic'd with Corrosion, immune without it.
+        let registeel = r#"[
+            {"species":"registeel","level":50,"ability":"clearbody","nature":"careful","moves":["irondefense","bodypress","amnesia","protect"]}
+        ]"#;
+        let run = |corrosion: bool| -> Status {
+            let ability = if corrosion { "corrosion" } else { "oblivious" };
+            let salazzle_json = format!(
+                r#"[{{"species":"salazzle","level":50,"ability":"{ability}","nature":"timid","moves":["toxic","flamethrower","protect","sludgewave"]}}]"#
+            );
+            let p1 = TeamBuilder::from_json(&salazzle_json).unwrap();
+            let p2 = TeamBuilder::from_json(registeel).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].status
+        };
+        assert_eq!(run(true), Status::Toxic, "Corrosion poisons a Steel-type");
+        assert_eq!(run(false), Status::None, "Steel is immune to poison without Corrosion");
     }
 
     #[test]
