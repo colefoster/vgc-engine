@@ -1334,6 +1334,8 @@ impl Battle {
                         crate::ability::refresh_paradox_booster(self, s, slot);
                     }
                 }
+                // Weather gone — Forecast Castforms revert to base forme.
+                self.refresh_forecast_formes();
             }
         }
         if self.trick_room_turns > 0 {
@@ -1793,6 +1795,58 @@ impl Battle {
                 | (crate::weather::Weather::Snow, data::item_id::ICYROCK)
         );
         self.weather_turns = if extended { 8 } else { 5 };
+        self.refresh_forecast_formes();
+    }
+
+    /// Forecast (Castform) — PS data/abilities.ts:forecast `onWeatherChange` /
+    /// `onUpdate`: a Castform holding Forecast swaps to the forme matching the
+    /// active weather (Sun→Sunny/Fire, Rain→Rainy/Water, Snow→Snowy/Ice; any
+    /// other weather, or none, → base Castform/Normal). All four formes share
+    /// identical base stats, so `set_forme` with `recompute_stats=false` only
+    /// swaps the species (and thus the type via `effective_types`). Suppressed
+    /// when the ability is (Gastro Acid / Neutralizing Gas → effective ability
+    /// no longer Forecast). Cloud Nine / Air Lock are honored through
+    /// `effective_weather()`. (The Utility Umbrella per-holder sun/rain
+    /// negation is not modeled — a vanishingly rare interaction.)
+    fn refresh_forecast(&mut self, side: SideRef, slot: u8) {
+        let is_forecast_castform = self
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| {
+                m.is_alive()
+                    && m.effective_ability_id() == data::ability_id::FORECAST
+                    && m.species().slug.starts_with("castform")
+            });
+        if !is_forecast_castform {
+            return;
+        }
+        let target_slug = match self.effective_weather() {
+            crate::weather::Weather::Sun => "castformsunny",
+            crate::weather::Weather::Rain => "castformrainy",
+            crate::weather::Weather::Snow => "castformsnowy",
+            _ => "castform",
+        };
+        let target_id = match data::SPECIES.iter().position(|s| s.slug == target_slug) {
+            Some(id) => id as u16,
+            None => return,
+        };
+        let cur = self
+            .side(side)
+            .active_mon(slot as usize)
+            .map(|m| m.species_id);
+        if cur != Some(target_id) {
+            self.set_forme(side, slot, target_id, false);
+        }
+    }
+
+    /// Re-evaluate Forecast on every active mon (after any weather change).
+    pub(crate) fn refresh_forecast_formes(&mut self) {
+        let n = self.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                self.refresh_forecast(side, slot);
+            }
+        }
     }
 
     /// Stealth Rock damage on switch-in. PS:
@@ -9854,6 +9908,7 @@ impl Battle {
                     .map(|m| m.item_id)
                     .unwrap_or(u16::MAX);
                 self.weather_turns = if user_item == data::item_id::ICYROCK { 8 } else { 5 };
+                self.refresh_forecast_formes();
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
@@ -17473,6 +17528,35 @@ mod tests {
         // Magician holder that already has an item steals nothing.
         let (_dx2, bl_has2) = run("lifeorb");
         assert!(bl_has2, "target keeps its item — Magician holder already holds one");
+    }
+
+    #[test]
+    fn forecast_castform_changes_forme_with_weather() {
+        // PS data/abilities.ts:forecast — Castform's forme (and type) tracks
+        // the active weather: none→Normal, Sun→Fire, Rain→Water.
+        let castform = r#"[
+            {"species":"castform","level":50,"ability":"forecast","nature":"modest","moves":["sunnyday","raindance","weatherball","protect"]}
+        ]"#;
+        let snorlax = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia","rest","bodyslam","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(castform).unwrap();
+        let p2 = TeamBuilder::from_json(snorlax).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // No weather → base Castform (Normal = type 0).
+        assert_eq!(b.p1.team[0].effective_types().0[0], 0, "base Castform is Normal");
+        // Sunny Day → Castform-Sunny (Fire = 1).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_types().0[0], 1, "Castform-Sunny is Fire");
+        // Rain Dance → Castform-Rainy (Water = 2).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_types().0[0], 2, "Castform-Rainy is Water");
     }
 
     #[test]

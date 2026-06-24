@@ -384,6 +384,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) => m.effective_ability_id(),
         None => return,
     };
+    // Forecast — a Castform switching into existing weather adopts the
+    // matching forme immediately (PS data/abilities.ts:forecast onStart /
+    // onUpdate). Cheap no-op for every non-Forecast active.
+    if ability_id == data::ability_id::FORECAST {
+        battle.refresh_forecast_formes();
+    }
     // Weather-setting abilities. Gen 9: 5-turn duration; weather rocks
     // (Damp/Heat/Smooth/Icy Rock) extend to 8 when the setter holds the
     // matching rock.
@@ -419,6 +425,9 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 | (crate::weather::Weather::Snow, data::item_id::ICYROCK)
             );
             battle.weather_turns = if extended { 8 } else { 5 };
+            // A weather-setting ability (Drought / Drizzle / Sand Stream /
+            // Snow Warning) flips Forecast Castforms on either side.
+            battle.refresh_forecast_formes();
         }
     }
 
