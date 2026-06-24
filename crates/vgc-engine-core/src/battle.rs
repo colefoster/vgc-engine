@@ -7679,6 +7679,42 @@ impl Battle {
         )
     }
 
+    /// Set the field terrain (no-op if `terrain` is already active),
+    /// mirroring PS's `field.setTerrain`. Duration is 5 turns, or 8 when
+    /// the setter holds Terrain Extender (`data/items.ts:terrainextender`).
+    /// On a real change we refresh Paradox boosters (Quark Drive flips on
+    /// under Electric Terrain) and fire the terrain-seed `onTerrainChange`
+    /// hook on every active. Shared by the four terrain-setting moves and
+    /// the surge abilities.
+    fn set_field_terrain(
+        &mut self,
+        terrain: crate::terrain::Terrain,
+        setter_side: SideRef,
+        setter_slot: u8,
+    ) {
+        if self.terrain == terrain {
+            return;
+        }
+        self.terrain = terrain;
+        let setter_item = self
+            .side(setter_side)
+            .active_mon(setter_slot as usize)
+            .map(|m| m.item_id)
+            .unwrap_or(u16::MAX);
+        self.terrain_turns = if setter_item == data::item_id::TERRAINEXTENDER { 8 } else { 5 };
+        let n = self.format().active_count() as u8;
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                crate::ability::refresh_paradox_booster(self, s, slot);
+            }
+        }
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                crate::item::try_consume_terrain_seed(self, s, slot);
+            }
+        }
+    }
+
     /// Core status-move resolver. `forced_target` overrides the
     /// "first alive opposing active" pick when `Some` — this is the lever
     /// Magic Bounce (PR-335) uses to send a bounced move back at the
@@ -8251,32 +8287,24 @@ impl Battle {
             // chosen target (or the actor for self-target moves).
             data::move_id::ELECTRICTERRAIN => {
                 // PS data/moves.ts:electricterrain — sets terrain unless
-                // already Electric, duration 5 (or 8 with Terrain Extender
-                // on the setter, PS `data/items.ts:terrainextender`).
-                if self.terrain != crate::terrain::Terrain::Electric {
-                    self.terrain = crate::terrain::Terrain::Electric;
-                    let user_item = self
-                        .side(actor_side)
-                        .active_mon(actor_slot as usize)
-                        .map(|m| m.item_id)
-                        .unwrap_or(u16::MAX);
-                    self.terrain_turns = if user_item == data::item_id::TERRAINEXTENDER { 8 } else { 5 };
-                    // Quark Drive users on either side may now flip on.
-                    let n = self.format().active_count() as u8;
-                    for s in [SideRef::P1, SideRef::P2] {
-                        for slot in 0..n {
-                            crate::ability::refresh_paradox_booster(self, s, slot);
-                        }
-                    }
-                    // Terrain seed dispatch — PS `onTerrainChange` arm
-                    // fires on both actives when the field's terrain
-                    // changes (Electric Seed will eat itself here).
-                    for s in [SideRef::P1, SideRef::P2] {
-                        for slot in 0..n {
-                            crate::item::try_consume_terrain_seed(self, s, slot);
-                        }
-                    }
-                }
+                // already Electric, duration 5 (or 8 with Terrain Extender).
+                self.set_field_terrain(crate::terrain::Terrain::Electric, actor_side, actor_slot);
+            }
+            data::move_id::GRASSYTERRAIN => {
+                // PS data/moves.ts:grassyterrain. Secondary effects (EOT
+                // heal, Ground-move halving) live in the residual loop /
+                // damage chain; here we just raise the field.
+                self.set_field_terrain(crate::terrain::Terrain::Grassy, actor_side, actor_slot);
+            }
+            data::move_id::PSYCHICTERRAIN => {
+                // PS data/moves.ts:psychicterrain. Priority-move block on
+                // grounded targets is gated at move-resolution time.
+                self.set_field_terrain(crate::terrain::Terrain::Psychic, actor_side, actor_slot);
+            }
+            data::move_id::MISTYTERRAIN => {
+                // PS data/moves.ts:mistyterrain. Status-block + Dragon-move
+                // halving on grounded mons are gated elsewhere.
+                self.set_field_terrain(crate::terrain::Terrain::Misty, actor_side, actor_slot);
             }
             data::move_id::STEALTHROCK => {
                 // PS data/moves.ts:stealthrock — `sideCondition` on the
@@ -16592,6 +16620,34 @@ mod tests {
         );
         assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
         assert_eq!(b.terrain_turns, 4);
+    }
+
+    #[test]
+    fn grassy_psychic_misty_terrain_moves_set_their_terrain() {
+        // Each move raises its own terrain (5 turns → 4 after the EOT
+        // decrement). Non-surge abilities so the only terrain source is
+        // the move itself.
+        for (mv, expected) in [
+            ("grassyterrain", crate::terrain::Terrain::Grassy),
+            ("psychicterrain", crate::terrain::Terrain::Psychic),
+            ("mistyterrain", crate::terrain::Terrain::Misty),
+        ] {
+            let p1_json = format!(
+                r#"[{{"species":"tapukoko","level":50,"ability":"static","nature":"hardy","moves":["{mv}","thunderbolt","wildcharge","dazzlinggleam"]}}]"#
+            );
+            let p2_json = r#"[
+                {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+            ]"#;
+            let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.terrain, expected, "{mv} should set its terrain");
+            assert_eq!(b.terrain_turns, 4, "{mv} duration 5 → 4 after EOT");
+        }
     }
 
     #[test]
