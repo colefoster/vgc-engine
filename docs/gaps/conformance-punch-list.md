@@ -58,18 +58,19 @@ notation, valid sets). 14 clean / 12 real / 19 cascades. Findings:
   is already corrected by `MegaFix starmiemega atk: 100`. So out_46 is NOT a
   Scolipede-Mega stat bug (that hypothesis is dead).
 - ✅ **Skill Swap blocked by Protect** — out_45 (7b02a6f).
-- ✅ **foe-stat-lowering STATUS moves implemented** (a544cc1) — `foe_debuff_moves`
-  table (21 moves) + full gating; out_46 Tickle now matches. Was: 🔴 GAP — — Growl,
-  Leer, Tail Whip, Charm, Screech, Tickle, Fake Tears, Metal Sound, Scary Face,
-  Feather Dance, Confide, Baby-Doll Eyes, Play Nice, Eerie Impulse, Captivate,
-  Cotton Spore, String Shot, Sand Attack, Smokescreen, etc. — ALL fall through
-  `resolve_status_move_inner`'s default arm to "no effect" (verified empirically:
-  Growl and Tickle both leave the foe at 0 boosts). Found via out_46 (Emolga
-  Tickle on Froslass — PS −1 atk/−1 def, engine 0). Needs a `foe_debuff_moves`
-  table routed through `apply_boosts` (which already does Mist/Mirror Armor/Clear
-  Body) PLUS call-site gating: Protect flag, Substitute block, accuracy, Magic
-  Bounce (reflectable), and White Herb / Eject Pack / Defiant reactions. A
-  meaty, careful PR — implement deliberately, not rushed.
+- ✅ **foe-stat-lowering STATUS moves implemented** (a544cc1) — were ALL
+  unimplemented (fell through `resolve_status_move_inner`'s default arm to "no
+  effect"; Growl/Tickle left the foe at 0 boosts). Found via out_46 (Emolga
+  Tickle on Froslass — PS −1 atk/−1 def, engine 0). New `foe_debuff_moves` table
+  (21 moves: Growl, Leer, Tail Whip, Tickle, Charm, Feather Dance, Baby-Doll
+  Eyes, Play Nice, Confide, Eerie Impulse, Fake Tears, Metal Sound, Screech,
+  Scary Face, Cotton Spore, String Shot, Sand Attack, Smokescreen, Kinesis,
+  Flash, Sweet Scent, Noble Roar, Tearful Look) routed through `apply_boosts`
+  (Mist/Mirror Armor/Clear Body) with full call-site gating: accuracy, Magic
+  Bounce (upstream), Protect flag, Substitute (unless sound/bypasssub), per-stat
+  Clear Body/Hyper Cutter, White Herb / Eject Pack / Defiant. allAdjacentFoes
+  moves hit both foes in doubles. Captivate (gender-gated) + Defog (side
+  effects) excluded. out_46 Tickle now matches.
 - Untriaged reals: out_12/out_25 (T1 big HP gaps involving switches + Life
   Orb/Kangaskhan), out_16 (T1 HP), out_06 (T2 freeze secondary not applied),
   out_24/out_34 (T2 boosts), deeper-turn out_13/29/01/48.
