@@ -36,10 +36,11 @@ damage mults, Terrain Pulse all pre-existing); the gaps were:
 QUEUE — REMAINING (heavier; need new volatile machinery or plumbing. Grep-verify
 each — the audit false-positived on Last Respects, which IS impl via
 DamageContext):
-- **Disable** (6) — lock the target's last move 4 turns. New volatile +
-  move-selection gating.
-- **Destiny Bond** (6) — KO the attacker if the user faints to it. Needs
-  faint-source tracking.
+- ✅ **Disable** (PR #21) — the volatile machinery already existed (Cursed
+  Body); added the move arm (lock target's last move 4 turns, Aroma-Veil-aware).
+- ✅ **Destiny Bond** (PR #22) — new DestinyBond volatile + faint-back hook
+  (`apply_destiny_bond_counter_faint` at both move-loop faint sites); cleared
+  on the holder's next move; consecutive-use fails.
 - ✅ **Beat Up** — DONE (PR #24, 2026-06-24). Was fully broken (base_power 0,
   multihit 0/0, missing from the `damaging` allowlist → ~0 dmg). Implemented as
   the correct gen-5+ plain multihit (verified vs PS `getDamage`, no `allies`
@@ -53,8 +54,15 @@ DamageContext):
   Beat Up applies them per-hit). Heap-free `[u16;6]`. Regression test asserts
   Life Orb damage == exact pokeRound. Full workspace green.
 - ~~Terrain: Grassy / Psychic / Misty unimplemented~~ ✅ DONE (PRs 17–20).
-- Lower-usage: Psych Up, Soak, Recycle, Gastro Acid, No Retreat, Contrary,
-  Forecast, Frisk, Leaf Guard, Magician, Infiltrator, Corrosion.
+- Lower-usage tail — 9/12 SHIPPED (PRs #23, #25–32): ✅ Psych Up (#23), ✅ Soak
+  (#25), ✅ Leaf Guard (#26), ✅ Corrosion (#27), ✅ Contrary (#28), ✅ Infiltrator
+  (#29), ✅ Gastro Acid (#30), ✅ No Retreat (#31), ✅ Magician (#32). REMAINING:
+  - **Recycle** — DEFERRED: needs a `consumed_item` field populated at every
+    item-consumption site (berries/Gems/Herbs), a cross-cutting change. Own PR.
+  - **Forecast** — Castform weather-forme change. Near-zero usage in Reg M-B;
+    deferred (needs forme + type-change-on-weather wiring).
+  - **Frisk** — WON'T IMPLEMENT: reveals the foe's held item, a pure
+    information effect with NO mechanical battle impact in a headless sim.
 - Remaining 0-unmatched turn-1 gaps: out_f55fe99993 (−13 dmg), boost gaps
   out_b018656fa6 / out_d36156026b.
 
