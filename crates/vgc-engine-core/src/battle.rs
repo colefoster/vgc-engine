@@ -7189,6 +7189,35 @@ impl Battle {
             }
         }
 
+        // 5a. Grassy Terrain heal — PS data/moves.ts:grassyterrain condition
+        //     `onResidualOrder: 5`. Each grounded, non-semi-invulnerable
+        //     active heals 1/16 max HP (same band as Leftovers; relative order
+        //     between two heals is unobservable). Heal Block cancels it
+        //     (PS `onTryHeal`); airborne / Fly / Dig occupants are skipped.
+        if matches!(self.terrain, crate::terrain::Terrain::Grassy) {
+            for side in [SideRef::P1, SideRef::P2] {
+                let n = self.format().active_count() as u8;
+                for slot in 0..n {
+                    let heal = match self.side(side).active_mon(slot as usize) {
+                        Some(m)
+                            if m.is_alive()
+                                && m.is_grounded()
+                                && m.semi_invuln == 0
+                                && m.volatiles
+                                    .get(crate::pokemon::VolatileKind::HealBlock)
+                                    .is_none() =>
+                        {
+                            (m.stats.hp / 16).max(1)
+                        }
+                        _ => continue,
+                    };
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                    }
+                }
+            }
+        }
+
         // 5. Item residuals (Leftovers, Black Sludge, ...) — PS order 5.
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
@@ -16648,6 +16677,43 @@ mod tests {
             assert_eq!(b.terrain, expected, "{mv} should set its terrain");
             assert_eq!(b.terrain_turns, 4, "{mv} duration 5 → 4 after EOT");
         }
+    }
+
+    #[test]
+    fn grassy_terrain_heals_grounded_active_but_not_airborne() {
+        // PS grassyterrain onResidual: grounded actives heal 1/16 max HP each
+        // end of turn; airborne (Flying-type) mons are skipped. Both sides
+        // Protect so no move damage/heal confounds the residual.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["protect","amnesia","curse","yawn"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"togekiss","level":50,"ability":"serenegrace","nature":"hardy","moves":["protect","airslash","nastyplot","roost"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let p1_max = b.p1.team[0].stats.hp;
+        let p2_max = b.p2.team[0].stats.hp;
+        b.p1.team[0].current_hp = p1_max / 2;
+        b.p2.team[0].current_hp = p2_max / 2;
+        let p1_before = b.p1.team[0].current_hp;
+        let p2_before = b.p2.team[0].current_hp;
+        b.terrain = crate::terrain::Terrain::Grassy;
+        b.terrain_turns = 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(
+            b.p1.team[0].current_hp,
+            (p1_before + (p1_max / 16).max(1)).min(p1_max),
+            "grounded Snorlax heals 1/16 under Grassy Terrain"
+        );
+        assert_eq!(
+            b.p2.team[0].current_hp, p2_before,
+            "airborne Togekiss is not healed by Grassy Terrain"
+        );
     }
 
     #[test]
