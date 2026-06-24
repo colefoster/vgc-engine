@@ -1375,7 +1375,17 @@ pub fn calculate_damage(
     // battle.rs. `item_id` (raw, not effective) matches PS's `target.getItem()`
     // — Knock Off still boosts under Magic Room since the item is physically
     // present. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Knock_Off_(move)>.
-    if move_id == data::move_id::KNOCKOFF && defender.item_id != u16::MAX {
+    // The ×1.5 (and the removal in battle.rs) only apply to a KNOCKABLE item.
+    // PS `canKnockOffItem` returns false for an item that can't be taken — most
+    // relevantly here, a Mega Stone held by the species it Mega-Evolves (PS
+    // item `onTakeItem` returns false). So Knock Off vs a holder's own mega
+    // stone gets NO boost and removes nothing (conformance out_179459f0d9:
+    // Knock Off into Banette @ Banettite was wrongly ×1.5). Other unremovable
+    // items (Z-crystals, plates, Ogerpon masks) are out of scope for Reg M-B.
+    if move_id == data::move_id::KNOCKOFF
+        && defender.item_id != u16::MAX
+        && data::mega_stone_for(defender.item_id, defender.species_id).is_none()
+    {
         bp_mod = chain_modify(bp_mod, 3, 2);
     }
 
