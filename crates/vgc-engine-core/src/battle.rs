@@ -9313,9 +9313,20 @@ impl Battle {
                     // `onFoeAfterBoost` whenever a foe's stat goes up.
                     // Dispatch once with the full boost set so multi-stat
                     // moves (Dragon Dance, Quiver Dance) copy all stats
-                    // before the Herb consumes.
+                    // before the Herb consumes. Only positive deltas are
+                    // copied, so passing Shell Smash's full set is fine.
                     crate::item::try_consume_mirror_herb_on_foe_boost(
                         self, actor_side, actor_slot, boosts,
+                    );
+                    // White Herb restores negative stages and Eject Pack
+                    // reacts to a drop — relevant only for mixed-sign
+                    // self-boosts (Shell Smash: -1 def/-1 spd). Both are
+                    // no-ops for the pure-positive moves above (White Herb
+                    // needs a negative stage; Eject Pack needs a drop), and
+                    // the holder can't carry both, so their order is moot.
+                    crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+                    let _ = crate::item::try_consume_eject_pack(
+                        self, actor_side, actor_slot, true,
                     );
                     if move_id == data::move_id::HOWL {
                         // PS target "allies" in doubles: also boost the
@@ -9436,6 +9447,11 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         "coil" => &[(0, 1), (1, 1), (5, 1)],
         "quiverdance" => &[(2, 1), (3, 1), (4, 1)],
         "victorydance" => &[(0, 1), (1, 1), (4, 1)],
+        // Mixed-sign — the user trades bulk for offense. White Herb / Eject
+        // Pack (handled at the call site) react to the negative stages.
+        // PS data/moves.ts:shellsmash `boosts {atk:+2, spa:+2, spe:+2,
+        // def:-1, spd:-1}`, target self.
+        "shellsmash" => &[(0, 2), (2, 2), (4, 2), (1, -1), (3, -1)],
         _ => return None,
     })
 }
@@ -12123,6 +12139,50 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].boosts[1], -1, "def -1");
         assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
+    }
+
+    #[test]
+    fn shell_smash_boosts_offense_and_drops_bulk() {
+        // PS data/moves.ts:shellsmash — +2 atk/spa/spe, -1 def/spd, self.
+        let p1_json = r#"[
+            {"species":"polteageist","level":50,"ability":"weakarmor","item":"focussash","nature":"timid","moves":["shellsmash","shadowball","storedpower","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let bo = b.p1.team[0].boosts;
+        assert_eq!((bo[0], bo[2], bo[4]), (2, 2, 2), "atk/spa/spe +2");
+        assert_eq!((bo[1], bo[3]), (-1, -1), "def/spd -1");
+    }
+
+    #[test]
+    fn shell_smash_white_herb_clears_the_drops() {
+        // out_02: Polteageist Shell Smash + White Herb. PS ends +2/+2/+2 with
+        // def/spd restored to 0 and the herb consumed.
+        let p1_json = r#"[
+            {"species":"polteageist","level":50,"ability":"weakarmor","item":"whiteherb","nature":"timid","moves":["shellsmash","shadowball","storedpower","protect"],"evs":{"spa":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let bo = b.p1.team[0].boosts;
+        assert_eq!((bo[0], bo[2], bo[4]), (2, 2, 2), "atk/spa/spe +2");
+        assert_eq!((bo[1], bo[3]), (0, 0), "def/spd restored by White Herb");
+        assert_eq!(b.p1.team[0].effective_item_id(), u16::MAX, "White Herb consumed");
     }
 
     #[test]
