@@ -923,6 +923,17 @@ pub fn calculate_damage(
     {
         bp_mod = chain_modify(bp_mod, 2048, 4096);
     }
+    // Misty Terrain halves Dragon-type damage against a grounded target — PS
+    // data/moves.ts:mistyterrain `onBasePower` (`chainModify(0.5)`). As with
+    // Grassy, the caller already gates `ctx.terrain` on the defender being
+    // grounded; PS additionally exempts semi-invulnerable targets. Dragon =
+    // type code 14.
+    if matches!(ctx.terrain, crate::terrain::Terrain::Misty)
+        && defender.semi_invuln == 0
+        && move_type == 14
+    {
+        bp_mod = chain_modify(bp_mod, 2048, 4096);
+    }
 
     // Technician — PS `data/abilities.ts:technician` (line 4873):
     //   onBasePowerPriority: 30,
@@ -2089,6 +2100,39 @@ mod tests {
             DamageContext { roll: 15, terrain: crate::terrain::Terrain::Grassy, ..Default::default() },
         );
         assert_eq!(dc_plain, dc_grassy, "non-Ground move unaffected by Grassy halving");
+    }
+
+    #[test]
+    fn misty_terrain_halves_dragon_move_on_grounded_target() {
+        // PS mistyterrain onBasePower: Dragon-type moves ×0.5 vs a grounded
+        // target. Caller gates ctx.terrain on grounded.
+        let atk = make_mon("garchomp", 50, "hardy", StatSpread::ZERO);
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let dc = move_id("dragonclaw");
+        let plain = calculate_damage(
+            &atk, &def, dc,
+            DamageContext { roll: 15, ..Default::default() },
+        );
+        let misty = calculate_damage(
+            &atk, &def, dc,
+            DamageContext { roll: 15, terrain: crate::terrain::Terrain::Misty, ..Default::default() },
+        );
+        assert!(misty < plain, "misty {misty} should be < plain {plain}");
+        assert!(
+            (misty as i32 - plain as i32 / 2).abs() <= 2,
+            "misty {misty} should be ~half of plain {plain}"
+        );
+        // A non-Dragon move (Earthquake) is untouched by the Dragon halving.
+        let eq = move_id("earthquake");
+        let eq_plain = calculate_damage(
+            &atk, &def, eq,
+            DamageContext { roll: 15, ..Default::default() },
+        );
+        let eq_misty = calculate_damage(
+            &atk, &def, eq,
+            DamageContext { roll: 15, terrain: crate::terrain::Terrain::Misty, ..Default::default() },
+        );
+        assert_eq!(eq_plain, eq_misty, "non-Dragon move unaffected by Misty halving");
     }
 
     // Ally damage-boost abilities. We compare final HP damage with the
