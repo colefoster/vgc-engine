@@ -67,6 +67,7 @@ const PS_PATH = process.env.PS_DIST || '/tmp/pokemon-showdown-research/dist/sim'
 const ps = require(PS_PATH);
 const { BattleStream, Teams, getPlayerStreams } = ps;
 const Battle = require(PS_PATH + '/battle').Battle;
+const BattleActions = require(PS_PATH + '/battle-actions').BattleActions;
 
 // --- stack-site capture (same scheme as driver.js) -----------------------
 
@@ -176,9 +177,45 @@ function patchRng(draws) {
     return v;
   };
 
+  // Per-target activeTarget for spread-move secondaries.
+  //
+  // PS's `BattleActions.secondaries()` (sim/battle-actions.ts:1357) loops
+  // `for (const target of targets)` and rolls `battle.random(100)` per
+  // secondary per target — but it never sets `battle.activeTarget = target`.
+  // So for a spread move (Rock Slide hitting both foes) every secondary roll
+  // is recorded against whatever `activeTarget` was left as by the preceding
+  // damage loop: the LAST target. The engine keys each secondary on its own
+  // target, so the first target's roll misses the table and falls back
+  // (unmatched), cascading the turn.
+  //
+  // Faithfully reimplement `secondaries()` with `activeTarget` set per target
+  // so each roll is recorded against the target it actually applies to. The
+  // body mirrors the PS source exactly (gen-9 path: no <=8 overflow); the
+  // only addition is the `activeTarget` assignment.
+  const origSecondaries = BattleActions.prototype.secondaries;
+  BattleActions.prototype.secondaries = function (targets, source, move, moveData, isSelf) {
+    if (!moveData.secondaries) return;
+    for (const target of targets) {
+      if (target === false) continue;
+      this.battle.activeTarget = target; // <-- the fix
+      const secondaries = this.battle.runEvent(
+        'ModifySecondaries', target, source, moveData, moveData.secondaries.slice(),
+      );
+      for (const secondary of secondaries) {
+        const secondaryRoll = this.battle.random(100);
+        const secondaryOverflow = (secondary.boosts || secondary.self) && this.battle.gen <= 8;
+        if (typeof secondary.chance === 'undefined' ||
+            secondaryRoll < (secondaryOverflow ? secondary.chance % 256 : secondary.chance)) {
+          this.moveHit(target, source, move, secondary, true, isSelf);
+        }
+      }
+    }
+  };
+
   return () => {
     Battle.prototype.random = origRandom;
     Battle.prototype.randomChance = origRandomChance;
+    BattleActions.prototype.secondaries = origSecondaries;
   };
 }
 
