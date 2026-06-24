@@ -273,7 +273,7 @@ fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         m.boosted_stat = new_idx;
         m.booster_locked = true;
-        m.item_id = u16::MAX; // useItem() — consumed.
+        m.consume_item(); // useItem() — consumed (Recycle-recoverable).
     }
 }
 
@@ -761,7 +761,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 .unwrap_or(false);
             if adrenaline {
                 if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                    t.item_id = u16::MAX;
+                    t.consume_item();
                 }
                 // Self-boost (+1 Spe) on the Orb holder.
                 battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
