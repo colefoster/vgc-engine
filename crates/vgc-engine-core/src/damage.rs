@@ -518,6 +518,38 @@ pub fn calculate_damage(
     move_id: u16,
     ctx: DamageContext,
 ) -> u16 {
+    calculate_damage_with_bp(attacker, defender, move_id, ctx, None)
+}
+
+/// Beat Up — per-hit damage helper. Each strike is a Dark-type physical hit
+/// using the ACTIVE user's stats/level/STAB/ability/item and the defender's
+/// Defense; only the base power varies per party member:
+///   `BP = 5 + floor(member.species.base_atk / 10)`
+/// PS data/moves.ts:beatup `basePowerCallback: 5 + Math.floor(setSpecies.baseStats.atk / 10)`.
+/// PS gen-5+ has NO `allies` attack-stat override (sim/battle-actions.ts
+/// `getDamage` only special-cased Beat Up in gens 2-4) — it is a plain
+/// multihit move. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Beat_Up_(move)>.
+pub fn calculate_beat_up_hit(
+    attacker: &Pokemon,
+    defender: &Pokemon,
+    ctx: DamageContext,
+    member_base_atk: u16,
+) -> u16 {
+    let bp = 5 + (member_base_atk as u32 / 10);
+    calculate_damage_with_bp(attacker, defender, data::move_id::BEATUP, ctx, Some(bp))
+}
+
+/// Core damage routine. `bp_override`, when `Some`, replaces the move's base
+/// power before the variable-BP slug chain runs (used only by Beat Up, whose
+/// per-member BP is computed by the caller). `None` is the normal path and
+/// produces byte-identical results to the historical `calculate_damage`.
+fn calculate_damage_with_bp(
+    attacker: &Pokemon,
+    defender: &Pokemon,
+    move_id: u16,
+    ctx: DamageContext,
+    bp_override: Option<u32>,
+) -> u16 {
     let m = &data::MOVES[move_id as usize];
     // Stat overrides (Choice Band/Specs, Assault Vest, Eviolite, Paradox
     // boosters, ...). When the caller supplies a snapshot we read it
@@ -534,7 +566,7 @@ pub fn calculate_damage(
     if m.category == 2 {
         return 0;
     }
-    if m.base_power == 0 && !matches!(
+    if m.base_power == 0 && bp_override.is_none() && !matches!(
         move_id,
         data::move_id::HEATCRASH | data::move_id::HEAVYSLAM
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
@@ -554,7 +586,12 @@ pub fn calculate_damage(
     // weather and the multiplier still fires — Sun WB hits Fire-type
     // ×1.5). We replicate that ordering: `move_type` flows through to
     // both `ctx.weather.damage_mult` and STAB / type chart below.
-    let (mut move_type, mut bp) = if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
+    let (mut move_type, mut bp) = if let Some(bp_ov) = bp_override {
+        // Beat Up — per-member BP supplied by the caller
+        // (`calculate_beat_up_hit`). Type is already Dark in data; no
+        // -ate / Tera / weather interaction applies.
+        (m.type_, bp_ov)
+    } else if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
         // Tera Blast: PS data/moves.ts:terablast:19234 `onModifyType` sets
         // `move.type = pokemon.teraType` when terastallized. BP 80 by
         // default; 100 when Tera type is Stellar (#255).
