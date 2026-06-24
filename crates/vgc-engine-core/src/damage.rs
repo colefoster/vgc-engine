@@ -1344,6 +1344,18 @@ pub fn calculate_damage(
         bp_mod = chain_modify(bp_mod, n as u64, d as u64);
     }
 
+    // Knock Off — ×1.5 BP against a target that is holding an item. PS
+    // `data/moves.ts:knockoff` applies this as an `onBasePower`
+    // chainModify(1.5), so it belongs in the base-power chain here, NOT on
+    // the final damage (where it was applied before, producing a different
+    // rounding). The actual item removal is a separate post-hit step in
+    // battle.rs. `item_id` (raw, not effective) matches PS's `target.getItem()`
+    // — Knock Off still boosts under Magic Room since the item is physically
+    // present. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Knock_Off_(move)>.
+    if move_id == data::move_id::KNOCKOFF && defender.item_id != u16::MAX {
+        bp_mod = chain_modify(bp_mod, 3, 2);
+    }
+
     // Apply the accumulated `onBasePower` chain once, with pokeRound — the
     // single point where every base-power modifier above lands on `bp`.
     bp = apply_modifier(bp, bp_mod);
