@@ -1884,6 +1884,51 @@ pub fn on_damaging_hit(
         }
     }
 
+    // Magician — PS data/abilities.ts:magician `onAfterMoveSecondarySelf`:
+    // after the holder's DAMAGING move hits, if the holder has NO item it
+    // steals the target's item. takeItem fails for Sticky Hold holders and
+    // unremovable items (a mon's own Mega Stone), and the steal is skipped on
+    // Fling (the item was already flung). On a multihit move this naturally
+    // fires once: after the first steal the holder is no longer item-less.
+    // Hoopa / Delphox / Klefki signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Magician_(Ability)>.
+    if attacker_ability_id == data::ability_id::MAGICIAN
+        && target_alive
+        && move_id != data::move_id::FLING
+    {
+        let attacker_itemless = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| a.item_id == u16::MAX);
+        let stealable = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .and_then(|t| {
+                if t.item_id != u16::MAX
+                    && t.effective_ability_id() != data::ability_id::STICKYHOLD
+                    && data::mega_stone_for(t.item_id, t.species_id).is_none()
+                {
+                    Some(t.item_id)
+                } else {
+                    None
+                }
+            });
+        if attacker_itemless {
+            if let Some(item) = stealable {
+                if let Some(tm) =
+                    battle.side_mut(target_side).active_mon_mut(target_slot as usize)
+                {
+                    tm.item_id = u16::MAX;
+                }
+                if let Some(am) =
+                    battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
+                {
+                    am.item_id = item;
+                }
+            }
+        }
+    }
+
     // Wandering Spirit — PS data/abilities.ts:wanderingspirit. On a
     // contact hit, swap abilities between holder and attacker (unless
     // the attacker's ability is in the un-swappable list). Coverage
