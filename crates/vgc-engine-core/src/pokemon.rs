@@ -560,6 +560,16 @@ pub struct Pokemon {
     /// Doodle). Reset to the sentinel on switch-out.
     pub ability_override: u16,
     pub item_id: u16,
+    /// The last item this mon genuinely **consumed** during its current
+    /// active stint — PS `Pokemon.lastItem`. `u16::MAX` = none. Set ONLY
+    /// when the holder uses up its own item (a Berry eaten, a Herb / Sash /
+    /// Balloon / Seed / Eject item spent, etc.) via `consume_item`; it is
+    /// deliberately NOT set when an item is removed by an external effect
+    /// (Knock Off, Thief, Trick/Switcheroo, Bestow, Magician, Symbiosis
+    /// hand-off, Sticky Barb transfer) — those clear `item_id` directly.
+    /// Read by Recycle, which restores `item_id` from this. Reset to the
+    /// sentinel on switch-out (PS `lastItem` is per-active-stint).
+    pub consumed_item: u16,
     pub stats: FinalStats,
     pub current_hp: u16,
     /// This individual's IV spread. Stored so a mid-battle forme change
@@ -866,6 +876,7 @@ impl Pokemon {
             tera_type,
             // ---- inert runtime / volatile defaults (single source) ----
             ability_override: u16::MAX,
+            consumed_item: u16::MAX,
             status: Status::None,
             boosts: [0; 7],
             fainted: false,
@@ -1109,6 +1120,21 @@ impl Pokemon {
             return u16::MAX;
         }
         self.item_id
+    }
+
+    /// Genuinely consume the held item: record it in `consumed_item` (so
+    /// Recycle can restore it — PS `Pokemon.lastItem`) and clear `item_id`.
+    /// This is the single chokepoint for "the holder used up its OWN item".
+    /// Mirrors PS `useItem`/`eatItem`, which both set `this.lastItem = item`
+    /// before emptying the slot. Call this ONLY at genuine-consumption sites
+    /// (Berry eaten, Herb / Sash / Balloon / Seed / Eject item spent, …) —
+    /// never at external removal/transfer sites (Knock Off, Thief, Trick,
+    /// Bestow, Magician, Symbiosis, Sticky Barb), which must keep clearing
+    /// `item_id` directly WITHOUT touching `consumed_item`.
+    #[inline]
+    pub fn consume_item(&mut self) {
+        self.consumed_item = self.item_id;
+        self.item_id = u16::MAX;
     }
 
     /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
