@@ -598,6 +598,7 @@ mod tests {
                 attacker_total_fainted_allies: 0,
                 attacker_stats: None, defender_stats: None,
                 pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
+                defender_friend_guarded: false,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));
