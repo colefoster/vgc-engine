@@ -8,6 +8,7 @@ members = [
     "crates/vgc-engine-replay",
     "crates/vgc-engine-golden",
     "crates/vgc-engine-conformance",
+    "crates/vgc-solver",
 ]
 # vgc-engine-py is built via maturin; excluded from default `cargo build` /
 # `cargo test --workspace` because the pyo3 `extension-module` feature
@@ -19,6 +20,7 @@ default-members = [
     "crates/vgc-engine-replay",
     "crates/vgc-engine-golden",
     "crates/vgc-engine-conformance",
+    "crates/vgc-solver",
 ]
 
 [workspace.package]

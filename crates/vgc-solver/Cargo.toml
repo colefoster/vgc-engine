@@ -1,0 +1,11 @@
+[package]
+name = "vgc-solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Outcome-frontier enumeration and endgame solver on top of vgc-engine."
+
+[dependencies]
+vgc-engine-core = { workspace = true }
