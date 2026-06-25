@@ -114,6 +114,12 @@ pub struct KeyedState {
     last_decision: RngDecision,
     fallback: u64,
     unmatched: u32,
+    /// Per-miss log accumulating `(key, space, drawn)` for every keyed
+    /// draw that missed the table. Empty by default; the outcome-frontier
+    /// enumerator turns on miss-recording to drive its lazy re-record loop
+    /// (each `unmatched_total > 0` combo reveals a counter-factual draw
+    /// site the record-pass didn't capture). See [`Rng::take_miss_log`].
+    miss_log: Vec<RecordedDraw>,
 }
 
 impl KeyedState {
@@ -154,18 +160,33 @@ impl KeyedState {
     /// counted fallback in the `OracleKeyed` arms routes through here so
     /// `unmatched` stays accurate and the fallback stream is
     /// byte-identical to a same-seeded `Splitmix`.
-    fn miss(&mut self) -> u64 {
+    /// Record a table miss as a [`RecordedDraw`] in [`KeyedState::miss_log`]
+    /// — captures the site's full [`DrawSpace`] and concrete drawn value
+    /// for the outcome-frontier enumerator's lazy re-record loop. This is
+    /// the LOG-only side: callers compute `drawn` from a prior
+    /// `self.fallback()` step and then call `record_miss` to bump
+    /// `unmatched` + push the log entry. Splits responsibility from the
+    /// legacy `miss()` (which combined fallback + count) so the value
+    /// drawn is available before the count bump.
+    fn record_miss(
+        &mut self,
+        decision: RngDecision,
+        space: DrawSpace,
+        drawn: RngEvent,
+    ) {
+        self.last_decision = decision;
         self.unmatched += 1;
-        // Opt-in diagnostic for the conformance harness: print the key that
-        // missed the table so doubles keying gaps can be traced. Gated on an
-        // env var so it never fires in production or normal test runs.
         if std::env::var_os("VGC_CONF_DEBUG").is_some() {
             eprintln!(
                 "UNMATCHED draw: turn={} actor={} target={} move={} decision={:?}",
-                self.ctx_turn, self.ctx_actor, self.ctx_target, self.ctx_move, self.last_decision
+                self.ctx_turn, self.ctx_actor, self.ctx_target, self.ctx_move, decision,
             );
         }
-        self.fallback()
+        self.miss_log.push(RecordedDraw {
+            key: self.key(decision),
+            space,
+            drawn,
+        });
     }
 }
 
@@ -440,7 +461,24 @@ impl Rng {
             last_decision: RngDecision::Range,
             fallback: fallback_seed,
             unmatched: 0,
+            miss_log: Vec::new(),
         })
+    }
+
+    /// Drain the miss-log of an `OracleKeyed` Rng — the `(key, space,
+    /// drawn)` entries for every keyed draw that missed the table during
+    /// this Rng's lifetime. Returns `None` for every other variant. After
+    /// the call the log is empty so subsequent draws accumulate fresh.
+    ///
+    /// Used by the outcome-frontier enumerator's lazy re-record loop: a
+    /// non-empty miss-log after a combo replay reveals counter-factual
+    /// draw sites the original record-pass didn't see, which the loop
+    /// folds into the per-site cross-product and re-enumerates.
+    pub fn take_miss_log(&mut self) -> Option<Vec<RecordedDraw>> {
+        match self {
+            Rng::OracleKeyed(k) => Some(std::mem::take(&mut k.miss_log)),
+            _ => None,
+        }
     }
 
     /// Construct a `Recording` Rng seeded by `fallback_seed`. The seam
@@ -658,7 +696,15 @@ impl Rng {
             Rng::PsGen5(rng) => rng.random_n(n),
             Rng::OracleKeyed(k) => match k.take(RngDecision::Range) {
                 Some(RngEvent::Range(v)) if v < n => v,
-                _ => (k.miss() as u32) % n,
+                _ => {
+                    let v = (k.fallback() as u32) % n;
+                    k.record_miss(
+                        RngDecision::Range,
+                        DrawSpace::UniformRange(n),
+                        RngEvent::Range(v),
+                    );
+                    v
+                }
             },
             Rng::Recording(r) => {
                 let v = (r.step() as u32) % n;
@@ -833,7 +879,15 @@ impl Rng {
                     debug_assert!(v < 16);
                     v
                 }
-                _ => (k.miss() & 0xF) as u8,
+                _ => {
+                    let v = (k.fallback() & 0xF) as u8;
+                    k.record_miss(
+                        RngDecision::Damage,
+                        DrawSpace::UniformDamage,
+                        RngEvent::DamageRoll(v),
+                    );
+                    v
+                }
             },
             Rng::Recording(r) => {
                 let v = (r.step() & 0xF) as u8;
@@ -876,7 +930,15 @@ impl Rng {
                 let decision = k.ctx_decision;
                 match k.take(decision) {
                     Some(RngEvent::PercentRoll(v)) => v,
-                    _ => ((k.miss() % 100) as u8) + 1,
+                    _ => {
+                        let v = ((k.fallback() % 100) as u8) + 1;
+                        k.record_miss(
+                            decision,
+                            DrawSpace::UniformPercent,
+                            RngEvent::PercentRoll(v),
+                        );
+                        v
+                    }
                 }
             }
             Rng::Recording(r) => {
@@ -927,12 +989,21 @@ impl Rng {
             // guaranteed crit PS never rolls, so it counts no miss).
             Rng::OracleKeyed(k) => match k.take(RngDecision::Crit) {
                 Some(RngEvent::Crit(v)) => v,
-                _ => match stage {
-                    0 => (k.miss() as u32) % 24 == 0,
-                    1 => (k.miss() as u32) % 8 == 0,
-                    2 => (k.miss() as u32) % 2 == 0,
-                    _ => true,
-                },
+                _ => {
+                    let denom = match stage {
+                        0 => 24u32,
+                        1 => 8,
+                        2 => 2,
+                        _ => return true, // stage 3+ never draws
+                    };
+                    let v = ((k.fallback() as u32) % denom) == 0;
+                    k.record_miss(
+                        RngDecision::Crit,
+                        DrawSpace::Crit { num: 1, denom },
+                        RngEvent::Crit(v),
+                    );
+                    v
+                }
             },
             Rng::Recording(r) => {
                 let denom = match stage {
@@ -974,7 +1045,15 @@ impl Rng {
             }
             Rng::OracleKeyed(k) => match k.take(RngDecision::Crit) {
                 Some(RngEvent::Crit(v)) => v,
-                _ => (k.miss() as u32) % 24 == 0,
+                _ => {
+                    let v = ((k.fallback() as u32) % 24) == 0;
+                    k.record_miss(
+                        RngDecision::Crit,
+                        DrawSpace::Crit { num: 1, denom: 24 },
+                        RngEvent::Crit(v),
+                    );
+                    v
+                }
             },
             Rng::Recording(r) => {
                 let v = ((r.step() as u32) % 24) == 0;

@@ -28,16 +28,24 @@
 //!    not-fired dimension yields the same next-state, and dedup collapses
 //!    them with prior sum = 1.
 //!
-//! ## Known v1 limitations
+//! ## Lazy re-record (counter-factual sites)
 //!
-//! - **Single-path recording.** Only sites the record-pass execution
-//!   actually visits are enumerated. If a site fires *only* on a counter-
-//!   factual path the recorder didn't take (e.g. an accuracy site whose
-//!   damage roll the recorder didn't reach because its own accuracy missed),
-//!   the cross-product is not a true superset and the affected combos hit
-//!   the `OracleKeyed` fallback. The keyed RNG bumps `unmatched_draws()` on
-//!   these — they're observable, not silent. Future PR adds a lazy
-//!   re-record loop driven by that counter.
+//! A single record pass only sees the draw sites step() actually visits on
+//! the path it walks. Counter-factual paths — different damage roll bracket,
+//! different crit branch, different accuracy outcome — may query *different*
+//! sites that the recorder never saw. When a combo replay hits one of those,
+//! `Rng::OracleKeyed` records it via [`Rng::take_miss_log`] and `step()`
+//! falls back to a Splitmix-derived value (so the run completes).
+//!
+//! [`enumerate_outcomes`] turns those miss-log entries into a fixed-point
+//! loop: after every enumeration pass it collects each combo's miss-log,
+//! per-key takes the maximum count observed in any single combo, appends
+//! that many new occurrences to the per-site list, and re-enumerates.
+//! Iteration count is bounded (`MAX_LAZY_ITERATIONS`); under that bound the
+//! loop converges when no new sites are discovered. The returned
+//! [`OutcomeFrontier::unmatched_total`] is `0` on convergence.
+//!
+//! ## Known v1 limitations
 //!
 //! - **Tiebreak marginalized.** `DrawSpace::Tiebreak` has a 2^64 space; the
 //!   enumerator collapses it to the single value the recorder drew. When
@@ -53,8 +61,22 @@
 use std::collections::{HashMap, VecDeque};
 
 use vgc_engine_core::{
-    Battle, Choice, DrawSpace, RecordedDraw, Rng, RngEvent, RngKey,
+    Battle, Choice, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey,
 };
+
+/// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
+/// entries deterministically. The enum doesn't expose a `#[repr(u8)]`
+/// projection so we hand-map; the actual numbers are arbitrary.
+fn decision_ord(d: RngDecision) -> u8 {
+    match d {
+        RngDecision::Accuracy => 0,
+        RngDecision::Crit => 1,
+        RngDecision::Damage => 2,
+        RngDecision::Secondary => 3,
+        RngDecision::Range => 4,
+        RngDecision::Tiebreak => 5,
+    }
+}
 
 /// One realized outcome on the frontier: the canonicalized next-state's
 /// hash, the resulting battle, and the prior probability mass that
@@ -73,17 +95,26 @@ pub struct OutcomeFrontier {
     /// Deduped outcomes. Probabilities sum to 1 within floating-point
     /// rounding (modulo the v1 limitations above).
     pub outcomes: Vec<Outcome>,
-    /// Number of `(prob, state)` cells enumerated before dedup (i.e., the
-    /// raw cross-product size). Equal to `outcomes.len()` only when every
-    /// combo produced a unique canonical hash.
+    /// Number of `(prob, state)` cells enumerated before dedup in the
+    /// FINAL pass. Equal to `outcomes.len()` only when every combo
+    /// produced a unique canonical hash.
     pub raw_combos: usize,
-    /// Sum of `unmatched_draws()` over all combo replays. Any value > 0
-    /// means at least one combo triggered a draw site the record-pass
-    /// didn't capture (counter-factual path); the affected outcome's prior
-    /// is a Splitmix-fallback approximation rather than an enumerated
-    /// branch. Drives the lazy re-record loop in a future PR.
+    /// Sum of `unmatched_draws()` over all combo replays in the FINAL
+    /// pass. Normally `0` after the lazy re-record loop converges; a
+    /// non-zero value means the loop hit `MAX_LAZY_ITERATIONS` before
+    /// every counter-factual site was captured. Diagnostic only.
     pub unmatched_total: u32,
+    /// Number of lazy re-record iterations consumed. `0` when the original
+    /// record pass already covered every site step() queried. Bounded by
+    /// [`MAX_LAZY_ITERATIONS`].
+    pub lazy_iterations: u32,
 }
+
+/// Upper bound on lazy re-record loop iterations. Each iteration discovers
+/// a fresh layer of counter-factual sites. In practice multi-hit moves
+/// converge in 2–3 iterations; this cap exists purely as a runaway-loop
+/// backstop and should never bind on real game states.
+pub const MAX_LAZY_ITERATIONS: u32 = 16;
 
 /// Expand a [`DrawSpace`] into its full outcome distribution as
 /// `(RngEvent, numerator, denominator)`. The probability of an outcome
@@ -117,29 +148,33 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
 /// it controls which single path the recorder walks but does NOT affect
 /// the enumerated outcomes (those come from the full per-site distribution
 /// regardless of which one the recorder happened to pick).
+///
+/// Implements the lazy re-record loop described in the module docs: after
+/// each enumeration pass, miss-logs from every combo replay are folded
+/// back into the per-site list and the pass re-runs until convergence
+/// (no new sites discovered) or [`MAX_LAZY_ITERATIONS`] is hit.
 pub fn enumerate_outcomes(
     base: &Battle,
     p1_choices: &[Choice],
     p2_choices: &[Choice],
     record_seed: u64,
 ) -> OutcomeFrontier {
-    // 1. Record pass.
+    // 1. Initial record pass to seed the per-site list.
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
     let _ = rec.step(p1_choices, p2_choices);
-    let log: Vec<RecordedDraw> = rec
+    let initial_log = rec
         .rng_mut()
         .take_recording_log()
         .expect("RNG was set to Recording above");
 
-    // 2. Build per-site outcome lists. If a key appears multiple times in
-    //    the log (e.g. two secondary draws under one move), expand each
-    //    occurrence independently — the OracleKeyed table is FIFO-popped
-    //    per key, so each enumeration slot corresponds to the i'th draw
-    //    against that key in execution order.
-    let per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>)> = log
+    // Per-site list: one entry per draw occurrence, in the order step()
+    // queried them. Same key may appear at multiple slots — the
+    // OracleKeyed table FIFO-pops per key, so iteration order over this
+    // list is the order in which a key's events get queued.
+    let mut per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
         .into_iter()
-        .map(|d| (d.key, expand(d.space, d.drawn)))
+        .map(|d| (d.key, expand(d.space, d.drawn), d.space, d.drawn))
         .collect();
 
     // Degenerate case: no recorded sites. The step had no random branches.
@@ -150,35 +185,80 @@ pub fn enumerate_outcomes(
             outcomes: vec![Outcome { hash: h, battle: rec, prob: 1.0 }],
             raw_combos: 1,
             unmatched_total: 0,
+            lazy_iterations: 0,
         };
     }
 
-    // 3. Cross-product enumeration. Indices vector counts through the
-    //    Cartesian product without allocating an intermediate combo list.
+    // 2. Lazy re-record loop. Each pass enumerates the current per-site
+    //    cross-product through OracleKeyed; misses from any combo extend
+    //    per_site for the next pass.
+    let mut lazy_iterations = 0u32;
+    loop {
+        let pass = enumerate_pass(base, p1_choices, p2_choices, record_seed, &per_site);
+
+        // Did any combo's replay discover counter-factual sites?
+        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs);
+
+        if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS {
+            // Convergence (or budget exhausted — bail with the current
+            // pass; unmatched_total in the result surfaces the leak).
+            let mut outcomes: Vec<Outcome> = pass.dedup.into_values().collect();
+            outcomes.sort_by_key(|o| o.hash);
+            return OutcomeFrontier {
+                outcomes,
+                raw_combos: pass.raw_combos,
+                unmatched_total: pass.unmatched_total,
+                lazy_iterations,
+            };
+        }
+
+        per_site.extend(new_sites);
+        lazy_iterations += 1;
+    }
+}
+
+/// Result of one enumeration pass over the current per-site list.
+struct PassResult {
+    dedup: HashMap<u64, Outcome>,
+    raw_combos: usize,
+    unmatched_total: u32,
+    /// Per-combo miss-logs. A non-empty inner Vec means that combo's
+    /// replay queried draw sites not in the per-site list — the loop
+    /// extends per_site by these and re-runs.
+    combo_miss_logs: Vec<Vec<RecordedDraw>>,
+}
+
+fn enumerate_pass(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    per_site: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
+) -> PassResult {
     let mut idx = vec![0usize; per_site.len()];
     let mut dedup: HashMap<u64, Outcome> = HashMap::new();
     let mut raw_combos = 0usize;
     let mut unmatched_total = 0u32;
+    let mut combo_miss_logs: Vec<Vec<RecordedDraw>> = Vec::new();
 
     loop {
-        // Build the OracleKeyed table for this combo. The same key may
-        // appear in multiple per-site slots (sequential draws under one
-        // (turn, actor, move, target, decision) tuple); each push_back is
-        // the i'th FIFO entry under that key.
         let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
         let mut prob = 1.0f64;
-        for (slot, (key, outcomes)) in per_site.iter().enumerate() {
+        for (slot, (key, outcomes, _, _)) in per_site.iter().enumerate() {
             let (event, num, denom) = outcomes[idx[slot]];
             table.entry(*key).or_default().push_back(event);
             prob *= num as f64 / denom as f64;
         }
 
-        // 4. Replay this combo on a fresh clone of `base`.
         let mut combo = base.clone();
         combo.set_rng(Rng::oracle_keyed(table, record_seed));
         let _ = combo.step(p1_choices, p2_choices);
         if let Some(u) = combo.rng().unmatched_draws() {
             unmatched_total += u;
+        }
+        let miss_log = combo.rng_mut().take_miss_log().unwrap_or_default();
+        if !miss_log.is_empty() {
+            combo_miss_logs.push(miss_log);
         }
         let h = combo.canonical_hash();
         raw_combos += 1;
@@ -188,16 +268,10 @@ pub fn enumerate_outcomes(
             .and_modify(|e| e.prob += prob)
             .or_insert(Outcome { hash: h, battle: combo, prob });
 
-        // Advance the index vector (odometer-style; little-endian).
         let mut k = 0;
         loop {
             if k == idx.len() {
-                // Overflowed past the last slot → enumeration done.
-                let mut outcomes: Vec<Outcome> = dedup.into_values().collect();
-                // Stable order: sort by hash so callers/tests see a
-                // deterministic frontier.
-                outcomes.sort_by_key(|o| o.hash);
-                return OutcomeFrontier { outcomes, raw_combos, unmatched_total };
+                return PassResult { dedup, raw_combos, unmatched_total, combo_miss_logs };
             }
             idx[k] += 1;
             if idx[k] < per_site[k].1.len() {
@@ -207,6 +281,53 @@ pub fn enumerate_outcomes(
             k += 1;
         }
     }
+}
+
+/// Walk every combo's miss-log and return the new per-site entries to
+/// append. Per key: take the MAXIMUM miss-count observed in any single
+/// combo replay — that's the number of additional FIFO slots that key
+/// needs in the global per-site list to cover every counter-factual path.
+/// Returns one entry per new occurrence, carrying that key's `DrawSpace`
+/// (taken from a representative miss-log entry).
+fn discover_new_sites(
+    _existing: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
+    combo_miss_logs: &[Vec<RecordedDraw>],
+) -> Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> {
+    use std::collections::HashMap as Map;
+    let mut max_per_key: Map<RngKey, (usize, DrawSpace, RngEvent)> = Map::new();
+    for log in combo_miss_logs {
+        let mut local_counts: Map<RngKey, usize> = Map::new();
+        for entry in log {
+            let c = local_counts.entry(entry.key).or_insert(0);
+            *c += 1;
+            let cur = *c;
+            max_per_key
+                .entry(entry.key)
+                .and_modify(|e| {
+                    if cur > e.0 {
+                        e.0 = cur;
+                    }
+                })
+                .or_insert((cur, entry.space, entry.drawn));
+        }
+    }
+    let mut out = Vec::new();
+    // Sort keys for deterministic iteration order — keeps the per_site
+    // extension stable across runs (relies only on key equality not key
+    // ordering, but tests can pin behavior).
+    let mut entries: Vec<(RngKey, usize, DrawSpace, RngEvent)> = max_per_key
+        .into_iter()
+        .map(|(k, (n, s, d))| (k, n, s, d))
+        .collect();
+    entries.sort_by_key(|e| {
+        (e.0.turn, e.0.actor, e.0.target, e.0.move_id, decision_ord(e.0.decision))
+    });
+    for (key, count, space, drawn) in entries {
+        for _ in 0..count {
+            out.push((key, expand(space, drawn), space, drawn));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -325,10 +446,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn switch_path_needs_no_lazy_iterations() {
+        // The switch path's draw sites are all visited by the record
+        // pass — no counter-factual sites should be discovered.
+        let b = fixture();
+        let frontier = enumerate_outcomes(
+            &b,
+            &[switch_choice(1)],
+            &[switch_choice(1)],
+            13,
+        );
+        assert_eq!(frontier.lazy_iterations, 0);
+        assert_eq!(frontier.unmatched_total, 0);
+    }
+
     /// Heavy enumeration through a real attack: validates the damage-roll
-    /// + crit cross-product. Gated `#[ignore]` because in debug profile
-    /// each combo's `step()` runs ~100µs and a single move expands to
-    /// thousands of combos. Run with:
+    /// + crit cross-product AND the lazy re-record loop converging on
+    /// counter-factual sites (e.g. crit branch's damage rolls vs the
+    /// no-crit branch's). Gated `#[ignore]` because in debug profile each
+    /// combo's `step()` runs ~100µs and a single move expands to thousands
+    /// of combos. Run with:
     ///
     ///     cargo test --release -p vgc-solver -- --ignored
     #[test]
@@ -351,5 +489,62 @@ mod tests {
         // Aerial Ace damage roll branches the canonical state — dedup
         // must compress raw combos.
         assert!(frontier.outcomes.len() < frontier.raw_combos);
+        // After the loop converges no combo should have hit the
+        // OracleKeyed fallback.
+        assert_eq!(
+            frontier.unmatched_total, 0,
+            "lazy re-record loop should converge with no leftover misses",
+        );
+    }
+
+    /// Unit test for the miss-log mechanism itself: build an OracleKeyed
+    /// table with a deliberate hole, replay, drain the log, verify the
+    /// missed site is captured with the right `(key, space)` shape.
+    #[test]
+    fn miss_log_captures_uncovered_sites() {
+        use std::collections::{HashMap, VecDeque};
+        use vgc_engine_core::{RngEvent, RngKey, RngDecision, DrawSpace};
+
+        let b = fixture();
+        // Empty OracleKeyed table — every keyed draw misses and the
+        // Splitmix fallback supplies the value. The miss-log must capture
+        // each one with its space + drawn event.
+        let table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        let mut c = b.clone();
+        c.set_rng(Rng::oracle_keyed(table, 42));
+        let _ = c.step(&[switch_choice(1)], &[switch_choice(1)]);
+        let log = c
+            .rng_mut()
+            .take_miss_log()
+            .expect("OracleKeyed Rng carries a miss-log");
+        // Switching draws a handful of misses (mostly Tiebreak from
+        // action ordering). All entries should carry a non-degenerate
+        // RngKey and a DrawSpace consistent with their RngEvent.
+        for entry in &log {
+            match (entry.space, entry.drawn) {
+                (DrawSpace::Tiebreak, RngEvent::Tiebreak(_)) => {}
+                (DrawSpace::UniformRange(n), RngEvent::Range(v)) => assert!(v < n),
+                (DrawSpace::UniformDamage, RngEvent::DamageRoll(v)) => assert!(v < 16),
+                (DrawSpace::UniformPercent, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
+                (DrawSpace::Crit { num: _, denom: _ }, RngEvent::Crit(_)) => {}
+                (s, d) => panic!("DrawSpace/RngEvent mismatch: {s:?} vs {d:?}"),
+            }
+            assert!(
+                matches!(
+                    entry.key.decision,
+                    RngDecision::Tiebreak
+                        | RngDecision::Range
+                        | RngDecision::Damage
+                        | RngDecision::Accuracy
+                        | RngDecision::Secondary
+                        | RngDecision::Crit
+                ),
+                "expected a known decision class, got {:?}",
+                entry.key.decision,
+            );
+        }
+        // Second drain returns an empty log (take semantics).
+        let log2 = c.rng_mut().take_miss_log().unwrap();
+        assert!(log2.is_empty());
     }
 }
