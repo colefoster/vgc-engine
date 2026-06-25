@@ -236,6 +236,86 @@ impl PsGen5Rng {
     }
 }
 
+/// Compact descriptor of the probability space of a single draw site.
+///
+/// The Recording RNG attaches one of these to every draw it observes so the
+/// caller (bruteforce / outcome-frontier layer) can expand each site into its
+/// outcomes and probabilities WITHOUT re-deriving stage tables or accuracy
+/// math from the keyed events. Designed to enumerate efficiently — uniform
+/// spaces stay compact (no 16-entry vector for damage rolls).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrawSpace {
+    /// Uniform integer in `0..n`. Drawn outcome is `RngEvent::Range(v)`.
+    UniformRange(u32),
+    /// Uniform damage bucket `0..16` (`RngEvent::DamageRoll`).
+    UniformDamage,
+    /// Uniform percent roll `1..=100` (`RngEvent::PercentRoll`).
+    /// The hit-threshold (or secondary-proc threshold) is caller-context;
+    /// this seam records only the raw 100-outcome uniform. The caller
+    /// collapses to hit/miss after dedup.
+    UniformPercent,
+    /// Crit Bernoulli (`num/denom` for `true`). Stage 3+ guaranteed crits
+    /// are NOT recorded (no random draw); same convention as PS / Oracle.
+    Crit { num: u32, denom: u32 },
+    /// Speed-tie nonce / opaque `u64` draw (`RngEvent::Tiebreak`). The
+    /// probability space is `2^64`; enumerators should marginalize this
+    /// out (it's an ordering tag, not a meaningful branch).
+    Tiebreak,
+}
+
+/// One recorded draw site, with its full probability space and the
+/// outcome the Recording RNG happened to pick. Carries the same `RngKey`
+/// the [`Rng::OracleKeyed`] table is keyed on, so a downstream
+/// enumeration layer can: (1) walk `RecordedDraw` entries to build the
+/// enumeration cross-product, and (2) inject each combo by populating an
+/// `OracleKeyed` table with `(key, alt_event)` pairs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedDraw {
+    pub key: RngKey,
+    pub space: DrawSpace,
+    pub drawn: RngEvent,
+}
+
+/// Backing state for [`Rng::Recording`]: a Splitmix stream that picks the
+/// concrete outcome at each site (so `step()` makes deterministic progress
+/// along a single execution path), a log of every draw site visited along
+/// the way, and the same move-context fields the keyed oracle tracks so
+/// the recorded `RngKey`s line up with what `OracleKeyed` would query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingState {
+    fallback: u64,
+    log: Vec<RecordedDraw>,
+    ctx_turn: u32,
+    ctx_actor: SlotRef,
+    ctx_target: SlotRef,
+    ctx_move: u16,
+    ctx_decision: RngDecision,
+}
+
+impl RecordingState {
+    fn key(&self, decision: RngDecision) -> RngKey {
+        RngKey {
+            turn: self.ctx_turn,
+            actor: self.ctx_actor,
+            target: self.ctx_target,
+            move_id: self.ctx_move,
+            decision,
+        }
+    }
+
+    fn step(&mut self) -> u64 {
+        Rng::splitmix_step(&mut self.fallback)
+    }
+
+    fn push(&mut self, decision: RngDecision, space: DrawSpace, drawn: RngEvent) {
+        self.log.push(RecordedDraw {
+            key: self.key(decision),
+            space,
+            drawn,
+        });
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleState {
     events: Vec<RngEvent>,
@@ -305,6 +385,14 @@ pub enum Rng {
     /// disturbing any other lookup. See
     /// `docs/ps-comparison-harness-design.md`.
     OracleKeyed(KeyedState),
+    /// Recording mode for outcome-frontier enumeration. Picks each draw
+    /// deterministically from an embedded Splitmix stream (so `step()`
+    /// makes progress along a single path) and appends a [`RecordedDraw`]
+    /// to its log capturing the full [`DrawSpace`] and the value drawn.
+    /// Used by the bruteforce / matrix-game layer to discover what sites
+    /// fire on a given `(state, joint_action)` before enumerating their
+    /// cross-product through `OracleKeyed`. See `docs/plan` Phase 4.
+    Recording(RecordingState),
 }
 
 impl Rng {
@@ -355,25 +443,74 @@ impl Rng {
         })
     }
 
+    /// Construct a `Recording` Rng seeded by `fallback_seed`. The seam
+    /// draws each site deterministically from a Splitmix stream while
+    /// appending one [`RecordedDraw`] per visited site to its log.
+    /// Read the log via [`Rng::recording_log`] after the host `step()`
+    /// call returns.
+    pub fn recording(fallback_seed: u64) -> Self {
+        Self::Recording(RecordingState {
+            fallback: fallback_seed,
+            log: Vec::new(),
+            ctx_turn: 0,
+            ctx_actor: NO_SLOT,
+            ctx_target: NO_SLOT,
+            ctx_move: 0,
+            ctx_decision: RngDecision::Range,
+        })
+    }
+
+    /// Borrow the [`RecordedDraw`] log on a `Recording` Rng. Returns
+    /// `None` for every other variant.
+    pub fn recording_log(&self) -> Option<&[RecordedDraw]> {
+        match self {
+            Rng::Recording(r) => Some(&r.log),
+            _ => None,
+        }
+    }
+
+    /// Take ownership of the recorded draw log. Returns `None` for every
+    /// non-`Recording` variant; on `Recording`, leaves the log empty so
+    /// the same Rng can continue recording subsequent calls without the
+    /// caller carrying stale entries.
+    pub fn take_recording_log(&mut self) -> Option<Vec<RecordedDraw>> {
+        match self {
+            Rng::Recording(r) => Some(std::mem::take(&mut r.log)),
+            _ => None,
+        }
+    }
+
     /// Set the move-resolution context that subsequent keyed draws are
-    /// attributed to. No-op for every non-`OracleKeyed` variant, so the
-    /// battle can call it unconditionally at its draw-site choke points
-    /// without branching (and production `Splitmix` battles pay nothing).
+    /// attributed to. No-op for every variant that doesn't carry a
+    /// context, so the battle can call it unconditionally at its
+    /// draw-site choke points without branching (production `Splitmix`
+    /// battles pay nothing).
     pub fn set_move_context(&mut self, turn: u32, actor: SlotRef, move_id: u16, target: SlotRef) {
-        if let Rng::OracleKeyed(k) = self {
-            k.ctx_turn = turn;
-            k.ctx_actor = actor;
-            k.ctx_move = move_id;
-            k.ctx_target = target;
+        match self {
+            Rng::OracleKeyed(k) => {
+                k.ctx_turn = turn;
+                k.ctx_actor = actor;
+                k.ctx_move = move_id;
+                k.ctx_target = target;
+            }
+            Rng::Recording(r) => {
+                r.ctx_turn = turn;
+                r.ctx_actor = actor;
+                r.ctx_move = move_id;
+                r.ctx_target = target;
+            }
+            _ => {}
         }
     }
 
     /// Set the decision class for the *next* ambiguous draw — used to
     /// distinguish Accuracy from Secondary (both `percent_1_100` on the
-    /// engine side). No-op for non-`OracleKeyed` variants.
+    /// engine side). No-op for variants without a context.
     pub fn set_decision(&mut self, decision: RngDecision) {
-        if let Rng::OracleKeyed(k) = self {
-            k.ctx_decision = decision;
+        match self {
+            Rng::OracleKeyed(k) => k.ctx_decision = decision,
+            Rng::Recording(r) => r.ctx_decision = decision,
+            _ => {}
         }
     }
 
@@ -398,7 +535,7 @@ impl Rng {
     pub fn oracle_pops(&self) -> Option<(usize, usize)> {
         match self {
             // OracleKeyed is positionless — use `unmatched_draws` instead.
-            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) => None,
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => None,
             Rng::Oracle(state) | Rng::OraclePartial { state, .. } => {
                 Some((state.pos, state.events.len()))
             }
@@ -448,6 +585,11 @@ impl Rng {
                 // in the state diff, not the unmatched metric.
                 _ => k.fallback(),
             },
+            Rng::Recording(r) => {
+                let v = r.step();
+                r.push(RngDecision::Tiebreak, DrawSpace::Tiebreak, RngEvent::Tiebreak(v));
+                v
+            }
         }
     }
 
@@ -478,6 +620,10 @@ impl Rng {
                 }
                 Rng::PsGen5(_) => {
                     // Mirror Oracle: PS elides the draw at denom=1.
+                }
+                Rng::Recording(_) => {
+                    // Mirror Oracle: a 1-outcome space has no branch worth
+                    // recording.
                 }
             }
             return 0;
@@ -514,6 +660,11 @@ impl Rng {
                 Some(RngEvent::Range(v)) if v < n => v,
                 _ => (k.miss() as u32) % n,
             },
+            Rng::Recording(r) => {
+                let v = (r.step() as u32) % n;
+                r.push(RngDecision::Range, DrawSpace::UniformRange(n), RngEvent::Range(v));
+                v
+            }
         }
     }
 
@@ -550,7 +701,9 @@ impl Rng {
             | Rng::OraclePartial { .. }
             // PS gender draws bypass the `Battle.random` patch, so they're
             // absent from the recorded table — don't draw, mirror Oracle.
-            | Rng::OracleKeyed(_) => 0,
+            | Rng::OracleKeyed(_)
+            // Recording follows Oracle: gender is not an enumerated site.
+            | Rng::Recording(_) => 0,
         }
     }
 
@@ -623,7 +776,7 @@ impl Rng {
         match self {
             // OracleKeyed stores the exact engine-convention bucket, so
             // there's nothing to back-solve — defer to `damage_roll`.
-            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) => self.damage_roll(),
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll(),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -682,6 +835,11 @@ impl Rng {
                 }
                 _ => (k.miss() & 0xF) as u8,
             },
+            Rng::Recording(r) => {
+                let v = (r.step() & 0xF) as u8;
+                r.push(RngDecision::Damage, DrawSpace::UniformDamage, RngEvent::DamageRoll(v));
+                v
+            }
         }
     }
 
@@ -720,6 +878,12 @@ impl Rng {
                     Some(RngEvent::PercentRoll(v)) => v,
                     _ => ((k.miss() % 100) as u8) + 1,
                 }
+            }
+            Rng::Recording(r) => {
+                let v = ((r.step() % 100) as u8) + 1;
+                let decision = r.ctx_decision;
+                r.push(decision, DrawSpace::UniformPercent, RngEvent::PercentRoll(v));
+                v
             }
         }
     }
@@ -770,6 +934,21 @@ impl Rng {
                     _ => true,
                 },
             },
+            Rng::Recording(r) => {
+                let denom = match stage {
+                    0 => 24,
+                    1 => 8,
+                    2 => 2,
+                    _ => return true, // guaranteed crit, no draw to record
+                };
+                let v = ((r.step() as u32) % denom) == 0;
+                r.push(
+                    RngDecision::Crit,
+                    DrawSpace::Crit { num: 1, denom },
+                    RngEvent::Crit(v),
+                );
+                v
+            }
         }
     }
 
@@ -797,6 +976,15 @@ impl Rng {
                 Some(RngEvent::Crit(v)) => v,
                 _ => (k.miss() as u32) % 24 == 0,
             },
+            Rng::Recording(r) => {
+                let v = ((r.step() as u32) % 24) == 0;
+                r.push(
+                    RngDecision::Crit,
+                    DrawSpace::Crit { num: 1, denom: 24 },
+                    RngEvent::Crit(v),
+                );
+                v
+            }
         }
     }
 }
@@ -1365,5 +1553,130 @@ mod tests {
         r.set_move_context(1, 0, 1, 2);
         assert_eq!(r.range(1), 0);
         assert_eq!(r.unmatched_draws(), Some(0));
+    }
+
+    // ---- recording (outcome-frontier enumeration seam) -------------------
+
+    #[test]
+    fn recording_matches_splitmix_value_for_value() {
+        // Recording's deterministic draw stream is byte-identical to a
+        // same-seeded Splitmix. The recorder logs alongside the picks but
+        // never perturbs the chosen values.
+        let mut rec = Rng::recording(0xABCD_1234);
+        let mut sm = Rng::new(0xABCD_1234);
+        for _ in 0..50 {
+            assert_eq!(rec.damage_roll(), sm.damage_roll());
+            assert_eq!(rec.range(37), sm.range(37));
+            assert_eq!(rec.percent_1_100(), sm.percent_1_100());
+            assert_eq!(rec.crit(), sm.crit());
+        }
+    }
+
+    #[test]
+    fn recording_logs_every_site_with_drawn_event() {
+        let mut r = Rng::recording(99);
+        r.set_move_context(3, 0, 42, 2);
+
+        let d = r.damage_roll();
+        r.set_decision(RngDecision::Accuracy);
+        let p = r.percent_1_100();
+        let c = r.crit_with_stage(1);
+        let v = r.range(8);
+
+        let log = r.recording_log().expect("Recording variant carries log");
+        assert_eq!(log.len(), 4, "one entry per non-elided draw");
+
+        // Each entry has the right space + drawn value + key context.
+        assert_eq!(log[0].space, DrawSpace::UniformDamage);
+        assert_eq!(log[0].drawn, RngEvent::DamageRoll(d));
+        assert_eq!(log[0].key.decision, RngDecision::Damage);
+        assert_eq!(log[0].key.turn, 3);
+        assert_eq!(log[0].key.actor, 0);
+        assert_eq!(log[0].key.target, 2);
+        assert_eq!(log[0].key.move_id, 42);
+
+        assert_eq!(log[1].space, DrawSpace::UniformPercent);
+        assert_eq!(log[1].drawn, RngEvent::PercentRoll(p));
+        assert_eq!(log[1].key.decision, RngDecision::Accuracy);
+
+        assert_eq!(log[2].space, DrawSpace::Crit { num: 1, denom: 8 });
+        assert_eq!(log[2].drawn, RngEvent::Crit(c));
+        assert_eq!(log[2].key.decision, RngDecision::Crit);
+
+        assert_eq!(log[3].space, DrawSpace::UniformRange(8));
+        assert_eq!(log[3].drawn, RngEvent::Range(v));
+        assert_eq!(log[3].key.decision, RngDecision::Range);
+    }
+
+    #[test]
+    fn recording_stage_3_crit_not_logged() {
+        // Guaranteed crit (stage ≥ 3) is not a random draw; mirror PS /
+        // OracleKeyed and skip recording so the enumerator doesn't
+        // materialize a degenerate 1-outcome dimension.
+        let mut r = Rng::recording(1);
+        assert!(r.crit_with_stage(3));
+        let log = r.recording_log().unwrap();
+        assert!(log.is_empty(), "stage-3 crit must not produce a draw site");
+    }
+
+    #[test]
+    fn recording_range_n1_not_logged() {
+        let mut r = Rng::recording(1);
+        assert_eq!(r.range(1), 0);
+        assert!(r.recording_log().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recording_gender_roll_not_logged() {
+        let mut r = Rng::recording(1);
+        assert_eq!(r.gender_roll(), 0);
+        assert!(r.recording_log().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recording_secondary_decision_carried_into_key() {
+        // percent_1_100 under set_decision(Secondary) produces a key with
+        // Secondary, so an OracleKeyed table built from this log resolves
+        // the same site on replay.
+        let mut r = Rng::recording(7);
+        r.set_move_context(1, 0, 5, 2);
+        r.set_decision(RngDecision::Secondary);
+        let _ = r.percent_1_100();
+        let log = r.recording_log().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].key.decision, RngDecision::Secondary);
+    }
+
+    #[test]
+    fn recording_log_roundtrips_through_oracle_keyed() {
+        // The seam's correctness contract: a recorded log can be replayed
+        // through OracleKeyed and reproduce the same draw values byte-for-
+        // byte, with zero unmatched draws. This is what the enumeration
+        // layer relies on — inject any combo by swapping `drawn`.
+        let mut r = Rng::recording(0xFEED_FACE);
+        r.set_move_context(1, 0, 11, 2);
+        let d = r.damage_roll();
+        r.set_decision(RngDecision::Accuracy);
+        let p = r.percent_1_100();
+        let c = r.crit_with_stage(0);
+        let v = r.range(13);
+        let log = r.take_recording_log().unwrap();
+        // After take, the log is cleared.
+        assert!(r.recording_log().unwrap().is_empty());
+
+        // Build an OracleKeyed table from the log, with each drawn event
+        // as the sole entry for its key.
+        let mut t: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for entry in &log {
+            t.entry(entry.key).or_default().push_back(entry.drawn);
+        }
+        let mut replay = Rng::oracle_keyed(t, 0);
+        replay.set_move_context(1, 0, 11, 2);
+        assert_eq!(replay.damage_roll(), d);
+        replay.set_decision(RngDecision::Accuracy);
+        assert_eq!(replay.percent_1_100(), p);
+        assert_eq!(replay.crit_with_stage(0), c);
+        assert_eq!(replay.range(13), v);
+        assert_eq!(replay.unmatched_draws(), Some(0), "every site keyed cleanly");
     }
 }
