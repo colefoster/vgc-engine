@@ -130,6 +130,20 @@ enum PreMoveOutcome {
     Abort,
 }
 
+/// Result of the per-target accuracy check inside the move-resolution
+/// loop. See `Battle::roll_accuracy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccuracyOutcome {
+    /// The move connected against this target — proceed with damage /
+    /// effects. Covers both the sure-hit / Protect-blocked early return
+    /// (no draw consumed) and a successful accuracy roll.
+    Hit,
+    /// The move missed this target — caller must `continue` the per-
+    /// target loop. Blunder Policy has already been consumed if
+    /// applicable.
+    Miss,
+}
+
 /// A pending Future Sight / Doom Desire hit, keyed in `Battle::future_pending`
 /// by the TARGET `[side][slot]`. PS stores this as a `futuremove`
 /// slotCondition on the target slot (`data/moves.ts:futuresight` /
@@ -3840,13 +3854,12 @@ impl Battle {
             }
 
             // Accuracy. PS sim/battle-actions.ts:707 — extracted into
-            // `crate::accuracy::effective_accuracy` (Phase A helper, see
-            // `docs/resolve-move-restructure-plan.md`). The helper is
-            // read-only on `Battle`; the caller (here) owns the RNG draw,
-            // the Micle-latch clear, and Blunder Policy on miss. Behavior
-            // is byte-identical to the prior inline computation.
-            let acc_comp = crate::accuracy::effective_accuracy(
-                self,
+            // `Battle::roll_accuracy`, which wraps the pure
+            // `crate::accuracy::effective_accuracy` helper (Phase A) with
+            // the single `percent_1_100` draw, Micle-latch clear, and
+            // Blunder Policy consumption on miss. Behavior is byte-
+            // identical to the prior inline computation.
+            match self.roll_accuracy(
                 &attacker,
                 &defender,
                 m,
@@ -3860,26 +3873,9 @@ impl Battle {
                 no_guard_pair,
                 damaging,
                 pending_kind,
-            );
-            if let Some(eff_acc) = acc_comp.threshold {
-                if acc_comp.consumed_micle {
-                    if let Some(a) =
-                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
-                    {
-                        a.micle_next_move = false;
-                    }
-                }
-                self.rng.set_decision(RngDecision::Accuracy);
-                let roll = self.rng.percent_1_100() as u32;
-                if roll > eff_acc {
-                    // Blunder Policy — the holder's own move missed due to
-                    // accuracy. PS `sim/battle-actions.ts:740` consumes the
-                    // item and grants +2 Spe on the miss branch (non-OHKO;
-                    // this path is the standard accuracy roll, OHKO uses a
-                    // separate one above). No new RNG draw.
-                    crate::item::try_consume_blunder_policy(self, actor_side, actor_slot);
-                    continue;
-                }
+            ) {
+                AccuracyOutcome::Hit => {}
+                AccuracyOutcome::Miss => continue,
             }
 
             // Wide Guard — blocks spread moves directed at this side
@@ -4559,49 +4555,28 @@ impl Battle {
             // Captured DamageContext for the optional Beat Up per-hit loop.
             // Only the non-fixed-damage branch builds it; Beat Up is never a
             // fixed-damage move, so this is always `Some` when Beat Up runs.
-            let mut beat_up_ctx_opt: Option<DamageContext> = None;
-            let mut dmg = if let Some(fd) = fixed_damage {
-                fd
-            } else {
-                // Single DamageContext template (`roll: 0` placeholder),
-                // built once and reused for both the pre-roll range and
-                // the rolled `calculate_damage`. Previously this site had
-                // two duplicated 18-field struct literals; `damage_range_for`
-                // collapses them. See `damage::damage_range_for` for the
-                // input bundle.
-                let inputs = crate::damage::DamageInputs {
-                    crit, is_spread, is_doubles,
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                    terrain: active_terrain,
-                    defender_has_reflect, defender_has_light_screen,
-                    defender_has_aurora_veil,
-                    fairy_aura_active, dark_aura_active, aura_break_active,
-                    attacker_total_fainted_allies,
-                    attacker_stats: atk_stats_ovr,
-                    defender_stats: def_stats_ovr,
-                    pursuit_doubled: move_id == data::move_id::PURSUIT
-                        && self.pursuit_intercepting,
-                    ally_power_spot, ally_battery, steely_spirit_holders,
-                };
-                let (mut dmg_ctx, roll) = match &self.rng {
-                    // Splitmix path skips the (lo, hi) precomputation
-                    // (it doesn't need a hint) — saves two calculate_damage
-                    // calls per hit on the hot perf-bench path.
-                    Rng::Splitmix(_) => {
-                        let ctx = crate::damage::ctx_from_inputs(inputs);
-                        (ctx, self.rng.damage_roll())
-                    }
-                    _ => {
-                        let (ctx, lo, hi) = crate::damage::damage_range_for(
-                            &attacker, &defender, move_id, inputs,
-                        );
-                        (ctx, self.rng.damage_roll_hint(lo, hi))
-                    }
-                };
-                dmg_ctx.roll = roll;
-                beat_up_ctx_opt = Some(dmg_ctx);
-                calculate_damage(&attacker, &defender, move_id, dmg_ctx)
+            //
+            // The `DamageInputs` bundle is built unconditionally here (the
+            // fixed-damage branch ignores it inside `roll_initial_damage`);
+            // construction is a plain struct literal with no side effects, so
+            // hoisting it out of the conditional preserves behavior — see
+            // `damage::damage_range_for` for the input bundle.
+            let inputs = crate::damage::DamageInputs {
+                crit, is_spread, is_doubles,
+                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                terrain: active_terrain,
+                defender_has_reflect, defender_has_light_screen,
+                defender_has_aurora_veil,
+                fairy_aura_active, dark_aura_active, aura_break_active,
+                attacker_total_fainted_allies,
+                attacker_stats: atk_stats_ovr,
+                defender_stats: def_stats_ovr,
+                pursuit_doubled: move_id == data::move_id::PURSUIT
+                    && self.pursuit_intercepting,
+                ally_power_spot, ally_battery, steely_spirit_holders,
             };
+            let (mut dmg, beat_up_ctx_opt) =
+                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs);
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
             // Fat / Water Bubble / Knock Off / type-resist berries) — PS
@@ -5961,6 +5936,146 @@ impl Battle {
         }
 
         targets
+    }
+
+    /// Roll the move's accuracy against one target inside the per-target
+    /// loop of `resolve_move_with_pending`. Wraps the pure
+    /// `crate::accuracy::effective_accuracy` predicate (Phase A helper)
+    /// with the actual `percent_1_100` draw + threshold compare +
+    /// Micle Berry latch consumption + Blunder Policy bookkeeping on
+    /// miss. Behavior is byte-identical to the previous inline block.
+    ///
+    /// CONTAINS ONE RNG DRAW (preserved verbatim):
+    ///   - `rng.percent_1_100()` keyed to (turn, actor, move, target) under
+    ///     `RngDecision::Accuracy`. Only drawn when
+    ///     `effective_accuracy` returns `Some(threshold)`; sure-hit /
+    ///     Protect-blocked early returns consume no draw — same as the
+    ///     prior inline branch.
+    ///
+    /// The caller still owns `set_move_context` (set once at the top of
+    /// the per-target loop, before this method), and the OHKO accuracy
+    /// draw a few hundred lines above is a SEPARATE call site that is
+    /// NOT routed through here.
+    #[allow(clippy::too_many_arguments)]
+    fn roll_accuracy(
+        &mut self,
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        m: &data::MoveDef,
+        move_id: u16,
+        actor_side: SideRef,
+        actor_slot: u8,
+        tside: SideRef,
+        tslot: u8,
+        attacker_ability_id: u16,
+        attacker_item_id: u16,
+        no_guard_pair: bool,
+        damaging: bool,
+        pending_kind: &[[u8; 2]; 2],
+    ) -> AccuracyOutcome {
+        let acc_comp = crate::accuracy::effective_accuracy(
+            self,
+            attacker,
+            defender,
+            m,
+            move_id,
+            actor_side,
+            actor_slot,
+            tside,
+            tslot,
+            attacker_ability_id,
+            attacker_item_id,
+            no_guard_pair,
+            damaging,
+            pending_kind,
+        );
+        if let Some(eff_acc) = acc_comp.threshold {
+            if acc_comp.consumed_micle {
+                if let Some(a) =
+                    self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                {
+                    a.micle_next_move = false;
+                }
+            }
+            self.rng.set_decision(RngDecision::Accuracy);
+            let roll = self.rng.percent_1_100() as u32;
+            if roll > eff_acc {
+                // Blunder Policy — the holder's own move missed due to
+                // accuracy. PS `sim/battle-actions.ts:740` consumes the
+                // item and grants +2 Spe on the miss branch (non-OHKO;
+                // this path is the standard accuracy roll, OHKO uses a
+                // separate one above). No new RNG draw.
+                crate::item::try_consume_blunder_policy(self, actor_side, actor_slot);
+                return AccuracyOutcome::Miss;
+            }
+        }
+        AccuracyOutcome::Hit
+    }
+
+    /// Roll the per-hit damage bucket and run the live `calculate_damage`
+    /// to produce the pre-modifier damage value. Pure mechanical extraction
+    /// of the `let mut dmg = if let Some(fd) = fixed_damage { ... } else { ... }`
+    /// site inside the per-target loop of `resolve_move_with_pending`.
+    /// Body byte-identical to the inline code; the only structural change
+    /// is that the caller now constructs `DamageInputs` unconditionally
+    /// (the fixed-damage branch ignores `inputs` — struct construction has
+    /// no side effects and no RNG draws).
+    ///
+    /// Returns `(dmg, beat_up_ctx_opt)`:
+    ///   - `dmg`: the pre-modifier damage value the caller plugs into the
+    ///     downstream Life Orb / Expert Belt / Friend Guard / Knock Off /
+    ///     type-resist-berry / Stellar / multihit pipeline.
+    ///   - `beat_up_ctx_opt`: the `DamageContext` template (with `roll`
+    ///     patched in) for the optional Beat Up per-hit re-calc loop. `None`
+    ///     on the fixed-damage branch (Beat Up is never a fixed-damage
+    ///     move; PS skips the ctx-build path the same way).
+    ///
+    /// CONTAINS THE PRIMARY ATTACK DAMAGE RNG DRAW:
+    ///   - `Rng::damage_roll()` (Splitmix path) / `Rng::damage_roll_hint(lo, hi)`
+    ///     (Oracle / OraclePartial / OracleKeyed paths), keyed under
+    ///     `RngDecision::Damage` by the Rng implementation itself.
+    ///   - Site, identity, order, and count are preserved verbatim. The
+    ///     `set_move_context` for this draw is set once at the top of the
+    ///     per-target loop in `resolve_move_with_pending` and travels with
+    ///     `self.rng` unchanged into this method.
+    ///   - Fixed-damage moves draw NO PRNG value (PS returns the
+    ///     pre-computed value before `randomizer`); this method short-
+    ///     circuits on the `Some(fd)` arm without touching `self.rng`.
+    fn roll_initial_damage(
+        &mut self,
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        move_id: u16,
+        fixed_damage: Option<u16>,
+        inputs: crate::damage::DamageInputs,
+    ) -> (u16, Option<DamageContext>) {
+        if let Some(fd) = fixed_damage {
+            return (fd, None);
+        }
+        // Single DamageContext template (`roll: 0` placeholder),
+        // built once and reused for both the pre-roll range and
+        // the rolled `calculate_damage`. Previously this site had
+        // two duplicated 18-field struct literals; `damage_range_for`
+        // collapses them. See `damage::damage_range_for` for the
+        // input bundle.
+        let (mut dmg_ctx, roll) = match &self.rng {
+            // Splitmix path skips the (lo, hi) precomputation
+            // (it doesn't need a hint) — saves two calculate_damage
+            // calls per hit on the hot perf-bench path.
+            Rng::Splitmix(_) => {
+                let ctx = crate::damage::ctx_from_inputs(inputs);
+                (ctx, self.rng.damage_roll())
+            }
+            _ => {
+                let (ctx, lo, hi) = crate::damage::damage_range_for(
+                    attacker, defender, move_id, inputs,
+                );
+                (ctx, self.rng.damage_roll_hint(lo, hi))
+            }
+        };
+        dmg_ctx.roll = roll;
+        let dmg = calculate_damage(attacker, defender, move_id, dmg_ctx);
+        (dmg, Some(dmg_ctx))
     }
 
     /// Pre-move volatile/status checks. Returns whether the move should
