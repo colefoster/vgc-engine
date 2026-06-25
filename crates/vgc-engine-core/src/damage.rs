@@ -1724,6 +1724,20 @@ fn calculate_damage_with_bp(
         d = (d * 6144 / 4096).max(1);
     }
 
+    // Fur Coat — PS `data/abilities.ts:furcoat`:
+    //   onModifyDefPriority: 6,
+    //   onModifyDef(def) { return this.chainModify(2); }
+    // Defender's Def stat ×2 (halves incoming physical damage). Physical
+    // moves only (PS hook is `onModifyDef`, the physical defensive read).
+    // Flagged `breakable: 1` → Mold Breaker bypasses. Furfrou signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Fur_Coat_(Ability)>.
+    if physical
+        && defender.effective_ability_id() == data::ability_id::FURCOAT
+        && !attacker_breaks_mold_for_offense
+    {
+        d = (d * 2).max(1);
+    }
+
     // Heatproof — PS data/abilities.ts:heatproof onSourceModifyAtk /
     // onSourceModifySpA: chainModify(0.5) on Fire moves. PS applies
     // this AFTER the stage boost (the chain runs on the post-stage stat
@@ -3990,5 +4004,49 @@ mod tests {
         let special_marvel = calculate_damage(&atk, &def, surf, ctx);
         assert_eq!(special_baseline, special_marvel,
             "Marvel Scale must not affect special-move damage");
+    }
+
+    #[test]
+    fn fur_coat_halves_incoming_physical() {
+        // Fur Coat doubles the defender's Def (×0.5 incoming physical
+        // damage). Special hits unaffected (it's onModifyDef).
+        let atk = make_mon(
+            "garchomp",
+            50,
+            "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 },
+        );
+        let mut def = make_mon("milotic", 50, "bold",
+            StatSpread { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 });
+        let furcoat = data::ABILITIES.iter().position(|a| a.slug == "furcoat").expect("furcoat") as u16;
+        let neutral = data::ABILITIES.iter().position(|a| a.slug == "keeneye").expect("keeneye") as u16;
+        let eq = move_id("earthquake");
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false,
+            weather: crate::weather::Weather::None,
+            defender_has_reflect: false, defender_has_light_screen: false,
+            defender_has_aurora_veil: false, is_doubles: false,
+            terrain: crate::terrain::Terrain::None,
+            fairy_aura_active: false, dark_aura_active: false,
+            aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 };
+        // Neutral ability — baseline.
+        def.ability_id = neutral;
+        let baseline = calculate_damage(&atk, &def, eq, ctx);
+        // Fur Coat — physical halved.
+        def.ability_id = furcoat;
+        let with_fur = calculate_damage(&atk, &def, eq, ctx);
+        assert!(with_fur < baseline,
+            "Fur Coat should reduce physical damage (baseline={baseline}, fur={with_fur})");
+        let expected = baseline / 2;
+        let diff = (with_fur as i32 - expected as i32).abs();
+        assert!(diff <= 3, "Fur Coat damage off (baseline={baseline}, with_fur={with_fur}, expected~{expected})");
+
+        // Special move — Fur Coat must NOT apply.
+        let surf = move_id("surf");
+        def.ability_id = neutral;
+        let special_baseline = calculate_damage(&atk, &def, surf, ctx);
+        def.ability_id = furcoat;
+        let special_fur = calculate_damage(&atk, &def, surf, ctx);
+        assert_eq!(special_baseline, special_fur,
+            "Fur Coat must not affect special-move damage");
     }
 }
