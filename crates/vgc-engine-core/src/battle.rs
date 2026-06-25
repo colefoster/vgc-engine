@@ -329,6 +329,23 @@ impl Battle {
         &self.rng
     }
 
+    /// Mutable access to the battle's RNG. Used by the outcome-frontier
+    /// solver to (a) drain a `Recording` log between enumeration calls and
+    /// (b) advance / reset state under test harnesses. The RNG is not part
+    /// of the canonical game state (see [`Battle::canonical_hash`]), so
+    /// mutating it does not affect TT equality.
+    pub fn rng_mut(&mut self) -> &mut Rng {
+        &mut self.rng
+    }
+
+    /// Replace the battle's RNG outright. Used by the outcome-frontier
+    /// solver to swap a baseline `Splitmix` for either an `Rng::Recording`
+    /// (discovery pass) or an `Rng::OracleKeyed` (combo replay) before
+    /// calling `step()`.
+    pub fn set_rng(&mut self, rng: Rng) {
+        self.rng = rng;
+    }
+
     pub fn seed(&self) -> u64 {
         self.config.seed
     }
