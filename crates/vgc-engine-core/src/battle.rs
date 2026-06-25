@@ -11743,8 +11743,13 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // Guaranteed -1 Spe (used as soft speed control in VGC):
         "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate"
         | "rocktomb" => (4, -1, 100),
-        // 100% -1 SpA:
-        "mysticalfire" | "snarl" => (2, -1, 100),
+        // 100% -1 SpA — Mystical Fire, Snarl (spread), plus Spirit Break
+        // (Grimmsnarl, single-target) and Struggle Bug (spread). PS
+        // data/moves.ts each `secondary: { chance: 100, boosts: { spa: -1 } }`.
+        // Spirit Break / Struggle Bug were missing, so their guaranteed SpA
+        // drop never landed. Spread targeting is handled by the per-target
+        // loop calling apply_secondary_effect once per hit foe.
+        "mysticalfire" | "snarl" | "spiritbreak" | "strugglebug" => (2, -1, 100),
         // 100% -2 SpD — Acid Spray and Lumina Crash (PS data/moves.ts:
         // luminacrash `secondary: { chance: 100, boosts: { spd: -2 } }`;
         // Espathra's signature, BP 80 Psychic). Was missing, so the guaranteed
@@ -30446,6 +30451,32 @@ mod tests {
         assert_eq!(super::stat_drop_secondary("lunge"), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("breakingswipe"), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("pounce"), Some((4, -1, 100)));
+    }
+
+    #[test]
+    fn spirit_break_and_struggle_bug_drop_spa() {
+        // PS data/moves.ts: spiritbreak / strugglebug both
+        // `secondary: { chance: 100, boosts: { spa: -1 } }` (index 2).
+        // Struggle Bug is a spread move; Spirit Break is single-target.
+        assert_eq!(super::stat_drop_secondary("spiritbreak"), Some((2, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("strugglebug"), Some((2, -1, 100)));
+        // Gameplay: Spirit Break always drops the target's SpA by 1.
+        let p1_json = r#"[
+            {"species":"grimmsnarl","level":50,"ability":"prankster","item":"","nature":"adamant","moves":["spiritbreak","tackle","thunderwave","protect"],"evs":{"atk":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0u64..16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].boosts[2], -1, "Spirit Break -1 SpA seed {seed}");
+        }
     }
 
     #[test]
