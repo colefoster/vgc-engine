@@ -5825,6 +5825,257 @@ impl Battle {
             } // end multi-hit per-hit loop
         }
 
+        self.apply_self_effects(
+            actor_side,
+            actor_slot,
+            move_id,
+            move_slot,
+            &attacker,
+            m,
+            any_damage_dealt,
+            attacker_item_id,
+            damaging,
+        );
+
+        // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
+        // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
+        // `flipturn:5787` all set `selfSwitch: true`. The switch fires
+        // iff the move actually connected (`any_damage_dealt > 0` — which
+        // covers Substitute absorption per PS, since target damage was
+        // taken even though HP didn't move) AND the user is still alive
+        // (Static / Rough Skin / recoil chip could have KO'd them — PS
+        // skips the switch when the user fainted in the same resolution
+        // window). No alive bench mon = silent fail (matches PS
+        // `canSwitch`). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
+        // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
+        // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
+        // Thunder Cage). PS data/conditions.ts:partiallytrapped —
+        // attached to the target after the initial hit; lasts
+        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
+        // residual order 13. Single-target moves; we apply to the
+        // first alive opposing slot the engine actually dealt damage
+        // to (mirrors PS's "applied to the hit target").
+        if any_damage_dealt > 0
+            && matches!(
+                move_id,
+                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
+                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
+                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
+                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
+                    | data::move_id::THUNDERCAGE
+            )
+        {
+            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+            let opp = actor_side.opposing();
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let alive = self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.is_alive());
+                if !alive { continue; }
+                if self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
+                {
+                    break; // already trapped, PS no-ops
+                }
+                let payload = dur
+                    | ((actor_side as u8 as u32) << 8)
+                    | ((actor_slot as u32) << 16);
+                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::PartialTrap,
+                        turns_remaining: 0,
+                        payload,
+                    });
+                }
+                break; // single-target
+            }
+        }
+
+        // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
+        // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
+        // hits). After a connecting hit, the user frees itself from Leech
+        // Seed and partial-trap and clears every entry hazard on ITS OWN
+        // side (Spikes / Toxic Spikes / Stealth Rock / Sticky Web —
+        // `gmaxsteelsurge` not modelled). Rapid Spin ALSO gains +1 Spe via
+        // its 100% self-secondary (Mortal Spin has no Spe boost — its
+        // secondary poisons the foes instead, handled by
+        // `apply_secondary_effect` per target). The whole `onAfterHit`
+        // body is gated on `!move.hasSheerForce` (a Sheer Force user skips
+        // the clears AND, for Rapid Spin, the Spe boost). The Spe boost is
+        // routed through `apply_boosts` (Contrary inverts it; Clear Body
+        // does NOT block self-boosts). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
+        // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
+        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            // User must be alive (recoil / Rough Skin could have KO'd it;
+            // PS gates the sub-damage variant on `pokemon.hp`).
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
+                    a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                }
+                self.clear_entry_hazards(actor_side);
+                if move_id == data::move_id::RAPIDSPIN {
+                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+                }
+            }
+        }
+
+        // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
+        // Overdrive...) trigger +1 SpA on the user after the hit. PS
+        // gates on the move actually being USED (not on damage > 0), so
+        // a fully-Protected sound move would still trigger; we
+        // approximate by firing whenever resolve_move_with_pending
+        // reaches this point (move chose a target, accuracy may have
+        // missed; PS still fires on miss because onAfterMove runs).
+        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
+
+        // Charge consume — PS data/conditions.ts:charge `onAfterMove`
+        // removes the volatile once the holder fires an Electric move
+        // (the ×2 BP was already read in calculate_damage). Electric
+        // type index = 3. Status Electric moves (Thunder Wave) route
+        // through resolve_status_move and clear it there is deferred —
+        // the BP-relevant consumer is the damaging path.
+        if m.type_ == 3 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.set_charged(false);
+            }
+        }
+
+        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN) && any_damage_dealt > 0 {
+            let still_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if still_alive && self.has_eligible_bench(actor_side) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_pending_self_switch(true);
+                }
+            }
+        }
+
+        // Dragon Tail / Circle Throw — damaging phazing. PS
+        // data/moves.ts:dragontail:4208 / circlethrow:2450 (`forceSwitch:
+        // true`, priority -6, NO `bypasssub`). After the hit connects,
+        // forceSwitch (battle-actions.ts:1124, step 6) drags the target out
+        // for a random bench replacement — but only when it took a real
+        // (non-Substitute) hit and survived. `drag_target` is set only on a
+        // real foe hit, so a subbed or fainted target is already excluded.
+        // DragOut blockers (Suction Cups / Guard Dog / Ingrain) and the
+        // no-eligible-bench fizzle match the status phazers; Mold Breaker on
+        // the user bypasses the ability blockers. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Dragon_Tail_(move)>.
+        if matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW) {
+            if let Some((ts, tslot)) = drag_target {
+                let still_alive = self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.is_alive());
+                let breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        )
+                    });
+                if still_alive
+                    && self.has_eligible_bench(ts)
+                    && self.can_be_dragged_out(ts, tslot, breaks_mold)
+                {
+                    self.force_switch_random(ts, tslot);
+                }
+            }
+        }
+
+        // Fling — consume the thrown item and apply its on-hit effect. PS
+        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
+        // user's item after the move; the per-item `fling.status` /
+        // `volatileStatus` rides as a 100% secondary, so it lands only on a
+        // real (non-Substitute) hit and respects the target's status
+        // immunities. We gate consumption on the move connecting
+        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
+        // item still spent, status blocked); a clean miss spends nothing.
+        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
+        // status/flinch applies exactly where PS's secondary would.
+        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
+        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
+        // is deferred (same shape as Trick's un-modelled receive-time item
+        // effects). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
+        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
+            let item_id = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.item_id)
+                .unwrap_or(u16::MAX);
+            if item_id != u16::MAX {
+                let effect = data::ITEMS[item_id as usize].fling_effect;
+                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
+                // when it clears the item, so a flung item IS recoverable by
+                // Recycle — route through `consume_item`.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.consume_item();
+                }
+                if let Some((ts, tslot)) = drag_target {
+                    match effect {
+                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
+                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
+                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
+                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
+                        5 => {
+                            if let Some(t) =
+                                self.side_mut(ts).active_mon_mut(tslot as usize)
+                            {
+                                if t.is_alive() {
+                                    t.set_flinched(true);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Self-effects applied to the move's USER after damage + secondaries
+    /// resolve, but before partial-trap / self-switch / fling and the per-move
+    /// cleanup. Covers Final Gambit faint, self-stat drops (Close Combat /
+    /// Draco Meteor / Overheat / Superpower / V-create), Scale Shot / Clanging
+    /// Scales selfBoost, Outrage / Petal Dance / Thrash lock-in + end-of-lock
+    /// confusion, Hyper Beam family recharge arm, every recoil variant
+    /// (move recoil, Steel Beam family max-HP recoil, Struggle recoil, Life
+    /// Orb recoil), and Shell Bell heal.
+    ///
+    /// NOT deterministic: the lock-in block draws (lockin duration + end-of-
+    /// lock confusion duration) at the SAME draw sites as the inline code.
+    /// Pure mechanical extraction — body byte-identical to the inline block;
+    /// draw-site identity and order are preserved.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_self_effects(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        attacker: &crate::pokemon::Pokemon,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+        attacker_item_id: u16,
+        damaging: bool,
+    ) {
         // Final Gambit — the user faints after dealing damage equal to
         // its HP. PS data/moves.ts:5305 calls `pokemon.faint()` inside the
         // damageCallback (and `selfdestruct: 'ifHit'`). We faint the user
@@ -6132,218 +6383,6 @@ impl Battle {
                     let heal = (any_damage_dealt as u32 / 8).max(1) as u16;
                     let max = a.stats.hp;
                     a.current_hp = ((a.current_hp as u32) + heal as u32).min(max as u32) as u16;
-                }
-            }
-        }
-
-        // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
-        // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
-        // `flipturn:5787` all set `selfSwitch: true`. The switch fires
-        // iff the move actually connected (`any_damage_dealt > 0` — which
-        // covers Substitute absorption per PS, since target damage was
-        // taken even though HP didn't move) AND the user is still alive
-        // (Static / Rough Skin / recoil chip could have KO'd them — PS
-        // skips the switch when the user fainted in the same resolution
-        // window). No alive bench mon = silent fail (matches PS
-        // `canSwitch`). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
-        // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
-        // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
-        // Thunder Cage). PS data/conditions.ts:partiallytrapped —
-        // attached to the target after the initial hit; lasts
-        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
-        // residual order 13. Single-target moves; we apply to the
-        // first alive opposing slot the engine actually dealt damage
-        // to (mirrors PS's "applied to the hit target").
-        if any_damage_dealt > 0
-            && matches!(
-                move_id,
-                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
-                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
-                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
-                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
-                    | data::move_id::THUNDERCAGE
-            )
-        {
-            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
-            let opp = actor_side.opposing();
-            let n = self.format().active_count() as u8;
-            for slot in 0..n {
-                let alive = self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.is_alive());
-                if !alive { continue; }
-                if self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
-                {
-                    break; // already trapped, PS no-ops
-                }
-                let payload = dur
-                    | ((actor_side as u8 as u32) << 8)
-                    | ((actor_slot as u32) << 16);
-                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                    let _ = t.volatiles.add(crate::pokemon::Volatile {
-                        kind: crate::pokemon::VolatileKind::PartialTrap,
-                        turns_remaining: 0,
-                        payload,
-                    });
-                }
-                break; // single-target
-            }
-        }
-
-        // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
-        // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
-        // hits). After a connecting hit, the user frees itself from Leech
-        // Seed and partial-trap and clears every entry hazard on ITS OWN
-        // side (Spikes / Toxic Spikes / Stealth Rock / Sticky Web —
-        // `gmaxsteelsurge` not modelled). Rapid Spin ALSO gains +1 Spe via
-        // its 100% self-secondary (Mortal Spin has no Spe boost — its
-        // secondary poisons the foes instead, handled by
-        // `apply_secondary_effect` per target). The whole `onAfterHit`
-        // body is gated on `!move.hasSheerForce` (a Sheer Force user skips
-        // the clears AND, for Rapid Spin, the Spe boost). The Spe boost is
-        // routed through `apply_boosts` (Contrary inverts it; Clear Body
-        // does NOT block self-boosts). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
-        // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
-        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            // User must be alive (recoil / Rough Skin could have KO'd it;
-            // PS gates the sub-damage variant on `pokemon.hp`).
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
-                    a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
-                }
-                self.clear_entry_hazards(actor_side);
-                if move_id == data::move_id::RAPIDSPIN {
-                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-                }
-            }
-        }
-
-        // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
-        // Overdrive...) trigger +1 SpA on the user after the hit. PS
-        // gates on the move actually being USED (not on damage > 0), so
-        // a fully-Protected sound move would still trigger; we
-        // approximate by firing whenever resolve_move_with_pending
-        // reaches this point (move chose a target, accuracy may have
-        // missed; PS still fires on miss because onAfterMove runs).
-        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
-
-        // Charge consume — PS data/conditions.ts:charge `onAfterMove`
-        // removes the volatile once the holder fires an Electric move
-        // (the ×2 BP was already read in calculate_damage). Electric
-        // type index = 3. Status Electric moves (Thunder Wave) route
-        // through resolve_status_move and clear it there is deferred —
-        // the BP-relevant consumer is the damaging path.
-        if m.type_ == 3 {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.set_charged(false);
-            }
-        }
-
-        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN) && any_damage_dealt > 0 {
-            let still_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if still_alive && self.has_eligible_bench(actor_side) {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.set_pending_self_switch(true);
-                }
-            }
-        }
-
-        // Dragon Tail / Circle Throw — damaging phazing. PS
-        // data/moves.ts:dragontail:4208 / circlethrow:2450 (`forceSwitch:
-        // true`, priority -6, NO `bypasssub`). After the hit connects,
-        // forceSwitch (battle-actions.ts:1124, step 6) drags the target out
-        // for a random bench replacement — but only when it took a real
-        // (non-Substitute) hit and survived. `drag_target` is set only on a
-        // real foe hit, so a subbed or fainted target is already excluded.
-        // DragOut blockers (Suction Cups / Guard Dog / Ingrain) and the
-        // no-eligible-bench fizzle match the status phazers; Mold Breaker on
-        // the user bypasses the ability blockers. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Dragon_Tail_(move)>.
-        if matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW) {
-            if let Some((ts, tslot)) = drag_target {
-                let still_alive = self
-                    .side(ts)
-                    .active_mon(tslot as usize)
-                    .is_some_and(|t| t.is_alive());
-                let breaks_mold = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| {
-                        matches!(
-                            a.effective_ability_slug(),
-                            "moldbreaker" | "teravolt" | "turboblaze"
-                        )
-                    });
-                if still_alive
-                    && self.has_eligible_bench(ts)
-                    && self.can_be_dragged_out(ts, tslot, breaks_mold)
-                {
-                    self.force_switch_random(ts, tslot);
-                }
-            }
-        }
-
-        // Fling — consume the thrown item and apply its on-hit effect. PS
-        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
-        // user's item after the move; the per-item `fling.status` /
-        // `volatileStatus` rides as a 100% secondary, so it lands only on a
-        // real (non-Substitute) hit and respects the target's status
-        // immunities. We gate consumption on the move connecting
-        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
-        // item still spent, status blocked); a clean miss spends nothing.
-        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
-        // status/flinch applies exactly where PS's secondary would.
-        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
-        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
-        // is deferred (same shape as Trick's un-modelled receive-time item
-        // effects). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
-        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
-            let item_id = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .map(|a| a.item_id)
-                .unwrap_or(u16::MAX);
-            if item_id != u16::MAX {
-                let effect = data::ITEMS[item_id as usize].fling_effect;
-                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
-                // when it clears the item, so a flung item IS recoverable by
-                // Recycle — route through `consume_item`.
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.consume_item();
-                }
-                if let Some((ts, tslot)) = drag_target {
-                    match effect {
-                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
-                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
-                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
-                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
-                        5 => {
-                            if let Some(t) =
-                                self.side_mut(ts).active_mon_mut(tslot as usize)
-                            {
-                                if t.is_alive() {
-                                    t.set_flinched(true);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
                 }
             }
         }
