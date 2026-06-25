@@ -630,6 +630,13 @@ pub struct Pokemon {
     /// or 255 if it hasn't moved yet on the field. Cleared on switch-
     /// out. Used by Encore to determine the lock target.
     pub last_used_move_slot: u8,
+    /// Encoded absolute target slot of the most recent move this mon used
+    /// (`side*2 + slot`: p1a=0, p1b=1, p2a=2, p2b=3), or 255 for none
+    /// (self/field move, or hasn't moved). Cleared on switch-out. Read by
+    /// Instruct, which re-runs the target's last move at the same location
+    /// (PS `lastMoveTargetLoc`). Stored encoded rather than as `Target` so
+    /// `Pokemon`'s Serialize/Deserialize derive needs no extra bound.
+    pub last_used_move_target: u8,
     /// Paradox booster stat index (0=atk, 1=def, 2=spa, 3=spd, 4=spe;
     /// 255 = no boost active). Set when Protosynthesis or Quark Drive
     /// activates via its trigger (Sun / Electric Terrain / Booster
@@ -882,6 +889,7 @@ impl Pokemon {
             fainted: false,
             turns_active: 0,
             last_used_move_slot: 255,
+            last_used_move_target: 255,
             boosted_stat: 255,
             booster_locked: false,
             ability_suppressed: false,

@@ -1751,6 +1751,7 @@ impl Battle {
             incoming.set_locked_move_slot(255); // Choice lock clears on switch.
             incoming.set_substitute_hp(0); // Sub doesn't survive switch-out.
             incoming.last_used_move_slot = 255;
+            incoming.last_used_move_target = 255;
             incoming.clear_encore();
             incoming.boosted_stat = 255;
             incoming.booster_locked = false; // Booster lock only persists while on field.
@@ -5924,6 +5925,7 @@ impl Battle {
             // bookkeeping is consistent.
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
             }
         }
         // Choice items AND Gorilla Tactics lock the holder into its first
@@ -5957,6 +5959,7 @@ impl Battle {
                 // it lands on a target. PS sim/pokemon.ts updates lastMove
                 // after PP deduction, regardless of accuracy outcome.
                 mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
             }
             // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
@@ -6166,6 +6169,7 @@ impl Battle {
                     *pp = pp.saturating_sub(1 + extra);
                 }
                 mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
             }
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
@@ -6195,6 +6199,7 @@ impl Battle {
                 // turn (the move becomes usable again every other
                 // turn whether the user actually used it or not).
                 mon.last_used_move_slot = 255;
+                mon.last_used_move_target = 255;
             }
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
@@ -10869,6 +10874,57 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::INSTRUCT => {
+                // Instruct — PS data/moves.ts:instruct. `onHit` makes the
+                // TARGET immediately repeat its last move (PS prioritizes the
+                // re-run action right after Instruct). It FAILS if the target
+                // has no last move, that move carries `failinstruct` (charge /
+                // two-turn / semi-invuln / recharge / lock-in / call-copy /
+                // self-referential moves — Instruct itself is in the set, which
+                // prevents an Instruct→Instruct loop), or the move slot is out
+                // of PP. Z/Max/Dynamax carry the flag too but are stripped from
+                // the gen-9 dump. Instruct has `accuracy: true` (no roll) and
+                // `bypasssub` with no protect flag, so it pierces Substitute and
+                // is not Protect-gated upstream. The repeated move re-runs
+                // through the full pipeline (PP re-deducted, secondaries and
+                // self-drops re-applied) — that is how Oranguru's Instruct turns
+                // a foe's Draco Meteor into a -4 SpA self-drop (conformance
+                // out_0861221fad). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Instruct_(move)>.
+                let (ts, tslot) = match opp_target {
+                    Some(x) => x,
+                    None => return,
+                };
+                let (last_slot, last_tgt_enc, last_move_id, pp_left) =
+                    match self.side(ts).active_mon(tslot as usize) {
+                        Some(t) if t.is_alive() => {
+                            let slot = t.last_used_move_slot;
+                            let mid = t.moves.get(slot as usize).copied().unwrap_or(u16::MAX);
+                            let pp = t.pp.get(slot as usize).copied().unwrap_or(0);
+                            (slot, t.last_used_move_target, mid, pp)
+                        }
+                        _ => return,
+                    };
+                // No last move, or last move slot resolved to nothing.
+                if last_slot == 255 || last_move_id == u16::MAX {
+                    return;
+                }
+                let last_slug = data::MOVES[last_move_id as usize].slug;
+                if move_fails_instruct(last_slug) || pp_left == 0 {
+                    return;
+                }
+                // Re-run the target's last move at the same target location.
+                let action = ScheduledAction {
+                    side: ts,
+                    actor_slot: tslot,
+                    choice: Choice::Move {
+                        actor_slot: tslot,
+                        move_slot: last_slot,
+                        target: dec_target(last_tgt_enc),
+                    },
+                };
+                self.resolve_move_with_pending(action, pending_kind, true);
+            }
             data::move_id::SWAGGER => {
                 // Swagger — PS data/moves.ts:swagger. A foe-targeting STATUS
                 // move (85% acc, target "normal") that RAISES the target's
@@ -11463,6 +11519,49 @@ fn pressure_extra_pp(
 /// Per-slug self-stat drops, applied after the move resolves.
 /// Returns a list of (boost-array-index, delta) pairs.
 /// Indices: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
+/// Encode an `Option<Target>` to the `side*2 + slot` form stored in
+/// `Pokemon::last_used_move_target` (255 = no target). Inverse of
+/// [`dec_target`].
+fn enc_target(t: Option<Target>) -> u8 {
+    match t {
+        Some(Target { side: SideRef::P1, slot }) => slot,
+        Some(Target { side: SideRef::P2, slot }) => 2 + slot,
+        None => 255,
+    }
+}
+
+/// Decode a `side*2 + slot` target back to an `Option<Target>` (255 → None).
+fn dec_target(enc: u8) -> Option<Target> {
+    match enc {
+        0 | 1 => Some(Target { side: SideRef::P1, slot: enc }),
+        2 | 3 => Some(Target { side: SideRef::P2, slot: enc - 2 }),
+        _ => None,
+    }
+}
+
+/// PS `flags.failinstruct` — moves Instruct cannot make the target repeat.
+/// Verbatim from the gen-9 `data/moves.ts` failinstruct set (charge / two-turn
+/// / semi-invuln moves, recharge, lock-in moves, the call/copy moves, and the
+/// self-referential / state-dependent moves). Z/Max moves also carry the flag
+/// but are stripped from the gen-9 dump, so they need no entry. Instruct itself
+/// is in the list, which prevents an Instruct→Instruct loop.
+fn move_fails_instruct(slug: &str) -> bool {
+    matches!(
+        slug,
+        "assist" | "beakblast" | "belch" | "bide" | "blazingtorque"
+            | "bounce" | "celebrate" | "chatter" | "combattorque" | "copycat"
+            | "dig" | "dive" | "dynamaxcannon" | "fly" | "focuspunch"
+            | "freezeshock" | "geomancy" | "holdhands" | "iceball" | "iceburn"
+            | "instruct" | "kingsshield" | "magicaltorque" | "mefirst"
+            | "meteorassault" | "metronome" | "mimic" | "mirrormove"
+            | "naturepower" | "noxioustorque" | "obstruct" | "outrage"
+            | "petaldance" | "phantomforce" | "razorwind" | "rollout"
+            | "shadowforce" | "shelltrap" | "sketch" | "skullbash" | "skyattack"
+            | "skydrop" | "sleeptalk" | "solarbeam" | "solarblade" | "struggle"
+            | "thrash" | "transform" | "uproar" | "wickedtorque"
+    )
+}
+
 fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
         // Close-combat family: -1 def, -1 spd. Headlong Rush (Great Tusk's
@@ -14106,6 +14205,76 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[4], -1, "Ice Hammer must drop the user's Speed by 1");
+    }
+
+    #[test]
+    fn instruct_repeats_targets_last_move() {
+        // PS data/moves.ts:instruct — the target immediately repeats its last
+        // move. Latios (faster) uses Draco Meteor (-2 SpA self-drop), then
+        // Oranguru Instructs it → Latios re-runs Draco Meteor → a second -2
+        // SpA, landing at -4. Confirms the re-execution re-applies the move's
+        // self-drop (the out_0861221fad mechanic).
+        let p1_json = r#"[
+            {"species":"oranguru","level":50,"ability":"innerfocus","item":"","nature":"sassy","moves":["instruct","trickroom","psychic","protect"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","protect","seismictoss","calmmind"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Latios invests only in Speed (weak Draco); the hit lands on max-bulk
+        // Blissey, which survives both Dracos so the self-drop stacks to -4.
+        let p2_json = r#"[
+            {"species":"latios","level":50,"ability":"levitate","item":"","nature":"timid","moves":["dracometeor","protect","psychic","recover"],"evs":{"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["protect"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Oranguru Instruct -> Latios
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },                    // Blissey Soft-Boiled (no Protect)
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, // Latios Draco Meteor -> Blissey
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },                    // Snorlax Protect
+            ],
+        );
+        assert_eq!(
+            b.p2.team[0].boosts[2], -4,
+            "Instruct must re-run Latios's Draco Meteor, stacking the SpA self-drop to -4"
+        );
+    }
+
+    #[test]
+    fn instruct_fails_when_target_has_no_last_move() {
+        // A freshly switched-in mon has no last move (last_used_move_slot reset
+        // to 255 on entry), so Instruct does nothing — the target keeps its
+        // stats and is not forced to act. Oranguru Instructs the mon P2 just
+        // switched in; nothing should change.
+        let p1_json = r#"[
+            {"species":"oranguru","level":50,"ability":"innerfocus","item":"","nature":"sassy","moves":["instruct","trickroom","psychic","protect"],"evs":{"hp":252}},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["protect"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"latios","level":50,"ability":"levitate","item":"","nature":"timid","moves":["dracometeor","protect","psychic","recover"],"evs":{"spa":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["protect"],"evs":{"hp":252}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["dragonclaw","protect","earthquake","swordsdance"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, // Oranguru Instruct -> p2a (Garchomp, just switched)
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[
+                Choice::Switch { actor_slot: 0, team_index: 2 }, // bring in Garchomp fresh
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        // Garchomp came in fresh (no last move) — Instruct is a no-op, so its
+        // Atk is unchanged (no Swords Dance forced) and it dealt no damage.
+        assert_eq!(b.p2.team[2].boosts[0], 0, "Instruct on a move-less switch-in must do nothing");
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "Instruct must not force the fresh mon to attack");
     }
 
     #[test]
