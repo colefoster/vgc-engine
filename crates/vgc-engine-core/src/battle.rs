@@ -3499,220 +3499,11 @@ impl Battle {
         if targets.is_empty() {
             return;
         }
-        // Rage Powder / Follow Me redirection. PS data/moves.ts:ragepowder
-        // / :followme `onFoeRedirectTarget` (priority 1) — fires during
-        // target-pick on single-target opposing moves. If any alive mon
-        // on the FOE side (relative to the attacker) is carrying the
-        // redirect volatile, the target is overridden to that mon.
-        // Gates:
-        //   - Doubles only (`active_count >= 2`).
-        //   - Only single-target opposing target codes 0 (normal),
-        //     4 (adjacentFoe), 10 (any). Spread / self / ally targets
-        //     untouched.
-        //   - Only when the resolved target is on the opposing side
-        //     (a self-targeted single-target move resolved to actor's
-        //     own slot via a future mechanic would not redirect).
-        //   - Rage Powder powder gate: skipped if the ATTACKER is
-        //     Grass-type, holds Safety Goggles, or has Overcoat
-        //     ability. Follow Me has no gate.
-        //   - If two foes both used a redirect this turn (e.g. Indeedee
-        //     Follow Me + Amoonguss Rage Powder on the same side), the
-        //     first-to-resolve claims the target — PS does this via
-        //     queue order, and since the volatile carrier had to move
-        //     before the attacker's action could redirect, both
-        //     volatiles are present. Tie-break: prefer Rage Powder
-        //     (it has the powder bonus on Bug type and is the more
-        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
-        //     runs first in queue order in practice as Amoonguss
-        //     typically outruns Indeedee here is irrelevant — the
-        //     volatile lookup is order-independent). Concretely we
-        //     iterate slot order on the foe side and pick the first
-        //     `redirecting_is_powder == true` carrier, falling back
-        //     to the first `redirecting_this_turn` carrier.
-        //
-        // `redirected` records whether this higher-priority Follow Me /
-        // Rage Powder pass claimed the move. PS resolves redirection in a
-        // `priorityEvent` (sim/pokemon.ts:835) that returns on the FIRST
-        // handler to yield a target, and Follow Me / Rage Powder carry
-        // `onFoeRedirectTargetPriority: 1` while Lightning Rod / Storm
-        // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
-        // a powder/follow-me redirect wins, and the ability pass below is
-        // skipped when `redirected` is already set.
-        //
-        // Stalwart / Propeller Tail / Snipe Shot — PS `sim/battle.ts:2450`
-        // `getTarget` resolves `tracksTarget` BEFORE the RedirectTarget
-        // event ever runs:
-        //   let tracksTarget = move.tracksTarget;
-        //   if (pokemon.hasAbility(['stalwart','propellertail'])) tracksTarget = true;
-        //   if (tracksTarget && originalTarget?.isActive) return originalTarget;
-        // (PS hardcodes the ability check here because Stalwart/Propeller
-        // Tail set `move.tracksTarget` in `onModifyMove`, which fires AFTER
-        // getTarget.) A "tracking" move ignores ALL redirection — Follow Me,
-        // Rage Powder, Lightning Rod, and Storm Drain — and strikes its
-        // originally chosen target. Snipe Shot carries the move-level
-        // `tracksTarget: true` flag (PS `data/moves.ts:17143`). We compute it
-        // once and skip BOTH redirect passes when set. Uses the attacker's
-        // EFFECTIVE ability so Gastro Acid / Neutralizing Gas suppression
-        // also disables the bypass. Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Stalwart_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Propeller_Tail_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Snipe_Shot_(move)>
-        let tracks_target = matches!(
-            attacker.effective_ability_id(),
-            data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
-        ) || move_id == data::move_id::SNIPESHOT;
-
-        let mut redirected = false;
-        if !tracks_target
-            && self.format().active_count() >= 2
-            && matches!(m.target, 0 | 4 | 10)
-            && targets.len() == 1
-        {
-            let (orig_side, _orig_slot) = targets[0];
-            if orig_side != actor_side {
-                let opp = orig_side; // foe side relative to attacker
-                let n = self.format().active_count() as u8;
-                // Find a redirector. Prefer Rage Powder (powder) if both.
-                let mut redirector: Option<u8> = None;
-                let mut found_powder = false;
-                for slot in 0..n {
-                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
-                        if p.is_alive() && p.redirecting_this_turn() {
-                            if p.redirecting_is_powder() {
-                                redirector = Some(slot);
-                                found_powder = true;
-                                break;
-                            } else if redirector.is_none() {
-                                redirector = Some(slot);
-                            }
-                        }
-                    }
-                }
-                if let Some(rslot) = redirector {
-                    // Don't redirect onto the original target itself
-                    // (would be a no-op, but also covers the case where
-                    // the attacker's chosen target IS the redirector).
-                    if (opp, rslot) != targets[0] {
-                        // Powder gate (Rage Powder only).
-                        let mut blocked = false;
-                        if found_powder {
-                            let s = attacker.species();
-                            let grass_attacker =
-                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
-                            if grass_attacker
-                                || attacker.item_id == data::item_id::SAFETYGOGGLES
-                                || attacker.ability_id == data::ability_id::OVERCOAT
-                            {
-                                blocked = true;
-                            }
-                        }
-                        if !blocked {
-                            targets = TargetBuf::single((opp, rslot));
-                            redirected = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Lightning Rod / Storm Drain redirection (doubles). PS
-        // `data/abilities.ts:lightningrod` (num 31) and `:stormdrain`
-        // (num 114) `onAnyRedirectTarget`:
-        //   onAnyRedirectTarget(target, source, source2, move) {
-        //     if (move.type !== 'Electric' || move.flags['pledgecombo']) return;
-        //     const redirectTarget = ['randomNormal','adjacentFoe']
-        //       .includes(move.target) ? 'normal' : move.target;
-        //     if (this.validTarget(this.effectState.target, source, redirectTarget)) {
-        //       ...
-        //       return this.effectState.target;
-        //     }
-        //   }
-        // Storm Drain is identical with `move.type === 'Water'`. Because
-        // the handler is `onAny*`, it pulls a matching-type single-target
-        // move aimed at ANY other mon (a foe, or the holder's own ally)
-        // toward the ability holder, regardless of which side the holder
-        // is on relative to the attacker. It runs at the default
-        // RedirectTarget priority (0), BELOW Follow Me / Rage Powder
-        // (priority 1) — hence the `!redirected` guard above.
-        // Gates:
-        //   - Doubles only; single-target codes 0/4/10 (same set the
-        //     powder pass uses). adjacentFoe (4) maps to `normal` in PS;
-        //     `any` (10) stays `any`. In doubles every slot is adjacent,
-        //     so the holder is always a valid redirect target.
-        //   - Move type must match: Electric (3) -> Lightning Rod,
-        //     Water (2) -> Storm Drain.
-        //   - Holder must be alive and is identified by
-        //     `effective_ability_id()`, so Gastro Acid / Neutralizing Gas
-        //     suppression disables redirection.
-        //   - Never the attacker itself, and never a no-op onto the move's
-        //     existing target.
-        //   - Lightning Rod / Storm Drain carry `flags: { breakable: 1 }`,
-        //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
-        //     the redirect (the move keeps its chosen target).
-        //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
-        //     and IGNORE all redirection; this whole pass is skipped via
-        //     the `!tracks_target` guard below (computed above the powder
-        //     pass — see PS sim/battle.ts:2456).
-        //   - Speed-tie among multiple holders: PS sorts RedirectTarget
-        //     handlers by speed (fastest first), `effectOrder` for true
-        //     ties (sim/battle.ts:997). We pick the highest effective
-        //     Speed, deterministic P1-before-P2 slot order on ties.
-        // Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
-        if !redirected
-            && !tracks_target
-            && self.format().active_count() >= 2
-            && matches!(m.target, 0 | 4 | 10)
-            && targets.len() == 1
-        {
-            let want_ability = match m.type_ {
-                3 => Some(data::ability_id::LIGHTNINGROD),
-                2 => Some(data::ability_id::STORMDRAIN),
-                _ => None,
-            };
-            // Mycelium Might makes Status moves ignore the target's ability,
-            // including redirect abilities (Lightning Rod / Storm Drain are
-            // `breakable`, which Mold Breaker bypasses). Gated on Status
-            // category since this block also runs for damaging moves.
-            let attacker_breaks_mold = matches!(
-                attacker.ability_id,
-                data::ability_id::MOLDBREAKER
-                    | data::ability_id::TERAVOLT
-                    | data::ability_id::TURBOBLAZE
-            ) || (m.category == 2
-                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
-            if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
-                let orig = targets[0];
-                let n = self.format().active_count() as u8;
-                let mut best: Option<(SideRef, u8)> = None;
-                let mut best_spe = 0u16;
-                for side in [SideRef::P1, SideRef::P2] {
-                    let tailwind = self.side(side).conditions.tailwind_turns > 0;
-                    for slot in 0..n {
-                        // Never redirect onto the attacker, and skip a
-                        // no-op onto the move's existing target.
-                        if (side == actor_side && slot == actor_slot) || (side, slot) == orig {
-                            continue;
-                        }
-                        let Some(p) = self.side(side).active_mon(slot as usize) else {
-                            continue;
-                        };
-                        if !p.is_alive() || p.effective_ability_id() != want {
-                            continue;
-                        }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
-                        if best.is_none() || spe > best_spe {
-                            best = Some((side, slot));
-                            best_spe = spe;
-                        }
-                    }
-                }
-                if let Some(holder) = best {
-                    targets = TargetBuf::single(holder);
-                }
-            }
-        }
+        // Resolve target redirection (Follow Me / Rage Powder, Lightning
+        // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
+        // moves and tracksTarget bypass are handled internally. See
+        // [`Battle::resolve_targets`] for the cited PS source.
+        targets = self.resolve_targets(actor_side, actor_slot, move_id, &attacker, m, targets);
         let is_spread = targets.len() > 1;
 
         // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
@@ -6164,6 +5955,250 @@ impl Battle {
     /// lock confusion duration) at the SAME draw sites as the inline code.
     /// Pure mechanical extraction — body byte-identical to the inline block;
     /// draw-site identity and order are preserved.
+    /// Resolve the move's actual targets after applying redirection:
+    ///   - Follow Me / Rage Powder volatile redirects single-target moves
+    ///     to the carrier ally.
+    ///   - Lightning Rod / Storm Drain pull matching-type single-target
+    ///     moves toward the holder (Mold Breaker / Teravolt / Turboblaze
+    ///     and Status-cat Mycelium Might bypass).
+    ///   - Stalwart / Propeller Tail / Snipe Shot bypass ALL redirection.
+    ///   - Spread moves (`targets.len() > 1`) and non-single-target codes
+    ///     are untouched.
+    ///
+    /// Pure read of `self` — deterministic, no RNG draws. Returns the
+    /// (possibly redirected) target list. Body byte-identical to the inline
+    /// block this replaces; draw-site identity preserved (there are none
+    /// here — absorb-effect side of Volt Absorb / Water Absorb / Sap
+    /// Sipper / Motor Drive / Flash Fire / Dry Skin / Earth Eater fires
+    /// later, inline with on-hit handling, not in this method).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_targets(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &crate::pokemon::Pokemon,
+        m: &data::MoveDef,
+        mut targets: TargetBuf,
+    ) -> TargetBuf {
+        // Rage Powder / Follow Me redirection. PS data/moves.ts:ragepowder
+        // / :followme `onFoeRedirectTarget` (priority 1) — fires during
+        // target-pick on single-target opposing moves. If any alive mon
+        // on the FOE side (relative to the attacker) is carrying the
+        // redirect volatile, the target is overridden to that mon.
+        // Gates:
+        //   - Doubles only (`active_count >= 2`).
+        //   - Only single-target opposing target codes 0 (normal),
+        //     4 (adjacentFoe), 10 (any). Spread / self / ally targets
+        //     untouched.
+        //   - Only when the resolved target is on the opposing side
+        //     (a self-targeted single-target move resolved to actor's
+        //     own slot via a future mechanic would not redirect).
+        //   - Rage Powder powder gate: skipped if the ATTACKER is
+        //     Grass-type, holds Safety Goggles, or has Overcoat
+        //     ability. Follow Me has no gate.
+        //   - If two foes both used a redirect this turn (e.g. Indeedee
+        //     Follow Me + Amoonguss Rage Powder on the same side), the
+        //     first-to-resolve claims the target — PS does this via
+        //     queue order, and since the volatile carrier had to move
+        //     before the attacker's action could redirect, both
+        //     volatiles are present. Tie-break: prefer Rage Powder
+        //     (it has the powder bonus on Bug type and is the more
+        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
+        //     runs first in queue order in practice as Amoonguss
+        //     typically outruns Indeedee here is irrelevant — the
+        //     volatile lookup is order-independent). Concretely we
+        //     iterate slot order on the foe side and pick the first
+        //     `redirecting_is_powder == true` carrier, falling back
+        //     to the first `redirecting_this_turn` carrier.
+        //
+        // `redirected` records whether this higher-priority Follow Me /
+        // Rage Powder pass claimed the move. PS resolves redirection in a
+        // `priorityEvent` (sim/pokemon.ts:835) that returns on the FIRST
+        // handler to yield a target, and Follow Me / Rage Powder carry
+        // `onFoeRedirectTargetPriority: 1` while Lightning Rod / Storm
+        // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
+        // a powder/follow-me redirect wins, and the ability pass below is
+        // skipped when `redirected` is already set.
+        //
+        // Stalwart / Propeller Tail / Snipe Shot — PS `sim/battle.ts:2450`
+        // `getTarget` resolves `tracksTarget` BEFORE the RedirectTarget
+        // event ever runs:
+        //   let tracksTarget = move.tracksTarget;
+        //   if (pokemon.hasAbility(['stalwart','propellertail'])) tracksTarget = true;
+        //   if (tracksTarget && originalTarget?.isActive) return originalTarget;
+        // (PS hardcodes the ability check here because Stalwart/Propeller
+        // Tail set `move.tracksTarget` in `onModifyMove`, which fires AFTER
+        // getTarget.) A "tracking" move ignores ALL redirection — Follow Me,
+        // Rage Powder, Lightning Rod, and Storm Drain — and strikes its
+        // originally chosen target. Snipe Shot carries the move-level
+        // `tracksTarget: true` flag (PS `data/moves.ts:17143`). We compute it
+        // once and skip BOTH redirect passes when set. Uses the attacker's
+        // EFFECTIVE ability so Gastro Acid / Neutralizing Gas suppression
+        // also disables the bypass. Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Stalwart_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Propeller_Tail_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Snipe_Shot_(move)>
+        let tracks_target = matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
+        ) || move_id == data::move_id::SNIPESHOT;
+
+        let mut redirected = false;
+        if !tracks_target
+            && self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let (orig_side, _orig_slot) = targets[0];
+            if orig_side != actor_side {
+                let opp = orig_side; // foe side relative to attacker
+                let n = self.format().active_count() as u8;
+                // Find a redirector. Prefer Rage Powder (powder) if both.
+                let mut redirector: Option<u8> = None;
+                let mut found_powder = false;
+                for slot in 0..n {
+                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
+                        if p.is_alive() && p.redirecting_this_turn() {
+                            if p.redirecting_is_powder() {
+                                redirector = Some(slot);
+                                found_powder = true;
+                                break;
+                            } else if redirector.is_none() {
+                                redirector = Some(slot);
+                            }
+                        }
+                    }
+                }
+                if let Some(rslot) = redirector {
+                    // Don't redirect onto the original target itself
+                    // (would be a no-op, but also covers the case where
+                    // the attacker's chosen target IS the redirector).
+                    if (opp, rslot) != targets[0] {
+                        // Powder gate (Rage Powder only).
+                        let mut blocked = false;
+                        if found_powder {
+                            let s = attacker.species();
+                            let grass_attacker =
+                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
+                            if grass_attacker
+                                || attacker.item_id == data::item_id::SAFETYGOGGLES
+                                || attacker.ability_id == data::ability_id::OVERCOAT
+                            {
+                                blocked = true;
+                            }
+                        }
+                        if !blocked {
+                            targets = TargetBuf::single((opp, rslot));
+                            redirected = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lightning Rod / Storm Drain redirection (doubles). PS
+        // `data/abilities.ts:lightningrod` (num 31) and `:stormdrain`
+        // (num 114) `onAnyRedirectTarget`:
+        //   onAnyRedirectTarget(target, source, source2, move) {
+        //     if (move.type !== 'Electric' || move.flags['pledgecombo']) return;
+        //     const redirectTarget = ['randomNormal','adjacentFoe']
+        //       .includes(move.target) ? 'normal' : move.target;
+        //     if (this.validTarget(this.effectState.target, source, redirectTarget)) {
+        //       ...
+        //       return this.effectState.target;
+        //     }
+        //   }
+        // Storm Drain is identical with `move.type === 'Water'`. Because
+        // the handler is `onAny*`, it pulls a matching-type single-target
+        // move aimed at ANY other mon (a foe, or the holder's own ally)
+        // toward the ability holder, regardless of which side the holder
+        // is on relative to the attacker. It runs at the default
+        // RedirectTarget priority (0), BELOW Follow Me / Rage Powder
+        // (priority 1) — hence the `!redirected` guard above.
+        // Gates:
+        //   - Doubles only; single-target codes 0/4/10 (same set the
+        //     powder pass uses). adjacentFoe (4) maps to `normal` in PS;
+        //     `any` (10) stays `any`. In doubles every slot is adjacent,
+        //     so the holder is always a valid redirect target.
+        //   - Move type must match: Electric (3) -> Lightning Rod,
+        //     Water (2) -> Storm Drain.
+        //   - Holder must be alive and is identified by
+        //     `effective_ability_id()`, so Gastro Acid / Neutralizing Gas
+        //     suppression disables redirection.
+        //   - Never the attacker itself, and never a no-op onto the move's
+        //     existing target.
+        //   - Lightning Rod / Storm Drain carry `flags: { breakable: 1 }`,
+        //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
+        //     the redirect (the move keeps its chosen target).
+        //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
+        //     and IGNORE all redirection; this whole pass is skipped via
+        //     the `!tracks_target` guard below (computed above the powder
+        //     pass — see PS sim/battle.ts:2456).
+        //   - Speed-tie among multiple holders: PS sorts RedirectTarget
+        //     handlers by speed (fastest first), `effectOrder` for true
+        //     ties (sim/battle.ts:997). We pick the highest effective
+        //     Speed, deterministic P1-before-P2 slot order on ties.
+        // Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
+        if !redirected
+            && !tracks_target
+            && self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let want_ability = match m.type_ {
+                3 => Some(data::ability_id::LIGHTNINGROD),
+                2 => Some(data::ability_id::STORMDRAIN),
+                _ => None,
+            };
+            // Mycelium Might makes Status moves ignore the target's ability,
+            // including redirect abilities (Lightning Rod / Storm Drain are
+            // `breakable`, which Mold Breaker bypasses). Gated on Status
+            // category since this block also runs for damaging moves.
+            let attacker_breaks_mold = matches!(
+                attacker.ability_id,
+                data::ability_id::MOLDBREAKER
+                    | data::ability_id::TERAVOLT
+                    | data::ability_id::TURBOBLAZE
+            ) || (m.category == 2
+                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
+            if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
+                let orig = targets[0];
+                let n = self.format().active_count() as u8;
+                let mut best: Option<(SideRef, u8)> = None;
+                let mut best_spe = 0u16;
+                for side in [SideRef::P1, SideRef::P2] {
+                    let tailwind = self.side(side).conditions.tailwind_turns > 0;
+                    for slot in 0..n {
+                        // Never redirect onto the attacker, and skip a
+                        // no-op onto the move's existing target.
+                        if (side == actor_side && slot == actor_slot) || (side, slot) == orig {
+                            continue;
+                        }
+                        let Some(p) = self.side(side).active_mon(slot as usize) else {
+                            continue;
+                        };
+                        if !p.is_alive() || p.effective_ability_id() != want {
+                            continue;
+                        }
+                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
+                        if best.is_none() || spe > best_spe {
+                            best = Some((side, slot));
+                            best_spe = spe;
+                        }
+                    }
+                }
+                if let Some(holder) = best {
+                    targets = TargetBuf::single(holder);
+                }
+            }
+        }
+
+        targets
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_self_effects(
         &mut self,
