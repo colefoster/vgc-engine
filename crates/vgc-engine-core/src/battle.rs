@@ -117,6 +117,20 @@ pub enum StepResult {
     Ended { winner: Option<SideRef> },
 }
 
+/// Result of the charge-turn / pre-effect block (Fly / Dig / Bounce /
+/// Dive / Solar Beam / Skull Bash / Meteor Beam / etc). See
+/// `Battle::apply_charge_turn`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChargeOutcome {
+    /// No charge-turn early-return — proceed to PP deduction and damage.
+    /// `skip_pp_deduct` is set on turn 2 of a multi-turn move because PP
+    /// was already deducted on turn 1.
+    Continue { skip_pp_deduct: bool },
+    /// Turn 1 of a multi-turn charge / semi-invuln move — caller must
+    /// short-circuit `resolve_move_with_pending` (no damage this turn).
+    Abort,
+}
+
 /// Result of the pre-move volatile/status checks (Truant, sleep, freeze,
 /// flinch, disable/throat-chop/heal-block/taunt, paralysis, confusion,
 /// attract). See `Battle::check_pre_move_status`.
@@ -2600,186 +2614,28 @@ impl Battle {
             return;
         }
 
-        // 2c. Two-turn semi-invulnerable charge moves (Fly / Dig / Dive /
-        //     Bounce / Phantom Force / Shadow Force). PS handler pattern
-        //     (data/moves.ts:fly:5894, dig:3578, dive:3737, bounce:1709,
-        //     phantomforce:13320, shadowforce:16086):
-        //       onTryMove(attacker) {
-        //         if (attacker.removeVolatile(move.id)) return;   // turn 2
-        //         this.add('-prepare', attacker, move.name);
-        //         attacker.addVolatile('twoturnmove', defender);
-        //         return null;                                     // turn 1
-        //       }
-        //     We deduct PP turn 1 (same as PS's runMove order) and skip
-        //     re-deduct turn 2. Bulbapedia:
-        //     <https://bulbapedia.bulbagarden.net/wiki/Semi-invulnerable_turn>.
-        let semi_invuln_code_for = |slug: &str| -> u8 {
-            match slug {
-                "dig" => 1,
-                "dive" => 2,
-                "fly" => 3,
-                "bounce" => 4,
-                "phantomforce" => 5,
-                "shadowforce" => 6,
-                "skydrop" => 7,
-                _ => 0,
-            }
+        // 2c. Two-turn charge / semi-invulnerable moves (Solar Beam family
+        //     without semi-invuln + Fly / Dig / Dive / Bounce / Phantom
+        //     Force / Shadow Force / Sky Drop with semi-invuln). On turn 1
+        //     this sets charging state, deducts PP (+ Pressure extra), and
+        //     short-circuits — `Abort` exits `resolve_move_with_pending`
+        //     with no damage. On turn 2 it clears the charging state and
+        //     returns `Continue { skip_pp_deduct: true }`. Power Herb
+        //     and weather-skip arms (Sun for Solar Beam, Rain for Electro
+        //     Shot) collapse to a single-turn move that falls through to
+        //     normal PP deduction + damage. See `apply_charge_turn`.
+        let skip_pp_deduct = match self.apply_charge_turn(
+            actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
+        ) {
+            ChargeOutcome::Continue { skip_pp_deduct } => skip_pp_deduct,
+            ChargeOutcome::Abort => return,
         };
-        // Two-turn charge moves WITHOUT semi-invulnerability (Solar Beam /
-        // Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor
-        // Beam). PS handler pattern (data/moves.ts:solarbeam:17229,
-        // solarblade:17265, skyattack:16670, razorwind:14760,
-        // skullbash:16720, meteorbeam:11740):
-        //   onTryMove: removeVolatile→continue; else addVolatile + return
-        //   null. Solar Beam / Solar Blade additionally skip the charge
-        //   turn under Sun (PS attrLastMove '[still]' + `addMove` early
-        //   return without `addVolatile`). Power Herb consumes the held
-        //   item to skip charge (data/items.ts:powerherb:4770
-        //   `onChargeMove` returns false → skip charge turn). The
-        //   per-charge stat-boost effects (Meteor Beam +1 SpA, Skull
-        //   Bash +1 Def) are load-bearing for follow-up damage and land
-        //   as separate move PRs alongside their `onTryMove` boost arms.
-        let is_charge_move = matches!(
-            move_id,
-            data::move_id::SOLARBEAM | data::move_id::SOLARBLADE | data::move_id::SKYATTACK
-                | data::move_id::RAZORWIND | data::move_id::SKULLBASH | data::move_id::METEORBEAM
-                | data::move_id::ELECTROSHOT
-        );
-        let semi_code = semi_invuln_code_for(m.slug);
-        let mut skip_pp_deduct = false;
-        if is_charge_move {
-            let release = attacker.charging_turns == 1
-                && attacker.charging_move_slot == move_slot;
-            if release {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.charging_turns = 0;
-                    a.charging_move_slot = 255;
-                }
-                skip_pp_deduct = true;
-            } else {
-                // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
-                // and Meteor Beam (data/moves.ts:meteorbeam:11740 onTryMove)
-                // both raise the user's Special Attack by +1 the moment they
-                // begin charging — PS calls `this.boost({spa:1})` after
-                // `-prepare` and *before* the weather/ChargeMove skip check, so
-                // the boost lands on turn 1 whether the charge is then skipped
-                // (Electro Shot in Rain, either via Power Herb) or not.
-                // Self-boost (source == target), so Clear Body / Mirror Armor
-                // don't block it. `&[(2, 1)]` is a stack slice — no heap
-                // allocation in step(). Meteor Beam has no weather skip; it
-                // only skips charge via Power Herb (handled below).
-                if matches!(move_id, data::move_id::ELECTROSHOT | data::move_id::METEORBEAM) {
-                    self.apply_boosts(actor_side, actor_slot, &[(2, 1)], actor_side, actor_slot);
-                }
-                // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
-                // Electro Shot in Rain) or Power Herb consumption.
-                let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
-                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun))
-                    || (move_id == data::move_id::ELECTROSHOT
-                        && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
-                let power_herb = attacker.item_id == data::item_id::POWERHERB;
-                if weather_skip {
-                    // Skip charge — fall through to normal damage. PP
-                    // deducts via the standard PP block.
-                } else if power_herb {
-                    // Consume Power Herb, skip charge. PS `useItem` clears
-                    // the item slot and records `lastItem` — Recycle can
-                    // restore it, so route through `consume_item`.
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.consume_item();
-                    }
-                } else {
-                    // Charge turn: deduct PP (+ Pressure extra, which PS
-                    // applies on turn 1 only), set charging state, return.
-                    let extra = pressure_extra_pp(self, actor_side, m, target);
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                            *pp = pp.saturating_sub(1 + extra);
-                        }
-                        a.last_used_move_slot = move_slot;
-                        a.charging_turns = 1;
-                        a.charging_move_slot = move_slot;
-                    }
-                    crate::item::on_pp_depleted(self, actor_side, actor_slot);
-                    return;
-                }
-            }
-        }
-        if semi_code != 0 {
-            let release = attacker.charging_turns == 1
-                && attacker.charging_move_slot == move_slot;
-            if release {
-                // Turn 2: clear state and fall through to normal damage.
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.charging_turns = 0;
-                    a.charging_move_slot = 255;
-                    a.semi_invuln = 0;
-                }
-                skip_pp_deduct = true;
-            } else {
-                // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
-                // applied turn 1 only per PS), no damage.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
-                    a.last_used_move_slot = move_slot;
-                    a.charging_turns = 1;
-                    a.charging_move_slot = move_slot;
-                    a.semi_invuln = semi_code;
-                }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
-                return;
-            }
-        }
 
-        // 3. PP cost — ticked even on miss / immunity (PS behavior).
-        // Also: Choice items lock the holder into this move slot after
-        // a successful invocation (PP-consumption suffices).
-        if skip_pp_deduct {
-            // Turn 2 of a semi-invuln move — PP was deducted on turn 1.
-            // Still update `last_used_move_slot` so Encore / Choice item
-            // bookkeeping is consistent.
-            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                mon.last_used_move_slot = move_slot;
-            }
-        }
-        // Choice items AND Gorilla Tactics lock the holder into its first
-        // selected move. PS sets Gorilla Tactics' `choiceLock` in
-        // `onModifyMove` (data/abilities.ts:1624) the first time a move is
-        // used; we reuse the Choice-item `locked_move_slot` state. Struggle
-        // and Z/Max moves are exempt in PS, but neither is modelled as a
-        // selectable slot here, so the slot-based lock is equivalent.
-        let is_choice = matches!(
-            attacker.item_id,
-            data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
-        ) || attacker.effective_ability_id() == data::ability_id::GORILLATACTICS;
-        // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
-        // +1 PP per foe target holding active Pressure. Computed before the
-        // mutable borrow; for charge / semi-invuln moves PS applies this only
-        // on turn 1, so it sits inside the `!skip_pp_deduct` arm.
-        let pressure_extra = if skip_pp_deduct {
-            0
-        } else {
-            pressure_extra_pp(self, actor_side, m, target)
-        };
-        if !skip_pp_deduct {
-            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + pressure_extra);
-                }
-                if is_choice && mon.locked_move_slot() == 255 {
-                    mon.set_locked_move_slot(move_slot);
-                }
-                // Track the most recent move used — Encore reads this when
-                // it lands on a target. PS sim/pokemon.ts updates lastMove
-                // after PP deduction, regardless of accuracy outcome.
-                mon.last_used_move_slot = move_slot;
-            }
-            // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
-        }
+        // 3. PP cost — ticked even on miss / immunity (PS behavior). Also
+        //    locks Choice / Gorilla Tactics into this slot, sets
+        //    `last_used_move_slot`, and fires Leppa Berry on PP depletion.
+        //    See `deduct_pp_main`.
+        self.deduct_pp_main(actor_side, actor_slot, move_slot, m, &attacker, target, skip_pp_deduct);
 
         // Priority-block abilities — Dazzling / Queenly Majesty / Armor Tail.
         // PS `data/abilities.ts` dazzling(854)/queenlymajesty(3706)/
@@ -6076,6 +5932,232 @@ impl Battle {
         dmg_ctx.roll = roll;
         let dmg = calculate_damage(attacker, defender, move_id, dmg_ctx);
         (dmg, Some(dmg_ctx))
+    }
+
+    /// Two-turn charge / semi-invuln move handling. Run after the lock-in
+    /// override and move-data finalization, BEFORE the standard PP
+    /// deduction. On turn 1 this deducts PP (+ Pressure extra), sets
+    /// `charging_turns` / `charging_move_slot` / `semi_invuln`, fires
+    /// the per-charge stat boosts (Electro Shot / Meteor Beam SpA +1),
+    /// and returns `Abort` so the caller short-circuits with no damage
+    /// this turn. Power Herb and weather skips collapse the charge to
+    /// a single-turn move (falls through, `skip_pp_deduct = false`).
+    /// Turn 2 clears state and returns `Continue { skip_pp_deduct: true }`
+    /// because PP was already deducted on turn 1.
+    ///
+    /// Deterministic — no RNG draws.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_charge_turn(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        m: &data::MoveDef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+    ) -> ChargeOutcome {
+        // Two-turn semi-invulnerable charge moves (Fly / Dig / Dive /
+        // Bounce / Phantom Force / Shadow Force). PS handler pattern
+        // (data/moves.ts:fly:5894, dig:3578, dive:3737, bounce:1709,
+        // phantomforce:13320, shadowforce:16086):
+        //   onTryMove(attacker) {
+        //     if (attacker.removeVolatile(move.id)) return;   // turn 2
+        //     this.add('-prepare', attacker, move.name);
+        //     attacker.addVolatile('twoturnmove', defender);
+        //     return null;                                     // turn 1
+        //   }
+        // We deduct PP turn 1 (same as PS's runMove order) and skip
+        // re-deduct turn 2. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Semi-invulnerable_turn>.
+        let semi_invuln_code_for = |slug: &str| -> u8 {
+            match slug {
+                "dig" => 1,
+                "dive" => 2,
+                "fly" => 3,
+                "bounce" => 4,
+                "phantomforce" => 5,
+                "shadowforce" => 6,
+                "skydrop" => 7,
+                _ => 0,
+            }
+        };
+        // Two-turn charge moves WITHOUT semi-invulnerability (Solar Beam /
+        // Solar Blade / Sky Attack / Razor Wind / Skull Bash / Meteor
+        // Beam). PS handler pattern (data/moves.ts:solarbeam:17229,
+        // solarblade:17265, skyattack:16670, razorwind:14760,
+        // skullbash:16720, meteorbeam:11740):
+        //   onTryMove: removeVolatile→continue; else addVolatile + return
+        //   null. Solar Beam / Solar Blade additionally skip the charge
+        //   turn under Sun (PS attrLastMove '[still]' + `addMove` early
+        //   return without `addVolatile`). Power Herb consumes the held
+        //   item to skip charge (data/items.ts:powerherb:4770
+        //   `onChargeMove` returns false → skip charge turn). The
+        //   per-charge stat-boost effects (Meteor Beam +1 SpA, Skull
+        //   Bash +1 Def) are load-bearing for follow-up damage and land
+        //   as separate move PRs alongside their `onTryMove` boost arms.
+        let is_charge_move = matches!(
+            move_id,
+            data::move_id::SOLARBEAM | data::move_id::SOLARBLADE | data::move_id::SKYATTACK
+                | data::move_id::RAZORWIND | data::move_id::SKULLBASH | data::move_id::METEORBEAM
+                | data::move_id::ELECTROSHOT
+        );
+        let semi_code = semi_invuln_code_for(m.slug);
+        let mut skip_pp_deduct = false;
+        if is_charge_move {
+            let release = attacker.charging_turns == 1
+                && attacker.charging_move_slot == move_slot;
+            if release {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                }
+                skip_pp_deduct = true;
+            } else {
+                // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
+                // and Meteor Beam (data/moves.ts:meteorbeam:11740 onTryMove)
+                // both raise the user's Special Attack by +1 the moment they
+                // begin charging — PS calls `this.boost({spa:1})` after
+                // `-prepare` and *before* the weather/ChargeMove skip check, so
+                // the boost lands on turn 1 whether the charge is then skipped
+                // (Electro Shot in Rain, either via Power Herb) or not.
+                // Self-boost (source == target), so Clear Body / Mirror Armor
+                // don't block it. `&[(2, 1)]` is a stack slice — no heap
+                // allocation in step(). Meteor Beam has no weather skip; it
+                // only skips charge via Power Herb (handled below).
+                if matches!(move_id, data::move_id::ELECTROSHOT | data::move_id::METEORBEAM) {
+                    self.apply_boosts(actor_side, actor_slot, &[(2, 1)], actor_side, actor_slot);
+                }
+                // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
+                // Electro Shot in Rain) or Power Herb consumption.
+                let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
+                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun))
+                    || (move_id == data::move_id::ELECTROSHOT
+                        && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
+                let power_herb = attacker.item_id == data::item_id::POWERHERB;
+                if weather_skip {
+                    // Skip charge — fall through to normal damage. PP
+                    // deducts via the standard PP block.
+                } else if power_herb {
+                    // Consume Power Herb, skip charge. PS `useItem` clears
+                    // the item slot and records `lastItem` — Recycle can
+                    // restore it, so route through `consume_item`.
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.consume_item();
+                    }
+                } else {
+                    // Charge turn: deduct PP (+ Pressure extra, which PS
+                    // applies on turn 1 only), set charging state, return.
+                    let extra = pressure_extra_pp(self, actor_side, m, target);
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        if let Some(pp) = a.pp.get_mut(move_slot as usize) {
+                            *pp = pp.saturating_sub(1 + extra);
+                        }
+                        a.last_used_move_slot = move_slot;
+                        a.charging_turns = 1;
+                        a.charging_move_slot = move_slot;
+                    }
+                    crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                    return ChargeOutcome::Abort;
+                }
+            }
+        }
+        if semi_code != 0 {
+            let release = attacker.charging_turns == 1
+                && attacker.charging_move_slot == move_slot;
+            if release {
+                // Turn 2: clear state and fall through to normal damage.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                    a.semi_invuln = 0;
+                }
+                skip_pp_deduct = true;
+            } else {
+                // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
+                // applied turn 1 only per PS), no damage.
+                let extra = pressure_extra_pp(self, actor_side, m, target);
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = a.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1 + extra);
+                    }
+                    a.last_used_move_slot = move_slot;
+                    a.charging_turns = 1;
+                    a.charging_move_slot = move_slot;
+                    a.semi_invuln = semi_code;
+                }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                return ChargeOutcome::Abort;
+            }
+        }
+        ChargeOutcome::Continue { skip_pp_deduct }
+    }
+
+    /// Standard PP deduction site — runs after `apply_charge_turn` returns
+    /// `Continue`. Handles:
+    ///   - Turn-2 `skip_pp_deduct` path (sets `last_used_move_slot` only).
+    ///   - Choice item / Gorilla Tactics move-slot lock-in.
+    ///   - Pressure surcharge (+1 PP per foe target holding Pressure).
+    ///   - Leppa Berry on-PP-depleted hook.
+    ///
+    /// Deterministic — no RNG draws.
+    #[allow(clippy::too_many_arguments)]
+    fn deduct_pp_main(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_slot: u8,
+        m: &data::MoveDef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+        skip_pp_deduct: bool,
+    ) {
+        // 3. PP cost — ticked even on miss / immunity (PS behavior).
+        // Also: Choice items lock the holder into this move slot after
+        // a successful invocation (PP-consumption suffices).
+        if skip_pp_deduct {
+            // Turn 2 of a semi-invuln move — PP was deducted on turn 1.
+            // Still update `last_used_move_slot` so Encore / Choice item
+            // bookkeeping is consistent.
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                mon.last_used_move_slot = move_slot;
+            }
+        }
+        // Choice items AND Gorilla Tactics lock the holder into its first
+        // selected move. PS sets Gorilla Tactics' `choiceLock` in
+        // `onModifyMove` (data/abilities.ts:1624) the first time a move is
+        // used; we reuse the Choice-item `locked_move_slot` state. Struggle
+        // and Z/Max moves are exempt in PS, but neither is modelled as a
+        // selectable slot here, so the slot-based lock is equivalent.
+        let is_choice = matches!(
+            attacker.item_id,
+            data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+        ) || attacker.effective_ability_id() == data::ability_id::GORILLATACTICS;
+        // Pressure (PS abilities.ts:3392 via battle-actions.ts:467-484):
+        // +1 PP per foe target holding active Pressure. Computed before the
+        // mutable borrow; for charge / semi-invuln moves PS applies this only
+        // on turn 1, so it sits inside the `!skip_pp_deduct` arm.
+        let pressure_extra = if skip_pp_deduct {
+            0
+        } else {
+            pressure_extra_pp(self, actor_side, m, target)
+        };
+        if !skip_pp_deduct {
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1 + pressure_extra);
+                }
+                if is_choice && mon.locked_move_slot() == 255 {
+                    mon.set_locked_move_slot(move_slot);
+                }
+                // Track the most recent move used — Encore reads this when
+                // it lands on a target. PS sim/pokemon.ts updates lastMove
+                // after PP deduction, regardless of accuracy outcome.
+                mon.last_used_move_slot = move_slot;
+            }
+            // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+        }
     }
 
     /// Pre-move volatile/status checks. Returns whether the move should
