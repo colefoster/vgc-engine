@@ -130,6 +130,20 @@ enum PreMoveOutcome {
     Abort,
 }
 
+/// Result of the per-target accuracy check inside the move-resolution
+/// loop. See `Battle::roll_accuracy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccuracyOutcome {
+    /// The move connected against this target — proceed with damage /
+    /// effects. Covers both the sure-hit / Protect-blocked early return
+    /// (no draw consumed) and a successful accuracy roll.
+    Hit,
+    /// The move missed this target — caller must `continue` the per-
+    /// target loop. Blunder Policy has already been consumed if
+    /// applicable.
+    Miss,
+}
+
 /// A pending Future Sight / Doom Desire hit, keyed in `Battle::future_pending`
 /// by the TARGET `[side][slot]`. PS stores this as a `futuremove`
 /// slotCondition on the target slot (`data/moves.ts:futuresight` /
@@ -3840,13 +3854,12 @@ impl Battle {
             }
 
             // Accuracy. PS sim/battle-actions.ts:707 — extracted into
-            // `crate::accuracy::effective_accuracy` (Phase A helper, see
-            // `docs/resolve-move-restructure-plan.md`). The helper is
-            // read-only on `Battle`; the caller (here) owns the RNG draw,
-            // the Micle-latch clear, and Blunder Policy on miss. Behavior
-            // is byte-identical to the prior inline computation.
-            let acc_comp = crate::accuracy::effective_accuracy(
-                self,
+            // `Battle::roll_accuracy`, which wraps the pure
+            // `crate::accuracy::effective_accuracy` helper (Phase A) with
+            // the single `percent_1_100` draw, Micle-latch clear, and
+            // Blunder Policy consumption on miss. Behavior is byte-
+            // identical to the prior inline computation.
+            match self.roll_accuracy(
                 &attacker,
                 &defender,
                 m,
@@ -3860,26 +3873,9 @@ impl Battle {
                 no_guard_pair,
                 damaging,
                 pending_kind,
-            );
-            if let Some(eff_acc) = acc_comp.threshold {
-                if acc_comp.consumed_micle {
-                    if let Some(a) =
-                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
-                    {
-                        a.micle_next_move = false;
-                    }
-                }
-                self.rng.set_decision(RngDecision::Accuracy);
-                let roll = self.rng.percent_1_100() as u32;
-                if roll > eff_acc {
-                    // Blunder Policy — the holder's own move missed due to
-                    // accuracy. PS `sim/battle-actions.ts:740` consumes the
-                    // item and grants +2 Spe on the miss branch (non-OHKO;
-                    // this path is the standard accuracy roll, OHKO uses a
-                    // separate one above). No new RNG draw.
-                    crate::item::try_consume_blunder_policy(self, actor_side, actor_slot);
-                    continue;
-                }
+            ) {
+                AccuracyOutcome::Hit => {}
+                AccuracyOutcome::Miss => continue,
             }
 
             // Wide Guard — blocks spread moves directed at this side
@@ -5961,6 +5957,80 @@ impl Battle {
         }
 
         targets
+    }
+
+    /// Roll the move's accuracy against one target inside the per-target
+    /// loop of `resolve_move_with_pending`. Wraps the pure
+    /// `crate::accuracy::effective_accuracy` predicate (Phase A helper)
+    /// with the actual `percent_1_100` draw + threshold compare +
+    /// Micle Berry latch consumption + Blunder Policy bookkeeping on
+    /// miss. Behavior is byte-identical to the previous inline block.
+    ///
+    /// CONTAINS ONE RNG DRAW (preserved verbatim):
+    ///   - `rng.percent_1_100()` keyed to (turn, actor, move, target) under
+    ///     `RngDecision::Accuracy`. Only drawn when
+    ///     `effective_accuracy` returns `Some(threshold)`; sure-hit /
+    ///     Protect-blocked early returns consume no draw — same as the
+    ///     prior inline branch.
+    ///
+    /// The caller still owns `set_move_context` (set once at the top of
+    /// the per-target loop, before this method), and the OHKO accuracy
+    /// draw a few hundred lines above is a SEPARATE call site that is
+    /// NOT routed through here.
+    #[allow(clippy::too_many_arguments)]
+    fn roll_accuracy(
+        &mut self,
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        m: &data::MoveDef,
+        move_id: u16,
+        actor_side: SideRef,
+        actor_slot: u8,
+        tside: SideRef,
+        tslot: u8,
+        attacker_ability_id: u16,
+        attacker_item_id: u16,
+        no_guard_pair: bool,
+        damaging: bool,
+        pending_kind: &[[u8; 2]; 2],
+    ) -> AccuracyOutcome {
+        let acc_comp = crate::accuracy::effective_accuracy(
+            self,
+            attacker,
+            defender,
+            m,
+            move_id,
+            actor_side,
+            actor_slot,
+            tside,
+            tslot,
+            attacker_ability_id,
+            attacker_item_id,
+            no_guard_pair,
+            damaging,
+            pending_kind,
+        );
+        if let Some(eff_acc) = acc_comp.threshold {
+            if acc_comp.consumed_micle {
+                if let Some(a) =
+                    self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                {
+                    a.micle_next_move = false;
+                }
+            }
+            self.rng.set_decision(RngDecision::Accuracy);
+            let roll = self.rng.percent_1_100() as u32;
+            if roll > eff_acc {
+                // Blunder Policy — the holder's own move missed due to
+                // accuracy. PS `sim/battle-actions.ts:740` consumes the
+                // item and grants +2 Spe on the miss branch (non-OHKO;
+                // this path is the standard accuracy roll, OHKO uses a
+                // separate one above). No new RNG draw.
+                crate::item::try_consume_blunder_policy(self, actor_side, actor_slot);
+                return AccuracyOutcome::Miss;
+            }
+        }
+        AccuracyOutcome::Hit
     }
 
     /// Pre-move volatile/status checks. Returns whether the move should
