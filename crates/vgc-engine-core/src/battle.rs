@@ -5767,15 +5767,14 @@ impl Battle {
                     _ => {}
                 }
             }
-            // Sheer Force strips secondaries entirely — flinch, stat
-            // drops, burn chance etc. are deleted before they roll. PS
-            // `data/abilities.ts:sheerforce` `onModifyMove` clears
-            // `move.secondaries` (and `move.self`); the secondary roll
-            // never reaches `runEvent('Hit')`. Same predicate as the BP
-            // boost in `damage.rs`.
-            let sheer_force_strip = crate::damage::attacker_has_sheer_force(&attacker)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            if alive_post && !hit_sub && !sheer_force_strip {
+            // Deterministic gate on the secondary-effect block. See
+            // `crate::secondary::should_run_secondary_block` for scope
+            // (Sheer Force ablation + target faint + sub absorption);
+            // per-secondary vetoes / draws live inside
+            // `apply_secondary_effect`.
+            if crate::secondary::should_run_secondary_block(self, &attacker, m, alive_post, hit_sub)
+                == crate::secondary::SecondaryProcDecision::Run
+            {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 // The keyed context set at the loop top travelled in with the
                 // mem::replace; tag the decision so percent draws here key as
