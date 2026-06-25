@@ -11652,10 +11652,17 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // Paralysis 10%:
         "thunderbolt" | "thundershock" | "spark" | "thunderpunch"
         | "thunderfang" | "zingzap" => (Status::Paralysis, 10),
-        // Freeze 10% — Ice Fang. PS data/moves.ts:icefang carries two
-        // independent secondaries (chance:10 frz + chance:10 flinch);
-        // the flinch arm is in `flinch_chance` below.
-        "icefang" => (Status::Freeze, 10),
+        // Freeze 10% — Ice Fang plus Ice Beam, Ice Punch, Blizzard. PS
+        // data/moves.ts each `secondary: { chance: 10, status: 'frz' }`. The
+        // freeze application path (try_set_status) already gates Ice-type /
+        // Magma Armor / Purifying Salt immunity and the 20% pre-move thaw is
+        // wired, so these just needed the table entry. (Ice Fang also carries
+        // a 10% flinch — its flinch arm is in `flinch_chance` below.)
+        //
+        // EXCLUDED for Champions: Freeze-Dry (mod sets `secondary: undefined`
+        // — no freeze in this format) and Powder Snow (mod `isNonstandard:
+        // "Past"`). See data/mods/champions/moves.ts.
+        "icefang" | "icebeam" | "icepunch" | "blizzard" => (Status::Freeze, 10),
         // Paralysis 30%:
         // (Thunderous Kick is NOT a paralysis move — PS
         // data/moves.ts:19549 `thunderouskick` has no status secondary; its
@@ -30341,15 +30348,19 @@ mod tests {
             super::status_secondary("thunderfang"), Some((Status::Paralysis, 10)),
             "Thunder Fang 10% par",
         );
-        // Ice Fang's freeze secondary is intentionally NOT in the
-        // status_secondary table yet — gen 9 freeze handling is deferred
-        // (needs a sleep-style volatile pipeline). This subtest is a
-        // load-bearing reminder to wire frz when that infrastructure
-        // lands. The flinch arm still fires today.
+        // 10% freeze — Ice Fang plus Ice Beam / Ice Punch / Blizzard. The
+        // freeze application path (try_set_status) gates Ice-type / Magma
+        // Armor immunity and the 20% pre-move thaw is wired. Freeze-Dry and
+        // Powder Snow are EXCLUDED for Champions (mod removes / sidelines
+        // them — see status_secondary).
         assert_eq!(
             super::status_secondary("icefang"), Some((Status::Freeze, 10)),
             "Ice Fang 10% frz",
         );
+        assert_eq!(super::status_secondary("icebeam"), Some((Status::Freeze, 10)), "Ice Beam 10% frz");
+        assert_eq!(super::status_secondary("icepunch"), Some((Status::Freeze, 10)), "Ice Punch 10% frz");
+        assert_eq!(super::status_secondary("blizzard"), Some((Status::Freeze, 10)), "Blizzard 10% frz");
+        assert_eq!(super::status_secondary("freezedry"), None, "Freeze-Dry has no Champions secondary");
         // Thunder (PS num 87) is `chance: 30` par — NOT 10% like Thunderbolt.
         assert_eq!(
             super::status_secondary("thunder"), Some((Status::Paralysis, 30)),
@@ -30359,6 +30370,50 @@ mod tests {
             super::status_secondary("thunderbolt"), Some((Status::Paralysis, 10)),
             "Thunderbolt 10% par",
         );
+    }
+
+    #[test]
+    fn ice_beam_can_freeze_non_ice_but_not_ice_types() {
+        // Ice Beam's 10% freeze secondary. Sweep seeds at a bulky NON-Ice
+        // target (Blissey) and confirm freeze occurs on some seeds but not
+        // all (chance-gated). Then confirm an ICE-type target (Glaceon) is
+        // NEVER frozen (type immunity, via try_set_status). The attacker is
+        // weak enough that the target always survives a single Ice Beam.
+        let atk_json = r#"[
+            {"species":"glaceon","level":50,"ability":"snowcloak","item":"","nature":"modest","moves":["icebeam","tackle","protect","ember"],"evs":{"spa":4}}
+        ]"#;
+        let normal_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let ice_json = r#"[
+            {"species":"glaceon","level":50,"ability":"snowcloak","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let n = 120u64;
+        let mut froze_normal = 0u64;
+        let mut froze_ice = 0u64;
+        for seed in 0..n {
+            let atk = TeamBuilder::from_json(atk_json).unwrap();
+            let nrm = TeamBuilder::from_json(normal_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, atk, nrm);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Blissey must survive Ice Beam (seed {seed})");
+            if matches!(b.p2.team[0].status, Status::Freeze) { froze_normal += 1; }
+
+            let atk = TeamBuilder::from_json(atk_json).unwrap();
+            let ice = TeamBuilder::from_json(ice_json).unwrap();
+            let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed }, atk, ice);
+            b2.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if matches!(b2.p2.team[0].status, Status::Freeze) { froze_ice += 1; }
+        }
+        assert!(froze_normal > 0, "Ice Beam should freeze a non-Ice target on some seeds (got 0)");
+        assert!(froze_normal < n, "Ice Beam freeze is 10%, not guaranteed (got all {n})");
+        assert_eq!(froze_ice, 0, "Ice-type target must never be frozen (got {froze_ice})");
     }
 
     #[test]
