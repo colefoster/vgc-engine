@@ -4516,6 +4516,35 @@ impl Battle {
             // sub break; PS is the oracle.)
             let base_hit_dmg = dmg;
             for hit_idx in 0..hits {
+                // Triple Kick / Triple Axel `multiaccuracy` — PS
+                // sim/battle-actions.ts:907 `if (target && move.multiaccuracy
+                // && hit > 1)`: every hit AFTER the first rolls accuracy
+                // independently and the move STOPS at the first miss (only the
+                // hits that connected deal damage / ramp BP). Hit 1's accuracy
+                // is the move-level roll already done above. Loaded Dice
+                // deletes `multiaccuracy` (data/items.ts:3456 onModifyMove), so
+                // its holder skips these rolls and always lands all 3 hits.
+                // Reuses the pure `effective_accuracy` predicate (boost chain,
+                // No Guard, etc.); `None` = sure-hit, no draw. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
+                if hit_idx >= 1
+                    && matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL)
+                    && attacker_item_id != data::item_id::LOADEDDICE
+                {
+                    let acc_comp = crate::accuracy::effective_accuracy(
+                        self, &attacker, &defender, m, move_id,
+                        actor_side, actor_slot, tside, tslot,
+                        attacker_ability_id, attacker_item_id, no_guard_pair,
+                        damaging, pending_kind,
+                    );
+                    if let Some(eff_acc) = acc_comp.threshold {
+                        self.rng.set_decision(RngDecision::Accuracy);
+                        let roll = self.rng.percent_1_100() as u32;
+                        if roll > eff_acc {
+                            break;
+                        }
+                    }
+                }
                 // Triple Kick / Triple Axel ramp BP by hit number. PS:
                 //   data/moves.ts:triplekick basePowerCallback `10 * move.hit`
                 //   data/moves.ts:tripleaxel basePowerCallback `20 * move.hit`
@@ -25560,6 +25589,48 @@ mod tests {
         let max_hp = b.p2.team[0].stats.hp;
         assert!(dmg as u32 * 8 >= max_hp as u32,
                 "Triple Axel ramp should land >= 1/8 max HP: dmg={dmg} maxhp={max_hp}");
+    }
+
+    #[test]
+    fn triple_axel_stops_on_a_missed_hit() {
+        // Triple Axel is `multiaccuracy` — hits 2 and 3 each roll 90%
+        // accuracy and the move STOPS at the first miss, so the total varies
+        // with how many hits connect. The ramp makes a 1-hit total ≈ 1/6 and
+        // a 2-hit total ≈ 1/2 of the full 3-hit total — far below the ±15%
+        // damage-roll spread. Sweep seeds and assert the smallest nonzero
+        // total is < 0.8× the largest: only a skipped hit can drop that low.
+        // Before per-hit accuracy every seed landed all 3 hits (ratio ≥ 0.85).
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["tripleaxel","dragonclaw","aerialace","ironhead"],"evs":{"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut totals: Vec<u16> = Vec::new();
+        for seed in 0..64u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(), p2.clone(),
+            );
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            let dmg = hp0 - b.p2.team[0].current_hp;
+            if dmg > 0 {
+                totals.push(dmg);
+            }
+        }
+        let min = *totals.iter().min().expect("some hits land");
+        let max = *totals.iter().max().expect("some hits land");
+        assert!(
+            (min as u32) * 100 < (max as u32) * 80,
+            "Triple Axel multiaccuracy should produce partial-hit totals \
+             (min {min} should be < 0.8 × max {max}); got {totals:?}",
+        );
     }
 
     #[test]
