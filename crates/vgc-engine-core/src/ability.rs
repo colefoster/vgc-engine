@@ -396,7 +396,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     let new_weather = match ability_id {
         data::ability_id::DRIZZLE => Some(crate::weather::Weather::Rain),
         data::ability_id::DROUGHT | data::ability_id::ORICHALCUMPULSE => Some(crate::weather::Weather::Sun),
-        data::ability_id::SANDSTREAM | data::ability_id::SANDSPIT => Some(crate::weather::Weather::Sand),
+        data::ability_id::SANDSTREAM => Some(crate::weather::Weather::Sand),
         data::ability_id::SNOWWARNING => Some(crate::weather::Weather::Snow),
         _ => None,
     };
@@ -1268,6 +1268,28 @@ pub fn on_damaging_hit(
                 battle.apply_boosts(sd, s, &[(4, -1)], target_side, target_slot);
             }
         }
+    }
+
+    // Sand Spit — PS `data/abilities.ts:sandspit` `onDamagingHit`:
+    //   this.field.setWeather('sandstorm');
+    // Whenever the holder is struck by a damaging move it sets Sandstorm
+    // (5 turns, 8 with Smooth Rock) — NOT on switch-in (where it was wrongly
+    // grouped with Sand Stream before). Fires regardless of contact/crit, and
+    // on a KO hit too (onDamagingHit runs before the faint is processed). The
+    // `!= Sand` guard mirrors PS `setWeather` returning false when the same
+    // weather is already up (no duration refresh). Sandaconda's signature.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Spit_(Ability)>.
+    if ability_id == data::ability_id::SANDSPIT
+        && battle.weather != crate::weather::Weather::Sand
+    {
+        battle.weather = crate::weather::Weather::Sand;
+        let holds_smooth_rock = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .map(|m| m.item_id == data::item_id::SMOOTHROCK)
+            .unwrap_or(false);
+        battle.weather_turns = if holds_smooth_rock { 8 } else { 5 };
+        battle.refresh_forecast_formes();
     }
 
     // Weak Armor — PS `data/abilities.ts:weakarmor` `onDamagingHit`:
