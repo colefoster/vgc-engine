@@ -4387,6 +4387,24 @@ impl Battle {
                         a.micle_next_move = false;
                     }
                 }
+                // Hustle — PS `data/abilities.ts:hustle`:
+                //   onSourceModifyAccuracyPriority: -1,
+                //   onSourceModifyAccuracy(accuracy, target, source, move) {
+                //     if (move.category === 'Physical' &&
+                //         typeof accuracy === 'number')
+                //       return this.chainModify([3277, 4096]);   // ≈ ×0.8
+                //   }
+                // The holder's PHYSICAL moves lose 20% accuracy — the trade-off
+                // for the ×1.5 Atk applied in damage.rs. Special / status moves
+                // are unaffected (raw `move.category`, so Body Press etc. count
+                // as physical). Scales the existing accuracy roll — no extra
+                // PRNG draw. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
+                if attacker.effective_ability_id() == data::ability_id::HUSTLE
+                    && m.category == 0
+                {
+                    eff_acc = eff_acc * 3277 / 4096;
+                }
                 // Bright Powder / Lax Incense — defender-side accuracy
                 // ×3686/4096 (≈ ×0.9). PS `data/items.ts:brightpowder`
                 // and `:laxincense`:
@@ -20669,6 +20687,54 @@ mod tests {
                 "Bright Powder should reduce hit rate ({} vs {})", bp, plain);
         assert!(lax < plain,
                 "Lax Incense should reduce hit rate ({} vs {})", lax, plain);
+    }
+
+    #[test]
+    fn hustle_lowers_physical_move_accuracy() {
+        // Hustle drops the holder's PHYSICAL move accuracy to ×0.8: a 100-acc
+        // physical move (Iron Head) now misses ~20% of the time, while the same
+        // mon with a neutral ability never misses it. PS data/abilities.ts:
+        // hustle onSourceModifyAccuracy. Pairs with the ×1.5 Atk in damage.rs.
+        let mk_plain = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"durant","level":50,"ability":"swarm","item":"leftovers","nature":"adamant","moves":["ironhead","crunch","protect","rest"],"evs":{"atk":252,"spe":252}}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let mk_hustle = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"durant","level":50,"ability":"hustle","item":"leftovers","nature":"adamant","moves":["ironhead","crunch","protect","rest"],"evs":{"atk":252,"spe":252}}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"impish","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp > 0
+        };
+        let trials = 200u64;
+        let plain: u32 = (0..trials).map(|s| mk_plain(s) as u32).sum();
+        let hustle: u32 = (0..trials).map(|s| mk_hustle(s) as u32).sum();
+        assert_eq!(plain, trials as u32, "Iron Head (100 acc) never misses without Hustle");
+        assert!(hustle < plain,
+                "Hustle lowers physical accuracy ({} vs {})", hustle, plain);
     }
 
     #[test]
