@@ -7677,7 +7677,13 @@ impl Battle {
                         .is_some_and(|m| m.is_alive() && m.effective_ability_id() == veil_id)
                 })
         };
-        if immune || terrain_blocks || ability_blocks || ally_veil_blocks {
+        // Harsh sunlight prevents freeze. PS `data/conditions.ts` sunnyday /
+        // desolateland `onImmunity(type) { if (type === 'frz') return false; }`
+        // — no mon can be frozen while harsh sun is up. `leaf_guard_sun`
+        // (computed above) already detects `effective_weather() == Sun`, which
+        // also covers Desolate Land (collapsed into Weather::Sun here).
+        let sun_blocks_freeze = leaf_guard_sun && matches!(status, Status::Freeze);
+        if immune || terrain_blocks || ability_blocks || ally_veil_blocks || sun_blocks_freeze {
             return;
         }
         // Sleep duration roll. PS `data/conditions.ts:59` slp.onStart:
@@ -30414,6 +30420,35 @@ mod tests {
         assert!(froze_normal > 0, "Ice Beam should freeze a non-Ice target on some seeds (got 0)");
         assert!(froze_normal < n, "Ice Beam freeze is 10%, not guaranteed (got all {n})");
         assert_eq!(froze_ice, 0, "Ice-type target must never be frozen (got {froze_ice})");
+    }
+
+    #[test]
+    fn harsh_sun_prevents_freeze() {
+        // PS sunnyday/desolateland `onImmunity('frz') => false`: no mon can be
+        // frozen under harsh sun. Same Ice Beam vs Blissey sweep as above, but
+        // with Sun up — freeze must NEVER land. (Without sun the prior test
+        // shows it freezes on ~8% of seeds, so a passing result here is the
+        // gate working, not the move silently failing.)
+        let atk_json = r#"[
+            {"species":"glaceon","level":50,"ability":"snowcloak","item":"","nature":"modest","moves":["icebeam","tackle","protect","ember"],"evs":{"spa":4}}
+        ]"#;
+        let normal_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let mut froze = 0u64;
+        for seed in 0..120u64 {
+            let atk = TeamBuilder::from_json(atk_json).unwrap();
+            let nrm = TeamBuilder::from_json(normal_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, atk, nrm);
+            b.weather = crate::weather::Weather::Sun;
+            b.weather_turns = 5;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if matches!(b.p2.team[0].status, Status::Freeze) { froze += 1; }
+        }
+        assert_eq!(froze, 0, "Harsh sun must prevent freeze entirely (got {froze})");
     }
 
     #[test]
