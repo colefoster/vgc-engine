@@ -17,6 +17,7 @@ mod team;
 mod team_export;
 
 pub mod ability;
+mod accuracy;
 pub mod battle;
 pub mod canonical_hash;
 #[cfg(feature = "chance")]
