@@ -11857,6 +11857,12 @@ fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
         "flamecharge" | "aquastep" | "trailblaze" | "aurawheel" => (&[(4, 1)], 100),
         // +1 Def:
         "steelwing" => (&[(1, 1)], 10),
+        // 100% +1 Def — Psyshield Bash (PS data/moves.ts:psyshieldbash
+        // `secondary: { chance: 100, self: { boosts: { def: 1 } } }`;
+        // Champions BP 90). Was missing, so the guaranteed Def raise never
+        // landed. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Psyshield_Bash_(move)>.
+        "psyshieldbash" => (&[(1, 1)], 100),
         // +1 to all five main stats (Ancient Power / Silver Wind / Ominous
         // Wind — the "elemental wind" family):
         "ancientpower" | "silverwind" | "ominouswind" => {
@@ -12890,6 +12896,41 @@ mod tests {
                 "Aqua Step (100% secondary) must raise attacker Spe by 1 (seed {seed})"
             );
         }
+    }
+
+    #[test]
+    fn psyshield_bash_always_raises_attacker_def() {
+        // PS data/moves.ts:psyshieldbash — `secondary: { chance: 100, self:
+        // { boosts: { def: 1 } } }`. 100% ⇒ +1 Def (index 1) on the attacker
+        // every connecting hit.
+        let p1_json = r#"[
+            {"species":"gallade","level":50,"ability":"justified","item":"","nature":"adamant","moves":["psyshieldbash","tackle","aerialace","ember"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        // Psyshield Bash is 90% accuracy, so it whiffs on some seeds — assert
+        // the +1 Def only when the hit connected (target lost HP), and confirm
+        // at least one hit landed across the sweep.
+        let mut hits = 0;
+        for seed in 0..16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let full = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p2.team[0].current_hp < full {
+                hits += 1;
+                assert_eq!(
+                    b.p1.team[0].boosts[1], 1,
+                    "Psyshield Bash (100% secondary) must raise attacker Def by 1 on a hit (seed {seed})"
+                );
+            }
+        }
+        assert!(hits > 0, "Psyshield Bash should have connected on at least one seed");
     }
 
     #[test]
