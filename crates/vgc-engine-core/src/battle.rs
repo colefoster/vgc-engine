@@ -29039,6 +29039,32 @@ mod tests {
     }
 
     #[test]
+    fn sand_spit_sets_sand_on_hit_not_switch_in() {
+        // Sand Spit fires onDamagingHit, NOT on switch-in (PS
+        // data/abilities.ts:sandspit). Sandaconda switches in with no weather,
+        // then a Body Slam triggers Sandstorm.
+        let p1_json = r#"[
+            {"species":"sandaconda","level":50,"ability":"sandspit","item":"","nature":"impish","moves":["coil","protect","earthquake","glare"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"adamant","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        assert_ne!(b.weather, crate::weather::Weather::Sand,
+                   "Sand Spit must NOT set Sand on switch-in");
+        // Sandaconda Coils (self); Snorlax Body Slams it → Sand Spit fires.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].is_alive(), "Sandaconda survives the Body Slam");
+        assert_eq!(b.weather, crate::weather::Weather::Sand,
+                   "Sand Spit sets Sand when the holder is hit by a damaging move");
+    }
+
+    #[test]
     fn protect_blocks_spread_move_on_protected_slot_only() {
         // Doubles: P1 slot 0 uses Earthquake (allAdjacent), P2 slot 1
         // uses Protect. EQ should hit P2 slot 0 (Calyrex partner) but
