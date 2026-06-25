@@ -3160,6 +3160,13 @@ impl Battle {
                         a.set_type_override(m.type_, None);
                         a.protean_used = true;
                     }
+                    // Refresh the attacker SNAPSHOT (cloned at the top of this
+                    // fn, before this retype) so the damage calc sees the new
+                    // mono-type and grants STAB on the very move that triggered
+                    // Protean/Libero — PS `onPrepareHit` retypes before the move
+                    // resolves. Same snapshot-refresh idiom as Stance Change
+                    // above. Without this the STAB check reads the stale clone.
+                    attacker.set_type_override(m.type_, None);
                 }
             }
         }
@@ -29318,6 +29325,56 @@ mod tests {
             assert_eq!(b.p2.team[0].boosts[4], -1, "Pounce -1 Spe seed {seed}");
             assert_eq!(b.p2.team[0].boosts[0], 0, "Pounce leaves Atk seed {seed}");
         }
+    }
+
+    #[test]
+    fn protean_grants_stab_on_triggering_move() {
+        // Protean/Libero retype the user to the move's type BEFORE the move
+        // resolves, so the very move that triggers it gains STAB. Greninja
+        // (Water/Dark) Flamethrower: with Protean it becomes Fire-typed and the
+        // hit gets ×1.5 STAB; with Torrent it stays Water/Dark and gets none.
+        // Same seed → identical damage roll, so the only difference is STAB.
+        // PS data/abilities.ts:protean onPrepareHit.
+        let mk_protean = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"greninja","level":50,"ability":"protean","item":"","nature":"timid","moves":["flamethrower","surf","darkpulse","protect"],"evs":{"spa":252,"spe":252}}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"gluttony","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"],"evs":{"hp":252,"spd":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let mk_plain = |seed: u64| {
+            let p1_json = r#"[
+                {"species":"greninja","level":50,"ability":"torrent","item":"","nature":"timid","moves":["flamethrower","surf","darkpulse","protect"],"evs":{"spa":252,"spe":252}}
+            ]"#;
+            let p2_json = r#"[
+                {"species":"snorlax","level":50,"ability":"gluttony","item":"","nature":"careful","moves":["bodyslam","rest","crunch","yawn"],"evs":{"hp":252,"spd":252}}
+            ]"#;
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            before - b.p2.team[0].current_hp
+        };
+        let protean = mk_protean(7);
+        let plain = mk_plain(7);
+        // ~×1.5 STAB; assert a clear boost (allow rounding slack).
+        let ratio_x100 = (protean as u32) * 100 / (plain.max(1) as u32);
+        assert!((140..=160).contains(&ratio_x100),
+            "Protean grants ~×1.5 STAB on the triggering move: protean={protean} plain={plain} (×{ratio_x100}/100)");
     }
 
     #[test]
