@@ -10978,8 +10978,11 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         | "rocktomb" => (4, -1, 100),
         // 100% -1 SpA:
         "mysticalfire" | "snarl" => (2, -1, 100),
-        // 100% -2 SpD:
-        "acidspray" => (3, -2, 100),
+        // 100% -2 SpD — Acid Spray and Lumina Crash (PS data/moves.ts:
+        // luminacrash `secondary: { chance: 100, boosts: { spd: -2 } }`;
+        // Espathra's signature, BP 80 Psychic). Was missing, so the guaranteed
+        // -2 SpD never landed (conformance out_a7c68724dd / out_b9836f85a9).
+        "acidspray" | "luminacrash" => (3, -2, 100),
         // 100% -1 SpD — Apple Acid (PS data/moves.ts:appleacid
         // `secondary: { chance: 100, boosts: { spd: -1 } }`; Champions BP 90).
         // Was missing, so the drop never landed (conformance out_90b9a9be38:
@@ -29301,6 +29304,31 @@ mod tests {
             assert!(b.p2.team[0].is_alive(), "Pounce target must survive seed {seed}");
             assert_eq!(b.p2.team[0].boosts[4], -1, "Pounce -1 Spe seed {seed}");
             assert_eq!(b.p2.team[0].boosts[0], 0, "Pounce leaves Atk seed {seed}");
+        }
+    }
+
+    #[test]
+    fn lumina_crash_always_drops_target_spd_by_two() {
+        // Lumina Crash = 100% SpD -2 (PS data/moves.ts:luminacrash, Espathra's
+        // signature). Sweep seeds at a bulky special wall and confirm the -2
+        // SpD lands every time and Atk is untouched.
+        let p1_json = r#"[
+            {"species":"espathra","level":50,"ability":"speedboost","item":"","nature":"timid","moves":["luminacrash","protect","dazzlinggleam","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","thunderwave","toxic"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        for seed in 0u64..32 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Lumina Crash target survives seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[3], -2, "Lumina Crash -2 SpD seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[0], 0, "Lumina Crash leaves Atk seed {seed}");
         }
     }
 
