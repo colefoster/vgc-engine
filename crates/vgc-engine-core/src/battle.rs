@@ -4221,6 +4221,35 @@ impl Battle {
             // construction is a plain struct literal with no side effects, so
             // hoisting it out of the conditional preserves behavior — see
             // `damage::damage_range_for` for the input bundle.
+            // Friend Guard — PS `data/abilities.ts:friendguard`
+            // `onAnyModifyDamage` ×3072/4096 (×0.75) on the holder's ALLY
+            // (not the holder itself). Doubles-only (singles has no ally),
+            // breakable (Mold Breaker / Turboblaze / Teravolt bypass).
+            // Pre-resolve the doubles + mold-break + ally-scan into a
+            // single bit so the post-formula stage just reads
+            // `ctx.defender_friend_guarded` — first slice of the damage-
+            // pipeline `DamageContext` builder. PS draws no RNG for this
+            // multiplier, so precomputing here cannot shift the draw order.
+            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Friend_Guard_(Ability)>.
+            let defender_friend_guarded = is_doubles
+                && !attacker_breaks_mold
+                && {
+                    let n = self.format().active_count() as u8;
+                    let mut guarded = false;
+                    for s in 0..n {
+                        if s == tslot { continue; }
+                        if let Some(ally) = self.side(tside).active_mon(s as usize) {
+                            if ally.is_alive()
+                                && ally.effective_ability_id()
+                                    == data::ability_id::FRIENDGUARD
+                            {
+                                guarded = true;
+                                break;
+                            }
+                        }
+                    }
+                    guarded
+                };
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
@@ -4234,6 +4263,7 @@ impl Battle {
                 pursuit_doubled: move_id == data::move_id::PURSUIT
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
+                defender_friend_guarded,
             };
             let (mut dmg, beat_up_ctx_opt) =
                 self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs);
@@ -4290,35 +4320,19 @@ impl Battle {
                 d
             };
             dmg = apply_attacker_item_mult(dmg, fixed_dmg_snapshot.is_none());
-            // Friend Guard — PS `data/abilities.ts:1488`:
-            //   onAnyModifyDamage(damage, source, target, move) {
-            //     if (target !== this.effectState.target &&
-            //         target.isAlly(this.effectState.target))
-            //       return this.chainModify(0.75);
-            //   }
-            // The HOLDER's ALLY takes ×0.75 incoming damage. Doubles-
-            // only — singles has no ally so the helper short-circuits.
-            // Carries `flags: { breakable: 1 }` — Mold Breaker on the
-            // attacker bypasses. Clefable / Clefairy signature.
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Friend_Guard_(Ability)>.
-            if is_doubles && dmg > 0 && !attacker_breaks_mold {
-                // Look at every alive ally of the defender on `tside`
-                // OTHER than the defender itself for Friend Guard.
-                let n = self.format().active_count() as u8;
-                let mut friend_guarded = false;
-                for s in 0..n {
-                    if s == tslot { continue; }
-                    if let Some(ally) = self.side(tside).active_mon(s as usize) {
-                        if ally.is_alive() && ally.effective_ability_id() == data::ability_id::FRIENDGUARD {
-                            friend_guarded = true;
-                            break;
-                        }
-                    }
-                }
-                if friend_guarded {
-                    dmg = ((dmg as u32) * 3072 / 4096).min(u16::MAX as u32) as u16;
-                }
+            // Friend Guard post-formula ×0.75 — first slice migrated into
+            // `DamageContext::apply_friend_guard` (the doubles + mold-break
+            // + ally-scan gate was pre-resolved into `defender_friend_guarded`
+            // at the input-build site above; PS draws no RNG for this
+            // multiplier so precomputing cannot shift draw order). For
+            // fixed-damage moves `beat_up_ctx_opt` is `None`; the snapshot
+            // restore below (`if let Some(fd) = fixed_dmg_snapshot`) would
+            // overwrite any multiplier anyway, so skipping the call there
+            // is byte-identical to the prior inline block. See PS
+            // `data/abilities.ts:friendguard` and `damage::DamageContext`
+            // for the per-arm citations.
+            if let Some(ref ctx) = beat_up_ctx_opt {
+                dmg = ctx.apply_friend_guard(dmg);
             }
             // Multi-hit hit-count roll — Double Hit, Population Bomb,
             // Bullet Seed, Rock Blast, Triple Axel, Tail Slap, Icicle
@@ -7833,6 +7847,9 @@ impl Battle {
                     ally_power_spot: false,
                     ally_battery: false,
                     steely_spirit_holders: 0,
+                    // Delayed Future Sight / Doom Desire hit — no Friend Guard
+                    // ally check (slot-condition resolution).
+                    defender_friend_guarded: false,
                 },
             )
         };
@@ -17398,11 +17415,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -21421,11 +21438,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
