@@ -117,6 +117,19 @@ pub enum StepResult {
     Ended { winner: Option<SideRef> },
 }
 
+/// Result of the pre-move volatile/status checks (Truant, sleep, freeze,
+/// flinch, disable/throat-chop/heal-block/taunt, paralysis, confusion,
+/// attract). See `Battle::check_pre_move_status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreMoveOutcome {
+    /// All checks passed — continue resolving the move.
+    Proceed,
+    /// A check fired — the caller must short-circuit
+    /// `resolve_move_with_pending` (the abort path matches PS exactly:
+    /// no PP consumed, no further move effects).
+    Abort,
+}
+
 /// A pending Future Sight / Doom Desire hit, keyed in `Battle::future_pending`
 /// by the TARGET `[side][slot]`. PS stores this as a `futuremove`
 /// slotCondition on the target slot (`data/moves.ts:futuresight` /
@@ -2217,269 +2230,20 @@ impl Battle {
         };
         let m = &data::MOVES[move_id as usize];
 
-        // 1. Flinch check — flinched mons cannot move at all this turn.
-        //    PS: PP is NOT consumed on flinch (the move is replaced with
-        //    inaction). Source: PS sim/battle-actions.ts:runMove.
-        if attacker.flinched_this_turn() {
-            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
-            //   onFlinch(pokemon) { this.boost({spe: 1}); }
-            // When the holder is stopped by flinch it gains +1 Speed. PS
-            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
-            // (the same gate that returns inaction), so the boost lands as
-            // the holder is prevented from moving. We use the effective
-            // ability so Gastro Acid / Neutralizing Gas suppression applies.
-            // Self-boost (source == holder), so it bypasses Mist / Mirror
-            // Armor and can be raised normally up to the +6 stage cap.
-            // Lucario / Mega Mewtwo X signature. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
-            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
-                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-            }
+        // Pre-move volatile/status checks (flinch, disable, throat chop, heal
+        // block, taunt, truant, sleep, freeze, paralysis, confusion, attract).
+        // Each gate aborts the move BEFORE PP is charged on the abort path,
+        // matching PS `cant` semantics. RNG draws (freeze thaw, paralysis full-
+        // para, confusion 33% gate + self-hit damage roll, attract 50% gate)
+        // stay in-place inside the extracted method so PsGen5 draw identity
+        // is preserved. See `check_pre_move_status`.
+        if matches!(
+            self.check_pre_move_status(
+                actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
+            ),
+            PreMoveOutcome::Abort
+        ) {
             return;
-        }
-
-        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
-        // (priority 7): the disabled move cannot be used. Selection is
-        // already filtered in `legal_choices`, but a forced / locked
-        // dispatch (Encore, lock-in) could still route the disabled
-        // slot here. No PP is consumed (we return before the PP-spend
-        // site). PS `cant`.
-        if attacker.disabled_move_slot() == move_slot {
-            return;
-        }
-
-        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
-        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
-        // used while the lockout is up. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a sound move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
-        // sound moves are exempt in PS, but the gen-9 data dump strips
-        // Z/Max so the exemption is a no-op here.
-        if attacker.throat_chop_turns() > 0 && m.is_sound {
-            return;
-        }
-
-        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
-        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
-        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
-        // while heal-blocked. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a heal move here, so it fails. No PP is consumed
-        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
-        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
-        if attacker.heal_block_turns() > 0 && m.is_heal {
-            return;
-        }
-
-        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
-        // (priority 5): a Status-category move cannot be used while taunted
-        // (Me First excepted). Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a status move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`.
-        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
-            return;
-        }
-
-        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
-        //   if (pokemon.removeVolatile('truant')) return;
-        //   if (!pokemon.hp) return;
-        //   this.add('cant', pokemon, 'ability: Truant');
-        //   return false;
-        // Effect: holder uses move on turn N, loafs around on N+1,
-        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
-        // (init false on switch-in). When true, skip the move and
-        // flip to false. When false, allow the move and flip to true.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
-        if attacker.effective_ability_id() == data::ability_id::TRUANT {
-            let loafing_now = attacker.truant_loafing;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.truant_loafing = !loafing_now;
-            }
-            if loafing_now {
-                return;
-            }
-        }
-
-        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
-        //     decrement sleep_turns; wake up + continue when it hits 0;
-        //     otherwise skip the move (no PP). `sleepUsable` moves like
-        //     Snore are not in the top-50 corpus — defer.
-        if matches!(attacker.status, Status::Sleep) {
-            let still_asleep = {
-                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
-                match mon {
-                    Some(a) => {
-                        let next = a.sleep_turns().saturating_sub(1);
-                        a.set_sleep_turns(next);
-                        if next == 0 {
-                            a.status = Status::None;
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    None => return,
-                }
-            };
-            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
-            // asleep it normally returns false (skip the move), but
-            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
-            // proceed. We let those through so Sleep Talk's `onHit`
-            // (random-move pick) runs and consumes its PRNG draw.
-            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
-                return;
-            }
-        }
-
-        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
-        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
-        //       user and lets the move proceed regardless of the roll.
-        //     - otherwise 20% chance to thaw and proceed; 80% to stay
-        //       frozen and skip the move (no PP).
-        if matches!(attacker.status, Status::Freeze) {
-            let thaws_self = move_is_defrost(m.slug);
-            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
-            if thaws_self || lucky_thaw {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.status = Status::None;
-                }
-            } else {
-                return;
-            }
-        }
-
-        // 1c. Paralysis full-skip. PS data/conditions.ts:par
-        //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
-        //     skip the move entirely (no PP, no effect). Matches PS
-        //     exactly via `rng.range(4) == 0`: oracle-pinned RngEvent
-        //     `Chance(num=1, denom=4)` lowers to `Range(0)` on true
-        //     and `Range(1)` on false (see lib.rs:389 in the golden
-        //     harness), so the engine consumes the same draw at the
-        //     same site as PS.
-        //
-        //     Engine survey (PR-208) saw this draw fire ~3x per battle
-        //     across the random-golden corpus and is the largest
-        //     single draw-site gap in the oracle alignment count.
-        // Keyed-oracle context for the pre-move status self-checks below
-        // (paralysis full-para, confusion self-hit). These draw BEFORE the move
-        // reaches the damaging-hit loop that normally calls `set_move_context`
-        // (~line 4009), so without this they inherit the PREVIOUS action's
-        // stale (turn, actor, move, target) key and miss the OracleKeyed table
-        // — the single largest draw-site gap in the conformance survey. PS keys
-        // each draw to (this turn, this mon, this move): the paralysis and
-        // confusion-gate rolls to the move's chosen target, the confusion
-        // self-hit DAMAGE roll to NO_SLOT (a self-hit has no target). Slot refs
-        // are `side*2 + slot`. `set_move_context` / `set_decision` are no-ops
-        // for every non-OracleKeyed RNG, so this changes nothing in real play.
-        let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
-        let ctx_target = match target {
-            Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
-            None => crate::rng::NO_SLOT,
-        };
-        if matches!(attacker.status, Status::Paralysis) {
-            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if self.rng.range(4) == 0 {
-                return;
-            }
-        }
-
-        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
-        //     decrements the confusion counter; when it hits 0 the
-        //     volatile is removed and the move proceeds normally.
-        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
-        //     to hit self for 40-BP typeless physical damage with the
-        //     standard damage roll, no PP consumed.
-        //
-        //     Engine survey (PR-208) saw this draw fire ~9x per
-        //     battle (PercentRoll gate) + the inner damage roll
-        //     (~4x). Both sites are now wired here so the oracle
-        //     stays balanced when confusion is in play.
-        {
-            let conf_pos = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
-            if let Some(pos) = conf_pos {
-                let remaining = {
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    let v = &mut m.volatiles.items[pos];
-                    v.payload = v.payload.saturating_sub(1);
-                    v.payload
-                };
-                if remaining == 0 {
-                    self.side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap()
-                        .volatiles
-                        .remove(crate::pokemon::VolatileKind::Confusion);
-                } else if {
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-                    self.rng.set_decision(RngDecision::Secondary);
-                    self.rng.percent_1_100() <= 33
-                } {
-                    // Self-hit: 40-BP typeless physical confusion damage.
-                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
-                    let (level, atk_base, atk_boost, def_base, def_boost) = {
-                        let m = self
-                            .side(actor_side)
-                            .active_mon(actor_slot as usize)
-                            .unwrap();
-                        (
-                            m.level as u32,
-                            m.stats.atk as u32,
-                            m.boosts[0],
-                            m.stats.def as u32,
-                            m.boosts[1],
-                        )
-                    };
-                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
-                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
-                    let lvl_factor = 2 * level / 5 + 2;
-                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
-                    // PS records the self-hit damage roll with no target.
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
-                    let roll = self.rng.damage_roll() as u32;
-                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    m.current_hp = m.current_hp.saturating_sub(dmg);
-                    if m.current_hp == 0 {
-                        m.fainted = true;
-                    }
-                    return;
-                }
-            }
-        }
-
-        // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
-        //     `onUpdate` (which fires before `onBeforeMove`) clears the
-        //     volatile if the source has left the field — we fold that in
-        //     here so NO RNG is drawn once the source is gone. Otherwise the
-        //     `onBeforeMovePriority 2` handler rolls `randomChance(1, 2)` —
-        //     50% chance to be "immobilized by love" and skip the move (no
-        //     PP). Placed after the confusion block to match PS onBeforeMove
-        //     priority ordering (confusion 3 > attract 2). The draw only
-        //     fires when an infatuated mon with a live source acts, so it
-        //     cannot perturb battles where Attract is never applied.
-        if let Some((src_side, src_idx)) = self
-            .side(actor_side)
-            .active_mon(actor_slot as usize)
-            .and_then(|mon| mon.attract_source())
-        {
-            if !self.attract_source_on_field(src_side, src_idx) {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.clear_attract();
-                }
-            } else if self.rng.range(2) == 0 {
-                return;
-            }
         }
 
         // Destiny Bond clears the moment its holder executes any move other
@@ -6197,6 +5961,321 @@ impl Battle {
         }
 
         targets
+    }
+
+    /// Pre-move volatile/status checks. Returns whether the move should
+    /// proceed:
+    ///   - `PreMoveOutcome::Proceed` — checks passed, continue with the move.
+    ///   - `PreMoveOutcome::Abort` — the move fails or is skipped; the
+    ///     caller (`resolve_move_with_pending`) short-circuits.
+    ///
+    /// Covers, in PS-canonical order:
+    ///   - Flinch (Steadfast self-boost still fires on the abort path).
+    ///   - Disable / Throat Chop / Heal Block / Taunt (selection is
+    ///     already filtered in `legal_choices`; a forced/locked dispatch
+    ///     could still route a banned move here).
+    ///   - Truant (Slaking / Vigoroth loafing this turn).
+    ///   - Sleep (decrement counter; wake at 0; otherwise skip — Sleep
+    ///     Talk / Snore pass through).
+    ///   - Freeze (20% thaw roll, or guaranteed thaw on a defrost move).
+    ///   - Paralysis (25% full-skip roll).
+    ///   - Confusion (decrement counter; 33% self-hit gate; 40-BP typeless
+    ///     physical self-damage with a damage roll on hit).
+    ///   - Attract (clear if source left the field; otherwise 50%
+    ///     immobilization roll).
+    ///
+    /// CONTAINS RNG DRAWS — preserved verbatim:
+    ///   - Freeze thaw: `rng.range(5)` (line was 1b).
+    ///   - Paralysis full-skip: `rng.range(4)` keyed to (turn, actor, move,
+    ///     target).
+    ///   - Confusion gate: `rng.percent_1_100()` keyed to (turn, actor, move,
+    ///     target) with `RngDecision::Secondary`.
+    ///   - Confusion self-hit damage: `rng.damage_roll()` keyed to (turn,
+    ///     actor, move, `NO_SLOT`).
+    ///   - Attract immobilize: `rng.range(2)`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_pre_move_status(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        m: &data::MoveDef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+    ) -> PreMoveOutcome {
+        // 1. Flinch check — flinched mons cannot move at all this turn.
+        //    PS: PP is NOT consumed on flinch (the move is replaced with
+        //    inaction). Source: PS sim/battle-actions.ts:runMove.
+        if attacker.flinched_this_turn() {
+            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
+            //   onFlinch(pokemon) { this.boost({spe: 1}); }
+            // When the holder is stopped by flinch it gains +1 Speed. PS
+            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
+            // (the same gate that returns inaction), so the boost lands as
+            // the holder is prevented from moving. We use the effective
+            // ability so Gastro Acid / Neutralizing Gas suppression applies.
+            // Self-boost (source == holder), so it bypasses Mist / Mirror
+            // Armor and can be raised normally up to the +6 stage cap.
+            // Lucario / Mega Mewtwo X signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
+            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
+                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+            }
+            return PreMoveOutcome::Abort;
+        }
+
+        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
+        // (priority 7): the disabled move cannot be used. Selection is
+        // already filtered in `legal_choices`, but a forced / locked
+        // dispatch (Encore, lock-in) could still route the disabled
+        // slot here. No PP is consumed (we return before the PP-spend
+        // site). PS `cant`.
+        //
+        // NOTE: this reads the ORIGINAL `move_slot` (pre lock-in override).
+        // The lock-in override happens AFTER this method returns; PS's
+        // disable check runs at `onBeforeMove` priority 7, before the
+        // lock-in move-id is substituted, so the original-slot comparison
+        // is the PS-correct behavior.
+        if attacker.disabled_move_slot() == move_slot {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
+        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
+        // used while the lockout is up. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a sound move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
+        // sound moves are exempt in PS, but the gen-9 data dump strips
+        // Z/Max so the exemption is a no-op here.
+        if attacker.throat_chop_turns() > 0 && m.is_sound {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
+        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
+        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
+        // while heal-blocked. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a heal move here, so it fails. No PP is consumed
+        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
+        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
+        if attacker.heal_block_turns() > 0 && m.is_heal {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
+        // (priority 5): a Status-category move cannot be used while taunted
+        // (Me First excepted). Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a status move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`.
+        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
+        //   if (pokemon.removeVolatile('truant')) return;
+        //   if (!pokemon.hp) return;
+        //   this.add('cant', pokemon, 'ability: Truant');
+        //   return false;
+        // Effect: holder uses move on turn N, loafs around on N+1,
+        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
+        // (init false on switch-in). When true, skip the move and
+        // flip to false. When false, allow the move and flip to true.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::TRUANT {
+            let loafing_now = attacker.truant_loafing;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.truant_loafing = !loafing_now;
+            }
+            if loafing_now {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
+        //     decrement sleep_turns; wake up + continue when it hits 0;
+        //     otherwise skip the move (no PP). `sleepUsable` moves like
+        //     Snore are not in the top-50 corpus — defer.
+        if matches!(attacker.status, Status::Sleep) {
+            let still_asleep = {
+                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
+                match mon {
+                    Some(a) => {
+                        let next = a.sleep_turns().saturating_sub(1);
+                        a.set_sleep_turns(next);
+                        if next == 0 {
+                            a.status = Status::None;
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => return PreMoveOutcome::Abort,
+                }
+            };
+            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
+            // asleep it normally returns false (skip the move), but
+            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
+            // proceed. We let those through so Sleep Talk's `onHit`
+            // (random-move pick) runs and consumes its PRNG draw.
+            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
+        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
+        //       user and lets the move proceed regardless of the roll.
+        //     - otherwise 20% chance to thaw and proceed; 80% to stay
+        //       frozen and skip the move (no PP).
+        if matches!(attacker.status, Status::Freeze) {
+            let thaws_self = move_is_defrost(m.slug);
+            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
+            if thaws_self || lucky_thaw {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.status = Status::None;
+                }
+            } else {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1c. Paralysis full-skip. PS data/conditions.ts:par
+        //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
+        //     skip the move entirely (no PP, no effect). Matches PS
+        //     exactly via `rng.range(4) == 0`: oracle-pinned RngEvent
+        //     `Chance(num=1, denom=4)` lowers to `Range(0)` on true
+        //     and `Range(1)` on false (see lib.rs:389 in the golden
+        //     harness), so the engine consumes the same draw at the
+        //     same site as PS.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~3x per battle
+        //     across the random-golden corpus and is the largest
+        //     single draw-site gap in the oracle alignment count.
+        // Keyed-oracle context for the pre-move status self-checks below
+        // (paralysis full-para, confusion self-hit). These draw BEFORE the move
+        // reaches the damaging-hit loop that normally calls `set_move_context`
+        // (~line 4009), so without this they inherit the PREVIOUS action's
+        // stale (turn, actor, move, target) key and miss the OracleKeyed table
+        // — the single largest draw-site gap in the conformance survey. PS keys
+        // each draw to (this turn, this mon, this move): the paralysis and
+        // confusion-gate rolls to the move's chosen target, the confusion
+        // self-hit DAMAGE roll to NO_SLOT (a self-hit has no target). Slot refs
+        // are `side*2 + slot`. `set_move_context` / `set_decision` are no-ops
+        // for every non-OracleKeyed RNG, so this changes nothing in real play.
+        let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+        let ctx_target = match target {
+            Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+            None => crate::rng::NO_SLOT,
+        };
+        if matches!(attacker.status, Status::Paralysis) {
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if self.rng.range(4) == 0 {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
+        //     decrements the confusion counter; when it hits 0 the
+        //     volatile is removed and the move proceeds normally.
+        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
+        //     to hit self for 40-BP typeless physical damage with the
+        //     standard damage roll, no PP consumed.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~9x per
+        //     battle (PercentRoll gate) + the inner damage roll
+        //     (~4x). Both sites are now wired here so the oracle
+        //     stays balanced when confusion is in play.
+        {
+            let conf_pos = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
+            if let Some(pos) = conf_pos {
+                let remaining = {
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    let v = &mut m.volatiles.items[pos];
+                    v.payload = v.payload.saturating_sub(1);
+                    v.payload
+                };
+                if remaining == 0 {
+                    self.side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap()
+                        .volatiles
+                        .remove(crate::pokemon::VolatileKind::Confusion);
+                } else if {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.set_decision(RngDecision::Secondary);
+                    self.rng.percent_1_100() <= 33
+                } {
+                    // Self-hit: 40-BP typeless physical confusion damage.
+                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
+                    let (level, atk_base, atk_boost, def_base, def_boost) = {
+                        let m = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .unwrap();
+                        (
+                            m.level as u32,
+                            m.stats.atk as u32,
+                            m.boosts[0],
+                            m.stats.def as u32,
+                            m.boosts[1],
+                        )
+                    };
+                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
+                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
+                    let lvl_factor = 2 * level / 5 + 2;
+                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
+                    // PS records the self-hit damage roll with no target.
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
+                    let roll = self.rng.damage_roll() as u32;
+                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    m.current_hp = m.current_hp.saturating_sub(dmg);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                    return PreMoveOutcome::Abort;
+                }
+            }
+        }
+
+        // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
+        //     `onUpdate` (which fires before `onBeforeMove`) clears the
+        //     volatile if the source has left the field — we fold that in
+        //     here so NO RNG is drawn once the source is gone. Otherwise the
+        //     `onBeforeMovePriority 2` handler rolls `randomChance(1, 2)` —
+        //     50% chance to be "immobilized by love" and skip the move (no
+        //     PP). Placed after the confusion block to match PS onBeforeMove
+        //     priority ordering (confusion 3 > attract 2). The draw only
+        //     fires when an infatuated mon with a live source acts, so it
+        //     cannot perturb battles where Attract is never applied.
+        if let Some((src_side, src_idx)) = self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .and_then(|mon| mon.attract_source())
+        {
+            if !self.attract_source_on_field(src_side, src_idx) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.clear_attract();
+                }
+            } else if self.rng.range(2) == 0 {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        PreMoveOutcome::Proceed
     }
 
     #[allow(clippy::too_many_arguments)]
