@@ -11449,6 +11449,55 @@ fn apply_secondary_effect(
             battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
+    // Triple Arrows — Decidueye-Hisui's signature (PS data/moves.ts:triplearrows).
+    // High crit ratio (critRatio: 2, handled in the damage step) plus TWO
+    // secondaries drawn in array order:
+    //   secondaries: [ { chance: 50, boosts: { def: -1 } },
+    //                  { chance: 30, volatileStatus: 'flinch' } ]
+    // Both record as `decision: Secondary` under the same (turn, actor, target,
+    // move) key, so the engine MUST draw the Def drop BEFORE the flinch to stay
+    // oracle-aligned (the keyed queue pops FIFO). The generic flinch_chance
+    // block draws flinch first, so Triple Arrows is NOT in that table nor in
+    // stat_drop_secondary — it is handled here, in PS array order. The def
+    // drop was unimplemented entirely, so the -1 Def never landed (conformance
+    // out_92ec16b5da / out_f79e83992e). Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Triple_Arrows_(move)>.
+    if move_slug == "triplearrows" {
+        // Secondary 1: 50% -1 Def on the target.
+        if rng.percent_1_100() <= sg(50) {
+            let blocked = battle.side(target_side).active_mon(target_slot as usize)
+                .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 1));
+            if !blocked {
+                battle.apply_boosts(target_side, target_slot, &[(1, -1)], attacker_side, attacker_slot);
+                crate::item::try_consume_white_herb(battle, target_side, target_slot);
+                let _ = crate::item::try_consume_eject_pack(
+                    battle, target_side, target_slot, true,
+                );
+            }
+        }
+        // Secondary 2: 30% flinch. PS rolls unconditionally; Inner Focus then
+        // vetoes the volatile (mirrors the generic flinch block above).
+        if rng.percent_1_100() <= sg(30) {
+            let attacker_breaks_mold = battle
+                .side(attacker_side)
+                .active_mon(attacker_slot as usize)
+                .map(|a| matches!(
+                    a.effective_ability_id(),
+                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+                ))
+                .unwrap_or(false);
+            let target_inner_focus = battle
+                .side(target_side)
+                .active_mon(target_slot as usize)
+                .map(|t| t.effective_ability_id() == data::ability_id::INNERFOCUS)
+                .unwrap_or(false);
+            if !(target_inner_focus && !attacker_breaks_mold) {
+                if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+                    t.set_flinched(true);
+                }
+            }
+        }
+    }
     // Throat Chop — PS data/moves.ts:throatchop
     //   secondary: { chance: 100, onHit(target) { target.addVolatile('throatchop'); } }
     // A 100%-chance secondary that adds the 2-turn `throatchop` lockout to
@@ -12183,6 +12232,40 @@ mod tests {
         assert!(
             boosted > 0 && boosted < n,
             "Charge Beam (70% secondary) self-boost must be chance-gated, got {boosted}/{n}"
+        );
+    }
+
+    #[test]
+    fn triple_arrows_def_drop_is_chance_gated() {
+        // PS data/moves.ts:triplearrows — secondaries: [ { chance: 50, boosts:
+        // { def: -1 } }, { chance: 30, volatileStatus: 'flinch' } ]. The 50%
+        // Def drop (boost index 1) must fire on SOME hits and not others: over
+        // many seeds the count is strictly between 0 and N, proving the roll is
+        // consumed in PS array order (before the flinch roll) and applied to
+        // the target.
+        let p1_json = r#"[
+            {"species":"decidueyehisui","level":50,"ability":"overgrow","item":"","nature":"adamant","moves":["triplearrows","leafblade","suckerpunch","roost"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let n = 100u64;
+        let mut dropped = 0u64;
+        for seed in 0..n {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p2.team[0].boosts[1] == -1 {
+                dropped += 1;
+            }
+        }
+        assert!(
+            dropped > 0 && dropped < n,
+            "Triple Arrows (50% secondary) Def drop must be chance-gated, got {dropped}/{n}"
         );
     }
 
