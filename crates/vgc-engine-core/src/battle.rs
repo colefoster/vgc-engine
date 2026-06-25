@@ -5486,10 +5486,8 @@ impl Battle {
                 if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     d.disguise_busted = true;
                     d.current_hp = d.current_hp.saturating_sub(chip);
-                    if d.current_hp == 0 {
-                        d.fainted = true;
-                    }
                 }
+                let _ = self.check_target_fainted(tside, tslot);
                 // The move's own damage is fully negated — skip the normal
                 // apply / item-hook / Stellar bookkeeping below for this hit.
                 // (Disguise carries no contact/secondary follow-through that
@@ -5501,9 +5499,6 @@ impl Battle {
             if !hit_sub {
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     t.current_hp = t.current_hp.saturating_sub(effective_dmg);
-                    if t.current_hp == 0 {
-                        t.fainted = true;
-                    }
                     // Mark this target as "damaged this turn" so
                     // Avalanche / Revenge / Counter (when wired) see
                     // a true source. Cross-side gate: opp-vs-self
@@ -5528,6 +5523,7 @@ impl Battle {
                         }
                     }
                 }
+                let _ = self.check_target_fainted(tside, tslot);
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
                 // Record the real-hit foe slot for Dragon Tail / Circle
                 // Throw phazing (a Substitute absorb never reaches this
@@ -5845,6 +5841,25 @@ impl Battle {
             any_damage_dealt,
             drag_target,
         );
+    }
+
+    /// Post-damage faint check — if the just-damaged target is at 0 HP,
+    /// set its `fainted` flag and return `true`. Deterministic; no RNG
+    /// draws. Replacement / faint-hook bookkeeping (Aftermath, Innards
+    /// Out, Destiny Bond, side active-slot maintenance) runs elsewhere
+    /// in the post-damage path — this helper is only the boundary that
+    /// flips `fainted` from false to true once `current_hp == 0`. PS:
+    /// `sim/pokemon.ts faint()` flips the flag; the surrounding faint-
+    /// effect dispatch is wired separately by the engine, matching PS's
+    /// faint-queue split.
+    fn check_target_fainted(&mut self, target_side: SideRef, target_slot: u8) -> bool {
+        if let Some(t) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.current_hp == 0 {
+                t.fainted = true;
+                return true;
+            }
+        }
+        false
     }
 
     /// Post-move interleaved effects that run after damage + secondaries
