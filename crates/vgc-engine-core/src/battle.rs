@@ -9480,6 +9480,51 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::ROLEPLAY => {
+                // Role Play — PS `data/moves.ts:roleplay` `onHit`:
+                //   const oldAbility = source.setAbility(target.ability, target);
+                // The USER copies the TARGET's (effective) ability; the target
+                // is unchanged (one-directional, unlike Skill Swap). `accuracy:
+                // true` (no draw) and NO `protect` flag — it pierces Protect.
+                // PS `onTryHit` fails (no copy) when the target is fainted, the
+                // two already share an ability, the target's ability carries
+                // `failroleplay`, or the user's ability carries `cantsuppress`.
+                // Those two PS flag-sets are the signature/form abilities; we
+                // approximate BOTH with `ability_fails_skill_swap` (same form/
+                // signature set — no common copyable ability is wrongly blocked,
+                // matching the Skill Swap simplification right above). Copying
+                // an on-switch-in ability does NOT re-fire its onStart here, the
+                // same simplification Skill Swap uses. Surfaced by the breadth
+                // corpus (out_845fe3662f etc.: Mr. Rime Role Plays Flash Fire /
+                // Sand Veil / Volt Absorb but kept Tangled Feet).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Role_Play_(move)>.
+                if let Some((ts, tslot)) = opp_target {
+                    let target_alive = self.side(ts).active_mon(tslot as usize)
+                        .is_some_and(|t| t.is_alive());
+                    let source_ability = self.side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .map(|s| s.effective_ability_slug())
+                        .unwrap_or("");
+                    let target_ability = self.side(ts).active_mon(tslot as usize)
+                        .map(|t| t.effective_ability_slug())
+                        .unwrap_or("");
+                    if target_alive
+                        && source_ability != target_ability
+                        && !ability_fails_skill_swap(target_ability)
+                        && !ability_fails_skill_swap(source_ability)
+                    {
+                        let target_eff_id = self.side(ts)
+                            .active_mon(tslot as usize)
+                            .map(|t| if t.ability_override != u16::MAX { t.ability_override } else { t.ability_id })
+                            .unwrap_or(u16::MAX);
+                        if target_eff_id != u16::MAX {
+                            if let Some(s) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                                s.ability_override = target_eff_id;
+                            }
+                        }
+                    }
+                }
+            }
             data::move_id::CURSE => {
                 // Curse — PS data/moves.ts:3265. `accuracy: true` (never
                 // misses), `flags: { bypasssub: 1 }`, NOT reflectable and NO
@@ -29062,6 +29107,34 @@ mod tests {
         assert!(b.p1.team[0].is_alive(), "Sandaconda survives the Body Slam");
         assert_eq!(b.weather, crate::weather::Weather::Sand,
                    "Sand Spit sets Sand when the holder is hit by a damaging move");
+    }
+
+    #[test]
+    fn role_play_copies_target_ability_to_user() {
+        // Role Play copies the target's ability onto the user; the target is
+        // unchanged. It also pierces Protect (no protect flag). PS
+        // data/moves.ts:roleplay onHit setAbility.
+        let p1_json = r#"[
+            {"species":"mrrime","level":50,"ability":"tangledfeet","item":"","nature":"modest","moves":["roleplay","psychic","protect","icywind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"arcanine","level":50,"ability":"flashfire","item":"","nature":"adamant","moves":["flareblitz","protect","extremespeed","crunch"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let flashfire = data::ABILITIES.iter().position(|a| a.slug == "flashfire").unwrap() as u16;
+        let tangledfeet = data::ABILITIES.iter().position(|a| a.slug == "tangledfeet").unwrap() as u16;
+        assert_eq!(b.p1.team[0].effective_ability_id(), tangledfeet, "Mr. Rime starts with Tangled Feet");
+        // Mr. Rime Role Plays a Protecting Arcanine — Role Play pierces Protect.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_id(), flashfire,
+                   "Role Play copies Flash Fire onto Mr. Rime (through Protect)");
+        assert_eq!(b.p2.team[0].effective_ability_id(), flashfire,
+                   "Role Play leaves the target's ability unchanged");
     }
 
     #[test]
