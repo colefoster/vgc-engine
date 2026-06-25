@@ -120,6 +120,38 @@ fn native_damage_branching_matches_wrapper() {
 
 Once this passes on the corpus, native becomes the default for damage rolls; the wrapper's damage-roll path is retired.
 
+## PR-11 investigation (2026-06-25) — blocked
+
+PR-11 was scoped as the first native-branching site (damage rolls). Investigation found the refactor is bigger than the PR envelope. Findings:
+
+### Damage-roll call sites
+
+`damage_roll` / `damage_roll_hint` is called from three places in `crates/vgc-engine-core/src/battle.rs`:
+
+1. **`battle.rs:2465`** — confusion self-hit damage. Inline inside `resolve_move_with_pending`'s pre-move volatile-check block. Small tail (one HP decrement + faint flag + early `return`). Genuinely isolated.
+2. **`battle.rs:5158`** — primary attack damage roll (via `damage_roll_hint`). Buried inside `resolve_move_with_pending` (lines 2206–6489, ~4280 lines). After the roll, the function runs the entire post-damage pipeline: attacker-item multipliers (Life Orb / Wise Glasses / Expert Belt), Friend Guard, multi-hit count + per-hit loop, type-resist berries, substitute, faint check + on-faint abilities, contact-ability counter-damage, secondary-effect rolls, self-switch flag, statuses, etc. All of it mutates `self`.
+3. **`battle.rs:7334`** — Future Sight / Doom Desire delayed-strike damage. Inside a separate residual-resolution function (not the main move path). Medium-sized tail.
+
+### Why all three options miss in PR-11 scope
+
+- **Option A (re-run with `OracleKeyed` pinning the damage value).** This is what the wrapper already does in the damage-only case. No speedup, no architectural progress.
+- **Option B (closure-passing).** Requires extracting the "post-damage tail" from a 4280-line function as a callable continuation. The tail captures dozens of locals (attacker/defender snapshots, item ids, weather, terrain, screens, auras, beat-up ctx, ally-helper flags, fixed-damage snapshot, …) and mutates `self` throughout. A closure refactor here is a multi-week extraction, not a PR.
+- **Option C (recursive step over the action queue).** Requires inverting `step()` itself so each action returns a frontier. Subsumes B plus the queue-mutation machinery (`pending_queue_reorder`, `ally_switch_pending`, pursuit interception, self-switch deferral, end-of-turn residuals).
+
+### Additional blocker — Battle clones
+
+Even if the tail were extractable, native branching only pays off with cheap clones (PR-12 / CoW Battle). At today's `Battle::clone()` cost, a 16-way damage fan-out per attack action eats roughly the same wall time the wrapper's 16 `step()` re-runs do — the bottleneck is the clone, not the post-damage tail. PR-11 in isolation has no perf story without PR-12.
+
+### Recommendation
+
+Reorder the migration:
+
+1. **PR-12 first (CoW Battle).** Lands the structural-sharing clone so the rest of the migration has somewhere to land.
+2. **PR-11a — extract `resolve_move_with_pending` into a state machine** with explicit per-step continuations. This is the load-bearing refactor; native branching at *any* chance site (damage, crit, accuracy, secondary) needs it. Sized as its own PR (likely multiple).
+3. **PR-11b — damage-roll native branching** on top of (1) + (2). Now mechanical.
+
+Until (1) and (2) land, `step_chance` stays the v1 record/replay wrapper. The wrapper is correct; the only cost is performance, which the campaign plan can absorb for one more iteration.
+
 ## Open questions
 
 - **Multi-site interactions.** Many turns query multiple chance sites (damage × crit × accuracy on a single move). Native branching at one site requires correct ordering against the others. Does native damage-roll-only branching have to coexist with wrapper-driven crit/accuracy? Yes for the migration window — sub-PRs add native sites one at a time and use the wrapper for the rest. The chance module needs to know which sites are native and which aren't.
