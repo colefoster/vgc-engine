@@ -2069,6 +2069,97 @@ pub fn damage_range_in_ctx(
     (min, max)
 }
 
+/// Bundle of non-roll inputs the caller assembles for one damaging hit.
+/// All fields map 1:1 to `DamageContext` — the helper just routes them
+/// in. Lets `damage_range_for` take a single struct instead of ~18 args.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DamageInputs {
+    pub crit: bool,
+    pub is_spread: bool,
+    pub is_doubles: bool,
+    pub weather: crate::weather::Weather,
+    pub terrain: crate::terrain::Terrain,
+    pub defender_has_reflect: bool,
+    pub defender_has_light_screen: bool,
+    pub defender_has_aurora_veil: bool,
+    pub fairy_aura_active: bool,
+    pub dark_aura_active: bool,
+    pub aura_break_active: bool,
+    pub attacker_total_fainted_allies: u8,
+    pub attacker_stats: FinalStats,
+    pub defender_stats: FinalStats,
+    pub pursuit_doubled: bool,
+    pub ally_power_spot: bool,
+    pub ally_battery: bool,
+    pub steely_spirit_holders: u8,
+}
+
+/// Build the `DamageContext` template for one hit from the caller's
+/// pre-rolled locals. `ctx.roll` is left at 0; the caller patches it
+/// after drawing the damage bucket.
+///
+/// Phase A / second helper of the `resolve_move_with_pending` state-machine
+/// refactor (see `docs/resolve-move-restructure-plan.md`). The pre-refactor
+/// site duplicated the 18-field `DamageContext` struct literal twice — once
+/// to feed `damage_range_in_ctx`, then again (with the rolled `roll` field
+/// patched in) to feed `calculate_damage`. Routing both through the same
+/// template guarantees the range bounds and the rolled value share
+/// identical weather / terrain / screens / auras / stat overrides /
+/// aggregated ally flags.
+pub(crate) fn ctx_from_inputs(inputs: DamageInputs) -> DamageContext {
+    DamageContext {
+        crit: inputs.crit,
+        roll: 0,
+        is_spread: inputs.is_spread,
+        weather: inputs.weather,
+        terrain: inputs.terrain,
+        defender_has_reflect: inputs.defender_has_reflect,
+        defender_has_light_screen: inputs.defender_has_light_screen,
+        defender_has_aurora_veil: inputs.defender_has_aurora_veil,
+        is_doubles: inputs.is_doubles,
+        fairy_aura_active: inputs.fairy_aura_active,
+        dark_aura_active: inputs.dark_aura_active,
+        aura_break_active: inputs.aura_break_active,
+        attacker_total_fainted_allies: inputs.attacker_total_fainted_allies,
+        attacker_stats: Some(inputs.attacker_stats),
+        defender_stats: Some(inputs.defender_stats),
+        pursuit_doubled: inputs.pursuit_doubled,
+        ally_power_spot: inputs.ally_power_spot,
+        ally_battery: inputs.ally_battery,
+        steely_spirit_holders: inputs.steely_spirit_holders,
+    }
+}
+
+/// Pre-roll damage-range computation, extracted from
+/// `Battle::resolve_move_with_pending`. Wraps `ctx_from_inputs` +
+/// `damage_range_in_ctx` so the caller can route one struct of locals
+/// into both the (lo, hi) hint and the per-hit `calculate_damage` ctx.
+///
+/// Returns `(ctx, lo, hi)`: the template ctx (roll = 0), and the
+/// min/max damage across the 16 roll buckets under that ctx. The caller
+/// draws the actual bucket via `Rng::damage_roll_hint(lo, hi)`, then
+/// patches `ctx.roll` before passing to `calculate_damage`.
+///
+/// Variable-base-power moves (Low Kick, Heat Crash, Eruption, Crush Grip,
+/// Stored Power, Electro Ball, Gyro Ball, Reversal, Return / Frustration,
+/// Acrobatics, Fling, Last Resort, Fury Cutter / Echoed Voice escalation,
+/// Bide double, ...) resolve their effective BP inside `calculate_damage`
+/// via per-slug branches keyed on `move_id` + the attacker/defender
+/// snapshots — so this helper does NOT need to enumerate them; passing the
+/// right `DamageInputs` is sufficient.
+///
+/// Behavior is byte-identical to the inline computation it replaces.
+pub(crate) fn damage_range_for(
+    attacker: &Pokemon,
+    defender: &Pokemon,
+    move_id: u16,
+    inputs: DamageInputs,
+) -> (DamageContext, u16, u16) {
+    let ctx = ctx_from_inputs(inputs);
+    let (lo, hi) = damage_range_in_ctx(attacker, defender, move_id, ctx);
+    (ctx, lo, hi)
+}
+
 pub fn damage_range(attacker: &Pokemon, defender: &Pokemon, move_id: u16) -> (u16, u16) {
     let min = calculate_damage(
         attacker,

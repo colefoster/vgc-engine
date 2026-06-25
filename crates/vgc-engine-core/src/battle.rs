@@ -21,7 +21,7 @@
 use crate::choice::{Choice, Target};
 use crate::damage::{calculate_damage, DamageContext};
 use crate::format::Format;
-use crate::order::{action_order, ScheduledAction};
+use crate::order::{action_order, ActionOrder, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
 use crate::rng::{Rng, RngDecision};
 use crate::side::{Side, SideRef};
@@ -1227,49 +1227,7 @@ impl Battle {
             let slot = (action.actor_slot as usize).min(1);
             pending_kind[s][slot] = 0;
             self.resolve_move_with_pending(action, &pending_kind, will_act);
-            // After You / Quash reorder the remaining queue. Apply the
-            // request (if any) to the unprocessed tail `(idx..]` before
-            // advancing — a no-op when the target already acted.
-            if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
-                order.reorder_remaining(idx, rside, rslot, to_front);
-            }
-            // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
-            // binds queued actions and their targets to the Pokémon object,
-            // so they "follow the mon" across the swap; our queue is
-            // slot-keyed, so re-point the still-unprocessed tail: flip the
-            // actor slot of `sw_side`'s remaining actions, flip any target
-            // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
-            // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
-            // Without this the switcher would act twice and its ally never
-            // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
-            if let Some(sw_side) = self.ally_switch_pending.take() {
-                for a in &mut order.as_mut_slice()[idx + 1..] {
-                    if a.side == sw_side {
-                        a.actor_slot ^= 1;
-                    }
-                    match &mut a.choice {
-                        Choice::Move { actor_slot, target, .. }
-                        | Choice::Terastallize { actor_slot, target, .. }
-                        | Choice::MegaEvolve { actor_slot, target, .. } => {
-                            if a.side == sw_side {
-                                *actor_slot ^= 1;
-                            }
-                            if let Some(t) = target {
-                                if t.side == sw_side {
-                                    t.slot ^= 1;
-                                }
-                            }
-                        }
-                        Choice::Switch { actor_slot, .. } | Choice::Pass { actor_slot } => {
-                            if a.side == sw_side {
-                                *actor_slot ^= 1;
-                            }
-                        }
-                    }
-                }
-                pending_kind[sw_side as usize].swap(0, 1);
-                self.pursuit_consumed[sw_side as usize].swap(0, 1);
-            }
+            self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
             idx += 1;
         }
 
@@ -4326,207 +4284,35 @@ impl Battle {
                 }
             }
 
-            // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
-            // accuracy stage minus defender's evasion stage as a combined
-            // boost in -6..=6, then:
-            //   boost > 0: acc *= (3 + boost) / 3   (PS uses int trunc)
-            //   boost < 0: acc *= 3 / (3 - boost)
-            // ignoreAccuracy / ignoreEvasion gating (Foresight, Miracle
-            // Eye, etc.) is deferred — none in the gen-9 VGC top-50.
-            // Weather-modified base accuracy. PS:
-            //   data/moves.ts:hurricane / thunder onModifyMove —
-            //     rain → accuracy = true (always hit);
-            //     sun  → accuracy = 50.
-            //   data/moves.ts:blizzard onModifyMove —
-            //     snow (gen-9 hail rename) → accuracy = true.
-            // `accuracy = true` is encoded as 255 here so the accuracy
-            // check is skipped entirely (and no PRNG draw is consumed —
-            // matches PS, which never calls randomChance when accuracy
-            // is `true`). Bulbapedia:
-            //   <https://bulbapedia.bulbagarden.net/wiki/Hurricane_(move)>
-            //   <https://bulbapedia.bulbagarden.net/wiki/Thunder_(move)>
-            //   <https://bulbapedia.bulbagarden.net/wiki/Blizzard_(move)>.
-            // Weather is read by both sides; Utility Umbrella on either
-            // suppresses Sun/Rain (but not Snow, which is unaffected).
-            let weather_for_acc = self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot);
-            let base_acc: u8 = match move_id {
-                data::move_id::HURRICANE | data::move_id::THUNDER => match weather_for_acc {
-                    crate::weather::Weather::Rain => 255,
-                    crate::weather::Weather::Sun => 50,
-                    _ => m.accuracy,
-                },
-                data::move_id::BLIZZARD => match self.effective_weather() {
-                    crate::weather::Weather::Snow => 255,
-                    _ => m.accuracy,
-                },
-                // Pursuit during switch interception bypasses the accuracy
-                // check (PS `data/moves.ts:pursuit` `onModifyMove` sets
-                // `move.accuracy = true`). 255 = guaranteed hit, no draw.
-                data::move_id::PURSUIT if self.pursuit_intercepting => 255,
-                _ => m.accuracy,
-            };
-            // No Guard (PS `onAnyAccuracy` returns `true`): force the
-            // sure-hit code (255), which skips the entire accuracy block —
-            // no stage/evasion math, no item modifiers, and no PRNG draw.
-            // This is the SAME mechanism `accuracy == true` moves (Swift,
-            // Aerial Ace, weather-boosted Hurricane/Thunder/Blizzard) use,
-            // so draw order is identical to a sure-hit move.
-            let base_acc = if no_guard_pair { 255 } else { base_acc };
-            // PS evaluates the Protect family at the TryHit step, BEFORE the
-            // accuracy roll, so a move blocked by Protect / Wide Guard / Quick
-            // Guard / Mat Block makes NO accuracy draw. Mirror that: suppress
-            // the wasted accuracy roll when this hit will be blocked below.
-            // The actual blocking still happens at its existing sites
-            // (Wide/Quick/Mat Guard + Protect, ~30 lines down); this only
-            // skips the RNG draw so the sequence matches PS (the conformance
-            // harness keys on this, and it tightens PsGen5 draw parity).
-            // Mirrors those four conditions exactly — keep them in sync.
-            // Piercing Drill (damaging contact) punches through single-target
-            // Protect, so it is NOT treated as blocked here (it still rolls).
-            let protect_blocked = (self.side(tside).conditions.wide_guard_this_turn
-                && matches!(m.target, 5 | 6 | 11))
-                || (self.side(tside).conditions.quick_guard_this_turn && m.priority > 0)
-                || (self.side(tside).conditions.mat_block_this_turn
-                    && damaging
-                    && is_targeting_move(m.target))
-                || (defender.is_protected_this_turn()
-                    && is_targeting_move(m.target)
-                    && !(damaging
-                        && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
-                        && crate::damage::move_makes_contact(
-                            &data::MOVES[move_id as usize],
-                            &attacker,
-                        )));
-            if base_acc != 255 && !protect_blocked {
-                let acc_stage = attacker.boosts[5] as i32;
-                let eva_stage = defender.boosts[6] as i32;
-                let boost = (acc_stage - eva_stage).clamp(-6, 6);
-                let mut eff_acc: u32 = if boost > 0 {
-                    (base_acc as u32) * (3 + boost as u32) / 3
-                } else if boost < 0 {
-                    (base_acc as u32) * 3 / (3 + (-boost) as u32)
-                } else {
-                    base_acc as u32
-                };
-                // Wide Lens — attacker's accuracy ×4505/4096 (≈ ×1.1).
-                // PS `data/items.ts:widelens` `onSourceModifyAccuracy`:
-                //   `if (typeof accuracy === 'number') return accuracy * 4505 / 4096;`
-                // Status-move OHKO (typeof === boolean) skip is moot
-                // because we guard on `m.accuracy != 255`. PS rounds via
-                // its tr() helper; we use integer-truncating divide which
-                // matches within ±1 percentage point.
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wide_Lens>.
-                if attacker_item_id == data::item_id::WIDELENS {
-                    eff_acc = (eff_acc * 4505 / 4096).min(100);
-                }
-                // Zoom Lens — attacker's accuracy ×4915/4096 (≈ ×1.2) if the
-                // holder moves AFTER its target this turn. PS
-                // `data/items.ts:7820` `onSourceModifyAccuracy(accuracy,
-                // target)`: applies when `!this.queue.willMove(target)` — the
-                // target has no pending move action left (it already moved,
-                // or it's switching / passing). `onSourceModifyAccuracyPriority
-                // -2` orders it after Wide Lens (0) and before Bright Powder
-                // (-4). We read the per-slot pending-action byte: a still-
-                // pending move is DamagingMove(1) / StatusMove(2); anything
-                // else (None(0) once consumed, or Switch(3)) means the target
-                // won't move later → boost. No new RNG draw — this scales the
-                // same accuracy roll. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Zoom_Lens>.
-                if attacker_item_id == data::item_id::ZOOMLENS {
-                    let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
-                    let target_will_move = tk == 1 || tk == 2;
-                    if !target_will_move {
-                        eff_acc = (eff_acc * 4915 / 4096).min(100);
-                    }
-                }
-                // Micle Berry — PS data/items.ts:micleberry condition
-                // `onSourceAccuracy`: the holder's next non-OHKO move gets
-                // accuracy ×4915/4096 (≈×1.2), then the volatile removes
-                // itself. We read the live latch (the snapshot may be stale
-                // if the berry ate this same turn) and consume it here so
-                // it applies to exactly one move. OHKO moves take the
-                // separate path above and never reach this block.
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
-                let micle_active = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| a.micle_next_move);
-                if micle_active {
-                    eff_acc = (eff_acc * 4915 / 4096).min(100);
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            // Accuracy. PS sim/battle-actions.ts:707 — extracted into
+            // `crate::accuracy::effective_accuracy` (Phase A helper, see
+            // `docs/resolve-move-restructure-plan.md`). The helper is
+            // read-only on `Battle`; the caller (here) owns the RNG draw,
+            // the Micle-latch clear, and Blunder Policy on miss. Behavior
+            // is byte-identical to the prior inline computation.
+            let acc_comp = crate::accuracy::effective_accuracy(
+                self,
+                &attacker,
+                &defender,
+                m,
+                move_id,
+                actor_side,
+                actor_slot,
+                tside,
+                tslot,
+                attacker_ability_id,
+                attacker_item_id,
+                no_guard_pair,
+                damaging,
+                pending_kind,
+            );
+            if let Some(eff_acc) = acc_comp.threshold {
+                if acc_comp.consumed_micle {
+                    if let Some(a) =
+                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                    {
                         a.micle_next_move = false;
                     }
-                }
-                // Hustle — PS `data/abilities.ts:hustle`:
-                //   onSourceModifyAccuracyPriority: -1,
-                //   onSourceModifyAccuracy(accuracy, target, source, move) {
-                //     if (move.category === 'Physical' &&
-                //         typeof accuracy === 'number')
-                //       return this.chainModify([3277, 4096]);   // ≈ ×0.8
-                //   }
-                // The holder's PHYSICAL moves lose 20% accuracy — the trade-off
-                // for the ×1.5 Atk applied in damage.rs. Special / status moves
-                // are unaffected (raw `move.category`, so Body Press etc. count
-                // as physical). Scales the existing accuracy roll — no extra
-                // PRNG draw. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
-                if attacker.effective_ability_id() == data::ability_id::HUSTLE
-                    && m.category == 0
-                {
-                    eff_acc = eff_acc * 3277 / 4096;
-                }
-                // Bright Powder / Lax Incense — defender-side accuracy
-                // ×3686/4096 (≈ ×0.9). PS `data/items.ts:brightpowder`
-                // and `:laxincense`:
-                //   onModifyAccuracyPriority: -4,
-                //   onModifyAccuracy(accuracy) {
-                //     if (typeof accuracy === 'number')
-                //       return this.chainModify([3686, 4096]);
-                //   }
-                // PS uses chainModify on the same accuracy variable, so
-                // both items stack additively with Wide Lens — order is
-                // priority-driven and not visible at the final integer.
-                // Applied after Wide Lens to match PS's negative-prio
-                // ordering. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Bright_Powder>,
-                // <https://bulbapedia.bulbagarden.net/wiki/Lax_Incense>.
-                if defender.effective_item_id() == data::item_id::BRIGHTPOWDER
-                    || defender.effective_item_id() == data::item_id::LAXINCENSE
-                {
-                    eff_acc = eff_acc * 3686 / 4096;
-                }
-                // Sand Veil / Snow Cloak — PS data/abilities.ts:
-                //   sandveil:  if (effectiveWeather === 'sandstorm')
-                //                return this.chainModify([3277, 4096]); // ≈0.8
-                //   snowcloak: if (effectiveWeather === 'snow' || 'hail')
-                //                return this.chainModify([3277, 4096]);
-                // Defender's incoming accuracy ×0.8 (= 3277/4096) while the
-                // matching weather is up. Flagged `breakable: 1` so Mold
-                // Breaker bypasses. Sand Veil mons (Garchomp HA, Gliscor,
-                // Sandslash); Snow Cloak mons (Glaliе, Beartic).
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Veil_(Ability)>
-                //             <https://bulbapedia.bulbagarden.net/wiki/Snow_Cloak_(Ability)>.
-                let def_ability = defender.effective_ability_id();
-                let weather_veil = match (def_ability, self.effective_weather()) {
-                    (data::ability_id::SANDVEIL, crate::weather::Weather::Sand) => true,
-                    (data::ability_id::SNOWCLOAK, crate::weather::Weather::Snow) => true,
-                    _ => false,
-                };
-                let attacker_breaks_mold = matches!(
-                    attacker.effective_ability_id(),
-                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
-                );
-                if weather_veil && !attacker_breaks_mold {
-                    eff_acc = eff_acc * 3277 / 4096;
-                }
-                // Gravity — PS `data/moves.ts:gravity` condition
-                // `onModifyAccuracy`: `this.chainModify([6840, 4096])`
-                // (≈ ×1.67) for every numeric-accuracy move while the
-                // field condition is up. Scales the existing accuracy
-                // roll — no extra PRNG draw. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
-                if self.gravity_turns > 0 {
-                    eff_acc = eff_acc * 6840 / 4096;
                 }
                 self.rng.set_decision(RngDecision::Accuracy);
                 let roll = self.rng.percent_1_100() as u32;
@@ -5222,44 +5008,42 @@ impl Battle {
             let mut dmg = if let Some(fd) = fixed_damage {
                 fd
             } else {
-                let roll = match &self.rng {
-                    Rng::Splitmix(_) => self.rng.damage_roll(),
-                    _ => {
-                        let stub_ctx = DamageContext {
-                            crit, roll: 0, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                            terrain: active_terrain,
-                            defender_has_reflect, defender_has_light_screen,
-                            defender_has_aurora_veil, is_doubles,
-                            fairy_aura_active, dark_aura_active, aura_break_active,
-                            attacker_total_fainted_allies,
-                            attacker_stats: Some(atk_stats_ovr),
-                            defender_stats: Some(def_stats_ovr),
-                            pursuit_doubled: move_id == data::move_id::PURSUIT
-                                && self.pursuit_intercepting,
-                            ally_power_spot, ally_battery, steely_spirit_holders,
-                        };
-                        let (lo, hi) = crate::damage::damage_range_in_ctx(
-                            &attacker, &defender, move_id, stub_ctx,
-                        );
-                        self.rng.damage_roll_hint(lo, hi)
-                    }
-                };
-                // Hoisted so the Beat Up per-hit loop below can reuse an
-                // IDENTICAL context (same crit/roll/weather/terrain/screens/
-                // auras/stat overrides). DamageContext is Copy.
-                let dmg_ctx = DamageContext {
-                    crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                // Single DamageContext template (`roll: 0` placeholder),
+                // built once and reused for both the pre-roll range and
+                // the rolled `calculate_damage`. Previously this site had
+                // two duplicated 18-field struct literals; `damage_range_for`
+                // collapses them. See `damage::damage_range_for` for the
+                // input bundle.
+                let inputs = crate::damage::DamageInputs {
+                    crit, is_spread, is_doubles,
+                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                     terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
-                    defender_has_aurora_veil, is_doubles,
+                    defender_has_aurora_veil,
                     fairy_aura_active, dark_aura_active, aura_break_active,
                     attacker_total_fainted_allies,
-                    attacker_stats: Some(atk_stats_ovr),
-                    defender_stats: Some(def_stats_ovr),
+                    attacker_stats: atk_stats_ovr,
+                    defender_stats: def_stats_ovr,
                     pursuit_doubled: move_id == data::move_id::PURSUIT
                         && self.pursuit_intercepting,
                     ally_power_spot, ally_battery, steely_spirit_holders,
                 };
+                let (mut dmg_ctx, roll) = match &self.rng {
+                    // Splitmix path skips the (lo, hi) precomputation
+                    // (it doesn't need a hint) — saves two calculate_damage
+                    // calls per hit on the hot perf-bench path.
+                    Rng::Splitmix(_) => {
+                        let ctx = crate::damage::ctx_from_inputs(inputs);
+                        (ctx, self.rng.damage_roll())
+                    }
+                    _ => {
+                        let (ctx, lo, hi) = crate::damage::damage_range_for(
+                            &attacker, &defender, move_id, inputs,
+                        );
+                        (ctx, self.rng.damage_roll_hint(lo, hi))
+                    }
+                };
+                dmg_ctx.roll = roll;
                 beat_up_ctx_opt = Some(dmg_ctx);
                 calculate_damage(&attacker, &defender, move_id, dmg_ctx)
             };
@@ -5941,15 +5725,14 @@ impl Battle {
                     _ => {}
                 }
             }
-            // Sheer Force strips secondaries entirely — flinch, stat
-            // drops, burn chance etc. are deleted before they roll. PS
-            // `data/abilities.ts:sheerforce` `onModifyMove` clears
-            // `move.secondaries` (and `move.self`); the secondary roll
-            // never reaches `runEvent('Hit')`. Same predicate as the BP
-            // boost in `damage.rs`.
-            let sheer_force_strip = crate::damage::attacker_has_sheer_force(&attacker)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            if alive_post && !hit_sub && !sheer_force_strip {
+            // Deterministic gate on the secondary-effect block. See
+            // `crate::secondary::should_run_secondary_block` for scope
+            // (Sheer Force ablation + target faint + sub absorption);
+            // per-secondary vetoes / draws live inside
+            // `apply_secondary_effect`.
+            if crate::secondary::should_run_secondary_block(self, &attacker, m, alive_post, hit_sub)
+                == crate::secondary::SecondaryProcDecision::Run
+            {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 // The keyed context set at the loop top travelled in with the
                 // mem::replace; tag the decision so percent draws here key as
@@ -6042,6 +5825,257 @@ impl Battle {
             } // end multi-hit per-hit loop
         }
 
+        self.apply_self_effects(
+            actor_side,
+            actor_slot,
+            move_id,
+            move_slot,
+            &attacker,
+            m,
+            any_damage_dealt,
+            attacker_item_id,
+            damaging,
+        );
+
+        // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
+        // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
+        // `flipturn:5787` all set `selfSwitch: true`. The switch fires
+        // iff the move actually connected (`any_damage_dealt > 0` — which
+        // covers Substitute absorption per PS, since target damage was
+        // taken even though HP didn't move) AND the user is still alive
+        // (Static / Rough Skin / recoil chip could have KO'd them — PS
+        // skips the switch when the user fainted in the same resolution
+        // window). No alive bench mon = silent fail (matches PS
+        // `canSwitch`). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
+        // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
+        // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
+        // Thunder Cage). PS data/conditions.ts:partiallytrapped —
+        // attached to the target after the initial hit; lasts
+        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
+        // residual order 13. Single-target moves; we apply to the
+        // first alive opposing slot the engine actually dealt damage
+        // to (mirrors PS's "applied to the hit target").
+        if any_damage_dealt > 0
+            && matches!(
+                move_id,
+                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
+                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
+                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
+                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
+                    | data::move_id::THUNDERCAGE
+            )
+        {
+            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+            let opp = actor_side.opposing();
+            let n = self.format().active_count() as u8;
+            for slot in 0..n {
+                let alive = self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.is_alive());
+                if !alive { continue; }
+                if self.side(opp).active_mon(slot as usize)
+                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
+                {
+                    break; // already trapped, PS no-ops
+                }
+                let payload = dur
+                    | ((actor_side as u8 as u32) << 8)
+                    | ((actor_slot as u32) << 16);
+                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::PartialTrap,
+                        turns_remaining: 0,
+                        payload,
+                    });
+                }
+                break; // single-target
+            }
+        }
+
+        // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
+        // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
+        // hits). After a connecting hit, the user frees itself from Leech
+        // Seed and partial-trap and clears every entry hazard on ITS OWN
+        // side (Spikes / Toxic Spikes / Stealth Rock / Sticky Web —
+        // `gmaxsteelsurge` not modelled). Rapid Spin ALSO gains +1 Spe via
+        // its 100% self-secondary (Mortal Spin has no Spe boost — its
+        // secondary poisons the foes instead, handled by
+        // `apply_secondary_effect` per target). The whole `onAfterHit`
+        // body is gated on `!move.hasSheerForce` (a Sheer Force user skips
+        // the clears AND, for Rapid Spin, the Spe boost). The Spe boost is
+        // routed through `apply_boosts` (Contrary inverts it; Clear Body
+        // does NOT block self-boosts). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
+        // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
+        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            // User must be alive (recoil / Rough Skin could have KO'd it;
+            // PS gates the sub-damage variant on `pokemon.hp`).
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
+                    a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                }
+                self.clear_entry_hazards(actor_side);
+                if move_id == data::move_id::RAPIDSPIN {
+                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+                }
+            }
+        }
+
+        // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
+        // Overdrive...) trigger +1 SpA on the user after the hit. PS
+        // gates on the move actually being USED (not on damage > 0), so
+        // a fully-Protected sound move would still trigger; we
+        // approximate by firing whenever resolve_move_with_pending
+        // reaches this point (move chose a target, accuracy may have
+        // missed; PS still fires on miss because onAfterMove runs).
+        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
+
+        // Charge consume — PS data/conditions.ts:charge `onAfterMove`
+        // removes the volatile once the holder fires an Electric move
+        // (the ×2 BP was already read in calculate_damage). Electric
+        // type index = 3. Status Electric moves (Thunder Wave) route
+        // through resolve_status_move and clear it there is deferred —
+        // the BP-relevant consumer is the damaging path.
+        if m.type_ == 3 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.set_charged(false);
+            }
+        }
+
+        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN) && any_damage_dealt > 0 {
+            let still_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if still_alive && self.has_eligible_bench(actor_side) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_pending_self_switch(true);
+                }
+            }
+        }
+
+        // Dragon Tail / Circle Throw — damaging phazing. PS
+        // data/moves.ts:dragontail:4208 / circlethrow:2450 (`forceSwitch:
+        // true`, priority -6, NO `bypasssub`). After the hit connects,
+        // forceSwitch (battle-actions.ts:1124, step 6) drags the target out
+        // for a random bench replacement — but only when it took a real
+        // (non-Substitute) hit and survived. `drag_target` is set only on a
+        // real foe hit, so a subbed or fainted target is already excluded.
+        // DragOut blockers (Suction Cups / Guard Dog / Ingrain) and the
+        // no-eligible-bench fizzle match the status phazers; Mold Breaker on
+        // the user bypasses the ability blockers. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Dragon_Tail_(move)>.
+        if matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW) {
+            if let Some((ts, tslot)) = drag_target {
+                let still_alive = self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.is_alive());
+                let breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| {
+                        matches!(
+                            a.effective_ability_slug(),
+                            "moldbreaker" | "teravolt" | "turboblaze"
+                        )
+                    });
+                if still_alive
+                    && self.has_eligible_bench(ts)
+                    && self.can_be_dragged_out(ts, tslot, breaks_mold)
+                {
+                    self.force_switch_random(ts, tslot);
+                }
+            }
+        }
+
+        // Fling — consume the thrown item and apply its on-hit effect. PS
+        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
+        // user's item after the move; the per-item `fling.status` /
+        // `volatileStatus` rides as a 100% secondary, so it lands only on a
+        // real (non-Substitute) hit and respects the target's status
+        // immunities. We gate consumption on the move connecting
+        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
+        // item still spent, status blocked); a clean miss spends nothing.
+        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
+        // status/flinch applies exactly where PS's secondary would.
+        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
+        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
+        // is deferred (same shape as Trick's un-modelled receive-time item
+        // effects). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
+        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
+            let item_id = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.item_id)
+                .unwrap_or(u16::MAX);
+            if item_id != u16::MAX {
+                let effect = data::ITEMS[item_id as usize].fling_effect;
+                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
+                // when it clears the item, so a flung item IS recoverable by
+                // Recycle — route through `consume_item`.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.consume_item();
+                }
+                if let Some((ts, tslot)) = drag_target {
+                    match effect {
+                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
+                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
+                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
+                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
+                        5 => {
+                            if let Some(t) =
+                                self.side_mut(ts).active_mon_mut(tslot as usize)
+                            {
+                                if t.is_alive() {
+                                    t.set_flinched(true);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Self-effects applied to the move's USER after damage + secondaries
+    /// resolve, but before partial-trap / self-switch / fling and the per-move
+    /// cleanup. Covers Final Gambit faint, self-stat drops (Close Combat /
+    /// Draco Meteor / Overheat / Superpower / V-create), Scale Shot / Clanging
+    /// Scales selfBoost, Outrage / Petal Dance / Thrash lock-in + end-of-lock
+    /// confusion, Hyper Beam family recharge arm, every recoil variant
+    /// (move recoil, Steel Beam family max-HP recoil, Struggle recoil, Life
+    /// Orb recoil), and Shell Bell heal.
+    ///
+    /// NOT deterministic: the lock-in block draws (lockin duration + end-of-
+    /// lock confusion duration) at the SAME draw sites as the inline code.
+    /// Pure mechanical extraction — body byte-identical to the inline block;
+    /// draw-site identity and order are preserved.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_self_effects(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        attacker: &crate::pokemon::Pokemon,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+        attacker_item_id: u16,
+        damaging: bool,
+    ) {
         // Final Gambit — the user faints after dealing damage equal to
         // its HP. PS data/moves.ts:5305 calls `pokemon.faint()` inside the
         // damageCallback (and `selfdestruct: 'ifHit'`). We faint the user
@@ -6352,217 +6386,60 @@ impl Battle {
                 }
             }
         }
+    }
 
-        // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
-        // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
-        // `flipturn:5787` all set `selfSwitch: true`. The switch fires
-        // iff the move actually connected (`any_damage_dealt > 0` — which
-        // covers Substitute absorption per PS, since target damage was
-        // taken even though HP didn't move) AND the user is still alive
-        // (Static / Rough Skin / recoil chip could have KO'd them — PS
-        // skips the switch when the user fainted in the same resolution
-        // window). No alive bench mon = silent fail (matches PS
-        // `canSwitch`). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/U-turn_(move)>.
-        // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
-        // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
-        // Thunder Cage). PS data/conditions.ts:partiallytrapped —
-        // attached to the target after the initial hit; lasts
-        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
-        // residual order 13. Single-target moves; we apply to the
-        // first alive opposing slot the engine actually dealt damage
-        // to (mirrors PS's "applied to the hit target").
-        if any_damage_dealt > 0
-            && matches!(
-                move_id,
-                data::move_id::WHIRLPOOL | data::move_id::WRAP | data::move_id::BIND
-                    | data::move_id::FIRESPIN | data::move_id::SANDTOMB
-                    | data::move_id::MAGMASTORM | data::move_id::INFESTATION
-                    | data::move_id::CLAMP | data::move_id::SNAPTRAP
-                    | data::move_id::THUNDERCAGE
-            )
-        {
-            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
-            let opp = actor_side.opposing();
-            let n = self.format().active_count() as u8;
-            for slot in 0..n {
-                let alive = self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.is_alive());
-                if !alive { continue; }
-                if self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
-                {
-                    break; // already trapped, PS no-ops
-                }
-                let payload = dur
-                    | ((actor_side as u8 as u32) << 8)
-                    | ((actor_slot as u32) << 16);
-                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                    let _ = t.volatiles.add(crate::pokemon::Volatile {
-                        kind: crate::pokemon::VolatileKind::PartialTrap,
-                        turns_remaining: 0,
-                        payload,
-                    });
-                }
-                break; // single-target
-            }
+    /// End-of-move cleanup. Applies the After You / Quash queue reorder
+    /// the move requested (if any), resolves a pending Ally Switch slot
+    /// swap, and clears any pursuit-interception bookkeeping. Runs once
+    /// per move resolution, after all draws have happened.
+    fn finalize_move_resolution(
+        &mut self,
+        order: &mut ActionOrder,
+        idx: usize,
+        pending_kind: &mut [[u8; 2]; 2],
+    ) {
+        // After You / Quash reorder the remaining queue. Apply the
+        // request (if any) to the unprocessed tail `(idx..]` before
+        // advancing — a no-op when the target already acted.
+        if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
+            order.reorder_remaining(idx, rside, rslot, to_front);
         }
-
-        // Rapid Spin / Mortal Spin — PS `data/moves.ts:rapidspin` /
-        // `mortalspin` `onAfterHit` (+ `onAfterSubDamage` for Substitute
-        // hits). After a connecting hit, the user frees itself from Leech
-        // Seed and partial-trap and clears every entry hazard on ITS OWN
-        // side (Spikes / Toxic Spikes / Stealth Rock / Sticky Web —
-        // `gmaxsteelsurge` not modelled). Rapid Spin ALSO gains +1 Spe via
-        // its 100% self-secondary (Mortal Spin has no Spe boost — its
-        // secondary poisons the foes instead, handled by
-        // `apply_secondary_effect` per target). The whole `onAfterHit`
-        // body is gated on `!move.hasSheerForce` (a Sheer Force user skips
-        // the clears AND, for Rapid Spin, the Spe boost). The Spe boost is
-        // routed through `apply_boosts` (Contrary inverts it; Clear Body
-        // does NOT block self-boosts). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Rapid_Spin_(move)>
-        // <https://bulbapedia.bulbagarden.net/wiki/Mortal_Spin_(move)>.
-        if matches!(move_id, data::move_id::RAPIDSPIN | data::move_id::MORTALSPIN) && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            // User must be alive (recoil / Rough Skin could have KO'd it;
-            // PS gates the sub-damage variant on `pokemon.hp`).
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.volatiles.remove(crate::pokemon::VolatileKind::LeechSeed);
-                    a.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+        // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
+        // binds queued actions and their targets to the Pokémon object,
+        // so they "follow the mon" across the swap; our queue is
+        // slot-keyed, so re-point the still-unprocessed tail: flip the
+        // actor slot of `sw_side`'s remaining actions, flip any target
+        // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
+        // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
+        // Without this the switcher would act twice and its ally never
+        // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
+        if let Some(sw_side) = self.ally_switch_pending.take() {
+            for a in &mut order.as_mut_slice()[idx + 1..] {
+                if a.side == sw_side {
+                    a.actor_slot ^= 1;
                 }
-                self.clear_entry_hazards(actor_side);
-                if move_id == data::move_id::RAPIDSPIN {
-                    self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-                }
-            }
-        }
-
-        // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
-        // Overdrive...) trigger +1 SpA on the user after the hit. PS
-        // gates on the move actually being USED (not on damage > 0), so
-        // a fully-Protected sound move would still trigger; we
-        // approximate by firing whenever resolve_move_with_pending
-        // reaches this point (move chose a target, accuracy may have
-        // missed; PS still fires on miss because onAfterMove runs).
-        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
-
-        // Charge consume — PS data/conditions.ts:charge `onAfterMove`
-        // removes the volatile once the holder fires an Electric move
-        // (the ×2 BP was already read in calculate_damage). Electric
-        // type index = 3. Status Electric moves (Thunder Wave) route
-        // through resolve_status_move and clear it there is deferred —
-        // the BP-relevant consumer is the damaging path.
-        if m.type_ == 3 {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.set_charged(false);
-            }
-        }
-
-        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN) && any_damage_dealt > 0 {
-            let still_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if still_alive && self.has_eligible_bench(actor_side) {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.set_pending_self_switch(true);
-                }
-            }
-        }
-
-        // Dragon Tail / Circle Throw — damaging phazing. PS
-        // data/moves.ts:dragontail:4208 / circlethrow:2450 (`forceSwitch:
-        // true`, priority -6, NO `bypasssub`). After the hit connects,
-        // forceSwitch (battle-actions.ts:1124, step 6) drags the target out
-        // for a random bench replacement — but only when it took a real
-        // (non-Substitute) hit and survived. `drag_target` is set only on a
-        // real foe hit, so a subbed or fainted target is already excluded.
-        // DragOut blockers (Suction Cups / Guard Dog / Ingrain) and the
-        // no-eligible-bench fizzle match the status phazers; Mold Breaker on
-        // the user bypasses the ability blockers. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Dragon_Tail_(move)>.
-        if matches!(move_id, data::move_id::DRAGONTAIL | data::move_id::CIRCLETHROW) {
-            if let Some((ts, tslot)) = drag_target {
-                let still_alive = self
-                    .side(ts)
-                    .active_mon(tslot as usize)
-                    .is_some_and(|t| t.is_alive());
-                let breaks_mold = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| {
-                        matches!(
-                            a.effective_ability_slug(),
-                            "moldbreaker" | "teravolt" | "turboblaze"
-                        )
-                    });
-                if still_alive
-                    && self.has_eligible_bench(ts)
-                    && self.can_be_dragged_out(ts, tslot, breaks_mold)
-                {
-                    self.force_switch_random(ts, tslot);
-                }
-            }
-        }
-
-        // Fling — consume the thrown item and apply its on-hit effect. PS
-        // data/moves.ts:fling: the `fling` volatile's `onUpdate` removes the
-        // user's item after the move; the per-item `fling.status` /
-        // `volatileStatus` rides as a 100% secondary, so it lands only on a
-        // real (non-Substitute) hit and respects the target's status
-        // immunities. We gate consumption on the move connecting
-        // (`any_damage_dealt > 0`, which also covers a Substitute absorb —
-        // item still spent, status blocked); a clean miss spends nothing.
-        // `drag_target` is the real-hit foe slot (None behind a Sub), so the
-        // status/flinch applies exactly where PS's secondary would.
-        // Berry Fling (the TARGET eats the berry) is NOT modelled here — the
-        // berry is consumed and deals its 10 BP, but the foe's on-eat effect
-        // is deferred (same shape as Trick's un-modelled receive-time item
-        // effects). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
-        if move_id == data::move_id::FLING && any_damage_dealt > 0 {
-            let item_id = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .map(|a| a.item_id)
-                .unwrap_or(u16::MAX);
-            if item_id != u16::MAX {
-                let effect = data::ITEMS[item_id as usize].fling_effect;
-                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
-                // when it clears the item, so a flung item IS recoverable by
-                // Recycle — route through `consume_item`.
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.consume_item();
-                }
-                if let Some((ts, tslot)) = drag_target {
-                    match effect {
-                        1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
-                        2 => self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot),
-                        3 => self.apply_status_to_target(ts, tslot, Status::Poison, actor_slot),
-                        4 => self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot),
-                        5 => {
-                            if let Some(t) =
-                                self.side_mut(ts).active_mon_mut(tslot as usize)
-                            {
-                                if t.is_alive() {
-                                    t.set_flinched(true);
-                                }
+                match &mut a.choice {
+                    Choice::Move { actor_slot, target, .. }
+                    | Choice::Terastallize { actor_slot, target, .. }
+                    | Choice::MegaEvolve { actor_slot, target, .. } => {
+                        if a.side == sw_side {
+                            *actor_slot ^= 1;
+                        }
+                        if let Some(t) = target {
+                            if t.side == sw_side {
+                                t.slot ^= 1;
                             }
                         }
-                        _ => {}
+                    }
+                    Choice::Switch { actor_slot, .. } | Choice::Pass { actor_slot } => {
+                        if a.side == sw_side {
+                            *actor_slot ^= 1;
+                        }
                     }
                 }
             }
+            pending_kind[sw_side as usize].swap(0, 1);
+            self.pursuit_consumed[sw_side as usize].swap(0, 1);
         }
     }
 
@@ -11954,7 +11831,7 @@ fn held_item_is_swappable(mon: &Pokemon) -> bool {
     }
 }
 
-fn is_targeting_move(target_code: u8) -> bool {
+pub(crate) fn is_targeting_move(target_code: u8) -> bool {
     // 0 normal, 2 adjacentAlly, 3 adjacentAllyOrSelf, 4 adjacentFoe, 10 any.
     // 5 allAdjacent and 6 allAdjacentFoes are spread — PS's Protect
     // condition.onTryHit (data/moves.ts:protect → conditions.ts) fires
