@@ -5050,44 +5050,42 @@ impl Battle {
             let mut dmg = if let Some(fd) = fixed_damage {
                 fd
             } else {
-                let roll = match &self.rng {
-                    Rng::Splitmix(_) => self.rng.damage_roll(),
-                    _ => {
-                        let stub_ctx = DamageContext {
-                            crit, roll: 0, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                            terrain: active_terrain,
-                            defender_has_reflect, defender_has_light_screen,
-                            defender_has_aurora_veil, is_doubles,
-                            fairy_aura_active, dark_aura_active, aura_break_active,
-                            attacker_total_fainted_allies,
-                            attacker_stats: Some(atk_stats_ovr),
-                            defender_stats: Some(def_stats_ovr),
-                            pursuit_doubled: move_id == data::move_id::PURSUIT
-                                && self.pursuit_intercepting,
-                            ally_power_spot, ally_battery, steely_spirit_holders,
-                        };
-                        let (lo, hi) = crate::damage::damage_range_in_ctx(
-                            &attacker, &defender, move_id, stub_ctx,
-                        );
-                        self.rng.damage_roll_hint(lo, hi)
-                    }
-                };
-                // Hoisted so the Beat Up per-hit loop below can reuse an
-                // IDENTICAL context (same crit/roll/weather/terrain/screens/
-                // auras/stat overrides). DamageContext is Copy.
-                let dmg_ctx = DamageContext {
-                    crit, roll, is_spread, weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                // Single DamageContext template (`roll: 0` placeholder),
+                // built once and reused for both the pre-roll range and
+                // the rolled `calculate_damage`. Previously this site had
+                // two duplicated 18-field struct literals; `damage_range_for`
+                // collapses them. See `damage::damage_range_for` for the
+                // input bundle.
+                let inputs = crate::damage::DamageInputs {
+                    crit, is_spread, is_doubles,
+                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
                     terrain: active_terrain,
                     defender_has_reflect, defender_has_light_screen,
-                    defender_has_aurora_veil, is_doubles,
+                    defender_has_aurora_veil,
                     fairy_aura_active, dark_aura_active, aura_break_active,
                     attacker_total_fainted_allies,
-                    attacker_stats: Some(atk_stats_ovr),
-                    defender_stats: Some(def_stats_ovr),
+                    attacker_stats: atk_stats_ovr,
+                    defender_stats: def_stats_ovr,
                     pursuit_doubled: move_id == data::move_id::PURSUIT
                         && self.pursuit_intercepting,
                     ally_power_spot, ally_battery, steely_spirit_holders,
                 };
+                let (mut dmg_ctx, roll) = match &self.rng {
+                    // Splitmix path skips the (lo, hi) precomputation
+                    // (it doesn't need a hint) — saves two calculate_damage
+                    // calls per hit on the hot perf-bench path.
+                    Rng::Splitmix(_) => {
+                        let ctx = crate::damage::ctx_from_inputs(inputs);
+                        (ctx, self.rng.damage_roll())
+                    }
+                    _ => {
+                        let (ctx, lo, hi) = crate::damage::damage_range_for(
+                            &attacker, &defender, move_id, inputs,
+                        );
+                        (ctx, self.rng.damage_roll_hint(lo, hi))
+                    }
+                };
+                dmg_ctx.roll = roll;
                 beat_up_ctx_opt = Some(dmg_ctx);
                 calculate_damage(&attacker, &defender, move_id, dmg_ctx)
             };
