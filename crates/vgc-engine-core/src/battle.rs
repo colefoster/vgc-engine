@@ -8087,6 +8087,32 @@ impl Battle {
             }
             _ => self.resolve_status_target(opp_side),
         };
+        // Protect / Detect (and the single-target shields) block a targeted
+        // status move exactly as they block a damaging one. PS resolves this in
+        // the move's hit step via the target's Protect `condition.onTryHit`,
+        // which fires only for moves carrying `flags['protect']`. We gate the
+        // SINGLE-target opposing status moves here (Hypnosis, Thunder Wave,
+        // Will-O-Wisp, Toxic, Glare, ...): if the move has the protect flag and
+        // the resolved foe is protected this turn, it does nothing to that foe.
+        // Protect-piercing status moves (Psych Up, Transform, Role Play) lack
+        // the flag and fall through. Spread status moves (Leer/Growl, target
+        // codes 5/6) gate Protect per-target inside their own loops and are not
+        // single-target, so the `m.target` check excludes them.
+        // Status moves never make contact, so a blocked status move triggers no
+        // shield punish (Spiky Shield chip, King's Shield −Atk, etc.).
+        // PS: data/moves.ts `protect` flag + conditions.ts Protect onTryHit.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protect_(move)>.
+        if m.blocked_by_protect && matches!(m.target, 0 | 4 | 10) {
+            if let Some((ts, tslot)) = opp_target {
+                if self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .is_some_and(|t| t.is_protected_this_turn())
+                {
+                    return;
+                }
+            }
+        }
         match move_id {
             data::move_id::PROTECT | data::move_id::DETECT | data::move_id::SPIKYSHIELD
             | data::move_id::BANEFULBUNKER | data::move_id::KINGSSHIELD
@@ -15124,9 +15150,12 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
         assert_eq!(b.p1.team[0].item_id, data::item_id::CHOICESCARF);
         assert_eq!(b.p2.team[0].item_id, data::item_id::LEFTOVERS);
+        // Blissey idles with Soft-Boiled (self, no effect at full HP). It must
+        // NOT Protect: Trick carries `flags.protect`, so Protect would block it
+        // (see protect_blocks_targeted_status_move).
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
-            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert_eq!(b.p1.team[0].item_id, data::item_id::LEFTOVERS, "Gengar receives Leftovers");
         assert_eq!(b.p2.team[0].item_id, data::item_id::CHOICESCARF, "Blissey receives the Choice Scarf");
@@ -15145,12 +15174,41 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // Blissey idles with Soft-Boiled, NOT Protect: Switcheroo has
+        // `flags.protect` and would be blocked by a Protecting target.
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
-            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert_eq!(b.p1.team[0].item_id, data::item_id::LEFTOVERS, "Weavile receives Leftovers");
         assert_eq!(b.p2.team[0].item_id, data::item_id::CHOICEBAND, "Blissey receives the Choice Band");
+    }
+
+    #[test]
+    fn protect_blocks_targeted_status_move() {
+        // A targeted status move carrying `flags.protect` (Hypnosis) is stopped
+        // by the target's Protect, exactly as a damaging move is. PS
+        // sim/battle.ts:1300 checkMoveBypassesProtect — `blockStatus` defaults
+        // true, so a protect-flagged move is blocked regardless of category.
+        // Protect-piercing status moves (Psych Up, Transform; no protect flag)
+        // are unaffected — see psych_up_copies_targets_stat_stages.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protect_(move)>.
+        let p1_json = r#"[
+            {"species":"alakazam","level":50,"ability":"synchronize","nature":"timid","moves":["hypnosis","psychic","shadowball","protect"],"evs":{"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","rest","crunch"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Snorlax Protects (+4 priority, resolves first); Alakazam's Hypnosis is
+        // blocked, so Snorlax stays unstatused.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::None, "Protect blocks Hypnosis (flags.protect)");
     }
 
     #[test]
@@ -17600,9 +17658,11 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 9 }, p1, p2);
         let (_, n0) = b.p2.team[0].effective_types();
         assert_eq!(n0, 2, "Garchomp starts dual-typed");
+        // Garchomp idles with Swords Dance (self), NOT Protect: Soak carries
+        // `flags.protect` and would be blocked by a Protecting target.
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
-            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
         );
         let (types, n) = b.p2.team[0].effective_types();
         assert_eq!(n, 1, "Soak makes the target mono-typed");
@@ -26608,9 +26668,13 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         b.p2.team[0].current_hp = 1;
+        // Toxapex idles with Scald at Cresselia (leaves its own HP at 1), NOT
+        // Protect: Heal Pulse has `flags.protect` and a Protecting target would
+        // block it. Scald can't heal/raise Toxapex's HP, so the 50% Heal Pulse
+        // restore remains the only HP change on the recipient.
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
-            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
         );
         let max = b.p2.team[0].stats.hp as u32;
         let expected = (1u32 + max.div_ceil(2)).min(max) as u16;
