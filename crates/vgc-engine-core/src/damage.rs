@@ -1651,6 +1651,20 @@ fn calculate_damage_with_bp(
         a = (a * 6144 / 4096).max(1);
     }
 
+    // Hustle — PS `data/abilities.ts:hustle`:
+    //   onModifyAtkPriority: 5,
+    //   onModifyAtk(atk) { return this.chainModify(1.5); }
+    // ×1.5 Atk (physical reads only — `onModifyAtk`). The companion effect —
+    // a ×0.8 accuracy penalty on the holder's physical moves
+    // (`onSourceModifyAccuracy`) — lives in battle.rs's accuracy path. NOT in
+    // PS's breakable list — Mold Breaker does NOT bypass an own offensive
+    // ability. ×1.5 = 6144/4096 (exact). Togedemaru / Corviknight-line /
+    // Flapple-line signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
+    if physical && attacker.effective_ability_id() == data::ability_id::HUSTLE {
+        a = (a * 6144 / 4096).max(1);
+    }
+
     // Huge Power / Pure Power — PS `data/abilities.ts:hugepower` / `purepower`:
     //   onModifyAtkPriority: 5,
     //   onModifyAtk(atk) { return this.chainModify(2); }
@@ -3345,6 +3359,38 @@ mod tests {
         let ratio_x100 = (gt_phys as u32) * 100 / (base_phys.max(1) as u32);
         assert!((146..=154).contains(&ratio_x100),
             "Gorilla Tactics ≈ ×1.5 Atk, got ×{ratio_x100}/100");
+    }
+
+    #[test]
+    fn hustle_boosts_physical_atk_x1_5_only() {
+        // Hustle ×1.5 Atk on physical moves; special moves unaffected
+        // (onModifyAtk only). The companion −20% physical accuracy penalty is
+        // exercised in battle.rs (hustle_lowers_physical_move_accuracy).
+        // PS data/abilities.ts:hustle.
+        let mut atk = make_mon("flapple", 50, "adamant",
+            StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 });
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon, mid: u16| calculate_damage(a, &def, mid,
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        let phys = move_id("earthquake"); // physical
+        let spec = move_id("flamethrower"); // special
+        let base_phys = mk(&atk, phys);
+        let base_spec = mk(&atk, spec);
+        let hustle_id = data::ABILITIES.iter()
+            .position(|a| a.slug == "hustle").unwrap() as u16;
+        atk.ability_id = hustle_id;
+        let hustle_phys = mk(&atk, phys);
+        let hustle_spec = mk(&atk, spec);
+        let ratio_x100 = (hustle_phys as u32) * 100 / (base_phys.max(1) as u32);
+        assert!((146..=154).contains(&ratio_x100),
+            "Hustle ≈ ×1.5 physical Atk, got ×{ratio_x100}/100");
+        assert_eq!(hustle_spec, base_spec, "Hustle must NOT touch special damage");
     }
 
     #[test]
