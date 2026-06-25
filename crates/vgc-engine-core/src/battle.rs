@@ -9378,6 +9378,36 @@ impl Battle {
                     self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
                 }
             }
+            data::move_id::GLARE => {
+                // Glare — PS `data/moves.ts:6679`: 100% accuracy, `status:
+                // 'par'`, Normal-typed. Unlike Thunder Wave it is NOT
+                // Electric-typed, so the Thunder-Wave-only Ground immunity does
+                // not apply — Glare paralyzes Ground types (e.g. Steelix). The
+                // general paralysis immunities (Electric type, Limber, etc.)
+                // still gate it via apply_status_to_target. Surfaced by the
+                // breadth corpus (out_ce6adeee36 / out_d51772b14a: Glare left
+                // Aggron / Steelix unparalyzed). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Glare_(move)>.
+                if let Some((ts, tslot)) = opp_target {
+                    // PS checks paralysis immunity in `hitStepTryImmunity`,
+                    // BEFORE the accuracy roll — an Electric-typed (effective)
+                    // target is immune and Glare fails with NO accuracy draw.
+                    // Pre-check it so the failure (and the draw stream) matches
+                    // PS; the remaining paralysis immunities (Limber, Safeguard,
+                    // Misty Terrain, etc.) are handled by apply_status_to_target
+                    // after the roll.
+                    let para_immune = self
+                        .side(ts)
+                        .active_mon(tslot as usize)
+                        .is_some_and(|t| {
+                            let (types, n) = t.effective_types();
+                            (0..n as usize).any(|i| types[i] == 3) // Electric
+                        });
+                    if !para_immune && self.rolled_accuracy_passed(m) {
+                        self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
+                    }
+                }
+            }
             data::move_id::WILLOWISP => {
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
@@ -29154,6 +29184,29 @@ mod tests {
                    "Role Play copies Flash Fire onto Mr. Rime (through Protect)");
         assert_eq!(b.p2.team[0].effective_ability_id(), flashfire,
                    "Role Play leaves the target's ability unchanged");
+    }
+
+    #[test]
+    fn glare_paralyzes_including_ground_types() {
+        // Glare = 100% paralysis, Normal-typed (PS data/moves.ts:6679). Unlike
+        // Thunder Wave (Electric, Ground-immune) it paralyzes Ground types.
+        let p1_json = r#"[
+            {"species":"arbok","level":50,"ability":"intimidate","item":"","nature":"jolly","moves":["glare","earthquake","crunch","protect"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"steelix","level":50,"ability":"sturdy","item":"","nature":"impish","moves":["ironhead","earthquake","crunch","rest"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        // Arbok (faster) Glares Steelix; Steelix idles with Iron Head at Arbok
+        // (NOT Protect, which would block Glare).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].status, Status::Paralysis,
+                   "Glare paralyzes a Ground type (Steelix)");
     }
 
     #[test]
