@@ -10436,6 +10436,73 @@ impl Battle {
                     }
                 }
             }
+            data::move_id::SWAGGER => {
+                // Swagger — PS data/moves.ts:swagger. A foe-targeting STATUS
+                // move (85% acc, target "normal") that RAISES the target's
+                // Attack by 2 (`boosts: { atk: 2 }`) and then confuses it
+                // (`volatileStatus: 'confusion'`). Draw order matches PS: the
+                // accuracy roll, then — the +2 boost is deterministic — the
+                // confusion duration roll (`random(2,6)` = 2 + range(4)).
+                // Protect (protect flag) and Magic Bounce (reflectable) are
+                // gated upstream. The +2 Atk is a RAISE, so Clear Body /
+                // White Herb / Defiant do not apply; Contrary inverts it
+                // inside apply_boosts. Confusion honors Own Tempo / Misty
+                // Terrain / Safeguard / already-confused, and the duration
+                // roll is skipped when the volatile is vetoed
+                // (onTryAddVolatile fires before onStart), matching PS's draw
+                // count. Was entirely unimplemented (conformance
+                // out_e1d7704628: engine atk:0 vs PS atk:+2). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Swagger_(move)>.
+                let (ts, tslot) = match opp_target {
+                    Some(x) => x,
+                    None => return,
+                };
+                // Key the accuracy + confusion-duration draws to this
+                // (turn, actor, swagger, target) so the OracleKeyed oracle
+                // matches PS (status moves don't pass through the damaging-hit
+                // loop that normally sets this context). `self.turn` reads N-1
+                // mid-resolution; PS's turn is N, so emit +1.
+                self.rng.set_move_context(
+                    self.turn + 1,
+                    (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot,
+                    move_id,
+                    (match ts { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tslot,
+                );
+                self.rng.set_decision(RngDecision::Accuracy);
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                // Substitute absorbs the whole move (no bypasssub flag).
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                    return;
+                }
+                // +2 Atk on the foe (raise — apply_boosts clamps to +6 and
+                // inverts under Contrary).
+                self.apply_boosts(ts, tslot, &[(0, 2)], actor_side, actor_slot);
+                // Confusion: onTryAddVolatile vetoes BEFORE the duration roll.
+                let blocked = self
+                    .side(ts)
+                    .active_mon(tslot as usize)
+                    .map(|t| {
+                        !t.is_alive()
+                            || t.volatiles.has(crate::pokemon::VolatileKind::Confusion)
+                            || t.effective_ability_id() == data::ability_id::OWNTEMPO
+                            || (matches!(self.terrain, crate::terrain::Terrain::Misty)
+                                && t.is_grounded())
+                            || self.side(ts).conditions.safeguard_turns > 0
+                    })
+                    .unwrap_or(true);
+                if !blocked {
+                    let dur = 2 + self.rng.range(4);
+                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                        let _ = t.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Confusion,
+                            turns_remaining: 0,
+                            payload: dur,
+                        });
+                    }
+                }
+            }
             _ => {
                 // Foe-stat-lowering STATUS moves (Growl, Leer, Tail Whip,
                 // Tickle, Charm, Screech, Fake Tears, Scary Face, …). PS:
@@ -12266,6 +12333,48 @@ mod tests {
         assert!(
             dropped > 0 && dropped < n,
             "Triple Arrows (50% secondary) Def drop must be chance-gated, got {dropped}/{n}"
+        );
+    }
+
+    #[test]
+    fn swagger_raises_foe_attack_by_two_and_confuses() {
+        // PS data/moves.ts:swagger — a foe-targeting STATUS move (85% acc)
+        // that RAISES the target's Attack by 2 (`boosts: { atk: 2 }`) and
+        // confuses it (`volatileStatus: 'confusion'`). On a connecting hit the
+        // target's Atk (boost index 0) is +2 and it carries the Confusion
+        // volatile; on a miss neither lands. Over many seeds the +2 must occur
+        // on a strong majority (≈85%) and the target Atk is never anything but
+        // 0 or +2 — proving the raise targets the FOE (not the user) and is
+        // gated by the accuracy roll.
+        let p1_json = r#"[
+            {"species":"slowkinggalar","level":50,"ability":"curiousmedicine","item":"","nature":"quiet","moves":["swagger","psychic","trickroom","chillyreception"],"evs":{"hp":252,"spa":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let n = 100u64;
+        let mut raised = 0u64;
+        for seed in 0..n {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            );
+            let atk = b.p2.team[0].boosts[0];
+            assert!(atk == 0 || atk == 2, "Swagger must raise the FOE's Atk by exactly 2 (got {atk}, seed {seed})");
+            if atk == 2 {
+                raised += 1;
+                assert!(
+                    b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
+                    "Swagger that landed +2 Atk must also confuse the foe (seed {seed})"
+                );
+            }
+        }
+        assert!(
+            raised > n / 2 && raised <= n,
+            "Swagger (85% acc) should raise the foe's Atk on a strong majority of seeds, got {raised}/{n}"
         );
     }
 
