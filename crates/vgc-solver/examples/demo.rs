@@ -16,8 +16,8 @@ use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Rng, SideRef, Target, TeamBuilder,
 };
 use vgc_solver::{
-    enumerate_outcomes, hp_ratio_leaf, solve_double_oracle, solve_zero_sum,
-    BattleMatrixGame, LeafEval, MatrixGame,
+    endgame_solve, enumerate_outcomes, hp_ratio_leaf, solve_double_oracle, solve_zero_sum,
+    BattleMatrixGame, LeafEval, MatrixGame, Provenance, SolverConfig,
 };
 
 const P1: &str = r#"[
@@ -241,6 +241,43 @@ fn main() {
     println!("  row_strategy  = {:?}", sol.row_strategy);
     println!("  col_strategy  = {:?}", sol.col_strategy);
     println!("  iterations    = {}", sol.iterations);
+
+    // ─── §7 — Recursive endgame solver (PR-9) ────────────────────────
+    h1("§7  PR-9 — recursive endgame_solve with TT");
+
+    h2("Terminal state — recursion short-circuits to leaf");
+    let mut terminal = fixture();
+    terminal.set_ended(Some(SideRef::P1));
+    let cfg = SolverConfig::default();
+    let sol = endgame_solve(&terminal, &cfg, hp_ratio_leaf);
+    println!("  value         = {:.6}  (expected +1.0 for P1 win)", sol.value);
+    println!("  provenance    = {:?}", sol.provenance);
+    println!("  policy sizes  = row {}, col {} (terminal → empty)",
+        sol.row_policy.len(), sol.col_policy.len());
+
+    h2("Depth-zero on a live fixture — Estimated::DepthLimit");
+    let live = fixture();
+    let cfg0 = SolverConfig { max_depth: 0, ..SolverConfig::default() };
+    let sol = endgame_solve(&live, &cfg0, hp_ratio_leaf);
+    println!("  value         = {:.6}  (= hp_ratio_leaf({:.6}))",
+        sol.value, hp_ratio_leaf(&live));
+    println!("  provenance    = {:?}", sol.provenance);
+
+    h2("Node budget 1 → root leaf-evaluates as NodeLimit");
+    let cfg_nb = SolverConfig {
+        max_depth: 8,
+        node_budget: 1,
+        record_seed: 0xC0DE,
+    };
+    let sol = endgame_solve(&live, &cfg_nb, hp_ratio_leaf);
+    println!("  provenance    = {:?}", sol.provenance);
+    println!("  value         = {:.6}", sol.value);
+
+    println!("\n(A real multi-ply solve over a live attack fixture would");
+    println!(" recurse via enumerate_outcomes on each cell — that hits the");
+    println!(" documented UniformPercent scale issue. Recursion structure");
+    println!(" is verified by the boundary tests + unit tests in");
+    println!(" `recursive::tests`.)");
 
     println!("\nDone.");
 }
