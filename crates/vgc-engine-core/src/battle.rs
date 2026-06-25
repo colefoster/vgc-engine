@@ -11183,6 +11183,13 @@ fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
         // +1 SpA:
         "chargebeam" => (&[(2, 1)], 70),
         "fierydance" => (&[(2, 1)], 50),
+        // 100% +1 SpA — Torch Song (PS data/moves.ts:torchsong
+        // `secondary: { chance: 100, self: { boosts: { spa: 1 } } }`;
+        // Skeledirge's signature, BP 80 Fire/Special). Was missing, so the
+        // guaranteed SpA raise never landed (conformance out_4c0e18f736 /
+        // out_35d408472a). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Torch_Song_(move)>.
+        "torchsong" => (&[(2, 1)], 100),
         // +1 Spe:
         "flamecharge" => (&[(4, 1)], 100),
         // +1 Def:
@@ -12115,6 +12122,33 @@ mod tests {
             assert_eq!(
                 b.p1.team[0].boosts[0], 1,
                 "Power-Up Punch (100% secondary) must raise attacker Atk by 1 (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn torch_song_always_raises_attacker_spa() {
+        // PS data/moves.ts:torchsong — `secondary: { chance: 100, self:
+        // { boosts: { spa: 1 } } }`. 100% accuracy + 100% secondary ⇒ +1 SpA
+        // (boost index 2) on the ATTACKER on every connecting hit. Checked
+        // across several seeds so a single unlucky draw can't mask a bug.
+        let p1_json = r#"[
+            {"species":"skeledirge","level":50,"ability":"blaze","item":"","nature":"modest","moves":["torchsong","shadowball","tackle","ember"],"evs":{"hp":4,"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0..20 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert_eq!(
+                b.p1.team[0].boosts[2], 1,
+                "Torch Song (100% secondary) must raise attacker SpA by 1 (seed {seed})"
             );
         }
     }
