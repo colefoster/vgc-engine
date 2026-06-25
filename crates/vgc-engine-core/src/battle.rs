@@ -21,7 +21,7 @@
 use crate::choice::{Choice, Target};
 use crate::damage::{calculate_damage, DamageContext};
 use crate::format::Format;
-use crate::order::{action_order, ScheduledAction};
+use crate::order::{action_order, ActionOrder, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
 use crate::rng::{Rng, RngDecision};
 use crate::side::{Side, SideRef};
@@ -1227,49 +1227,7 @@ impl Battle {
             let slot = (action.actor_slot as usize).min(1);
             pending_kind[s][slot] = 0;
             self.resolve_move_with_pending(action, &pending_kind, will_act);
-            // After You / Quash reorder the remaining queue. Apply the
-            // request (if any) to the unprocessed tail `(idx..]` before
-            // advancing — a no-op when the target already acted.
-            if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
-                order.reorder_remaining(idx, rside, rslot, to_front);
-            }
-            // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
-            // binds queued actions and their targets to the Pokémon object,
-            // so they "follow the mon" across the swap; our queue is
-            // slot-keyed, so re-point the still-unprocessed tail: flip the
-            // actor slot of `sw_side`'s remaining actions, flip any target
-            // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
-            // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
-            // Without this the switcher would act twice and its ally never
-            // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
-            if let Some(sw_side) = self.ally_switch_pending.take() {
-                for a in &mut order.as_mut_slice()[idx + 1..] {
-                    if a.side == sw_side {
-                        a.actor_slot ^= 1;
-                    }
-                    match &mut a.choice {
-                        Choice::Move { actor_slot, target, .. }
-                        | Choice::Terastallize { actor_slot, target, .. }
-                        | Choice::MegaEvolve { actor_slot, target, .. } => {
-                            if a.side == sw_side {
-                                *actor_slot ^= 1;
-                            }
-                            if let Some(t) = target {
-                                if t.side == sw_side {
-                                    t.slot ^= 1;
-                                }
-                            }
-                        }
-                        Choice::Switch { actor_slot, .. } | Choice::Pass { actor_slot } => {
-                            if a.side == sw_side {
-                                *actor_slot ^= 1;
-                            }
-                        }
-                    }
-                }
-                pending_kind[sw_side as usize].swap(0, 1);
-                self.pursuit_consumed[sw_side as usize].swap(0, 1);
-            }
+            self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
             idx += 1;
         }
 
@@ -6388,6 +6346,61 @@ impl Battle {
                     }
                 }
             }
+        }
+    }
+
+    /// End-of-move cleanup. Applies the After You / Quash queue reorder
+    /// the move requested (if any), resolves a pending Ally Switch slot
+    /// swap, and clears any pursuit-interception bookkeeping. Runs once
+    /// per move resolution, after all draws have happened.
+    fn finalize_move_resolution(
+        &mut self,
+        order: &mut ActionOrder,
+        idx: usize,
+        pending_kind: &mut [[u8; 2]; 2],
+    ) {
+        // After You / Quash reorder the remaining queue. Apply the
+        // request (if any) to the unprocessed tail `(idx..]` before
+        // advancing — a no-op when the target already acted.
+        if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
+            order.reorder_remaining(idx, rside, rslot, to_front);
+        }
+        // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
+        // binds queued actions and their targets to the Pokémon object,
+        // so they "follow the mon" across the swap; our queue is
+        // slot-keyed, so re-point the still-unprocessed tail: flip the
+        // actor slot of `sw_side`'s remaining actions, flip any target
+        // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
+        // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
+        // Without this the switcher would act twice and its ally never
+        // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
+        if let Some(sw_side) = self.ally_switch_pending.take() {
+            for a in &mut order.as_mut_slice()[idx + 1..] {
+                if a.side == sw_side {
+                    a.actor_slot ^= 1;
+                }
+                match &mut a.choice {
+                    Choice::Move { actor_slot, target, .. }
+                    | Choice::Terastallize { actor_slot, target, .. }
+                    | Choice::MegaEvolve { actor_slot, target, .. } => {
+                        if a.side == sw_side {
+                            *actor_slot ^= 1;
+                        }
+                        if let Some(t) = target {
+                            if t.side == sw_side {
+                                t.slot ^= 1;
+                            }
+                        }
+                    }
+                    Choice::Switch { actor_slot, .. } | Choice::Pass { actor_slot } => {
+                        if a.side == sw_side {
+                            *actor_slot ^= 1;
+                        }
+                    }
+                }
+            }
+            pending_kind[sw_side as usize].swap(0, 1);
+            self.pursuit_consumed[sw_side as usize].swap(0, 1);
         }
     }
 
