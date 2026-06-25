@@ -11604,7 +11604,7 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // Burn 30%:
         "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchagotcha" => (Status::Burn, 30),
         // Paralysis 10%:
-        "thunderbolt" | "thunder" | "thundershock" | "spark" | "thunderpunch"
+        "thunderbolt" | "thundershock" | "spark" | "thunderpunch"
         | "thunderfang" | "zingzap" => (Status::Paralysis, 10),
         // Freeze 10% — Ice Fang. PS data/moves.ts:icefang carries two
         // independent secondaries (chance:10 frz + chance:10 flinch);
@@ -11615,7 +11615,9 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // data/moves.ts:19549 `thunderouskick` has no status secondary; its
         // secondary is a guaranteed Def -1 drop, handled in
         // `stat_drop_secondary` below.)
-        "discharge" | "bodyslam"
+        // Thunder — PS data/moves.ts thunder (num 87) `chance: 30, status: 'par'`
+        // (NOT 10% like Thunderbolt). Was mis-bucketed with the 10% arm.
+        "thunder" | "discharge" | "bodyslam"
         | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
         // Paralysis 100% — Nuzzle (PS data/moves.ts:nuzzle
         // `secondary: { chance: 100, status: 'par' }`):
@@ -30181,6 +30183,15 @@ mod tests {
         assert_eq!(
             super::status_secondary("icefang"), Some((Status::Freeze, 10)),
             "Ice Fang 10% frz",
+        );
+        // Thunder (PS num 87) is `chance: 30` par — NOT 10% like Thunderbolt.
+        assert_eq!(
+            super::status_secondary("thunder"), Some((Status::Paralysis, 30)),
+            "Thunder 30% par",
+        );
+        assert_eq!(
+            super::status_secondary("thunderbolt"), Some((Status::Paralysis, 10)),
+            "Thunderbolt 10% par",
         );
     }
 
