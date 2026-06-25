@@ -2404,7 +2404,24 @@ impl Battle {
         //     Engine survey (PR-208) saw this draw fire ~3x per battle
         //     across the random-golden corpus and is the largest
         //     single draw-site gap in the oracle alignment count.
+        // Keyed-oracle context for the pre-move status self-checks below
+        // (paralysis full-para, confusion self-hit). These draw BEFORE the move
+        // reaches the damaging-hit loop that normally calls `set_move_context`
+        // (~line 4009), so without this they inherit the PREVIOUS action's
+        // stale (turn, actor, move, target) key and miss the OracleKeyed table
+        // — the single largest draw-site gap in the conformance survey. PS keys
+        // each draw to (this turn, this mon, this move): the paralysis and
+        // confusion-gate rolls to the move's chosen target, the confusion
+        // self-hit DAMAGE roll to NO_SLOT (a self-hit has no target). Slot refs
+        // are `side*2 + slot`. `set_move_context` / `set_decision` are no-ops
+        // for every non-OracleKeyed RNG, so this changes nothing in real play.
+        let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+        let ctx_target = match target {
+            Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+            None => crate::rng::NO_SLOT,
+        };
         if matches!(attacker.status, Status::Paralysis) {
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
             if self.rng.range(4) == 0 {
                 return;
             }
@@ -2442,7 +2459,11 @@ impl Battle {
                         .unwrap()
                         .volatiles
                         .remove(crate::pokemon::VolatileKind::Confusion);
-                } else if self.rng.percent_1_100() <= 33 {
+                } else if {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.set_decision(RngDecision::Secondary);
+                    self.rng.percent_1_100() <= 33
+                } {
                     // Self-hit: 40-BP typeless physical confusion damage.
                     // PS sim/battle-actions.ts:1854 getConfusionDamage.
                     let (level, atk_base, atk_boost, def_base, def_boost) = {
@@ -2462,6 +2483,8 @@ impl Battle {
                     let def = crate::damage::apply_boost(def_base, def_boost).max(1);
                     let lvl_factor = 2 * level / 5 + 2;
                     let base = (lvl_factor * 40 * atk / def / 50) + 2;
+                    // PS records the self-hit damage roll with no target.
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
                     let roll = self.rng.damage_roll() as u32;
                     let dmg = (base * (100 - roll) / 100).max(1) as u16;
                     let m = self
