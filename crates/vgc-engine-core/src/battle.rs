@@ -6048,6 +6048,19 @@ impl Battle {
             let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
         }
 
+        // Clanging Scales — PS `data/moves.ts:clangingscales` carries a
+        // top-level `selfBoost: { boosts: { def: -1 } }`, applied once after
+        // the move connects (sim/battle-actions.ts:521, same path as Scale
+        // Shot — NOT a per-hit secondary). Kommo-o's signature spread Dragon
+        // move; the user drops its own Def by 1 after hitting. White Herb /
+        // Eject Pack react to the drop exactly as for Scale Shot.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Clanging_Scales_(move)>.
+        if m.slug == "clangingscales" && any_damage_dealt > 0 {
+            self.apply_boosts(actor_side, actor_slot, &[(1, -1)], actor_side, actor_slot);
+            crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+            let _ = crate::item::try_consume_eject_pack(self, actor_side, actor_slot, true);
+        }
+
         // Move recoil — Flare Blitz / Wild Charge / Brave Bird /
         // Double-Edge / Head Smash / Take Down / Wave Crash, etc.
         // PS sim/battle.ts:2173 gen>4 path:
@@ -29329,6 +29342,31 @@ mod tests {
             assert!(b.p2.team[0].is_alive(), "Lumina Crash target survives seed {seed}");
             assert_eq!(b.p2.team[0].boosts[3], -2, "Lumina Crash -2 SpD seed {seed}");
             assert_eq!(b.p2.team[0].boosts[0], 0, "Lumina Crash leaves Atk seed {seed}");
+        }
+    }
+
+    #[test]
+    fn clanging_scales_drops_user_def_by_one() {
+        // Clanging Scales = top-level selfBoost Def -1, applied once after the
+        // move connects (PS data/moves.ts:clangingscales). Kommo-o drops its
+        // OWN Def by 1; the target's Def is untouched.
+        let p1_json = r#"[
+            {"species":"kommoo","level":50,"ability":"bulletproof","item":"","nature":"modest","moves":["clangingscales","protect","flamethrower","closecombat"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","thunderwave","toxic"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        for seed in 0u64..16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Clanging Scales target survives seed {seed}");
+            assert_eq!(b.p1.team[0].boosts[1], -1, "Clanging Scales -1 user Def seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[1], 0, "Clanging Scales leaves target Def seed {seed}");
         }
     }
 
