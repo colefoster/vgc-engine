@@ -144,6 +144,21 @@ enum PreMoveOutcome {
     Abort,
 }
 
+/// Result of the move-identity onTry checks (Destiny Bond clear, Stance
+/// Change forme swap, Damp, Sucker Punch, Focus Punch, Gigaton Hammer /
+/// Blood Moon two-turn lock, Gravity ground-restriction, Fake Out
+/// turn-1 requirement). See `Battle::check_move_identity_pre_use`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoveIdentityOutcome {
+    /// All checks passed — continue resolving the move.
+    Proceed,
+    /// A move-identity check fired — caller must short-circuit
+    /// `resolve_move_with_pending`. PP handling (tick-on-fail vs leave
+    /// untouched) was already performed inline by the check that fired,
+    /// matching PS semantics for each specific move.
+    Abort,
+}
+
 /// Result of the per-target accuracy check inside the move-resolution
 /// loop. See `Battle::roll_accuracy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2274,240 +2289,28 @@ impl Battle {
             return;
         }
 
-        // Destiny Bond clears the moment its holder executes any move other
-        // than Destiny Bond itself — PS data/moves.ts:destinybond condition
-        // onBeforeMove (priority -1). Placed AFTER the can-act gates (a
-        // flinched / asleep / fully-paralyzed holder that fails to move keeps
-        // the volatile, matching PS) and before the move's own effect, so the
-        // holder's protection lapses for THIS turn whether the move lands or
-        // fails. Re-using Destiny Bond skips removal here so its arm's
-        // consecutive-use guard still sees the prior volatile.
-        if move_id != data::move_id::DESTINYBOND {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.volatiles.remove(crate::pokemon::VolatileKind::DestinyBond);
-            }
-        }
-
-        // 1e-bis. Stance Change — PS `data/abilities.ts:stancechange`
-        //   onModifyMove(move, attacker) {
-        //     if (attacker.species.baseSpecies !== 'Aegislash' ||
-        //         attacker.transformed) return;
-        //     if (move.category === 'Status' && move.id !== 'kingsshield')
-        //       return;
-        //     const targetForme =
-        //       move.id === 'kingsshield' ? 'Aegislash' : 'Aegislash-Blade';
-        //     if (attacker.species.id !== toID(targetForme))
-        //       attacker.formeChange(targetForme);
-        //   }
-        // Aegislash flips to Blade (offensive) forme when it uses any
-        // attacking move, and back to Shield forme (base Aegislash) when it
-        // uses King's Shield. Other status moves leave the forme unchanged.
-        // Placed AFTER the beforeMove gates (a flinched / fully-paralyzed /
-        // asleep Aegislash that fails to move does not change forme — PS's
-        // onModifyMove only runs once the move executes) and BEFORE accuracy
-        // / damage, so the new forme's stats apply to THIS move (even on a
-        // miss). `recompute_stats=true` swaps the five battle stats; the
-        // `attacker` snapshot is refreshed so the damage calc reads them.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stance_Change_(Ability)>.
-        if attacker.effective_ability_id() == data::ability_id::STANCECHANGE {
-            let cur = attacker.species_id;
-            let is_aegislash =
-                cur == data::species_id::AEGISLASH || cur == data::species_id::AEGISLASHBLADE;
-            let target = if !is_aegislash {
-                None
-            } else if move_id == data::move_id::KINGSSHIELD {
-                Some(data::species_id::AEGISLASH)
-            } else if m.category != 2 {
-                Some(data::species_id::AEGISLASHBLADE)
-            } else {
-                None
-            };
-            if let Some(target_species) = target {
-                if target_species != cur {
-                    self.set_forme(actor_side, actor_slot, target_species, true);
-                    if let Some(live) = self.side(actor_side).active_mon(actor_slot as usize) {
-                        attacker.species_id = live.species_id;
-                        attacker.stats = live.stats;
-                    }
-                }
-            }
-        }
-
-        // 1f. Damp — PS `data/abilities.ts:801`:
-        //   onAnyTryMove(target, source, effect) {
-        //     if (['explosion','mindblown','mistyexplosion','selfdestruct']
-        //         .includes(effect.id)) {
-        //       this.attrLastMove('[still]');
-        //       this.add('cant', ..., 'ability: Damp', effect, ...);
-        //       return false;
-        //     }
-        //   }
-        // Field-wide: if ANY active mon (either side) has Damp, the
-        // explosion move fails outright — no damage, no self-faint.
-        // `onAnyTryMove` is a global event, so Mold Breaker (which only
-        // suppresses the move's *target* abilities) does NOT bypass it.
-        // PP IS consumed in PS (the move is selected and runMove proceeds
-        // past the PP deduction before TryMove vetoes) — we tick it then
-        // return, mirroring the Sucker-Punch fail path below.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_(Ability)>.
+        // Move-identity onTry checks — Destiny Bond pre-move clear, Stance
+        // Change forme swap, Damp suppression of explosion moves, Sucker
+        // Punch fail-if-target-already-moved, Focus Punch lost-focus, Gigaton
+        // Hammer / Blood Moon two-turn lock, Gravity ground-restriction,
+        // Fake Out turn-1 requirement. Each check fires only for its own
+        // move-identity (constant-time match) and either mutates
+        // self / attacker in place or short-circuits via Abort with the
+        // PS-canonical PP handling already applied. Deterministic — no
+        // RNG draws. See `check_move_identity_pre_use`.
         if matches!(
-            move_id,
-            data::move_id::EXPLOSION
-                | data::move_id::SELFDESTRUCT
-                | data::move_id::MINDBLOWN
-                | data::move_id::MISTYEXPLOSION
-        ) {
-            let n = self.format().active_count() as u8;
-            let damp_on_field = [SideRef::P1, SideRef::P2].iter().any(|&s| {
-                (0..n).any(|slot| {
-                    self.side(s)
-                        .active_mon(slot as usize)
-                        .is_some_and(|mon| {
-                            mon.is_alive() && mon.effective_ability_id() == data::ability_id::DAMP
-                        })
-                })
-            });
-            if damp_on_field {
-                // Pressure still applies — PS deducts the foe's extra PP in
-                // `useMove` (before the move's TryMove veto). See
-                // `pressure_extra_pp`.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
-                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
-                }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
-                return;
-            }
-        }
-
-        // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
-        //     fails unless the target is still queued to use a
-        //     damaging (non-Status) move this turn. Approximation:
-        //     scan every opposing slot's `pending_kind`; if at least
-        //     one is still pending with a damaging move, succeed;
-        //     otherwise fail (PS targets exactly one mon and checks
-        //     that mon's queued action, but the engine often passes
-        //     `target: None` for `target: "normal"` and resolves by
-        //     position later — using "any unmoved foe is attacking"
-        //     matches PS in the singles case and is correct for
-        //     doubles whenever Sucker Punch has been routed to a
-        //     specific slot via the action target field — see below.
-        //     Fails still tick PP (PS behavior).
-        if move_id == data::move_id::SUCKERPUNCH {
-            let opp = actor_side.opposing() as usize;
-            // If the action specifies a target slot, check ONLY that
-            // slot's pending action. Otherwise (single-target moves
-            // sometimes pass target: None when target: "normal" auto-
-            // resolves), check whether any opposing actor is queued
-            // with a damaging move.
-            let ok = match target {
-                Some(Target { side, slot }) if side == actor_side.opposing() => {
-                    let s = slot as usize & 1;
-                    pending_kind[opp][s] == 1
-                }
-                _ => pending_kind[opp].iter().any(|&k| k == 1),
-            };
-            if !ok {
-                let extra = pressure_extra_pp(self, actor_side, m, target);
-                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
-                }
-                crate::item::on_pp_depleted(self, actor_side, actor_slot);
-                return;
-            }
-        }
-
-        // 2a'. Focus Punch — PS data/moves.ts:focuspunch.
-        //      `onTry(pokemon)` checks `pokemon.volatiles['focuspunch']`
-        //      which is set turn-start via `onBeforeTurn` and cleared if
-        //      the user took damage before its action via `onHit` on the
-        //      `focuspunch` volatile (PS clears it on any move that
-        //      `damage > 0`). Our engine collapses this to: fail if
-        //      `damaged_this_turn` is set when resolution starts. PP is
-        //      still ticked (PS "Lost focus!" message — move fails after
-        //      PP deduct in PS's flow, but the gen-9 outcome is the same:
-        //      the move slot pays PP, no damage is dealt).
-        //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
-        if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
-            let extra = pressure_extra_pp(self, actor_side, m, target);
-            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
-                mon.last_used_move_slot = move_slot;
-            }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
-            return;
-        }
-
-        // 1b. Gigaton Hammer / Blood Moon — `flags: { cantusetwice: 1 }`.
-        // PS sim/battle.ts:1692 disables the move at choice-selection
-        // time when the user's lastMove id matches the slot. We model
-        // this as a resolve-time failure (PP still ticks, matching PS
-        // semantics for a move that "fails"). `last_used_move_slot`
-        // is set in PP-deduct below, cleared on switch-out, so it
-        // exactly tracks "did this mon use this same slot last turn?"
-        // PS source: data/moves.ts:gigatonhammer (line 6589),
-        //            data/moves.ts:bloodmoon (line 1528).
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gigaton_Hammer_(move)>
-        //             <https://bulbapedia.bulbagarden.net/wiki/Blood_Moon_(move)>
-        if matches!(move_id, data::move_id::GIGATONHAMMER | data::move_id::BLOODMOON)
-            && attacker.last_used_move_slot == move_slot
-        {
-            let extra = pressure_extra_pp(self, actor_side, m, target);
-            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
-                // Set last_used_move_slot to 255 so a third attempt
-                // succeeds — PS clears the volatile on every other
-                // turn (the move becomes usable again every other
-                // turn whether the user actually used it or not).
-                mon.last_used_move_slot = 255;
-            }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
-            return;
-        }
-
-        // 1c. Gravity — moves with the `gravity` flag can't be used while
-        // the field condition is up (PS `data/moves.ts:gravity` condition
-        // `onBeforeMove`: `this.add('cant', ...); return false;`). PS's
-        // `cant` cancels the move BEFORE PP is charged and draws no RNG.
-        // The gravity-flagged move set (PS `flags.gravity`): the airborne /
-        // jump moves — Fly, Bounce, Sky Drop, Jump Kick, High Jump Kick,
-        // Splash, Magnet Rise, Telekinesis, Flying Press, plus the bounce
-        // variant Hi Jump Kick. Hardcoded here rather than threading a new
-        // generated `is_gravity` flag through `build.rs` (no consumer for
-        // the broader flag set yet). Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
-        if self.gravity_turns > 0
-            && matches!(
+            self.check_move_identity_pre_use(
+                actor_side,
+                actor_slot,
                 move_id,
-                data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP
-                    | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK
-                    | data::move_id::SPLASH | data::move_id::MAGNETRISE
-                    | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS
-            )
-        {
-            return;
-        }
-
-        // 2. Fake Out: fails unless attacker has been on the field 0 turns
-        //    (i.e. this is its first action since switch-in). PS marks
-        //    this with the 'fakeout' move's onTry checking activeTurns.
-        if move_id == data::move_id::FAKEOUT && attacker.turns_active != 0 {
-            // Failure still ticks PP per PS (plus Pressure extra).
-            let extra = pressure_extra_pp(self, actor_side, m, target);
-            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
-            }
-            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                move_slot,
+                m,
+                &mut attacker,
+                target,
+                pending_kind,
+            ),
+            MoveIdentityOutcome::Abort
+        ) {
             return;
         }
 
@@ -6158,6 +5961,284 @@ impl Battle {
             // Leppa Berry — PS `onUpdate` eats once a move hits 0 PP.
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
         }
+    }
+
+    /// Move-identity specific "onTry" checks — Destiny Bond pre-move
+    /// clear, Stance Change forme swap, Damp suppression of explosion
+    /// moves, Sucker Punch fail-if-target-already-moved, Focus Punch
+    /// lost-focus, Gigaton Hammer / Blood Moon two-turn lock, Gravity
+    /// ground-restriction, Fake Out turn-1 requirement.
+    ///
+    /// Returns whether the move should proceed; on `Abort` the caller
+    /// short-circuits the rest of `resolve_move_with_pending`. Each
+    /// check verifies its move-identity (or ability identity, for
+    /// Stance Change) before doing any work, so non-applicable moves
+    /// pass through in O(1).
+    ///
+    /// Order matches the inline code that lived between
+    /// `check_pre_move_status` and the lock-in / charge-turn / PP-deduct
+    /// block, and matches PS's `onTry` ordering (Destiny Bond's
+    /// `onBeforeMove` clear → `onModifyMove` Stance Change forme swap →
+    /// global `onAnyTryMove` Damp → move-own `onTry` Sucker Punch /
+    /// Focus Punch / Gigaton Hammer / Gravity / Fake Out). PP-on-fail
+    /// handling and Pressure surcharge are PRESERVED VERBATIM for each
+    /// individual check.
+    ///
+    /// Stance Change mutates the caller's `attacker` snapshot in place
+    /// (forme swap refreshes `species_id` + `stats`) so the damage calc
+    /// reads the new forme's stats — see the Stance Change arm below.
+    ///
+    /// Deterministic — no RNG draws.
+    #[allow(clippy::too_many_arguments)]
+    fn check_move_identity_pre_use(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        m: &data::MoveDef,
+        attacker: &mut Pokemon,
+        target: Option<Target>,
+        pending_kind: &[[u8; 2]; 2],
+    ) -> MoveIdentityOutcome {
+        // Destiny Bond clears the moment its holder executes any move other
+        // than Destiny Bond itself — PS data/moves.ts:destinybond condition
+        // onBeforeMove (priority -1). Placed AFTER the can-act gates (a
+        // flinched / asleep / fully-paralyzed holder that fails to move keeps
+        // the volatile, matching PS) and before the move's own effect, so the
+        // holder's protection lapses for THIS turn whether the move lands or
+        // fails. Re-using Destiny Bond skips removal here so its arm's
+        // consecutive-use guard still sees the prior volatile.
+        if move_id != data::move_id::DESTINYBOND {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.volatiles.remove(crate::pokemon::VolatileKind::DestinyBond);
+            }
+        }
+
+        // 1e-bis. Stance Change — PS `data/abilities.ts:stancechange`
+        //   onModifyMove(move, attacker) {
+        //     if (attacker.species.baseSpecies !== 'Aegislash' ||
+        //         attacker.transformed) return;
+        //     if (move.category === 'Status' && move.id !== 'kingsshield')
+        //       return;
+        //     const targetForme =
+        //       move.id === 'kingsshield' ? 'Aegislash' : 'Aegislash-Blade';
+        //     if (attacker.species.id !== toID(targetForme))
+        //       attacker.formeChange(targetForme);
+        //   }
+        // Aegislash flips to Blade (offensive) forme when it uses any
+        // attacking move, and back to Shield forme (base Aegislash) when it
+        // uses King's Shield. Other status moves leave the forme unchanged.
+        // Placed AFTER the beforeMove gates (a flinched / fully-paralyzed /
+        // asleep Aegislash that fails to move does not change forme — PS's
+        // onModifyMove only runs once the move executes) and BEFORE accuracy
+        // / damage, so the new forme's stats apply to THIS move (even on a
+        // miss). `recompute_stats=true` swaps the five battle stats; the
+        // `attacker` snapshot is refreshed so the damage calc reads them.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stance_Change_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::STANCECHANGE {
+            let cur = attacker.species_id;
+            let is_aegislash =
+                cur == data::species_id::AEGISLASH || cur == data::species_id::AEGISLASHBLADE;
+            let target_species = if !is_aegislash {
+                None
+            } else if move_id == data::move_id::KINGSSHIELD {
+                Some(data::species_id::AEGISLASH)
+            } else if m.category != 2 {
+                Some(data::species_id::AEGISLASHBLADE)
+            } else {
+                None
+            };
+            if let Some(target_species) = target_species {
+                if target_species != cur {
+                    self.set_forme(actor_side, actor_slot, target_species, true);
+                    if let Some(live) = self.side(actor_side).active_mon(actor_slot as usize) {
+                        attacker.species_id = live.species_id;
+                        attacker.stats = live.stats;
+                    }
+                }
+            }
+        }
+
+        // 1f. Damp — PS `data/abilities.ts:801`:
+        //   onAnyTryMove(target, source, effect) {
+        //     if (['explosion','mindblown','mistyexplosion','selfdestruct']
+        //         .includes(effect.id)) {
+        //       this.attrLastMove('[still]');
+        //       this.add('cant', ..., 'ability: Damp', effect, ...);
+        //       return false;
+        //     }
+        //   }
+        // Field-wide: if ANY active mon (either side) has Damp, the
+        // explosion move fails outright — no damage, no self-faint.
+        // `onAnyTryMove` is a global event, so Mold Breaker (which only
+        // suppresses the move's *target* abilities) does NOT bypass it.
+        // PP IS consumed in PS (the move is selected and runMove proceeds
+        // past the PP deduction before TryMove vetoes) — we tick it then
+        // return, mirroring the Sucker-Punch fail path below.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Damp_(Ability)>.
+        if matches!(
+            move_id,
+            data::move_id::EXPLOSION
+                | data::move_id::SELFDESTRUCT
+                | data::move_id::MINDBLOWN
+                | data::move_id::MISTYEXPLOSION
+        ) {
+            let n = self.format().active_count() as u8;
+            let damp_on_field = [SideRef::P1, SideRef::P2].iter().any(|&s| {
+                (0..n).any(|slot| {
+                    self.side(s)
+                        .active_mon(slot as usize)
+                        .is_some_and(|mon| {
+                            mon.is_alive() && mon.effective_ability_id() == data::ability_id::DAMP
+                        })
+                })
+            });
+            if damp_on_field {
+                // Pressure still applies — PS deducts the foe's extra PP in
+                // `useMove` (before the move's TryMove veto). See
+                // `pressure_extra_pp`.
+                let extra = pressure_extra_pp(self, actor_side, m, target);
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1 + extra);
+                    }
+                }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                return MoveIdentityOutcome::Abort;
+            }
+        }
+
+        // 2a. Sucker Punch: PS `data/moves.ts:suckerpunch` onTry —
+        //     fails unless the target is still queued to use a
+        //     damaging (non-Status) move this turn. Approximation:
+        //     scan every opposing slot's `pending_kind`; if at least
+        //     one is still pending with a damaging move, succeed;
+        //     otherwise fail (PS targets exactly one mon and checks
+        //     that mon's queued action, but the engine often passes
+        //     `target: None` for `target: "normal"` and resolves by
+        //     position later — using "any unmoved foe is attacking"
+        //     matches PS in the singles case and is correct for
+        //     doubles whenever Sucker Punch has been routed to a
+        //     specific slot via the action target field — see below.
+        //     Fails still tick PP (PS behavior).
+        if move_id == data::move_id::SUCKERPUNCH {
+            let opp = actor_side.opposing() as usize;
+            // If the action specifies a target slot, check ONLY that
+            // slot's pending action. Otherwise (single-target moves
+            // sometimes pass target: None when target: "normal" auto-
+            // resolves), check whether any opposing actor is queued
+            // with a damaging move.
+            let ok = match target {
+                Some(Target { side, slot }) if side == actor_side.opposing() => {
+                    let s = slot as usize & 1;
+                    pending_kind[opp][s] == 1
+                }
+                _ => pending_kind[opp].iter().any(|&k| k == 1),
+            };
+            if !ok {
+                let extra = pressure_extra_pp(self, actor_side, m, target);
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                        *pp = pp.saturating_sub(1 + extra);
+                    }
+                }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                return MoveIdentityOutcome::Abort;
+            }
+        }
+
+        // 2a'. Focus Punch — PS data/moves.ts:focuspunch.
+        //      `onTry(pokemon)` checks `pokemon.volatiles['focuspunch']`
+        //      which is set turn-start via `onBeforeTurn` and cleared if
+        //      the user took damage before its action via `onHit` on the
+        //      `focuspunch` volatile (PS clears it on any move that
+        //      `damage > 0`). Our engine collapses this to: fail if
+        //      `damaged_this_turn` is set when resolution starts. PP is
+        //      still ticked (PS "Lost focus!" message — move fails after
+        //      PP deduct in PS's flow, but the gen-9 outcome is the same:
+        //      the move slot pays PP, no damage is dealt).
+        //      Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Punch_(move)>.
+        if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
+            let extra = pressure_extra_pp(self, actor_side, m, target);
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1 + extra);
+                }
+                mon.last_used_move_slot = move_slot;
+            }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+            return MoveIdentityOutcome::Abort;
+        }
+
+        // 1b. Gigaton Hammer / Blood Moon — `flags: { cantusetwice: 1 }`.
+        // PS sim/battle.ts:1692 disables the move at choice-selection
+        // time when the user's lastMove id matches the slot. We model
+        // this as a resolve-time failure (PP still ticks, matching PS
+        // semantics for a move that "fails"). `last_used_move_slot`
+        // is set in PP-deduct below, cleared on switch-out, so it
+        // exactly tracks "did this mon use this same slot last turn?"
+        // PS source: data/moves.ts:gigatonhammer (line 6589),
+        //            data/moves.ts:bloodmoon (line 1528).
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gigaton_Hammer_(move)>
+        //             <https://bulbapedia.bulbagarden.net/wiki/Blood_Moon_(move)>
+        if matches!(move_id, data::move_id::GIGATONHAMMER | data::move_id::BLOODMOON)
+            && attacker.last_used_move_slot == move_slot
+        {
+            let extra = pressure_extra_pp(self, actor_side, m, target);
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1 + extra);
+                }
+                // Set last_used_move_slot to 255 so a third attempt
+                // succeeds — PS clears the volatile on every other
+                // turn (the move becomes usable again every other
+                // turn whether the user actually used it or not).
+                mon.last_used_move_slot = 255;
+            }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+            return MoveIdentityOutcome::Abort;
+        }
+
+        // 1c. Gravity — moves with the `gravity` flag can't be used while
+        // the field condition is up (PS `data/moves.ts:gravity` condition
+        // `onBeforeMove`: `this.add('cant', ...); return false;`). PS's
+        // `cant` cancels the move BEFORE PP is charged and draws no RNG.
+        // The gravity-flagged move set (PS `flags.gravity`): the airborne /
+        // jump moves — Fly, Bounce, Sky Drop, Jump Kick, High Jump Kick,
+        // Splash, Magnet Rise, Telekinesis, Flying Press, plus the bounce
+        // variant Hi Jump Kick. Hardcoded here rather than threading a new
+        // generated `is_gravity` flag through `build.rs` (no consumer for
+        // the broader flag set yet). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
+        if self.gravity_turns > 0
+            && matches!(
+                move_id,
+                data::move_id::FLY | data::move_id::BOUNCE | data::move_id::SKYDROP
+                    | data::move_id::JUMPKICK | data::move_id::HIGHJUMPKICK
+                    | data::move_id::SPLASH | data::move_id::MAGNETRISE
+                    | data::move_id::TELEKINESIS | data::move_id::FLYINGPRESS
+            )
+        {
+            return MoveIdentityOutcome::Abort;
+        }
+
+        // 2. Fake Out: fails unless attacker has been on the field 0 turns
+        //    (i.e. this is its first action since switch-in). PS marks
+        //    this with the 'fakeout' move's onTry checking activeTurns.
+        if move_id == data::move_id::FAKEOUT && attacker.turns_active != 0 {
+            // Failure still ticks PP per PS (plus Pressure extra).
+            let extra = pressure_extra_pp(self, actor_side, m, target);
+            if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
+                    *pp = pp.saturating_sub(1 + extra);
+                }
+            }
+            crate::item::on_pp_depleted(self, actor_side, actor_slot);
+            return MoveIdentityOutcome::Abort;
+        }
+
+        MoveIdentityOutcome::Proceed
     }
 
     /// Pre-move volatile/status checks. Returns whether the move should
