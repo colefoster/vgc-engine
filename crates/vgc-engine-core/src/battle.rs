@@ -212,42 +212,42 @@ pub struct Battle {
     /// `step` calls. A plain Copy field — no heap, hot-loop safe.
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
-    pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
     /// Set true for the duration of a single Pursuit switch-interception
     /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
     /// by the damage calc (BP ×2) and the accuracy block (no accuracy
     /// check) so a normal move-phase Pursuit stays a 40-BP Dark move.
     /// Always `false` outside the interception call. Copy field, hot-loop
     /// safe. PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`.
-    pursuit_intercepting: bool,
+    pub(crate) pursuit_intercepting: bool,
     /// Per-(side, slot) latch marking a queued move action that was
     /// already executed as a Pursuit interception during switch
     /// resolution this turn. The move-phase walk skips these so the
     /// Pursuit user does not act twice. PS analog: `this.queue.cancelMove`
     /// in the `pursuit` condition. Reset at the top of every `step`.
-    pursuit_consumed: [[bool; 2]; 2],
+    pub(crate) pursuit_consumed: [[bool; 2]; 2],
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
     /// the Pokémon, not the board slot — PS swaps the mon objects). Always
     /// `None` between resolutions. Copy field, hot-loop safe. PS
     /// `data/moves.ts:allyswitch` (`this.swapPosition`).
-    ally_switch_pending: Option<SideRef>,
+    pub(crate) ally_switch_pending: Option<SideRef>,
     /// Delayed-effect queue for Future Sight / Doom Desire, indexed
     /// `[target_side][target_slot]`. Fixed-capacity (2 sides × 2 slots) so
     /// it never allocates in `step()`; `None` = no pending hit on that slot.
     /// At most one future move per slot (PS `addSlotCondition` fails if one
     /// already pends). See [`FutureEffect`].
-    future_pending: [[Option<FutureEffect>; 2]; 2],
+    pub(crate) future_pending: [[Option<FutureEffect>; 2]; 2],
     /// Delayed-effect queue for Wish, indexed `[wisher_side][wisher_slot]`.
     /// Same fixed-capacity, alloc-free shape as `future_pending`. A slot may
     /// hold BOTH a pending Wish (here) AND a pending future move (foe's
     /// Future Sight) — PS tracks them as independent slotConditions. See
     /// [`WishEffect`].
-    wish_pending: [[Option<WishEffect>; 2]; 2],
-    rng: Rng,
-    turn: u32,
-    ended: Option<Option<SideRef>>,
+    pub(crate) wish_pending: [[Option<WishEffect>; 2]; 2],
+    pub(crate) rng: Rng,
+    pub(crate) turn: u32,
+    pub(crate) ended: Option<Option<SideRef>>,
 }
 
 impl Battle {
@@ -327,6 +327,46 @@ impl Battle {
     /// to read `unmatched_draws()` after an `Rng::OracleKeyed` replay.
     pub fn rng(&self) -> &Rng {
         &self.rng
+    }
+
+    /// Mutable access to the battle's RNG. Used by the outcome-frontier
+    /// solver to (a) drain a `Recording` log between enumeration calls and
+    /// (b) advance / reset state under test harnesses. The RNG is not part
+    /// of the canonical game state (see [`Battle::canonical_hash`]), so
+    /// mutating it does not affect TT equality.
+    pub fn rng_mut(&mut self) -> &mut Rng {
+        &mut self.rng
+    }
+
+    /// Replace the battle's RNG outright. Used by the outcome-frontier
+    /// solver to swap a baseline `Splitmix` for either an `Rng::Recording`
+    /// (discovery pass) or an `Rng::OracleKeyed` (combo replay) before
+    /// calling `step()`.
+    pub fn set_rng(&mut self, rng: Rng) {
+        self.rng = rng;
+    }
+
+    /// Battle-end state. `None` if the battle has not ended yet;
+    /// `Some(None)` for a draw (both sides simultaneously fully fainted);
+    /// `Some(Some(side))` for that side as the winner. Matches the
+    /// internal `ended` field shape one-to-one.
+    pub fn winner(&self) -> Option<Option<SideRef>> {
+        self.ended
+    }
+
+    /// True when at least one side has no active mons left. Used by the
+    /// endgame solver to short-circuit recursion at terminal states.
+    pub fn is_terminal(&self) -> bool {
+        self.ended.is_some()
+    }
+
+    /// Force the battle into a terminal state with the given outcome.
+    /// `None` = draw, `Some(side)` = that side wins. Intended for solver
+    /// test fixtures and for search-controller code paths that need to
+    /// fold in known-terminal states from external context (TT lookup,
+    /// determinization-prior shortcut). Not for in-game use.
+    pub fn set_ended(&mut self, outcome: Option<SideRef>) {
+        self.ended = Some(outcome);
     }
 
     pub fn seed(&self) -> u64 {
