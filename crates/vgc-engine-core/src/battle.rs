@@ -11843,8 +11843,13 @@ fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
         // out_35d408472a). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Torch_Song_(move)>.
         "torchsong" => (&[(2, 1)], 100),
-        // +1 Spe:
-        "flamecharge" => (&[(4, 1)], 100),
+        // +1 Spe (100% self-boost secondary on a damaging hit) — Flame
+        // Charge plus Aqua Step (Quaquaval), Trailblaze (Grass starters /
+        // many) and Aura Wheel (Morpeko). PS data/moves.ts each carries
+        // `secondary: { chance: 100, self: { boosts: { spe: 1 } } }`. These
+        // three were missing, so the guaranteed Speed raise never landed.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aqua_Step_(move)>.
+        "flamecharge" | "aquastep" | "trailblaze" | "aurawheel" => (&[(4, 1)], 100),
         // +1 Def:
         "steelwing" => (&[(1, 1)], 10),
         // +1 to all five main stats (Ancient Power / Silver Wind / Ominous
@@ -12851,6 +12856,33 @@ mod tests {
             assert_eq!(
                 b.p1.team[0].boosts[2], 1,
                 "Torch Song (100% secondary) must raise attacker SpA by 1 (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn aqua_step_always_raises_attacker_spe() {
+        // PS data/moves.ts:aquastep — `secondary: { chance: 100, self:
+        // { boosts: { spe: 1 } } }`. 100% accuracy + 100% secondary ⇒ +1 Spe
+        // (boost index 4) on the ATTACKER on every connecting hit. Same shape
+        // as Trailblaze / Aura Wheel (all three share this table entry).
+        let p1_json = r#"[
+            {"species":"quaquaval","level":50,"ability":"torrent","item":"","nature":"jolly","moves":["aquastep","tackle","aerialace","ember"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0..20 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert_eq!(
+                b.p1.team[0].boosts[4], 1,
+                "Aqua Step (100% secondary) must raise attacker Spe by 1 (seed {seed})"
             );
         }
     }
