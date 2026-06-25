@@ -504,6 +504,16 @@ pub fn move_type_in_ctx(
         } else {
             m.type_
         }
+    } else if move_id == data::move_id::RAGINGBULL {
+        // Raging Bull — PS data/moves.ts:ragingbull `onModifyType`: the move's
+        // type follows the user's Tauros-Paldea breed (granting STAB). Any
+        // other user keeps the move's declared Normal type.
+        match data::SPECIES[attacker.species_id as usize].slug {
+            "taurospaldeacombat" => 6, // Fighting
+            "taurospaldeablaze" => 1,  // Fire
+            "taurospaldeaaqua" => 2,   // Water
+            _ => m.type_,
+        }
     } else {
         m.type_
     }
@@ -622,6 +632,18 @@ fn calculate_damage_with_bp(
             Weather::Snow => (5u8, 100),
             Weather::None => (m.type_, m.base_power as u32),
         }
+    } else if move_id == data::move_id::RAGINGBULL {
+        // Raging Bull — PS data/moves.ts:ragingbull `onModifyType`: type follows
+        // the user's Tauros-Paldea breed (granting STAB). BP unchanged (60).
+        // The companion screen-break (onTryHit, shared with Brick Break /
+        // Psychic Fangs) is not yet modelled — deferred to a separate PR.
+        let ty = match data::SPECIES[attacker.species_id as usize].slug {
+            "taurospaldeacombat" => 6, // Fighting
+            "taurospaldeablaze" => 1,  // Fire
+            "taurospaldeaaqua" => 2,   // Water
+            _ => m.type_,
+        };
+        (ty, m.base_power as u32)
     } else if move_id == data::move_id::LASTRESPECTS {
         // Last Respects — PS data/moves.ts:lastrespects
         // `basePowerCallback: 50 + 50 * pokemon.side.totalFainted`,
@@ -3391,6 +3413,30 @@ mod tests {
         assert!((146..=154).contains(&ratio_x100),
             "Hustle ≈ ×1.5 physical Atk, got ×{ratio_x100}/100");
         assert_eq!(hustle_spec, base_spec, "Hustle must NOT touch special damage");
+    }
+
+    #[test]
+    fn raging_bull_type_follows_tauros_paldea_breed() {
+        // Raging Bull's type follows the user's Paldea breed (and gains STAB).
+        // vs Charizard (Fire/Flying): Tauros-Paldea-Aqua's Water hit is ×2 +
+        // STAB, while Tauros-Paldea-Combat's Fighting hit is ×0.5 (resisted).
+        // All three breeds share base stats, so the gap is purely type-driven.
+        // PS data/moves.ts:ragingbull onModifyType.
+        let def = make_mon("charizard", 50, "hardy", StatSpread::ZERO);
+        let mk = |a: &Pokemon| calculate_damage(a, &def, move_id("ragingbull"),
+            DamageContext { crit: false, roll: 15, is_spread: false,
+                weather: crate::weather::Weather::None,
+                defender_has_reflect: false, defender_has_light_screen: false,
+                defender_has_aurora_veil: false, is_doubles: false,
+                terrain: crate::terrain::Terrain::None,
+                fairy_aura_active: false, dark_aura_active: false,
+                aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0 });
+        let evs = StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 4 };
+        let aqua = make_mon("taurospaldeaaqua", 50, "adamant", evs);
+        let combat = make_mon("taurospaldeacombat", 50, "adamant", evs);
+        assert!(mk(&aqua) > mk(&combat) * 2,
+            "Raging Bull is Water (SE+STAB) from Aqua but Fighting (resisted) from Combat: aqua={} combat={}",
+            mk(&aqua), mk(&combat));
     }
 
     #[test]
