@@ -11,3 +11,20 @@ description = "vgc-engine simulation core (data-oriented, zero-alloc step loop)"
 vgc-engine-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+# Internal chance-frontier branching. When enabled, exposes
+# `Battle::step_chance()` which returns the full outcome frontier of one
+# turn as `Vec<(Battle, f64)>` without a record/replay round-trip.
+#
+# v1 implementation (this milestone): wraps `Rng::Recording` +
+# `Rng::OracleKeyed` and produces the same frontier `vgc_solver` does —
+# the value is consolidating the API inside engine-core so callers don't
+# have to wire two RNG variants themselves. Performance is identical to
+# the solver crate's `enumerate_outcomes`.
+#
+# Future milestones (see `docs/chance-frontier-migration.md`): replace
+# the wrapper with native per-site branching in `step()`, with a
+# copy-on-write `Battle` so per-outcome cloning is O(1) instead of
+# O(state size). The public API stays stable across the migration.
+chance = []
