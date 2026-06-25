@@ -8142,7 +8142,26 @@ impl Battle {
             {
                 Some((ts, tslot))
             }
-            _ => self.resolve_status_target(opp_side),
+            // Honor the explicitly-chosen foe. In doubles a single-target
+            // opposing status move (Thunder Wave, Hypnosis, Toxic, Glare, ...)
+            // hits the slot the player picked — PS resolves against the chosen
+            // target — but the engine previously always took the first alive
+            // foe (slot 0). Fall back to that first-alive-non-commanding foe
+            // only when no usable opposing target was passed (singles, or a
+            // self/field move that ignores `opp_target` anyway). Found by the
+            // breadth corpus (out_d51772b14a: a Glare aimed at p2b hit p2a).
+            _ => match target {
+                Some(Target { side: tgt_side, slot: tgt_slot })
+                    if tgt_side == opp_side
+                        && self
+                            .side(tgt_side)
+                            .active_mon(tgt_slot as usize)
+                            .is_some_and(|m| m.is_alive() && !m.commanding) =>
+                {
+                    Some((tgt_side, tgt_slot))
+                }
+                _ => self.resolve_status_target(opp_side),
+            },
         };
         // Protect / Detect (and the single-target shields) block a targeted
         // status move exactly as they block a damaging one. PS resolves this in
@@ -29524,6 +29543,43 @@ mod tests {
             assert_eq!(b.p1.team[0].boosts[1], -1, "Clanging Scales -1 user Def seed {seed}");
             assert_eq!(b.p2.team[0].boosts[1], 0, "Clanging Scales leaves target Def seed {seed}");
         }
+    }
+
+    #[test]
+    fn single_target_status_move_hits_chosen_foe_in_doubles() {
+        // In doubles a single-target opposing status move hits the slot the
+        // player picked, not always the first foe. P1a Thunder Waves the
+        // SECOND foe (slot 1); the first foe is never touched.
+        let p1_json = r#"[
+            {"species":"raichu","level":50,"ability":"static","item":"","nature":"timid","moves":["thunderwave","thunderbolt","protect","nastyplot"],"evs":{"spa":252,"spe":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["protect","bodyslam","rest","crunch"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","toxic","calmmind"],"evs":{"hp":252}},
+            {"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["nastyplot","shadowball","sludgebomb","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let mut slot1_para = 0;
+        for seed in 0u64..16 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+                    Choice::Pass { actor_slot: 1 },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None }, // Blissey Soft-Boiled
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None }, // Gengar Nasty Plot
+                ],
+            );
+            // The non-targeted first foe is NEVER paralyzed.
+            assert_eq!(b.p2.team[0].status, Status::None,
+                       "slot-0 foe untouched seed {seed}");
+            if b.p2.team[1].status == Status::Paralysis { slot1_para += 1; }
+        }
+        assert!(slot1_para > 0,
+                "Thunder Wave paralyzes the chosen slot-1 foe (not the first foe)");
     }
 
     #[test]
