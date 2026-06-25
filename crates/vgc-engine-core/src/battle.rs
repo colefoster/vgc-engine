@@ -5837,6 +5837,37 @@ impl Battle {
             damaging,
         );
 
+        self.apply_post_move_effects(
+            actor_side,
+            actor_slot,
+            move_id,
+            m,
+            any_damage_dealt,
+            drag_target,
+        );
+    }
+
+    /// Post-move interleaved effects that run after damage + secondaries
+    /// resolve. Mix of target-side and self-side: partial-trap volatile
+    /// application, hazard-clear moves (Rapid Spin / Mortal Spin), Throat
+    /// Spray, Charge volatile consume, self-switch flagging (U-turn / Volt
+    /// Switch / Flip Turn), forced switches (Dragon Tail / Circle Throw),
+    /// and Fling item dispatch.
+    ///
+    /// Some of these draw RNG (partial-trap duration). Draw sites are
+    /// preserved verbatim — no movement, no reordering. PS draws in the
+    /// same order. Pure mechanical extraction — body byte-identical to the
+    /// inline block.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_post_move_effects(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+        drag_target: Option<(SideRef, u8)>,
+    ) {
         // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
         // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
         // `flipturn:5787` all set `selfSwitch: true`. The switch fires
