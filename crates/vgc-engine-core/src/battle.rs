@@ -4326,207 +4326,35 @@ impl Battle {
                 }
             }
 
-            // Accuracy. PS sim/battle-actions.ts:707 — apply attacker's
-            // accuracy stage minus defender's evasion stage as a combined
-            // boost in -6..=6, then:
-            //   boost > 0: acc *= (3 + boost) / 3   (PS uses int trunc)
-            //   boost < 0: acc *= 3 / (3 - boost)
-            // ignoreAccuracy / ignoreEvasion gating (Foresight, Miracle
-            // Eye, etc.) is deferred — none in the gen-9 VGC top-50.
-            // Weather-modified base accuracy. PS:
-            //   data/moves.ts:hurricane / thunder onModifyMove —
-            //     rain → accuracy = true (always hit);
-            //     sun  → accuracy = 50.
-            //   data/moves.ts:blizzard onModifyMove —
-            //     snow (gen-9 hail rename) → accuracy = true.
-            // `accuracy = true` is encoded as 255 here so the accuracy
-            // check is skipped entirely (and no PRNG draw is consumed —
-            // matches PS, which never calls randomChance when accuracy
-            // is `true`). Bulbapedia:
-            //   <https://bulbapedia.bulbagarden.net/wiki/Hurricane_(move)>
-            //   <https://bulbapedia.bulbagarden.net/wiki/Thunder_(move)>
-            //   <https://bulbapedia.bulbagarden.net/wiki/Blizzard_(move)>.
-            // Weather is read by both sides; Utility Umbrella on either
-            // suppresses Sun/Rain (but not Snow, which is unaffected).
-            let weather_for_acc = self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot);
-            let base_acc: u8 = match move_id {
-                data::move_id::HURRICANE | data::move_id::THUNDER => match weather_for_acc {
-                    crate::weather::Weather::Rain => 255,
-                    crate::weather::Weather::Sun => 50,
-                    _ => m.accuracy,
-                },
-                data::move_id::BLIZZARD => match self.effective_weather() {
-                    crate::weather::Weather::Snow => 255,
-                    _ => m.accuracy,
-                },
-                // Pursuit during switch interception bypasses the accuracy
-                // check (PS `data/moves.ts:pursuit` `onModifyMove` sets
-                // `move.accuracy = true`). 255 = guaranteed hit, no draw.
-                data::move_id::PURSUIT if self.pursuit_intercepting => 255,
-                _ => m.accuracy,
-            };
-            // No Guard (PS `onAnyAccuracy` returns `true`): force the
-            // sure-hit code (255), which skips the entire accuracy block —
-            // no stage/evasion math, no item modifiers, and no PRNG draw.
-            // This is the SAME mechanism `accuracy == true` moves (Swift,
-            // Aerial Ace, weather-boosted Hurricane/Thunder/Blizzard) use,
-            // so draw order is identical to a sure-hit move.
-            let base_acc = if no_guard_pair { 255 } else { base_acc };
-            // PS evaluates the Protect family at the TryHit step, BEFORE the
-            // accuracy roll, so a move blocked by Protect / Wide Guard / Quick
-            // Guard / Mat Block makes NO accuracy draw. Mirror that: suppress
-            // the wasted accuracy roll when this hit will be blocked below.
-            // The actual blocking still happens at its existing sites
-            // (Wide/Quick/Mat Guard + Protect, ~30 lines down); this only
-            // skips the RNG draw so the sequence matches PS (the conformance
-            // harness keys on this, and it tightens PsGen5 draw parity).
-            // Mirrors those four conditions exactly — keep them in sync.
-            // Piercing Drill (damaging contact) punches through single-target
-            // Protect, so it is NOT treated as blocked here (it still rolls).
-            let protect_blocked = (self.side(tside).conditions.wide_guard_this_turn
-                && matches!(m.target, 5 | 6 | 11))
-                || (self.side(tside).conditions.quick_guard_this_turn && m.priority > 0)
-                || (self.side(tside).conditions.mat_block_this_turn
-                    && damaging
-                    && is_targeting_move(m.target))
-                || (defender.is_protected_this_turn()
-                    && is_targeting_move(m.target)
-                    && !(damaging
-                        && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
-                        && crate::damage::move_makes_contact(
-                            &data::MOVES[move_id as usize],
-                            &attacker,
-                        )));
-            if base_acc != 255 && !protect_blocked {
-                let acc_stage = attacker.boosts[5] as i32;
-                let eva_stage = defender.boosts[6] as i32;
-                let boost = (acc_stage - eva_stage).clamp(-6, 6);
-                let mut eff_acc: u32 = if boost > 0 {
-                    (base_acc as u32) * (3 + boost as u32) / 3
-                } else if boost < 0 {
-                    (base_acc as u32) * 3 / (3 + (-boost) as u32)
-                } else {
-                    base_acc as u32
-                };
-                // Wide Lens — attacker's accuracy ×4505/4096 (≈ ×1.1).
-                // PS `data/items.ts:widelens` `onSourceModifyAccuracy`:
-                //   `if (typeof accuracy === 'number') return accuracy * 4505 / 4096;`
-                // Status-move OHKO (typeof === boolean) skip is moot
-                // because we guard on `m.accuracy != 255`. PS rounds via
-                // its tr() helper; we use integer-truncating divide which
-                // matches within ±1 percentage point.
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wide_Lens>.
-                if attacker_item_id == data::item_id::WIDELENS {
-                    eff_acc = (eff_acc * 4505 / 4096).min(100);
-                }
-                // Zoom Lens — attacker's accuracy ×4915/4096 (≈ ×1.2) if the
-                // holder moves AFTER its target this turn. PS
-                // `data/items.ts:7820` `onSourceModifyAccuracy(accuracy,
-                // target)`: applies when `!this.queue.willMove(target)` — the
-                // target has no pending move action left (it already moved,
-                // or it's switching / passing). `onSourceModifyAccuracyPriority
-                // -2` orders it after Wide Lens (0) and before Bright Powder
-                // (-4). We read the per-slot pending-action byte: a still-
-                // pending move is DamagingMove(1) / StatusMove(2); anything
-                // else (None(0) once consumed, or Switch(3)) means the target
-                // won't move later → boost. No new RNG draw — this scales the
-                // same accuracy roll. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Zoom_Lens>.
-                if attacker_item_id == data::item_id::ZOOMLENS {
-                    let tk = pending_kind[tside as usize][(tslot as usize).min(1)];
-                    let target_will_move = tk == 1 || tk == 2;
-                    if !target_will_move {
-                        eff_acc = (eff_acc * 4915 / 4096).min(100);
-                    }
-                }
-                // Micle Berry — PS data/items.ts:micleberry condition
-                // `onSourceAccuracy`: the holder's next non-OHKO move gets
-                // accuracy ×4915/4096 (≈×1.2), then the volatile removes
-                // itself. We read the live latch (the snapshot may be stale
-                // if the berry ate this same turn) and consume it here so
-                // it applies to exactly one move. OHKO moves take the
-                // separate path above and never reach this block.
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Micle_Berry>.
-                let micle_active = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| a.micle_next_move);
-                if micle_active {
-                    eff_acc = (eff_acc * 4915 / 4096).min(100);
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            // Accuracy. PS sim/battle-actions.ts:707 — extracted into
+            // `crate::accuracy::effective_accuracy` (Phase A helper, see
+            // `docs/resolve-move-restructure-plan.md`). The helper is
+            // read-only on `Battle`; the caller (here) owns the RNG draw,
+            // the Micle-latch clear, and Blunder Policy on miss. Behavior
+            // is byte-identical to the prior inline computation.
+            let acc_comp = crate::accuracy::effective_accuracy(
+                self,
+                &attacker,
+                &defender,
+                m,
+                move_id,
+                actor_side,
+                actor_slot,
+                tside,
+                tslot,
+                attacker_ability_id,
+                attacker_item_id,
+                no_guard_pair,
+                damaging,
+                pending_kind,
+            );
+            if let Some(eff_acc) = acc_comp.threshold {
+                if acc_comp.consumed_micle {
+                    if let Some(a) =
+                        self.side_mut(actor_side).active_mon_mut(actor_slot as usize)
+                    {
                         a.micle_next_move = false;
                     }
-                }
-                // Hustle — PS `data/abilities.ts:hustle`:
-                //   onSourceModifyAccuracyPriority: -1,
-                //   onSourceModifyAccuracy(accuracy, target, source, move) {
-                //     if (move.category === 'Physical' &&
-                //         typeof accuracy === 'number')
-                //       return this.chainModify([3277, 4096]);   // ≈ ×0.8
-                //   }
-                // The holder's PHYSICAL moves lose 20% accuracy — the trade-off
-                // for the ×1.5 Atk applied in damage.rs. Special / status moves
-                // are unaffected (raw `move.category`, so Body Press etc. count
-                // as physical). Scales the existing accuracy roll — no extra
-                // PRNG draw. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
-                if attacker.effective_ability_id() == data::ability_id::HUSTLE
-                    && m.category == 0
-                {
-                    eff_acc = eff_acc * 3277 / 4096;
-                }
-                // Bright Powder / Lax Incense — defender-side accuracy
-                // ×3686/4096 (≈ ×0.9). PS `data/items.ts:brightpowder`
-                // and `:laxincense`:
-                //   onModifyAccuracyPriority: -4,
-                //   onModifyAccuracy(accuracy) {
-                //     if (typeof accuracy === 'number')
-                //       return this.chainModify([3686, 4096]);
-                //   }
-                // PS uses chainModify on the same accuracy variable, so
-                // both items stack additively with Wide Lens — order is
-                // priority-driven and not visible at the final integer.
-                // Applied after Wide Lens to match PS's negative-prio
-                // ordering. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Bright_Powder>,
-                // <https://bulbapedia.bulbagarden.net/wiki/Lax_Incense>.
-                if defender.effective_item_id() == data::item_id::BRIGHTPOWDER
-                    || defender.effective_item_id() == data::item_id::LAXINCENSE
-                {
-                    eff_acc = eff_acc * 3686 / 4096;
-                }
-                // Sand Veil / Snow Cloak — PS data/abilities.ts:
-                //   sandveil:  if (effectiveWeather === 'sandstorm')
-                //                return this.chainModify([3277, 4096]); // ≈0.8
-                //   snowcloak: if (effectiveWeather === 'snow' || 'hail')
-                //                return this.chainModify([3277, 4096]);
-                // Defender's incoming accuracy ×0.8 (= 3277/4096) while the
-                // matching weather is up. Flagged `breakable: 1` so Mold
-                // Breaker bypasses. Sand Veil mons (Garchomp HA, Gliscor,
-                // Sandslash); Snow Cloak mons (Glaliе, Beartic).
-                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Veil_(Ability)>
-                //             <https://bulbapedia.bulbagarden.net/wiki/Snow_Cloak_(Ability)>.
-                let def_ability = defender.effective_ability_id();
-                let weather_veil = match (def_ability, self.effective_weather()) {
-                    (data::ability_id::SANDVEIL, crate::weather::Weather::Sand) => true,
-                    (data::ability_id::SNOWCLOAK, crate::weather::Weather::Snow) => true,
-                    _ => false,
-                };
-                let attacker_breaks_mold = matches!(
-                    attacker.effective_ability_id(),
-                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
-                );
-                if weather_veil && !attacker_breaks_mold {
-                    eff_acc = eff_acc * 3277 / 4096;
-                }
-                // Gravity — PS `data/moves.ts:gravity` condition
-                // `onModifyAccuracy`: `this.chainModify([6840, 4096])`
-                // (≈ ×1.67) for every numeric-accuracy move while the
-                // field condition is up. Scales the existing accuracy
-                // roll — no extra PRNG draw. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Gravity_(move)>.
-                if self.gravity_turns > 0 {
-                    eff_acc = eff_acc * 6840 / 4096;
                 }
                 self.rng.set_decision(RngDecision::Accuracy);
                 let roll = self.rng.percent_1_100() as u32;
@@ -11954,7 +11782,7 @@ fn held_item_is_swappable(mon: &Pokemon) -> bool {
     }
 }
 
-fn is_targeting_move(target_code: u8) -> bool {
+pub(crate) fn is_targeting_move(target_code: u8) -> bool {
     // 0 normal, 2 adjacentAlly, 3 adjacentAllyOrSelf, 4 adjacentFoe, 10 any.
     // 5 allAdjacent and 6 allAdjacentFoes are spread — PS's Protect
     // condition.onTryHit (data/moves.ts:protect → conditions.ts) fires
