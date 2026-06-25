@@ -4555,49 +4555,28 @@ impl Battle {
             // Captured DamageContext for the optional Beat Up per-hit loop.
             // Only the non-fixed-damage branch builds it; Beat Up is never a
             // fixed-damage move, so this is always `Some` when Beat Up runs.
-            let mut beat_up_ctx_opt: Option<DamageContext> = None;
-            let mut dmg = if let Some(fd) = fixed_damage {
-                fd
-            } else {
-                // Single DamageContext template (`roll: 0` placeholder),
-                // built once and reused for both the pre-roll range and
-                // the rolled `calculate_damage`. Previously this site had
-                // two duplicated 18-field struct literals; `damage_range_for`
-                // collapses them. See `damage::damage_range_for` for the
-                // input bundle.
-                let inputs = crate::damage::DamageInputs {
-                    crit, is_spread, is_doubles,
-                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
-                    terrain: active_terrain,
-                    defender_has_reflect, defender_has_light_screen,
-                    defender_has_aurora_veil,
-                    fairy_aura_active, dark_aura_active, aura_break_active,
-                    attacker_total_fainted_allies,
-                    attacker_stats: atk_stats_ovr,
-                    defender_stats: def_stats_ovr,
-                    pursuit_doubled: move_id == data::move_id::PURSUIT
-                        && self.pursuit_intercepting,
-                    ally_power_spot, ally_battery, steely_spirit_holders,
-                };
-                let (mut dmg_ctx, roll) = match &self.rng {
-                    // Splitmix path skips the (lo, hi) precomputation
-                    // (it doesn't need a hint) — saves two calculate_damage
-                    // calls per hit on the hot perf-bench path.
-                    Rng::Splitmix(_) => {
-                        let ctx = crate::damage::ctx_from_inputs(inputs);
-                        (ctx, self.rng.damage_roll())
-                    }
-                    _ => {
-                        let (ctx, lo, hi) = crate::damage::damage_range_for(
-                            &attacker, &defender, move_id, inputs,
-                        );
-                        (ctx, self.rng.damage_roll_hint(lo, hi))
-                    }
-                };
-                dmg_ctx.roll = roll;
-                beat_up_ctx_opt = Some(dmg_ctx);
-                calculate_damage(&attacker, &defender, move_id, dmg_ctx)
+            //
+            // The `DamageInputs` bundle is built unconditionally here (the
+            // fixed-damage branch ignores it inside `roll_initial_damage`);
+            // construction is a plain struct literal with no side effects, so
+            // hoisting it out of the conditional preserves behavior — see
+            // `damage::damage_range_for` for the input bundle.
+            let inputs = crate::damage::DamageInputs {
+                crit, is_spread, is_doubles,
+                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                terrain: active_terrain,
+                defender_has_reflect, defender_has_light_screen,
+                defender_has_aurora_veil,
+                fairy_aura_active, dark_aura_active, aura_break_active,
+                attacker_total_fainted_allies,
+                attacker_stats: atk_stats_ovr,
+                defender_stats: def_stats_ovr,
+                pursuit_doubled: move_id == data::move_id::PURSUIT
+                    && self.pursuit_intercepting,
+                ally_power_spot, ally_battery, steely_spirit_holders,
             };
+            let (mut dmg, beat_up_ctx_opt) =
+                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs);
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
             // Fat / Water Bubble / Knock Off / type-resist berries) — PS
@@ -6031,6 +6010,72 @@ impl Battle {
             }
         }
         AccuracyOutcome::Hit
+    }
+
+    /// Roll the per-hit damage bucket and run the live `calculate_damage`
+    /// to produce the pre-modifier damage value. Pure mechanical extraction
+    /// of the `let mut dmg = if let Some(fd) = fixed_damage { ... } else { ... }`
+    /// site inside the per-target loop of `resolve_move_with_pending`.
+    /// Body byte-identical to the inline code; the only structural change
+    /// is that the caller now constructs `DamageInputs` unconditionally
+    /// (the fixed-damage branch ignores `inputs` — struct construction has
+    /// no side effects and no RNG draws).
+    ///
+    /// Returns `(dmg, beat_up_ctx_opt)`:
+    ///   - `dmg`: the pre-modifier damage value the caller plugs into the
+    ///     downstream Life Orb / Expert Belt / Friend Guard / Knock Off /
+    ///     type-resist-berry / Stellar / multihit pipeline.
+    ///   - `beat_up_ctx_opt`: the `DamageContext` template (with `roll`
+    ///     patched in) for the optional Beat Up per-hit re-calc loop. `None`
+    ///     on the fixed-damage branch (Beat Up is never a fixed-damage
+    ///     move; PS skips the ctx-build path the same way).
+    ///
+    /// CONTAINS THE PRIMARY ATTACK DAMAGE RNG DRAW:
+    ///   - `Rng::damage_roll()` (Splitmix path) / `Rng::damage_roll_hint(lo, hi)`
+    ///     (Oracle / OraclePartial / OracleKeyed paths), keyed under
+    ///     `RngDecision::Damage` by the Rng implementation itself.
+    ///   - Site, identity, order, and count are preserved verbatim. The
+    ///     `set_move_context` for this draw is set once at the top of the
+    ///     per-target loop in `resolve_move_with_pending` and travels with
+    ///     `self.rng` unchanged into this method.
+    ///   - Fixed-damage moves draw NO PRNG value (PS returns the
+    ///     pre-computed value before `randomizer`); this method short-
+    ///     circuits on the `Some(fd)` arm without touching `self.rng`.
+    fn roll_initial_damage(
+        &mut self,
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        move_id: u16,
+        fixed_damage: Option<u16>,
+        inputs: crate::damage::DamageInputs,
+    ) -> (u16, Option<DamageContext>) {
+        if let Some(fd) = fixed_damage {
+            return (fd, None);
+        }
+        // Single DamageContext template (`roll: 0` placeholder),
+        // built once and reused for both the pre-roll range and
+        // the rolled `calculate_damage`. Previously this site had
+        // two duplicated 18-field struct literals; `damage_range_for`
+        // collapses them. See `damage::damage_range_for` for the
+        // input bundle.
+        let (mut dmg_ctx, roll) = match &self.rng {
+            // Splitmix path skips the (lo, hi) precomputation
+            // (it doesn't need a hint) — saves two calculate_damage
+            // calls per hit on the hot perf-bench path.
+            Rng::Splitmix(_) => {
+                let ctx = crate::damage::ctx_from_inputs(inputs);
+                (ctx, self.rng.damage_roll())
+            }
+            _ => {
+                let (ctx, lo, hi) = crate::damage::damage_range_for(
+                    attacker, defender, move_id, inputs,
+                );
+                (ctx, self.rng.damage_roll_hint(lo, hi))
+            }
+        };
+        dmg_ctx.roll = roll;
+        let dmg = calculate_damage(attacker, defender, move_id, dmg_ctx);
+        (dmg, Some(dmg_ctx))
     }
 
     /// Pre-move volatile/status checks. Returns whether the move should
