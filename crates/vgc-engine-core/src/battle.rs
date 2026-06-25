@@ -346,6 +346,29 @@ impl Battle {
         self.rng = rng;
     }
 
+    /// Battle-end state. `None` if the battle has not ended yet;
+    /// `Some(None)` for a draw (both sides simultaneously fully fainted);
+    /// `Some(Some(side))` for that side as the winner. Matches the
+    /// internal `ended` field shape one-to-one.
+    pub fn winner(&self) -> Option<Option<SideRef>> {
+        self.ended
+    }
+
+    /// True when at least one side has no active mons left. Used by the
+    /// endgame solver to short-circuit recursion at terminal states.
+    pub fn is_terminal(&self) -> bool {
+        self.ended.is_some()
+    }
+
+    /// Force the battle into a terminal state with the given outcome.
+    /// `None` = draw, `Some(side)` = that side wins. Intended for solver
+    /// test fixtures and for search-controller code paths that need to
+    /// fold in known-terminal states from external context (TT lookup,
+    /// determinization-prior shortcut). Not for in-game use.
+    pub fn set_ended(&mut self, outcome: Option<SideRef>) {
+        self.ended = Some(outcome);
+    }
+
     pub fn seed(&self) -> u64 {
         self.config.seed
     }
