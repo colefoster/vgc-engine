@@ -123,7 +123,7 @@ pub fn double_oracle<G: MatrixGame>(
     // Memoize payoff(i, j) — DO best-response queries the same cells
     // many times across iterations.
     let mut cache: HashMap<(usize, usize), f64> = HashMap::new();
-    let mut payoff_at = |game: &mut G, cache: &mut HashMap<(usize, usize), f64>, i: usize, j: usize| -> f64 {
+    let payoff_at = |game: &mut G, cache: &mut HashMap<(usize, usize), f64>, i: usize, j: usize| -> f64 {
         if let Some(&v) = cache.get(&(i, j)) {
             return v;
         }
