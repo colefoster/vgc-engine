@@ -5629,59 +5629,9 @@ impl Battle {
             // mon — sub-absorbed hits skipped. Dispatches Stamina,
             // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
             // their own PRs.
-            if !hit_sub && effective_dmg > 0 {
-                // PS fires onDamagingHit regardless of whether the
-                // target survived (Rough Skin / Static / Flame Body
-                // tick on a KO hit too). Individual ability arms in
-                // `on_damaging_hit` gate on `target_is_alive` when
-                // relevant (Stamina only boosts a live target).
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::ability::on_damaging_hit(
-                    self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
-                );
-                self.rng = rng;
-                // Defender's held item reacts to the contact hit —
-                // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
-                // Skin / Iron Barbs: contact-only, attacker not Magic-
-                // Guarded. PS `data/items.ts:rockyhelmet`.
-                if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], &attacker) {
-                    crate::item::on_attacker_contact_hit(
-                        self, tside, tslot, actor_side, actor_slot,
-                    );
-                }
-                // Defender items with non-contact onDamagingHit triggers
-                // (Jaboca Berry — physical category gate). Runs on every
-                // damaging hit regardless of contact. PS
-                // `data/items.ts:jabocaberry`.
-                crate::item::on_damaging_hit(
-                    self, tside, tslot, actor_side, actor_slot, move_id,
-                );
-                // Reactive-switch items — PS `onAfterDamage` slot.
-                //   Red Card (forces ATTACKER out) runs BEFORE Eject
-                //   Button (forces holder out) in PS handler order:
-                //   PS `data/items.ts:redcard.onAfterMoveSecondary` vs
-                //   `ejectbutton.onAfterMoveSecondarySelf`. Both fire on
-                //   the same `tside/tslot` holder; only one card type
-                //   can be held at a time so the order is observable
-                //   only in cross-mon interactions. We gate Eject Button
-                //   on the holder still being alive AND still on the
-                //   field (Red Card might have force-switched the
-                //   attacker but the holder is still in slot tslot).
-                if self.side(tside).active_mon(tslot as usize)
-                    .is_some_and(|m| m.is_alive())
-                {
-                    let _ = crate::item::try_consume_red_card(
-                        self, tside, tslot, actor_side, actor_slot,
-                    );
-                }
-                if self.side(tside).active_mon(tslot as usize)
-                    .is_some_and(|m| m.is_alive())
-                {
-                    let _ = crate::item::try_consume_eject_button(
-                        self, tside, tslot,
-                    );
-                }
-            }
+            self.apply_on_hit_reactions(
+                tside, tslot, actor_side, actor_slot, move_id, &attacker, crit, hit_sub, effective_dmg,
+            );
             // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
             // attacker-side KO triggers. PS data/abilities.ts:
             //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
@@ -5748,62 +5698,7 @@ impl Battle {
             // common case (single-target drain into a live mon) is
             // exact. Liquid Ooze flip not modelled (rare ability).
             // Big Root +30% boost also deferred.
-            if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
-                // Round half-up: (x*n + den/2) / den.
-                let num = m.drain_num as u32;
-                let den = m.drain_den.max(1) as u32;
-                let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
-                // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
-                // returns `chainModify([5324, 4096])` (~×1.3) when
-                // the heal source is in {drain, leechseed, ingrain,
-                // aquaring, strengthsap}. We only fire it on drain
-                // moves here; leech-seed / ingrain are handled when
-                // their PRs land.
-                let attacker_item_id_now = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .map(|a| a.item_id)
-                    .unwrap_or(u16::MAX);
-                if attacker_item_id_now == data::item_id::BIGROOT {
-                    heal = heal * 5324 / 4096;
-                }
-                let heal = heal.min(u16::MAX as u32) as u16;
-                // Liquid Ooze — PS `data/abilities.ts:2357`
-                //   onSourceTryHeal(damage, target, source, effect) {
-                //     const canOoze = ['drain', 'leechseed', 'strengthsap'];
-                //     if (canOoze.includes(effect.id)) { this.damage(damage); return 0; }
-                //   }
-                // The HP-drain attacker takes the heal as damage
-                // instead. NOT in PS breakable list — Mold Breaker
-                // does NOT bypass. Tentacruel / Qwilfish / Toxapex.
-                // Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Ooze_(Ability)>.
-                let target_has_liquid_ooze = self
-                    .side(tside)
-                    .active_mon(tslot as usize)
-                    .map(|d| d.effective_ability_id() == data::ability_id::LIQUIDOOZE)
-                    .unwrap_or(false);
-                if target_has_liquid_ooze {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if a.is_alive() {
-                            a.current_hp = a.current_hp.saturating_sub(heal);
-                            if a.current_hp == 0 {
-                                a.fainted = true;
-                            }
-                        }
-                    }
-                } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    // Heal Block on the drainer vetoes only the heal — the
-                    // target still took the damage above. PS routes the drain
-                    // recovery through the attacker's `onTryHeal`, which Heal
-                    // Block returns `false` for. (Liquid Ooze's damage branch,
-                    // above, is unaffected — it's damage, not a heal.)
-                    if a.is_alive() && !a.is_heal_blocked() {
-                        let max = a.stats.hp;
-                        a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
-                    }
-                }
-            }
+            self.apply_drain_heal(tside, tslot, actor_side, actor_slot, m, hit_sub, effective_dmg);
 
                 // PS stops a multi-hit move the moment the target faints
                 // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -5841,6 +5736,166 @@ impl Battle {
             any_damage_dealt,
             drag_target,
         );
+    }
+
+    /// Post-damage attacker/defender reactions that fire per-hit once a
+    /// damaging move has landed on the target itself (sub-absorbed hits
+    /// excluded). Pure mechanical extraction of the per-hit
+    /// `if !hit_sub && effective_dmg > 0 { ... }` block; body
+    /// byte-identical to the inline code; draw-site identity and order
+    /// preserved. Covers, in order:
+    ///   - Defender on-damaging-hit abilities (Rough Skin, Iron Barbs,
+    ///     Static, Flame Body, Effect Spore, Stamina, etc.) via
+    ///     `ability::on_damaging_hit`. Static / Flame Body / Effect
+    ///     Spore draw RNG inside that dispatch — site preserved verbatim
+    ///     under the same `mem::replace` swap.
+    ///   - Rocky Helmet (`item::on_attacker_contact_hit`) gated on
+    ///     `move_makes_contact`.
+    ///   - Jaboca / other non-contact onDamagingHit items
+    ///     (`item::on_damaging_hit`).
+    ///   - Red Card then Eject Button reactive-switch items in PS handler
+    ///     order, each gated on the holder still being alive.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_on_hit_reactions(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &Pokemon,
+        crit: bool,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if !hit_sub && effective_dmg > 0 {
+            // PS fires onDamagingHit regardless of whether the
+            // target survived (Rough Skin / Static / Flame Body
+            // tick on a KO hit too). Individual ability arms in
+            // `on_damaging_hit` gate on `target_is_alive` when
+            // relevant (Stamina only boosts a live target).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::ability::on_damaging_hit(
+                self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
+            );
+            self.rng = rng;
+            // Defender's held item reacts to the contact hit —
+            // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
+            // Skin / Iron Barbs: contact-only, attacker not Magic-
+            // Guarded. PS `data/items.ts:rockyhelmet`.
+            if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], attacker) {
+                crate::item::on_attacker_contact_hit(
+                    self, tside, tslot, actor_side, actor_slot,
+                );
+            }
+            // Defender items with non-contact onDamagingHit triggers
+            // (Jaboca Berry — physical category gate). Runs on every
+            // damaging hit regardless of contact. PS
+            // `data/items.ts:jabocaberry`.
+            crate::item::on_damaging_hit(
+                self, tside, tslot, actor_side, actor_slot, move_id,
+            );
+            // Reactive-switch items — PS `onAfterDamage` slot.
+            //   Red Card (forces ATTACKER out) runs BEFORE Eject
+            //   Button (forces holder out) in PS handler order:
+            //   PS `data/items.ts:redcard.onAfterMoveSecondary` vs
+            //   `ejectbutton.onAfterMoveSecondarySelf`. Both fire on
+            //   the same `tside/tslot` holder; only one card type
+            //   can be held at a time so the order is observable
+            //   only in cross-mon interactions. We gate Eject Button
+            //   on the holder still being alive AND still on the
+            //   field (Red Card might have force-switched the
+            //   attacker but the holder is still in slot tslot).
+            if self.side(tside).active_mon(tslot as usize)
+                .is_some_and(|m| m.is_alive())
+            {
+                let _ = crate::item::try_consume_red_card(
+                    self, tside, tslot, actor_side, actor_slot,
+                );
+            }
+            if self.side(tside).active_mon(tslot as usize)
+                .is_some_and(|m| m.is_alive())
+            {
+                let _ = crate::item::try_consume_eject_button(
+                    self, tside, tslot,
+                );
+            }
+        }
+    }
+
+    /// Drain heal — attacker recovers `round(damage * num/den)` of the HP
+    /// damage just applied on this hit. Pure mechanical extraction of the
+    /// per-hit drain block; body byte-identical to the inline code; no
+    /// RNG draws. Big Root (~×1.3) modifies the heal; Liquid Ooze on the
+    /// defender flips it to damage on the attacker (NOT Mold-Breaker
+    /// breakable); Heal Block on the attacker vetoes only the heal (the
+    /// target damage above is unaffected).
+    fn apply_drain_heal(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        m: &data::MoveDef,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
+            // Round half-up: (x*n + den/2) / den.
+            let num = m.drain_num as u32;
+            let den = m.drain_den.max(1) as u32;
+            let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
+            // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
+            // returns `chainModify([5324, 4096])` (~×1.3) when
+            // the heal source is in {drain, leechseed, ingrain,
+            // aquaring, strengthsap}. We only fire it on drain
+            // moves here; leech-seed / ingrain are handled when
+            // their PRs land.
+            let attacker_item_id_now = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.item_id)
+                .unwrap_or(u16::MAX);
+            if attacker_item_id_now == data::item_id::BIGROOT {
+                heal = heal * 5324 / 4096;
+            }
+            let heal = heal.min(u16::MAX as u32) as u16;
+            // Liquid Ooze — PS `data/abilities.ts:2357`
+            //   onSourceTryHeal(damage, target, source, effect) {
+            //     const canOoze = ['drain', 'leechseed', 'strengthsap'];
+            //     if (canOoze.includes(effect.id)) { this.damage(damage); return 0; }
+            //   }
+            // The HP-drain attacker takes the heal as damage
+            // instead. NOT in PS breakable list — Mold Breaker
+            // does NOT bypass. Tentacruel / Qwilfish / Toxapex.
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Ooze_(Ability)>.
+            let target_has_liquid_ooze = self
+                .side(tside)
+                .active_mon(tslot as usize)
+                .map(|d| d.effective_ability_id() == data::ability_id::LIQUIDOOZE)
+                .unwrap_or(false);
+            if target_has_liquid_ooze {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        a.current_hp = a.current_hp.saturating_sub(heal);
+                        if a.current_hp == 0 {
+                            a.fainted = true;
+                        }
+                    }
+                }
+            } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                // Heal Block on the drainer vetoes only the heal — the
+                // target still took the damage above. PS routes the drain
+                // recovery through the attacker's `onTryHeal`, which Heal
+                // Block returns `false` for. (Liquid Ooze's damage branch,
+                // above, is unaffected — it's damage, not a heal.)
+                if a.is_alive() && !a.is_heal_blocked() {
+                    let max = a.stats.hp;
+                    a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
+                }
+            }
+        }
     }
 
     /// Post-damage faint check — if the just-damaged target is at 0 HP,
