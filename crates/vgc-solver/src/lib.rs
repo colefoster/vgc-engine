@@ -65,6 +65,8 @@ use vgc_engine_core::{
 };
 
 pub mod nash;
+pub mod double_oracle;
+pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
 pub use nash::{solve_zero_sum, NashSolution};
 
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
