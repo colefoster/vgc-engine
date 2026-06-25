@@ -64,6 +64,9 @@ use vgc_engine_core::{
     Battle, Choice, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey,
 };
 
+pub mod nash;
+pub use nash::{solve_zero_sum, NashSolution};
+
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
 /// entries deterministically. The enum doesn't expose a `#[repr(u8)]`
 /// projection so we hand-map; the actual numbers are arbitrary.
