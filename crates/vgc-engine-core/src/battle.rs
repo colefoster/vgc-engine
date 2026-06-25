@@ -11112,7 +11112,13 @@ fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
         // -1 def -1 spd -1 spe (V-Create).
         "vcreate" => &[(1, -1), (3, -1), (4, -1)],
         // -1 spe.
-        "hammerarm" | "iceham" | "raindance_unused" => &[(4, -1)],
+        // 100% self Spe -1 (top-level `self: { boosts: { spe: -1 } }`).
+        // Hammer Arm (PS data/moves.ts:hammerarm) and Ice Hammer
+        // (data/moves.ts:icehammer, Crabominable's signature). The Ice Hammer
+        // entry was misspelled "iceham", which never matched the real slug, so
+        // its guaranteed Speed drop never landed (conformance out_9c6a042fce /
+        // out_24de42cf44 / out_0715ec0180 / out_1b06607032).
+        "hammerarm" | "icehammer" => &[(4, -1)],
         // -1 atk (Power Whip family — no actually that's not a self drop).
         _ => return None,
     })
@@ -13707,6 +13713,29 @@ mod tests {
         };
         assert!(scarfed > bare);
         assert_eq!(scarfed, bare * 3 / 2);
+    }
+
+    #[test]
+    fn ice_hammer_drops_user_speed() {
+        // PS data/moves.ts:icehammer — top-level `self: { boosts: { spe: -1 } }`.
+        // On a connecting hit the user's Speed (boost index 4) drops by 1, with
+        // no RNG draw (100%, unconditional). Regression guard for the "iceham"
+        // slug typo that meant the drop never landed.
+        let p1_json = r#"[
+            {"species":"crabominable","level":50,"ability":"ironfist","item":"","nature":"adamant","moves":["icehammer","closecombat","earthquake","protect"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p1.team[0].boosts[4], 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], -1, "Ice Hammer must drop the user's Speed by 1");
     }
 
     #[test]
