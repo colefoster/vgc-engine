@@ -117,6 +117,19 @@ pub enum StepResult {
     Ended { winner: Option<SideRef> },
 }
 
+/// Result of the pre-move volatile/status checks (Truant, sleep, freeze,
+/// flinch, disable/throat-chop/heal-block/taunt, paralysis, confusion,
+/// attract). See `Battle::check_pre_move_status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreMoveOutcome {
+    /// All checks passed — continue resolving the move.
+    Proceed,
+    /// A check fired — the caller must short-circuit
+    /// `resolve_move_with_pending` (the abort path matches PS exactly:
+    /// no PP consumed, no further move effects).
+    Abort,
+}
+
 /// A pending Future Sight / Doom Desire hit, keyed in `Battle::future_pending`
 /// by the TARGET `[side][slot]`. PS stores this as a `futuremove`
 /// slotCondition on the target slot (`data/moves.ts:futuresight` /
@@ -2217,269 +2230,20 @@ impl Battle {
         };
         let m = &data::MOVES[move_id as usize];
 
-        // 1. Flinch check — flinched mons cannot move at all this turn.
-        //    PS: PP is NOT consumed on flinch (the move is replaced with
-        //    inaction). Source: PS sim/battle-actions.ts:runMove.
-        if attacker.flinched_this_turn() {
-            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
-            //   onFlinch(pokemon) { this.boost({spe: 1}); }
-            // When the holder is stopped by flinch it gains +1 Speed. PS
-            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
-            // (the same gate that returns inaction), so the boost lands as
-            // the holder is prevented from moving. We use the effective
-            // ability so Gastro Acid / Neutralizing Gas suppression applies.
-            // Self-boost (source == holder), so it bypasses Mist / Mirror
-            // Armor and can be raised normally up to the +6 stage cap.
-            // Lucario / Mega Mewtwo X signature. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
-            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
-                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-            }
+        // Pre-move volatile/status checks (flinch, disable, throat chop, heal
+        // block, taunt, truant, sleep, freeze, paralysis, confusion, attract).
+        // Each gate aborts the move BEFORE PP is charged on the abort path,
+        // matching PS `cant` semantics. RNG draws (freeze thaw, paralysis full-
+        // para, confusion 33% gate + self-hit damage roll, attract 50% gate)
+        // stay in-place inside the extracted method so PsGen5 draw identity
+        // is preserved. See `check_pre_move_status`.
+        if matches!(
+            self.check_pre_move_status(
+                actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
+            ),
+            PreMoveOutcome::Abort
+        ) {
             return;
-        }
-
-        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
-        // (priority 7): the disabled move cannot be used. Selection is
-        // already filtered in `legal_choices`, but a forced / locked
-        // dispatch (Encore, lock-in) could still route the disabled
-        // slot here. No PP is consumed (we return before the PP-spend
-        // site). PS `cant`.
-        if attacker.disabled_move_slot() == move_slot {
-            return;
-        }
-
-        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
-        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
-        // used while the lockout is up. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a sound move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
-        // sound moves are exempt in PS, but the gen-9 data dump strips
-        // Z/Max so the exemption is a no-op here.
-        if attacker.throat_chop_turns() > 0 && m.is_sound {
-            return;
-        }
-
-        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
-        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
-        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
-        // while heal-blocked. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a heal move here, so it fails. No PP is consumed
-        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
-        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
-        if attacker.heal_block_turns() > 0 && m.is_heal {
-            return;
-        }
-
-        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
-        // (priority 5): a Status-category move cannot be used while taunted
-        // (Me First excepted). Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a status move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`.
-        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
-            return;
-        }
-
-        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
-        //   if (pokemon.removeVolatile('truant')) return;
-        //   if (!pokemon.hp) return;
-        //   this.add('cant', pokemon, 'ability: Truant');
-        //   return false;
-        // Effect: holder uses move on turn N, loafs around on N+1,
-        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
-        // (init false on switch-in). When true, skip the move and
-        // flip to false. When false, allow the move and flip to true.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
-        if attacker.effective_ability_id() == data::ability_id::TRUANT {
-            let loafing_now = attacker.truant_loafing;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.truant_loafing = !loafing_now;
-            }
-            if loafing_now {
-                return;
-            }
-        }
-
-        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
-        //     decrement sleep_turns; wake up + continue when it hits 0;
-        //     otherwise skip the move (no PP). `sleepUsable` moves like
-        //     Snore are not in the top-50 corpus — defer.
-        if matches!(attacker.status, Status::Sleep) {
-            let still_asleep = {
-                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
-                match mon {
-                    Some(a) => {
-                        let next = a.sleep_turns().saturating_sub(1);
-                        a.set_sleep_turns(next);
-                        if next == 0 {
-                            a.status = Status::None;
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    None => return,
-                }
-            };
-            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
-            // asleep it normally returns false (skip the move), but
-            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
-            // proceed. We let those through so Sleep Talk's `onHit`
-            // (random-move pick) runs and consumes its PRNG draw.
-            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
-                return;
-            }
-        }
-
-        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
-        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
-        //       user and lets the move proceed regardless of the roll.
-        //     - otherwise 20% chance to thaw and proceed; 80% to stay
-        //       frozen and skip the move (no PP).
-        if matches!(attacker.status, Status::Freeze) {
-            let thaws_self = move_is_defrost(m.slug);
-            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
-            if thaws_self || lucky_thaw {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.status = Status::None;
-                }
-            } else {
-                return;
-            }
-        }
-
-        // 1c. Paralysis full-skip. PS data/conditions.ts:par
-        //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
-        //     skip the move entirely (no PP, no effect). Matches PS
-        //     exactly via `rng.range(4) == 0`: oracle-pinned RngEvent
-        //     `Chance(num=1, denom=4)` lowers to `Range(0)` on true
-        //     and `Range(1)` on false (see lib.rs:389 in the golden
-        //     harness), so the engine consumes the same draw at the
-        //     same site as PS.
-        //
-        //     Engine survey (PR-208) saw this draw fire ~3x per battle
-        //     across the random-golden corpus and is the largest
-        //     single draw-site gap in the oracle alignment count.
-        // Keyed-oracle context for the pre-move status self-checks below
-        // (paralysis full-para, confusion self-hit). These draw BEFORE the move
-        // reaches the damaging-hit loop that normally calls `set_move_context`
-        // (~line 4009), so without this they inherit the PREVIOUS action's
-        // stale (turn, actor, move, target) key and miss the OracleKeyed table
-        // — the single largest draw-site gap in the conformance survey. PS keys
-        // each draw to (this turn, this mon, this move): the paralysis and
-        // confusion-gate rolls to the move's chosen target, the confusion
-        // self-hit DAMAGE roll to NO_SLOT (a self-hit has no target). Slot refs
-        // are `side*2 + slot`. `set_move_context` / `set_decision` are no-ops
-        // for every non-OracleKeyed RNG, so this changes nothing in real play.
-        let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
-        let ctx_target = match target {
-            Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
-            None => crate::rng::NO_SLOT,
-        };
-        if matches!(attacker.status, Status::Paralysis) {
-            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if self.rng.range(4) == 0 {
-                return;
-            }
-        }
-
-        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
-        //     decrements the confusion counter; when it hits 0 the
-        //     volatile is removed and the move proceeds normally.
-        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
-        //     to hit self for 40-BP typeless physical damage with the
-        //     standard damage roll, no PP consumed.
-        //
-        //     Engine survey (PR-208) saw this draw fire ~9x per
-        //     battle (PercentRoll gate) + the inner damage roll
-        //     (~4x). Both sites are now wired here so the oracle
-        //     stays balanced when confusion is in play.
-        {
-            let conf_pos = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
-            if let Some(pos) = conf_pos {
-                let remaining = {
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    let v = &mut m.volatiles.items[pos];
-                    v.payload = v.payload.saturating_sub(1);
-                    v.payload
-                };
-                if remaining == 0 {
-                    self.side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap()
-                        .volatiles
-                        .remove(crate::pokemon::VolatileKind::Confusion);
-                } else if {
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-                    self.rng.set_decision(RngDecision::Secondary);
-                    self.rng.percent_1_100() <= 33
-                } {
-                    // Self-hit: 40-BP typeless physical confusion damage.
-                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
-                    let (level, atk_base, atk_boost, def_base, def_boost) = {
-                        let m = self
-                            .side(actor_side)
-                            .active_mon(actor_slot as usize)
-                            .unwrap();
-                        (
-                            m.level as u32,
-                            m.stats.atk as u32,
-                            m.boosts[0],
-                            m.stats.def as u32,
-                            m.boosts[1],
-                        )
-                    };
-                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
-                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
-                    let lvl_factor = 2 * level / 5 + 2;
-                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
-                    // PS records the self-hit damage roll with no target.
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
-                    let roll = self.rng.damage_roll() as u32;
-                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    m.current_hp = m.current_hp.saturating_sub(dmg);
-                    if m.current_hp == 0 {
-                        m.fainted = true;
-                    }
-                    return;
-                }
-            }
-        }
-
-        // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
-        //     `onUpdate` (which fires before `onBeforeMove`) clears the
-        //     volatile if the source has left the field — we fold that in
-        //     here so NO RNG is drawn once the source is gone. Otherwise the
-        //     `onBeforeMovePriority 2` handler rolls `randomChance(1, 2)` —
-        //     50% chance to be "immobilized by love" and skip the move (no
-        //     PP). Placed after the confusion block to match PS onBeforeMove
-        //     priority ordering (confusion 3 > attract 2). The draw only
-        //     fires when an infatuated mon with a live source acts, so it
-        //     cannot perturb battles where Attract is never applied.
-        if let Some((src_side, src_idx)) = self
-            .side(actor_side)
-            .active_mon(actor_slot as usize)
-            .and_then(|mon| mon.attract_source())
-        {
-            if !self.attract_source_on_field(src_side, src_idx) {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.clear_attract();
-                }
-            } else if self.rng.range(2) == 0 {
-                return;
-            }
         }
 
         // Destiny Bond clears the moment its holder executes any move other
@@ -3499,220 +3263,11 @@ impl Battle {
         if targets.is_empty() {
             return;
         }
-        // Rage Powder / Follow Me redirection. PS data/moves.ts:ragepowder
-        // / :followme `onFoeRedirectTarget` (priority 1) — fires during
-        // target-pick on single-target opposing moves. If any alive mon
-        // on the FOE side (relative to the attacker) is carrying the
-        // redirect volatile, the target is overridden to that mon.
-        // Gates:
-        //   - Doubles only (`active_count >= 2`).
-        //   - Only single-target opposing target codes 0 (normal),
-        //     4 (adjacentFoe), 10 (any). Spread / self / ally targets
-        //     untouched.
-        //   - Only when the resolved target is on the opposing side
-        //     (a self-targeted single-target move resolved to actor's
-        //     own slot via a future mechanic would not redirect).
-        //   - Rage Powder powder gate: skipped if the ATTACKER is
-        //     Grass-type, holds Safety Goggles, or has Overcoat
-        //     ability. Follow Me has no gate.
-        //   - If two foes both used a redirect this turn (e.g. Indeedee
-        //     Follow Me + Amoonguss Rage Powder on the same side), the
-        //     first-to-resolve claims the target — PS does this via
-        //     queue order, and since the volatile carrier had to move
-        //     before the attacker's action could redirect, both
-        //     volatiles are present. Tie-break: prefer Rage Powder
-        //     (it has the powder bonus on Bug type and is the more
-        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
-        //     runs first in queue order in practice as Amoonguss
-        //     typically outruns Indeedee here is irrelevant — the
-        //     volatile lookup is order-independent). Concretely we
-        //     iterate slot order on the foe side and pick the first
-        //     `redirecting_is_powder == true` carrier, falling back
-        //     to the first `redirecting_this_turn` carrier.
-        //
-        // `redirected` records whether this higher-priority Follow Me /
-        // Rage Powder pass claimed the move. PS resolves redirection in a
-        // `priorityEvent` (sim/pokemon.ts:835) that returns on the FIRST
-        // handler to yield a target, and Follow Me / Rage Powder carry
-        // `onFoeRedirectTargetPriority: 1` while Lightning Rod / Storm
-        // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
-        // a powder/follow-me redirect wins, and the ability pass below is
-        // skipped when `redirected` is already set.
-        //
-        // Stalwart / Propeller Tail / Snipe Shot — PS `sim/battle.ts:2450`
-        // `getTarget` resolves `tracksTarget` BEFORE the RedirectTarget
-        // event ever runs:
-        //   let tracksTarget = move.tracksTarget;
-        //   if (pokemon.hasAbility(['stalwart','propellertail'])) tracksTarget = true;
-        //   if (tracksTarget && originalTarget?.isActive) return originalTarget;
-        // (PS hardcodes the ability check here because Stalwart/Propeller
-        // Tail set `move.tracksTarget` in `onModifyMove`, which fires AFTER
-        // getTarget.) A "tracking" move ignores ALL redirection — Follow Me,
-        // Rage Powder, Lightning Rod, and Storm Drain — and strikes its
-        // originally chosen target. Snipe Shot carries the move-level
-        // `tracksTarget: true` flag (PS `data/moves.ts:17143`). We compute it
-        // once and skip BOTH redirect passes when set. Uses the attacker's
-        // EFFECTIVE ability so Gastro Acid / Neutralizing Gas suppression
-        // also disables the bypass. Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Stalwart_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Propeller_Tail_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Snipe_Shot_(move)>
-        let tracks_target = matches!(
-            attacker.effective_ability_id(),
-            data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
-        ) || move_id == data::move_id::SNIPESHOT;
-
-        let mut redirected = false;
-        if !tracks_target
-            && self.format().active_count() >= 2
-            && matches!(m.target, 0 | 4 | 10)
-            && targets.len() == 1
-        {
-            let (orig_side, _orig_slot) = targets[0];
-            if orig_side != actor_side {
-                let opp = orig_side; // foe side relative to attacker
-                let n = self.format().active_count() as u8;
-                // Find a redirector. Prefer Rage Powder (powder) if both.
-                let mut redirector: Option<u8> = None;
-                let mut found_powder = false;
-                for slot in 0..n {
-                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
-                        if p.is_alive() && p.redirecting_this_turn() {
-                            if p.redirecting_is_powder() {
-                                redirector = Some(slot);
-                                found_powder = true;
-                                break;
-                            } else if redirector.is_none() {
-                                redirector = Some(slot);
-                            }
-                        }
-                    }
-                }
-                if let Some(rslot) = redirector {
-                    // Don't redirect onto the original target itself
-                    // (would be a no-op, but also covers the case where
-                    // the attacker's chosen target IS the redirector).
-                    if (opp, rslot) != targets[0] {
-                        // Powder gate (Rage Powder only).
-                        let mut blocked = false;
-                        if found_powder {
-                            let s = attacker.species();
-                            let grass_attacker =
-                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
-                            if grass_attacker
-                                || attacker.item_id == data::item_id::SAFETYGOGGLES
-                                || attacker.ability_id == data::ability_id::OVERCOAT
-                            {
-                                blocked = true;
-                            }
-                        }
-                        if !blocked {
-                            targets = TargetBuf::single((opp, rslot));
-                            redirected = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Lightning Rod / Storm Drain redirection (doubles). PS
-        // `data/abilities.ts:lightningrod` (num 31) and `:stormdrain`
-        // (num 114) `onAnyRedirectTarget`:
-        //   onAnyRedirectTarget(target, source, source2, move) {
-        //     if (move.type !== 'Electric' || move.flags['pledgecombo']) return;
-        //     const redirectTarget = ['randomNormal','adjacentFoe']
-        //       .includes(move.target) ? 'normal' : move.target;
-        //     if (this.validTarget(this.effectState.target, source, redirectTarget)) {
-        //       ...
-        //       return this.effectState.target;
-        //     }
-        //   }
-        // Storm Drain is identical with `move.type === 'Water'`. Because
-        // the handler is `onAny*`, it pulls a matching-type single-target
-        // move aimed at ANY other mon (a foe, or the holder's own ally)
-        // toward the ability holder, regardless of which side the holder
-        // is on relative to the attacker. It runs at the default
-        // RedirectTarget priority (0), BELOW Follow Me / Rage Powder
-        // (priority 1) — hence the `!redirected` guard above.
-        // Gates:
-        //   - Doubles only; single-target codes 0/4/10 (same set the
-        //     powder pass uses). adjacentFoe (4) maps to `normal` in PS;
-        //     `any` (10) stays `any`. In doubles every slot is adjacent,
-        //     so the holder is always a valid redirect target.
-        //   - Move type must match: Electric (3) -> Lightning Rod,
-        //     Water (2) -> Storm Drain.
-        //   - Holder must be alive and is identified by
-        //     `effective_ability_id()`, so Gastro Acid / Neutralizing Gas
-        //     suppression disables redirection.
-        //   - Never the attacker itself, and never a no-op onto the move's
-        //     existing target.
-        //   - Lightning Rod / Storm Drain carry `flags: { breakable: 1 }`,
-        //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
-        //     the redirect (the move keeps its chosen target).
-        //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
-        //     and IGNORE all redirection; this whole pass is skipped via
-        //     the `!tracks_target` guard below (computed above the powder
-        //     pass — see PS sim/battle.ts:2456).
-        //   - Speed-tie among multiple holders: PS sorts RedirectTarget
-        //     handlers by speed (fastest first), `effectOrder` for true
-        //     ties (sim/battle.ts:997). We pick the highest effective
-        //     Speed, deterministic P1-before-P2 slot order on ties.
-        // Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
-        if !redirected
-            && !tracks_target
-            && self.format().active_count() >= 2
-            && matches!(m.target, 0 | 4 | 10)
-            && targets.len() == 1
-        {
-            let want_ability = match m.type_ {
-                3 => Some(data::ability_id::LIGHTNINGROD),
-                2 => Some(data::ability_id::STORMDRAIN),
-                _ => None,
-            };
-            // Mycelium Might makes Status moves ignore the target's ability,
-            // including redirect abilities (Lightning Rod / Storm Drain are
-            // `breakable`, which Mold Breaker bypasses). Gated on Status
-            // category since this block also runs for damaging moves.
-            let attacker_breaks_mold = matches!(
-                attacker.ability_id,
-                data::ability_id::MOLDBREAKER
-                    | data::ability_id::TERAVOLT
-                    | data::ability_id::TURBOBLAZE
-            ) || (m.category == 2
-                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
-            if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
-                let orig = targets[0];
-                let n = self.format().active_count() as u8;
-                let mut best: Option<(SideRef, u8)> = None;
-                let mut best_spe = 0u16;
-                for side in [SideRef::P1, SideRef::P2] {
-                    let tailwind = self.side(side).conditions.tailwind_turns > 0;
-                    for slot in 0..n {
-                        // Never redirect onto the attacker, and skip a
-                        // no-op onto the move's existing target.
-                        if (side == actor_side && slot == actor_slot) || (side, slot) == orig {
-                            continue;
-                        }
-                        let Some(p) = self.side(side).active_mon(slot as usize) else {
-                            continue;
-                        };
-                        if !p.is_alive() || p.effective_ability_id() != want {
-                            continue;
-                        }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
-                        if best.is_none() || spe > best_spe {
-                            best = Some((side, slot));
-                            best_spe = spe;
-                        }
-                    }
-                }
-                if let Some(holder) = best {
-                    targets = TargetBuf::single(holder);
-                }
-            }
-        }
+        // Resolve target redirection (Follow Me / Rage Powder, Lightning
+        // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
+        // moves and tracksTarget bypass are handled internally. See
+        // [`Battle::resolve_targets`] for the cited PS source.
+        targets = self.resolve_targets(actor_side, actor_slot, move_id, &attacker, m, targets);
         let is_spread = targets.len() > 1;
 
         // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
@@ -5486,10 +5041,8 @@ impl Battle {
                 if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     d.disguise_busted = true;
                     d.current_hp = d.current_hp.saturating_sub(chip);
-                    if d.current_hp == 0 {
-                        d.fainted = true;
-                    }
                 }
+                let _ = self.check_target_fainted(tside, tslot);
                 // The move's own damage is fully negated — skip the normal
                 // apply / item-hook / Stellar bookkeeping below for this hit.
                 // (Disguise carries no contact/secondary follow-through that
@@ -5501,9 +5054,6 @@ impl Battle {
             if !hit_sub {
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     t.current_hp = t.current_hp.saturating_sub(effective_dmg);
-                    if t.current_hp == 0 {
-                        t.fainted = true;
-                    }
                     // Mark this target as "damaged this turn" so
                     // Avalanche / Revenge / Counter (when wired) see
                     // a true source. Cross-side gate: opp-vs-self
@@ -5528,6 +5078,7 @@ impl Battle {
                         }
                     }
                 }
+                let _ = self.check_target_fainted(tside, tslot);
                 any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
                 // Record the real-hit foe slot for Dragon Tail / Circle
                 // Throw phazing (a Substitute absorb never reaches this
@@ -5633,59 +5184,9 @@ impl Battle {
             // mon — sub-absorbed hits skipped. Dispatches Stamina,
             // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
             // their own PRs.
-            if !hit_sub && effective_dmg > 0 {
-                // PS fires onDamagingHit regardless of whether the
-                // target survived (Rough Skin / Static / Flame Body
-                // tick on a KO hit too). Individual ability arms in
-                // `on_damaging_hit` gate on `target_is_alive` when
-                // relevant (Stamina only boosts a live target).
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::ability::on_damaging_hit(
-                    self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
-                );
-                self.rng = rng;
-                // Defender's held item reacts to the contact hit —
-                // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
-                // Skin / Iron Barbs: contact-only, attacker not Magic-
-                // Guarded. PS `data/items.ts:rockyhelmet`.
-                if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], &attacker) {
-                    crate::item::on_attacker_contact_hit(
-                        self, tside, tslot, actor_side, actor_slot,
-                    );
-                }
-                // Defender items with non-contact onDamagingHit triggers
-                // (Jaboca Berry — physical category gate). Runs on every
-                // damaging hit regardless of contact. PS
-                // `data/items.ts:jabocaberry`.
-                crate::item::on_damaging_hit(
-                    self, tside, tslot, actor_side, actor_slot, move_id,
-                );
-                // Reactive-switch items — PS `onAfterDamage` slot.
-                //   Red Card (forces ATTACKER out) runs BEFORE Eject
-                //   Button (forces holder out) in PS handler order:
-                //   PS `data/items.ts:redcard.onAfterMoveSecondary` vs
-                //   `ejectbutton.onAfterMoveSecondarySelf`. Both fire on
-                //   the same `tside/tslot` holder; only one card type
-                //   can be held at a time so the order is observable
-                //   only in cross-mon interactions. We gate Eject Button
-                //   on the holder still being alive AND still on the
-                //   field (Red Card might have force-switched the
-                //   attacker but the holder is still in slot tslot).
-                if self.side(tside).active_mon(tslot as usize)
-                    .is_some_and(|m| m.is_alive())
-                {
-                    let _ = crate::item::try_consume_red_card(
-                        self, tside, tslot, actor_side, actor_slot,
-                    );
-                }
-                if self.side(tside).active_mon(tslot as usize)
-                    .is_some_and(|m| m.is_alive())
-                {
-                    let _ = crate::item::try_consume_eject_button(
-                        self, tside, tslot,
-                    );
-                }
-            }
+            self.apply_on_hit_reactions(
+                tside, tslot, actor_side, actor_slot, move_id, &attacker, crit, hit_sub, effective_dmg,
+            );
             // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
             // attacker-side KO triggers. PS data/abilities.ts:
             //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
@@ -5752,62 +5253,7 @@ impl Battle {
             // common case (single-target drain into a live mon) is
             // exact. Liquid Ooze flip not modelled (rare ability).
             // Big Root +30% boost also deferred.
-            if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
-                // Round half-up: (x*n + den/2) / den.
-                let num = m.drain_num as u32;
-                let den = m.drain_den.max(1) as u32;
-                let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
-                // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
-                // returns `chainModify([5324, 4096])` (~×1.3) when
-                // the heal source is in {drain, leechseed, ingrain,
-                // aquaring, strengthsap}. We only fire it on drain
-                // moves here; leech-seed / ingrain are handled when
-                // their PRs land.
-                let attacker_item_id_now = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .map(|a| a.item_id)
-                    .unwrap_or(u16::MAX);
-                if attacker_item_id_now == data::item_id::BIGROOT {
-                    heal = heal * 5324 / 4096;
-                }
-                let heal = heal.min(u16::MAX as u32) as u16;
-                // Liquid Ooze — PS `data/abilities.ts:2357`
-                //   onSourceTryHeal(damage, target, source, effect) {
-                //     const canOoze = ['drain', 'leechseed', 'strengthsap'];
-                //     if (canOoze.includes(effect.id)) { this.damage(damage); return 0; }
-                //   }
-                // The HP-drain attacker takes the heal as damage
-                // instead. NOT in PS breakable list — Mold Breaker
-                // does NOT bypass. Tentacruel / Qwilfish / Toxapex.
-                // Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Ooze_(Ability)>.
-                let target_has_liquid_ooze = self
-                    .side(tside)
-                    .active_mon(tslot as usize)
-                    .map(|d| d.effective_ability_id() == data::ability_id::LIQUIDOOZE)
-                    .unwrap_or(false);
-                if target_has_liquid_ooze {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if a.is_alive() {
-                            a.current_hp = a.current_hp.saturating_sub(heal);
-                            if a.current_hp == 0 {
-                                a.fainted = true;
-                            }
-                        }
-                    }
-                } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    // Heal Block on the drainer vetoes only the heal — the
-                    // target still took the damage above. PS routes the drain
-                    // recovery through the attacker's `onTryHeal`, which Heal
-                    // Block returns `false` for. (Liquid Ooze's damage branch,
-                    // above, is unaffected — it's damage, not a heal.)
-                    if a.is_alive() && !a.is_heal_blocked() {
-                        let max = a.stats.hp;
-                        a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
-                    }
-                }
-            }
+            self.apply_drain_heal(tside, tslot, actor_side, actor_slot, m, hit_sub, effective_dmg);
 
                 // PS stops a multi-hit move the moment the target faints
                 // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -5837,6 +5283,216 @@ impl Battle {
             damaging,
         );
 
+        self.apply_post_move_effects(
+            actor_side,
+            actor_slot,
+            move_id,
+            m,
+            any_damage_dealt,
+            drag_target,
+        );
+    }
+
+    /// Post-damage attacker/defender reactions that fire per-hit once a
+    /// damaging move has landed on the target itself (sub-absorbed hits
+    /// excluded). Pure mechanical extraction of the per-hit
+    /// `if !hit_sub && effective_dmg > 0 { ... }` block; body
+    /// byte-identical to the inline code; draw-site identity and order
+    /// preserved. Covers, in order:
+    ///   - Defender on-damaging-hit abilities (Rough Skin, Iron Barbs,
+    ///     Static, Flame Body, Effect Spore, Stamina, etc.) via
+    ///     `ability::on_damaging_hit`. Static / Flame Body / Effect
+    ///     Spore draw RNG inside that dispatch — site preserved verbatim
+    ///     under the same `mem::replace` swap.
+    ///   - Rocky Helmet (`item::on_attacker_contact_hit`) gated on
+    ///     `move_makes_contact`.
+    ///   - Jaboca / other non-contact onDamagingHit items
+    ///     (`item::on_damaging_hit`).
+    ///   - Red Card then Eject Button reactive-switch items in PS handler
+    ///     order, each gated on the holder still being alive.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_on_hit_reactions(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &Pokemon,
+        crit: bool,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if !hit_sub && effective_dmg > 0 {
+            // PS fires onDamagingHit regardless of whether the
+            // target survived (Rough Skin / Static / Flame Body
+            // tick on a KO hit too). Individual ability arms in
+            // `on_damaging_hit` gate on `target_is_alive` when
+            // relevant (Stamina only boosts a live target).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::ability::on_damaging_hit(
+                self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
+            );
+            self.rng = rng;
+            // Defender's held item reacts to the contact hit —
+            // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
+            // Skin / Iron Barbs: contact-only, attacker not Magic-
+            // Guarded. PS `data/items.ts:rockyhelmet`.
+            if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], attacker) {
+                crate::item::on_attacker_contact_hit(
+                    self, tside, tslot, actor_side, actor_slot,
+                );
+            }
+            // Defender items with non-contact onDamagingHit triggers
+            // (Jaboca Berry — physical category gate). Runs on every
+            // damaging hit regardless of contact. PS
+            // `data/items.ts:jabocaberry`.
+            crate::item::on_damaging_hit(
+                self, tside, tslot, actor_side, actor_slot, move_id,
+            );
+            // Reactive-switch items — PS `onAfterDamage` slot.
+            //   Red Card (forces ATTACKER out) runs BEFORE Eject
+            //   Button (forces holder out) in PS handler order:
+            //   PS `data/items.ts:redcard.onAfterMoveSecondary` vs
+            //   `ejectbutton.onAfterMoveSecondarySelf`. Both fire on
+            //   the same `tside/tslot` holder; only one card type
+            //   can be held at a time so the order is observable
+            //   only in cross-mon interactions. We gate Eject Button
+            //   on the holder still being alive AND still on the
+            //   field (Red Card might have force-switched the
+            //   attacker but the holder is still in slot tslot).
+            if self.side(tside).active_mon(tslot as usize)
+                .is_some_and(|m| m.is_alive())
+            {
+                let _ = crate::item::try_consume_red_card(
+                    self, tside, tslot, actor_side, actor_slot,
+                );
+            }
+            if self.side(tside).active_mon(tslot as usize)
+                .is_some_and(|m| m.is_alive())
+            {
+                let _ = crate::item::try_consume_eject_button(
+                    self, tside, tslot,
+                );
+            }
+        }
+    }
+
+    /// Drain heal — attacker recovers `round(damage * num/den)` of the HP
+    /// damage just applied on this hit. Pure mechanical extraction of the
+    /// per-hit drain block; body byte-identical to the inline code; no
+    /// RNG draws. Big Root (~×1.3) modifies the heal; Liquid Ooze on the
+    /// defender flips it to damage on the attacker (NOT Mold-Breaker
+    /// breakable); Heal Block on the attacker vetoes only the heal (the
+    /// target damage above is unaffected).
+    fn apply_drain_heal(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        m: &data::MoveDef,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
+            // Round half-up: (x*n + den/2) / den.
+            let num = m.drain_num as u32;
+            let den = m.drain_den.max(1) as u32;
+            let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
+            // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
+            // returns `chainModify([5324, 4096])` (~×1.3) when
+            // the heal source is in {drain, leechseed, ingrain,
+            // aquaring, strengthsap}. We only fire it on drain
+            // moves here; leech-seed / ingrain are handled when
+            // their PRs land.
+            let attacker_item_id_now = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .map(|a| a.item_id)
+                .unwrap_or(u16::MAX);
+            if attacker_item_id_now == data::item_id::BIGROOT {
+                heal = heal * 5324 / 4096;
+            }
+            let heal = heal.min(u16::MAX as u32) as u16;
+            // Liquid Ooze — PS `data/abilities.ts:2357`
+            //   onSourceTryHeal(damage, target, source, effect) {
+            //     const canOoze = ['drain', 'leechseed', 'strengthsap'];
+            //     if (canOoze.includes(effect.id)) { this.damage(damage); return 0; }
+            //   }
+            // The HP-drain attacker takes the heal as damage
+            // instead. NOT in PS breakable list — Mold Breaker
+            // does NOT bypass. Tentacruel / Qwilfish / Toxapex.
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Ooze_(Ability)>.
+            let target_has_liquid_ooze = self
+                .side(tside)
+                .active_mon(tslot as usize)
+                .map(|d| d.effective_ability_id() == data::ability_id::LIQUIDOOZE)
+                .unwrap_or(false);
+            if target_has_liquid_ooze {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() {
+                        a.current_hp = a.current_hp.saturating_sub(heal);
+                        if a.current_hp == 0 {
+                            a.fainted = true;
+                        }
+                    }
+                }
+            } else if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                // Heal Block on the drainer vetoes only the heal — the
+                // target still took the damage above. PS routes the drain
+                // recovery through the attacker's `onTryHeal`, which Heal
+                // Block returns `false` for. (Liquid Ooze's damage branch,
+                // above, is unaffected — it's damage, not a heal.)
+                if a.is_alive() && !a.is_heal_blocked() {
+                    let max = a.stats.hp;
+                    a.current_hp = (a.current_hp as u32 + heal as u32).min(max as u32) as u16;
+                }
+            }
+        }
+    }
+
+    /// Post-damage faint check — if the just-damaged target is at 0 HP,
+    /// set its `fainted` flag and return `true`. Deterministic; no RNG
+    /// draws. Replacement / faint-hook bookkeeping (Aftermath, Innards
+    /// Out, Destiny Bond, side active-slot maintenance) runs elsewhere
+    /// in the post-damage path — this helper is only the boundary that
+    /// flips `fainted` from false to true once `current_hp == 0`. PS:
+    /// `sim/pokemon.ts faint()` flips the flag; the surrounding faint-
+    /// effect dispatch is wired separately by the engine, matching PS's
+    /// faint-queue split.
+    fn check_target_fainted(&mut self, target_side: SideRef, target_slot: u8) -> bool {
+        if let Some(t) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            if t.current_hp == 0 {
+                t.fainted = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Post-move interleaved effects that run after damage + secondaries
+    /// resolve. Mix of target-side and self-side: partial-trap volatile
+    /// application, hazard-clear moves (Rapid Spin / Mortal Spin), Throat
+    /// Spray, Charge volatile consume, self-switch flagging (U-turn / Volt
+    /// Switch / Flip Turn), forced switches (Dragon Tail / Circle Throw),
+    /// and Fling item dispatch.
+    ///
+    /// Some of these draw RNG (partial-trap duration). Draw sites are
+    /// preserved verbatim — no movement, no reordering. PS draws in the
+    /// same order. Pure mechanical extraction — body byte-identical to the
+    /// inline block.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_post_move_effects(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+        drag_target: Option<(SideRef, u8)>,
+    ) {
         // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
         // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
         // `flipturn:5787` all set `selfSwitch: true`. The switch fires
@@ -6063,6 +5719,565 @@ impl Battle {
     /// lock confusion duration) at the SAME draw sites as the inline code.
     /// Pure mechanical extraction — body byte-identical to the inline block;
     /// draw-site identity and order are preserved.
+    /// Resolve the move's actual targets after applying redirection:
+    ///   - Follow Me / Rage Powder volatile redirects single-target moves
+    ///     to the carrier ally.
+    ///   - Lightning Rod / Storm Drain pull matching-type single-target
+    ///     moves toward the holder (Mold Breaker / Teravolt / Turboblaze
+    ///     and Status-cat Mycelium Might bypass).
+    ///   - Stalwart / Propeller Tail / Snipe Shot bypass ALL redirection.
+    ///   - Spread moves (`targets.len() > 1`) and non-single-target codes
+    ///     are untouched.
+    ///
+    /// Pure read of `self` — deterministic, no RNG draws. Returns the
+    /// (possibly redirected) target list. Body byte-identical to the inline
+    /// block this replaces; draw-site identity preserved (there are none
+    /// here — absorb-effect side of Volt Absorb / Water Absorb / Sap
+    /// Sipper / Motor Drive / Flash Fire / Dry Skin / Earth Eater fires
+    /// later, inline with on-hit handling, not in this method).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_targets(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &crate::pokemon::Pokemon,
+        m: &data::MoveDef,
+        mut targets: TargetBuf,
+    ) -> TargetBuf {
+        // Rage Powder / Follow Me redirection. PS data/moves.ts:ragepowder
+        // / :followme `onFoeRedirectTarget` (priority 1) — fires during
+        // target-pick on single-target opposing moves. If any alive mon
+        // on the FOE side (relative to the attacker) is carrying the
+        // redirect volatile, the target is overridden to that mon.
+        // Gates:
+        //   - Doubles only (`active_count >= 2`).
+        //   - Only single-target opposing target codes 0 (normal),
+        //     4 (adjacentFoe), 10 (any). Spread / self / ally targets
+        //     untouched.
+        //   - Only when the resolved target is on the opposing side
+        //     (a self-targeted single-target move resolved to actor's
+        //     own slot via a future mechanic would not redirect).
+        //   - Rage Powder powder gate: skipped if the ATTACKER is
+        //     Grass-type, holds Safety Goggles, or has Overcoat
+        //     ability. Follow Me has no gate.
+        //   - If two foes both used a redirect this turn (e.g. Indeedee
+        //     Follow Me + Amoonguss Rage Powder on the same side), the
+        //     first-to-resolve claims the target — PS does this via
+        //     queue order, and since the volatile carrier had to move
+        //     before the attacker's action could redirect, both
+        //     volatiles are present. Tie-break: prefer Rage Powder
+        //     (it has the powder bonus on Bug type and is the more
+        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
+        //     runs first in queue order in practice as Amoonguss
+        //     typically outruns Indeedee here is irrelevant — the
+        //     volatile lookup is order-independent). Concretely we
+        //     iterate slot order on the foe side and pick the first
+        //     `redirecting_is_powder == true` carrier, falling back
+        //     to the first `redirecting_this_turn` carrier.
+        //
+        // `redirected` records whether this higher-priority Follow Me /
+        // Rage Powder pass claimed the move. PS resolves redirection in a
+        // `priorityEvent` (sim/pokemon.ts:835) that returns on the FIRST
+        // handler to yield a target, and Follow Me / Rage Powder carry
+        // `onFoeRedirectTargetPriority: 1` while Lightning Rod / Storm
+        // Drain's `onAnyRedirectTarget` run at the default priority 0 — so
+        // a powder/follow-me redirect wins, and the ability pass below is
+        // skipped when `redirected` is already set.
+        //
+        // Stalwart / Propeller Tail / Snipe Shot — PS `sim/battle.ts:2450`
+        // `getTarget` resolves `tracksTarget` BEFORE the RedirectTarget
+        // event ever runs:
+        //   let tracksTarget = move.tracksTarget;
+        //   if (pokemon.hasAbility(['stalwart','propellertail'])) tracksTarget = true;
+        //   if (tracksTarget && originalTarget?.isActive) return originalTarget;
+        // (PS hardcodes the ability check here because Stalwart/Propeller
+        // Tail set `move.tracksTarget` in `onModifyMove`, which fires AFTER
+        // getTarget.) A "tracking" move ignores ALL redirection — Follow Me,
+        // Rage Powder, Lightning Rod, and Storm Drain — and strikes its
+        // originally chosen target. Snipe Shot carries the move-level
+        // `tracksTarget: true` flag (PS `data/moves.ts:17143`). We compute it
+        // once and skip BOTH redirect passes when set. Uses the attacker's
+        // EFFECTIVE ability so Gastro Acid / Neutralizing Gas suppression
+        // also disables the bypass. Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Stalwart_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Propeller_Tail_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Snipe_Shot_(move)>
+        let tracks_target = matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
+        ) || move_id == data::move_id::SNIPESHOT;
+
+        let mut redirected = false;
+        if !tracks_target
+            && self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let (orig_side, _orig_slot) = targets[0];
+            if orig_side != actor_side {
+                let opp = orig_side; // foe side relative to attacker
+                let n = self.format().active_count() as u8;
+                // Find a redirector. Prefer Rage Powder (powder) if both.
+                let mut redirector: Option<u8> = None;
+                let mut found_powder = false;
+                for slot in 0..n {
+                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
+                        if p.is_alive() && p.redirecting_this_turn() {
+                            if p.redirecting_is_powder() {
+                                redirector = Some(slot);
+                                found_powder = true;
+                                break;
+                            } else if redirector.is_none() {
+                                redirector = Some(slot);
+                            }
+                        }
+                    }
+                }
+                if let Some(rslot) = redirector {
+                    // Don't redirect onto the original target itself
+                    // (would be a no-op, but also covers the case where
+                    // the attacker's chosen target IS the redirector).
+                    if (opp, rslot) != targets[0] {
+                        // Powder gate (Rage Powder only).
+                        let mut blocked = false;
+                        if found_powder {
+                            let s = attacker.species();
+                            let grass_attacker =
+                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
+                            if grass_attacker
+                                || attacker.item_id == data::item_id::SAFETYGOGGLES
+                                || attacker.ability_id == data::ability_id::OVERCOAT
+                            {
+                                blocked = true;
+                            }
+                        }
+                        if !blocked {
+                            targets = TargetBuf::single((opp, rslot));
+                            redirected = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Lightning Rod / Storm Drain redirection (doubles). PS
+        // `data/abilities.ts:lightningrod` (num 31) and `:stormdrain`
+        // (num 114) `onAnyRedirectTarget`:
+        //   onAnyRedirectTarget(target, source, source2, move) {
+        //     if (move.type !== 'Electric' || move.flags['pledgecombo']) return;
+        //     const redirectTarget = ['randomNormal','adjacentFoe']
+        //       .includes(move.target) ? 'normal' : move.target;
+        //     if (this.validTarget(this.effectState.target, source, redirectTarget)) {
+        //       ...
+        //       return this.effectState.target;
+        //     }
+        //   }
+        // Storm Drain is identical with `move.type === 'Water'`. Because
+        // the handler is `onAny*`, it pulls a matching-type single-target
+        // move aimed at ANY other mon (a foe, or the holder's own ally)
+        // toward the ability holder, regardless of which side the holder
+        // is on relative to the attacker. It runs at the default
+        // RedirectTarget priority (0), BELOW Follow Me / Rage Powder
+        // (priority 1) — hence the `!redirected` guard above.
+        // Gates:
+        //   - Doubles only; single-target codes 0/4/10 (same set the
+        //     powder pass uses). adjacentFoe (4) maps to `normal` in PS;
+        //     `any` (10) stays `any`. In doubles every slot is adjacent,
+        //     so the holder is always a valid redirect target.
+        //   - Move type must match: Electric (3) -> Lightning Rod,
+        //     Water (2) -> Storm Drain.
+        //   - Holder must be alive and is identified by
+        //     `effective_ability_id()`, so Gastro Acid / Neutralizing Gas
+        //     suppression disables redirection.
+        //   - Never the attacker itself, and never a no-op onto the move's
+        //     existing target.
+        //   - Lightning Rod / Storm Drain carry `flags: { breakable: 1 }`,
+        //     so a Mold Breaker / Teravolt / Turboblaze attacker bypasses
+        //     the redirect (the move keeps its chosen target).
+        //   - Stalwart / Propeller Tail / Snipe Shot set `tracksTarget`
+        //     and IGNORE all redirection; this whole pass is skipped via
+        //     the `!tracks_target` guard below (computed above the powder
+        //     pass — see PS sim/battle.ts:2456).
+        //   - Speed-tie among multiple holders: PS sorts RedirectTarget
+        //     handlers by speed (fastest first), `effectOrder` for true
+        //     ties (sim/battle.ts:997). We pick the highest effective
+        //     Speed, deterministic P1-before-P2 slot order on ties.
+        // Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Lightning_Rod_(Ability)>
+        //   <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>
+        if !redirected
+            && !tracks_target
+            && self.format().active_count() >= 2
+            && matches!(m.target, 0 | 4 | 10)
+            && targets.len() == 1
+        {
+            let want_ability = match m.type_ {
+                3 => Some(data::ability_id::LIGHTNINGROD),
+                2 => Some(data::ability_id::STORMDRAIN),
+                _ => None,
+            };
+            // Mycelium Might makes Status moves ignore the target's ability,
+            // including redirect abilities (Lightning Rod / Storm Drain are
+            // `breakable`, which Mold Breaker bypasses). Gated on Status
+            // category since this block also runs for damaging moves.
+            let attacker_breaks_mold = matches!(
+                attacker.ability_id,
+                data::ability_id::MOLDBREAKER
+                    | data::ability_id::TERAVOLT
+                    | data::ability_id::TURBOBLAZE
+            ) || (m.category == 2
+                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
+            if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
+                let orig = targets[0];
+                let n = self.format().active_count() as u8;
+                let mut best: Option<(SideRef, u8)> = None;
+                let mut best_spe = 0u16;
+                for side in [SideRef::P1, SideRef::P2] {
+                    let tailwind = self.side(side).conditions.tailwind_turns > 0;
+                    for slot in 0..n {
+                        // Never redirect onto the attacker, and skip a
+                        // no-op onto the move's existing target.
+                        if (side == actor_side && slot == actor_slot) || (side, slot) == orig {
+                            continue;
+                        }
+                        let Some(p) = self.side(side).active_mon(slot as usize) else {
+                            continue;
+                        };
+                        if !p.is_alive() || p.effective_ability_id() != want {
+                            continue;
+                        }
+                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
+                        if best.is_none() || spe > best_spe {
+                            best = Some((side, slot));
+                            best_spe = spe;
+                        }
+                    }
+                }
+                if let Some(holder) = best {
+                    targets = TargetBuf::single(holder);
+                }
+            }
+        }
+
+        targets
+    }
+
+    /// Pre-move volatile/status checks. Returns whether the move should
+    /// proceed:
+    ///   - `PreMoveOutcome::Proceed` — checks passed, continue with the move.
+    ///   - `PreMoveOutcome::Abort` — the move fails or is skipped; the
+    ///     caller (`resolve_move_with_pending`) short-circuits.
+    ///
+    /// Covers, in PS-canonical order:
+    ///   - Flinch (Steadfast self-boost still fires on the abort path).
+    ///   - Disable / Throat Chop / Heal Block / Taunt (selection is
+    ///     already filtered in `legal_choices`; a forced/locked dispatch
+    ///     could still route a banned move here).
+    ///   - Truant (Slaking / Vigoroth loafing this turn).
+    ///   - Sleep (decrement counter; wake at 0; otherwise skip — Sleep
+    ///     Talk / Snore pass through).
+    ///   - Freeze (20% thaw roll, or guaranteed thaw on a defrost move).
+    ///   - Paralysis (25% full-skip roll).
+    ///   - Confusion (decrement counter; 33% self-hit gate; 40-BP typeless
+    ///     physical self-damage with a damage roll on hit).
+    ///   - Attract (clear if source left the field; otherwise 50%
+    ///     immobilization roll).
+    ///
+    /// CONTAINS RNG DRAWS — preserved verbatim:
+    ///   - Freeze thaw: `rng.range(5)` (line was 1b).
+    ///   - Paralysis full-skip: `rng.range(4)` keyed to (turn, actor, move,
+    ///     target).
+    ///   - Confusion gate: `rng.percent_1_100()` keyed to (turn, actor, move,
+    ///     target) with `RngDecision::Secondary`.
+    ///   - Confusion self-hit damage: `rng.damage_roll()` keyed to (turn,
+    ///     actor, move, `NO_SLOT`).
+    ///   - Attract immobilize: `rng.range(2)`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_pre_move_status(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        move_slot: u8,
+        m: &data::MoveDef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+    ) -> PreMoveOutcome {
+        // 1. Flinch check — flinched mons cannot move at all this turn.
+        //    PS: PP is NOT consumed on flinch (the move is replaced with
+        //    inaction). Source: PS sim/battle-actions.ts:runMove.
+        if attacker.flinched_this_turn() {
+            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
+            //   onFlinch(pokemon) { this.boost({spe: 1}); }
+            // When the holder is stopped by flinch it gains +1 Speed. PS
+            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
+            // (the same gate that returns inaction), so the boost lands as
+            // the holder is prevented from moving. We use the effective
+            // ability so Gastro Acid / Neutralizing Gas suppression applies.
+            // Self-boost (source == holder), so it bypasses Mist / Mirror
+            // Armor and can be raised normally up to the +6 stage cap.
+            // Lucario / Mega Mewtwo X signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
+            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
+                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+            }
+            return PreMoveOutcome::Abort;
+        }
+
+        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
+        // (priority 7): the disabled move cannot be used. Selection is
+        // already filtered in `legal_choices`, but a forced / locked
+        // dispatch (Encore, lock-in) could still route the disabled
+        // slot here. No PP is consumed (we return before the PP-spend
+        // site). PS `cant`.
+        //
+        // NOTE: this reads the ORIGINAL `move_slot` (pre lock-in override).
+        // The lock-in override happens AFTER this method returns; PS's
+        // disable check runs at `onBeforeMove` priority 7, before the
+        // lock-in move-id is substituted, so the original-slot comparison
+        // is the PS-correct behavior.
+        if attacker.disabled_move_slot() == move_slot {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
+        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
+        // used while the lockout is up. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a sound move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
+        // sound moves are exempt in PS, but the gen-9 data dump strips
+        // Z/Max so the exemption is a no-op here.
+        if attacker.throat_chop_turns() > 0 && m.is_sound {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
+        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
+        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
+        // while heal-blocked. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a heal move here, so it fails. No PP is consumed
+        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
+        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
+        if attacker.heal_block_turns() > 0 && m.is_heal {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
+        // (priority 5): a Status-category move cannot be used while taunted
+        // (Me First excepted). Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a status move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`.
+        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
+        //   if (pokemon.removeVolatile('truant')) return;
+        //   if (!pokemon.hp) return;
+        //   this.add('cant', pokemon, 'ability: Truant');
+        //   return false;
+        // Effect: holder uses move on turn N, loafs around on N+1,
+        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
+        // (init false on switch-in). When true, skip the move and
+        // flip to false. When false, allow the move and flip to true.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::TRUANT {
+            let loafing_now = attacker.truant_loafing;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.truant_loafing = !loafing_now;
+            }
+            if loafing_now {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
+        //     decrement sleep_turns; wake up + continue when it hits 0;
+        //     otherwise skip the move (no PP). `sleepUsable` moves like
+        //     Snore are not in the top-50 corpus — defer.
+        if matches!(attacker.status, Status::Sleep) {
+            let still_asleep = {
+                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
+                match mon {
+                    Some(a) => {
+                        let next = a.sleep_turns().saturating_sub(1);
+                        a.set_sleep_turns(next);
+                        if next == 0 {
+                            a.status = Status::None;
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => return PreMoveOutcome::Abort,
+                }
+            };
+            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
+            // asleep it normally returns false (skip the move), but
+            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
+            // proceed. We let those through so Sleep Talk's `onHit`
+            // (random-move pick) runs and consumes its PRNG draw.
+            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
+        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
+        //       user and lets the move proceed regardless of the roll.
+        //     - otherwise 20% chance to thaw and proceed; 80% to stay
+        //       frozen and skip the move (no PP).
+        if matches!(attacker.status, Status::Freeze) {
+            let thaws_self = move_is_defrost(m.slug);
+            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
+            if thaws_self || lucky_thaw {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.status = Status::None;
+                }
+            } else {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1c. Paralysis full-skip. PS data/conditions.ts:par
+        //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
+        //     skip the move entirely (no PP, no effect). Matches PS
+        //     exactly via `rng.range(4) == 0`: oracle-pinned RngEvent
+        //     `Chance(num=1, denom=4)` lowers to `Range(0)` on true
+        //     and `Range(1)` on false (see lib.rs:389 in the golden
+        //     harness), so the engine consumes the same draw at the
+        //     same site as PS.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~3x per battle
+        //     across the random-golden corpus and is the largest
+        //     single draw-site gap in the oracle alignment count.
+        // Keyed-oracle context for the pre-move status self-checks below
+        // (paralysis full-para, confusion self-hit). These draw BEFORE the move
+        // reaches the damaging-hit loop that normally calls `set_move_context`
+        // (~line 4009), so without this they inherit the PREVIOUS action's
+        // stale (turn, actor, move, target) key and miss the OracleKeyed table
+        // — the single largest draw-site gap in the conformance survey. PS keys
+        // each draw to (this turn, this mon, this move): the paralysis and
+        // confusion-gate rolls to the move's chosen target, the confusion
+        // self-hit DAMAGE roll to NO_SLOT (a self-hit has no target). Slot refs
+        // are `side*2 + slot`. `set_move_context` / `set_decision` are no-ops
+        // for every non-OracleKeyed RNG, so this changes nothing in real play.
+        let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+        let ctx_target = match target {
+            Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+            None => crate::rng::NO_SLOT,
+        };
+        if matches!(attacker.status, Status::Paralysis) {
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if self.rng.range(4) == 0 {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
+        //     decrements the confusion counter; when it hits 0 the
+        //     volatile is removed and the move proceeds normally.
+        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
+        //     to hit self for 40-BP typeless physical damage with the
+        //     standard damage roll, no PP consumed.
+        //
+        //     Engine survey (PR-208) saw this draw fire ~9x per
+        //     battle (PercentRoll gate) + the inner damage roll
+        //     (~4x). Both sites are now wired here so the oracle
+        //     stays balanced when confusion is in play.
+        {
+            let conf_pos = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
+            if let Some(pos) = conf_pos {
+                let remaining = {
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    let v = &mut m.volatiles.items[pos];
+                    v.payload = v.payload.saturating_sub(1);
+                    v.payload
+                };
+                if remaining == 0 {
+                    self.side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap()
+                        .volatiles
+                        .remove(crate::pokemon::VolatileKind::Confusion);
+                } else if {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.set_decision(RngDecision::Secondary);
+                    self.rng.percent_1_100() <= 33
+                } {
+                    // Self-hit: 40-BP typeless physical confusion damage.
+                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
+                    let (level, atk_base, atk_boost, def_base, def_boost) = {
+                        let m = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .unwrap();
+                        (
+                            m.level as u32,
+                            m.stats.atk as u32,
+                            m.boosts[0],
+                            m.stats.def as u32,
+                            m.boosts[1],
+                        )
+                    };
+                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
+                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
+                    let lvl_factor = 2 * level / 5 + 2;
+                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
+                    // PS records the self-hit damage roll with no target.
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
+                    let roll = self.rng.damage_roll() as u32;
+                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
+                    let m = self
+                        .side_mut(actor_side)
+                        .active_mon_mut(actor_slot as usize)
+                        .unwrap();
+                    m.current_hp = m.current_hp.saturating_sub(dmg);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                    return PreMoveOutcome::Abort;
+                }
+            }
+        }
+
+        // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
+        //     `onUpdate` (which fires before `onBeforeMove`) clears the
+        //     volatile if the source has left the field — we fold that in
+        //     here so NO RNG is drawn once the source is gone. Otherwise the
+        //     `onBeforeMovePriority 2` handler rolls `randomChance(1, 2)` —
+        //     50% chance to be "immobilized by love" and skip the move (no
+        //     PP). Placed after the confusion block to match PS onBeforeMove
+        //     priority ordering (confusion 3 > attract 2). The draw only
+        //     fires when an infatuated mon with a live source acts, so it
+        //     cannot perturb battles where Attract is never applied.
+        if let Some((src_side, src_idx)) = self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .and_then(|mon| mon.attract_source())
+        {
+            if !self.attract_source_on_field(src_side, src_idx) {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.clear_attract();
+                }
+            } else if self.rng.range(2) == 0 {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        PreMoveOutcome::Proceed
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_self_effects(
         &mut self,
