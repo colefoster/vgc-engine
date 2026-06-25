@@ -26,6 +26,7 @@ pub mod damage;
 pub mod item;
 pub mod order;
 pub mod rng;
+mod secondary;
 pub mod terrain;
 pub mod weather;
 
