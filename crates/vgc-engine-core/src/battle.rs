@@ -5041,6 +5041,25 @@ impl Battle {
                             .min(u16::MAX as u32)) as u16;
                 }
             }
+            // Snow (gen 9) — Ice-type defenders get ×1.5 Def while Snowscape
+            // is the active weather. PS `data/conditions.ts:706` snowscape
+            // `onModifyDef` priority 10:
+            //   if (pokemon.hasType('Ice') && pokemon.effectiveWeather() === 'snowscape')
+            //     return this.modify(def, 1.5);
+            // Physical defensive reads only (onModifyDef). Mirrors the Sandstorm
+            // Rock-SpD boost above; uses effective (post-Tera) types like PS
+            // hasType. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
+            if matches!(self.effective_weather(), crate::weather::Weather::Snow)
+                && m.category == 0
+            {
+                let (eff_types, eff_num) = defender.effective_types();
+                let is_ice = (0..eff_num as usize).any(|i| eff_types[i] == 5);
+                if is_ice {
+                    def_stats_ovr.def =
+                        ((def_stats_ovr.def as u32 * 3 / 2)
+                            .min(u16::MAX as u32)) as u16;
+                }
+            }
             // Paradox booster on defender: 1=def boosts def vs physical,
             // 3=spd boosts spd vs special. ×1.3.
             if defender.boosted_stat == 1 && m.category == 0 {
@@ -28950,6 +28969,49 @@ mod tests {
         assert!(
             dmg_with_sand < dmg_no_sand,
             "Sand should reduce Special damage on Rock-types: with_sand={dmg_with_sand} no_sand={dmg_no_sand}",
+        );
+    }
+
+    #[test]
+    fn snow_boosts_ice_def_by_15x_on_physical_hits() {
+        // Abomasnow (Grass/Ice) takes a physical Body Slam from Snorlax while
+        // Snow is up — the Ice Def ×1.5 boost makes the hit deal ~1/3 less than
+        // the same hit with weather cleared. PS data/conditions.ts:706
+        // snowscape onModifyDef.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"adamant","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"atk":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"abomasnow","level":50,"ability":"snowwarning","item":"leftovers","nature":"impish","moves":["iceshard","woodhammer","auroraveil","protect"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Snow, "Snow Warning sets Snow on switch-in");
+        let hp_before = b.p2.team[0].current_hp;
+        // Abomasnow idles with Ice Shard at Snorlax (no self HP/Def change) so
+        // it does NOT Protect away the Body Slam we are measuring.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let dmg_with_snow = hp_before - b.p2.team[0].current_hp;
+
+        // Rerun with Snow cleared right after switch-in; damage should rise.
+        let p1b = TeamBuilder::from_json(p1_json).unwrap();
+        let p2b = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
+        b2.weather = crate::weather::Weather::None;
+        let hp_before2 = b2.p2.team[0].current_hp;
+        b2.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let dmg_no_snow = hp_before2 - b2.p2.team[0].current_hp;
+
+        assert!(
+            dmg_with_snow < dmg_no_snow,
+            "Snow should reduce physical damage on Ice-types: with_snow={dmg_with_snow} no_snow={dmg_no_snow}",
         );
     }
 
