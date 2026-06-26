@@ -31587,6 +31587,41 @@ mod tests {
     }
 
     #[test]
+    fn rivalry_scales_damage_by_gender_matchup() {
+        // Rivalry: x1.25 vs a same-gender target, x0.75 vs the opposite gender,
+        // x1.0 (no effect) when either side is genderless. PS
+        // data/abilities.ts rivalry onBasePower. A male Pyroar Flamethrowers a
+        // Garchomp whose gender we vary; compare the HP lost.
+        let atk = r#"[
+            {"species":"pyroar","level":50,"ability":"rivalry","item":"","gender":"M","nature":"modest","moves":["flamethrower","protect","hyperbeam","darkpulse"],"evs":{"spa":252}}
+        ]"#;
+        let foe = |gender: &str| format!(r#"[
+            {{"species":"garchomp","level":50,"ability":"roughskin","item":"","gender":"{gender}","nature":"impish","moves":["swordsdance","protect","earthquake","dragonclaw"],"evs":{{"hp":252,"def":252}}}}
+        ]"#);
+        let run = |gender: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(atk).unwrap();
+            let p2 = TeamBuilder::from_json(&foe(gender)).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 5 }, p1, p2);
+            let hp = b.p2.team[0].stats.hp;
+            // Foe Swords Dances (no damage to Pyroar); Pyroar Flamethrowers.
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            hp - b.p2.team[0].current_hp
+        };
+        let same = run("M");      // male vs male  -> x1.25
+        let neutral = run("N");   // male vs genderless -> x1.0
+        let opposite = run("F");  // male vs female -> x0.75
+        assert!(same > neutral && neutral > opposite,
+                "Rivalry ordering same({same}) > neutral({neutral}) > opposite({opposite})");
+        let up = same as f64 / neutral as f64;
+        let down = opposite as f64 / neutral as f64;
+        assert!((1.22..=1.28).contains(&up), "same-gender ~1.25x (got {up:.3})");
+        assert!((0.72..=0.78).contains(&down), "opposite-gender ~0.75x (got {down:.3})");
+    }
+
+    #[test]
     fn analytic_boosts_damage_when_moving_last() {
         // Analytic ×5325/4096 (~1.3) base power when the user moves last (no
         // other active still has a pending move). A slow Magnezone Thunderbolts
