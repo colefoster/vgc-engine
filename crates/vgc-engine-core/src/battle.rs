@@ -11871,8 +11871,11 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // `secondary.chance: 10`). Our target format.
         "moonblast" => (2, -1, 10),
         // 100% -1 Def — Thunderous Kick (PS data/moves.ts:19549
-        // `secondary: { chance: 100, boosts: { def: -1 } }`; no status):
-        "thunderouskick" => (1, -1, 100),
+        // `secondary: { chance: 100, boosts: { def: -1 } }`; no status) and
+        // Grav Apple (Dipplin/Flapple, PS data/moves.ts:gravapple
+        // `secondary: { chance: 100, boosts: { def: -1 } }`; the Champions mod
+        // only bumps its BP to 90, secondary intact). Grav Apple was missing.
+        "thunderouskick" | "gravapple" => (1, -1, 100),
         // 30% -1 Def (contact biters):
         "irontail" => (1, -1, 30),
         "liquidation" | "rocksmash" => (1, -1, 30),
@@ -30875,6 +30878,30 @@ mod tests {
         assert_eq!(super::stat_drop_secondary("lunge"), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("breakingswipe"), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("pounce"), Some((4, -1, 100)));
+    }
+
+    #[test]
+    fn grav_apple_always_drops_target_def() {
+        // PS data/moves.ts:gravapple — `secondary: { chance: 100, boosts:
+        // { def: -1 } }` (Champions only bumps BP). 100% acc + 100% secondary
+        // ⇒ the target's Def (index 1) drops on every connecting hit.
+        assert_eq!(super::stat_drop_secondary("gravapple"), Some((1, -1, 100)));
+        let p1_json = r#"[
+            {"species":"dipplin","level":50,"ability":"supersweetsyrup","item":"","nature":"modest","moves":["gravapple","gigadrain","protect","ember"],"evs":{"spa":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        for seed in 0..12 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].boosts[1], -1, "Grav Apple drops target Def (seed {seed})");
+        }
     }
 
     #[test]
