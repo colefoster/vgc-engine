@@ -11863,7 +11863,8 @@ fn flinch_chance(slug: &str) -> Option<u8> {
         "rockslide" | "airslash" | "zenheadbutt"
         | "headbutt" | "bite" | "stomp" | "needleam"
         | "extrasensory" | "astonish" | "hyperfang" => 30,
-        "ironhead" | "darkpulse" | "twister" | "dragonrush" | "snore" => 20,
+        "ironhead" | "darkpulse" | "twister" | "dragonrush" | "snore"
+        | "waterfall" => 20,
         "icefang" | "thunderfang" | "firefang" | "fireblast"
         | "rollingkick" | "lowkick" | "steamroller" => 10,
         // Heat Wave: 10% BURN, not flinch — handled elsewhere.
@@ -14916,6 +14917,17 @@ mod tests {
         assert_eq!(super::flinch_chance("ironhead"), Some(20));
         assert_eq!(super::flinch_chance("rockslide"), Some(30));
         assert_eq!(super::flinch_chance("airslash"), Some(30));
+    }
+
+    #[test]
+    fn waterfall_flinch_is_20_percent() {
+        // PS data/moves.ts:waterfall — `secondary: { chance: 20, volatileStatus:
+        // 'flinch' }`; no Champions override (data/mods/champions/moves.ts has no
+        // waterfall entry). The conformance harness (out_12ab49a472) caught the
+        // engine failing to flinch a Trick Room user with Gyarados Waterfall: a
+        // draw of 10 (<=20) flinches, but the engine's flinch_chance table omitted
+        // waterfall, so the slow -7 Trick Room resolved and toggled the field.
+        assert_eq!(super::flinch_chance("waterfall"), Some(20));
     }
 
     #[test]
