@@ -4338,6 +4338,9 @@ impl Battle {
                     && self.pursuit_intercepting,
                 ally_power_spot, ally_battery, steely_spirit_holders,
                 defender_friend_guarded,
+                // Analytic ×1.3: the attacker moves last iff no later action
+                // this turn is a move by a live mon (PS queue.willMove scan).
+                attacker_moves_last: !will_act,
             };
             let (mut dmg, beat_up_ctx_opt) =
                 self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, None);
@@ -8121,6 +8124,9 @@ impl Battle {
                     // Delayed Future Sight / Doom Desire hit — no Friend Guard
                     // ally check (slot-condition resolution).
                     defender_friend_guarded: false,
+                    // The delayed hit has no live attacker in the turn queue;
+                    // Analytic does not apply.
+                    attacker_moves_last: false,
                 },
             )
         };
@@ -18097,11 +18103,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -22156,11 +22162,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -31578,6 +31584,69 @@ mod tests {
                    "Gardevoir traced Intimidate");
         assert_eq!(b.p2.team[0].boosts[0], -1,
                    "traced Intimidate lowers the foe's Atk by 1");
+    }
+
+    #[test]
+    fn analytic_boosts_damage_when_moving_last() {
+        // Analytic ×5325/4096 (~1.3) base power when the user moves last (no
+        // other active still has a pending move). A slow Magnezone Thunderbolts
+        // AFTER a faster foe acts, so Analytic should fire. Compare against an
+        // otherwise-identical Sturdy Magnezone (no BP effect): the Analytic hit
+        // lands ~1.3x the damage. PS data/abilities.ts analytic onBasePower.
+        let foe = r#"[
+            {"species":"dragapult","level":50,"ability":"clearbody","item":"","nature":"jolly","moves":["dragondance","protect","dragondarts","phantomforce"],"evs":{"hp":252,"spe":252}}
+        ]"#;
+        // Quiet + no Spe EVs keeps Magnezone slower than the Jolly 252-Spe foe.
+        let mag = |ability: &str| format!(r#"[
+            {{"species":"magnezone","level":50,"ability":"{ability}","item":"","nature":"quiet","moves":["thunderbolt","protect","flashcannon","calmmind"],"evs":{{"spa":252}}}}
+        ]"#);
+        let run = |ability: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(&mag(ability)).unwrap();
+            let p2 = TeamBuilder::from_json(foe).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            let foe_hp = b.p2.team[0].stats.hp;
+            // Foe (faster) Dragon Dances — it acts but deals no damage — then
+            // Magnezone Thunderbolts last.
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            foe_hp - b.p2.team[0].current_hp
+        };
+        let analytic_dmg = run("analytic");
+        let control_dmg = run("sturdy");
+        assert!(control_dmg > 0 && analytic_dmg > control_dmg,
+                "Analytic ({analytic_dmg}) should exceed the Sturdy control ({control_dmg})");
+        let ratio = analytic_dmg as f64 / control_dmg as f64;
+        assert!((1.27..=1.33).contains(&ratio),
+                "Analytic ~1.3x when moving last (got {ratio:.3}: {analytic_dmg}/{control_dmg})");
+    }
+
+    #[test]
+    fn analytic_does_not_boost_when_moving_first() {
+        // Mirror of the above with the speeds flipped: a fast Magnezone moves
+        // BEFORE the foe, so Analytic must NOT fire — damage matches the Sturdy
+        // control exactly. Guards the !will_act gate against over-application.
+        let foe = r#"[
+            {"species":"munkidori","level":50,"ability":"frisk","item":"","nature":"sassy","moves":["calmmind","protect","sludgebomb","psychic"],"evs":{"hp":252}}
+        ]"#;
+        // Timid + 252 Spe Magnezone outspeeds the Sassy, no-Spe foe.
+        let mag = |ability: &str| format!(r#"[
+            {{"species":"magnezone","level":50,"ability":"{ability}","item":"","nature":"timid","moves":["thunderbolt","protect","flashcannon","calmmind"],"evs":{{"spa":252,"spe":252}}}}
+        ]"#);
+        let run = |ability: &str| -> u16 {
+            let p1 = TeamBuilder::from_json(&mag(ability)).unwrap();
+            let p2 = TeamBuilder::from_json(foe).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            let foe_hp = b.p2.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            foe_hp - b.p2.team[0].current_hp
+        };
+        assert_eq!(run("analytic"), run("sturdy"),
+                   "Analytic must not boost when the user moves first");
     }
 
     #[test]
