@@ -4844,56 +4844,28 @@ impl Battle {
                 continue;
             }
 
-            // Apply (only when the sub didn't intercept).
+            // Apply (only when the sub didn't intercept). HP write +
+            // damaged_this_turn / last_attacker / last_phys/spec /
+            // last_damage_taken trackers + faint check + Stellar
+            // one-shot mark are all owned by
+            // `Battle::apply_damage_step`. See
+            // `docs/damage-pipeline-design.md` PR-B.
             if !hit_sub {
-                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
-                    t.current_hp = t.current_hp.saturating_sub(effective_dmg);
-                    // Mark this target as "damaged this turn" so
-                    // Avalanche / Revenge / Counter (when wired) see
-                    // a true source. Cross-side gate: opp-vs-self
-                    // damage is the only case; self-targeted damaging
-                    // moves never go through this branch (status path).
-                    if effective_dmg > 0 && tside != actor_side {
-                        t.set_damaged_this_turn(true);
-                        // Record attacker for Counter / Mirror Coat /
-                        // Stamina / Anger Point / Cotton Down /
-                        // Berserk etc. Side byte: 0=P1, 1=P2.
-                        let aside_byte = match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 1u8 };
-                        t.last_attacker = (aside_byte, actor_slot as u8);
-                        t.last_attacker_category = m.category;
-                        t.last_damage_taken = effective_dmg;
-                        // Per-category attribution for Counter / Mirror Coat.
-                        if m.category == 0 {
-                            t.last_phys_attacker = (aside_byte, actor_slot as u8);
-                            t.last_phys_damage = effective_dmg;
-                        } else if m.category == 1 {
-                            t.last_spec_attacker = (aside_byte, actor_slot as u8);
-                            t.last_spec_damage = effective_dmg;
-                        }
-                    }
-                }
-                let _ = self.check_target_fainted(tside, tslot);
-                any_damage_dealt = any_damage_dealt.saturating_add(effective_dmg);
+                let res = self.apply_damage_step(DamageApplication {
+                    effective_dmg,
+                    attacker_side: actor_side,
+                    attacker_slot: actor_slot as u8,
+                    target_side: tside,
+                    target_slot: tslot,
+                    move_category: m.category,
+                    move_type: m.type_,
+                });
+                any_damage_dealt = any_damage_dealt.saturating_add(res.damage_dealt);
                 // Record the real-hit foe slot for Dragon Tail / Circle
                 // Throw phazing (a Substitute absorb never reaches this
                 // branch, so a subbed mon stays None and is not phazed).
-                if tside != actor_side && effective_dmg > 0 {
+                if res.is_real_hit {
                     drag_target = Some((tside, tslot));
-                }
-
-                // Stellar once-per-type bookkeeping. PS
-                // `sim/pokemon.ts` runEffectiveness sets the consumed-
-                // type bit on the user's `terastallizedType` for every
-                // Stellar-bonus hit. We mark after the hit lands so the
-                // damage call's read above sees `bit == 0` on the first
-                // use of that type. Subsequent Stellar hits of the same
-                // move-type drop back to regular STAB / off-type.
-                if effective_dmg > 0 {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if a.terastallized && a.tera_type == 255 && (m.type_ as u32) < 32 {
-                            a.stellar_boosted_types |= 1u32 << (m.type_ as u32);
-                        }
-                    }
                 }
 
                 // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
@@ -5278,6 +5250,93 @@ impl Battle {
                 }
             }
         }
+    }
+
+    /// One HP-write step on the defender for a damaging move that landed
+    /// on the mon itself (not absorbed by Substitute, not consumed by
+    /// Disguise). Lifts the previously-inline block of:
+    ///   - `current_hp -=` (saturating)
+    ///   - cross-side `damaged_this_turn` mark
+    ///   - `last_attacker` + `last_attacker_category` + `last_damage_taken`
+    ///   - per-category `last_phys_attacker / last_phys_damage` or
+    ///     `last_spec_attacker / last_spec_damage`
+    ///   - `check_target_fainted`
+    ///   - Stellar one-shot consumption mark on the attacker
+    /// into one named method. PR-B of the damage-pipeline design
+    /// (`docs/damage-pipeline-design.md`).
+    ///
+    /// Sub interception / Disguise / Sturdy / Endure / Focus Sash STAY
+    /// INLINE in the caller — they all run BEFORE the apply step,
+    /// pre-clamping `effective_dmg` so the apply step doesn't need to
+    /// know about them. Post-damage item hooks (Sitrus / Starf), thaw,
+    /// Destiny Bond, Knock Off removal, and on-hit reactions (Static /
+    /// Rocky Helmet / …) also stay inline — they follow the apply
+    /// step.
+    ///
+    /// Caller plumbs `effective_dmg` (already accounting for sub /
+    /// Sturdy / Endure / Focus Sash). The method does NOT itself draw
+    /// RNG. Behavior byte-identical to the inline block it replaces.
+    pub(crate) fn apply_damage_step(&mut self, app: DamageApplication) -> ApplyResult {
+        let mut result = ApplyResult::default();
+        let cross_side = app.target_side != app.attacker_side;
+        if let Some(t) = self
+            .side_mut(app.target_side)
+            .active_mon_mut(app.target_slot as usize)
+        {
+            t.current_hp = t.current_hp.saturating_sub(app.effective_dmg);
+            // Mark this target as "damaged this turn" so
+            // Avalanche / Revenge / Counter (when wired) see
+            // a true source. Cross-side gate: opp-vs-self
+            // damage is the only case; self-targeted damaging
+            // moves never go through this branch (status path).
+            if app.effective_dmg > 0 && cross_side {
+                t.set_damaged_this_turn(true);
+                // Record attacker for Counter / Mirror Coat /
+                // Stamina / Anger Point / Cotton Down /
+                // Berserk etc. Side byte: 0=P1, 1=P2.
+                let aside_byte = match app.attacker_side {
+                    SideRef::P1 => 0u8,
+                    SideRef::P2 => 1u8,
+                };
+                t.last_attacker = (aside_byte, app.attacker_slot);
+                t.last_attacker_category = app.move_category;
+                t.last_damage_taken = app.effective_dmg;
+                // Per-category attribution for Counter / Mirror Coat.
+                if app.move_category == 0 {
+                    t.last_phys_attacker = (aside_byte, app.attacker_slot);
+                    t.last_phys_damage = app.effective_dmg;
+                } else if app.move_category == 1 {
+                    t.last_spec_attacker = (aside_byte, app.attacker_slot);
+                    t.last_spec_damage = app.effective_dmg;
+                }
+            }
+        }
+        result.fainted = self.check_target_fainted(app.target_side, app.target_slot);
+        result.damage_dealt = app.effective_dmg;
+        result.is_real_hit = app.effective_dmg > 0 && cross_side;
+
+        // Stellar once-per-type bookkeeping. PS
+        // `sim/pokemon.ts` runEffectiveness sets the consumed-
+        // type bit on the user's `terastallizedType` for every
+        // Stellar-bonus hit. We mark after the hit lands so the
+        // damage call's read above sees `bit == 0` on the first
+        // use of that type. Subsequent Stellar hits of the same
+        // move-type drop back to regular STAB / off-type.
+        if app.effective_dmg > 0 {
+            if let Some(a) = self
+                .side_mut(app.attacker_side)
+                .active_mon_mut(app.attacker_slot as usize)
+            {
+                if a.terastallized && a.tera_type == 255 && (app.move_type as u32) < 32 {
+                    let bit = 1u32 << (app.move_type as u32);
+                    if a.stellar_boosted_types & bit == 0 {
+                        a.stellar_boosted_types |= bit;
+                        result.stellar_consumed = true;
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Post-damage faint check — if the just-damaged target is at 0 HP,
@@ -11576,6 +11635,53 @@ fn protect_variant_for(move_id: u16) -> u8 {
         data::move_id::SILKTRAP => protect_variant::SILK,
         _ => protect_variant::PLAIN,
     }
+}
+
+/// Inputs to one [`Battle::apply_damage_step`] call — the HP-write
+/// step at the end of one damaging hit's resolution. PR-B of the
+/// damage-pipeline design (`docs/damage-pipeline-design.md`).
+///
+/// `effective_dmg` is the post-multiplier, post-sub-clamp, post-
+/// Sturdy / Endure / Focus Sash value the apply step should subtract
+/// from the defender. The caller is responsible for the sub
+/// interception, Disguise check, and pre-damage item clamps that
+/// produce `effective_dmg`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DamageApplication {
+    pub effective_dmg: u16,
+    pub attacker_side: SideRef,
+    pub attacker_slot: u8,
+    pub target_side: SideRef,
+    pub target_slot: u8,
+    /// `move_data.category`: 0 = Physical, 1 = Special, 2 = Status.
+    /// Status moves never call apply_damage_step.
+    pub move_category: u8,
+    /// Effective move type at hit time (post-Tera / Weather Ball /
+    /// Terrain Pulse). Used by the Stellar one-shot mark.
+    pub move_type: u8,
+}
+
+/// Return value of [`Battle::apply_damage_step`]. Reports the
+/// per-hit outcomes that caller-side trackers need to consume
+/// (`any_damage_dealt`, `drag_target`, faint-stops-loop).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ApplyResult {
+    /// Bytes actually subtracted from the defender's HP — equals
+    /// `app.effective_dmg` after the saturating sub. Returned so
+    /// the caller can update `any_damage_dealt` without re-reading
+    /// the locals.
+    pub damage_dealt: u16,
+    /// True iff `effective_dmg > 0` AND the hit crossed sides — used
+    /// by `drag_target` (Dragon Tail / Circle Throw phazing). A
+    /// self-hit or zero-damage hit sets this `false`.
+    pub is_real_hit: bool,
+    /// True iff the defender's `current_hp` reached 0 on this step.
+    /// Drives the multi-hit faint-stops-loop.
+    pub fainted: bool,
+    /// True iff this hit marked a fresh Stellar one-shot bit on the
+    /// attacker. Currently unused by the caller (the mark itself is
+    /// the side-effect) but exposed for future hooks.
+    pub stellar_consumed: bool,
 }
 
 /// A foe-stat-lowering status move's data. Stat indices match
