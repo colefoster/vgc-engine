@@ -11899,8 +11899,11 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // (PS data/moves.ts:tropkick, same 100% atk -1, target:"normal";
         // Champions BP 85) — was missing, so a slower foe Trop-Kicked before
         // its own attack still hit at full Atk (conformance out_16: Araquanid
-        // Leech Life 74 vs PS 50).
-        "lunge" | "breakingswipe" | "tropkick" => (0, -1, 100),
+        // Leech Life 74 vs PS 50). Chilling Water (PS data/moves.ts
+        // chillingwater) and Bitter Malice (bittermalice) carry the same
+        // `secondary: { chance: 100, boosts: { atk: -1 } }` (no Champions
+        // override) and were missing.
+        "lunge" | "breakingswipe" | "tropkick" | "chillingwater" | "bittermalice" => (0, -1, 100),
         // 100% -1 Spe. Pounce (PS data/moves.ts:13633
         // `secondary: { chance: 100, boosts: { spe: -1 } }`, target:"normal").
         "pounce" => (4, -1, 100),
@@ -30917,6 +30920,31 @@ mod tests {
         // The genuine 10% SpD movers are unchanged.
         assert_eq!(super::stat_drop_secondary("flashcannon"), Some((3, -1, 10)));
         assert_eq!(super::stat_drop_secondary("energyball"), Some((3, -1, 10)));
+    }
+
+    #[test]
+    fn chilling_water_and_bitter_malice_drop_target_atk() {
+        // PS data/moves.ts chillingwater / bittermalice both
+        // `secondary: { chance: 100, boosts: { atk: -1 } }` (no Champions
+        // override). 100% ⇒ the target's Atk (index 0) drops on every hit.
+        assert_eq!(super::stat_drop_secondary("chillingwater"), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("bittermalice"), Some((0, -1, 100)));
+        let p1_json = r#"[
+            {"species":"slowbro","level":50,"ability":"owntempo","item":"","nature":"modest","moves":["chillingwater","scald","protect","ember"],"evs":{"spa":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        for seed in 0..12 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].boosts[0], -1, "Chilling Water drops target Atk (seed {seed})");
+        }
     }
 
     #[test]
