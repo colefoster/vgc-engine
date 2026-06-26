@@ -4586,107 +4586,26 @@ impl Battle {
                         }
                     }
                 }
-                // Per-hit damage. PS runs `getDamage` per strike, re-rolling
-                // crit + the damage randomizer each hit and (for Triple Kick /
-                // Triple Axel) computing at the hit's ramped base power
-                // (`10*hit` / `20*hit`). See the per-hit block below.
-                let mut dmg: u16 = if move_id == data::move_id::BEATUP {
-                    // Beat Up — each strike is the active user's hit at the
-                    // hitting member's base-Attack-derived BP (`5 + atk/10`). PS
-                    // runs getDamage per member, re-rolling crit + the damage
-                    // randomizer each strike, so only hit 0 reuses the pre-loop
-                    // ctx (popping Crit[0]/DamageRoll[0]); each later member
-                    // re-rolls, popping the next queued outcome so the Oracle
-                    // stream stays aligned. The member BP threads through
-                    // roll_initial_damage's bp_override exactly as
-                    // calculate_beat_up_hit applies it. Then the per-hit
-                    // attacker-item multiplier pipeline (Life Orb / Expert Belt /
-                    // Muscle Band / Wise Glasses) runs on each strike.
-                    if hit_idx == 0 {
-                        let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
-                        let raw = crate::damage::calculate_beat_up_hit(
-                            &attacker, &defender, ctx, beat_up_base_atks[0],
-                        );
-                        pipeline.current = raw;
-                        pipeline.apply_attacker_item(true);
-                        pipeline.current
-                    } else {
-                        let hc = if crit_immune {
-                            false
-                        } else {
-                            self.rng.crit_with_stage(crit_stage)
-                        };
-                        let mut inp = inputs;
-                        inp.crit = hc;
-                        let member_bp = 5 + (beat_up_base_atks[hit_idx as usize] as u32 / 10);
-                        let (raw, _) = self.roll_initial_damage(
-                            &attacker, &defender, move_id, None, inp, Some(member_bp),
-                        );
-                        pipeline.current = raw;
-                        pipeline.apply_attacker_item(true);
-                        pipeline.current
-                    }
-                } else {
-                    // Per-hit crit + damage roll. PS runs `getDamage` per
-                    // strike (sim/battle-actions.ts:moveHit → getDamage), so it
-                    // re-rolls BOTH the crit and the 85-100 damage randomizer
-                    // every hit — the `draws` arrays show distinct per-hit
-                    // crit/damage values. The engine previously froze hit 0's
-                    // crit + roll into `base_hit_dmg` and reused them for every
-                    // hit, so it under-damaged when a late hit crit in PS (Triple
-                    // Axel out_021218fdbd: PS 10/18/42=80, engine 10/20/30=90) and
-                    // over-damaged when an early hit crit (Population Bomb
-                    // out_5e73bffe61: engine applied hit 1's crit to all 10).
-                    //
-                    // Hit 0 reuses the pre-loop crit + roll (already drawn at the
-                    // top of this block — popping the FIFO Crit/DamageRoll queue's
-                    // first entry); each later hit re-rolls, popping the next
-                    // queued outcome so the Oracle stream stays aligned (the key
-                    // carries no hit index — rng.rs:126 — so same-key draws
-                    // resolve FIFO in PS's recorded order). A multiaccuracy miss
-                    // `break`s above before reaching here, so a missed hit draws
-                    // neither crit nor damage — matching PS, which stops before
-                    // `getDamage`. Single-hit moves (`hits == 1`) never reach
-                    // `hit_idx >= 1`, so their draw sequence is byte-identical.
-                    // Beat Up keeps its own per-member recompute arm above (its
-                    // per-hit crit/roll is a separate follow-up).
-                    // Triple Kick / Triple Axel ramp BP by hit number (PS
-                    // basePowerCallback `10*hit` / `20*hit`). Hit n is computed
-                    // at its TRUE base power (`base_power * (hit_idx+1)`) via the
-                    // bp_override path — NOT `base_hit_dmg * n`, which rounds the
-                    // BP-20 hit then scales and drifts ±1-2 from PS's per-BP floor
-                    // chain once the per-hit rolls differ (regressed out_2e5b1e5c92:
-                    // PS 10/21/29=60 vs base*n 10/22/30=62). Hit 0's pre-loop roll
-                    // already used the move's flat base power = hit 1's true BP, so
-                    // it needs no override.
-                    let ramped =
-                        matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL);
-                    if hit_idx == 0 {
-                        base_hit_dmg
-                    } else {
-                        let hc = if fixed_dmg_snapshot.is_some() || crit_immune {
-                            false
-                        } else {
-                            self.rng.crit_with_stage(crit_stage)
-                        };
-                        let mut inp = inputs;
-                        inp.crit = hc;
-                        let bp_ov = if ramped {
-                            Some((m.base_power as u32) * (hit_idx + 1))
-                        } else {
-                            None
-                        };
-                        let (rd, rctx) = self.roll_initial_damage(
-                            &attacker, &defender, move_id, fixed_dmg_snapshot, inp, bp_ov,
-                        );
-                        pipeline.current = rd;
-                        pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
-                        if let Some(ref c) = rctx {
-                            pipeline.apply_friend_guard(c);
-                        }
-                        pipeline.current
-                    }
-                };
+                // Per-hit damage — Beat Up per-ally arm + normal-move
+                // per-hit re-roll arm, both threading through the
+                // DamagePipeline (attacker item + Friend Guard). Lifted
+                // into `compute_per_hit_damage`; PS draw site + identity
+                // + order preserved (see method docs).
+                let mut dmg: u16 = self.compute_per_hit_damage(
+                    hit_idx,
+                    &attacker,
+                    &defender,
+                    move_id,
+                    m.base_power as u32,
+                    inputs,
+                    &mut pipeline,
+                    beat_up_ctx_opt,
+                    beat_up_base_atks,
+                    crit_immune,
+                    crit_stage,
+                    base_hit_dmg,
+                    fixed_dmg_snapshot,
+                );
 
             // Substitute interception. If the defender has a sub up, the
             // sub absorbs the hit (capped at remaining sub HP) and the
@@ -6039,6 +5958,103 @@ impl Battle {
             attacker, defender, move_id, dmg_ctx, bp_override,
         );
         (dmg, Some(dmg_ctx))
+    }
+
+    /// Compute one hit's post-formula damage value inside the multi-hit
+    /// loop. Pulls the per-hit damage block of
+    /// `resolve_move_with_pending` out of inline:
+    ///   - Hit 0: reuses `base_hit_dmg` (the pre-loop roll); Beat Up hit
+    ///     0 calculates via `calculate_beat_up_hit` on the first ally.
+    ///   - Hit n ≥ 1: re-rolls crit + damage roll (PS `getDamage` per
+    ///     strike); Triple Kick / Triple Axel ramp BP by hit number;
+    ///     Beat Up re-runs `roll_initial_damage` with the ally member's
+    ///     `5 + atk/10` BP. Either arm threads through the
+    ///     `DamagePipeline` (attacker item / Friend Guard).
+    ///
+    /// PR-C of the damage-pipeline design
+    /// (`docs/damage-pipeline-design.md`). The post-damage tail
+    /// (Substitute interception, Disguise, apply_damage_step,
+    /// Destiny Bond, Knock Off, secondaries, drain, faint-stops-loop)
+    /// stays in the loop body for now — a full `apply_single_hit`
+    /// extraction needs a `PerTargetContext` bundle that's out of scope
+    /// for this slice. Phase C of the resolve-move restructure picks
+    /// that up.
+    ///
+    /// Behavior byte-identical to the inline arm it replaces. The crit
+    /// + damage-roll RNG draws fire at the same call points in the same
+    /// order; the keyed `set_move_context` set by the per-target outer
+    /// scope is carried into `self.rng` unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn compute_per_hit_damage(
+        &mut self,
+        hit_idx: u32,
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        move_id: u16,
+        base_power: u32,
+        inputs: crate::damage::DamageInputs,
+        pipeline: &mut DamagePipeline,
+        beat_up_ctx_opt: Option<DamageContext>,
+        beat_up_base_atks: [u16; 6],
+        crit_immune: bool,
+        crit_stage: u8,
+        base_hit_dmg: u16,
+        fixed_dmg_snapshot: Option<u16>,
+    ) -> u16 {
+        if move_id == data::move_id::BEATUP {
+            if hit_idx == 0 {
+                let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
+                let raw = crate::damage::calculate_beat_up_hit(
+                    attacker, defender, ctx, beat_up_base_atks[0],
+                );
+                pipeline.current = raw;
+                pipeline.apply_attacker_item(true);
+                pipeline.current
+            } else {
+                let hc = if crit_immune {
+                    false
+                } else {
+                    self.rng.crit_with_stage(crit_stage)
+                };
+                let mut inp = inputs;
+                inp.crit = hc;
+                let member_bp = 5 + (beat_up_base_atks[hit_idx as usize] as u32 / 10);
+                let (raw, _) = self.roll_initial_damage(
+                    attacker, defender, move_id, None, inp, Some(member_bp),
+                );
+                pipeline.current = raw;
+                pipeline.apply_attacker_item(true);
+                pipeline.current
+            }
+        } else {
+            let ramped =
+                matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL);
+            if hit_idx == 0 {
+                base_hit_dmg
+            } else {
+                let hc = if fixed_dmg_snapshot.is_some() || crit_immune {
+                    false
+                } else {
+                    self.rng.crit_with_stage(crit_stage)
+                };
+                let mut inp = inputs;
+                inp.crit = hc;
+                let bp_ov = if ramped {
+                    Some(base_power * (hit_idx + 1))
+                } else {
+                    None
+                };
+                let (rd, rctx) = self.roll_initial_damage(
+                    attacker, defender, move_id, fixed_dmg_snapshot, inp, bp_ov,
+                );
+                pipeline.current = rd;
+                pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
+                if let Some(ref c) = rctx {
+                    pipeline.apply_friend_guard(c);
+                }
+                pipeline.current
+            }
+        }
     }
 
     /// Two-turn charge / semi-invuln move handling. Run after the lock-in
