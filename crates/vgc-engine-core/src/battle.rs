@@ -12394,6 +12394,15 @@ fn apply_secondary_effect(
                 let _ = crate::item::try_consume_eject_pack(
                     battle, target_side, target_slot, true,
                 );
+                // Competitive (+2 SpA) / Defiant (+2 Atk) rebound when a foe
+                // lowers a stat — fires on the move-secondary drop path too
+                // (e.g. Crunch Def-drop, Lumina Crash SpD-drop into a
+                // Competitive mon). Mirrors the status-move ordering above
+                // (apply → White Herb → Eject Pack → react). PS
+                // data/abilities.ts competitive/defiant `onAfterEachBoost`.
+                crate::ability::react_to_opposing_stat_drop(
+                    battle, target_side, target_slot,
+                );
             }
         }
     }
@@ -31482,6 +31491,49 @@ mod tests {
             assert!(b.p2.team[0].is_alive(), "Lumina Crash target survives seed {seed}");
             assert_eq!(b.p2.team[0].boosts[3], -2, "Lumina Crash -2 SpD seed {seed}");
             assert_eq!(b.p2.team[0].boosts[0], 0, "Lumina Crash leaves Atk seed {seed}");
+        }
+    }
+
+    #[test]
+    fn competitive_rebounds_on_secondary_stat_drop() {
+        // Competitive (+2 SpA) rebounds when a foe lowers one of its stats —
+        // including via a damaging move's secondary (here Lumina Crash's 100%
+        // SpD -2). PS data/abilities.ts competitive `onAfterEachBoost`. Before
+        // the fix this fired only on the status-move / Intimidate paths.
+        // Control: a non-Competitive wall (Blissey) takes the SpD drop with no
+        // SpA rebound, proving the boost is ability-gated, not unconditional.
+        let p1_json = r#"[
+            {"species":"espathra","level":50,"ability":"speedboost","item":"","nature":"timid","moves":["luminacrash","protect","dazzlinggleam","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let comp_json = r#"[
+            {"species":"milotic","level":50,"ability":"competitive","item":"","nature":"calm","moves":["recover","scald","icebeam","mirrorcoat"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let ctrl_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","thunderwave","toxic"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        for seed in 0u64..16 {
+            // Competitive target: SpD -2 from the move, SpA +2 from the rebound.
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(comp_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Competitive target survives seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[3], -2, "Lumina Crash -2 SpD seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[2], 2, "Competitive rebound +2 SpA seed {seed}");
+
+            // Control: no Competitive ⇒ SpD drops but SpA is untouched.
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(ctrl_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert_eq!(b.p2.team[0].boosts[3], -2, "control -2 SpD seed {seed}");
+            assert_eq!(b.p2.team[0].boosts[2], 0, "control no SpA rebound seed {seed}");
         }
     }
 
