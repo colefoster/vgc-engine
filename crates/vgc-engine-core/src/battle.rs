@@ -4596,19 +4596,37 @@ impl Battle {
                 // Triple Axel) computing at the hit's ramped base power
                 // (`10*hit` / `20*hit`). See the per-hit block below.
                 let mut dmg: u16 = if move_id == data::move_id::BEATUP {
-                    // Beat Up — recompute this strike's damage from the
-                    // hitting member's species base Attack, reusing the
-                    // captured DamageContext (same crit/roll/stat overrides),
-                    // then run the per-hit attacker-item multiplier pipeline
-                    // (Life Orb / Expert Belt / Muscle Band / Wise Glasses).
-                    let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
-                    let raw = crate::damage::calculate_beat_up_hit(
-                        &attacker,
-                        &defender,
-                        ctx,
-                        beat_up_base_atks[hit_idx as usize],
-                    );
-                    apply_attacker_item_mult(raw, true)
+                    // Beat Up — each strike is the active user's hit at the
+                    // hitting member's base-Attack-derived BP (`5 + atk/10`). PS
+                    // runs getDamage per member, re-rolling crit + the damage
+                    // randomizer each strike, so only hit 0 reuses the pre-loop
+                    // ctx (popping Crit[0]/DamageRoll[0]); each later member
+                    // re-rolls, popping the next queued outcome so the Oracle
+                    // stream stays aligned. The member BP threads through
+                    // roll_initial_damage's bp_override exactly as
+                    // calculate_beat_up_hit applies it. Then the per-hit
+                    // attacker-item multiplier pipeline (Life Orb / Expert Belt /
+                    // Muscle Band / Wise Glasses) runs on each strike.
+                    if hit_idx == 0 {
+                        let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
+                        let raw = crate::damage::calculate_beat_up_hit(
+                            &attacker, &defender, ctx, beat_up_base_atks[0],
+                        );
+                        apply_attacker_item_mult(raw, true)
+                    } else {
+                        let hc = if crit_immune {
+                            false
+                        } else {
+                            self.rng.crit_with_stage(crit_stage)
+                        };
+                        let mut inp = inputs;
+                        inp.crit = hc;
+                        let member_bp = 5 + (beat_up_base_atks[hit_idx as usize] as u32 / 10);
+                        let (raw, _) = self.roll_initial_damage(
+                            &attacker, &defender, move_id, None, inp, Some(member_bp),
+                        );
+                        apply_attacker_item_mult(raw, true)
+                    }
                 } else {
                     // Per-hit crit + damage roll. PS runs `getDamage` per
                     // strike (sim/battle-actions.ts:moveHit → getDamage), so it
@@ -26290,13 +26308,17 @@ mod tests {
         assert!(dmg1 > 0, "single-eligible Beat Up should deal damage");
         assert!(dmg1_statused_user > 0,
             "statused active user still counts as an eligible member");
-        // Per-hit damage is uniform (identical species, healthy user), so the
-        // totals scale with the hit count. Allow ±1 HP per hit for rounding.
+        // Each member now re-rolls its own 85-100 damage factor (PS runs
+        // getDamage per strike), so the totals scale ~linearly with the hit
+        // count but NOT exactly N×. With identical species (same BP) the only
+        // per-hit variance is the [0.85, 1.0] roll band, so an N-hit total sits
+        // within roughly [0.85·N, 1.18·N] × a single roll. Bound generously and
+        // lean on the monotonic check below for the hit-count guarantee.
         let per = dmg1 as i32;
-        assert!((dmg6 as i32 - per * 6).abs() <= 6,
-            "6-eligible ≈ 6×1-eligible: dmg6={dmg6} per={per}");
-        assert!((dmg4 as i32 - per * 4).abs() <= 4,
-            "4-eligible ≈ 4×1-eligible: dmg4={dmg4} per={per}");
+        assert!((dmg6 as i32) >= per * 5 && (dmg6 as i32) <= per * 7,
+            "6-eligible total in [5×,7×] single: dmg6={dmg6} per={per}");
+        assert!((dmg4 as i32) >= per * 3 && (dmg4 as i32) <= per * 5,
+            "4-eligible total in [3×,5×] single: dmg4={dmg4} per={per}");
         assert!(dmg6 > dmg4 && dmg4 > dmg1,
             "more eligible members ⇒ more damage: {dmg6} > {dmg4} > {dmg1}");
     }
