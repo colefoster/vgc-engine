@@ -11881,9 +11881,13 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         "liquidation" | "rocksmash" => (1, -1, 30),
         // 20% -1 Def (Crunch per PS data/moves.ts:crunch).
         "crunch" => (1, -1, 20),
+        // 20% -1 SpD — Shadow Ball (PS data/moves.ts shadowball
+        // `secondary: { chance: 20, boosts: { spd: -1 } }`; no Champions
+        // override). Was mis-bucketed with the 10% moves below.
+        "shadowball" => (3, -1, 20),
         // 10% -1 SpD:
         "earthpower" | "flashcannon" | "energyball" | "focusblast"
-        | "psychic" | "shadowball" | "bugbuzz" => (3, -1, 10),
+        | "psychic" | "bugbuzz" => (3, -1, 10),
         // 10% -1 Atk:
         "aurorabeam" => (0, -1, 10),
         // 100% -1 Atk. Lunge (PS data/moves.ts:10608
@@ -30902,6 +30906,17 @@ mod tests {
             );
             assert_eq!(b.p2.team[0].boosts[1], -1, "Grav Apple drops target Def (seed {seed})");
         }
+    }
+
+    #[test]
+    fn shadow_ball_spd_drop_is_twenty_percent() {
+        // PS data/moves.ts shadowball `secondary: { chance: 20, boosts:
+        // { spd: -1 } }` — NOT 10% like the Flash Cannon / Energy Ball family
+        // (no Champions override). It was mis-bucketed at 10%.
+        assert_eq!(super::stat_drop_secondary("shadowball"), Some((3, -1, 20)));
+        // The genuine 10% SpD movers are unchanged.
+        assert_eq!(super::stat_drop_secondary("flashcannon"), Some((3, -1, 10)));
+        assert_eq!(super::stat_drop_secondary("energyball"), Some((3, -1, 10)));
     }
 
     #[test]
