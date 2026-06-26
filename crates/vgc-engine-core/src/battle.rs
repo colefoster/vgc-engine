@@ -12412,7 +12412,21 @@ fn apply_secondary_effect(
                 )
         })
         .unwrap_or(false);
-    if attacker_kings_rock {
+    // Stench — PS `data/abilities.ts:stench` shares King's Rock's recipe
+    // exactly: `onModifyMovePriority: -1` + an `onModifyMove` that appends a
+    // 10% flinch secondary to any non-Status move lacking a native flinch
+    // (same dedupe guard). So it rides the same block and the same draw, just
+    // gated on the ability instead of the held item. `effective_ability_id`
+    // honours Neutralizing Gas (which suppresses Stench). Surfaced by the
+    // conformance harness (out_7ff1a6a3ae): Garbodor's Stench should add a 10%
+    // flinch to Seed Bomb; the proc interrupted a -7 Trick Room user.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stench_(Ability)>.
+    let attacker_stench = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .map(|a| a.is_alive() && a.effective_ability_id() == data::ability_id::STENCH)
+        .unwrap_or(false);
+    if attacker_kings_rock || attacker_stench {
         let move_category = data::MOVES
             .iter()
             .find(|mv| mv.slug == move_slug)
@@ -31447,6 +31461,45 @@ mod tests {
         assert!(kings > 0, "King's Rock should land at least one 10% flinch over 300 trials (got {kings})");
         let razor = sweep("razorfang");
         assert!(razor > 0, "Razor Fang should land at least one 10% flinch over 300 trials (got {razor})");
+    }
+
+    #[test]
+    fn stench_adds_10pct_flinch_to_non_flinch_move() {
+        // Stench (PS data/abilities.ts:stench) appends a 10% flinch secondary to
+        // any non-Status move that doesn't already roll a flinch — King's Rock's
+        // recipe, gated on the ability. Fast Garbodor (Jolly, 252 Spe) outspeeds
+        // a slow Blissey and uses Sludge Bomb (no native flinch); a Stench proc
+        // suppresses Blissey's move, so its Softboiled PP does NOT drop. Control
+        // uses Aftermath (also a legal Garbodor ability) and must NEVER flinch.
+        let sweep = |ability: &str| -> u32 {
+            let p1_json = format!(r#"[
+                {{"species":"garbodor","level":50,"ability":"{ability}","item":"","nature":"jolly","moves":["sludgebomb","gunkshot","bodyslam","protect"],"evs":{{"atk":252,"spe":252,"hp":4}}}}
+            ]"#);
+            let p2_json = r#"[
+                {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"sassy","moves":["tackle","seismictoss","softboiled","protect"],"evs":{"hp":252,"def":252,"spd":4},"ivs":{"spe":0}}
+            ]"#;
+            let mut flinches = 0u32;
+            for seed in 0u64..300 {
+                let p1 = TeamBuilder::from_json(&p1_json).unwrap();
+                let p2 = TeamBuilder::from_json(p2_json).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+                let pp_pre = b.side(SideRef::P2).active_mon(0).unwrap().pp[2];
+                // Garbodor (faster) Sludge Bombs; Blissey tries Softboiled (slot 2).
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+                );
+                let pp_post = b.side(SideRef::P2).active_mon(0).unwrap().pp[2];
+                if pp_post == pp_pre {
+                    flinches += 1;
+                }
+            }
+            flinches
+        };
+        let control = sweep("aftermath");
+        assert_eq!(control, 0, "Aftermath (no flinch) → Blissey must never flinch (got {control})");
+        let stench = sweep("stench");
+        assert!(stench > 0, "Stench should land at least one 10% flinch over 300 trials (got {stench})");
     }
 
     #[test]
