@@ -4516,19 +4516,26 @@ impl Battle {
             // sub break; PS is the oracle.)
             let base_hit_dmg = dmg;
             for hit_idx in 0..hits {
-                // Triple Kick / Triple Axel `multiaccuracy` — PS
-                // sim/battle-actions.ts:907 `if (target && move.multiaccuracy
+                // `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
+                // PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy
                 // && hit > 1)`: every hit AFTER the first rolls accuracy
                 // independently and the move STOPS at the first miss (only the
                 // hits that connected deal damage / ramp BP). Hit 1's accuracy
                 // is the move-level roll already done above. Loaded Dice
                 // deletes `multiaccuracy` (data/items.ts:3456 onModifyMove), so
-                // its holder skips these rolls and always lands all 3 hits.
+                // its holder skips these rolls and lands every rolled hit.
                 // Reuses the pure `effective_accuracy` predicate (boost chain,
-                // No Guard, etc.); `None` = sure-hit, no draw. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
+                // No Guard, etc.); `None` = sure-hit, no draw. Population Bomb
+                // (10 hits, acc 90) does NOT ramp BP — it is deliberately out of
+                // the ramp arm below. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
                 if hit_idx >= 1
-                    && matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL)
+                    && matches!(
+                        move_id,
+                        data::move_id::TRIPLEKICK
+                            | data::move_id::TRIPLEAXEL
+                            | data::move_id::POPULATIONBOMB
+                    )
                     && attacker_item_id != data::item_id::LOADEDDICE
                 {
                     let acc_comp = crate::accuracy::effective_accuracy(
@@ -25988,6 +25995,50 @@ mod tests {
         assert!(
             (min as u32) * 100 < (max as u32) * 80,
             "Triple Axel multiaccuracy should produce partial-hit totals \
+             (min {min} should be < 0.8 × max {max}); got {totals:?}",
+        );
+    }
+
+    #[test]
+    fn population_bomb_stops_on_a_missed_hit() {
+        // Population Bomb is `multihit: 10, multiaccuracy: true, accuracy: 90`.
+        // Each hit after the first rolls 90% and the move stops at the first
+        // miss. It does NOT ramp BP, so the total scales ~linearly with the
+        // number of connecting hits — a partial run lands far below a full
+        // 10-hit run, beyond the ±15% damage-roll spread. Sweep seeds at a
+        // bulky target (weak attacker so it survives a full run) and assert the
+        // smallest nonzero total is < 0.8× the largest. Before per-hit accuracy
+        // every connecting use landed all 10 hits.
+        let p1_json = r#"[
+            {"species":"maushold","level":50,"ability":"friendguard","item":"","nature":"modest","moves":["populationbomb","tidyup","protect","ember"],"evs":{"hp":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut totals: Vec<u16> = Vec::new();
+        for seed in 0..64u64 {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed },
+                p1.clone(), p2.clone(),
+            );
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            assert!(b.p2.team[0].is_alive(), "Blissey must survive a full Population Bomb (seed {seed})");
+            let dmg = hp0 - b.p2.team[0].current_hp;
+            if dmg > 0 {
+                totals.push(dmg);
+            }
+        }
+        let min = *totals.iter().min().expect("some hits land");
+        let max = *totals.iter().max().expect("some hits land");
+        assert!(
+            (min as u32) * 100 < (max as u32) * 80,
+            "Population Bomb multiaccuracy should produce partial-hit totals \
              (min {min} should be < 0.8 × max {max}); got {totals:?}",
         );
     }
