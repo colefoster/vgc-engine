@@ -11941,6 +11941,9 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         | "poisonjab" => (Status::Poison, 30),
         // Poison 40% — Smog (PS data/moves.ts:17042 `chance: 40`):
         "smog" => (Status::Poison, 40),
+        // Poison 50% — Barb Barrage (PS data/moves.ts:barbbarrage
+        // `secondary: { chance: 50, status: 'psn' }`):
+        "barbbarrage" => (Status::Poison, 50),
         // Poison 30% — Poison Sting (PS data/moves.ts:13533 `chance: 30`):
         "poisonsting" => (Status::Poison, 30),
         // Poison 10%:
