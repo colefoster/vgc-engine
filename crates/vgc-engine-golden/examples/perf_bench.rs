@@ -8,7 +8,8 @@
 //! A counting global allocator is installed so the bench can verify the claim
 //! that `step()` is heap-free (AGENTS.md rule 4). It snapshots allocation
 //! counts around each `step()` call and reports allocations attributable to the
-//! hot loop separately from driver overhead (`legal_choices` returns a `Vec`).
+//! hot loop separately from driver overhead. The driver enumerates actions via
+//! `legal_choices_into` (a reused buffer), so it is heap-free too.
 //!
 //! Run (release is mandatory for meaningful numbers):
 //!   cargo run --release -p vgc-engine-golden --example perf_bench -- --battles 500
@@ -244,10 +245,19 @@ fn parse_args() -> Args {
 /// Build a full set of random legal choices (one per active slot) for `side`,
 /// using `picker` for selection. Returns the choices plus whether all slots
 /// were forced to Pass (a signal the side can't act).
-fn pick_side(battle: &Battle, side: SideRef, active: usize, picker: &mut Rng, buf: &mut Vec<Choice>) {
+fn pick_side(
+    battle: &Battle,
+    side: SideRef,
+    active: usize,
+    picker: &mut Rng,
+    buf: &mut Vec<Choice>,
+    lc: &mut Vec<Choice>,
+) {
     buf.clear();
     for slot in 0..active {
-        let lc = battle.legal_choices(side, slot as u8);
+        // Allocation-free: fills the reused `lc` buffer instead of returning a
+        // fresh Vec per slot (legal_choices_into clears + writes in place).
+        battle.legal_choices_into(side, slot as u8, lc);
         let idx = picker.range(lc.len() as u32) as usize;
         buf.push(lc[idx]);
     }
@@ -261,9 +271,11 @@ fn main() {
     let active = args.format.active_count();
 
     // Reusable choice buffers so the driver itself doesn't churn the heap each
-    // turn (legal_choices still allocates internally — that's measured below).
+    // turn. `lc_buf` is the per-slot legal-choice scratch filled by
+    // legal_choices_into — reusing it makes action enumeration heap-free too.
     let mut p1_buf: Vec<Choice> = Vec::with_capacity(active);
     let mut p2_buf: Vec<Choice> = Vec::with_capacity(active);
+    let mut lc_buf: Vec<Choice> = Vec::with_capacity(16);
 
     // --- warmup (let the CPU/branch predictors settle; not timed) ---------
     {
@@ -274,8 +286,8 @@ fn main() {
         );
         let mut picker = Rng::new(args.seed ^ 0xDEAD_BEEF);
         for _ in 0..50 {
-            pick_side(&warm, SideRef::P1, active, &mut picker, &mut p1_buf);
-            pick_side(&warm, SideRef::P2, active, &mut picker, &mut p2_buf);
+            pick_side(&warm, SideRef::P1, active, &mut picker, &mut p1_buf, &mut lc_buf);
+            pick_side(&warm, SideRef::P2, active, &mut picker, &mut p2_buf, &mut lc_buf);
             if matches!(warm.step(&p1_buf, &p2_buf), StepResult::Ended { .. }) {
                 break;
             }
@@ -304,12 +316,13 @@ fn main() {
                 capped += 1;
                 break;
             }
-            pick_side(&battle, SideRef::P1, active, &mut picker, &mut p1_buf);
-            pick_side(&battle, SideRef::P2, active, &mut picker, &mut p2_buf);
+            pick_side(&battle, SideRef::P1, active, &mut picker, &mut p1_buf, &mut lc_buf);
+            pick_side(&battle, SideRef::P2, active, &mut picker, &mut p2_buf, &mut lc_buf);
 
-            // Isolate allocations attributable to the hot loop. legal_choices
-            // (the Vec allocs) already happened above; anything between these
-            // two snapshots is step()'s own heap traffic.
+            // Isolate allocations attributable to the hot loop. The action
+            // enumeration above is now heap-free (legal_choices_into into a
+            // reused buffer); anything between these two snapshots is step()'s
+            // own heap traffic.
             let a_before = alloc_count();
             let res = battle.step(&p1_buf, &p2_buf);
             step_allocs += alloc_count() - a_before;
