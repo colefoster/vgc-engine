@@ -1077,6 +1077,31 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 3, 2);
     }
 
+    // Rivalry — PS `data/abilities.ts:rivalry` `onBasePowerPriority: 24`:
+    //   if (attacker.gender && defender.gender) {
+    //     if (attacker.gender === defender.gender) chainModify(1.25);
+    //     else chainModify(0.75);
+    //   }
+    // ×1.25 (5120/4096) vs a same-gender target, ×0.75 (3072/4096) vs the
+    // opposite gender. Genderless on EITHER side (PS treats the empty gender
+    // string as falsy) skips the modifier entirely. Runs at PS priority 24 —
+    // between Technician (30) and the -ate ×1.2 (23). No Champions override.
+    // Pyroar / Haxorus / Nidoking signature. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Rivalry_(Ability)>.
+    if attacker.ability_id != u16::MAX
+        && attacker.ability_id == data::ability_id::RIVALRY
+    {
+        let known = |g| matches!(g, data::Gender::Male | data::Gender::Female);
+        let (ag, dg) = (attacker.gender, defender.gender);
+        if known(ag) && known(dg) {
+            if ag == dg {
+                bp_mod = chain_modify(bp_mod, 5120, 4096);
+            } else {
+                bp_mod = chain_modify(bp_mod, 3072, 4096);
+            }
+        }
+    }
+
     // -ate ×1.2 BP — deferred from the type-rebind above so it lands at PS's
     // `onBasePowerPriority: 23`, i.e. AFTER Technician (30). ×1.2 = 4915/4096
     // (pokeRound). Fires only when the type was actually changed.
