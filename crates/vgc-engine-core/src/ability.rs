@@ -371,6 +371,72 @@ pub(crate) fn recompute_neutralizing_gas(battle: &mut Battle) {
 ///
 /// Called from Battle::new (for initial sendouts) and from
 /// apply_switches (for mid-battle switches).
+/// Fire Intimidate's `onStart` from `(side, slot)`: lower every alive adjacent
+/// opposing active's Atk by 1, running the full reaction chain (Adrenaline Orb,
+/// Guard Dog, Clear Amulet, White Herb, Eject Pack, Defiant / Competitive,
+/// Rattled). Shared by the switch-in dispatch below AND by a mid-battle ability
+/// gain — PS `setAbility` (Skill Swap / Role Play) runs the gained ability's
+/// onStart, so a freshly-acquired Intimidate triggers immediately.
+pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Lower atk of every alive adjacent opposing active by 1 stage, unless
+    // their ability blocks the drop. After each successful drop, run the
+    // target's `onAfterEachBoost` — Defiant (+2 Atk) / Competitive (+2 SpA)
+    // react to any stat drop caused by an opposing source. PS gates on
+    // `!target.isAlly(source) && any(boost[i] < 0)`; Intimidate's user is
+    // `side` and its target is on `opp`, so the cross-side check is automatic.
+    let opp = side.opposing();
+    let n = battle.format().active_count() as u8;
+    for s in 0..n {
+        let target_ability = match battle.side(opp).active_mon(s as usize) {
+            Some(m) if m.is_alive() => m.ability_id,
+            _ => continue,
+        };
+        // Adrenaline Orb — PS `data/items.ts:adrenalineorb` fires on
+        // `onAfterBoost` for Intimidate even if the Atk drop was blocked
+        // (Hyper Cutter / Clear Body / Clear Amulet ...). +1 Spe, consumed.
+        // Gated on the holder being alive and Spe < +6.
+        let adrenaline = battle.side(opp).active_mon(s as usize)
+            .map(|m| m.is_alive()
+                && m.item_id == data::item_id::ADRENALINEORB
+                && m.boosts[4] < 6)
+            .unwrap_or(false);
+        if adrenaline {
+            if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
+                t.consume_item();
+            }
+            battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
+        }
+        if blocks_intimidate(target_ability) {
+            // Guard Dog (PS `data/abilities.ts:guarddog` onTryBoost) vetoes the
+            // Atk drop AND grants the holder +1 Atk.
+            if target_ability == data::ability_id::GUARDDOG {
+                battle.apply_boosts(opp, s, &[(0, 1)], opp, s);
+            }
+            continue;
+        }
+        // Clear Amulet (held item) also vetoes Intimidate's atk drop
+        // (PS `data/items.ts:clearamulet` onTryBoost).
+        let amulet = battle.side(opp).active_mon(s as usize)
+            .map(|m| m.item_id == data::item_id::CLEARAMULET)
+            .unwrap_or(false);
+        if amulet {
+            continue;
+        }
+        // Intimidate's Atk drop — source is the Intimidate user.
+        battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
+        crate::item::try_consume_white_herb(battle, opp, s);
+        // Eject Pack — PS `data/items.ts:ejectpack.onAfterEachBoost` fires on
+        // any stat drop regardless of source.
+        let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
+        react_to_opposing_stat_drop(battle, opp, s);
+        // Rattled — PS `data/abilities.ts:rattled` onAfterBoost grants +1 Spe
+        // on an Intimidate target (stacks with the drop).
+        if target_ability == data::ability_id::RATTLED {
+            battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
+        }
+    }
+}
+
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Neutralizing Gas: re-evaluate field-wide ability suppression BEFORE
     // dispatching this mon's switch-in ability. If an NG holder is already
@@ -742,92 +808,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 
     if ability_id == data::ability_id::INTIMIDATE {
-        // Lower atk of every alive adjacent opposing active by 1 stage,
-        // unless their ability blocks the drop. After each successful
-        // drop, run the target's `onAfterEachBoost` — Defiant (+2 Atk)
-        // and Competitive (+2 SpA) react to any stat drop caused by an
-        // opposing source. PS gates on
-        // `!target.isAlly(source) && any(boost[i] < 0)`; since
-        // Intimidate's user is `side` and its target is on `opp`, the
-        // cross-side check is automatic. Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Defiant_(Ability)>
-        //   <https://bulbapedia.bulbagarden.net/wiki/Competitive_(Ability)>
-        let opp = side.opposing();
-        let n = battle.format().active_count() as u8;
-        for s in 0..n {
-            let target_ability = match battle.side(opp).active_mon(s as usize) {
-                Some(m) if m.is_alive() => m.ability_id,
-                _ => continue,
-            };
-            // Adrenaline Orb — PS `data/items.ts:adrenalineorb` line 111
-            // fires on `onAfterBoost` when effect.name === 'Intimidate'.
-            // It triggers even if the Atk drop was blocked by Hyper Cutter
-            // / Clear Body / Full Metal Body / White Smoke / Clear Amulet
-            // — PS dispatches `onAfterBoost` regardless of whether the
-            // drop landed. We fire BEFORE the block / amulet gates so the
-            // +1 Spe is granted regardless. Consume on use. The Orb is
-            // gated on (1) the target being alive and (2) Speed not at
-            // +6. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Adrenaline_Orb>.
-            let adrenaline = battle.side(opp).active_mon(s as usize)
-                .map(|m| m.is_alive()
-                    && m.item_id == data::item_id::ADRENALINEORB
-                    && m.boosts[4] < 6)
-                .unwrap_or(false);
-            if adrenaline {
-                if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                    t.consume_item();
-                }
-                // Self-boost (+1 Spe) on the Orb holder.
-                battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
-            }
-            if blocks_intimidate(target_ability) {
-                // Guard Dog — PS `data/abilities.ts:guarddog` `onTryBoost`:
-                //   if (effect.name === 'Intimidate' && boost.atk) {
-                //     delete boost.atk;
-                //     this.boost({atk: 1}, target, target, null, false, true);
-                //   }
-                // It not only vetoes Intimidate's Atk drop (handled by
-                // `blocks_intimidate`) but ALSO grants the holder +1 Atk
-                // (self-boost). Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Guard_Dog_(Ability)>.
-                if target_ability == data::ability_id::GUARDDOG {
-                    battle.apply_boosts(opp, s, &[(0, 1)], opp, s);
-                }
-                continue;
-            }
-            // Clear Amulet (held item) ALSO vetoes Intimidate's atk drop
-            // (PS `data/items.ts:clearamulet` `onTryBoost`).
-            let amulet = battle.side(opp).active_mon(s as usize)
-                .map(|m| m.item_id == data::item_id::CLEARAMULET)
-                .unwrap_or(false);
-            if amulet {
-                continue;
-            }
-            // Intimidate's Atk drop — source is the Intimidate user.
-            battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
-            crate::item::try_consume_white_herb(battle, opp, s);
-            // Eject Pack on the intimidated target — PS
-            // `data/items.ts:ejectpack.onAfterEachBoost` fires on any
-            // stat drop regardless of source. Common Eject Pack play:
-            // pivot into Incineroar's Intimidate, get the Atk drop, eat
-            // the pack, and pivot to a counter. Bulbapedia link in
-            // `try_consume_eject_pack`.
-            let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
-            react_to_opposing_stat_drop(battle, opp, s);
-            // Rattled — PS `data/abilities.ts:3726` `onAfterBoost`:
-            //   if (effect && effect.name === 'Intimidate')
-            //     this.boost({spe: 1}, pokemon);
-            // +1 Spe on the Intimidate target if they have Rattled.
-            // This stacks WITH the Atk drop (Rattled does not block
-            // the drop). Triggers after the drop lands.
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Rattled_(Ability)>.
-            if target_ability == data::ability_id::RATTLED {
-                // Self-boost (+1 Spe) on the intimidated Rattled holder.
-                battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
-            }
-        }
+        fire_intimidate(battle, side, slot);
     }
     // Future PRs add more arms: drizzle/drought/sandstream/snowwarning
     // (weather), electricsurge/grassysurge/etc. (terrain), trace,
