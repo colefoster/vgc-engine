@@ -8462,12 +8462,16 @@ impl Battle {
             }
         }
 
-        // 13. Salt Cure residual. PS data/moves.ts:15638 (saltcure)
-        //     condition `onResidualOrder: 13`, `onResidual`:
-        //       this.damage(pokemon.baseMaxhp / (pokemon.hasType(['Water','Steel']) ? 4 : 8));
-        //     i.e. the holder loses 1/8 max HP each end of turn, doubled to
-        //     1/4 if it is currently Water- OR Steel-type. We read the live
-        //     types via `effective_types()` so Tera / type-override changes
+        // 13. Salt Cure residual. Pokémon Champions (our target format)
+        //     HALVES standard Salt Cure: data/mods/champions/moves.ts saltcure
+        //     overrides the condition's `onResidual`:
+        //       this.damage(pokemon.baseMaxhp / (pokemon.hasType(['Water','Steel']) ? 8 : 16));
+        //     i.e. the holder loses 1/16 max HP each end of turn, doubled to
+        //     1/8 if it is currently Water- OR Steel-type. (Standard gen 9 is
+        //     1/8, 1/4 W/Steel — data/moves.ts:saltcure.) Found by the
+        //     conformance harness (out_4096cd1c98: Houndstone took −9 ≈ 1/16 in
+        //     PS, the engine chipped −18 = 1/8). We read the live types via
+        //     `effective_types()` so Tera / type-override changes
         //     are respected (PS's `hasType` reads the active type set). The
         //     chip is indirect damage routed through `this.damage` with the
         //     `saltcure` condition as the effect, so Magic Guard blocks it
@@ -8486,7 +8490,7 @@ impl Battle {
                         let (types, num) = m.effective_types();
                         let water_or_steel =
                             (0..num as usize).any(|i| matches!(types[i], 2 | 16));
-                        let denom = if water_or_steel { 4 } else { 8 };
+                        let denom = if water_or_steel { 8 } else { 16 };
                         ((m.stats.hp / denom).max(1), crate::ability::has_magic_guard(m))
                     }
                     _ => (0, false),
@@ -16269,11 +16273,11 @@ mod tests {
     // attacker uses a self-targeting status move (Iron Defense) so the only
     // HP change to the salt-cured target is the end-of-turn chip.
     #[test]
-    fn salt_cure_chips_neutral_one_eighth() {
+    fn salt_cure_chips_neutral_one_sixteenth() {
         let p1_json = r#"[
             {"species":"garganacl","level":50,"ability":"purifyingsalt","item":"","nature":"impish","moves":["saltcure","irondefense","recover","stoneedge"],"evs":{"hp":252,"def":252}}
         ]"#;
-        // Snorlax (Normal) — neither Water nor Steel → 1/8 chip.
+        // Snorlax (Normal) — neither Water nor Steel → 1/16 chip (Champions).
         let p2_json = r#"[
             {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["amnesia","bodyslam","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
         ]"#;
@@ -16297,19 +16301,19 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
         );
-        let expected_chip = (snorlax_max / 8).max(1);
+        let expected_chip = (snorlax_max / 16).max(1);
         assert_eq!(
             b.p2.team[0].current_hp, hp_after_t1 - expected_chip,
-            "Neutral-type target should lose 1/8 max HP to Salt Cure"
+            "Neutral-type target should lose 1/16 max HP to Champions Salt Cure"
         );
     }
 
     #[test]
-    fn salt_cure_chips_steel_one_quarter() {
+    fn salt_cure_chips_steel_one_eighth() {
         let p1_json = r#"[
             {"species":"garganacl","level":50,"ability":"purifyingsalt","item":"","nature":"impish","moves":["saltcure","irondefense","recover","stoneedge"],"evs":{"hp":252,"def":252}}
         ]"#;
-        // Skarmory (Steel/Flying) — Steel-type → doubled 1/4 chip.
+        // Skarmory (Steel/Flying) — Steel-type → doubled 1/8 chip (Champions).
         let p2_json = r#"[
             {"species":"skarmory","level":50,"ability":"sturdy","item":"","nature":"impish","moves":["irondefense","spikes","bravebird","roost"],"evs":{"hp":252,"def":252}}
         ]"#;
@@ -16327,10 +16331,10 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
         );
-        let expected_chip = (skarmory_max / 4).max(1);
+        let expected_chip = (skarmory_max / 8).max(1);
         assert_eq!(
             b.p2.team[0].current_hp, hp_after_t1 - expected_chip,
-            "Steel-type target should lose 1/4 max HP to Salt Cure"
+            "Steel-type target should lose 1/8 max HP to Champions Salt Cure"
         );
     }
 
