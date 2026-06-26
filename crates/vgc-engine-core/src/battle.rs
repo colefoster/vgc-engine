@@ -3291,6 +3291,12 @@ impl Battle {
         }
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
+        // Did the move attempt resolution against at least one LIVE target?
+        // Crash-damage moves (Jump Kick family) take 1/2 max HP when the move
+        // connects with no target (miss / Protect / immunity), but NOT on a
+        // pure no-target fizzle — PS returns before `MoveFail` when there were
+        // no targets at all (battle-actions.ts:512).
+        let mut had_live_target = false;
         // Phazing target for Dragon Tail / Circle Throw (`forceSwitch`): the
         // opposing slot that took a REAL (non-Substitute) hit this move. PS
         // runs forceSwitch (battle-actions.ts:1124, step 6) only for targets
@@ -3308,6 +3314,7 @@ impl Battle {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
             };
+            had_live_target = true;
             // Conformance keyed-oracle context: attribute every randomized
             // draw made resolving this (attacker, move, target) hit — the
             // accuracy roll (below), crit, damage, and (via the mem::replace
@@ -5087,6 +5094,39 @@ impl Battle {
                     break;
                 }
             } // end multi-hit per-hit loop
+        }
+
+        // Crash damage — Jump Kick / High Jump Kick / Axe Kick / Supercell Slam
+        // deal 1/2 the user's max HP to the USER when the move fails to connect
+        // on any target (accuracy miss, Protect-block, type/ability immunity).
+        // PS data/moves.ts `hasCrashDamage` + `onMoveFail` fires only when
+        // `moveResult` is false, i.e. the move hit nothing — `any_damage_dealt
+        // == 0` is the equivalent proxy (a Substitute absorb counts as damage,
+        // and a real hit deals >= 1). A pure no-target fizzle does NOT crash, so
+        // gate on `had_live_target`. Magic Guard blocks the indirect self-damage
+        // (PS routes through onDamage); Rock Head does NOT (PS scopes Rock Head
+        // to the `recoil` effect id only — same as Mind Blown's max-HP recoil).
+        // PS: this.damage(source.baseMaxhp / 2, source, source, ...).
+        if matches!(
+            move_id,
+            data::move_id::JUMPKICK
+                | data::move_id::HIGHJUMPKICK
+                | data::move_id::AXEKICK
+                | data::move_id::SUPERCELLSLAM
+        ) && had_live_target
+            && any_damage_dealt == 0
+        {
+            let user = self.side(actor_side).active_mon(actor_slot as usize);
+            let skip = user.is_some_and(crate::ability::has_magic_guard);
+            if !skip {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let crash = (a.stats.hp / 2).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(crash);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
         }
 
         self.apply_self_effects(
@@ -31502,6 +31542,71 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].boosts[4], 1, "Espathra stops boosting once Speed Boost is swapped away");
         assert_eq!(b.p2.team[0].boosts[4], 1, "Blissey gains +1 Spe from the swapped-in Speed Boost");
+    }
+
+    #[test]
+    fn high_jump_kick_crashes_when_it_fails_to_connect() {
+        // High Jump Kick (and Jump Kick / Axe Kick / Supercell Slam) deal 1/2
+        // the user's max HP to the USER when the move fails to connect — on a
+        // Protect-block or type immunity. A connecting hit costs no HP. PS
+        // data/moves.ts highjumpkick `hasCrashDamage` + `onMoveFail`
+        // (this.damage(source.baseMaxhp / 2, source, source, ...)).
+        let atk = r#"[
+            {"species":"hawlucha","level":50,"ability":"unburden","item":"","nature":"jolly","moves":["highjumpkick","acrobatics","swordsdance","encore"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        // Protect always blocks (+4 priority resolves before the kick) → crash.
+        let prot = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["protect","softboiled","seismictoss","toxic"],"evs":{"hp":252}}
+        ]"#;
+        // Ghost is immune to Fighting (0x) → the move connects with 0 damage → crash.
+        let ghost = r#"[
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["moonblast","shadowball","protect","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        // A regular target HJK hits for real damage → no crash.
+        let target = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["earthquake","protect","dragonclaw","swordsdance"],"evs":{"hp":252}}
+        ]"#;
+        for seed in 0u64..16 {
+            // Protect-block crash.
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed },
+                TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(prot).unwrap());
+            let maxhp = b.p1.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Protect
+            );
+            assert_eq!(b.p1.team[0].current_hp, maxhp - (maxhp / 2).max(1),
+                       "HJK crash 1/2 maxhp into Protect seed {seed}");
+            assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp,
+                       "Protect target unharmed seed {seed}");
+
+            // Type-immunity crash (Fighting vs Ghost).
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed },
+                TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(ghost).unwrap());
+            let maxhp = b.p1.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Calm Mind (no Protect)
+            );
+            assert_eq!(b.p1.team[0].current_hp, maxhp - (maxhp / 2).max(1),
+                       "HJK crash 1/2 maxhp into Ghost immunity seed {seed}");
+            assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp,
+                       "Ghost target takes 0 from Fighting seed {seed}");
+
+            // Connecting hit — no crash.
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed },
+                TeamBuilder::from_json(atk).unwrap(), TeamBuilder::from_json(target).unwrap());
+            let maxhp = b.p1.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }], // Swords Dance
+            );
+            if b.p2.team[0].current_hp < b.p2.team[0].stats.hp {
+                // The kick landed — Rough Skin chip aside, no 1/2-maxhp crash.
+                assert!(b.p1.team[0].current_hp > maxhp - (maxhp / 2),
+                        "no crash on a connecting HJK seed {seed} (hp={})", b.p1.team[0].current_hp);
+            }
+        }
     }
 
     #[test]
