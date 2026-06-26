@@ -11618,8 +11618,10 @@ fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
         // Close-combat family: -1 def, -1 spd. Headlong Rush (Great Tusk's
         // signature, PS data/moves.ts: `self.boosts {def:-1, spd:-1}`, BP 120,
-        // no Champions override) shares this drop.
-        "closecombat" | "headlongrush" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
+        // no Champions override) shares this drop, as does Armor Cannon
+        // (Armarouge's signature, PS data/moves.ts armorcannon
+        // `self: { boosts: { def: -1, spd: -1 } }`) — was missing.
+        "closecombat" | "headlongrush" | "armorcannon" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
         // -2 spa specials. NOTE: Make It Rain is -1 in STANDARD gen9 (PS
         // `data/moves.ts` makeitrain `self.boosts.spa: -1`) but Pokémon
         // Champions — our TARGET format — rebalances it to -2, grouped here
@@ -14504,7 +14506,28 @@ mod tests {
         assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
     }
 
-
+    #[test]
+    fn armor_cannon_drops_user_def_and_spd() {
+        // Armarouge's Armor Cannon self-drops Def/SpD by 1 on hit (PS
+        // data/moves.ts armorcannon `self: { boosts: { def: -1, spd: -1 } }`).
+        // Was missing from self_stat_drops.
+        assert_eq!(self_stat_drops("armorcannon"), Some(&[(1u8, -1i8), (3u8, -1i8)][..]));
+        let p1_json = r#"[
+            {"species":"armarouge","level":50,"ability":"flashfire","item":"","nature":"modest","moves":["armorcannon","flamethrower","protect","ember"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","earthquake","crunch","rest"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[1], -1, "def -1");
+        assert_eq!(b.p1.team[0].boosts[3], -1, "spd -1");
+    }
 
     #[test]
     fn champions_move_data_overrides_applied() {
