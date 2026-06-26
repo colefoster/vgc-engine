@@ -1072,11 +1072,31 @@ fn main() {
     }
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();
+    // Distinct mega-stone item ids, for the O(1) reject guard below.
+    let mut stone_item_ids: Vec<usize> = mega_rows.iter().map(|r| r.0).collect();
+    stone_item_ids.sort_unstable();
+    stone_item_ids.dedup();
+    let stone_guard = stone_item_ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
     writeln!(f, "/// Mega-evolution linkage for a holder: the row whose stone the").unwrap();
     writeln!(f, "/// mon holds AND whose `base_species_id` matches its species, if any.").unwrap();
-    writeln!(f, "/// Linear scan over the small `MEGA_STONES` table (alloc-free).").unwrap();
+    writeln!(f, "/// Called per active mon per turn in `legal_choices`; the vast").unwrap();
+    writeln!(f, "/// majority of items are not stones, so an O(1) `matches!` reject over").unwrap();
+    writeln!(f, "/// the distinct stone item ids short-circuits before the linear scan.").unwrap();
     writeln!(f, "pub fn mega_stone_for(item_id: u16, species_id: u16) -> Option<&'static MegaStone> {{").unwrap();
-    writeln!(f, "    MEGA_STONES.iter().find(|m| m.item_id == item_id && m.base_species_id == species_id)").unwrap();
+    if stone_item_ids.is_empty() {
+        // No mega stones in this build — nothing can ever match.
+        writeln!(f, "    let _ = (item_id, species_id);").unwrap();
+        writeln!(f, "    None").unwrap();
+    } else {
+        writeln!(f, "    if !matches!(item_id, {stone_guard}) {{").unwrap();
+        writeln!(f, "        return None;").unwrap();
+        writeln!(f, "    }}").unwrap();
+        writeln!(f, "    MEGA_STONES.iter().find(|m| m.item_id == item_id && m.base_species_id == species_id)").unwrap();
+    }
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
 
