@@ -31470,6 +31470,41 @@ mod tests {
     }
 
     #[test]
+    fn speed_boost_follows_skill_swap_via_effective_ability() {
+        // Residual ability hooks dispatch on the EFFECTIVE ability. Espathra
+        // (Speed Boost) gains +1 Spe at the end of turn 1, then Skill-Swaps its
+        // Speed Boost onto Blissey on turn 2. After the swap Espathra must STOP
+        // gaining Spe (stays at +1), and Blissey — which now holds Speed Boost
+        // via override — must START gaining it (+1). Before the fix, residual
+        // dispatch read the base ability: Espathra kept boosting (+2) and
+        // Blissey never did (0). PS data/abilities.ts speedboost onResidual.
+        let p1_json = r#"[
+            {"species":"espathra","level":50,"ability":"speedboost","item":"","nature":"timid","moves":["skillswap","protect","dazzlinggleam","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","thunderwave","toxic"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Turn 1: Espathra Protect (slot 1), Blissey Soft-Boiled. Speed Boost
+        // fires normally at end of turn → Espathra +1 Spe.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], 1, "Speed Boost +1 Spe after turn 1");
+        assert_eq!(b.p2.team[0].boosts[4], 0, "Blissey no Spe before the swap");
+        // Turn 2: Espathra Skill Swap (slot 0) onto Blissey. The ability moves.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], 1, "Espathra stops boosting once Speed Boost is swapped away");
+        assert_eq!(b.p2.team[0].boosts[4], 1, "Blissey gains +1 Spe from the swapped-in Speed Boost");
+    }
+
+    #[test]
     fn lumina_crash_always_drops_target_spd_by_two() {
         // Lumina Crash = 100% SpD -2 (PS data/moves.ts:luminacrash, Espathra's
         // signature). Sweep seeds at a bulky special wall and confirm the -2
