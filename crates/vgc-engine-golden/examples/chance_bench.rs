@@ -117,7 +117,7 @@ fn bench_format(format: Format) {
         frontier.lazy_iterations
     );
 
-    let n = 200;
+    let n = 3;
     let t = Instant::now();
     let mut sink = 0u64;
     for _ in 0..n {
