@@ -296,7 +296,24 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
                 Some(RngEvent::PercentRoll(r.saturating_add(1)))
             }
         }
-        "range" => Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?)),
+        // A `range` draw is normally the integer `random(n)` value (multi-hit
+        // count, duration, …). PS also records some `randomChance(num, den)`
+        // bool gates under `range` (e.g. Fickle Beam's onBasePower 3/10
+        // double) — logged as the boolean RESULT. Encode bool as Range(1)=
+        // passed / Range(0)=failed, which `Rng::chance_keyed` decodes.
+        "range" => {
+            // PS logs some randomChance(num, den) bool gates under `range`
+            // (Fickle Beam's onBasePower 3/10 double) with a boolean VALUE and
+            // no `raw_is_bool` flag — so detect the bool by type. Encode as
+            // Range(1)=passed / Range(0)=failed, which `Rng::chance_keyed`
+            // decodes; integer `range` draws (multi-hit count, duration) keep
+            // their numeric value.
+            if let Some(b) = d.value.as_bool() {
+                Some(RngEvent::Range(if b { 1 } else { 0 }))
+            } else {
+                Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?))
+            }
+        }
         "tiebreak" => Some(RngEvent::Tiebreak(d.value.as_u64()?)),
         _ => None,
     }

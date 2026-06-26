@@ -4344,8 +4344,24 @@ impl Battle {
                 // this turn is a move by a live mon (PS queue.willMove scan).
                 attacker_moves_last: !will_act,
             };
+            // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
+            //   if (this.randomChance(3, 10)) return this.chainModify(2);
+            // 30% chance to double base power (80 -> 160). PS draws this in
+            // onBasePower, AFTER the crit roll and BEFORE the damage roll, and
+            // the recorder logs it under the `range` decision as a bool. Draw
+            // the keyed gate here (same per-target move context) and feed the
+            // doubled BP through roll_initial_damage's bp_override seam (x2 is
+            // exact, no rounding). No Champions override.
+            let fickle_override = if move_id == data::move_id::FICKLEBEAM
+                && fixed_damage.is_none()
+                && self.rng.chance_keyed(3, 10)
+            {
+                Some((data::MOVES[move_id as usize].base_power as u32) * 2)
+            } else {
+                None
+            };
             let (mut dmg, beat_up_ctx_opt) =
-                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, None);
+                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, fickle_override);
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
             // Fat / Water Bubble / Knock Off / type-resist berries) — PS
@@ -31546,6 +31562,47 @@ mod tests {
                    "Gardevoir traced Intimidate");
         assert_eq!(b.p2.team[0].boosts[0], -1,
                    "traced Intimidate lowers the foe's Atk by 1");
+    }
+
+    #[test]
+    fn fickle_beam_sometimes_doubles_base_power() {
+        // Fickle Beam has a 30% chance to double its base power (80 -> 160). PS
+        // data/moves.ts:ficklebeam onBasePower randomChance(3, 10) -> x2. Sweep
+        // seeds and confirm BOTH outcomes occur: a low cluster (normal 80 BP)
+        // and a high cluster ~2x it (doubled). A non-doubling implementation
+        // would keep every seed inside the 0.85-1.0 damage-roll spread.
+        let atk = r#"[
+            {"species":"hydreigon","level":50,"ability":"levitate","item":"","nature":"modest","moves":["ficklebeam","protect","darkpulse","flamethrower"],"evs":{"spa":252}}
+        ]"#;
+        let foe = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let mut dmgs = Vec::new();
+        for seed in 0u64..48 {
+            let p1 = TeamBuilder::from_json(atk).unwrap();
+            let p2 = TeamBuilder::from_json(foe).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let hp = b.p2.team[0].stats.hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                // Blissey Seismic Tosses back (no self-heal) so its HP loss
+                // reflects the Fickle Beam hit, not a Soft-Boiled recovery.
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            dmgs.push(hp - b.p2.team[0].current_hp);
+        }
+        let lo = *dmgs.iter().min().unwrap();
+        let hi = *dmgs.iter().max().unwrap();
+        assert!(lo > 0, "Fickle Beam deals damage");
+        // Doubled hits land ~2x the normal roll; the damage-roll spread alone
+        // is only 0.85-1.0, so a >1.5x spread proves the BP doubling fired.
+        assert!(hi as f64 / lo as f64 > 1.5,
+                "Fickle Beam doubling produces a high cluster (lo={lo} hi={hi})");
+        // ...and it does NOT always double — a low cluster must exist too.
+        let near_lo = dmgs.iter().filter(|&&d| (d as f64) < lo as f64 * 1.2).count();
+        let near_hi = dmgs.iter().filter(|&&d| (d as f64) > lo as f64 * 1.5).count();
+        assert!(near_lo > 0 && near_hi > 0,
+                "both doubled and normal Fickle Beam hits occur (lo cluster {near_lo}, hi cluster {near_hi})");
     }
 
     #[test]
