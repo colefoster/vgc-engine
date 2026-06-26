@@ -19641,6 +19641,42 @@ mod tests {
     }
 
     #[test]
+    fn cheek_pouch_heals_third_on_berry_eat() {
+        // PS data/abilities.ts:cheekpouch onEatItem heals baseMaxhp/3 on top of
+        // the berry's own effect. Diggersby (Cheek Pouch) + Sitrus at 1/4 HP:
+        // Sitrus heals 1/4, then Cheek Pouch heals 1/3, and the berry is gone.
+        let p1_json = r#"[
+            {"species":"diggersby","level":50,"ability":"cheekpouch","item":"sitrusberry","nature":"adamant","moves":["earthquake","quickattack","protect","rockslide"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bodyslam","rest","sleeptalk","headbutt"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        let before = (max / 4).max(1);
+        b.p1.team[0].current_hp = before;
+        crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        let expected = (before + (max / 4).max(1) + (max / 3).max(1)).min(max);
+        assert_eq!(b.p1.team[0].current_hp, expected,
+            "Sitrus (1/4) + Cheek Pouch (1/3) heal: max={max} before={before}");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus consumed");
+
+        // Control: same mon WITHOUT Cheek Pouch (Pickup) heals only Sitrus's 1/4.
+        let p1c_json = r#"[
+            {"species":"diggersby","level":50,"ability":"pickup","item":"sitrusberry","nature":"adamant","moves":["earthquake","quickattack","protect","rockslide"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let p1c = TeamBuilder::from_json(p1c_json).unwrap();
+        let p2c = TeamBuilder::from_json(p2_json).unwrap();
+        let mut bc = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1c, p2c);
+        bc.p1.team[0].current_hp = before;
+        crate::item::on_after_damage(&mut bc, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
+        assert_eq!(bc.p1.team[0].current_hp, (before + (max / 4).max(1)).min(max),
+            "without Cheek Pouch, only Sitrus heals");
+    }
+
+    #[test]
     fn unnerve_suppresses_opposing_berry_eat() {
         // PS data/abilities.ts:unnerve — while an opposing active mon has
         // Unnerve, this side's Pokémon cannot eat their held Berries
