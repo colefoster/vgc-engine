@@ -452,6 +452,16 @@ impl Battle {
     /// <https://bulbapedia.bulbagarden.net/wiki/Cloud_Nine_(Ability)>,
     /// <https://bulbapedia.bulbagarden.net/wiki/Air_Lock_(Ability)>.
     pub fn effective_weather(&self) -> crate::weather::Weather {
+        // Fast path: with no weather set there is nothing to suppress, so skip
+        // the 4-mon Cloud Nine / Air Lock ability scan entirely. The old code
+        // returned `self.weather` (None) whether or not suppression fired, so
+        // this is behaviour-identical — it just avoids `weather_suppressed()`'s
+        // per-call scan on the common (no-weather) path. `effective_weather` is
+        // queried all over the damage / accuracy / residual paths, so this is
+        // the hot, weatherless-battle case (performance review finding #2).
+        if matches!(self.weather, crate::weather::Weather::None) {
+            return crate::weather::Weather::None;
+        }
         if self.weather_suppressed() {
             crate::weather::Weather::None
         } else {
