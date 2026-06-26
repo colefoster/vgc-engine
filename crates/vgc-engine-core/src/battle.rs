@@ -12740,16 +12740,19 @@ fn scan_aura_field(b: &Battle) -> (bool, bool, bool) {
     let n = b.format().active_count() as u8;
     for &s in &[SideRef::P1, SideRef::P2] {
         for slot in 0..n {
-            let slug = match b.side(s).active_mon(slot as usize) {
-                Some(m) if m.is_alive() && m.ability_id != u16::MAX => {
-                    data::ABILITIES[m.ability_id as usize].slug
-                }
+            // Integer-id dispatch (was a `data::ABILITIES[id].slug` lookup +
+            // string match) — this runs per damaging hit over all 4 active
+            // mons, so the slug indirection showed up in the damage-path
+            // profile. Reads the raw `ability_id` exactly as before (no
+            // behaviour change).
+            let aid = match b.side(s).active_mon(slot as usize) {
+                Some(m) if m.is_alive() && m.ability_id != u16::MAX => m.ability_id,
                 _ => continue,
             };
-            match slug {
-                "fairyaura" => fairy = true,
-                "darkaura" => dark = true,
-                "aurabreak" => brk = true,
+            match aid {
+                data::ability_id::FAIRYAURA => fairy = true,
+                data::ability_id::DARKAURA => dark = true,
+                data::ability_id::AURABREAK => brk = true,
                 _ => {}
             }
         }
