@@ -602,6 +602,45 @@ impl Battle {
         }
     }
 
+    /// Shared Transform primitive — copies the target's species, ability, and
+    /// the five non-HP battle stats onto the user, preserving the user's own
+    /// HP / max HP (PS `sim/pokemon.ts:transformInto`). Types update for free
+    /// from the cloned `species_id`. Backs BOTH the Imposter ability (auto
+    /// transform on switch-in, target = the foe in the mirror slot) and the
+    /// Transform move (target = the chosen foe).
+    ///
+    /// Scope-limited to match the Imposter PR: the moveset / PP and the
+    /// target's stat *stages* (boosts) are NOT copied here — that overlay is a
+    /// documented follow-up shared by both callers. Returns `false` (no-op) if
+    /// the target slot is empty or fainted.
+    pub(crate) fn transform_into(
+        &mut self,
+        user_side: SideRef,
+        user_slot: u8,
+        target_side: SideRef,
+        target_slot: u8,
+    ) -> bool {
+        let payload = self
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .filter(|m| m.is_alive())
+            .map(|m| (m.species_id, m.ability_id, m.stats));
+        let Some((sp, ab, st)) = payload else { return false };
+        // Swap species via the shared forme primitive (no base-stat recompute —
+        // Transform copies the target's *actual* stat values, not a spread
+        // recompute). `set_forme` preserves current_hp / the HP stat / boosts /
+        // moves; we then overlay the Transform-specific copies (foe ability +
+        // the five battle stats).
+        self.set_forme(user_side, user_slot, sp, false);
+        if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
+            m.ability_id = ab;
+            let hp = m.stats.hp;
+            m.stats = st;
+            m.stats.hp = hp;
+        }
+        true
+    }
+
     /// Centralized stat-stage boost application — the single choke point
     /// that every additive boost / drop now routes through.
     ///
@@ -10018,6 +10057,20 @@ impl Battle {
                 if eligible > 0 {
                     let _picked = self.rng.range(eligible);
                     // Called-move execution deferred (draw parity only).
+                }
+            }
+            data::move_id::TRANSFORM => {
+                // Transform — PS `data/moves.ts:transform` `onHit` →
+                // `pokemon.transformInto(target)`. `accuracy: true` (no accuracy
+                // draw). Copies the target's species, ability, and the five
+                // non-HP battle stats via the shared primitive — moveset / PP and
+                // the target's boosts are the documented Imposter-scope follow-up.
+                // Surfaced by the conformance harness (out_07d85c6598): Ditto
+                // Transforming into Aggron must gain Sturdy + Aggron's bulk, so a
+                // Body Press leaves it at 1 HP instead of fainting. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Transform_(move)>.
+                if let Some((ts, tslot)) = opp_target {
+                    self.transform_into(actor_side, actor_slot, ts, tslot);
                 }
             }
             data::move_id::SKILLSWAP => {
@@ -32013,6 +32066,44 @@ mod tests {
         // stay at Ditto's HP.
         assert_eq!(b.p1.team[0].stats.atk, b.p2.team[0].stats.atk);
         assert_eq!(b.p1.team[0].stats.spe, b.p2.team[0].stats.spe);
+    }
+
+    #[test]
+    fn transform_move_copies_target_species_ability_and_stats() {
+        // The Transform MOVE (distinct from the Imposter ability) copies the
+        // target's species, ability, and the five non-HP stats. Use a Ditto
+        // with Limber (NOT Imposter) so the auto-transform ability doesn't fire
+        // — only the move does the work. Target = Aggron (Sturdy). After the
+        // move, Ditto presents as Aggron with Sturdy and Aggron's Def, but
+        // keeps its own max HP. Surfaced by the conformance harness
+        // (out_07d85c6598): without this, Ditto stays frail and faints where PS
+        // (transformed into Aggron) survives a Body Press via Sturdy.
+        let p1_json = r#"[
+            {"species":"ditto","level":50,"ability":"limber","item":"","nature":"hardy","moves":["transform","transform","transform","transform"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"aggron","level":50,"ability":"sturdy","item":"leftovers","nature":"adamant","moves":["protect","ironhead","earthquake","bodypress"],"evs":{"def":252,"hp":252,"atk":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Ditto has NOT transformed yet (Limber, no Imposter).
+        assert_eq!(b.p1.team[0].species().slug, "ditto", "no auto-transform with Limber");
+        let ditto_max_hp = b.p1.team[0].stats.hp;
+        let aggron_def = b.p2.team[0].stats.def;
+        // Ditto uses Transform on Aggron; Aggron Protects.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].species().slug, "aggron",
+            "Transform move should change Ditto's species to Aggron's");
+        assert_eq!(b.p1.team[0].effective_ability_slug(), "sturdy",
+            "Transform should copy Aggron's Sturdy");
+        assert_eq!(b.p1.team[0].stats.def, aggron_def,
+            "Transform should copy Aggron's Def stat");
+        assert_eq!(b.p1.team[0].stats.hp, ditto_max_hp,
+            "Transform preserves Ditto's own max HP");
     }
 
     #[test]

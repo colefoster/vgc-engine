@@ -683,27 +683,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // they update for free. HP and max HP are preserved per PS Transform.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Imposter_(Ability)>.
     if ability_id == data::ability_id::IMPOSTER {
+        // Imposter transforms into the foe in the mirror slot on switch-in via
+        // the shared Transform primitive (`Battle::transform_into`), which the
+        // Transform move also uses. Copies species + ability + the five non-HP
+        // battle stats, preserving Ditto's HP.
         let opp = side.opposing();
-        let target_payload = battle
-            .side(opp)
-            .active_mon(slot as usize)
-            .filter(|m| m.is_alive())
-            .map(|m| (m.species_id, m.ability_id, m.stats));
-        if let Some((sp, ab, st)) = target_payload {
-            // Swap species via the shared forme primitive (no base-stat
-            // recompute — Transform copies the target's *actual* stat values,
-            // not a spread recompute). `set_forme` preserves current_hp / the
-            // HP stat / boosts / moves / volatiles; we then overlay the
-            // Transform-specific copies (foe ability + the five battle stats).
-            battle.set_forme(side, slot, sp, false);
-            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                m.ability_id = ab;
-                // Preserve HP per PS Transform; clone the five other stats.
-                let hp = m.stats.hp;
-                m.stats = st;
-                m.stats.hp = hp;
-            }
-        }
+        battle.transform_into(side, slot, opp, slot);
     }
 
     // Slow Start — PS `data/abilities.ts:4266` `onStart` adds the
