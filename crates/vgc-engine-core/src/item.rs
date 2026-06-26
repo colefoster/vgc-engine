@@ -424,6 +424,29 @@ pub fn on_after_damage(
             }
         }
     }
+    // Cheek Pouch — PS `data/abilities.ts:cheekpouch` `onEatItem`: heals
+    // baseMaxhp/3 whenever the holder eats a Berry (any berry), AFTER the
+    // berry's own effect. Same eat-detection as Cud Chew above (the pre-hook
+    // item was a Berry and the slot is now empty). Heal Block vetoes the
+    // recovery — the berry is still eaten. NOTE: berries eaten OUTSIDE this
+    // HP-trigger hook (type-resist / status-cure berries, Bug Bite / Pluck
+    // theft) don't yet route Cheek Pouch — a documented follow-up; the common
+    // Sitrus / pinch-berry eats the conformance corpus exercises do.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Cheek_Pouch_(Ability)>.
+    if item_id != u16::MAX && data::ITEMS[item_id as usize].is_berry {
+        let ate = battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+            m.item_id == u16::MAX
+                && m.effective_ability_id() == data::ability_id::CHEEKPOUCH
+        });
+        if ate {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                if !m.is_heal_blocked() {
+                    let heal = (m.stats.hp / 3).max(1);
+                    m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                }
+            }
+        }
+    }
     // Unburden speed latch / Symbiosis ally hand-off — fire once if a real
     // item was just consumed.
     maybe_on_item_consumed(battle, side, slot, item_id);
