@@ -120,6 +120,57 @@ fn native_damage_branching_matches_wrapper() {
 
 Once this passes on the corpus, native becomes the default for damage rolls; the wrapper's damage-roll path is retired.
 
+## Clone-cost measurement (2026-06-26) — premise revisited
+
+The migration plan above assumes `Battle::clone()` is the dominant cost in
+`step_chance` enumeration, projecting a 5–20× speedup from native branching
+once cheap clones (PR-12 / CoW) exist. **Measurement contradicts the
+assumption.**
+
+Measured on this machine (Apple Silicon, release):
+
+| Operation | ns/op |
+|-----------|-------|
+| `Battle::clone()` (turn-0) | 57 |
+| `Battle::clone()` (mid-game) | 59 |
+| `step()` (mid-game doubles) | 525 |
+
+`size_of::<Battle>() = 288` (stack) + ~2.3 kB heap (two `Side` allocations,
+each with `Vec<Pokemon>` of 6 × 192-byte Pokemon plus an 80-byte
+`VolatileSet`). The "~10 kB state" estimate the plan used was a back-of-
+envelope guess; the real number is ~3× smaller.
+
+Concrete consequence — a 16-way damage-roll fan-out:
+
+- 16 clones = **~944 ns**
+- 16 wrapper `step()` re-runs = **~8400 ns**
+- Clone share = **~11%** of total
+
+### Implication for PR-12 (CoW Battle)
+
+The CoW retrofit's upper-bound throughput win on `step_chance` is **~11%**
+in the most clone-heavy scenarios. The cost is a multi-week refactor that
+touches every write site in 34k lines of `battle.rs`, plus a borrow-checker
+surface change to `Rc::make_mut` on every mutation. **The ratio doesn't
+clear the bar.**
+
+Recommendation: **drop PR-12 from the migration**. The "cheap clones before
+native branching" gate the original plan baked in is not load-bearing —
+clones are already cheap enough that native branching's win comes from
+avoiding step() re-execution, not from clone churn.
+
+### Implication for native branching
+
+Native branching still wins, but the projected 5–20× speedup needs to be
+restated. Each saved step() re-run is 525 ns, not the 3 µs the plan
+assumed. The wrapper's 38,400-cell worst case (16 × 24 × 100 for damage ×
+crit × accuracy) is ~20 ms per cell at 525 ns/step, not 115 ms. Native
+branching that collapses the cross product into a tree (16 + 24 + 100 =
+140 step-tails instead of 38,400 full steps) is still the right move, just
+with a tighter perf headline.
+
+Benchmark source: `crates/vgc-engine-golden/examples/clone_bench.rs`.
+
 ## PR-11 investigation (2026-06-25) — blocked
 
 PR-11 was scoped as the first native-branching site (damage rolls). Investigation found the refactor is bigger than the PR envelope. Findings:
