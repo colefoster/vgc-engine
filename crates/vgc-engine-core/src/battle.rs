@@ -5265,6 +5265,34 @@ impl Battle {
             }
         }
 
+        // Ceaseless Edge — PS data/moves.ts:ceaselessedge `onAfterHit` (+
+        // `onAfterSubDamage`): `if (!move.hasSheerForce && source.hp) { for
+        // (const side of source.side.foeSidesWithConditions())
+        // side.addSideCondition('spikes'); }`. After a connecting hit, lay one
+        // Spikes layer on the FOE's side (caps at 3). Gated identically to
+        // Rapid Spin above — the user must survive and NOT be a Sheer Force
+        // user (Sheer Force converts the `secondary: {}` into the damage boost
+        // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
+        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                let layers = &mut self.side_mut(opp).conditions.spikes_layers;
+                if *layers < 3 {
+                    *layers += 1;
+                }
+            }
+        }
+
         // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
         // Overdrive...) trigger +1 SpA on the user after the hit. PS
         // gates on the move actually being USED (not on damage > 0), so
@@ -14557,6 +14585,39 @@ mod tests {
         let p2 = TeamBuilder::from_json(no_herb).unwrap();
         let b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         assert_eq!(b2.p2.team[0].boosts[6], -1, "Supersweet Syrup drops foe evasion by 1");
+    }
+
+    #[test]
+    fn ceaseless_edge_lays_spikes_on_hit() {
+        // PS data/moves.ts:ceaselessedge onAfterHit adds one Spikes layer to
+        // the foe's side per connecting use (caps at 3). Was unimplemented.
+        // 90% accuracy, so assert per-seed by whether the hit connected.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["ceaselessedge","aquatail","protect","tackle"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let mut connected = 0;
+        for seed in 0..24u64 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let full = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp < full {
+                connected += 1;
+                assert_eq!(b.p2.conditions.spikes_layers, 1,
+                    "one Spikes layer per connecting Ceaseless Edge (seed {seed})");
+            } else {
+                assert_eq!(b.p2.conditions.spikes_layers, 0,
+                    "no Spikes layer on a miss (seed {seed})");
+            }
+        }
+        assert!(connected > 0, "Ceaseless Edge should connect on some seeds");
     }
 
     #[test]
