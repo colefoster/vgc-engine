@@ -11680,9 +11680,11 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // (NOT 10% like Thunderbolt). Was mis-bucketed with the 10% arm.
         "thunder" | "discharge" | "bodyslam"
         | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
-        // Paralysis 100% — Nuzzle (PS data/moves.ts:nuzzle
-        // `secondary: { chance: 100, status: 'par' }`):
-        "nuzzle" => (Status::Paralysis, 100),
+        // Paralysis 100% — Nuzzle and Zap Cannon (PS data/moves.ts each
+        // `secondary: { chance: 100, status: 'par' }`). Zap Cannon is 50%
+        // accuracy but a GUARANTEED paralysis on a connecting hit — was
+        // missing, so it never paralyzed.
+        "nuzzle" | "zapcannon" => (Status::Paralysis, 100),
         // Poison 30%:
         "sludgebomb" | "sludgewave" | "sludge" | "gunkshot"
         | "poisonjab" => (Status::Poison, 30),
@@ -30472,6 +30474,43 @@ mod tests {
             if matches!(b.p2.team[0].status, Status::Freeze) { froze += 1; }
         }
         assert_eq!(froze, 0, "Harsh sun must prevent freeze entirely (got {froze})");
+    }
+
+    #[test]
+    fn zap_cannon_paralyzes_on_hit() {
+        // PS data/moves.ts:zapcannon — `secondary: { chance: 100, status: 'par' }`,
+        // accuracy 50. A connecting Zap Cannon ALWAYS paralyzes a non-Electric
+        // target; it just misses half the time. Assert the table entry, then
+        // sweep seeds and confirm: every connecting hit paralyzes, at least one
+        // connects, and at least one misses (50% acc).
+        assert_eq!(super::status_secondary("zapcannon"), Some((Status::Paralysis, 100)), "Zap Cannon 100% par");
+        let p1_json = r#"[
+            {"species":"magnezone","level":50,"ability":"sturdy","item":"","nature":"modest","moves":["zapcannon","flashcannon","protect","ember"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"immunity","item":"","nature":"careful","moves":["recover","tackle","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let mut hits = 0u32;
+        let mut misses = 0u32;
+        for seed in 0..40u64 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let full = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+            );
+            if b.p2.team[0].current_hp < full {
+                hits += 1;
+                assert!(matches!(b.p2.team[0].status, Status::Paralysis),
+                    "Zap Cannon must paralyze on a connecting hit (seed {seed})");
+            } else {
+                misses += 1;
+            }
+        }
+        assert!(hits > 0, "Zap Cannon should connect on some seeds");
+        assert!(misses > 0, "Zap Cannon is 50% acc — should miss on some seeds");
     }
 
     #[test]
