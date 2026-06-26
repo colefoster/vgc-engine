@@ -906,6 +906,15 @@ pub(crate) fn calculate_damage_with_bp(
         // (65 → 130) when the target carries a non-volatile status.
         // Comatose ability (treats holder as Sleep) deferred.
         (m.type_, (m.base_power as u32) * 2)
+    } else if move_id == data::move_id::BARBBARRAGE
+        && matches!(defender.status, Status::Poison | Status::Toxic)
+    {
+        // PS data/moves.ts:barbbarrage `onBasePower`: chainModify(2) when the
+        // target is already poisoned (psn or tox) — 60 → 120. No Champions
+        // override. (Its own 50% poison secondary is post-damage and so never
+        // doubles its own hit.) Surfaced by the conformance harness as a tight
+        // engine under-damage cluster vs poisoned targets.
+        (m.type_, (m.base_power as u32) * 2)
     } else if move_id == data::move_id::PURSUIT && ctx.pursuit_doubled {
         // PS data/moves.ts:pursuit:14379 `basePowerCallback`:
         //   if (target.beingCalledBack || target.switchFlag)
@@ -2291,6 +2300,28 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn barb_barrage_doubles_bp_vs_poisoned_target() {
+        // PS data/moves.ts:barbbarrage onBasePower chainModify(2) vs a psn/tox
+        // target (60 -> 120). A clean target takes the base hit; a poisoned one
+        // takes ~2x. Both psn and tox qualify.
+        let atk = make_mon("garchomp", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 0 });
+        let mut def = make_mon("snorlax", 50, "careful", StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 });
+        let bb = move_id("barbbarrage");
+        let ctx = DamageContext { roll: 15, ..Default::default() };
+        let clean = calculate_damage(&atk, &def, bb, ctx);
+        def.status = Status::Poison;
+        let poisoned = calculate_damage(&atk, &def, bb, ctx);
+        assert!(clean > 0, "barb barrage deals damage");
+        assert!(
+            (poisoned as i32 - 2 * clean as i32).abs() <= 2,
+            "Barb Barrage ~2x vs poisoned: poisoned={poisoned} clean={clean}",
+        );
+        def.status = Status::Toxic;
+        let tox = calculate_damage(&atk, &def, bb, ctx);
+        assert_eq!(tox, poisoned, "tox target doubles like psn");
     }
 
     #[test]
