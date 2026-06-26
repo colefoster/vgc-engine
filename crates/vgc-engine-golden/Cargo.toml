@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Synthetic golden-master differential harness — replays a scripted battle against PS-recorded ground truth and reports per-turn divergence. Primary correctness signal for engine mechanics."
 
 [dependencies]
-vgc-engine-core = { workspace = true }
+vgc-engine-core = { workspace = true, features = ["chance"] }
 vgc-engine-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
