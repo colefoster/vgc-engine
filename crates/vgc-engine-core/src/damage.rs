@@ -596,7 +596,7 @@ pub fn calculate_beat_up_hit(
 /// power before the variable-BP slug chain runs (used only by Beat Up, whose
 /// per-member BP is computed by the caller). `None` is the normal path and
 /// produces byte-identical results to the historical `calculate_damage`.
-fn calculate_damage_with_bp(
+pub(crate) fn calculate_damage_with_bp(
     attacker: &Pokemon,
     defender: &Pokemon,
     move_id: u16,
@@ -2116,13 +2116,14 @@ pub fn damage_range_in_ctx(
     defender: &Pokemon,
     move_id: u16,
     ctx: DamageContext,
+    bp_override: Option<u32>,
 ) -> (u16, u16) {
     let mut ctx_lo = ctx;
     ctx_lo.roll = DamageContext::MIN_ROLL;
     let mut ctx_hi = ctx;
     ctx_hi.roll = DamageContext::MAX_ROLL;
-    let min = calculate_damage(attacker, defender, move_id, ctx_lo);
-    let max = calculate_damage(attacker, defender, move_id, ctx_hi);
+    let min = calculate_damage_with_bp(attacker, defender, move_id, ctx_lo, bp_override);
+    let max = calculate_damage_with_bp(attacker, defender, move_id, ctx_hi, bp_override);
     (min, max)
 }
 
@@ -2213,9 +2214,10 @@ pub(crate) fn damage_range_for(
     defender: &Pokemon,
     move_id: u16,
     inputs: DamageInputs,
+    bp_override: Option<u32>,
 ) -> (DamageContext, u16, u16) {
     let ctx = ctx_from_inputs(inputs);
-    let (lo, hi) = damage_range_in_ctx(attacker, defender, move_id, ctx);
+    let (lo, hi) = damage_range_in_ctx(attacker, defender, move_id, ctx, bp_override);
     (ctx, lo, hi)
 }
 
@@ -2289,6 +2291,37 @@ mod tests {
 
     fn move_id(slug: &str) -> u16 {
         data::MOVES.iter().position(|m| m.slug == slug).expect("move") as u16
+    }
+
+    #[test]
+    fn bp_override_computes_ramped_hits_at_true_base_power() {
+        // The multi-hit per-hit re-roll path computes Triple Axel hit n at its
+        // TRUE base power (20*n) via `calculate_damage_with_bp`, not as
+        // `base(BP20) * n`. The two differ because the damage formula floors at
+        // each BP, so `damage(BP40) != 2 * damage(BP20)` in general. This guards
+        // the bp_override seam the ramp fix depends on. (Without it, multi-hit
+        // re-rolls drift ±1-2 from PS once per-hit rolls differ.)
+        let atk = make_mon("weavile", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 0 });
+        let def = make_mon("snorlax", 50, "careful", StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 });
+        let ta = move_id("tripleaxel");
+        let ctx = DamageContext { roll: 15, ..Default::default() };
+        let d20 = calculate_damage_with_bp(&atk, &def, ta, ctx, Some(20));
+        let d40 = calculate_damage_with_bp(&atk, &def, ta, ctx, Some(40));
+        let d60 = calculate_damage_with_bp(&atk, &def, ta, ctx, Some(60));
+        // BP scales damage monotonically and ~linearly...
+        assert!(d20 < d40 && d40 < d60, "ramp must increase: {d20} {d40} {d60}");
+        assert!((d40 as i32 - 2 * d20 as i32).abs() <= 2, "BP40 ~ 2x BP20: {d40} vs {}", 2 * d20);
+        assert!((d60 as i32 - 3 * d20 as i32).abs() <= 3, "BP60 ~ 3x BP20: {d60} vs {}", 3 * d20);
+        // ...but the true-BP floor chain is NOT byte-identical to base*n for at
+        // least one BP here — that gap is exactly what the ramp fix removes.
+        assert!(
+            d40 != 2 * d20 || d60 != 3 * d20,
+            "true-BP must differ from base*n somewhere ({d20}/{d40}/{d60}) — \
+             else this test can't catch a regression to base*n",
+        );
+        // bp_override None falls back to the move's flat base power (20).
+        let d_none = calculate_damage_with_bp(&atk, &def, ta, ctx, None);
+        assert_eq!(d_none, d20, "None override == base power (20)");
     }
 
     #[test]
