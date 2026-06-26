@@ -619,10 +619,12 @@ impl Battle {
     /// transform on switch-in, target = the foe in the mirror slot) and the
     /// Transform move (target = the chosen foe).
     ///
-    /// Scope-limited to match the Imposter PR: the moveset / PP and the
-    /// target's stat *stages* (boosts) are NOT copied here — that overlay is a
-    /// documented follow-up shared by both callers. Returns `false` (no-op) if
-    /// the target slot is empty or fainted.
+    /// Copies the target's stat *stages* (boosts) per PS `transformInto`
+    /// (`for boostName in pokemon.boosts: this.boosts[boostName] = ...` — all
+    /// seven, including accuracy / evasion). Scope-limited to match the Imposter
+    /// PR otherwise: the moveset / PP overlay is still a documented follow-up
+    /// shared by both callers. Returns `false` (no-op) if the target slot is
+    /// empty or fainted.
     pub(crate) fn transform_into(
         &mut self,
         user_side: SideRef,
@@ -634,19 +636,21 @@ impl Battle {
             .side(target_side)
             .active_mon(target_slot as usize)
             .filter(|m| m.is_alive())
-            .map(|m| (m.species_id, m.ability_id, m.stats));
-        let Some((sp, ab, st)) = payload else { return false };
+            .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts));
+        let Some((sp, ab, st, boosts)) = payload else { return false };
         // Swap species via the shared forme primitive (no base-stat recompute —
         // Transform copies the target's *actual* stat values, not a spread
         // recompute). `set_forme` preserves current_hp / the HP stat / boosts /
-        // moves; we then overlay the Transform-specific copies (foe ability +
-        // the five battle stats).
+        // moves; we then overlay the Transform-specific copies (foe ability,
+        // the five battle stats, and the target's stat stages).
         self.set_forme(user_side, user_slot, sp, false);
         if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
             m.ability_id = ab;
             let hp = m.stats.hp;
             m.stats = st;
             m.stats.hp = hp;
+            // PS copies every boost stage from the target onto the transformer.
+            m.boosts = boosts;
         }
         true
     }
@@ -32524,6 +32528,38 @@ mod tests {
             "Transform should copy Aggron's Def stat");
         assert_eq!(b.p1.team[0].stats.hp, ditto_max_hp,
             "Transform preserves Ditto's own max HP");
+    }
+
+    #[test]
+    fn transform_copies_target_stat_stages() {
+        // PS transformInto copies every boost stage from the target onto the
+        // transformer. Garchomp raises its Atk +2 with Swords Dance, then Ditto
+        // (Limber, so no auto-Imposter) Transforms into it and must inherit the
+        // +2 Atk stage. Before the fix transform_into skipped boosts (stayed 0).
+        let p1_json = r#"[
+            {"species":"ditto","level":50,"ability":"limber","item":"","nature":"hardy","moves":["transform","protect","transform","transform"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["swordsdance","earthquake","protect","dragonclaw"],"evs":{"atk":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Turn 1: Ditto Protects (slot 1) while Garchomp Swords Dances (+2 Atk).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].boosts[0], 2, "Garchomp +2 Atk from Swords Dance");
+        assert_eq!(b.p1.team[0].boosts[0], 0, "Ditto unboosted before Transform");
+        // Turn 2: Ditto Transforms into Garchomp; Garchomp Protects.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
+        );
+        assert_eq!(b.p1.team[0].species().slug, "garchomp", "Transform copies species");
+        assert_eq!(b.p1.team[0].boosts[0], 2,
+                   "Transform copies the target's +2 Atk stage");
     }
 
     #[test]
