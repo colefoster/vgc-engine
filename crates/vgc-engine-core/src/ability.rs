@@ -730,6 +730,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                 });
                 if drop {
                     battle.apply_boosts(opp, s, &[(6, -1)], side, slot);
+                    // The evasion drop is a negative boost from an opposing
+                    // source, so the foe's White Herb restores it and is
+                    // consumed (PS `data/items.ts:whiteherb` onUpdate restores
+                    // any negative boost). Mirrors the Intimidate path below;
+                    // without this the herb stayed unconsumed.
+                    crate::item::try_consume_white_herb(battle, opp, s);
                 }
             }
         }
