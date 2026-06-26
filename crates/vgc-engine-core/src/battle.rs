@@ -14532,6 +14532,34 @@ mod tests {
     }
 
     #[test]
+    fn supersweet_syrup_drop_consumes_foe_white_herb() {
+        // Hydrapple's Supersweet Syrup drops each foe's evasion by 1 on
+        // switch-in (fires at battle start for leads). A foe holding White Herb
+        // restores the drop and CONSUMES the herb (PS whiteherb onUpdate) — the
+        // engine was applying the drop but never consuming the herb.
+        let syrup = r#"[
+            {"species":"hydrapple","level":50,"ability":"supersweetsyrup","item":"","nature":"modest","moves":["gigadrain","protect","ember","tackle"],"evs":{"spa":252,"hp":4}}
+        ]"#;
+        let herb = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"whiteherb","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let no_herb = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        // With White Herb: evasion restored to 0, herb consumed.
+        let p1 = TeamBuilder::from_json(syrup).unwrap();
+        let p2 = TeamBuilder::from_json(herb).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[6], 0, "White Herb restores the evasion drop");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "White Herb consumed");
+        // Control without White Herb: evasion stays -1 (proves the drop fired).
+        let p1 = TeamBuilder::from_json(syrup).unwrap();
+        let p2 = TeamBuilder::from_json(no_herb).unwrap();
+        let b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b2.p2.team[0].boosts[6], -1, "Supersweet Syrup drops foe evasion by 1");
+    }
+
+    #[test]
     fn champions_move_data_overrides_applied() {
         // Spot-check the Champions move-data rebalances baked into the MOVES
         // table by build.rs (vs gen-9 values). See docs/champions-data-deltas.md.
