@@ -10861,6 +10861,17 @@ impl Battle {
                 // before reaching here when the move fails, so this runs on
                 // exactly the same paths as the old inline loop.
                 self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                // The self-inflicted HP cost can drop the user past a berry's
+                // HP threshold (Sitrus at 1/2, the pinch berries at 1/4). PS
+                // fires the berry's onUpdate right after the directDamage, so we
+                // run the same post-damage item hook on the USER. Surfaced by
+                // the conformance harness (out_e11448d356: a Belly Drum Snorlax
+                // at exactly 1/2 HP must eat its Sitrus — the engine left it
+                // unhealed). mem::replace swaps self.rng across the &mut self
+                // borrow exactly like the in-combat hit path (Starf draws RNG).
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::on_after_damage(self, actor_side, actor_slot, &mut rng);
+                self.rng = rng;
             }
             data::move_id::PAINSPLIT => {
                 // PS data/moves.ts:painsplit onHit: averages user + target
@@ -28752,6 +28763,44 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].current_hp, max - max / 2, "paid half max HP");
         assert_eq!(b.p1.team[0].boosts[0], 6, "Atk → +6");
+    }
+
+    #[test]
+    fn belly_drum_self_cost_triggers_sitrus_berry() {
+        // The self-inflicted HP cost must run the post-damage item hook on the
+        // user: a Belly Drum that lands the user at exactly 1/2 HP eats its
+        // Sitrus Berry (heals 1/4 maxhp back) and consumes it. PS fires the
+        // berry's onUpdate after the directDamage. Sitrus only triggers when
+        // the post-cost HP is <= maxhp/2, which holds exactly when maxhp is even
+        // (odd maxhp lands the user just above half), so branch on parity.
+        let p1_json = r#"[
+            {"species":"azumarill","level":50,"ability":"hugepower","item":"sitrusberry","nature":"adamant","moves":["bellydrum","aquajet","playrough","protect"],"evs":{"hp":4,"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["moonblast","encore","tailwind","protect"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        let paid = max - max / 2; // HP immediately after the 1/2 cost
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_eq!(b.p1.team[0].boosts[0], 6, "Atk → +6 regardless");
+        if paid * 2 <= max as u16 {
+            // Even maxhp → user sits at exactly 1/2 → Sitrus fires.
+            assert!(
+                b.p1.team[0].current_hp > paid,
+                "Sitrus should heal the Belly Drum user back above 1/2 (max={max} \
+                 paid={paid} got={})", b.p1.team[0].current_hp,
+            );
+            assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus consumed");
+        } else {
+            // Odd maxhp → just above 1/2 → Sitrus does NOT fire.
+            assert_eq!(b.p1.team[0].current_hp, paid, "no Sitrus above 1/2");
+        }
     }
 
     #[test]
