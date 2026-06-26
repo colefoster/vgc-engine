@@ -1562,7 +1562,7 @@ pub(crate) fn calculate_damage_with_bp(
 
     // Boost-stage indices into `Pokemon::boosts`:
     //   0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva
-    let (mut atk_stage, def_stage, mut atk_stat, def_stat) = if physical {
+    let (mut atk_stage, mut def_stage, mut atk_stat, mut def_stat) = if physical {
         (
             attacker.boosts[0],
             defender.boosts[1],
@@ -1598,6 +1598,22 @@ pub(crate) fn calculate_damage_with_bp(
     if move_id == data::move_id::FOULPLAY {
         atk_stat = def_stats.atk as u32;
         atk_stage = defender.boosts[0];
+    }
+    // Psyshock / Psystrike / Secret Sword — `overrideDefensiveStat: 'def'`.
+    // PS keeps these SPECIAL (the move still uses the attacker's SpA, and
+    // Light Screen — not Reflect — applies since screens key on category) but
+    // computes the defending side with the target's physical DEFENSE stat AND
+    // its Def boost stage in place of SpD. The crit boost-ignore policy then
+    // keys on the Def stage (via def_stage) automatically. (Psystrike / Secret
+    // Sword are `isNonstandard: "Past"` in Champions and so never appear in
+    // Reg M-B, but the mechanic is shared so they ride the same arm.)
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Psyshock_(move)>.
+    if matches!(
+        move_id,
+        data::move_id::PSYSHOCK | data::move_id::PSYSTRIKE | data::move_id::SECRETSWORD
+    ) {
+        def_stat = def_stats.def as u32;
+        def_stage = defender.boosts[1];
     }
 
     // Solar Power — PS `data/abilities.ts:solarpower`:
@@ -2322,6 +2338,26 @@ mod tests {
         def.status = Status::Toxic;
         let tox = calculate_damage(&atk, &def, bb, ctx);
         assert_eq!(tox, poisoned, "tox target doubles like psn");
+    }
+
+    #[test]
+    fn psyshock_targets_physical_defense_not_spdef() {
+        // Psyshock has overrideDefensiveStat 'def': it's a Special move but
+        // defends against the target's physical Def. Blissey has a tiny Def and
+        // an enormous SpD, so Psyshock (80 BP, hits Def) out-damages Psychic
+        // (90 BP, hits SpD) by a wide margin despite the lower BP and both
+        // being special Psychic moves. A regression to SpD would invert this.
+        let atk = make_mon("alakazam", 50, "modest", StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 0 });
+        let def = make_mon("blissey", 50, "calm", StatSpread { hp: 252, atk: 0, def: 4, spa: 0, spd: 252, spe: 0 });
+        let ctx = DamageContext { roll: 15, ..Default::default() };
+        let ps = calculate_damage(&atk, &def, move_id("psyshock"), ctx);
+        let py = calculate_damage(&atk, &def, move_id("psychic"), ctx);
+        assert!(ps > 0 && py > 0, "both deal damage: ps={ps} py={py}");
+        assert!(
+            ps > py * 2,
+            "Psyshock (hits Blissey's low Def) should far exceed Psychic (hits \
+             its huge SpD): psyshock={ps} psychic={py}",
+        );
     }
 
     #[test]
