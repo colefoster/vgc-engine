@@ -5293,6 +5293,27 @@ impl Battle {
             }
         }
 
+        // Stone Axe — PS data/moves.ts:stoneaxe `onAfterHit` (+
+        // `onAfterSubDamage`): identical shape to Ceaseless Edge but sets
+        // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
+        // && source.hp` gate. Kleavor's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
+        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                self.side_mut(opp).conditions.stealth_rock = true;
+            }
+        }
+
         // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
         // Overdrive...) trigger +1 SpA on the user after the hit. PS
         // gates on the move actually being USED (not on damage > 0), so
@@ -14618,6 +14639,38 @@ mod tests {
             }
         }
         assert!(connected > 0, "Ceaseless Edge should connect on some seeds");
+    }
+
+    #[test]
+    fn stone_axe_sets_stealth_rock_on_hit() {
+        // PS data/moves.ts:stoneaxe onAfterHit sets Stealth Rock on the foe's
+        // side per connecting hit (idempotent). Was unimplemented. 90% acc.
+        let p1_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"adamant","moves":["stoneaxe","aquatail","protect","tackle"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","protect","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let mut connected = 0;
+        for seed in 0..24u64 {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            let full = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp < full {
+                connected += 1;
+                assert!(b.p2.conditions.stealth_rock,
+                    "Stealth Rock set by a connecting Stone Axe (seed {seed})");
+            } else {
+                assert!(!b.p2.conditions.stealth_rock,
+                    "no Stealth Rock on a miss (seed {seed})");
+            }
+        }
+        assert!(connected > 0, "Stone Axe should connect on some seeds");
     }
 
     #[test]
