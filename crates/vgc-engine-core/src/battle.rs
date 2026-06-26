@@ -31545,6 +31545,38 @@ mod tests {
     }
 
     #[test]
+    fn trace_fires_copied_intimidate_on_switch_in() {
+        // Trace copies a foe's ability and runs its onStart (PS Trace ->
+        // setAbility). When it copies Intimidate, the Atk drop must fire. A
+        // filler leads (so Gardevoir is not present for Incineroar's lead
+        // Intimidate), then switches to Gardevoir, which Traces the foe's
+        // Intimidate and lowers the foe's Atk. Before the fix the dispatch read
+        // the stale "trace" id and never fired.
+        let p1_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["softboiled","seismictoss","toxic","protect"],"evs":{"hp":252}},
+            {"species":"gardevoir","level":50,"ability":"trace","item":"","nature":"timid","moves":["moonblast","psychic","protect","calmmind"],"evs":{"spa":252,"spe":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"careful","moves":["protect","fakeout","flareblitz","partingshot"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // Incineroar's lead Intimidate has already hit Blissey, not the foe.
+        assert_eq!(b.p2.team[0].boosts[0], 0, "foe Atk untouched before the Trace");
+        // Turn 1: P1 switches Blissey -> Gardevoir; Incineroar Protects.
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        // Gardevoir traced Intimidate and fired it on the foe.
+        assert_eq!(b.p1.team[1].ability_id, data::ability_id::INTIMIDATE,
+                   "Gardevoir traced Intimidate");
+        assert_eq!(b.p2.team[0].boosts[0], -1,
+                   "traced Intimidate lowers the foe's Atk by 1");
+    }
+
+    #[test]
     fn high_jump_kick_crashes_when_it_fails_to_connect() {
         // High Jump Kick (and Jump Kick / Axe Kick / Supercell Slam) deal 1/2
         // the user's max HP to the USER when the move fails to connect — on a
