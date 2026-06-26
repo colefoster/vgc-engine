@@ -714,6 +714,54 @@ impl Rng {
         }
     }
 
+    /// PS `randomChance(num, den)` boolean gate recorded under the `Range`
+    /// decision — e.g. Fickle Beam's `onBasePower` 3/10 chance to double its
+    /// base power. The conformance recorder logs only the boolean RESULT (the
+    /// `[anim]`/`-activate` branch), not the underlying `random(den)` roll, so
+    /// the oracle table carries it as `Range(1)` = passed / `Range(0)` = failed
+    /// (see `event_for_draw`). Splitmix / PsGen5 draw the real `den`-gate so
+    /// live play and the solver get the correct probability; OracleKeyed honors
+    /// PS's recorded outcome and falls back to the gate on a table miss.
+    pub fn chance_keyed(&mut self, num: u32, den: u32) -> bool {
+        if den == 0 {
+            return false;
+        }
+        match self {
+            Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(den) < num,
+            Rng::Oracle(state) => match state.pop() {
+                RngEvent::Range(v) => v != 0,
+                other => panic!("OracleRng: expected Range (bool gate), got {other:?}"),
+            },
+            Rng::OraclePartial { state, fallback } => {
+                match state.pop_if(|e| matches!(e, RngEvent::Range(_))) {
+                    Some(RngEvent::Range(v)) => v != 0,
+                    _ => ((Self::splitmix_step(fallback) as u32) % den) < num,
+                }
+            }
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Range) {
+                Some(RngEvent::Range(v)) => v != 0,
+                _ => {
+                    let pass = ((k.fallback() as u32) % den) < num;
+                    k.record_miss(
+                        RngDecision::Range,
+                        DrawSpace::UniformRange(den),
+                        RngEvent::Range(pass as u32),
+                    );
+                    pass
+                }
+            },
+            Rng::Recording(r) => {
+                let pass = ((r.step() as u32) % den) < num;
+                r.push(
+                    RngDecision::Range,
+                    DrawSpace::UniformRange(den),
+                    RngEvent::Range(pass as u32),
+                );
+                pass
+            }
+        }
+    }
+
     /// Gender roll for a ratio'd species at battle construction.
     /// Returns `0` for male, `1` for female. Mirrors PS's
     /// `this.battle.sample(['M', 'F'])` → `prng.random(2)` (a flat 50/50
