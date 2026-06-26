@@ -11211,6 +11211,43 @@ impl Battle {
                     }
                     return;
                 }
+                // Stockpile — PS data/moves.ts:stockpile. Each use adds a
+                // "stockpile" layer (max 3) and raises the user's Def and SpD
+                // by 1; using it at 3 layers FAILS (no boost). The layer count
+                // is stored in the Stockpile volatile's `payload`; it clears on
+                // switch-out with the rest of the volatiles. Spit Up / Swallow
+                // (which consume the layers and undo these boosts) are not yet
+                // implemented, so the boosts persist for now. No RNG draw
+                // (self-target, no accuracy). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Stockpile_(move)>.
+                if move_id == data::move_id::STOCKPILE {
+                    let layers = self
+                        .side(actor_side)
+                        .active_mon(actor_slot as usize)
+                        .and_then(|m| {
+                            m.volatiles
+                                .get(crate::pokemon::VolatileKind::Stockpile)
+                                .map(|v| v.payload)
+                        })
+                        .unwrap_or(0);
+                    if layers >= 3 {
+                        return;
+                    }
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Stockpile,
+                            turns_remaining: 0,
+                            payload: layers + 1,
+                        });
+                    }
+                    let boosts: &[(u8, i8)] = &[(1, 1), (3, 1)];
+                    self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                    // A foe's Mirror Herb copies the Def/SpD increase.
+                    crate::item::try_consume_mirror_herb_on_foe_boost(
+                        self, actor_side, actor_slot, boosts,
+                    );
+                    return;
+                }
                 // Self-boost status moves — PS data/moves.ts: each
                 // listed move has `target: "self"` (or `target: "allies"`
                 // for Howl) and `boosts: { stat: n, ... }`. Application
@@ -27877,6 +27914,38 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].boosts[0], 2, "Swords Dance +2 Atk");
+    }
+
+    #[test]
+    fn stockpile_boosts_def_spd_up_to_three_layers() {
+        // PS data/moves.ts:stockpile — +1 Def / +1 SpD per use, max 3 layers;
+        // a 4th use fails (no boost). Def index 1, SpD index 3.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["stockpile","rest","protect","crunch"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","protect","calmmind","ember"],"evs":{"hp":252,"def":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let stock = &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let foe = &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        for layer in 1..=3i8 {
+            b.step(stock, foe);
+            assert_eq!(
+                (b.p1.team[0].boosts[1], b.p1.team[0].boosts[3]),
+                (layer, layer),
+                "{layer} stockpile layer(s) → +{layer} Def / +{layer} SpD",
+            );
+        }
+        // 4th Stockpile fails — boosts stay at +3/+3.
+        b.step(stock, foe);
+        assert_eq!(
+            (b.p1.team[0].boosts[1], b.p1.team[0].boosts[3]),
+            (3, 3),
+            "4th Stockpile fails (cap 3 layers), no further boost",
+        );
     }
 
     #[test]
