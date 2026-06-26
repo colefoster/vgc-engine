@@ -19,7 +19,9 @@
 //! - end-of-turn switch prompts when an active slot is empty
 
 use crate::choice::{Choice, Target};
-use crate::damage::{calculate_damage, DamageContext};
+use crate::damage::{
+    calculate_damage, type_effectiveness, DamageContext, DamagePipeline, PostFormulaInputs,
+};
 use crate::format::Format;
 use crate::order::{action_order, ActionOrder, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
@@ -4355,62 +4357,32 @@ impl Battle {
             // is correct — a fixed-damage hit never reaches that step in
             // PS.)
             let fixed_dmg_snapshot = fixed_damage;
-            // Post-formula attacker-item multipliers — Life Orb (×5324/4096
-            // pokeRound), Wise Glasses (special ×4505/4096), Muscle Band
-            // (physical ×4505/4096) and Expert Belt (super-effective
-            // ×4915/4096). Extracted into a single closure so the normal
-            // single-hit path AND the Beat Up per-hit loop apply an identical
-            // pipeline (single source of truth). PS refs:
-            //   data/items.ts:lifeorb (chainModify([5324,4096]); pokeRound =
-            //     floor((v*5324 + 2047) / 4096));
-            //   data/items.ts:expertbelt onBasePower
-            //     `if (target.runEffectiveness(move) > 0) chainModify([4915,4096])`
-            //     — 2× and 4× both qualify, immune (0×) does not;
-            //   data/items.ts:wiseglasses `move.category === 'Special'` ×4505/4096;
-            //   data/items.ts:muscleband `move.category === 'Physical'` ×4505/4096.
-            // Multipliers commute with the formula tail's integer-divides to
-            // within rounding, so applying them here matches PS's mean.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Life_Orb>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Expert_Belt>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
-            let apply_attacker_item_mult = |mut d: u16, apply_life_orb: bool| -> u16 {
-                if apply_life_orb && life_orb && d > 0 {
-                    d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
-                }
-                if attacker_item_id == data::item_id::WISEGLASSES && special_move && d > 0 {
-                    d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
-                }
-                if attacker_item_id == data::item_id::MUSCLEBAND && physical_move && d > 0 {
-                    d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
-                }
-                if attacker_item_id == data::item_id::EXPERTBELT && d > 0 {
-                    let eff = crate::damage::type_effectiveness(m.type_, defender.species());
-                    let se = matches!(
-                        eff,
-                        crate::damage::TypeEff::DoubleX | crate::damage::TypeEff::QuadrupleX
-                    );
-                    if se {
-                        d = ((d as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
-                    }
-                }
-                d
+            // Post-formula multiplier chain — see
+            // `docs/damage-pipeline-design.md` and
+            // `crate::damage::DamagePipeline`. PR-A lift: every multiplier
+            // that previously lived inline (Life Orb / Wise Glasses /
+            // Muscle Band / Expert Belt / Friend Guard / Thick Fat /
+            // Water Bubble) is now a named method on the pipeline,
+            // applied in PS's modifier-event order. Byte-identical to
+            // the prior inline block; the only structural change is
+            // method dispatch.
+            let post_inputs = PostFormulaInputs {
+                move_type: m.type_,
+                effectiveness: type_effectiveness(m.type_, defender.species()),
+                attacker_item_id,
+                life_orb,
+                physical_move,
+                special_move,
+                defender_ability_id: defender.ability_id,
+                attacker_breaks_mold,
             };
-            dmg = apply_attacker_item_mult(dmg, fixed_dmg_snapshot.is_none());
-            // Friend Guard post-formula ×0.75 — first slice migrated into
-            // `DamageContext::apply_friend_guard` (the doubles + mold-break
-            // + ally-scan gate was pre-resolved into `defender_friend_guarded`
-            // at the input-build site above; PS draws no RNG for this
-            // multiplier so precomputing cannot shift draw order). For
-            // fixed-damage moves `beat_up_ctx_opt` is `None`; the snapshot
-            // restore below (`if let Some(fd) = fixed_dmg_snapshot`) would
-            // overwrite any multiplier anyway, so skipping the call there
-            // is byte-identical to the prior inline block. See PS
-            // `data/abilities.ts:friendguard` and `damage::DamageContext`
-            // for the per-arm citations.
+            let mut pipeline =
+                DamagePipeline::new(dmg, fixed_dmg_snapshot.is_some(), post_inputs);
+            pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
             if let Some(ref ctx) = beat_up_ctx_opt {
-                dmg = ctx.apply_friend_guard(dmg);
+                pipeline.apply_friend_guard(ctx);
             }
+            dmg = pipeline.current;
             // Multi-hit hit-count roll — Double Hit, Population Bomb,
             // Bullet Seed, Rock Blast, Triple Axel, Tail Slap, Icicle
             // Spear, Scale Shot, Water Shuriken, etc. PS rolls the hit
@@ -4503,37 +4475,22 @@ impl Battle {
                 }
                 hits = count.max(1) as u32;
             }
-            // Thick Fat (Snorlax / Mamoswine / Goodra-H): defender's
-            // ability halves the attacker's offensive stat against Fire
-            // (type 1) and Ice (type 5) moves. PS handler shape:
-            //   onSourceModifyAtk(atk, attacker, defender, move) {
-            //     if (move.type === 'Ice' || move.type === 'Fire')
-            //       return this.chainModify(0.5);
-            //   }
-            // Atk and SpA branches are identical bodies. Halving the
-            // offensive stat is mathematically equivalent to halving
-            // damage at the end of the base-formula chain, so we just
-            // do the latter here. Carries `flags: { breakable: 1 }`, so
-            // Mold Breaker (when it lands) lifts it. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>.
-            if defender.ability_id == data::ability_id::THICKFAT
-                && !attacker_breaks_mold
-                && (m.type_ == 1 || m.type_ == 5)
-                && dmg > 0
-            {
-                dmg /= 2;
-            }
-            // Water Bubble (defender side) — Fire-type incoming damage
-            // halved. PS `data/abilities.ts:waterbubble`
-            // `onSourceModifyAtk` / `onSourceModifySpA`:
-            //   if (move.type === 'Fire') return this.chainModify(0.5);
-            // Halving the offensive stat is mathematically equivalent to
-            // halving final damage. NOT in PS's breakable list — Mold
-            // Breaker does NOT bypass. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-            if defender.ability_id == data::ability_id::WATERBUBBLE && m.type_ == 1 && dmg > 0 {
-                dmg /= 2;
-            }
+            // Defender post-formula halves: Thick Fat (Fire/Ice, breakable),
+            // Water Bubble (Fire, not breakable). Routed through
+            // `DamagePipeline::apply_thick_fat` / `apply_water_bubble` — both
+            // are byte-identical to the prior inline halves.
+            // PS refs:
+            //   data/abilities.ts:thickfat onSourceModifyAtk/SpA chainModify(0.5)
+            //     on Fire (type 1) or Ice (type 5); breakable.
+            //   data/abilities.ts:waterbubble onSourceModifyAtk/SpA chainModify(0.5)
+            //     on Fire; NOT breakable.
+            // Bulbapedia:
+            //   <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>,
+            //   <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+            pipeline.current = dmg;
+            pipeline.apply_thick_fat();
+            pipeline.apply_water_bubble();
+            dmg = pipeline.current;
             // Knock Off's ×1.5 vs item holders is applied at the base-power
             // stage inside `calculate_damage` (PS data/moves.ts:knockoff
             // onBasePower chainModify(1.5)), not here on final damage — the
@@ -4650,7 +4607,9 @@ impl Battle {
                         let raw = crate::damage::calculate_beat_up_hit(
                             &attacker, &defender, ctx, beat_up_base_atks[0],
                         );
-                        apply_attacker_item_mult(raw, true)
+                        pipeline.current = raw;
+                        pipeline.apply_attacker_item(true);
+                        pipeline.current
                     } else {
                         let hc = if crit_immune {
                             false
@@ -4663,7 +4622,9 @@ impl Battle {
                         let (raw, _) = self.roll_initial_damage(
                             &attacker, &defender, move_id, None, inp, Some(member_bp),
                         );
-                        apply_attacker_item_mult(raw, true)
+                        pipeline.current = raw;
+                        pipeline.apply_attacker_item(true);
+                        pipeline.current
                     }
                 } else {
                     // Per-hit crit + damage roll. PS runs `getDamage` per
@@ -4715,14 +4676,15 @@ impl Battle {
                         } else {
                             None
                         };
-                        let (mut rd, rctx) = self.roll_initial_damage(
+                        let (rd, rctx) = self.roll_initial_damage(
                             &attacker, &defender, move_id, fixed_dmg_snapshot, inp, bp_ov,
                         );
-                        rd = apply_attacker_item_mult(rd, fixed_dmg_snapshot.is_none());
+                        pipeline.current = rd;
+                        pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
                         if let Some(ref c) = rctx {
-                            rd = c.apply_friend_guard(rd);
+                            pipeline.apply_friend_guard(c);
                         }
-                        rd
+                        pipeline.current
                     }
                 };
 

@@ -260,6 +260,162 @@ impl DamageContext {
     }
 }
 
+/// Frozen post-formula inputs for one damaging hit. Caller (currently
+/// `resolve_move_with_pending`) builds this once per hit, drops it into
+/// [`DamagePipeline::new`], and chains the `apply_*` methods. See
+/// `docs/damage-pipeline-design.md` for the rationale.
+///
+/// 1:1 with the previously-inline `apply_attacker_item_mult` closure
+/// captures + the Thick Fat / Water Bubble local reads. Adding a new
+/// post-formula multiplier means adding a field here and an `apply_*`
+/// method on [`DamagePipeline`]; the call site grows by one line, not
+/// twenty.
+#[derive(Debug, Clone, Copy)]
+pub struct PostFormulaInputs {
+    /// Effective move type at hit time (post Tera / Weather Ball / etc.).
+    /// Matches `move_data.type_` in the simple case.
+    pub move_type: u8,
+    /// Pre-resolved type effectiveness for this hit. Used by Expert
+    /// Belt's super-effective gate. Caller computes this once at the
+    /// build site via `type_effectiveness(move_type, defender.species())`
+    /// so the pipeline stays free of `SpeciesDef` references.
+    pub effectiveness: TypeEff,
+    /// `attacker.effective_item_id()` snapshot. Read by Life Orb / Wise
+    /// Glasses / Muscle Band / Expert Belt gates.
+    pub attacker_item_id: u16,
+    /// True iff the attacker actually holds Life Orb. Held separately
+    /// from `attacker_item_id == LIFEORB` so the caller can pre-resolve
+    /// Klutz / Magic Room suppression at the build site.
+    pub life_orb: bool,
+    /// `move_data.category == 0` — physical move.
+    pub physical_move: bool,
+    /// `move_data.category == 1` — special move.
+    pub special_move: bool,
+    /// `defender.ability_id` — read by Thick Fat / Water Bubble gates.
+    pub defender_ability_id: u16,
+    /// Attacker's ability ignores breakable defender abilities (Mold
+    /// Breaker / Turboblaze / Teravolt). Lifts Thick Fat; does NOT lift
+    /// Water Bubble (Water Bubble is not on PS's breakable list).
+    pub attacker_breaks_mold: bool,
+}
+
+/// Post-formula multiplier chain accumulator. Owns a running `u16`
+/// damage value and an immutable inputs bundle; each `apply_*` method
+/// mutates `current` in place under the gate from `inputs`.
+///
+/// Pure data; no `&mut Battle`, no `&mut Pokemon`. The caller is
+/// responsible for the side-effecting steps that *follow* the
+/// multiplier chain — type-resist berry consumption (already a
+/// `crate::item::try_consume_type_resist_berry` call), Substitute
+/// interception, Disguise chip, Stellar mark, the actual HP write.
+/// Those land in PR-B (`DamageApplication`).
+///
+/// `fixed` short-circuits every method: fixed-damage moves
+/// (Seismic Toss / Dragon Rage / Night Shade / Super Fang / Endeavor /
+/// Sonic Boom / Ruination) bypass the entire multiplier chain in PS
+/// (`getDamage` returns before `randomizer`). The caller restores the
+/// pre-chain value via the existing `fixed_dmg_snapshot` site below
+/// the chain; gating here is defensive duplication of that invariant.
+#[derive(Debug, Clone, Copy)]
+pub struct DamagePipeline {
+    pub current: u16,
+    pub fixed: bool,
+    pub inputs: PostFormulaInputs,
+}
+
+impl DamagePipeline {
+    #[inline]
+    pub fn new(initial: u16, fixed: bool, inputs: PostFormulaInputs) -> Self {
+        Self { current: initial, fixed, inputs }
+    }
+
+    /// Life Orb (×5324/4096 pokeRound) + Wise Glasses (special ×4505/4096)
+    /// + Muscle Band (physical ×4505/4096) + Expert Belt (super-effective
+    /// ×4915/4096). Byte-identical lift of the inline
+    /// `apply_attacker_item_mult` closure.
+    ///
+    /// `apply_life_orb` mirrors the closure's outer gate: callers pass
+    /// `!fixed_damage_snapshot.is_some()` so a fixed-damage move's
+    /// Life Orb step is suppressed even though `self.current` would
+    /// later be overwritten by the snapshot restore.
+    ///
+    /// PS refs:
+    ///   data/items.ts:lifeorb chainModify([5324,4096]); pokeRound
+    ///   data/items.ts:wiseglasses move.category === 'Special' ×4505/4096
+    ///   data/items.ts:muscleband move.category === 'Physical' ×4505/4096
+    ///   data/items.ts:expertbelt onBasePower
+    ///     `target.runEffectiveness(move) > 0 → chainModify([4915,4096])`
+    #[inline]
+    pub fn apply_attacker_item(&mut self, apply_life_orb: bool) {
+        if self.fixed {
+            return;
+        }
+        let inp = &self.inputs;
+        let mut d = self.current;
+        if apply_life_orb && inp.life_orb && d > 0 {
+            d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
+        }
+        if inp.attacker_item_id == crate::data::item_id::WISEGLASSES && inp.special_move && d > 0 {
+            d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+        }
+        if inp.attacker_item_id == crate::data::item_id::MUSCLEBAND && inp.physical_move && d > 0 {
+            d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+        }
+        if inp.attacker_item_id == crate::data::item_id::EXPERTBELT && d > 0 {
+            if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+                d = ((d as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+            }
+        }
+        self.current = d;
+    }
+
+    /// Friend Guard ×3072/4096 (×0.75) on the defender's ally hit. The
+    /// pre-resolved gate lives on `DamageContext::defender_friend_guarded`
+    /// — we just route through the existing `DamageContext::apply_friend_guard`
+    /// so the rounding stays in one place.
+    #[inline]
+    pub fn apply_friend_guard(&mut self, ctx: &DamageContext) {
+        if self.fixed {
+            return;
+        }
+        self.current = ctx.apply_friend_guard(self.current);
+    }
+
+    /// Thick Fat (Snorlax / Mamoswine / Goodra-H): defender ability
+    /// halves Fire / Ice incoming damage. Breakable.
+    /// PS `data/abilities.ts:thickfat` `onSourceModifyAtk` /
+    /// `onSourceModifySpA` chainModify(0.5) on Fire (type 1) / Ice (type 5).
+    /// Halving the offensive stat is mathematically equivalent to halving
+    /// final damage; we just do the latter.
+    #[inline]
+    pub fn apply_thick_fat(&mut self) {
+        if self.fixed || self.current == 0 {
+            return;
+        }
+        let inp = &self.inputs;
+        if inp.defender_ability_id == crate::data::ability_id::THICKFAT
+            && !inp.attacker_breaks_mold
+            && (inp.move_type == 1 || inp.move_type == 5)
+        {
+            self.current /= 2;
+        }
+    }
+
+    /// Water Bubble (defender side): halves Fire-type incoming damage.
+    /// NOT on PS's breakable list — Mold Breaker does NOT bypass.
+    /// PS `data/abilities.ts:waterbubble` chainModify(0.5) on Fire.
+    #[inline]
+    pub fn apply_water_bubble(&mut self) {
+        if self.fixed || self.current == 0 {
+            return;
+        }
+        let inp = &self.inputs;
+        if inp.defender_ability_id == crate::data::ability_id::WATERBUBBLE && inp.move_type == 1 {
+            self.current /= 2;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeEff {
     Immune,
