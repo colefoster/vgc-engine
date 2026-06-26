@@ -10065,6 +10065,24 @@ impl Battle {
                         if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                             t.ability_override = source_eff_id;
                         }
+                        // PS `Battle.skillSwap` runs each gained ability's
+                        // `onStart` (source first, then target). A freshly-
+                        // acquired Intimidate fires immediately, lowering its
+                        // new foes' Atk. Gate on the EFFECTIVE ability so
+                        // Neutralizing Gas suppression is honored. Other gained
+                        // onStart abilities (weather/terrain/Download/...) are
+                        // not yet re-fired here — only Intimidate surfaced in
+                        // the breadth corpus.
+                        if self.side(actor_side).active_mon(actor_slot as usize)
+                            .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
+                        {
+                            crate::ability::fire_intimidate(self, actor_side, actor_slot);
+                        }
+                        if self.side(ts).active_mon(tslot as usize)
+                            .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
+                        {
+                            crate::ability::fire_intimidate(self, ts, tslot);
+                        }
                     }
                 }
             }
@@ -10108,6 +10126,16 @@ impl Battle {
                         if target_eff_id != u16::MAX {
                             if let Some(s) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                                 s.ability_override = target_eff_id;
+                            }
+                            // PS Role Play `source.setAbility(target.ability)`
+                            // runs the gained ability's `onStart` on the user —
+                            // a copied Intimidate fires immediately. Gate on the
+                            // EFFECTIVE ability (honors Neutralizing Gas). Other
+                            // onStart abilities are not yet re-fired here.
+                            if self.side(actor_side).active_mon(actor_slot as usize)
+                                .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
+                            {
+                                crate::ability::fire_intimidate(self, actor_side, actor_slot);
                             }
                         }
                     }
@@ -14671,6 +14699,67 @@ mod tests {
             }
         }
         assert!(connected > 0, "Stone Axe should connect on some seeds");
+    }
+
+    #[test]
+    fn role_play_gained_intimidate_fires_onstart() {
+        // PS Role Play `source.setAbility(target.ability)` runs the gained
+        // ability's onStart. A user that copies Intimidate from the foe
+        // triggers it immediately, dropping that foe's Atk. Before this fix the
+        // ability was copied but its onStart never re-fired.
+        // p1 holds Intimidate; p2 (Role Play user) copies it off p1.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["tackle","protect","fakeout","ember"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"kangaskhan","level":50,"ability":"scrappy","item":"","nature":"adamant","moves":["roleplay","tackle","protect","ember"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // p1's own Intimidate never drops itself, and Scrappy doesn't touch p1,
+        // so p1's Atk is a clean 0 — only a Role Play-gained Intimidate on p2
+        // can move it.
+        assert_eq!(b.p1.team[0].boosts[0], 0, "p1 Atk untouched at start");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // p2 copied Intimidate via Role Play → its onStart fires → p1 Atk -1.
+        assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::INTIMIDATE,
+            "p2 copied Intimidate via Role Play");
+        assert_eq!(b.p1.team[0].boosts[0], -1,
+            "Role Play-gained Intimidate must fire and drop the foe's Atk");
+    }
+
+    #[test]
+    fn skill_swap_gained_intimidate_fires_onstart() {
+        // PS Battle.skillSwap runs each gained ability's onStart. When an
+        // Intimidate user swaps it onto a foe, that foe's freshly-gained
+        // Intimidate fires immediately, dropping the swapper's Atk.
+        let p1_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["skillswap","tackle","protect","ember"],"evs":{"hp":252,"atk":252}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"bronzong","level":50,"ability":"levitate","item":"","nature":"sassy","moves":["tackle","gyroball","rest","ember"],"evs":{"hp":252,"spd":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        // p1's lead Intimidate dropped p2's Atk; p1 itself is untouched.
+        assert_eq!(b.p2.team[0].boosts[0], -1, "lead Intimidate drops p2 Atk");
+        assert_eq!(b.p1.team[0].boosts[0], 0, "p1 Atk untouched at start");
+        // p2 uses Tackle (NOT Protect — Skill Swap carries the protect flag and
+        // would be blocked); p1 Skill Swaps Intimidate onto p2.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        // After the swap p2 holds Intimidate; its onStart fires → p1 Atk -1.
+        assert_eq!(b.p1.team[0].boosts[0], -1,
+            "Skill Swap-gained Intimidate on the foe must fire and drop the swapper's Atk");
+        assert_eq!(b.p2.team[0].effective_ability_id(),
+            data::ability_id::INTIMIDATE, "p2 gained Intimidate");
     }
 
     #[test]
