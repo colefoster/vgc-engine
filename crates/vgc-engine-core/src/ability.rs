@@ -903,8 +903,13 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
 /// and weather damage — the relative order matches PS (item order ≈ 5,
 /// status ≈ 9, speedboost = 28).
 pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
+    // Dispatch on the EFFECTIVE ability so residual hooks (Speed Boost, Shed
+    // Skin, Moody, Cud Chew, …) follow Skill Swap / Trace / Gastro Acid: a mon
+    // that swapped Speed Boost away must not still gain +1 Spe at end of turn,
+    // and a Gastro-Acid'd residual ability is suppressed. effective_ability_id()
+    // returns the override (or u16::MAX when suppressed), else the base id.
     let (ability_id, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.ability_id, m.switched_in_this_turn()),
+        Some(m) if m.is_alive() => (m.effective_ability_id(), m.switched_in_this_turn()),
         _ => return,
     };
 
