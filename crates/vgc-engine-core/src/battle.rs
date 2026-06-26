@@ -951,28 +951,44 @@ impl Battle {
         }
     }
 
-    /// Legal choices for one active slot on one side.
+    /// Legal choices for one active slot on one side. Owning convenience
+    /// wrapper over [`Battle::legal_choices_into`]; allocates a fresh `Vec`.
+    /// Hot rollout loops should call `legal_choices_into` with a reused buffer
+    /// instead (the perf review found this per-call `Vec` was ~30% of the
+    /// per-turn rollout cost: 4 allocs + 4 frees per turn in doubles).
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
+        let mut out = Vec::with_capacity(8);
+        self.legal_choices_into(side, actor_slot, &mut out);
+        out
+    }
+
+    /// Legal choices for one active slot, written into `out` (cleared first) —
+    /// the allocation-free form. `out` is reused across calls by the caller so
+    /// the hot loop performs no per-slot heap traffic; if `out` has capacity
+    /// (>= the slot's choice count, typically <= 8) this never allocates.
+    pub fn legal_choices_into(&self, side: SideRef, actor_slot: u8, out: &mut Vec<Choice>) {
+        out.clear();
         let s = self.side(side);
         let slot = actor_slot as usize;
         let Some(active) = s.active_mon(slot) else {
-            return vec![Choice::Pass { actor_slot }];
+            out.push(Choice::Pass { actor_slot });
+            return;
         };
         // Commander: a Tatsugiri inside its Dondozo's mouth cannot act. PS
         // auto-passes the slot (`side.ts` `getChoiceIndex` skips slots whose
         // `volatiles['commanding']` is set) — it can't move or switch.
         if active.commanding {
-            return vec![Choice::Pass { actor_slot }];
+            out.push(Choice::Pass { actor_slot });
+            return;
         }
         if !active.is_alive() {
-            let switches: Vec<Choice> = s
-                .switch_candidates(slot)
-                .map(|team_index| Choice::Switch { actor_slot, team_index })
-                .collect();
-            if switches.is_empty() {
-                return vec![Choice::Pass { actor_slot }];
+            for team_index in s.switch_candidates(slot) {
+                out.push(Choice::Switch { actor_slot, team_index });
             }
-            return switches;
+            if out.is_empty() {
+                out.push(Choice::Pass { actor_slot });
+            }
+            return;
         }
 
         let is_choice_item = matches!(
@@ -998,7 +1014,6 @@ impl Battle {
         let can_mega = !s.conditions.mega_used
             && data::mega_stone_for(active.item_id, active.species_id).is_some();
 
-        let mut out = Vec::with_capacity(8);
         // PS `sim/pokemon.ts` `getMoves` tracks `hasValidMove`; if every
         // moveslot is unselectable (`disabled`, which includes `pp <= 0`) it
         // returns `[]`, and `getMoveRequestData` then forces Struggle. We
@@ -1127,7 +1142,6 @@ impl Battle {
         if out.is_empty() {
             out.push(Choice::Pass { actor_slot });
         }
-        out
     }
 
     /// Advance the battle one turn.
