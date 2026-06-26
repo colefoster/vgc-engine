@@ -11888,8 +11888,10 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // 10% -1 SpD:
         "earthpower" | "flashcannon" | "energyball" | "focusblast"
         | "psychic" | "bugbuzz" => (3, -1, 10),
-        // 10% -1 Atk:
-        "aurorabeam" => (0, -1, 10),
+        // 10% -1 Atk — Aurora Beam and Play Rough (PS data/moves.ts playrough
+        // `secondary: { chance: 10, boosts: { atk: -1 } }`, acc 90; no Champions
+        // override). Play Rough's Atk-drop secondary was missing.
+        "aurorabeam" | "playrough" => (0, -1, 10),
         // 100% -1 Atk. Lunge (PS data/moves.ts:10608
         // `secondary: { chance: 100, boosts: { atk: -1 } }`,
         // target:"normal"). Breaking Swipe (PS data/moves.ts:1789, same
@@ -30920,6 +30922,8 @@ mod tests {
         // The genuine 10% SpD movers are unchanged.
         assert_eq!(super::stat_drop_secondary("flashcannon"), Some((3, -1, 10)));
         assert_eq!(super::stat_drop_secondary("energyball"), Some((3, -1, 10)));
+        // Play Rough — 10% Atk-1 (PS data/moves.ts playrough).
+        assert_eq!(super::stat_drop_secondary("playrough"), Some((0, -1, 10)));
     }
 
     #[test]
