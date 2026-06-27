@@ -2999,6 +2999,19 @@ impl Battle {
             if !flingable {
                 return;
             }
+            // PS removes the flung item in `onPrepareHit` (before accuracy /
+            // Protect / the hit) via the `fling` volatile's onUpdate — so it is
+            // spent even when Fling then misses, is blocked by Protect, or hits
+            // an immune target. Consume it here, at that timing, on the LIVE
+            // mon; the `attacker` snapshot keeps the item so the damage BP
+            // (damage.rs reads `attacker.fling_bp`) is unaffected. The flung
+            // item is Recycle-recoverable, so consume_item (which sets
+            // lastItem) is the right primitive. The fling status/flinch EFFECT
+            // is a move secondary and still applies only on a connecting hit
+            // (handled later, gated on any_damage_dealt > 0).
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.consume_item();
+            }
         }
 
         // 5. Enumerate targets (spread or single).
@@ -5563,19 +5576,17 @@ impl Battle {
         // effects). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Fling_(move)>.
         if move_id == data::move_id::FLING && any_damage_dealt > 0 {
+            // The item was already consumed at onPrepareHit timing (above, at
+            // the flingable check) regardless of connect, so it now lives in the
+            // user's `consumed_item`. The status/flinch is a move secondary, so
+            // it applies only here on a connecting hit.
             let item_id = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
-                .map(|a| a.item_id)
+                .map(|a| a.consumed_item)
                 .unwrap_or(u16::MAX);
             if item_id != u16::MAX {
                 let effect = data::ITEMS[item_id as usize].fling_effect;
-                // PS `fling` condition `onUpdate` sets `pokemon.lastItem`
-                // when it clears the item, so a flung item IS recoverable by
-                // Recycle — route through `consume_item`.
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.consume_item();
-                }
                 if let Some((ts, tslot)) = drag_target {
                     match effect {
                         1 => self.apply_status_to_target(ts, tslot, Status::Burn, actor_slot),
@@ -31562,6 +31573,45 @@ mod tests {
                    "Gardevoir traced Intimidate");
         assert_eq!(b.p2.team[0].boosts[0], -1,
                    "traced Intimidate lowers the foe's Atk by 1");
+    }
+
+    #[test]
+    fn fling_consumes_item_even_when_blocked() {
+        // PS removes the flung item in onPrepareHit (before accuracy / Protect /
+        // the hit) via the `fling` volatile, so Fling spends the item even when
+        // the move is blocked or misses. Before the fix the engine gated
+        // consumption on any_damage_dealt > 0 and kept the item on a no-damage
+        // Fling. PS data/moves.ts:fling.
+        let atk = r#"[
+            {"species":"ambipom","level":50,"ability":"technician","item":"kingsrock","nature":"jolly","moves":["fling","protect","fakeout","return"],"evs":{"atk":252,"spe":252}}
+        ]"#;
+        let foe = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"calm","moves":["protect","seismictoss","softboiled","toxic"],"evs":{"hp":252}}
+        ]"#;
+        // Blocked by Protect — item must STILL be consumed.
+        let p1 = TeamBuilder::from_json(atk).unwrap();
+        let p2 = TeamBuilder::from_json(foe).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_ne!(b.p1.team[0].item_id, u16::MAX, "starts holding King's Rock");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Blissey Protect
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX,
+                   "Fling spends the item even when Protect blocks it");
+        assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp,
+                   "Protected foe takes no Fling damage");
+
+        // Control: a connecting Fling also consumes the item and deals damage.
+        let p1 = TeamBuilder::from_json(atk).unwrap();
+        let p2 = TeamBuilder::from_json(foe).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }], // Seismic Toss (no heal)
+        );
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "connecting Fling consumes the item");
+        assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "connecting Fling deals damage");
     }
 
     #[test]
