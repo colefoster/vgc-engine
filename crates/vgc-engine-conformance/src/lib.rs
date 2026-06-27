@@ -223,6 +223,12 @@ pub struct BattleReport {
     /// at a divergence or the battle's natural end (see [`replay`]). The turns
     /// before it are validated; the rest are not.
     pub faint_truncated: bool,
+    /// Provenance of every keyed draw that missed the oracle table — the
+    /// `(turn, actor, target, move_id, decision)` of each engine draw PS did
+    /// not record under that key. Drives the `--draw-report` attribution mode
+    /// so "K unmatched draws" becomes a ranked `move x decision` breakdown
+    /// instead of an opaque count. Empty unless miss-logging fired.
+    pub miss_keys: Vec<RngKey>,
 }
 
 impl BattleReport {
@@ -296,7 +302,24 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
                 Some(RngEvent::PercentRoll(r.saturating_add(1)))
             }
         }
-        "range" => Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?)),
+        // A `range` draw is normally the integer `random(n)` value (multi-hit
+        // count, duration, …). PS also records some `randomChance(num, den)`
+        // bool gates under `range` (e.g. Fickle Beam's onBasePower 3/10
+        // double) — logged as the boolean RESULT. Encode bool as Range(1)=
+        // passed / Range(0)=failed, which `Rng::chance_keyed` decodes.
+        "range" => {
+            // PS logs some randomChance(num, den) bool gates under `range`
+            // (Fickle Beam's onBasePower 3/10 double) with a boolean VALUE and
+            // no `raw_is_bool` flag — so detect the bool by type. Encode as
+            // Range(1)=passed / Range(0)=failed, which `Rng::chance_keyed`
+            // decodes; integer `range` draws (multi-hit count, duration) keep
+            // their numeric value.
+            if let Some(b) = d.value.as_bool() {
+                Some(RngEvent::Range(if b { 1 } else { 0 }))
+            } else {
+                Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?))
+            }
+        }
         "tiebreak" => Some(RngEvent::Tiebreak(d.value.as_u64()?)),
         _ => None,
     }
@@ -689,12 +712,20 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     }
 
     let unmatched_draws = b.rng().unmatched_draws().unwrap_or(0);
+    // Drain the per-draw miss log (keys of engine draws PS never recorded under
+    // that key) for attribution. `take_miss_log` is a no-op for non-OracleKeyed.
+    let miss_keys = b
+        .rng_mut()
+        .take_miss_log()
+        .map(|log| log.into_iter().map(|r| r.key).collect())
+        .unwrap_or_default();
     Ok(BattleReport {
         matched_turns,
         divergence,
         unmatched_draws,
         unresolved_moves: unresolved,
         faint_truncated,
+        miss_keys,
     })
 }
 
