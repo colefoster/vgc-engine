@@ -12553,7 +12553,13 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         "thunderouskick" | "gravapple" => (1, -1, 100),
         // 30% -1 Def (contact biters):
         "irontail" => (1, -1, 30),
-        "liquidation" | "rocksmash" => (1, -1, 30),
+        // Liquidation: 20% -1 Def (PS data/moves.ts:10385
+        // `secondary: { chance: 20, boosts: { def: -1 } }`). Was bucketed at
+        // 30% with Iron Tail, causing extra def drops vs PS (conformance
+        // out_0a8c7971b1: secondary roll 21 → engine applied drop, PS did
+        // not). Rock Smash is 50% (PS data/moves.ts:15271).
+        "liquidation" => (1, -1, 20),
+        "rocksmash" => (1, -1, 50),
         // 20% -1 Def (Crunch per PS data/moves.ts:crunch).
         "crunch" => (1, -1, 20),
         // 20% -1 SpD — Shadow Ball (PS data/moves.ts shadowball
