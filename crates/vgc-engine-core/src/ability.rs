@@ -693,12 +693,18 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // they update for free. HP and max HP are preserved per PS Transform.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Imposter_(Ability)>.
     if ability_id == data::ability_id::IMPOSTER {
-        // Imposter transforms into the foe in the mirror slot on switch-in via
-        // the shared Transform primitive (`Battle::transform_into`), which the
-        // Transform move also uses. Copies species + ability + the five non-HP
-        // battle stats, preserving Ditto's HP.
+        // Imposter transforms into the foe in the DIAGONAL mirror slot on
+        // switch-in — PS data/abilities.ts:2111:
+        //   const target = pokemon.side.foe.active[
+        //     pokemon.side.foe.active.length - 1 - pokemon.position];
+        // In singles (active.length 1) the mirror is the only foe; in
+        // doubles, p2a (pos 0) targets p1b, p2b (pos 1) targets p1a. The
+        // shared Transform primitive copies species + ability + the five
+        // non-HP battle stats, preserving Ditto's HP.
         let opp = side.opposing();
-        battle.transform_into(side, slot, opp, slot);
+        let n = battle.format().active_count() as u8;
+        let opp_slot = n - 1 - slot;
+        battle.transform_into(side, slot, opp, opp_slot);
     }
 
     // Slow Start — PS `data/abilities.ts:4266` `onStart` adds the
