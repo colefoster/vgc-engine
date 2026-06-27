@@ -4851,6 +4851,75 @@ impl Battle {
         (hit_sub, effective_dmg)
     }
 
+    /// Disguise (Mimikyu / Mimikyu-Totem) — first damaging move that
+    /// would deal HP damage to an intact-disguise holder is fully
+    /// negated; instead the holder takes `baseMaxhp / 8` chip and
+    /// forme-changes to the Busted forme (identical base stats — no
+    /// stat recompute). PS structure: `onDamage` returns 0 (no move
+    /// damage) and sets `busted`, then `onUpdate` does `formeChange`
+    /// + `damage(baseMaxhp / 8)`. We collapse both into this choke
+    /// point. Disguise is breakable, so a Mold Breaker attacker
+    /// bypasses it. Only triggers when the hit reaches the mon (a
+    /// Substitute that absorbs the hit takes the `hit_sub` branch and
+    /// Disguise never fires).
+    /// PS `data/abilities.ts:960`.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
+    ///
+    /// Returns `true` when Disguise consumed the hit — caller must
+    /// short-circuit (`return` from `apply_single_hit`) so the normal
+    /// apply / item-hook / Stellar bookkeeping doesn't fire. The
+    /// driver does NOT stop the multi-hit loop on Disguise: PS's
+    /// `continue` semantics let the next hit land on the busted form.
+    fn check_disguise_negate(
+        &mut self,
+        ctx: &PerTargetContext,
+        hit_sub: bool,
+        effective_dmg: u16,
+        move_category: u8,
+    ) -> bool {
+        let disguise_triggered = !hit_sub
+            && effective_dmg > 0
+            && move_category != 2
+            && !ctx.attacker_breaks_mold
+            && self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+                .is_some_and(|d| {
+                    !d.disguise_busted
+                        && d.effective_ability_id() == data::ability_id::DISGUISE
+                        && matches!(
+                            d.species_id,
+                            data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
+                        )
+                });
+        if !disguise_triggered {
+            return false;
+        }
+        // Busted-forme slug: totem -> busted-totem, else busted.
+        let (chip, busted_id) = {
+            let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
+            let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
+                Some(data::species_id::MIMIKYUBUSTEDTOTEM)
+            } else {
+                Some(data::species_id::MIMIKYUBUSTED)
+            };
+            // PS chips `baseMaxhp / 8` (integer division, min 1).
+            let chip = (d.stats.hp / 8).max(1);
+            (chip, busted_id)
+        };
+        // Forme-change first (identical base stats — no recompute),
+        // then mark busted and apply the chip.
+        if let Some(busted_id) = busted_id {
+            self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
+        }
+        if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+            d.disguise_busted = true;
+            d.current_hp = d.current_hp.saturating_sub(chip);
+        }
+        let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
+        true
+    }
+
     fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
@@ -4903,67 +4972,7 @@ impl Battle {
         // defrost / secondary gate) can read move-def fields.
         let m = &ctx.move_def;
 
-        // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
-        // damaging move that would deal HP damage to an intact-disguise
-        // Mimikyu / Mimikyu-Totem is fully negated; instead the holder
-        // takes `baseMaxhp / 8` chip and forme-changes to the Busted
-        // forme (which has identical base stats, so no stat recompute).
-        // PS structure: `onDamage` returns 0 (no move damage) and sets
-        // `busted`, then `onUpdate` does `formeChange` + `damage(
-        // baseMaxhp / 8)`. We collapse both into this choke point: if
-        // the move would have landed HP damage (`effective_dmg > 0`,
-        // category Physical/Special) on an intact holder, negate it and
-        // apply the chip. Disguise is breakable, so a Mold Breaker
-        // attacker bypasses it. Only triggers when the hit reaches the
-        // mon (a Substitute that absorbs the hit takes the `hit_sub`
-        // branch and Disguise never fires — matching PS, where
-        // `onDamage` only runs when the mon itself is damaged).
-        // Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
-        let disguise_triggered = !hit_sub
-            && effective_dmg > 0
-            && m.category != 2
-            && !ctx.attacker_breaks_mold
-            && self
-                .side(ctx.tside)
-                .active_mon(ctx.tslot as usize)
-                .is_some_and(|d| {
-                    !d.disguise_busted
-                        && d.effective_ability_id() == data::ability_id::DISGUISE
-                        && matches!(
-                            d.species_id,
-                            data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
-                        )
-                });
-        if disguise_triggered {
-            // Busted-forme slug: totem -> busted-totem, else busted.
-            let (chip, busted_id) = {
-                let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
-                let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
-                    Some(data::species_id::MIMIKYUBUSTEDTOTEM)
-                } else {
-                    Some(data::species_id::MIMIKYUBUSTED)
-                };
-                // PS chips `baseMaxhp / 8` (integer division, min 1).
-                let chip = (d.stats.hp / 8).max(1);
-                (chip, busted_id)
-            };
-            // Forme-change first (identical base stats — no recompute),
-            // then mark busted and apply the chip.
-            if let Some(busted_id) = busted_id {
-                self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
-            }
-            if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                d.disguise_busted = true;
-                d.current_hp = d.current_hp.saturating_sub(chip);
-            }
-            let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
-            // The move's own damage is fully negated — skip the normal
-            // apply / item-hook / Stellar bookkeeping below for this hit.
-            // (Disguise carries no contact/secondary follow-through that
-            // the engine models beyond the damage itself.) PS's `continue`
-            // → early return; driver does NOT stop, the next hit may
-            // still land on the busted Mimikyu.
+        if self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category) {
             return;
         }
 
