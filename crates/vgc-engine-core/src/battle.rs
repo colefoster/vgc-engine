@@ -4549,7 +4549,47 @@ impl Battle {
             // place we follow PS over the brief, which said to stop on a
             // sub break; PS is the oracle.)
             let base_hit_dmg = dmg;
-            for hit_idx in 0..hits {
+            // ---- Per-target context bundle (PR-D1) ----
+            // Captures every outer-scope local the per-hit body reads
+            // from. The hit-loop body reads + writes through `ctx`;
+            // accumulators (`any_damage_dealt` / `drag_target`) are
+            // seeded from the outer locals and read back below so the
+            // per-target tail sees the updated values. `pipeline` is
+            // per-target (moved in, never read after the loop). This
+            // is pure plumbing — behavior byte-identical to the
+            // pre-PR-D1 inline body. See
+            // `docs/per-target-context-design.md`.
+            let mut ctx = PerTargetContext {
+                tside,
+                tslot,
+                actor_side,
+                actor_slot,
+                move_id,
+                pending_kind: *pending_kind,
+                attacker: attacker.clone(),
+                defender: defender.clone(),
+                attacker_item_id,
+                attacker_ability_id,
+                attacker_breaks_mold,
+                attacker_infiltrates,
+                no_guard_pair,
+                damaging,
+                crit,
+                crit_immune,
+                crit_stage,
+                inputs,
+                beat_up_ctx_opt,
+                beat_up_base_atks,
+                fixed_dmg_snapshot,
+                piercing_drill_quarter,
+                pipeline,
+                base_hit_dmg,
+                hits,
+                any_damage_dealt,
+                drag_target,
+                target_fainted_this_hit: false,
+            };
+            for hit_idx in 0..ctx.hits {
                 // `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
                 // PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy
                 // && hit > 1)`: every hit AFTER the first rolls accuracy
@@ -4565,18 +4605,18 @@ impl Battle {
                 // <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
                 if hit_idx >= 1
                     && matches!(
-                        move_id,
+                        ctx.move_id,
                         data::move_id::TRIPLEKICK
                             | data::move_id::TRIPLEAXEL
                             | data::move_id::POPULATIONBOMB
                     )
-                    && attacker_item_id != data::item_id::LOADEDDICE
+                    && ctx.attacker_item_id != data::item_id::LOADEDDICE
                 {
                     let acc_comp = crate::accuracy::effective_accuracy(
-                        self, &attacker, &defender, m, move_id,
-                        actor_side, actor_slot, tside, tslot,
-                        attacker_ability_id, attacker_item_id, no_guard_pair,
-                        damaging, pending_kind,
+                        self, &ctx.attacker, &ctx.defender, m, ctx.move_id,
+                        ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot,
+                        ctx.attacker_ability_id, ctx.attacker_item_id, ctx.no_guard_pair,
+                        ctx.damaging, &ctx.pending_kind,
                     );
                     if let Some(eff_acc) = acc_comp.threshold {
                         self.rng.set_decision(RngDecision::Accuracy);
@@ -4593,18 +4633,18 @@ impl Battle {
                 // + order preserved (see method docs).
                 let mut dmg: u16 = self.compute_per_hit_damage(
                     hit_idx,
-                    &attacker,
-                    &defender,
-                    move_id,
+                    &ctx.attacker,
+                    &ctx.defender,
+                    ctx.move_id,
                     m.base_power as u32,
-                    inputs,
-                    &mut pipeline,
-                    beat_up_ctx_opt,
-                    beat_up_base_atks,
-                    crit_immune,
-                    crit_stage,
-                    base_hit_dmg,
-                    fixed_dmg_snapshot,
+                    ctx.inputs,
+                    &mut ctx.pipeline,
+                    ctx.beat_up_ctx_opt,
+                    ctx.beat_up_base_atks,
+                    ctx.crit_immune,
+                    ctx.crit_stage,
+                    ctx.base_hit_dmg,
+                    ctx.fixed_dmg_snapshot,
                 );
 
             // Substitute interception. If the defender has a sub up, the
@@ -4624,21 +4664,21 @@ impl Battle {
             // Piercing Drill broke through the target's Protect: the move
             // lands for 1/4 of the damage it would otherwise deal (applied to
             // the fully-modified final damage). See the Protect block above.
-            if piercing_drill_quarter {
+            if ctx.piercing_drill_quarter {
                 dmg /= 4;
             }
-            let sub_hp_pre = defender.substitute_hp();
+            let sub_hp_pre = ctx.defender.substitute_hp();
             // Infiltrator and sound moves both bypass the target's Substitute
             // (PS: `move.infiltrates` / the `sound` flag let the hit pass
             // straight through to the mon).
-            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !attacker_infiltrates;
+            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !ctx.attacker_infiltrates;
             let effective_dmg = if hit_sub {
                 let absorbed = dmg.min(sub_hp_pre);
-                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     let next = t.substitute_hp().saturating_sub(absorbed);
                     t.set_substitute_hp(next);
                 }
-                any_damage_dealt = any_damage_dealt.saturating_add(absorbed);
+                ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(absorbed);
                 0u16
             } else {
                 // Sturdy — defender ability that caps a fatal hit at
@@ -4658,14 +4698,14 @@ impl Battle {
                 // <https://bulbapedia.bulbagarden.net/wiki/Sturdy_(Ability)>.
                 let mut capped = dmg;
                 let (def_ability, def_cur, def_max) = match self
-                    .side(tside)
-                    .active_mon(tslot as usize)
+                    .side(ctx.tside)
+                    .active_mon(ctx.tslot as usize)
                 {
                     Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
                     None => (u16::MAX, 0, 0),
                 };
                 if def_ability == data::ability_id::STURDY
-                    && !attacker_breaks_mold
+                    && !ctx.attacker_breaks_mold
                     && def_cur == def_max
                     && capped >= def_cur
                 {
@@ -4686,8 +4726,8 @@ impl Battle {
                 // guards the `- 1`. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Endure_(move)>.
                 let target_endured = self
-                    .side(tside)
-                    .active_mon(tslot as usize)
+                    .side(ctx.tside)
+                    .active_mon(ctx.tslot as usize)
                     .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
                 if target_endured && capped >= def_cur && def_cur > 0 {
                     capped = def_cur - 1;
@@ -4696,7 +4736,7 @@ impl Battle {
                 // further). Focus Band draws RNG, so swap it out across
                 // the borrow (mirrors apply_secondary_effect's pattern).
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                let out = crate::item::on_before_damage(self, tside, tslot, capped, &mut rng).unwrap_or(capped);
+                let out = crate::item::on_before_damage(self, ctx.tside, ctx.tslot, capped, &mut rng).unwrap_or(capped);
                 self.rng = rng;
                 out
             };
@@ -4721,10 +4761,10 @@ impl Battle {
             let disguise_triggered = !hit_sub
                 && effective_dmg > 0
                 && m.category != 2
-                && !attacker_breaks_mold
+                && !ctx.attacker_breaks_mold
                 && self
-                    .side(tside)
-                    .active_mon(tslot as usize)
+                    .side(ctx.tside)
+                    .active_mon(ctx.tslot as usize)
                     .is_some_and(|d| {
                         !d.disguise_busted
                             && d.effective_ability_id() == data::ability_id::DISGUISE
@@ -4736,7 +4776,7 @@ impl Battle {
             if disguise_triggered {
                 // Busted-forme slug: totem -> busted-totem, else busted.
                 let (chip, busted_id) = {
-                    let d = self.side(tside).active_mon(tslot as usize).unwrap();
+                    let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
                     let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
                         Some(data::species_id::MIMIKYUBUSTEDTOTEM)
                     } else {
@@ -4749,13 +4789,13 @@ impl Battle {
                 // Forme-change first (identical base stats — no recompute),
                 // then mark busted and apply the chip.
                 if let Some(busted_id) = busted_id {
-                    self.set_forme(tside, tslot, busted_id, false);
+                    self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
                 }
-                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     d.disguise_busted = true;
                     d.current_hp = d.current_hp.saturating_sub(chip);
                 }
-                let _ = self.check_target_fainted(tside, tslot);
+                let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
                 // The move's own damage is fully negated — skip the normal
                 // apply / item-hook / Stellar bookkeeping below for this hit.
                 // (Disguise carries no contact/secondary follow-through that
@@ -4772,26 +4812,26 @@ impl Battle {
             if !hit_sub {
                 let res = self.apply_damage_step(DamageApplication {
                     effective_dmg,
-                    attacker_side: actor_side,
-                    attacker_slot: actor_slot as u8,
-                    target_side: tside,
-                    target_slot: tslot,
+                    attacker_side: ctx.actor_side,
+                    attacker_slot: ctx.actor_slot as u8,
+                    target_side: ctx.tside,
+                    target_slot: ctx.tslot,
                     move_category: m.category,
                     move_type: m.type_,
                 });
-                any_damage_dealt = any_damage_dealt.saturating_add(res.damage_dealt);
+                ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(res.damage_dealt);
                 // Record the real-hit foe slot for Dragon Tail / Circle
                 // Throw phazing (a Substitute absorb never reaches this
                 // branch, so a subbed mon stays None and is not phazed).
                 if res.is_real_hit {
-                    drag_target = Some((tside, tslot));
+                    ctx.drag_target = Some((ctx.tside, ctx.tslot));
                 }
 
                 // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
                 // Starf Berry draws RNG for its random-stat pick, so swap
                 // self.rng out across the borrow (mem::replace idiom).
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::item::on_after_damage(self, tside, tslot, &mut rng);
+                crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
                 self.rng = rng;
 
                 // Defender thaw on Fire-type hit (PS cartridge rule —
@@ -4801,7 +4841,7 @@ impl Battle {
                 // first. type code 1 = Fire.
                 let thawed = m.type_ == 1 || move_is_defrost(m.slug);
                 if thawed {
-                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                         if t.is_alive() && matches!(t.status, Status::Freeze) {
                             t.status = Status::None;
                         }
@@ -4812,23 +4852,23 @@ impl Battle {
             // Destiny Bond — if this hit fainted a holder of the volatile,
             // the attacker faints too (PS onFaint). Fires after the damage /
             // item hooks above so the target's faint state is settled.
-            self.apply_destiny_bond_counter_faint(actor_side, actor_slot, tside, tslot);
+            self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
 
             // Knock Off item removal — after damage, after Sitrus etc.,
             // skip if target fainted (item removed via faint is moot),
             // if defender has Sticky Hold, or if the hit was absorbed by
             // a Substitute (PS: knock-off effect requires the hit to
             // reach the holder).
-            if move_id == data::move_id::KNOCKOFF && !hit_sub {
+            if ctx.move_id == data::move_id::KNOCKOFF && !hit_sub {
                 // Sticky Hold and a Substitute block removal; so does an
                 // unremovable item — the holder's own Mega Stone (PS
                 // `onTakeItem` false). Matches the no-boost gate in damage.rs.
-                let can_knock = self.side(tside).active_mon(tslot as usize)
+                let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
                     .is_some_and(|m| m.is_alive()
                         && m.ability_id != data::ability_id::STICKYHOLD
                         && data::mega_stone_for(m.item_id, m.species_id).is_none());
                 if can_knock {
-                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                    if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                         t.item_id = u16::MAX;
                     }
                 }
@@ -4845,8 +4885,8 @@ impl Battle {
             // Bulbapedia:
             //   <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
             //   <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
-            if matches!(move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) && !hit_sub {
-                if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+            if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) && !hit_sub {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     if t.is_alive() {
                         let _ = t.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::SmackdownGrounded,
@@ -4862,7 +4902,7 @@ impl Battle {
             // the user-of-the-sub (flinch, stat drops, status). Sound
             // moves never set `hit_sub = true` (see is_sound_move check
             // above), so their secondaries fire normally.
-            let alive_post = self.side(tside).active_mon(tslot as usize)
+            let alive_post = self.side(ctx.tside).active_mon(ctx.tslot as usize)
                 .is_some_and(|m| m.is_alive());
             // Defender ability `onDamagingHit` (PS step before secondary
             // effects). Runs only when the hit actually reached the
@@ -4870,7 +4910,7 @@ impl Battle {
             // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
             // their own PRs.
             self.apply_on_hit_reactions(
-                tside, tslot, actor_side, actor_slot, move_id, &attacker, crit, hit_sub, effective_dmg,
+                ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
             );
             // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
             // attacker-side KO triggers. PS data/abilities.ts:
@@ -4886,13 +4926,13 @@ impl Battle {
             //             <https://bulbapedia.bulbagarden.net/wiki/Beast_Boost_(Ability)>.
             if !alive_post && effective_dmg > 0 && !hit_sub {
                 let attacker_ability = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
+                    .side(ctx.actor_side)
+                    .active_mon(ctx.actor_slot as usize)
                     .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
                     .unwrap_or("");
                 match attacker_ability {
                     "moxie" => {
-                        self.apply_boosts(actor_side, actor_slot, &[(0, 1)], actor_side, actor_slot);
+                        self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
                     }
                     // Eelevate (Pokémon Champions, Mega Eelektross) shares
                     // Beast Boost's on-KO trigger: "When the Pokémon knocks
@@ -4902,11 +4942,11 @@ impl Battle {
                         // PS reads the attacker's current stats / stages
                         // at faint time (PS `getBestStat(false, true)`).
                         let idx = self
-                            .side(actor_side)
-                            .active_mon(actor_slot as usize)
+                            .side(ctx.actor_side)
+                            .active_mon(ctx.actor_slot as usize)
                             .map(crate::ability::best_stat_index)
                             .unwrap_or(0);
-                        self.apply_boosts(actor_side, actor_slot, &[(idx, 1)], actor_side, actor_slot);
+                        self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
                     }
                     _ => {}
                 }
@@ -4916,7 +4956,7 @@ impl Battle {
             // (Sheer Force ablation + target faint + sub absorption);
             // per-secondary vetoes / draws live inside
             // `apply_secondary_effect`.
-            if crate::secondary::should_run_secondary_block(self, &attacker, m, alive_post, hit_sub)
+            if crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub)
                 == crate::secondary::SecondaryProcDecision::Run
             {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
@@ -4924,7 +4964,7 @@ impl Battle {
                 // mem::replace; tag the decision so percent draws here key as
                 // Secondary (not the Accuracy set before the accuracy roll).
                 rng.set_decision(RngDecision::Secondary);
-                apply_secondary_effect(self, tside, tslot, actor_side, actor_slot, m.slug, &mut rng);
+                apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
                 self.rng = rng;
             }
 
@@ -4938,7 +4978,7 @@ impl Battle {
             // common case (single-target drain into a live mon) is
             // exact. Liquid Ooze flip not modelled (rare ability).
             // Big Root +30% boost also deferred.
-            self.apply_drain_heal(tside, tslot, actor_side, actor_slot, m, hit_sub, effective_dmg);
+            self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, effective_dmg);
 
                 // PS stops a multi-hit move the moment the target faints
                 // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -4946,14 +4986,19 @@ impl Battle {
                 // sub and lands on the Pokémon. Single-hit moves have
                 // `hits == 1`, so this break is reached at most once.
                 let target_fainted = self
-                    .side(tside)
-                    .active_mon(tslot as usize)
+                    .side(ctx.tside)
+                    .active_mon(ctx.tslot as usize)
                     .map(|d| !d.is_alive())
                     .unwrap_or(true);
                 if target_fainted {
                     break;
                 }
             } // end multi-hit per-hit loop
+            // Read accumulators back from ctx — the per-target tail
+            // (crash damage / `apply_self_effects` / `apply_post_move_effects`)
+            // continues to read the outer locals. See PR-D1 design.
+            any_damage_dealt = ctx.any_damage_dealt;
+            drag_target = ctx.drag_target;
         }
 
         // Crash damage — Jump Kick / High Jump Kick / Axe Kick / Supercell Slam
@@ -11698,6 +11743,79 @@ pub(crate) struct ApplyResult {
     /// attacker. Currently unused by the caller (the mark itself is
     /// the side-effect) but exposed for future hooks.
     pub stellar_consumed: bool,
+}
+
+/// Per-target / per-hit context bundle owned by the per-target body of
+/// `resolve_move_with_pending`. Built once per target right before the
+/// `for hit_idx in 0..hits` loop; the hit-loop body reads/writes every
+/// captured local through this struct so it can extract into
+/// `Battle::apply_single_hit` (PR-D2) without a 20-arg signature. See
+/// `docs/per-target-context-design.md`.
+///
+/// **Lifetime**: scoped to ONE per-target iteration. The `attacker` and
+/// `defender` snapshots are owned `Pokemon` clones (Pokemon is heap-free
+/// plain data — clone cost is the same as the existing per-target
+/// snapshot already taken at the top of the per-target loop).
+///
+/// **Mutable accumulators**: `any_damage_dealt` and `drag_target` are
+/// seeded from the outer per-target scope and read back AFTER the hit
+/// loop so the per-target tail (crash damage / `apply_self_effects` /
+/// `apply_post_move_effects`) sees the updated values. `pipeline` is
+/// per-target (moved in, never read after the loop).
+///
+/// **Per-hit scratch**: `target_fainted_this_hit` is reset by the
+/// driver each iteration; once PR-D2 lifts the body into a method, the
+/// `target_fainted` break check becomes a `ctx.target_fainted_this_hit`
+/// write that the driver checks after the call returns.
+#[derive(Debug, Clone)]
+pub(crate) struct PerTargetContext {
+    // ---- target identity ----
+    pub tside: SideRef,
+    pub tslot: u8,
+    pub actor_side: SideRef,
+    pub actor_slot: u8,
+
+    // ---- move identity ----
+    pub move_id: u16,
+    pub pending_kind: [[u8; 2]; 2],
+
+    // ---- attacker / defender snapshots (taken once per target) ----
+    pub attacker: Pokemon,
+    pub defender: Pokemon,
+    pub attacker_item_id: u16,
+    pub attacker_ability_id: u16,
+    pub attacker_breaks_mold: bool,
+    pub attacker_infiltrates: bool,
+    pub no_guard_pair: bool,
+    pub damaging: bool,
+
+    // ---- crit + damage inputs (computed once per target) ----
+    pub crit: bool,
+    pub crit_immune: bool,
+    pub crit_stage: u8,
+    pub inputs: crate::damage::DamageInputs,
+    pub beat_up_ctx_opt: Option<DamageContext>,
+    pub beat_up_base_atks: [u16; 6],
+    pub fixed_dmg_snapshot: Option<u16>,
+    pub piercing_drill_quarter: bool,
+
+    // ---- per-hit pipeline state ----
+    pub pipeline: DamagePipeline,
+    pub base_hit_dmg: u16,
+    pub hits: u32,
+
+    // ---- mutable accumulators (read back by per-target tail) ----
+    pub any_damage_dealt: u16,
+    pub drag_target: Option<(SideRef, u8)>,
+
+    // ---- per-hit scratch (reset each iteration; bundled for ergonomics) ----
+    // Driver-side break flag for the multi-hit loop. Set by PR-D2's
+    // `apply_single_hit` when the target faints OR a multiaccuracy miss
+    // should stop the move; the driver checks it after the method call
+    // returns. Unused in PR-D1 where the body stays inline and uses
+    // `break` directly.
+    #[allow(dead_code)]
+    pub target_fainted_this_hit: bool,
 }
 
 /// A foe-stat-lowering status move's data. Stat indices match
