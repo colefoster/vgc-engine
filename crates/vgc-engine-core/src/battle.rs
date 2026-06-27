@@ -12931,9 +12931,26 @@ fn apply_secondary_effect(
     if defender_has_covert_cloak {
         return;
     }
-    // PS rolls each secondary independently — a move can in principle
-    // have multiple (none currently in our table, but the structure
-    // tolerates it).
+    // PS rolls each secondary independently in `secondaries[]` array
+    // order — sim/battle-actions.ts:1363 `for (const secondary of
+    // secondaries)`, one `random(100)` per entry. The elemental Fangs
+    // (Ice/Fire/Thunder Fang — PS data/moves.ts icefang:9358,
+    // firefang:5347, thunderfang) all list `[{status}, {flinch}]`, so
+    // PS draws the status roll first and the flinch roll second.
+    // Engine OracleKeyed buckets both rolls under the same (turn,
+    // actor, target, move, Secondary) key and pops FIFO, so the engine
+    // must run the status check before the flinch check or it consumes
+    // the wrong roll for each. Conformance witness out_1d29a55a3b:
+    // Luxray Ice Fang on Salazzle recorded [89, 6]; pre-swap engine
+    // popped 89 for flinch (no flinch) then 6 for status (≤10 = freeze
+    // applied, diverged from PS=none).
+    if let Some((status, chance)) = status_secondary(move_slug) {
+        if rng.percent_1_100() <= sg(chance) {
+            // Move secondary: the attacker is the source, so Safeguard on
+            // the target's side vetoes it.
+            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
+        }
+    }
     if let Some(chance) = flinch_chance(move_slug) {
         let chance = sg(chance);
         // PS rolls the flinch chance unconditionally; the flinch is then
@@ -12968,13 +12985,6 @@ fn apply_secondary_effect(
                     t.set_flinched(true);
                 }
             }
-        }
-    }
-    if let Some((status, chance)) = status_secondary(move_slug) {
-        if rng.percent_1_100() <= sg(chance) {
-            // Move secondary: the attacker is the source, so Safeguard on
-            // the target's side vetoes it.
-            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
     // Confuse secondary — PS `secondary: { chance, volatileStatus:
