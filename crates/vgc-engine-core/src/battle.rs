@@ -4974,6 +4974,57 @@ impl Battle {
         }
     }
 
+    /// Attacker-side on-KO ability triggers — Moxie / Beast Boost /
+    /// Eelevate. Fires once per damaging-move target that transitioned
+    /// alive→fainted on this hit. PS gates on `move && source && source
+    /// !== target` (attacker exists + cross-side) + the target fainting
+    /// from this hit; we approximate with `!alive_post && effective_dmg
+    /// > 0 && !hit_sub`. Body byte-identical to the inline block.
+    ///
+    /// PS handlers (data/abilities.ts):
+    ///   moxie        onSourceAfterFaint -> boost({atk: 1})
+    ///   beastboost   onSourceAfterFaint -> boost({<best>: 1})
+    /// Eelevate (Pokémon Champions, Mega Eelektross) shares Beast Boost's
+    /// on-KO trigger per the Champions ability gloss
+    /// (serebii.net/pokemonchampions/newabilities.shtml).
+    ///
+    /// `best_stat_index` mirrors PS `getBestStat(false, true)` — the
+    /// stat read at faint time (current stats / stages).
+    /// Chilling Neigh / Grim Neigh / As One variants land in their own
+    /// PRs; the inline scaffold here did not cover them.
+    ///
+    /// No RNG draws.
+    fn apply_attacker_ko_boost_triggers(
+        &mut self,
+        ctx: &PerTargetContext,
+        alive_post: bool,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if !(!alive_post && effective_dmg > 0 && !hit_sub) {
+            return;
+        }
+        let attacker_ability = self
+            .side(ctx.actor_side)
+            .active_mon(ctx.actor_slot as usize)
+            .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
+            .unwrap_or("");
+        match attacker_ability {
+            "moxie" => {
+                self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
+            }
+            "beastboost" | "eelevate" => {
+                let idx = self
+                    .side(ctx.actor_side)
+                    .active_mon(ctx.actor_slot as usize)
+                    .map(crate::ability::best_stat_index)
+                    .unwrap_or(0);
+                self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
+            }
+            _ => {}
+        }
+    }
+
     fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
@@ -5098,45 +5149,7 @@ impl Battle {
         self.apply_on_hit_reactions(
             ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
         );
-        // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
-        // attacker-side KO triggers. PS data/abilities.ts:
-        //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
-        //   beastboost:   onSourceAfterFaint { boost({<best>: 1}) }
-        // Fires once per fainted target on a damaging move. PS gates
-        // on `move && source && source !== target` (attacker still
-        // exists + cross-side) + the target actually fainting from
-        // this hit. We approximate by detecting the alive→fainted
-        // transition (`!alive_post && effective_dmg > 0`).
-        // `best_stat_index` already mirrors PS `getBestStat(false, true)`.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moxie_(Ability)>
-        //             <https://bulbapedia.bulbagarden.net/wiki/Beast_Boost_(Ability)>.
-        if !alive_post && effective_dmg > 0 && !hit_sub {
-            let attacker_ability = self
-                .side(ctx.actor_side)
-                .active_mon(ctx.actor_slot as usize)
-                .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
-                .unwrap_or("");
-            match attacker_ability {
-                "moxie" => {
-                    self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
-                }
-                // Eelevate (Pokémon Champions, Mega Eelektross) shares
-                // Beast Boost's on-KO trigger: "When the Pokémon knocks
-                // out a target with an attack, its highest stat is boosted
-                // by 1 stage." (serebii.net/pokemonchampions/newabilities.shtml).
-                "beastboost" | "eelevate" => {
-                    // PS reads the attacker's current stats / stages
-                    // at faint time (PS `getBestStat(false, true)`).
-                    let idx = self
-                        .side(ctx.actor_side)
-                        .active_mon(ctx.actor_slot as usize)
-                        .map(crate::ability::best_stat_index)
-                        .unwrap_or(0);
-                    self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
-                }
-                _ => {}
-            }
-        }
+        self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
         // Deterministic gate on the secondary-effect block. See
         // `crate::secondary::should_run_secondary_block` for scope
         // (Sheer Force ablation + target faint + sub absorption);
