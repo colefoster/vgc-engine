@@ -1166,34 +1166,65 @@ impl Battle {
         }
     }
 
-    /// Advance the cursor by one phase. F0 has just two phases: `Start`
-    /// runs the full turn body (delegating to `step_inner`) and parks
-    /// the `StepResult` in `Done`; `Done` hands the result back to the
-    /// driver. Future PRs (F1+) split `Start` into finer phases and add
-    /// `ChanceYield` returns at native draw sites.
+    /// Advance the cursor by one phase. F1 splits the turn into four
+    /// phases: `Start` (prologue: volatile reset, switches, mega, action
+    /// ordering, Custap, queue setup) → `ActionLoop` (one queued action
+    /// per call) → `Epilogue` (self-switch, EOT, timers, weather,
+    /// commander, winner check) → `Done`. Future PRs (F2+) add
+    /// `ChanceYield` returns at native draw sites inside the action
+    /// loop.
     pub fn step_one(
         &mut self,
         cursor: &mut crate::step_machine::StepCursor<'_>,
     ) -> crate::step_machine::StepProgress {
         use crate::step_machine::{StepPhase, StepProgress};
-        match cursor.phase {
+        // Match on `&mut cursor.phase` so we can mutate ActionLoop
+        // fields in place. Phase transitions go via the `next` local so
+        // the cursor borrow is dropped before reassignment.
+        let next: Option<StepPhase<'_>> = match &mut cursor.phase {
             StepPhase::Start { p1, p2 } => {
-                let r = self.step_inner(p1, p2);
-                cursor.phase = StepPhase::Done(r);
-                StepProgress::Continue
+                let p1 = *p1;
+                let p2 = *p2;
+                // Battle-ended short-circuit (matches the pre-F1
+                // `if let Some(w) = self.ended { return Ended }` guard).
+                if let Some(w) = self.ended {
+                    Some(StepPhase::Done(StepResult::Ended { winner: w }))
+                } else {
+                    let (order, pending_kind) = self.turn_prologue(p1, p2);
+                    Some(StepPhase::ActionLoop { p1, p2, order, idx: 0, pending_kind })
+                }
             }
-            StepPhase::Done(r) => StepProgress::Done(r),
+            StepPhase::ActionLoop { p1, p2, order, idx, pending_kind } => {
+                if *idx < order.len() {
+                    self.process_one_action(order, *idx, pending_kind);
+                    *idx += 1;
+                    None
+                } else {
+                    Some(StepPhase::Epilogue { p1: *p1, p2: *p2 })
+                }
+            }
+            StepPhase::Epilogue { p1, p2 } => {
+                let r = self.turn_epilogue(*p1, *p2);
+                Some(StepPhase::Done(r))
+            }
+            StepPhase::Done(r) => return StepProgress::Done(*r),
+        };
+        if let Some(p) = next {
+            cursor.phase = p;
         }
+        StepProgress::Continue
     }
 
-    /// The pre-F0 `step()` body, kept intact as a single block so the
-    /// cursor lift is a pure no-op. F1+ will dissect this into the
-    /// `StepPhase` arms inside `step_one`.
-    fn step_inner(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) -> StepResult {
-        if let Some(w) = self.ended {
-            return StepResult::Ended { winner: w };
-        }
-
+    /// Phase-1 prologue: everything that runs BEFORE the action queue
+    /// walk. Step indexing matches the pre-F0 `step()` body comments
+    /// (0 / 1 / 1b / 2 / Custap / queue setup). Returns the resolved
+    /// action order and the flat `pending_kind` view consumed inside
+    /// the loop.
+    fn turn_prologue(
+        &mut self,
+        p1_choices: &[Choice],
+        p2_choices: &[Choice],
+    ) -> (ActionOrder, [[u8; 2]; 2]) {
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
@@ -1252,7 +1283,7 @@ impl Battle {
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
         // placeholder for the duration of the call.
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-        let mut order = action_order(self, p1_choices, p2_choices, &mut rng);
+        let order = action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
         // Consume Custap Berry for any holder whose `onFractionalPriority`
         // fired this turn. PS `data/items.ts:custapberry` consumes the
@@ -1329,71 +1360,86 @@ impl Battle {
             }
         }
         // Backwards-compatible flat view consumed by `resolve_move_with_pending`.
-        let mut pending_kind: [[u8; 2]; 2] = [
+        let pending_kind: [[u8; 2]; 2] = [
             [queue.entries[0][0].kind.as_byte(), queue.entries[0][1].kind.as_byte()],
             [queue.entries[1][0].kind.as_byte(), queue.entries[1][1].kind.as_byte()],
         ];
 
-        // Index-based walk (rather than `order.iter()`) so After You / Quash
-        // can re-position later actions in the still-unprocessed tail of
-        // `order` between resolutions — PS mutates `this.queue` mid-turn.
-        let mut idx = 0usize;
-        while idx < order.len() {
-            let action = order[idx];
-            if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
-                idx += 1;
-                continue;
-            }
-            // Skip if the actor has fainted earlier this turn, or is a
-            // commanding Tatsugiri (PS `commanding.onBeforeTurn` cancels its
-            // action). `legal_choices` already auto-passes a commanding slot,
-            // so this only fires if a caller hand-built a Move for it.
-            let actor_can_act = self
-                .side(action.side)
-                .active_mon(action.actor_slot as usize)
-                .is_some_and(|m| m.is_alive() && !m.commanding);
-            if !actor_can_act {
-                idx += 1;
-                continue;
-            }
-            // Skip a Pursuit whose action was already consumed during
-            // switch interception this turn (PS `this.queue.cancelMove`).
-            if self.pursuit_consumed[action.side as usize][(action.actor_slot as usize).min(1)] {
-                idx += 1;
-                continue;
-            }
-            // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
-            // iff any action ordered AFTER the current one this turn is a
-            // move/switch/instaswitch/shift. PS shifts the current action
-            // off the queue BEFORE running it, so `willAct()` only sees
-            // later actions. Stall moves (Protect family / Endure / etc.)
-            // gate their success+RNG draw on this — if no later action
-            // will act, the stall move FAILS and does NOT draw. We mirror
-            // by scanning the remainder of `order` for a still-alive Move
-            // action (switches in our engine already ran up-front, so the
-            // only "later acting" actions at move-resolution time are
-            // moves).
-            let will_act = order[idx + 1..].iter().any(|a| {
-                matches!(
-                    a.choice,
-                    Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
-                ) && self
-                        .side(a.side)
-                        .active_mon(a.actor_slot as usize)
-                        .is_some_and(|m| m.is_alive())
-            });
-            // Mark this actor as having consumed their queued action
-            // BEFORE resolving — so Sucker Punch's `willMove(target)`
-            // check sees the target as "still pending" only when it
-            // genuinely hasn't acted yet.
-            let s = action.side as usize;
-            let slot = (action.actor_slot as usize).min(1);
-            pending_kind[s][slot] = 0;
-            self.resolve_move_with_pending(action, &pending_kind, will_act);
-            self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
-            idx += 1;
-        }
+        (order, pending_kind)
+    }
 
+    /// Phase-2 body: process the action at `idx` in the queue. Mirrors
+    /// one iteration of the pre-F1 `while idx < order.len()` loop —
+    /// caller does the `idx += 1` itself (in `step_one`'s `ActionLoop`
+    /// arm). Index-based access so After You / Quash can re-position
+    /// later actions in the still-unprocessed tail via
+    /// `finalize_move_resolution` (PS mutates `this.queue` mid-turn).
+    fn process_one_action(
+        &mut self,
+        order: &mut ActionOrder,
+        idx: usize,
+        pending_kind: &mut [[u8; 2]; 2],
+    ) {
+        let action = order[idx];
+        if matches!(action.choice, Choice::Switch { .. } | Choice::Pass { .. }) {
+            return;
+        }
+        // Skip if the actor has fainted earlier this turn, or is a
+        // commanding Tatsugiri (PS `commanding.onBeforeTurn` cancels its
+        // action). `legal_choices` already auto-passes a commanding slot,
+        // so this only fires if a caller hand-built a Move for it.
+        let actor_can_act = self
+            .side(action.side)
+            .active_mon(action.actor_slot as usize)
+            .is_some_and(|m| m.is_alive() && !m.commanding);
+        if !actor_can_act {
+            return;
+        }
+        // Skip a Pursuit whose action was already consumed during
+        // switch interception this turn (PS `this.queue.cancelMove`).
+        if self.pursuit_consumed[action.side as usize][(action.actor_slot as usize).min(1)] {
+            return;
+        }
+        // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
+        // iff any action ordered AFTER the current one this turn is a
+        // move/switch/instaswitch/shift. PS shifts the current action
+        // off the queue BEFORE running it, so `willAct()` only sees
+        // later actions. Stall moves (Protect family / Endure / etc.)
+        // gate their success+RNG draw on this — if no later action
+        // will act, the stall move FAILS and does NOT draw. We mirror
+        // by scanning the remainder of `order` for a still-alive Move
+        // action (switches in our engine already ran up-front, so the
+        // only "later acting" actions at move-resolution time are
+        // moves).
+        let will_act = order[idx + 1..].iter().any(|a| {
+            matches!(
+                a.choice,
+                Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. }
+            ) && self
+                    .side(a.side)
+                    .active_mon(a.actor_slot as usize)
+                    .is_some_and(|m| m.is_alive())
+        });
+        // Mark this actor as having consumed their queued action
+        // BEFORE resolving — so Sucker Punch's `willMove(target)`
+        // check sees the target as "still pending" only when it
+        // genuinely hasn't acted yet.
+        let s = action.side as usize;
+        let slot = (action.actor_slot as usize).min(1);
+        pending_kind[s][slot] = 0;
+        self.resolve_move_with_pending(action, pending_kind, will_act);
+        self.finalize_move_resolution(order, idx, pending_kind);
+    }
+
+    /// Phase-3 epilogue: everything that runs AFTER the action queue
+    /// walk drains. Step indexing matches the pre-F0 `step()` body
+    /// comments (2b / 3 / 4 / 5 / commander / winner check). Returns
+    /// the `StepResult` that the cursor parks in `StepPhase::Done`.
+    fn turn_epilogue(
+        &mut self,
+        p1_choices: &[Choice],
+        p2_choices: &[Choice],
+    ) -> StepResult {
         // 2b. Self-switch sweep — U-turn / Volt Switch / Flip Turn /
         //     Parting Shot / Teleport / Chilly Reception all leave the
         //     user with `pending_self_switch == true`. Consume the next
