@@ -457,6 +457,31 @@ pub fn apply_boost(stat: u32, stage: i8) -> u32 {
     }
 }
 
+/// Confusion self-hit damage for one damage-roll bucket.
+/// PS `sim/battle-actions.ts:1854` `getConfusionDamage`: 40-BP typeless
+/// physical hit; level / atk / def feed the standard formula, the damage
+/// roll is `100 - bucket` percent applied to the post-base value, min 1.
+///
+/// Pulled out of the inline site at `battle.rs:check_pre_move_status` so
+/// the native-branching fan-out (`Battle::branch_confusion_self_hit`,
+/// chance feature) and the in-step path share one formula. The real path
+/// draws a single bucket; the branch path enumerates all 16.
+#[inline]
+pub fn confusion_self_hit_damage_for_bucket(
+    level: u32,
+    atk_base: u32,
+    atk_boost: i8,
+    def_base: u32,
+    def_boost: i8,
+    bucket: u8,
+) -> u16 {
+    let atk = apply_boost(atk_base, atk_boost);
+    let def = apply_boost(def_base, def_boost).max(1);
+    let lvl_factor = 2 * level / 5 + 2;
+    let base = (lvl_factor * 40 * atk / def / 50) + 2;
+    (base * (100 - bucket as u32) / 100).max(1) as u16
+}
+
 /// Pokémon Champions / mainline gen-9 damage rounding — a faithful port of
 /// PS's `Battle.chainModify` + `Battle.modify` (`sim/battle.ts:2334`,`:2345`),
 /// which the cartridge and Champions both use (round-half-DOWN, "pokeRound").
