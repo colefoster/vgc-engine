@@ -115,6 +115,70 @@ impl Battle {
     ) -> ChanceFrontier {
         enumerate_outcomes_impl(self, p1_choices, p2_choices, record_seed)
     }
+
+    /// Native chance branching — confusion self-hit damage (PR-E1 spike).
+    ///
+    /// Given an `actor_side`/`actor_slot` pair that would, in a real
+    /// `step()`, hit itself in confusion this turn, fan out the 16
+    /// possible damage-roll buckets directly: clone the Battle once per
+    /// bucket, apply the corresponding HP delta to the actor, and return
+    /// `(Battle, prob=1/16)` for each. No RNG is drawn; no `step()` is
+    /// invoked.
+    ///
+    /// **This is a spike — it is not integrated into `step()`.** The
+    /// real path inside `check_pre_move_status` still draws one bucket
+    /// and continues. Full integration requires continuation-passing for
+    /// the rest of `step()` after the draw site, which is the load-
+    /// bearing piece of the chance-frontier migration (see
+    /// `docs/chance-frontier-migration.md` "PR-11 investigation" + the
+    /// Phase C state-machine refactor `docs/per-target-context-design.md`).
+    /// Tracks toward PR-E2 (per-hit primary damage-roll branching) once
+    /// the `apply_single_hit` sub-phases extract.
+    ///
+    /// The shared damage formula lives in
+    /// `crate::damage::confusion_self_hit_damage_for_bucket` so the
+    /// spike and the in-step path cannot drift.
+    ///
+    /// Returns an empty vec if the actor slot is empty (no live mon to
+    /// apply damage to).
+    #[cfg(feature = "chance")]
+    pub fn branch_confusion_self_hit(
+        &self,
+        actor_side: crate::side::SideRef,
+        actor_slot: u8,
+    ) -> Vec<(Battle, f64)> {
+        let (level, atk_base, atk_boost, def_base, def_boost) = match self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+        {
+            Some(m) => (
+                m.level as u32,
+                m.stats.atk as u32,
+                m.boosts[0],
+                m.stats.def as u32,
+                m.boosts[1],
+            ),
+            None => return Vec::new(),
+        };
+        let mut out = Vec::with_capacity(16);
+        for bucket in 0u8..16 {
+            let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
+                level, atk_base, atk_boost, def_base, def_boost, bucket,
+            );
+            let mut branch = self.clone();
+            if let Some(m) = branch
+                .side_mut(actor_side)
+                .active_mon_mut(actor_slot as usize)
+            {
+                m.current_hp = m.current_hp.saturating_sub(dmg);
+                if m.current_hp == 0 {
+                    m.fainted = true;
+                }
+            }
+            out.push((branch, 1.0 / 16.0));
+        }
+        out
+    }
 }
 
 /// Internal enumerator. Mirrors `vgc_solver::enumerate_outcomes` exactly
@@ -346,6 +410,55 @@ mod tests {
         for o in &frontier.outcomes {
             assert_eq!(o.hash, o.battle.canonical_hash());
         }
+    }
+
+    #[test]
+    fn branch_confusion_self_hit_fans_out_16() {
+        let b = fixture();
+        let frontier = b.branch_confusion_self_hit(SideRef::P1, 0);
+        assert_eq!(frontier.len(), 16, "16 damage-roll buckets");
+        let total: f64 = frontier.iter().map(|(_, p)| *p).sum();
+        assert!((total - 1.0).abs() < 1e-9, "Σ prob = {total}");
+        // Each branch is a real Battle; the actor's HP must have
+        // decreased by some positive amount in every branch (min-1
+        // floor in the formula guarantees non-zero damage on a live
+        // mon at full HP).
+        let orig_hp = b
+            .side(SideRef::P1)
+            .active_mon(0)
+            .map(|m| m.current_hp)
+            .unwrap();
+        for (branch, _) in &frontier {
+            let new_hp = branch
+                .side(SideRef::P1)
+                .active_mon(0)
+                .map(|m| m.current_hp)
+                .unwrap();
+            assert!(new_hp < orig_hp, "branch HP {new_hp} must drop from {orig_hp}");
+        }
+        // Bucket 0 (100%) deals the most damage; bucket 15 (85%) the
+        // least. So branch 0's HP <= branch 15's HP, monotonically.
+        for w in frontier.windows(2) {
+            let hp_a = w[0].0.side(SideRef::P1).active_mon(0).unwrap().current_hp;
+            let hp_b = w[1].0.side(SideRef::P1).active_mon(0).unwrap().current_hp;
+            assert!(hp_a <= hp_b, "bucket {} HP {} > next bucket HP {}", 0, hp_a, hp_b);
+        }
+    }
+
+    #[test]
+    fn branch_confusion_self_hit_does_not_mutate_base() {
+        let b = fixture();
+        let h_before = b.canonical_hash();
+        let _ = b.branch_confusion_self_hit(SideRef::P1, 0);
+        assert_eq!(b.canonical_hash(), h_before);
+    }
+
+    #[test]
+    fn branch_confusion_self_hit_empty_slot_returns_empty() {
+        let b = fixture();
+        // P1 slot 1 in a Singles fixture has no active mon.
+        let frontier = b.branch_confusion_self_hit(SideRef::P1, 1);
+        assert!(frontier.is_empty());
     }
 
     /// Parity test: step_chance must produce the same frontier the
