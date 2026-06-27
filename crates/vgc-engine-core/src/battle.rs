@@ -6780,6 +6780,104 @@ impl Battle {
     ///   - Confusion self-hit damage: `rng.damage_roll()` keyed to (turn,
     ///     actor, move, `NO_SLOT`).
     ///   - Attract immobilize: `rng.range(2)`.
+    /// Confusion onBeforeMove arm of `check_pre_move_status`. Mirrors PS
+    /// `data/conditions.ts:180` exactly:
+    ///   1. Decrement the confusion volatile's counter. If it hits 0,
+    ///      remove the volatile and let the move proceed (Proceed return).
+    ///   2. Otherwise draw `randomChance(33, 100)` — 33% chance to hit
+    ///      self. Veto / counter-decrement happens BEFORE the draw in PS
+    ///      (`onBeforeMove` reads the volatile state, then rolls); we
+    ///      mirror that here. Do NOT lift the counter-zero predicate
+    ///      ahead of the gate draw — memory `feedback_ps_draws_then_vetoes`.
+    ///   3. If the gate passes, draw the standard `damage_roll()` and
+    ///      apply 40-BP typeless physical self-damage. PS
+    ///      `sim/battle-actions.ts:1854 getConfusionDamage`. Return
+    ///      Abort — the move is fully aborted, no PP consumed.
+    ///
+    /// **PsGen5 keying:** the gate keys to (turn, actor, move, target)
+    /// under `RngDecision::Secondary` (matching PS's onBeforeMove
+    /// effect-id keying); the damage roll keys to (turn, actor, move,
+    /// `NO_SLOT`) since the self-hit has no target. Both draws are
+    /// preserved byte-identical from the previous inline location.
+    ///
+    /// **Native-branching seam (future PR-E2):** the damage roll site
+    /// here is the cleanest fan-out in the engine. The current
+    /// chance-frontier wrapper enumerates this site via record/replay;
+    /// the native path would fan out 16 buckets via
+    /// `Battle::branch_confusion_self_hit` (chance.rs) and resume
+    /// `step()` per branch. Resuming requires either a CoW Battle or a
+    /// state-machine driver — see `docs/chance-frontier-migration.md`
+    /// "PR-11 investigation" for why the seam alone is insufficient.
+    fn try_confusion_self_hit(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        ctx_actor: u8,
+        ctx_target: u8,
+    ) -> PreMoveOutcome {
+        let conf_pos = self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
+        let Some(pos) = conf_pos else { return PreMoveOutcome::Proceed; };
+        let remaining = {
+            let m = self
+                .side_mut(actor_side)
+                .active_mon_mut(actor_slot as usize)
+                .unwrap();
+            let v = &mut m.volatiles.items[pos];
+            v.payload = v.payload.saturating_sub(1);
+            v.payload
+        };
+        if remaining == 0 {
+            self.side_mut(actor_side)
+                .active_mon_mut(actor_slot as usize)
+                .unwrap()
+                .volatiles
+                .remove(crate::pokemon::VolatileKind::Confusion);
+            return PreMoveOutcome::Proceed;
+        }
+        // Gate draw — PS percent_1_100 vs 33.
+        self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+        self.rng.set_decision(RngDecision::Secondary);
+        if self.rng.percent_1_100() > 33 {
+            return PreMoveOutcome::Proceed;
+        }
+        // Self-hit: 40-BP typeless physical confusion damage.
+        let (level, atk_base, atk_boost, def_base, def_boost) = {
+            let m = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .unwrap();
+            (
+                m.level as u32,
+                m.stats.atk as u32,
+                m.boosts[0],
+                m.stats.def as u32,
+                m.boosts[1],
+            )
+        };
+        // PS records the self-hit damage roll with no target.
+        self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
+        let roll = self.rng.damage_roll();
+        // Shared formula with the native-branching fan-out
+        // (`Battle::branch_confusion_self_hit`). PS
+        // `sim/battle-actions.ts:1854` `getConfusionDamage`.
+        let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
+            level, atk_base, atk_boost, def_base, def_boost, roll,
+        );
+        let m = self
+            .side_mut(actor_side)
+            .active_mon_mut(actor_slot as usize)
+            .unwrap();
+        m.current_hp = m.current_hp.saturating_sub(dmg);
+        if m.current_hp == 0 {
+            m.fainted = true;
+        }
+        PreMoveOutcome::Abort
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_pre_move_status(
         &mut self,
@@ -6965,78 +7063,14 @@ impl Battle {
             }
         }
 
-        // 1d. Confusion onBeforeMove. PS data/conditions.ts:180
-        //     decrements the confusion counter; when it hits 0 the
-        //     volatile is removed and the move proceeds normally.
-        //     Otherwise PS fires `randomChance(33, 100)` — 33% chance
-        //     to hit self for 40-BP typeless physical damage with the
-        //     standard damage roll, no PP consumed.
-        //
-        //     Engine survey (PR-208) saw this draw fire ~9x per
-        //     battle (PercentRoll gate) + the inner damage roll
-        //     (~4x). Both sites are now wired here so the oracle
-        //     stays balanced when confusion is in play.
-        {
-            let conf_pos = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .and_then(|m| m.volatiles.position(crate::pokemon::VolatileKind::Confusion));
-            if let Some(pos) = conf_pos {
-                let remaining = {
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    let v = &mut m.volatiles.items[pos];
-                    v.payload = v.payload.saturating_sub(1);
-                    v.payload
-                };
-                if remaining == 0 {
-                    self.side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap()
-                        .volatiles
-                        .remove(crate::pokemon::VolatileKind::Confusion);
-                } else if {
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-                    self.rng.set_decision(RngDecision::Secondary);
-                    self.rng.percent_1_100() <= 33
-                } {
-                    // Self-hit: 40-BP typeless physical confusion damage.
-                    // PS sim/battle-actions.ts:1854 getConfusionDamage.
-                    let (level, atk_base, atk_boost, def_base, def_boost) = {
-                        let m = self
-                            .side(actor_side)
-                            .active_mon(actor_slot as usize)
-                            .unwrap();
-                        (
-                            m.level as u32,
-                            m.stats.atk as u32,
-                            m.boosts[0],
-                            m.stats.def as u32,
-                            m.boosts[1],
-                        )
-                    };
-                    // PS records the self-hit damage roll with no target.
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
-                    let roll = self.rng.damage_roll();
-                    // Shared formula with the native-branching fan-out
-                    // (`Battle::branch_confusion_self_hit`). PS
-                    // `sim/battle-actions.ts:1854` `getConfusionDamage`.
-                    let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
-                        level, atk_base, atk_boost, def_base, def_boost, roll,
-                    );
-                    let m = self
-                        .side_mut(actor_side)
-                        .active_mon_mut(actor_slot as usize)
-                        .unwrap();
-                    m.current_hp = m.current_hp.saturating_sub(dmg);
-                    if m.current_hp == 0 {
-                        m.fainted = true;
-                    }
-                    return PreMoveOutcome::Abort;
-                }
-            }
+        // 1d. Confusion onBeforeMove. See `try_confusion_self_hit` for
+        //     the gate + damage draw + apply detail; PS draw sites and
+        //     ordering are preserved verbatim there.
+        if matches!(
+            self.try_confusion_self_hit(actor_side, actor_slot, move_id, ctx_actor, ctx_target),
+            PreMoveOutcome::Abort
+        ) {
+            return PreMoveOutcome::Abort;
         }
 
         // 1e. Attract (infatuation). PS data/moves.ts:706 attract condition.
