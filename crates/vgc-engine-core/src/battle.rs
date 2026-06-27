@@ -4757,6 +4757,100 @@ impl Battle {
         false
     }
 
+    /// Substitute interception + Sturdy / Endure / Focus Sash / Focus Band
+    /// clamp chain. Lifted byte-identical from the inline block; PS draw
+    /// site preserved verbatim (Focus Band's `percent_1_100` lives inside
+    /// `item::on_before_damage`, called under the same `mem::replace` rng
+    /// swap that the inline code used).
+    ///
+    /// Returns `(hit_sub, effective_dmg)`. When `hit_sub` is true the
+    /// Substitute absorbed the hit — `effective_dmg` is 0, the sub's HP
+    /// is already decremented, and `ctx.any_damage_dealt` has been bumped
+    /// by the absorbed amount. When false, `effective_dmg` is the
+    /// (possibly clamped) damage to apply to the mon.
+    ///
+    /// Sub bypass: sound moves (`is_sound_move`) and `attacker_infiltrates`
+    /// both pass straight to the mon (PS: `data/conditions.ts:substitute
+    /// onTryPrimaryHit` early-return + `move.infiltrates`).
+    ///
+    /// Sturdy is Mold-Breaker-breakable; Endure and Focus Sash are not.
+    /// All three clamp to `def_cur - 1`, so their relative order is
+    /// immaterial — kept in PS's listed order (Sturdy → Endure → Focus
+    /// Sash) for cross-reference. The OHKO-move arm of Sturdy
+    /// (`onTryHit`) is deferred to the OHKO PR.
+    /// PS handlers: Sturdy `data/abilities.ts`; Endure `data/moves.ts`
+    /// (Endure volatile `onDamage`); Focus Sash `data/items.ts`.
+    fn intercept_substitute_and_clamp(
+        &mut self,
+        ctx: &mut PerTargetContext,
+        dmg: u16,
+    ) -> (bool, u16) {
+        let sub_hp_pre = ctx.defender.substitute_hp();
+        let slug = ctx.move_def.slug;
+        // Infiltrator and sound moves both bypass the target's Substitute
+        // (PS: `move.infiltrates` / the `sound` flag let the hit pass
+        // straight through to the mon).
+        let hit_sub = sub_hp_pre > 0 && !is_sound_move(slug) && !ctx.attacker_infiltrates;
+        let effective_dmg = if hit_sub {
+            let absorbed = dmg.min(sub_hp_pre);
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                let next = t.substitute_hp().saturating_sub(absorbed);
+                t.set_substitute_hp(next);
+            }
+            ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(absorbed);
+            0u16
+        } else {
+            // Sturdy — defender ability that caps a fatal hit at 1 HP if
+            // the defender is at full HP. Sturdy is breakable; Mold
+            // Breaker (precomputed once per move upstream as
+            // `ctx.attacker_breaks_mold`) lifts it. OHKO-move arm
+            // (`onTryHit` for `move.ohko`) is deferred — Horn Drill /
+            // Fissure / Guillotine / Sheer Cold not implemented yet.
+            let mut capped = dmg;
+            let (def_ability, def_cur, def_max) = match self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+            {
+                Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
+                None => (u16::MAX, 0, 0),
+            };
+            if def_ability == data::ability_id::STURDY
+                && !ctx.attacker_breaks_mold
+                && def_cur == def_max
+                && capped >= def_cur
+            {
+                capped = def_cur - 1;
+            }
+            // Endure volatile — PS `data/moves.ts` (Endure's volatile
+            //   onDamagePriority: -10,
+            //   onDamage(damage, target, source, effect) {
+            //     if (effect?.effectType === 'Move' && damage >= target.hp)
+            //       return target.hp - 1;
+            //   }
+            // Survives a lethal MOVE hit from ANY HP (not just full),
+            // NOT breakable by Mold Breaker. Caps move damage only —
+            // residual (poison / sand / etc.) can still KO afterward.
+            // `def_cur > 0` guards the `- 1`.
+            let target_endured = self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+                .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
+            if target_endured && capped >= def_cur && def_cur > 0 {
+                capped = def_cur - 1;
+            }
+            // Pre-damage item hook (Focus Sash / Focus Band may cap
+            // further). Focus Band draws RNG, so swap it out across the
+            // borrow (mirrors apply_secondary_effect's pattern). Veto
+            // predicates inside `on_before_damage` STAY there — do not
+            // lift ahead of the draw (PsGen5 discipline).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            let out = crate::item::on_before_damage(self, ctx.tside, ctx.tslot, capped, &mut rng).unwrap_or(capped);
+            self.rng = rng;
+            out
+        };
+        (hit_sub, effective_dmg)
+    }
+
     fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
@@ -4803,79 +4897,11 @@ impl Battle {
         if ctx.piercing_drill_quarter {
             dmg /= 4;
         }
-        let sub_hp_pre = ctx.defender.substitute_hp();
-        // Infiltrator and sound moves both bypass the target's Substitute
-        // (PS: `move.infiltrates` / the `sound` flag let the hit pass
-        // straight through to the mon).
-        let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !ctx.attacker_infiltrates;
-        let effective_dmg = if hit_sub {
-            let absorbed = dmg.min(sub_hp_pre);
-            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                let next = t.substitute_hp().saturating_sub(absorbed);
-                t.set_substitute_hp(next);
-            }
-            ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(absorbed);
-            0u16
-        } else {
-            // Sturdy — defender ability that caps a fatal hit at
-            // 1 HP if the defender is at full HP. PS handler:
-            //   onDamage(damage, target, source, effect) {
-            //     if (target.hp === target.maxhp && damage >= target.hp
-            //         && effect && effect.effectType === 'Move') {
-            //       this.add('-ability', target, 'Sturdy');
-            //       return target.hp - 1;
-            //     }
-            //   }
-            // OHKO-move arm (`onTryHit` for `move.ohko`) is deferred
-            // — Horn Drill / Fissure / Guillotine / Sheer Cold not
-            // implemented yet. Sturdy carries `flags: { breakable: 1 }`,
-            // so Mold Breaker (computed once per move above) lifts it.
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Sturdy_(Ability)>.
-            let mut capped = dmg;
-            let (def_ability, def_cur, def_max) = match self
-                .side(ctx.tside)
-                .active_mon(ctx.tslot as usize)
-            {
-                Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
-                None => (u16::MAX, 0, 0),
-            };
-            if def_ability == data::ability_id::STURDY
-                && !ctx.attacker_breaks_mold
-                && def_cur == def_max
-                && capped >= def_cur
-            {
-                capped = def_cur - 1;
-            }
-            // Endure — PS `data/moves.ts:4827` (the `endure` volatile's
-            //   onDamagePriority: -10,
-            //   onDamage(damage, target, source, effect) {
-            //     if (effect?.effectType === 'Move' && damage >= target.hp)
-            //       return target.hp - 1;
-            //   }
-            // Unlike Sturdy, Endure survives a lethal MOVE hit from ANY
-            // HP (not just full) and is NOT breakable by Mold Breaker.
-            // It only caps move damage; residual (poison / sand / etc.)
-            // can still KO afterward. Runs at priority -10 — after
-            // Sturdy and Focus Sash — but all three clamp to hp-1, so
-            // the relative order is immaterial here. `def_cur > 0`
-            // guards the `- 1`. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Endure_(move)>.
-            let target_endured = self
-                .side(ctx.tside)
-                .active_mon(ctx.tslot as usize)
-                .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
-            if target_endured && capped >= def_cur && def_cur > 0 {
-                capped = def_cur - 1;
-            }
-            // Pre-damage item hook (Focus Sash / Focus Band may cap
-            // further). Focus Band draws RNG, so swap it out across
-            // the borrow (mirrors apply_secondary_effect's pattern).
-            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-            let out = crate::item::on_before_damage(self, ctx.tside, ctx.tslot, capped, &mut rng).unwrap_or(capped);
-            self.rng = rng;
-            out
-        };
+        let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
+        // Rebind `m` after the &mut ctx borrow above ends, so the
+        // remaining post-damage code (Disguise / apply / Knock Off /
+        // defrost / secondary gate) can read move-def fields.
+        let m = &ctx.move_def;
 
         // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
         // damaging move that would deal HP damage to an intact-disguise
