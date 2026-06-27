@@ -4566,6 +4566,7 @@ impl Battle {
                 actor_slot,
                 move_id,
                 pending_kind: *pending_kind,
+                move_def: *m,
                 attacker: attacker.clone(),
                 defender: defender.clone(),
                 attacker_item_id,
@@ -4589,411 +4590,18 @@ impl Battle {
                 drag_target,
                 target_fainted_this_hit: false,
             };
+            // Per-hit driver — body lifted into `Battle::apply_single_hit`
+            // in PR-D2. Faint / multiaccuracy-miss early-returns inside
+            // the method write `ctx.target_fainted_this_hit`, which the
+            // driver checks here to break the multi-hit loop. Behavior
+            // byte-identical to the pre-PR-D2 inline body. See
+            // `docs/per-target-context-design.md`.
             for hit_idx in 0..ctx.hits {
-                // `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
-                // PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy
-                // && hit > 1)`: every hit AFTER the first rolls accuracy
-                // independently and the move STOPS at the first miss (only the
-                // hits that connected deal damage / ramp BP). Hit 1's accuracy
-                // is the move-level roll already done above. Loaded Dice
-                // deletes `multiaccuracy` (data/items.ts:3456 onModifyMove), so
-                // its holder skips these rolls and lands every rolled hit.
-                // Reuses the pure `effective_accuracy` predicate (boost chain,
-                // No Guard, etc.); `None` = sure-hit, no draw. Population Bomb
-                // (10 hits, acc 90) does NOT ramp BP — it is deliberately out of
-                // the ramp arm below. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
-                if hit_idx >= 1
-                    && matches!(
-                        ctx.move_id,
-                        data::move_id::TRIPLEKICK
-                            | data::move_id::TRIPLEAXEL
-                            | data::move_id::POPULATIONBOMB
-                    )
-                    && ctx.attacker_item_id != data::item_id::LOADEDDICE
-                {
-                    let acc_comp = crate::accuracy::effective_accuracy(
-                        self, &ctx.attacker, &ctx.defender, m, ctx.move_id,
-                        ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot,
-                        ctx.attacker_ability_id, ctx.attacker_item_id, ctx.no_guard_pair,
-                        ctx.damaging, &ctx.pending_kind,
-                    );
-                    if let Some(eff_acc) = acc_comp.threshold {
-                        self.rng.set_decision(RngDecision::Accuracy);
-                        let roll = self.rng.percent_1_100() as u32;
-                        if roll > eff_acc {
-                            break;
-                        }
-                    }
-                }
-                // Per-hit damage — Beat Up per-ally arm + normal-move
-                // per-hit re-roll arm, both threading through the
-                // DamagePipeline (attacker item + Friend Guard). Lifted
-                // into `compute_per_hit_damage`; PS draw site + identity
-                // + order preserved (see method docs).
-                let mut dmg: u16 = self.compute_per_hit_damage(
-                    hit_idx,
-                    &ctx.attacker,
-                    &ctx.defender,
-                    ctx.move_id,
-                    m.base_power as u32,
-                    ctx.inputs,
-                    &mut ctx.pipeline,
-                    ctx.beat_up_ctx_opt,
-                    ctx.beat_up_base_atks,
-                    ctx.crit_immune,
-                    ctx.crit_stage,
-                    ctx.base_hit_dmg,
-                    ctx.fixed_dmg_snapshot,
-                );
-
-            // Substitute interception. If the defender has a sub up, the
-            // sub absorbs the hit (capped at remaining sub HP) and the
-            // damage doesn't reach the mon's HP. Item hooks (Focus Sash,
-            // Sitrus) and Knock Off item removal still see no damage —
-            // PS: `if (target.volatiles['substitute']) damage = target.volatiles['substitute'].hp ...`
-            // followed by an early-out before on_damage / item hooks.
-            //
-            // Sound moves bypass Substitute (gen 6+): PS
-            // `data/conditions.ts:substitute onTryPrimaryHit` early-returns
-            // when `move.flags['sound']`. The hit then proceeds as if no
-            // sub existed — full damage to the mon, secondaries fire,
-            // sub HP is unchanged. Same exemption applies to moves with
-            // the `authentic` flag (Hyperspace Hole etc.) and to
-            // Infiltrator users; both deferred to their own PRs.
-            // Piercing Drill broke through the target's Protect: the move
-            // lands for 1/4 of the damage it would otherwise deal (applied to
-            // the fully-modified final damage). See the Protect block above.
-            if ctx.piercing_drill_quarter {
-                dmg /= 4;
-            }
-            let sub_hp_pre = ctx.defender.substitute_hp();
-            // Infiltrator and sound moves both bypass the target's Substitute
-            // (PS: `move.infiltrates` / the `sound` flag let the hit pass
-            // straight through to the mon).
-            let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !ctx.attacker_infiltrates;
-            let effective_dmg = if hit_sub {
-                let absorbed = dmg.min(sub_hp_pre);
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    let next = t.substitute_hp().saturating_sub(absorbed);
-                    t.set_substitute_hp(next);
-                }
-                ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(absorbed);
-                0u16
-            } else {
-                // Sturdy — defender ability that caps a fatal hit at
-                // 1 HP if the defender is at full HP. PS handler:
-                //   onDamage(damage, target, source, effect) {
-                //     if (target.hp === target.maxhp && damage >= target.hp
-                //         && effect && effect.effectType === 'Move') {
-                //       this.add('-ability', target, 'Sturdy');
-                //       return target.hp - 1;
-                //     }
-                //   }
-                // OHKO-move arm (`onTryHit` for `move.ohko`) is deferred
-                // — Horn Drill / Fissure / Guillotine / Sheer Cold not
-                // implemented yet. Sturdy carries `flags: { breakable: 1 }`,
-                // so Mold Breaker (computed once per move above) lifts it.
-                // Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Sturdy_(Ability)>.
-                let mut capped = dmg;
-                let (def_ability, def_cur, def_max) = match self
-                    .side(ctx.tside)
-                    .active_mon(ctx.tslot as usize)
-                {
-                    Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
-                    None => (u16::MAX, 0, 0),
-                };
-                if def_ability == data::ability_id::STURDY
-                    && !ctx.attacker_breaks_mold
-                    && def_cur == def_max
-                    && capped >= def_cur
-                {
-                    capped = def_cur - 1;
-                }
-                // Endure — PS `data/moves.ts:4827` (the `endure` volatile's
-                //   onDamagePriority: -10,
-                //   onDamage(damage, target, source, effect) {
-                //     if (effect?.effectType === 'Move' && damage >= target.hp)
-                //       return target.hp - 1;
-                //   }
-                // Unlike Sturdy, Endure survives a lethal MOVE hit from ANY
-                // HP (not just full) and is NOT breakable by Mold Breaker.
-                // It only caps move damage; residual (poison / sand / etc.)
-                // can still KO afterward. Runs at priority -10 — after
-                // Sturdy and Focus Sash — but all three clamp to hp-1, so
-                // the relative order is immaterial here. `def_cur > 0`
-                // guards the `- 1`. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Endure_(move)>.
-                let target_endured = self
-                    .side(ctx.tside)
-                    .active_mon(ctx.tslot as usize)
-                    .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
-                if target_endured && capped >= def_cur && def_cur > 0 {
-                    capped = def_cur - 1;
-                }
-                // Pre-damage item hook (Focus Sash / Focus Band may cap
-                // further). Focus Band draws RNG, so swap it out across
-                // the borrow (mirrors apply_secondary_effect's pattern).
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                let out = crate::item::on_before_damage(self, ctx.tside, ctx.tslot, capped, &mut rng).unwrap_or(capped);
-                self.rng = rng;
-                out
-            };
-
-            // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
-            // damaging move that would deal HP damage to an intact-disguise
-            // Mimikyu / Mimikyu-Totem is fully negated; instead the holder
-            // takes `baseMaxhp / 8` chip and forme-changes to the Busted
-            // forme (which has identical base stats, so no stat recompute).
-            // PS structure: `onDamage` returns 0 (no move damage) and sets
-            // `busted`, then `onUpdate` does `formeChange` + `damage(
-            // baseMaxhp / 8)`. We collapse both into this choke point: if
-            // the move would have landed HP damage (`effective_dmg > 0`,
-            // category Physical/Special) on an intact holder, negate it and
-            // apply the chip. Disguise is breakable, so a Mold Breaker
-            // attacker bypasses it. Only triggers when the hit reaches the
-            // mon (a Substitute that absorbs the hit takes the `hit_sub`
-            // branch and Disguise never fires — matching PS, where
-            // `onDamage` only runs when the mon itself is damaged).
-            // Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
-            let disguise_triggered = !hit_sub
-                && effective_dmg > 0
-                && m.category != 2
-                && !ctx.attacker_breaks_mold
-                && self
-                    .side(ctx.tside)
-                    .active_mon(ctx.tslot as usize)
-                    .is_some_and(|d| {
-                        !d.disguise_busted
-                            && d.effective_ability_id() == data::ability_id::DISGUISE
-                            && matches!(
-                                d.species_id,
-                                data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
-                            )
-                    });
-            if disguise_triggered {
-                // Busted-forme slug: totem -> busted-totem, else busted.
-                let (chip, busted_id) = {
-                    let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
-                    let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
-                        Some(data::species_id::MIMIKYUBUSTEDTOTEM)
-                    } else {
-                        Some(data::species_id::MIMIKYUBUSTED)
-                    };
-                    // PS chips `baseMaxhp / 8` (integer division, min 1).
-                    let chip = (d.stats.hp / 8).max(1);
-                    (chip, busted_id)
-                };
-                // Forme-change first (identical base stats — no recompute),
-                // then mark busted and apply the chip.
-                if let Some(busted_id) = busted_id {
-                    self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
-                }
-                if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    d.disguise_busted = true;
-                    d.current_hp = d.current_hp.saturating_sub(chip);
-                }
-                let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
-                // The move's own damage is fully negated — skip the normal
-                // apply / item-hook / Stellar bookkeeping below for this hit.
-                // (Disguise carries no contact/secondary follow-through that
-                // the engine models beyond the damage itself.)
-                continue;
-            }
-
-            // Apply (only when the sub didn't intercept). HP write +
-            // damaged_this_turn / last_attacker / last_phys/spec /
-            // last_damage_taken trackers + faint check + Stellar
-            // one-shot mark are all owned by
-            // `Battle::apply_damage_step`. See
-            // `docs/damage-pipeline-design.md` PR-B.
-            if !hit_sub {
-                let res = self.apply_damage_step(DamageApplication {
-                    effective_dmg,
-                    attacker_side: ctx.actor_side,
-                    attacker_slot: ctx.actor_slot as u8,
-                    target_side: ctx.tside,
-                    target_slot: ctx.tslot,
-                    move_category: m.category,
-                    move_type: m.type_,
-                });
-                ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(res.damage_dealt);
-                // Record the real-hit foe slot for Dragon Tail / Circle
-                // Throw phazing (a Substitute absorb never reaches this
-                // branch, so a subbed mon stays None and is not phazed).
-                if res.is_real_hit {
-                    ctx.drag_target = Some((ctx.tside, ctx.tslot));
-                }
-
-                // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
-                // Starf Berry draws RNG for its random-stat pick, so swap
-                // self.rng out across the borrow (mem::replace idiom).
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
-                self.rng = rng;
-
-                // Defender thaw on Fire-type hit (PS cartridge rule —
-                // any Fire damaging move thaws the target) or on any
-                // explicit defrost-flagged move. Done after damage so a
-                // frozen mon that's KO'd by the hit doesn't get cured
-                // first. type code 1 = Fire.
-                let thawed = m.type_ == 1 || move_is_defrost(m.slug);
-                if thawed {
-                    if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                        if t.is_alive() && matches!(t.status, Status::Freeze) {
-                            t.status = Status::None;
-                        }
-                    }
-                }
-            }
-
-            // Destiny Bond — if this hit fainted a holder of the volatile,
-            // the attacker faints too (PS onFaint). Fires after the damage /
-            // item hooks above so the target's faint state is settled.
-            self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
-
-            // Knock Off item removal — after damage, after Sitrus etc.,
-            // skip if target fainted (item removed via faint is moot),
-            // if defender has Sticky Hold, or if the hit was absorbed by
-            // a Substitute (PS: knock-off effect requires the hit to
-            // reach the holder).
-            if ctx.move_id == data::move_id::KNOCKOFF && !hit_sub {
-                // Sticky Hold and a Substitute block removal; so does an
-                // unremovable item — the holder's own Mega Stone (PS
-                // `onTakeItem` false). Matches the no-boost gate in damage.rs.
-                let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                    .is_some_and(|m| m.is_alive()
-                        && m.ability_id != data::ability_id::STICKYHOLD
-                        && data::mega_stone_for(m.item_id, m.species_id).is_none());
-                if can_knock {
-                    if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                        t.item_id = u16::MAX;
-                    }
-                }
-            }
-
-            // Smack Down / Thousand Arrows — grounding side effect.
-            // PS data/moves.ts:smackdown / :thousandarrows both apply
-            // `volatileStatus: 'smackdown'` after the hit lands. The
-            // volatile overrides Flying type, Levitate, Air Balloon,
-            // and Magnet Rise grounding for the remainder of the battle
-            // (until switch-out). PS gates the apply on a successful
-            // hit only, which we mirror by checking that the target is
-            // still alive AND was not absorbed by a Substitute.
-            // Bulbapedia:
-            //   <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
-            if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) && !hit_sub {
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    if t.is_alive() {
-                        let _ = t.volatiles.add(crate::pokemon::Volatile {
-                            kind: crate::pokemon::VolatileKind::SmackdownGrounded,
-                            turns_remaining: 0, // indefinite, cleared on switch-out
-                            payload: 0,
-                        });
-                    }
-                }
-            }
-
-            // Secondary if target still alive — and the sub didn't take
-            // the hit. PS: Substitute blocks all secondaries that target
-            // the user-of-the-sub (flinch, stat drops, status). Sound
-            // moves never set `hit_sub = true` (see is_sound_move check
-            // above), so their secondaries fire normally.
-            let alive_post = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                .is_some_and(|m| m.is_alive());
-            // Defender ability `onDamagingHit` (PS step before secondary
-            // effects). Runs only when the hit actually reached the
-            // mon — sub-absorbed hits skipped. Dispatches Stamina,
-            // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
-            // their own PRs.
-            self.apply_on_hit_reactions(
-                ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
-            );
-            // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
-            // attacker-side KO triggers. PS data/abilities.ts:
-            //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
-            //   beastboost:   onSourceAfterFaint { boost({<best>: 1}) }
-            // Fires once per fainted target on a damaging move. PS gates
-            // on `move && source && source !== target` (attacker still
-            // exists + cross-side) + the target actually fainting from
-            // this hit. We approximate by detecting the alive→fainted
-            // transition (`!alive_post && effective_dmg > 0`).
-            // `best_stat_index` already mirrors PS `getBestStat(false, true)`.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moxie_(Ability)>
-            //             <https://bulbapedia.bulbagarden.net/wiki/Beast_Boost_(Ability)>.
-            if !alive_post && effective_dmg > 0 && !hit_sub {
-                let attacker_ability = self
-                    .side(ctx.actor_side)
-                    .active_mon(ctx.actor_slot as usize)
-                    .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
-                    .unwrap_or("");
-                match attacker_ability {
-                    "moxie" => {
-                        self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
-                    }
-                    // Eelevate (Pokémon Champions, Mega Eelektross) shares
-                    // Beast Boost's on-KO trigger: "When the Pokémon knocks
-                    // out a target with an attack, its highest stat is boosted
-                    // by 1 stage." (serebii.net/pokemonchampions/newabilities.shtml).
-                    "beastboost" | "eelevate" => {
-                        // PS reads the attacker's current stats / stages
-                        // at faint time (PS `getBestStat(false, true)`).
-                        let idx = self
-                            .side(ctx.actor_side)
-                            .active_mon(ctx.actor_slot as usize)
-                            .map(crate::ability::best_stat_index)
-                            .unwrap_or(0);
-                        self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
-                    }
-                    _ => {}
-                }
-            }
-            // Deterministic gate on the secondary-effect block. See
-            // `crate::secondary::should_run_secondary_block` for scope
-            // (Sheer Force ablation + target faint + sub absorption);
-            // per-secondary vetoes / draws live inside
-            // `apply_secondary_effect`.
-            if crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub)
-                == crate::secondary::SecondaryProcDecision::Run
-            {
-                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-                // The keyed context set at the loop top travelled in with the
-                // mem::replace; tag the decision so percent draws here key as
-                // Secondary (not the Accuracy set before the accuracy roll).
-                rng.set_decision(RngDecision::Secondary);
-                apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
-                self.rng = rng;
-            }
-
-            // Drain — heal the attacker for `round(damage * num/den)`
-            // of the HP damage just applied. PS sim/battle.ts:2173
-            // (`this.gen > 4`): `Math.round(targetDamage * drain[0] / drain[1])`.
-            // Per-target heal (spread drain moves like Matcha Gotcha
-            // tick once per target); sub-absorbed hits are skipped —
-            // PS's `targetDamage` is non-zero on sub absorption but
-            // the engine doesn't expose that signal here yet, and the
-            // common case (single-target drain into a live mon) is
-            // exact. Liquid Ooze flip not modelled (rare ability).
-            // Big Root +30% boost also deferred.
-            self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, effective_dmg);
-
-                // PS stops a multi-hit move the moment the target faints
-                // (battle-actions.ts:888 / :971). A Substitute that broke
-                // this hit does NOT stop it — the next iteration sees no
-                // sub and lands on the Pokémon. Single-hit moves have
-                // `hits == 1`, so this break is reached at most once.
-                let target_fainted = self
-                    .side(ctx.tside)
-                    .active_mon(ctx.tslot as usize)
-                    .map(|d| !d.is_alive())
-                    .unwrap_or(true);
-                if target_fainted {
+                self.apply_single_hit(&mut ctx, hit_idx);
+                if ctx.target_fainted_this_hit {
                     break;
                 }
-            } // end multi-hit per-hit loop
+            }
             // Read accumulators back from ctx — the per-target tail
             // (crash damage / `apply_self_effects` / `apply_post_move_effects`)
             // continues to read the outer locals. See PR-D1 design.
@@ -5054,6 +4662,450 @@ impl Battle {
             any_damage_dealt,
             drag_target,
         );
+    }
+
+    /// One iteration of the per-target multi-hit loop. Lifted verbatim
+    /// from the inline body that used to live inside `for hit_idx in
+    /// 0..hits` (PR-D2 — see `docs/per-target-context-design.md`).
+    ///
+    /// **Control flow contract:** the method returns early in three
+    /// cases, each surfaced to the driver via
+    /// `ctx.target_fainted_this_hit`:
+    ///   - **Multiaccuracy miss** (Triple Kick / Triple Axel /
+    ///     Population Bomb, hit_idx >= 1, accuracy roll failed) — sets
+    ///     the flag and returns. PS stops the move at the first miss.
+    ///   - **Disguise negate** (Mimikyu busted-form chip) — returns
+    ///     WITHOUT setting the flag; the move continues to the next
+    ///     hit in PS, which is byte-identical to the pre-PR-D2 `continue`.
+    ///   - **Target faint** at end-of-hit — sets the flag and returns
+    ///     naturally; driver breaks the loop. PS
+    ///     `if (!pokemon.hp && targets.length === 1) break`.
+    ///
+    /// **RNG draw discipline** (memory: `feedback_ps_draws_then_vetoes`):
+    /// PS draws unconditionally and vetoes via onTry AFTER the draw. The
+    /// multiaccuracy roll, the secondary block, Focus Sash / Starf Berry
+    /// item hooks, Static / Flame Body contact-ability dispatches — all
+    /// draws stay INSIDE the helpers they currently live in. This method
+    /// does NOT lift any veto predicate ahead of its draw.
+    ///
+    /// `m` is re-derived from `ctx.move_def` (the per-resolve mutated
+    /// copy taken by `resolve_move_with_pending`); we cannot re-fetch
+    /// `&data::MOVES[ctx.move_id as usize]` because PS modifies move
+    /// data per-resolve (Photon Geyser category flip, Helping Hand BP
+    /// doubling, etc.) and a fresh static lookup would lose those
+    /// mutations.
+    fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
+        let m = &ctx.move_def;
+        // `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
+        // PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy
+        // && hit > 1)`: every hit AFTER the first rolls accuracy
+        // independently and the move STOPS at the first miss (only the
+        // hits that connected deal damage / ramp BP). Hit 1's accuracy
+        // is the move-level roll already done above. Loaded Dice
+        // deletes `multiaccuracy` (data/items.ts:3456 onModifyMove), so
+        // its holder skips these rolls and lands every rolled hit.
+        // Reuses the pure `effective_accuracy` predicate (boost chain,
+        // No Guard, etc.); `None` = sure-hit, no draw. Population Bomb
+        // (10 hits, acc 90) does NOT ramp BP — it is deliberately out of
+        // the ramp arm below. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
+        if hit_idx >= 1
+            && matches!(
+                ctx.move_id,
+                data::move_id::TRIPLEKICK
+                    | data::move_id::TRIPLEAXEL
+                    | data::move_id::POPULATIONBOMB
+            )
+            && ctx.attacker_item_id != data::item_id::LOADEDDICE
+        {
+            let acc_comp = crate::accuracy::effective_accuracy(
+                self, &ctx.attacker, &ctx.defender, m, ctx.move_id,
+                ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot,
+                ctx.attacker_ability_id, ctx.attacker_item_id, ctx.no_guard_pair,
+                ctx.damaging, &ctx.pending_kind,
+            );
+            if let Some(eff_acc) = acc_comp.threshold {
+                self.rng.set_decision(RngDecision::Accuracy);
+                let roll = self.rng.percent_1_100() as u32;
+                if roll > eff_acc {
+                    // Multiaccuracy miss — PS breaks the multi-hit loop.
+                    // Surface to the driver via the loop-stop flag.
+                    ctx.target_fainted_this_hit = true;
+                    return;
+                }
+            }
+        }
+        // Per-hit damage — Beat Up per-ally arm + normal-move
+        // per-hit re-roll arm, both threading through the
+        // DamagePipeline (attacker item + Friend Guard). Lifted
+        // into `compute_per_hit_damage`; PS draw site + identity
+        // + order preserved (see method docs).
+        let mut dmg: u16 = self.compute_per_hit_damage(
+            hit_idx,
+            &ctx.attacker,
+            &ctx.defender,
+            ctx.move_id,
+            m.base_power as u32,
+            ctx.inputs,
+            &mut ctx.pipeline,
+            ctx.beat_up_ctx_opt,
+            ctx.beat_up_base_atks,
+            ctx.crit_immune,
+            ctx.crit_stage,
+            ctx.base_hit_dmg,
+            ctx.fixed_dmg_snapshot,
+        );
+
+        // Substitute interception. If the defender has a sub up, the
+        // sub absorbs the hit (capped at remaining sub HP) and the
+        // damage doesn't reach the mon's HP. Item hooks (Focus Sash,
+        // Sitrus) and Knock Off item removal still see no damage —
+        // PS: `if (target.volatiles['substitute']) damage = target.volatiles['substitute'].hp ...`
+        // followed by an early-out before on_damage / item hooks.
+        //
+        // Sound moves bypass Substitute (gen 6+): PS
+        // `data/conditions.ts:substitute onTryPrimaryHit` early-returns
+        // when `move.flags['sound']`. The hit then proceeds as if no
+        // sub existed — full damage to the mon, secondaries fire,
+        // sub HP is unchanged. Same exemption applies to moves with
+        // the `authentic` flag (Hyperspace Hole etc.) and to
+        // Infiltrator users; both deferred to their own PRs.
+        // Piercing Drill broke through the target's Protect: the move
+        // lands for 1/4 of the damage it would otherwise deal (applied to
+        // the fully-modified final damage). See the Protect block above.
+        if ctx.piercing_drill_quarter {
+            dmg /= 4;
+        }
+        let sub_hp_pre = ctx.defender.substitute_hp();
+        // Infiltrator and sound moves both bypass the target's Substitute
+        // (PS: `move.infiltrates` / the `sound` flag let the hit pass
+        // straight through to the mon).
+        let hit_sub = sub_hp_pre > 0 && !is_sound_move(m.slug) && !ctx.attacker_infiltrates;
+        let effective_dmg = if hit_sub {
+            let absorbed = dmg.min(sub_hp_pre);
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                let next = t.substitute_hp().saturating_sub(absorbed);
+                t.set_substitute_hp(next);
+            }
+            ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(absorbed);
+            0u16
+        } else {
+            // Sturdy — defender ability that caps a fatal hit at
+            // 1 HP if the defender is at full HP. PS handler:
+            //   onDamage(damage, target, source, effect) {
+            //     if (target.hp === target.maxhp && damage >= target.hp
+            //         && effect && effect.effectType === 'Move') {
+            //       this.add('-ability', target, 'Sturdy');
+            //       return target.hp - 1;
+            //     }
+            //   }
+            // OHKO-move arm (`onTryHit` for `move.ohko`) is deferred
+            // — Horn Drill / Fissure / Guillotine / Sheer Cold not
+            // implemented yet. Sturdy carries `flags: { breakable: 1 }`,
+            // so Mold Breaker (computed once per move above) lifts it.
+            // Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Sturdy_(Ability)>.
+            let mut capped = dmg;
+            let (def_ability, def_cur, def_max) = match self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+            {
+                Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
+                None => (u16::MAX, 0, 0),
+            };
+            if def_ability == data::ability_id::STURDY
+                && !ctx.attacker_breaks_mold
+                && def_cur == def_max
+                && capped >= def_cur
+            {
+                capped = def_cur - 1;
+            }
+            // Endure — PS `data/moves.ts:4827` (the `endure` volatile's
+            //   onDamagePriority: -10,
+            //   onDamage(damage, target, source, effect) {
+            //     if (effect?.effectType === 'Move' && damage >= target.hp)
+            //       return target.hp - 1;
+            //   }
+            // Unlike Sturdy, Endure survives a lethal MOVE hit from ANY
+            // HP (not just full) and is NOT breakable by Mold Breaker.
+            // It only caps move damage; residual (poison / sand / etc.)
+            // can still KO afterward. Runs at priority -10 — after
+            // Sturdy and Focus Sash — but all three clamp to hp-1, so
+            // the relative order is immaterial here. `def_cur > 0`
+            // guards the `- 1`. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Endure_(move)>.
+            let target_endured = self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+                .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
+            if target_endured && capped >= def_cur && def_cur > 0 {
+                capped = def_cur - 1;
+            }
+            // Pre-damage item hook (Focus Sash / Focus Band may cap
+            // further). Focus Band draws RNG, so swap it out across
+            // the borrow (mirrors apply_secondary_effect's pattern).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            let out = crate::item::on_before_damage(self, ctx.tside, ctx.tslot, capped, &mut rng).unwrap_or(capped);
+            self.rng = rng;
+            out
+        };
+
+        // Disguise (Mimikyu) — PS `data/abilities.ts:960`. The first
+        // damaging move that would deal HP damage to an intact-disguise
+        // Mimikyu / Mimikyu-Totem is fully negated; instead the holder
+        // takes `baseMaxhp / 8` chip and forme-changes to the Busted
+        // forme (which has identical base stats, so no stat recompute).
+        // PS structure: `onDamage` returns 0 (no move damage) and sets
+        // `busted`, then `onUpdate` does `formeChange` + `damage(
+        // baseMaxhp / 8)`. We collapse both into this choke point: if
+        // the move would have landed HP damage (`effective_dmg > 0`,
+        // category Physical/Special) on an intact holder, negate it and
+        // apply the chip. Disguise is breakable, so a Mold Breaker
+        // attacker bypasses it. Only triggers when the hit reaches the
+        // mon (a Substitute that absorbs the hit takes the `hit_sub`
+        // branch and Disguise never fires — matching PS, where
+        // `onDamage` only runs when the mon itself is damaged).
+        // Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
+        let disguise_triggered = !hit_sub
+            && effective_dmg > 0
+            && m.category != 2
+            && !ctx.attacker_breaks_mold
+            && self
+                .side(ctx.tside)
+                .active_mon(ctx.tslot as usize)
+                .is_some_and(|d| {
+                    !d.disguise_busted
+                        && d.effective_ability_id() == data::ability_id::DISGUISE
+                        && matches!(
+                            d.species_id,
+                            data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
+                        )
+                });
+        if disguise_triggered {
+            // Busted-forme slug: totem -> busted-totem, else busted.
+            let (chip, busted_id) = {
+                let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
+                let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
+                    Some(data::species_id::MIMIKYUBUSTEDTOTEM)
+                } else {
+                    Some(data::species_id::MIMIKYUBUSTED)
+                };
+                // PS chips `baseMaxhp / 8` (integer division, min 1).
+                let chip = (d.stats.hp / 8).max(1);
+                (chip, busted_id)
+            };
+            // Forme-change first (identical base stats — no recompute),
+            // then mark busted and apply the chip.
+            if let Some(busted_id) = busted_id {
+                self.set_forme(ctx.tside, ctx.tslot, busted_id, false);
+            }
+            if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                d.disguise_busted = true;
+                d.current_hp = d.current_hp.saturating_sub(chip);
+            }
+            let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
+            // The move's own damage is fully negated — skip the normal
+            // apply / item-hook / Stellar bookkeeping below for this hit.
+            // (Disguise carries no contact/secondary follow-through that
+            // the engine models beyond the damage itself.) PS's `continue`
+            // → early return; driver does NOT stop, the next hit may
+            // still land on the busted Mimikyu.
+            return;
+        }
+
+        // Apply (only when the sub didn't intercept). HP write +
+        // damaged_this_turn / last_attacker / last_phys/spec /
+        // last_damage_taken trackers + faint check + Stellar
+        // one-shot mark are all owned by
+        // `Battle::apply_damage_step`. See
+        // `docs/damage-pipeline-design.md` PR-B.
+        if !hit_sub {
+            let res = self.apply_damage_step(DamageApplication {
+                effective_dmg,
+                attacker_side: ctx.actor_side,
+                attacker_slot: ctx.actor_slot as u8,
+                target_side: ctx.tside,
+                target_slot: ctx.tslot,
+                move_category: m.category,
+                move_type: m.type_,
+            });
+            ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(res.damage_dealt);
+            // Record the real-hit foe slot for Dragon Tail / Circle
+            // Throw phazing (a Substitute absorb never reaches this
+            // branch, so a subbed mon stays None and is not phazed).
+            if res.is_real_hit {
+                ctx.drag_target = Some((ctx.tside, ctx.tslot));
+            }
+
+            // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
+            // Starf Berry draws RNG for its random-stat pick, so swap
+            // self.rng out across the borrow (mem::replace idiom).
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
+            self.rng = rng;
+
+            // Defender thaw on Fire-type hit (PS cartridge rule —
+            // any Fire damaging move thaws the target) or on any
+            // explicit defrost-flagged move. Done after damage so a
+            // frozen mon that's KO'd by the hit doesn't get cured
+            // first. type code 1 = Fire.
+            let thawed = m.type_ == 1 || move_is_defrost(m.slug);
+            if thawed {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    if t.is_alive() && matches!(t.status, Status::Freeze) {
+                        t.status = Status::None;
+                    }
+                }
+            }
+        }
+
+        // Destiny Bond — if this hit fainted a holder of the volatile,
+        // the attacker faints too (PS onFaint). Fires after the damage /
+        // item hooks above so the target's faint state is settled.
+        self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
+
+        // Knock Off item removal — after damage, after Sitrus etc.,
+        // skip if target fainted (item removed via faint is moot),
+        // if defender has Sticky Hold, or if the hit was absorbed by
+        // a Substitute (PS: knock-off effect requires the hit to
+        // reach the holder).
+        if ctx.move_id == data::move_id::KNOCKOFF && !hit_sub {
+            // Sticky Hold and a Substitute block removal; so does an
+            // unremovable item — the holder's own Mega Stone (PS
+            // `onTakeItem` false). Matches the no-boost gate in damage.rs.
+            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
+                .is_some_and(|m| m.is_alive()
+                    && m.ability_id != data::ability_id::STICKYHOLD
+                    && data::mega_stone_for(m.item_id, m.species_id).is_none());
+            if can_knock {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    t.item_id = u16::MAX;
+                }
+            }
+        }
+
+        // Smack Down / Thousand Arrows — grounding side effect.
+        // PS data/moves.ts:smackdown / :thousandarrows both apply
+        // `volatileStatus: 'smackdown'` after the hit lands. The
+        // volatile overrides Flying type, Levitate, Air Balloon,
+        // and Magnet Rise grounding for the remainder of the battle
+        // (until switch-out). PS gates the apply on a successful
+        // hit only, which we mirror by checking that the target is
+        // still alive AND was not absorbed by a Substitute.
+        // Bulbapedia:
+        //   <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
+        //   <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
+        if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) && !hit_sub {
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                if t.is_alive() {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::SmackdownGrounded,
+                        turns_remaining: 0, // indefinite, cleared on switch-out
+                        payload: 0,
+                    });
+                }
+            }
+        }
+
+        // Secondary if target still alive — and the sub didn't take
+        // the hit. PS: Substitute blocks all secondaries that target
+        // the user-of-the-sub (flinch, stat drops, status). Sound
+        // moves never set `hit_sub = true` (see is_sound_move check
+        // above), so their secondaries fire normally.
+        let alive_post = self.side(ctx.tside).active_mon(ctx.tslot as usize)
+            .is_some_and(|m| m.is_alive());
+        // Defender ability `onDamagingHit` (PS step before secondary
+        // effects). Runs only when the hit actually reached the
+        // mon — sub-absorbed hits skipped. Dispatches Stamina,
+        // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
+        // their own PRs.
+        self.apply_on_hit_reactions(
+            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
+        );
+        // Moxie / Beast Boost / Chilling Neigh / Grim Neigh / As One —
+        // attacker-side KO triggers. PS data/abilities.ts:
+        //   moxie:        onSourceAfterFaint { boost({atk: 1}) }
+        //   beastboost:   onSourceAfterFaint { boost({<best>: 1}) }
+        // Fires once per fainted target on a damaging move. PS gates
+        // on `move && source && source !== target` (attacker still
+        // exists + cross-side) + the target actually fainting from
+        // this hit. We approximate by detecting the alive→fainted
+        // transition (`!alive_post && effective_dmg > 0`).
+        // `best_stat_index` already mirrors PS `getBestStat(false, true)`.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moxie_(Ability)>
+        //             <https://bulbapedia.bulbagarden.net/wiki/Beast_Boost_(Ability)>.
+        if !alive_post && effective_dmg > 0 && !hit_sub {
+            let attacker_ability = self
+                .side(ctx.actor_side)
+                .active_mon(ctx.actor_slot as usize)
+                .map(|a| if a.is_alive() { a.effective_ability_slug() } else { "" })
+                .unwrap_or("");
+            match attacker_ability {
+                "moxie" => {
+                    self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
+                }
+                // Eelevate (Pokémon Champions, Mega Eelektross) shares
+                // Beast Boost's on-KO trigger: "When the Pokémon knocks
+                // out a target with an attack, its highest stat is boosted
+                // by 1 stage." (serebii.net/pokemonchampions/newabilities.shtml).
+                "beastboost" | "eelevate" => {
+                    // PS reads the attacker's current stats / stages
+                    // at faint time (PS `getBestStat(false, true)`).
+                    let idx = self
+                        .side(ctx.actor_side)
+                        .active_mon(ctx.actor_slot as usize)
+                        .map(crate::ability::best_stat_index)
+                        .unwrap_or(0);
+                    self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
+                }
+                _ => {}
+            }
+        }
+        // Deterministic gate on the secondary-effect block. See
+        // `crate::secondary::should_run_secondary_block` for scope
+        // (Sheer Force ablation + target faint + sub absorption);
+        // per-secondary vetoes / draws live inside
+        // `apply_secondary_effect`.
+        if crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub)
+            == crate::secondary::SecondaryProcDecision::Run
+        {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            // The keyed context set at the loop top travelled in with the
+            // mem::replace; tag the decision so percent draws here key as
+            // Secondary (not the Accuracy set before the accuracy roll).
+            rng.set_decision(RngDecision::Secondary);
+            apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+            self.rng = rng;
+        }
+
+        // Drain — heal the attacker for `round(damage * num/den)`
+        // of the HP damage just applied. PS sim/battle.ts:2173
+        // (`this.gen > 4`): `Math.round(targetDamage * drain[0] / drain[1])`.
+        // Per-target heal (spread drain moves like Matcha Gotcha
+        // tick once per target); sub-absorbed hits are skipped —
+        // PS's `targetDamage` is non-zero on sub absorption but
+        // the engine doesn't expose that signal here yet, and the
+        // common case (single-target drain into a live mon) is
+        // exact. Liquid Ooze flip not modelled (rare ability).
+        // Big Root +30% boost also deferred.
+        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, effective_dmg);
+
+        // PS stops a multi-hit move the moment the target faints
+        // (battle-actions.ts:888 / :971). A Substitute that broke
+        // this hit does NOT stop it — the next iteration sees no
+        // sub and lands on the Pokémon. Single-hit moves have
+        // `hits == 1`, so this break is reached at most once.
+        // Driver checks `ctx.target_fainted_this_hit` after this
+        // method returns and breaks the loop.
+        let target_fainted = self
+            .side(ctx.tside)
+            .active_mon(ctx.tslot as usize)
+            .map(|d| !d.is_alive())
+            .unwrap_or(true);
+        if target_fainted {
+            ctx.target_fainted_this_hit = true;
+        }
     }
 
     /// Post-damage attacker/defender reactions that fire per-hit once a
@@ -11767,7 +11819,7 @@ pub(crate) struct ApplyResult {
 /// driver each iteration; once PR-D2 lifts the body into a method, the
 /// `target_fainted` break check becomes a `ctx.target_fainted_this_hit`
 /// write that the driver checks after the call returns.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PerTargetContext {
     // ---- target identity ----
     pub tside: SideRef,
@@ -11778,6 +11830,14 @@ pub(crate) struct PerTargetContext {
     // ---- move identity ----
     pub move_id: u16,
     pub pending_kind: [[u8; 2]; 2],
+    /// Per-resolve mutated copy of the move def (`m_owned` at the top
+    /// of `resolve_move_with_pending`). Stored as an owned copy so
+    /// `apply_single_hit` can `let m = &ctx.move_def;` without a
+    /// lifetime on the bundle. `MoveDef` is `Copy`. PS modifies
+    /// move data per-resolve (Photon Geyser category flip, Helping
+    /// Hand BP doubling, etc.) — using a fresh `data::MOVES[id]`
+    /// would lose those mutations.
+    pub move_def: data::MoveDef,
 
     // ---- attacker / defender snapshots (taken once per target) ----
     pub attacker: Pokemon,
