@@ -8620,29 +8620,46 @@ impl Battle {
     /// after move resolution. Currently: item residuals (Leftovers),
     /// status DOT (burn/poison/toxic), sand weather damage. Subsequent
     /// PRs add Speed Boost, Life Orb recoil, etc.
+    /// End-of-turn residual phase — PS gen-9 `sim/battle.ts`
+    /// residualOrder. PR-F3 split each numbered section into a
+    /// named `eot_*` helper so a future PR can yield from inside
+    /// any one of them without disturbing the others.
     fn resolve_end_of_turn(&mut self) {
-        // PS gen-9 `sim/battle.ts` residualOrder summary, in execution
-        // order:
-        //   1. weather damage (sand)
-        //   2. Future Sight / Doom Desire delivery       [not impl]
-        //   3. Wish                                       [not impl]
-        //   4. Aqua Ring / Ingrain heal                   [not impl]
-        //   5. Leech Seed                                 [not impl]
-        //   5b. item residual (Leftovers; PS order 5)
-        //   6. status DOT (burn / poison / toxic)
-        //   7. Curse                                      [not impl]
-        //   8. Trap                                       [not impl]
-        //   9. Uproar                                     [not impl]
-        //   10. Disable / Encore / Taunt ticks            [Encore done below]
-        //   11. Yawn → sleep                              [not impl]
-        //   12. Perish Song                               [not impl]
-        //   13. screens tick                              [done elsewhere]
-        //   14. Tailwind tick                             [done elsewhere]
-        //   15. Trick Room tick                           [done elsewhere]
-        //   16. Wonder / Magic Room                       [not impl]
-        //   17. Slow Start tick                           [not impl]
-        //   28. ability residuals (Speed Boost)
+        // PS gen-9 `sim/battle.ts` residualOrder dispatch — each
+        // sub-phase is a named helper for ease of reading and to
+        // give PR-F4+ a per-phase yield seam (no yields here yet).
+        // PS residualOrder summary in execution order:
+        //   1 weather chip · 3 Future Sight · 4 Wish · 5a Grassy heal
+        //   5 Leftovers · 8 Leech Seed · 6 status DOT · 12 Curse
+        //   13 Partial Trap · 13 Salt Cure · 23 Yawn · 24 Perish Song
+        //   28 late item (Sticky Barb) · 28 ability (Speed Boost) ·
+        //   Attract onUpdate sweep
+        self.eot_weather_chip();
+        self.eot_future_sight_delivery();
+        self.eot_wish();
+        self.eot_grassy_terrain_heal();
+        self.eot_item_residual();
+        self.eot_leech_seed();
+        self.eot_status_dot();
+        self.eot_curse();
+        self.eot_partial_trap();
+        self.eot_salt_cure();
+        self.eot_yawn();
+        self.eot_perish_song();
+        self.eot_late_item_residual();
+        self.eot_ability_residual();
+        // Attract `onUpdate` sweep — lift infatuation on any mon whose
+        // source has left the field via switch / faint this turn (PS
+        // data/moves.ts:706 attract onUpdate). No RNG.
+        self.update_attract_sources();
+    }
 
+    /// EOT sub-phase `weather_chip`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_weather_chip(&mut self) {
         // 1. Weather damage (sand) — PS residualOrder 1.
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities: Magic Guard blocks the damage (PS
@@ -8697,7 +8714,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `future_sight_delivery`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_future_sight_delivery(&mut self) {
         // 3. Future Sight / Doom Desire delivery — PS `data/conditions.ts`
         //    `futuremove` `onResidualOrder: 3`. Fires after weather chip but
         //    BEFORE Wish (4), Leftovers (5), and all status chip (>=9). Each
@@ -8723,7 +8747,14 @@ impl Battle {
                 self.resolve_future_hit(tside, tslot as u8, entry);
             }
         }
+    }
 
+    /// EOT sub-phase `wish`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_wish(&mut self) {
         // 4. Wish heal — PS `data/moves.ts:wish` `onResidualOrder: 4`. After
         //    future-move damage, before Leftovers / status chip. Heals the
         //    CURRENT occupant of the wisher's slot (a switch-in inherits it);
@@ -8762,7 +8793,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `grassy_terrain_heal`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_grassy_terrain_heal(&mut self) {
         // 5a. Grassy Terrain heal — PS data/moves.ts:grassyterrain condition
         //     `onResidualOrder: 5`. Each grounded, non-semi-invulnerable
         //     active heals 1/16 max HP (same band as Leftovers; relative order
@@ -8791,7 +8829,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `item_residual`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_item_residual(&mut self) {
         // 5. Item residuals (Leftovers, Black Sludge, ...) — PS order 5.
         for side in [SideRef::P1, SideRef::P2] {
             let n = self.format().active_count() as u8;
@@ -8799,7 +8844,14 @@ impl Battle {
                 crate::item::on_residual(self, side, slot);
             }
         }
+    }
 
+    /// EOT sub-phase `leech_seed`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_leech_seed(&mut self) {
         // 8. Leech Seed residual. PS data/moves.ts:leechseed condition
         //    onResidualOrder 8. Target loses 1/8 max HP; seeder heals by
         //    the actual amount dealt (capped at seeder's missing HP).
@@ -8862,7 +8914,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `status_dot`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_status_dot(&mut self) {
         // 6. Status DOT (burn 1/16, poison 1/8, toxic counter/16).
         // Gen 7+ burn rate; PS data/conditions.ts. Magic Guard blocks
         // the HP loss but the toxic counter still ticks unconditionally.
@@ -8943,7 +9002,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `curse`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_curse(&mut self) {
         // 12. Curse residual. PS data/moves.ts:3265 curse condition
         //     `onResidualOrder: 12`, `onResidual`: this.damage(
         //     pokemon.baseMaxhp / 4) — a cursed mon loses 1/4 max HP each end
@@ -8978,7 +9044,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `partial_trap`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_partial_trap(&mut self) {
         // 13. Partial-trap residual. PS data/conditions.ts:partiallytrapped
         //     onResidualOrder 13. Chip holder 1/8 max HP; decrement
         //     payload counter; remove volatile when it hits 0. Magic
@@ -9029,7 +9102,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `salt_cure`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_salt_cure(&mut self) {
         // 13. Salt Cure residual. Pokémon Champions (our target format)
         //     HALVES standard Salt Cure: data/mods/champions/moves.ts saltcure
         //     overrides the condition's `onResidual`:
@@ -9074,7 +9154,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `yawn`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_yawn(&mut self) {
         // 23. Yawn. PS `data/moves.ts:yawn` condition `onResidualOrder: 23`,
         //     `duration: 2` — a drowsy mon falls asleep when the counter
         //     expires (the end of the turn AFTER Yawn landed: 2→1 on the Yawn
@@ -9114,7 +9201,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `perish_song`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_perish_song(&mut self) {
         // 24. Perish Song. PS `data/moves.ts:perishsong` condition,
         //     `onResidualOrder: 24` — fires after the status/Salt-Cure
         //     chip (order 13) but before the late item (28) and ability
@@ -9134,7 +9228,14 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// EOT sub-phase `late_item_residual`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_late_item_residual(&mut self) {
         // 28. Late item residuals (Sticky Barb — order 28, sub-order 3).
         // Fires AFTER status DOT (9-10) so a fatal burn shadows the
         // Sticky Barb tick, matching PS.
@@ -9144,7 +9245,14 @@ impl Battle {
                 crate::item::on_residual_late(self, side, slot);
             }
         }
+    }
 
+    /// EOT sub-phase `ability_residual`. Extracted from
+    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
+    /// pre-F3 inline version; the section's own PS-citation comments
+    /// remain at the top of the body. No RNG draws are added or
+    /// removed; behavior is byte-identical.
+    fn eot_ability_residual(&mut self) {
         // 28. Ability residuals (Speed Boost etc.). PS onResidualOrder
         // for speedboost is 28 — last among the residual phases.
         for side in [SideRef::P1, SideRef::P2] {
@@ -9155,12 +9263,8 @@ impl Battle {
                 self.rng = rng;
             }
         }
-
-        // Attract `onUpdate` sweep — lift infatuation on any mon whose
-        // source has left the field via switch / faint this turn (PS
-        // data/moves.ts:706 attract onUpdate). No RNG.
-        self.update_attract_sources();
     }
+
 
     /// True if the Attract source (recorded by side 0/1 + team roster
     /// index) is currently on the field and alive. Mirrors PS's
