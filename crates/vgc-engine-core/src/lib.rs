@@ -48,7 +48,7 @@ pub use pokemon::{
 };
 pub use rng::{DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey};
 pub use side::{Side, SideRef};
-pub use step_machine::{StepCursor, StepPhase, StepProgress};
+pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, TeamBuilder, TeamLoadError, TeamMember};
 pub use team_export::parse_showdown_export;
 pub use terrain::Terrain;

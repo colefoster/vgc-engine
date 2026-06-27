@@ -306,6 +306,16 @@ pub struct Battle {
     pub(crate) rng: Rng,
     pub(crate) turn: u32,
     pub(crate) ended: Option<Option<SideRef>>,
+    /// Transient native-chance yield request parked by a draw site
+    /// inside the per-action resolver (PR-F2+). `step_one`'s
+    /// `ActionLoop` arm `take()`s this after `process_one_action`
+    /// returns; if `Some`, the cursor transitions to
+    /// `StepPhase::ResolveYield` and `step_one` returns
+    /// `StepProgress::ChanceYield`. Always `None` between `step`
+    /// calls — never serialized (the engine's serializable state
+    /// excludes the in-flight per-action cursor by design).
+    #[serde(skip)]
+    pub(crate) pending_yield: Option<crate::step_machine::PendingYield>,
 }
 
 impl Battle {
@@ -359,6 +369,7 @@ impl Battle {
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
+            pending_yield: None,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -1157,62 +1168,154 @@ impl Battle {
     /// the borrowed `StepCursor` stack frame; the cursor holds slice
     /// references to the caller's `Choice` buffers.
     pub fn step(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) -> StepResult {
-        let mut cursor = crate::step_machine::StepCursor::start(p1_choices, p2_choices);
+        use crate::rng::{DrawSpace, RngEvent};
+        use crate::step_machine::{StepCursor, StepProgress};
+        let mut cursor = StepCursor::start(p1_choices, p2_choices);
         loop {
             match self.step_one(&mut cursor) {
-                crate::step_machine::StepProgress::Continue => continue,
-                crate::step_machine::StepProgress::Done(r) => return r,
+                StepProgress::Continue => continue,
+                StepProgress::Done(r) => return r,
+                StepProgress::ChanceYield { space, .. } => {
+                    // Default in-step driver: draw the bucket from the
+                    // live RNG and resume on that single path. Preserves
+                    // the pre-F2 draw site at byte identity — part-a
+                    // has already set the move context for this draw.
+                    let event = match space {
+                        DrawSpace::UniformDamage => {
+                            RngEvent::DamageRoll(self.rng.damage_roll())
+                        }
+                        // F2 only yields UniformDamage (confusion
+                        // self-hit). Other spaces land in F4-F6.
+                        other => panic!(
+                            "step: chance yield with unsupported DrawSpace {other:?}"
+                        ),
+                    };
+                    cursor.resolve_yield(event);
+                }
             }
         }
     }
 
-    /// Advance the cursor by one phase. F1 splits the turn into four
-    /// phases: `Start` (prologue: volatile reset, switches, mega, action
-    /// ordering, Custap, queue setup) → `ActionLoop` (one queued action
-    /// per call) → `Epilogue` (self-switch, EOT, timers, weather,
-    /// commander, winner check) → `Done`. Future PRs (F2+) add
-    /// `ChanceYield` returns at native draw sites inside the action
+    /// Advance the cursor by one phase. PR-F2 adds the `ResolveYield`
+    /// arm — when `process_one_action` parks a `PendingYield` on the
+    /// battle, the cursor transitions to `StepPhase::ResolveYield` and
+    /// `step_one` returns `StepProgress::ChanceYield`. The caller
+    /// supplies the resolved draw via `cursor.resolve_yield(event)`;
+    /// on re-entry, the `ResolveYield` arm applies the yield,
+    /// finalizes the action, advances `idx`, and resumes the action
     /// loop.
     pub fn step_one(
         &mut self,
         cursor: &mut crate::step_machine::StepCursor<'_>,
     ) -> crate::step_machine::StepProgress {
         use crate::step_machine::{StepPhase, StepProgress};
-        // Match on `&mut cursor.phase` so we can mutate ActionLoop
-        // fields in place. Phase transitions go via the `next` local so
-        // the cursor borrow is dropped before reassignment.
-        let next: Option<StepPhase<'_>> = match &mut cursor.phase {
+        // Move the phase out so each arm can pattern-match by-value
+        // (some transitions move owned `ActionOrder` between variants).
+        // Every arm writes a real phase back into `cursor.phase` before
+        // returning; the temporary `Done(StepResult::Continue)` sentinel
+        // is never observed externally.
+        let phase = std::mem::replace(
+            &mut cursor.phase,
+            StepPhase::Done(StepResult::Continue),
+        );
+        match phase {
             StepPhase::Start { p1, p2 } => {
-                let p1 = *p1;
-                let p2 = *p2;
-                // Battle-ended short-circuit (matches the pre-F1
-                // `if let Some(w) = self.ended { return Ended }` guard).
                 if let Some(w) = self.ended {
-                    Some(StepPhase::Done(StepResult::Ended { winner: w }))
+                    cursor.phase = StepPhase::Done(StepResult::Ended { winner: w });
                 } else {
                     let (order, pending_kind) = self.turn_prologue(p1, p2);
-                    Some(StepPhase::ActionLoop { p1, p2, order, idx: 0, pending_kind })
+                    cursor.phase = StepPhase::ActionLoop {
+                        p1, p2, order, idx: 0, pending_kind,
+                    };
                 }
+                StepProgress::Continue
             }
-            StepPhase::ActionLoop { p1, p2, order, idx, pending_kind } => {
-                if *idx < order.len() {
-                    self.process_one_action(order, *idx, pending_kind);
-                    *idx += 1;
-                    None
+            StepPhase::ActionLoop { p1, p2, mut order, mut idx, mut pending_kind } => {
+                if idx < order.len() {
+                    self.process_one_action(&mut order, idx, &mut pending_kind);
+                    if let Some(pending) = self.pending_yield.take() {
+                        let (key, space) = pending.draw_descriptor();
+                        cursor.phase = StepPhase::ResolveYield {
+                            p1, p2, order, idx, pending_kind, pending, resolved: None,
+                        };
+                        return StepProgress::ChanceYield { pending, key, space };
+                    }
+                    idx += 1;
+                    cursor.phase = StepPhase::ActionLoop {
+                        p1, p2, order, idx, pending_kind,
+                    };
                 } else {
-                    Some(StepPhase::Epilogue { p1: *p1, p2: *p2 })
+                    cursor.phase = StepPhase::Epilogue { p1, p2 };
                 }
+                StepProgress::Continue
+            }
+            StepPhase::ResolveYield {
+                p1, p2, mut order, mut idx, mut pending_kind, pending, resolved,
+            } => {
+                let event = resolved.expect(
+                    "step_one: ResolveYield re-entered without resolve_yield",
+                );
+                self.apply_pending_yield(pending, event);
+                // After the apply, the per-action work that the pre-F2
+                // inline path did AFTER the draw is the same tail
+                // `process_one_action` runs after `resolve_move_with_pending`
+                // returns: `finalize_move_resolution`, then `idx += 1`.
+                self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                idx += 1;
+                cursor.phase = StepPhase::ActionLoop {
+                    p1, p2, order, idx, pending_kind,
+                };
+                StepProgress::Continue
             }
             StepPhase::Epilogue { p1, p2 } => {
-                let r = self.turn_epilogue(*p1, *p2);
-                Some(StepPhase::Done(r))
+                let r = self.turn_epilogue(p1, p2);
+                cursor.phase = StepPhase::Done(r);
+                StepProgress::Continue
             }
-            StepPhase::Done(r) => return StepProgress::Done(*r),
-        };
-        if let Some(p) = next {
-            cursor.phase = p;
+            StepPhase::Done(r) => {
+                cursor.phase = StepPhase::Done(r);
+                StepProgress::Done(r)
+            }
         }
-        StepProgress::Continue
+    }
+
+    /// Apply a resolved `PendingYield` to the battle. Called from
+    /// `step_one`'s `ResolveYield` arm with the bucket the caller drew
+    /// (or the branch picked, for native chance fan-out). Shared
+    /// damage formulas live in `crate::damage` so this apply, the
+    /// spike (`Battle::branch_confusion_self_hit`), and the pre-F2
+    /// inline path cannot drift.
+    fn apply_pending_yield(
+        &mut self,
+        pending: crate::step_machine::PendingYield,
+        event: crate::rng::RngEvent,
+    ) {
+        use crate::rng::RngEvent;
+        use crate::step_machine::PendingYield;
+        match pending {
+            PendingYield::ConfusionSelfHit {
+                actor_side, actor_slot, level, atk_base, atk_boost, def_base, def_boost,
+            } => {
+                let bucket = match event {
+                    RngEvent::DamageRoll(b) => b,
+                    other => panic!(
+                        "apply_pending_yield: ConfusionSelfHit expects DamageRoll, got {other:?}"
+                    ),
+                };
+                let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
+                    level, atk_base, atk_boost, def_base, def_boost, bucket,
+                );
+                if let Some(m) = self
+                    .side_mut(actor_side)
+                    .active_mon_mut(actor_slot as usize)
+                {
+                    m.current_hp = m.current_hp.saturating_sub(dmg);
+                    if m.current_hp == 0 {
+                        m.fainted = true;
+                    }
+                }
+            }
+        }
     }
 
     /// Phase-1 prologue: everything that runs BEFORE the action queue
@@ -6956,6 +7059,18 @@ impl Battle {
             return PreMoveOutcome::Proceed;
         }
         // Self-hit: 40-BP typeless physical confusion damage.
+        //
+        // PR-F2 native-chance yield seam: instead of drawing the bucket
+        // inline, snapshot the per-hit damage-formula inputs and park a
+        // `PendingYield::ConfusionSelfHit` on the battle. `step_one`'s
+        // `ActionLoop` arm sees the parked yield and surfaces it as
+        // `StepProgress::ChanceYield`; the caller (default in-step
+        // driver or chance crate) supplies the bucket via
+        // `cursor.resolve_yield(event)`, and `apply_pending_yield`
+        // applies the HP delta on resume. The RNG move context is set
+        // here so the in-step `damage_roll()` draw matches the pre-F2
+        // PS-keyed site byte-for-byte (PS records the self-hit damage
+        // roll with no target).
         let (level, atk_base, atk_boost, def_base, def_boost) = {
             let m = self
                 .side(actor_side)
@@ -6969,23 +7084,16 @@ impl Battle {
                 m.boosts[1],
             )
         };
-        // PS records the self-hit damage roll with no target.
         self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
-        let roll = self.rng.damage_roll();
-        // Shared formula with the native-branching fan-out
-        // (`Battle::branch_confusion_self_hit`). PS
-        // `sim/battle-actions.ts:1854` `getConfusionDamage`.
-        let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
-            level, atk_base, atk_boost, def_base, def_boost, roll,
-        );
-        let m = self
-            .side_mut(actor_side)
-            .active_mon_mut(actor_slot as usize)
-            .unwrap();
-        m.current_hp = m.current_hp.saturating_sub(dmg);
-        if m.current_hp == 0 {
-            m.fainted = true;
-        }
+        self.pending_yield = Some(crate::step_machine::PendingYield::ConfusionSelfHit {
+            actor_side,
+            actor_slot,
+            level,
+            atk_base,
+            atk_boost,
+            def_base,
+            def_boost,
+        });
         PreMoveOutcome::Abort
     }
 
