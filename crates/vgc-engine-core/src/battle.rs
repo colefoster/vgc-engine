@@ -1151,7 +1151,45 @@ impl Battle {
     }
 
     /// Advance the battle one turn.
+    ///
+    /// Thin wrapper over [`Battle::step_one`] introduced in PR-F0 — see
+    /// `docs/outer-step-refactor-design.md`. Allocates nothing beyond
+    /// the borrowed `StepCursor` stack frame; the cursor holds slice
+    /// references to the caller's `Choice` buffers.
     pub fn step(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) -> StepResult {
+        let mut cursor = crate::step_machine::StepCursor::start(p1_choices, p2_choices);
+        loop {
+            match self.step_one(&mut cursor) {
+                crate::step_machine::StepProgress::Continue => continue,
+                crate::step_machine::StepProgress::Done(r) => return r,
+            }
+        }
+    }
+
+    /// Advance the cursor by one phase. F0 has just two phases: `Start`
+    /// runs the full turn body (delegating to `step_inner`) and parks
+    /// the `StepResult` in `Done`; `Done` hands the result back to the
+    /// driver. Future PRs (F1+) split `Start` into finer phases and add
+    /// `ChanceYield` returns at native draw sites.
+    pub fn step_one(
+        &mut self,
+        cursor: &mut crate::step_machine::StepCursor<'_>,
+    ) -> crate::step_machine::StepProgress {
+        use crate::step_machine::{StepPhase, StepProgress};
+        match cursor.phase {
+            StepPhase::Start { p1, p2 } => {
+                let r = self.step_inner(p1, p2);
+                cursor.phase = StepPhase::Done(r);
+                StepProgress::Continue
+            }
+            StepPhase::Done(r) => StepProgress::Done(r),
+        }
+    }
+
+    /// The pre-F0 `step()` body, kept intact as a single block so the
+    /// cursor lift is a pure no-op. F1+ will dissect this into the
+    /// `StepPhase` arms inside `step_one`.
+    fn step_inner(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) -> StepResult {
         if let Some(w) = self.ended {
             return StepResult::Ended { winner: w };
         }
