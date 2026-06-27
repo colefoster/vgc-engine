@@ -4920,6 +4920,60 @@ impl Battle {
         true
     }
 
+    /// Move-specific post-damage side effects that don't fit the generic
+    /// secondary / on-hit-reaction dispatch — currently Knock Off's
+    /// item removal and Smack Down / Thousand Arrows' grounding
+    /// volatile. Both gated on `!hit_sub` (PS: each effect requires
+    /// the hit to reach the holder, not the substitute).
+    ///
+    /// Knock Off (PS `data/moves.ts:knockoff`): after the damage and
+    /// after Sitrus etc., remove the target's item. Sticky Hold blocks;
+    /// so does an unremovable item — the holder's own Mega Stone (PS
+    /// `onTakeItem` false). Skip if the holder has fainted (item
+    /// removed via faint is moot). Matches the no-boost gate in
+    /// damage.rs's Knock-Off ×1.5 BP path.
+    ///
+    /// Smack Down / Thousand Arrows (PS `data/moves.ts:smackdown` /
+    /// `:thousandarrows`): apply `volatileStatus: 'smackdown'` to a
+    /// surviving target. The volatile overrides Flying type, Levitate,
+    /// Air Balloon and Magnet Rise grounding until switch-out.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
+    /// <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
+    ///
+    /// No RNG draws. Pure mechanical extraction — body byte-identical
+    /// to the inline blocks it replaces.
+    fn apply_move_specific_post_damage(
+        &mut self,
+        ctx: &PerTargetContext,
+        hit_sub: bool,
+    ) {
+        if hit_sub {
+            return;
+        }
+        if ctx.move_id == data::move_id::KNOCKOFF {
+            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
+                .is_some_and(|m| m.is_alive()
+                    && m.ability_id != data::ability_id::STICKYHOLD
+                    && data::mega_stone_for(m.item_id, m.species_id).is_none());
+            if can_knock {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    t.item_id = u16::MAX;
+                }
+            }
+        }
+        if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) {
+            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                if t.is_alive() {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::SmackdownGrounded,
+                        turns_remaining: 0, // indefinite, cleared on switch-out
+                        payload: 0,
+                    });
+                }
+            }
+        }
+    }
+
     fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
@@ -5027,48 +5081,7 @@ impl Battle {
         // item hooks above so the target's faint state is settled.
         self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
 
-        // Knock Off item removal — after damage, after Sitrus etc.,
-        // skip if target fainted (item removed via faint is moot),
-        // if defender has Sticky Hold, or if the hit was absorbed by
-        // a Substitute (PS: knock-off effect requires the hit to
-        // reach the holder).
-        if ctx.move_id == data::move_id::KNOCKOFF && !hit_sub {
-            // Sticky Hold and a Substitute block removal; so does an
-            // unremovable item — the holder's own Mega Stone (PS
-            // `onTakeItem` false). Matches the no-boost gate in damage.rs.
-            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                .is_some_and(|m| m.is_alive()
-                    && m.ability_id != data::ability_id::STICKYHOLD
-                    && data::mega_stone_for(m.item_id, m.species_id).is_none());
-            if can_knock {
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    t.item_id = u16::MAX;
-                }
-            }
-        }
-
-        // Smack Down / Thousand Arrows — grounding side effect.
-        // PS data/moves.ts:smackdown / :thousandarrows both apply
-        // `volatileStatus: 'smackdown'` after the hit lands. The
-        // volatile overrides Flying type, Levitate, Air Balloon,
-        // and Magnet Rise grounding for the remainder of the battle
-        // (until switch-out). PS gates the apply on a successful
-        // hit only, which we mirror by checking that the target is
-        // still alive AND was not absorbed by a Substitute.
-        // Bulbapedia:
-        //   <https://bulbapedia.bulbagarden.net/wiki/Smack_Down_(move)>,
-        //   <https://bulbapedia.bulbagarden.net/wiki/Thousand_Arrows_(move)>.
-        if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) && !hit_sub {
-            if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                if t.is_alive() {
-                    let _ = t.volatiles.add(crate::pokemon::Volatile {
-                        kind: crate::pokemon::VolatileKind::SmackdownGrounded,
-                        turns_remaining: 0, // indefinite, cleared on switch-out
-                        payload: 0,
-                    });
-                }
-            }
-        }
+        self.apply_move_specific_post_damage(ctx, hit_sub);
 
         // Secondary if target still alive — and the sub didn't take
         // the hit. PS: Substitute blocks all secondaries that target
