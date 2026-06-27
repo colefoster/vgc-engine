@@ -223,6 +223,12 @@ pub struct BattleReport {
     /// at a divergence or the battle's natural end (see [`replay`]). The turns
     /// before it are validated; the rest are not.
     pub faint_truncated: bool,
+    /// Provenance of every keyed draw that missed the oracle table — the
+    /// `(turn, actor, target, move_id, decision)` of each engine draw PS did
+    /// not record under that key. Drives the `--draw-report` attribution mode
+    /// so "K unmatched draws" becomes a ranked `move x decision` breakdown
+    /// instead of an opaque count. Empty unless miss-logging fired.
+    pub miss_keys: Vec<RngKey>,
 }
 
 impl BattleReport {
@@ -706,12 +712,20 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     }
 
     let unmatched_draws = b.rng().unmatched_draws().unwrap_or(0);
+    // Drain the per-draw miss log (keys of engine draws PS never recorded under
+    // that key) for attribution. `take_miss_log` is a no-op for non-OracleKeyed.
+    let miss_keys = b
+        .rng_mut()
+        .take_miss_log()
+        .map(|log| log.into_iter().map(|r| r.key).collect())
+        .unwrap_or_default();
     Ok(BattleReport {
         matched_turns,
         divergence,
         unmatched_draws,
         unresolved_moves: unresolved,
         faint_truncated,
+        miss_keys,
     })
 }
 
