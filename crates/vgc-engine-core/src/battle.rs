@@ -4694,47 +4694,74 @@ impl Battle {
     /// data per-resolve (Photon Geyser category flip, Helping Hand BP
     /// doubling, etc.) and a fresh static lookup would lose those
     /// mutations.
-    fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
-        let m = &ctx.move_def;
-        // `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
-        // PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy
-        // && hit > 1)`: every hit AFTER the first rolls accuracy
-        // independently and the move STOPS at the first miss (only the
-        // hits that connected deal damage / ramp BP). Hit 1's accuracy
-        // is the move-level roll already done above. Loaded Dice
-        // deletes `multiaccuracy` (data/items.ts:3456 onModifyMove), so
-        // its holder skips these rolls and lands every rolled hit.
-        // Reuses the pure `effective_accuracy` predicate (boost chain,
-        // No Guard, etc.); `None` = sure-hit, no draw. Population Bomb
-        // (10 hits, acc 90) does NOT ramp BP — it is deliberately out of
-        // the ramp arm below. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
-        if hit_idx >= 1
-            && matches!(
+    /// `multiaccuracy` — Triple Kick / Triple Axel / Population Bomb.
+    /// PS sim/battle-actions.ts:907 `if (target && move.multiaccuracy &&
+    /// hit > 1)`: every hit AFTER the first rolls accuracy independently
+    /// and the move STOPS at the first miss (only the hits that connected
+    /// deal damage / ramp BP). Hit 1's accuracy is the move-level roll
+    /// already done upstream. Loaded Dice deletes `multiaccuracy`
+    /// (data/items.ts:3456 onModifyMove), so its holder skips these rolls
+    /// and lands every rolled hit.
+    ///
+    /// Reuses the pure `effective_accuracy` predicate (boost chain,
+    /// No Guard, etc.); `None` threshold = sure-hit, no draw. Population
+    /// Bomb (10 hits, acc 90) does NOT ramp BP — that gate lives in the
+    /// BP-ramp arm of the damage path.
+    /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Population_Bomb_(move)>.
+    ///
+    /// Returns `true` when the loop must stop this hit (miss). On miss
+    /// the method also sets `ctx.target_fainted_this_hit = true` so the
+    /// driver breaks the multi-hit loop after `apply_single_hit` returns
+    /// — matching PS's "first miss ends the move." Returning `false` is
+    /// either "no roll required" (move/item gate failed) or "sure hit" or
+    /// "roll passed"; in all three cases the caller continues into the
+    /// per-hit damage path.
+    ///
+    /// PsGen5 draw discipline (memory: `feedback_ps_draws_then_vetoes`):
+    /// the deterministic move-id + Loaded Dice gates are PRE-DRAW
+    /// guards in PS as well — PS never reaches the accuracy roll on hits
+    /// 0 or on Loaded Dice holders. No veto is lifted ahead of a draw.
+    fn roll_multiaccuracy_or_break(
+        &mut self,
+        ctx: &mut PerTargetContext,
+        hit_idx: u32,
+    ) -> bool {
+        if hit_idx < 1
+            || !matches!(
                 ctx.move_id,
                 data::move_id::TRIPLEKICK
                     | data::move_id::TRIPLEAXEL
                     | data::move_id::POPULATIONBOMB
             )
-            && ctx.attacker_item_id != data::item_id::LOADEDDICE
+            || ctx.attacker_item_id == data::item_id::LOADEDDICE
         {
-            let acc_comp = crate::accuracy::effective_accuracy(
-                self, &ctx.attacker, &ctx.defender, m, ctx.move_id,
-                ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot,
-                ctx.attacker_ability_id, ctx.attacker_item_id, ctx.no_guard_pair,
-                ctx.damaging, &ctx.pending_kind,
-            );
-            if let Some(eff_acc) = acc_comp.threshold {
-                self.rng.set_decision(RngDecision::Accuracy);
-                let roll = self.rng.percent_1_100() as u32;
-                if roll > eff_acc {
-                    // Multiaccuracy miss — PS breaks the multi-hit loop.
-                    // Surface to the driver via the loop-stop flag.
-                    ctx.target_fainted_this_hit = true;
-                    return;
-                }
+            return false;
+        }
+        let m = &ctx.move_def;
+        let acc_comp = crate::accuracy::effective_accuracy(
+            self, &ctx.attacker, &ctx.defender, m, ctx.move_id,
+            ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot,
+            ctx.attacker_ability_id, ctx.attacker_item_id, ctx.no_guard_pair,
+            ctx.damaging, &ctx.pending_kind,
+        );
+        if let Some(eff_acc) = acc_comp.threshold {
+            self.rng.set_decision(RngDecision::Accuracy);
+            let roll = self.rng.percent_1_100() as u32;
+            if roll > eff_acc {
+                // Multiaccuracy miss — PS breaks the multi-hit loop.
+                // Surface to the driver via the loop-stop flag.
+                ctx.target_fainted_this_hit = true;
+                return true;
             }
         }
+        false
+    }
+
+    fn apply_single_hit(&mut self, ctx: &mut PerTargetContext, hit_idx: u32) {
+        if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
+            return;
+        }
+        let m = &ctx.move_def;
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted
