@@ -6929,14 +6929,15 @@ impl Battle {
                             m.boosts[1],
                         )
                     };
-                    let atk = crate::damage::apply_boost(atk_base, atk_boost);
-                    let def = crate::damage::apply_boost(def_base, def_boost).max(1);
-                    let lvl_factor = 2 * level / 5 + 2;
-                    let base = (lvl_factor * 40 * atk / def / 50) + 2;
                     // PS records the self-hit damage roll with no target.
                     self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, crate::rng::NO_SLOT);
-                    let roll = self.rng.damage_roll() as u32;
-                    let dmg = (base * (100 - roll) / 100).max(1) as u16;
+                    let roll = self.rng.damage_roll();
+                    // Shared formula with the native-branching fan-out
+                    // (`Battle::branch_confusion_self_hit`). PS
+                    // `sim/battle-actions.ts:1854` `getConfusionDamage`.
+                    let dmg = crate::damage::confusion_self_hit_damage_for_bucket(
+                        level, atk_base, atk_boost, def_base, def_boost, roll,
+                    );
                     let m = self
                         .side_mut(actor_side)
                         .active_mon_mut(actor_slot as usize)
