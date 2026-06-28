@@ -679,6 +679,9 @@ pub fn on_attacker_contact_hit(
             {
                 a.item_id = barb_id;
             }
+            // PR-EOT4: Sticky Barb just transferred from defender → attacker.
+            battle.sync_item_chip_bit(target_side, target_slot);
+            battle.sync_item_chip_bit(attacker_side, attacker_slot);
         }
     }
     if item_id == data::item_id::ROCKYHELMET {

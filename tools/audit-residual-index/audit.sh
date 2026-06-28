@@ -22,7 +22,14 @@ cd "$(git rev-parse --show-toplevel)"
 # resolve_end_of_turn catches any case the static audit misses.
 declare -a FIELDS=(
   'status'      'sync_status_dot_bit'      'Status::(Burn|Poison|Toxic)'
-  # PR-EOT4+ will add: 'item' 'sync_item_chip_bit' 'Item::(Leftovers|BlackSludge|StickyBarb)', etc.
+  # PR-EOT4: item_chip. Engine writes item_id via numeric `data::item_id::*`
+  # constants and variable transfers (Trick / Bestow / Sticky Barb contact
+  # swap), so the value-regex matches direct constant writes only — the
+  # variable-transfer sites are caught by the debug-build rescan
+  # `debug_assert_eq!` in `eot_item_residual` instead. The static guard
+  # remains useful: any future `pokemon.item_id = data::item_id::LEFTOVERS`
+  # without a nearby sync is flagged.
+  'item_id'     'sync_item_chip_bit'       'data::item_id::(LEFTOVERS|BLACKSLUDGE|STICKYBARB)'
 )
 
 ROOTS=(crates/vgc-engine-core/src)
