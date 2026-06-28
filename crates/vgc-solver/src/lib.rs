@@ -57,6 +57,14 @@
 //!   outcomes per site; dedup collapses them but the step calls are paid.
 //!   Future PR can collapse to {1, 100} representative values when the
 //!   caller asserts no mechanic checks an exact non-edge value.
+//!
+//! - **Opt-in lossy damage 3-bucket collapse.** [`EnumerateOpts::lossy_damage_3bucket`]
+//!   collapses `UniformDamage` from 16 buckets to 3 representative rolls
+//!   {0, 7, 15} with weights {5, 6, 5}/16. This preserves expected damage
+//!   but NOT the full post-hit HP distribution — survivors land on one of
+//!   3 HP values instead of up to 16. Sound only when the downstream leaf
+//!   is monotone in HP (e.g. `hp_ratio_leaf`, `kho_race_leaf`). Engine-
+//!   side `chance.rs` stays on 16 buckets unconditionally.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -129,19 +137,40 @@ pub struct OutcomeFrontier {
 /// backstop and should never bind on real game states.
 pub const MAX_LAZY_ITERATIONS: u32 = 16;
 
+/// Optional knobs for [`enumerate_outcomes_with`]. Defaults reproduce the
+/// pre-PR-C behavior (16 damage buckets, full fidelity).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnumerateOpts {
+    /// When true, collapse `DrawSpace::UniformDamage` to 3 representative
+    /// rolls {0, 7, 15} with weights {5, 6, 5}/16. This is **lossy** for
+    /// post-hit HP — survivors land at one of 3 representative HP values
+    /// instead of up to 16. Use only when the downstream leaf is monotone
+    /// in HP and you can accept the approximation. See `crates/vgc-solver/
+    /// src/lib.rs` module docs for the soundness analysis.
+    pub lossy_damage_3bucket: bool,
+}
+
 /// Expand a [`DrawSpace`] into its full outcome distribution as
 /// `(RngEvent, numerator, denominator)`. The probability of an outcome
 /// is `numerator / denominator`. For `Tiebreak` the returned distribution
 /// contains only the recorder-drawn value with weight 1/1 — the 2^64
 /// space is marginalized out (see module limitations).
-fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
+fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEvent, u32, u32)> {
     match space {
         DrawSpace::UniformRange(n) => (0..n)
             .map(|v| (RngEvent::Range(v), 1u32, n))
             .collect(),
-        DrawSpace::UniformDamage => (0..16u8)
-            .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
-            .collect(),
+        DrawSpace::UniformDamage => if opts.lossy_damage_3bucket {
+            vec![
+                (RngEvent::DamageRoll(0),  5, 16),
+                (RngEvent::DamageRoll(7),  6, 16),
+                (RngEvent::DamageRoll(15), 5, 16),
+            ]
+        } else {
+            (0..16u8)
+                .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
+                .collect()
+        },
         DrawSpace::UniformPercent { threshold } => match threshold {
             None => (1..=100u8)
                 .map(|v| (RngEvent::PercentRoll(v), 1u32, 100))
@@ -180,6 +209,19 @@ pub fn enumerate_outcomes(
     p2_choices: &[Choice],
     record_seed: u64,
 ) -> OutcomeFrontier {
+    enumerate_outcomes_with(base, p1_choices, p2_choices, record_seed, EnumerateOpts::default())
+}
+
+/// Same as [`enumerate_outcomes`] but with caller-supplied [`EnumerateOpts`]
+/// to opt in to lossy collapses (e.g. PR-C's 3-bucket UniformDamage). The
+/// default-opts case is bit-for-bit identical to [`enumerate_outcomes`].
+pub fn enumerate_outcomes_with(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    opts: EnumerateOpts,
+) -> OutcomeFrontier {
     // 1. Initial record pass to seed the per-site list.
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
@@ -195,7 +237,7 @@ pub fn enumerate_outcomes(
     // list is the order in which a key's events get queued.
     let mut per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
         .into_iter()
-        .map(|d| (d.key, expand(d.space, d.drawn), d.space, d.drawn))
+        .map(|d| (d.key, expand(d.space, d.drawn, opts), d.space, d.drawn))
         .collect();
 
     // Degenerate case: no recorded sites. The step had no random branches.
@@ -218,7 +260,7 @@ pub fn enumerate_outcomes(
         let pass = enumerate_pass(base, p1_choices, p2_choices, record_seed, &per_site);
 
         // Did any combo's replay discover counter-factual sites?
-        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs);
+        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs, opts);
 
         if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS {
             // Convergence (or budget exhausted — bail with the current
@@ -313,6 +355,7 @@ fn enumerate_pass(
 fn discover_new_sites(
     _existing: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
     combo_miss_logs: &[Vec<RecordedDraw>],
+    opts: EnumerateOpts,
 ) -> Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> {
     use std::collections::HashMap as Map;
     let mut max_per_key: Map<RngKey, (usize, DrawSpace, RngEvent)> = Map::new();
@@ -345,7 +388,7 @@ fn discover_new_sites(
     });
     for (key, count, space, drawn) in entries {
         for _ in 0..count {
-            out.push((key, expand(space, drawn), space, drawn));
+            out.push((key, expand(space, drawn, opts), space, drawn));
         }
     }
     out
@@ -621,6 +664,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformPercent { threshold: Some(85) },
             RngEvent::PercentRoll(42),
+            EnumerateOpts::default(),
         );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], (RngEvent::PercentRoll(1), 85, 100));
@@ -633,6 +677,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformPercent { threshold: Some(0) },
             RngEvent::PercentRoll(1),
+            EnumerateOpts::default(),
         );
         assert_eq!(out, vec![(RngEvent::PercentRoll(100), 100, 100)]);
     }
@@ -642,6 +687,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformPercent { threshold: Some(100) },
             RngEvent::PercentRoll(1),
+            EnumerateOpts::default(),
         );
         assert_eq!(out, vec![(RngEvent::PercentRoll(1), 100, 100)]);
     }
@@ -651,6 +697,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformPercent { threshold: Some(150) },
             RngEvent::PercentRoll(1),
+            EnumerateOpts::default(),
         );
         assert_eq!(out, vec![(RngEvent::PercentRoll(1), 100, 100)]);
     }
@@ -660,6 +707,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformPercent { threshold: None },
             RngEvent::PercentRoll(42),
+            EnumerateOpts::default(),
         );
         assert_eq!(out.len(), 100);
         assert_eq!(out[0], (RngEvent::PercentRoll(1), 1, 100));
@@ -714,7 +762,7 @@ mod tests {
         for d in &log {
             if let DrawSpace::UniformPercent { .. } = d.space {
                 saw_percent = true;
-                let exp = expand(d.space, d.drawn);
+                let exp = expand(d.space, d.drawn, EnumerateOpts::default());
                 assert!(
                     exp.len() <= 2,
                     "UniformPercent expand returned {} entries (expected ≤2 after PR-B); space={:?}",
@@ -724,5 +772,115 @@ mod tests {
             }
         }
         assert!(saw_percent, "fixture should have triggered at least one percent draw");
+    }
+
+    // ---- PR-C: opt-in 3-bucket UniformDamage collapse ----
+
+    #[test]
+    fn expand_uniform_damage_default_16() {
+        let out = expand(
+            DrawSpace::UniformDamage,
+            RngEvent::DamageRoll(7),
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 16);
+        for (i, entry) in out.iter().enumerate() {
+            assert_eq!(*entry, (RngEvent::DamageRoll(i as u8), 1, 16));
+        }
+    }
+
+    #[test]
+    fn expand_uniform_damage_3bucket() {
+        let out = expand(
+            DrawSpace::UniformDamage,
+            RngEvent::DamageRoll(7),
+            EnumerateOpts { lossy_damage_3bucket: true },
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (RngEvent::DamageRoll(0),  5, 16));
+        assert_eq!(out[1], (RngEvent::DamageRoll(7),  6, 16));
+        assert_eq!(out[2], (RngEvent::DamageRoll(15), 5, 16));
+    }
+
+    #[test]
+    fn expand_uniform_damage_3bucket_weights_sum_to_16() {
+        let out = expand(
+            DrawSpace::UniformDamage,
+            RngEvent::DamageRoll(0),
+            EnumerateOpts { lossy_damage_3bucket: true },
+        );
+        let total: u32 = out.iter().map(|(_, n, _)| *n).sum();
+        assert_eq!(total, 16);
+        for (_, _, denom) in &out {
+            assert_eq!(*denom, 16);
+        }
+    }
+
+    #[test]
+    fn enumerate_outcomes_with_3bucket_shrinks_raw_combos() {
+        let b = fixture();
+        // Aerial Ace: no accuracy roll, but a damage roll fires.
+        let default_frontier = enumerate_outcomes(
+            &b,
+            &[move_choice(2)],
+            &[switch_choice(1)],
+            11,
+        );
+        let lossy_frontier = enumerate_outcomes_with(
+            &b,
+            &[move_choice(2)],
+            &[switch_choice(1)],
+            11,
+            EnumerateOpts { lossy_damage_3bucket: true },
+        );
+        // Damage roll is the dominant cross-product axis here; 16→3 should
+        // shrink raw_combos by ~5×. Use a conservative >=3× lower bound to
+        // absorb tiebreak / counterfactual lazy site noise.
+        assert!(
+            lossy_frontier.raw_combos * 3 <= default_frontier.raw_combos,
+            "lossy raw_combos ({}) should be ~5× smaller than default ({})",
+            lossy_frontier.raw_combos,
+            default_frontier.raw_combos,
+        );
+        eprintln!(
+            "PR-C raw_combos: default={} lossy={}",
+            default_frontier.raw_combos, lossy_frontier.raw_combos,
+        );
+    }
+
+    #[test]
+    fn enumerate_outcomes_with_3bucket_probs_sum_to_1() {
+        let b = fixture();
+        let frontier = enumerate_outcomes_with(
+            &b,
+            &[move_choice(2)],
+            &[switch_choice(1)],
+            11,
+            EnumerateOpts { lossy_damage_3bucket: true },
+        );
+        let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "lossy frontier probs sum to {total}, expected 1.0",
+        );
+    }
+
+    #[test]
+    fn enumerate_outcomes_default_matches_enumerate_outcomes_with_default() {
+        let b = fixture();
+        let a = enumerate_outcomes(&b, &[switch_choice(1)], &[switch_choice(1)], 17);
+        let c = enumerate_outcomes_with(
+            &b,
+            &[switch_choice(1)],
+            &[switch_choice(1)],
+            17,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(a.outcomes.len(), c.outcomes.len());
+        assert_eq!(a.raw_combos, c.raw_combos);
+        for (oa, oc) in a.outcomes.iter().zip(c.outcomes.iter()) {
+            assert_eq!(oa.hash, oc.hash);
+            assert!((oa.prob - oc.prob).abs() < 1e-12);
+        }
     }
 }
