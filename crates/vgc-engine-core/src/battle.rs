@@ -8666,9 +8666,14 @@ impl Battle {
         // routes weather damage through `onDamage`). Sand Veil is evasion-
         // only (not damage immunity). Overcoat / Safety Goggles land in
         // their own PRs.
-        if self.effective_weather() == crate::weather::Weather::Sand {
+        // PR-EOT1: hoist `effective_weather` + `active_count` above the
+        // side/slot loops — both are loop-invariant within this residual
+        // phase (PS `sim/battle.ts` `residualOrder` doesn't redraw field
+        // state between slots). Byte-identical behavior.
+        let weather = self.effective_weather();
+        if weather == crate::weather::Weather::Sand {
+            let n = self.format().active_count();
             for side in [SideRef::P1, SideRef::P2] {
-                let n = self.format().active_count();
                 for slot in 0..n {
                     let immune = match self.side(side).active_mon(slot) {
                         Some(m) if m.is_alive() => {
@@ -8728,8 +8733,9 @@ impl Battle {
         //    pending entry's countdown ticks here; the hit lands the turn it
         //    reaches 0 (two turns after use). Damage is recomputed against the
         //    LIVE source vs the current slot occupant.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count();
         for tside in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count();
             for tslot in 0..n {
                 let entry = match self.future_pending[tside as usize][tslot] {
                     Some(e) => e,
@@ -8760,8 +8766,9 @@ impl Battle {
         //    CURRENT occupant of the wisher's slot (a switch-in inherits it);
         //    cancelled by Heal Block on the receiver (PS `onTryHeal`); skipped
         //    if the slot is empty or its occupant fainted.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count();
         for wside in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count();
             for wslot in 0..n {
                 let entry = match self.wish_pending[wside as usize][wslot] {
                     Some(e) => e,
@@ -8807,8 +8814,9 @@ impl Battle {
         //     between two heals is unobservable). Heal Block cancels it
         //     (PS `onTryHeal`); airborne / Fly / Dig occupants are skipped.
         if matches!(self.terrain, crate::terrain::Terrain::Grassy) {
+            // PR-EOT1: hoist `active_count`.
+            let n = self.format().active_count() as u8;
             for side in [SideRef::P1, SideRef::P2] {
-                let n = self.format().active_count() as u8;
                 for slot in 0..n {
                     let heal = match self.side(side).active_mon(slot as usize) {
                         Some(m)
@@ -8838,8 +8846,9 @@ impl Battle {
     /// removed; behavior is byte-identical.
     fn eot_item_residual(&mut self) {
         // 5. Item residuals (Leftovers, Black Sludge, ...) — PS order 5.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 crate::item::on_residual(self, side, slot);
             }
@@ -8860,8 +8869,9 @@ impl Battle {
         //    skip the entire pair when MG blocks since `damage` returns
         //    0 in that case). Seeder's slot encoded in payload as
         //    `(side << 8) | slot`.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for target_side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for target_slot in 0..n {
                 let (chip, source_side, source_slot, magic_guard) = match self
                     .side(target_side)
@@ -8925,8 +8935,9 @@ impl Battle {
         // 6. Status DOT (burn 1/16, poison 1/8, toxic counter/16).
         // Gen 7+ burn rate; PS data/conditions.ts. Magic Guard blocks
         // the HP loss but the toxic counter still ticks unconditionally.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let (dmg, mg, poison_heal) = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive() => {
@@ -9021,8 +9032,9 @@ impl Battle {
         //     `volatiles.clear()`. Runs after status DOT (order 9) and before
         //     the partial-trap chip (order 13). Bulbapedia:
         //     <https://bulbapedia.bulbagarden.net/wiki/Curse_(move)>.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
                     Some(m)
@@ -9058,8 +9070,9 @@ impl Battle {
         //     Guard blocks the chip but the duration still ticks
         //     (PS: `damage` returns 0 under MG but the volatile
         //     persists until its own duration expires).
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let (chip, magic_guard, expires) = match self
                     .side(side)
@@ -9128,8 +9141,9 @@ impl Battle {
         //     tick — and clears on switch-out via the blanket
         //     `volatiles.clear()`. Type codes: Water = 2, Steel = 16.
         //     Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive()
@@ -9170,8 +9184,9 @@ impl Battle {
         //     immunity and the already-statused guard all apply at sleep time;
         //     then the volatile is removed. Sleep duration rolls RNG inside
         //     `try_set_status_from`. Cleared on switch-out via `volatiles.clear()`.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let fire = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive() => m
@@ -9220,8 +9235,9 @@ impl Battle {
         //     No RNG, no allocation. Cleared on switch-out via the blanket
         //     `volatiles.clear()`. Bulbapedia:
         //     <https://bulbapedia.bulbagarden.net/wiki/Perish_Song_(move)>.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     m.tick_perish_song();
@@ -9239,8 +9255,9 @@ impl Battle {
         // 28. Late item residuals (Sticky Barb — order 28, sub-order 3).
         // Fires AFTER status DOT (9-10) so a fatal burn shadows the
         // Sticky Barb tick, matching PS.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 crate::item::on_residual_late(self, side, slot);
             }
@@ -9255,8 +9272,9 @@ impl Battle {
     fn eot_ability_residual(&mut self) {
         // 28. Ability residuals (Speed Boost etc.). PS onResidualOrder
         // for speedboost is 28 — last among the residual phases.
+        // PR-EOT1: hoist `active_count`.
+        let n = self.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
-            let n = self.format().active_count() as u8;
             for slot in 0..n {
                 let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
                 crate::ability::on_residual(self, side, slot, &mut rng);
