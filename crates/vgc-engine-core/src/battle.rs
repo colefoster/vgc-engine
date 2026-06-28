@@ -12791,8 +12791,15 @@ fn flinch_chance(slug: &str) -> Option<u8> {
         | "extrasensory" | "astonish" | "hyperfang" => 30,
         "ironhead" | "darkpulse" | "twister" | "dragonrush" | "snore"
         | "waterfall" => 20,
-        "icefang" | "thunderfang" | "firefang" | "fireblast"
-        | "rollingkick" | "lowkick" | "steamroller" => 10,
+        // Fire Blast (PS data/moves.ts:5330) only has a 10% burn
+        // secondary — no flinch. Low Kick (PS data/moves.ts:10444) has
+        // no secondary at all (just an onTryHit Dynamax veto). Both
+        // were grouped here in error so the engine fired a phantom 10%
+        // flinch roll every hit, diverging vs PS under Rng::OracleKeyed
+        // (conformance draw-report round 2: lowkick 59 misses /
+        // 49 battles, fireblast 18 / 13).
+        "icefang" | "thunderfang" | "firefang"
+        | "rollingkick" | "steamroller" => 10,
         // Heat Wave: 10% BURN, not flinch — handled elsewhere.
         _ => return None,
     })
