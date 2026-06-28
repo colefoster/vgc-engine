@@ -1187,6 +1187,10 @@ pub(crate) fn try_consume_mental_herb(battle: &mut Battle, side: SideRef, slot: 
             }
         }
         if removed {
+            // PR-LC3: Mental Herb directly removes Encore / Taunt /
+            // Disable / HealBlock volatiles — keep the `move_locks`
+            // bitset in sync.
+            m.sync_move_locks();
             m.consume_item();
         }
     }
