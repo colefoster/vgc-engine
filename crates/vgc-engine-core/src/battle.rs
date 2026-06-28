@@ -1202,53 +1202,71 @@ impl Battle {
         // mirror that: flag whether any move survives the selection filters
         // below and, if none does, offer Struggle instead (see after loop).
         let mut has_usable_move = false;
+        // PR-LC3: gate the per-move 6-condition filter cascade behind the
+        // cached `move_locks` bitset. ~90% of mid-battle turns have no
+        // active lock-volatile, so the common path skips all 6 method
+        // calls + 6 branches per move and falls straight through to the
+        // (item-level) Assault Vest check below.
+        let move_locks = active.move_locks;
         for (i, &move_id) in active.moves.iter().enumerate() {
             if move_id == u16::MAX || active.pp.get(i).copied().unwrap_or(0) == 0 {
                 continue;
             }
-            // Choice / Gorilla Tactics lock: only the locked slot is usable.
-            if is_move_locker
-                && active.locked_move_slot() != 255
-                && active.locked_move_slot() as usize != i
-            {
-                continue;
-            }
-            // Encore lock: while encored, only the encored slot is
-            // selectable. PS data/conditions.ts:encore onDisableMove.
-            if active.encore_turns() > 0
-                && active.encored_move_slot() != 255
-                && active.encored_move_slot() as usize != i
-            {
-                continue;
-            }
-            // Disable lock: the disabled slot is unselectable. PS
-            // data/moves.ts:disable condition onDisableMove.
-            if active.disabled_move_slot() != 255 && active.disabled_move_slot() as usize == i {
-                continue;
+            if move_locks != 0 {
+                // Slot-based locks first (no move-data fetch needed).
+                // Choice / Gorilla Tactics lock: only the locked slot is usable.
+                if move_locks & crate::pokemon::MOVE_LOCK_CHOICE != 0
+                    && is_move_locker
+                    && active.locked_move_slot() as usize != i
+                {
+                    continue;
+                }
+                // Encore lock: while encored, only the encored slot is
+                // selectable. PS data/conditions.ts:encore onDisableMove.
+                if move_locks & crate::pokemon::MOVE_LOCK_ENCORE != 0
+                    && active.encored_move_slot() != 255
+                    && active.encored_move_slot() as usize != i
+                {
+                    continue;
+                }
+                // Disable lock: the disabled slot is unselectable. PS
+                // data/moves.ts:disable condition onDisableMove.
+                if move_locks & crate::pokemon::MOVE_LOCK_DISABLE != 0
+                    && active.disabled_move_slot() as usize == i
+                {
+                    continue;
+                }
             }
             let m = &data::MOVES[move_id as usize];
-            // Throat Chop lockout: every sound-flagged move is disabled
-            // for 2 turns. PS data/moves.ts:throatchop condition
-            // onDisableMove — disables each moveSlot with flags['sound'].
-            if active.throat_chop_turns() > 0 && m.is_sound {
-                continue;
+            if move_locks != 0 {
+                // Move-flag-based locks (need `m`).
+                // Throat Chop lockout: every sound-flagged move is disabled
+                // for 2 turns. PS data/moves.ts:throatchop condition
+                // onDisableMove — disables each moveSlot with flags['sound'].
+                if move_locks & crate::pokemon::MOVE_LOCK_THROAT_CHOP != 0 && m.is_sound {
+                    continue;
+                }
+                // Taunt lockout: every Status-category move is unselectable
+                // while taunted (Me First excepted). PS data/moves.ts:taunt
+                // condition onDisableMove — disables each moveSlot whose
+                // move.category === 'Status' && id !== 'mefirst'.
+                if move_locks & crate::pokemon::MOVE_LOCK_TAUNT != 0
+                    && m.category == 2
+                    && move_id != data::move_id::MEFIRST
+                {
+                    continue;
+                }
+                // Heal Block lockout: every heal-flagged move is unselectable
+                // while heal-blocked. PS Heal Block condition `data/moves.ts:
+                // healblock` onDisableMove — disables each moveSlot whose move
+                // has `flags['heal']` (Recover, Roost, Rest, Wish, Synthesis,
+                // …). Z/Max exemptions are stripped from the gen-9 data dump.
+                if move_locks & crate::pokemon::MOVE_LOCK_HEAL_BLOCK != 0 && m.is_heal {
+                    continue;
+                }
             }
-            // Taunt lockout: every Status-category move is unselectable
-            // while taunted (Me First excepted). PS data/moves.ts:taunt
-            // condition onDisableMove — disables each moveSlot whose
-            // move.category === 'Status' && id !== 'mefirst'.
-            if active.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
-                continue;
-            }
-            // Heal Block lockout: every heal-flagged move is unselectable
-            // while heal-blocked. PS Heal Block condition `data/moves.ts:
-            // healblock` onDisableMove — disables each moveSlot whose move
-            // has `flags['heal']` (Recover, Roost, Rest, Wish, Synthesis,
-            // …). Z/Max exemptions are stripped from the gen-9 data dump.
-            if active.heal_block_turns() > 0 && m.is_heal {
-                continue;
-            }
-            // Assault Vest: status moves disallowed.
+            // Assault Vest: status moves disallowed. Item-level, not a
+            // per-mon volatile — stays outside the `move_locks` gate.
             if is_assault_vest && m.category == 2 {
                 continue;
             }
@@ -2213,6 +2231,11 @@ impl Battle {
             incoming.lockin_turns = 0;
             incoming.lockin_move_slot = 255;
             incoming.volatiles.clear();
+            // PR-LC3: the blanket `volatiles.clear()` above wiped any
+            // remaining lock-volatile (Disable / Throat Chop / Heal Block /
+            // Taunt — Choice/Encore were already cleared via their setters
+            // above). Reset the cached `move_locks` bitset to match.
+            incoming.move_locks = 0;
             // Set after the blanket clear so the marker survives until
             // the end-of-turn reset.
             incoming.set_switched_in_this_turn(true);
@@ -8870,6 +8893,36 @@ impl Battle {
                         debug_assert_eq!(
                             m.can_mega_evolve, live,
                             "PR-LC2: can_mega_evolve drift on {:?}.{} — a mutation site is missing a sync_can_mega_evolve call",
+                            side, slot
+                        );
+                        // PR-LC3: rescan `move_locks` from live volatile state.
+                        // If this fires, a mutation site on one of the six
+                        // lock-volatiles (Choice/Encore/Disable/ThroatChop/
+                        // Taunt/HealBlock) is missing a `sync_move_locks` call
+                        // or a direct bit update. Find and fix the site; do
+                        // NOT disable the assertion.
+                        let mut live_locks = 0u8;
+                        if m.locked_move_slot() != 255 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_CHOICE;
+                        }
+                        if m.encore_turns() > 0 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_ENCORE;
+                        }
+                        if m.disabled_move_slot() != 255 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_DISABLE;
+                        }
+                        if m.throat_chop_turns() > 0 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_THROAT_CHOP;
+                        }
+                        if m.taunt_turns() > 0 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_TAUNT;
+                        }
+                        if m.heal_block_turns() > 0 {
+                            live_locks |= crate::pokemon::MOVE_LOCK_HEAL_BLOCK;
+                        }
+                        debug_assert_eq!(
+                            m.move_locks, live_locks,
+                            "PR-LC3: move_locks drift on {:?}.{} — a mutation site is missing a sync_move_locks call",
                             side, slot
                         );
                     }
