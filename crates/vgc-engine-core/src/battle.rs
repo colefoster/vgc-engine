@@ -3455,6 +3455,29 @@ impl Battle {
         // Hadron Engine / Orichalcum Pulse above (gated by the same
         // `matches!` on attacker_ability_id). See PR-LC4.
         let _ = special_move;
+        // PR-LC6: per-action attacker invariants. The `attacker_no_guard`
+        // and `attacker_breaks_mold` locals above are the source of truth
+        // for the values currently in scope; `attacker_infiltrates` was
+        // previously re-derived per-target (one `effective_ability_id()`
+        // call per target) and is hoisted here. We resolve the attacker's
+        // effective ability once and reuse it for both `attacker_no_guard`
+        // (already computed above; we reuse via the same `==` predicate)
+        // and `attacker_infiltrates`. Existing downstream code keeps
+        // reading the named locals; the per-target body reads
+        // `mr_ctx.attacker_infiltrates` to eliminate the re-derivation.
+        let attacker_effective_ability_id_action = attacker.effective_ability_id();
+        let mr_ctx = MoveResolveCtx::new_for_action(
+            attacker_ability_id,
+            attacker_item_id,
+            attacker_effective_ability_id_action,
+            attacker_breaks_mold,
+            physical_move,
+            special_move,
+        );
+        // `attacker_no_guard` was computed above using the same effective
+        // ability read; keep it as a local for the existing call sites and
+        // confirm it matches the bundled value under debug builds.
+        debug_assert_eq!(attacker_no_guard, mr_ctx.attacker_no_guard);
         let mut any_damage_dealt: u16 = 0;
         // Did the move attempt resolution against at least one LIVE target?
         // Crash-damage moves (Jump Kick family) take 1/2 max HP when the move
@@ -4381,8 +4404,25 @@ impl Battle {
             // target side's Reflect / Light Screen / Aurora Veil (and the
             // Substitute / Safeguard / Mist below). The holder's own screens
             // are unaffected (this only fires on its outgoing moves).
-            let attacker_infiltrates =
-                attacker.effective_ability_id() == data::ability_id::INFILTRATOR;
+            // PR-LC6: hoisted to action-level `mr_ctx` — the attacker's
+            // effective ability does not change between targets of one
+            // move, so PS's per-target `onSourceModify*` reads can read a
+            // single precomputed value. Debug build re-derives and
+            // asserts equality.
+            let attacker_infiltrates = mr_ctx.attacker_infiltrates;
+            #[cfg(debug_assertions)]
+            {
+                debug_assert_eq!(
+                    attacker_infiltrates,
+                    attacker.effective_ability_id() == data::ability_id::INFILTRATOR
+                );
+                debug_assert_eq!(mr_ctx.attacker_breaks_mold, attacker_breaks_mold);
+                debug_assert_eq!(mr_ctx.attacker_no_guard, attacker_no_guard);
+                debug_assert_eq!(mr_ctx.attacker_item_id, attacker_item_id);
+                debug_assert_eq!(mr_ctx.attacker_ability_id, attacker_ability_id);
+                debug_assert_eq!(mr_ctx.physical_move, physical_move);
+                debug_assert_eq!(mr_ctx.special_move, special_move);
+            }
             let defender_has_reflect = def_conds.reflect_turns > 0 && !attacker_infiltrates;
             let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
@@ -12784,6 +12824,79 @@ pub(crate) struct ApplyResult {
     /// attacker. Currently unused by the caller (the mark itself is
     /// the side-effect) but exposed for future hooks.
     pub stellar_consumed: bool,
+}
+
+/// Per-action attacker invariants for `resolve_move_with_pending`.
+///
+/// Built ONCE per action, immediately after the attacker/move setup
+/// phase completes (see `MoveResolveCtx::new_for_action`). Holds the
+/// values that the per-target loop body needs but that are constant
+/// across every target of one move resolution. Hoisting them out of
+/// the per-target block eliminates redundant `effective_ability_id()`
+/// re-derivation (`attacker_infiltrates`) and lets `PerTargetContext`
+/// copy from one place. PR-LC6.
+///
+/// Stack-only, `Copy`, ~8 bytes payload (cache-line friendly).
+///
+/// Most fields duplicate locals that are already in scope at the
+/// construction site (so the per-target body keeps reading those
+/// locals). They live on the struct so future per-target sites can
+/// migrate to `mr_ctx.<field>` reads without re-deriving via
+/// `effective_*_id()`; `attacker_infiltrates` is the field that
+/// actively pays today (one `effective_ability_id()` call saved per
+/// target). `#[allow(dead_code)]` covers the as-yet-unused fields —
+/// keeping them on the struct documents the invariant set and lets
+/// follow-ups land without touching the action-level construction.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+struct MoveResolveCtx {
+    /// `effective_ability_id() == NOGUARD` for the attacker. Already a
+    /// once-per-action read but bundled here for cohesion.
+    attacker_no_guard: bool,
+    /// `effective_ability_id() == INFILTRATOR` for the attacker. Was
+    /// re-derived per-target prior to PR-LC6 — this is the field that
+    /// pays for the struct.
+    attacker_infiltrates: bool,
+    /// Mold Breaker / Teravolt / Turboblaze (and Mycelium Might on
+    /// status moves). Identical to the existing per-action local.
+    attacker_breaks_mold: bool,
+    /// `attacker.effective_item_id()` snapshot — Magic Room suppression
+    /// already folded in.
+    attacker_item_id: u16,
+    /// `attacker.ability_id` (raw, NOT effective — matches the existing
+    /// per-action local used by Mold Breaker / Ruin / pinch-ability
+    /// gating downstream).
+    attacker_ability_id: u16,
+    /// `m.category == 0`.
+    physical_move: bool,
+    /// `m.category == 1`.
+    special_move: bool,
+}
+
+impl MoveResolveCtx {
+    /// Construct from the attacker snapshot + move def. Inline-always:
+    /// LC5's lesson — the auto-inliner doesn't reach into the 2400-line
+    /// `resolve_move_with_pending`, and without `inline(always)` the
+    /// helper extraction regresses.
+    #[inline(always)]
+    fn new_for_action(
+        attacker_ability_id: u16,
+        attacker_item_id: u16,
+        attacker_effective_ability: u16,
+        attacker_breaks_mold: bool,
+        physical_move: bool,
+        special_move: bool,
+    ) -> Self {
+        Self {
+            attacker_no_guard: attacker_effective_ability == data::ability_id::NOGUARD,
+            attacker_infiltrates: attacker_effective_ability == data::ability_id::INFILTRATOR,
+            attacker_breaks_mold,
+            attacker_item_id,
+            attacker_ability_id,
+            physical_move,
+            special_move,
+        }
+    }
 }
 
 /// Per-target / per-hit context bundle owned by the per-target body of
