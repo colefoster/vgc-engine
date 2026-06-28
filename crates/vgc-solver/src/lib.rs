@@ -142,9 +142,17 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
         DrawSpace::UniformDamage => (0..16u8)
             .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
             .collect(),
-        DrawSpace::UniformPercent { .. } => (1..=100u8)
-            .map(|v| (RngEvent::PercentRoll(v), 1u32, 100))
-            .collect(),
+        DrawSpace::UniformPercent { threshold } => match threshold {
+            None => (1..=100u8)
+                .map(|v| (RngEvent::PercentRoll(v), 1u32, 100))
+                .collect(),
+            Some(0) => vec![(RngEvent::PercentRoll(100), 100, 100)],
+            Some(t) if t >= 100 => vec![(RngEvent::PercentRoll(1), 100, 100)],
+            Some(t) => vec![
+                (RngEvent::PercentRoll(1), t as u32, 100),
+                (RngEvent::PercentRoll(t + 1), (100 - t) as u32, 100),
+            ],
+        },
         DrawSpace::Crit { num, denom } => vec![
             (RngEvent::Crit(true), num, denom),
             (RngEvent::Crit(false), denom - num, denom),
@@ -603,5 +611,118 @@ mod tests {
         // Second drain returns an empty log (take semantics).
         let log2 = c.rng_mut().take_miss_log().unwrap();
         assert!(log2.is_empty());
+    }
+
+    // PR-B unit tests for the {hit, miss} bucket collapse on
+    // `DrawSpace::UniformPercent`. `drawn` is irrelevant for the percent
+    // arm — the helper passes a placeholder value.
+    #[test]
+    fn expand_uniform_percent_some_collapses_to_two() {
+        let out = expand(
+            DrawSpace::UniformPercent { threshold: Some(85) },
+            RngEvent::PercentRoll(42),
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], (RngEvent::PercentRoll(1), 85, 100));
+        assert_eq!(out[1], (RngEvent::PercentRoll(86), 15, 100));
+        assert_eq!(out.iter().map(|(_, n, _)| n).sum::<u32>(), 100);
+    }
+
+    #[test]
+    fn expand_uniform_percent_some_zero() {
+        let out = expand(
+            DrawSpace::UniformPercent { threshold: Some(0) },
+            RngEvent::PercentRoll(1),
+        );
+        assert_eq!(out, vec![(RngEvent::PercentRoll(100), 100, 100)]);
+    }
+
+    #[test]
+    fn expand_uniform_percent_some_full() {
+        let out = expand(
+            DrawSpace::UniformPercent { threshold: Some(100) },
+            RngEvent::PercentRoll(1),
+        );
+        assert_eq!(out, vec![(RngEvent::PercentRoll(1), 100, 100)]);
+    }
+
+    #[test]
+    fn expand_uniform_percent_some_overhundred() {
+        let out = expand(
+            DrawSpace::UniformPercent { threshold: Some(150) },
+            RngEvent::PercentRoll(1),
+        );
+        assert_eq!(out, vec![(RngEvent::PercentRoll(1), 100, 100)]);
+    }
+
+    #[test]
+    fn expand_uniform_percent_none_stays_full() {
+        let out = expand(
+            DrawSpace::UniformPercent { threshold: None },
+            RngEvent::PercentRoll(42),
+        );
+        assert_eq!(out.len(), 100);
+        assert_eq!(out[0], (RngEvent::PercentRoll(1), 1, 100));
+        assert_eq!(out[99], (RngEvent::PercentRoll(100), 1, 100));
+    }
+
+    /// Frontier-level: an accuracy-bearing attack must enumerate
+    /// dramatically fewer raw combos after the bucket collapse. Pre-PR-B
+    /// a single accuracy site alone multiplied the cross-product by 100;
+    /// post-PR-B each `Some(t)` percent site contributes at most 2.
+    /// Hurricane has 70% accuracy plus a 30% confusion secondary, so two
+    /// percent sites fire — pre-collapse cross-product is ≥ 16·2·100·100
+    /// = 320 000; post-collapse it's bounded by 16·2·2·2 = 128 (plus any
+    /// tiebreak / counterfactual lazy sites).
+    #[test]
+    fn percent_bucket_collapse_shrinks_raw_combos() {
+        let mut b = fixture();
+        // Bring Pelipper out so Hurricane (move_slot 0) is active.
+        let _ = b.step(&[switch_choice(1)], &[switch_choice(1)]);
+        // P2 switches (no draws on its side); P1 fires Hurricane.
+        let frontier = enumerate_outcomes(
+            &b,
+            &[move_choice(0)],
+            &[switch_choice(1)],
+            7,
+        );
+        // Hard upper bound chosen well below the pre-collapse floor
+        // (which would be ≥ 100·16·2 = 3200 from the accuracy site alone)
+        // but loose enough to absorb counterfactual sites surfaced by the
+        // lazy re-record loop.
+        assert!(
+            frontier.raw_combos < 1024,
+            "expected post-collapse raw_combos < 1024, got {} (outcomes={})",
+            frontier.raw_combos,
+            frontier.outcomes.len(),
+        );
+        let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "probs sum to {total}, expected 1.0",
+        );
+        assert_eq!(frontier.unmatched_total, 0);
+
+        // Cross-check: every UniformPercent site the recorder saw should
+        // expand to at most 2 buckets (the `None` legacy path would
+        // produce 100).
+        let mut rec = b.clone();
+        rec.set_rng(Rng::recording(7));
+        let _ = rec.step(&[move_choice(0)], &[switch_choice(1)]);
+        let log = rec.rng_mut().take_recording_log().unwrap();
+        let mut saw_percent = false;
+        for d in &log {
+            if let DrawSpace::UniformPercent { .. } = d.space {
+                saw_percent = true;
+                let exp = expand(d.space, d.drawn);
+                assert!(
+                    exp.len() <= 2,
+                    "UniformPercent expand returned {} entries (expected ≤2 after PR-B); space={:?}",
+                    exp.len(),
+                    d.space,
+                );
+            }
+        }
+        assert!(saw_percent, "fixture should have triggered at least one percent draw");
     }
 }
