@@ -1027,7 +1027,7 @@ mod tests {
         assert_eq!(first_no.side, SideRef::P2, "no terrain: Flutter Mane outspeeds");
 
         // Grassy Terrain: Garchomp's Grassy Glide gains +1 priority.
-        b.terrain = crate::terrain::Terrain::Grassy;
+        b.set_terrain(crate::terrain::Terrain::Grassy);
         b.terrain_turns = 5;
         let mut rng2 = Rng::new(0);
         let order_g = action_order(&b, &p1c, &p2c, &mut rng2);
