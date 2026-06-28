@@ -391,6 +391,18 @@ pub struct Battle {
     pub(crate) cached_terrain: crate::terrain::Terrain,
 }
 
+/// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
+/// Populated by `Battle::compute_ruin_flags` in one walk so the four
+/// `field_has_ruin` scan sites in `resolve_move_with_pending` collapse to a
+/// single field traversal per call site.
+#[derive(Default, Clone, Copy)]
+struct RuinFlags {
+    tablets: bool,
+    vessel: bool,
+    sword: bool,
+    beads: bool,
+}
+
 impl Battle {
     pub fn new(config: BattleConfig, p1_team: Vec<Pokemon>, p2_team: Vec<Pokemon>) -> Self {
         let rng = Rng::new(config.seed);
@@ -2690,6 +2702,31 @@ impl Battle {
         }
     }
 
+    /// PR-LC5: single-walk Ruin field scan used by `resolve_move_with_pending`.
+    /// Walks every active live slot once and returns a 4-bit bitset of which
+    /// Ruin abilities are present. Uses `effective_ability_id()` so Gastro
+    /// Acid / Neutralizing Gas suppression is respected.
+    #[inline(always)]
+    fn compute_ruin_flags(&self) -> RuinFlags {
+        let mut f = RuinFlags::default();
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for s in 0..n {
+                if let Some(mon) = self.side(side).active_mon(s) {
+                    if !mon.is_alive() { continue; }
+                    match mon.effective_ability_id() {
+                        data::ability_id::TABLETSOFRUIN => f.tablets = true,
+                        data::ability_id::VESSELOFRUIN  => f.vessel  = true,
+                        data::ability_id::SWORDOFRUIN   => f.sword   = true,
+                        data::ability_id::BEADSOFRUIN   => f.beads   = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        f
+    }
+
     fn resolve_move_with_pending(
         &mut self,
         action: ScheduledAction,
@@ -3382,16 +3419,16 @@ impl Battle {
         //            <https://bulbapedia.bulbagarden.net/wiki/Vessel_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Sword_of_Ruin_(Ability)>
         //            <https://bulbapedia.bulbagarden.net/wiki/Beads_of_Ruin_(Ability)>.
-        let field_has_ruin = |b: &Self, ability_id: u16| -> bool {
-            let n = b.format().active_count();
-            [SideRef::P1, SideRef::P2].into_iter().any(|side| {
-                (0..n).any(|s| {
-                    b.side(side).active_mon(s)
-                        .map(|m| m.is_alive() && m.effective_ability_id() == ability_id)
-                        .unwrap_or(false)
-                })
-            })
-        };
+        // PR-LC5: single-walk Ruin field scan. The previous code called a
+        // per-ability `field_has_ruin` closure up to 4 times per action (twice
+        // up here for offense, twice per target below for defense), walking
+        // every active slot and resolving `effective_ability_id()` each time.
+        // The four predicates are identical — "any active live mon on the
+        // field has effective_ability_id == X" — so one walk produces the
+        // full 4-bit bitset via `compute_ruin_flags` and each ability arm
+        // reads its bit. Behavior is byte-identical, including PS's
+        // per-target re-evaluation when a Ruin holder faints mid-spread-move
+        // (the helper is still called per target-iter inside the loop below).
         let scale_off_075 = |v: u16| -> u16 {
             (((v as u32 * 3072 + 2047) / 4096).min(u16::MAX as u32)) as u16
         };
@@ -3399,14 +3436,15 @@ impl Battle {
         // only when IT holds the ability (PS `source.hasAbility(...)`); any
         // other holder on the field — including the attacker's own ally —
         // still reduces its Atk/SpA.
+        let off_ruin = self.compute_ruin_flags();
         if attacker_ability_id != data::ability_id::TABLETSOFRUIN
-            && field_has_ruin(self, data::ability_id::TABLETSOFRUIN)
+            && off_ruin.tablets
             && physical_move
         {
             atk_stats_ovr.atk = scale_off_075(atk_stats_ovr.atk);
         }
         if attacker_ability_id != data::ability_id::VESSELOFRUIN
-            && field_has_ruin(self, data::ability_id::VESSELOFRUIN)
+            && off_ruin.vessel
             && special_move
         {
             atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
@@ -4273,14 +4311,19 @@ impl Battle {
             // any other holder on the field — including the defender's own
             // ally — still reduces its Def/SpD. ×0.75 once, no stacking.
             // See attacker-side notes above for the PS handler shape/cites.
+            // PR-LC5: single ruin scan per target-iter (was 2 scans). PS
+            // re-evaluates Ruin per target during spread moves (e.g. if a
+            // holder faints mid-loop), so the helper is called inside the
+            // per-target loop rather than hoisted to action setup.
+            let def_ruin = self.compute_ruin_flags();
             if defender.effective_ability_id() != data::ability_id::SWORDOFRUIN
-                && field_has_ruin(self, data::ability_id::SWORDOFRUIN)
+                && def_ruin.sword
                 && m.category == 0
             {
                 def_stats_ovr.def = scale_off_075(def_stats_ovr.def);
             }
             if defender.effective_ability_id() != data::ability_id::BEADSOFRUIN
-                && field_has_ruin(self, data::ability_id::BEADSOFRUIN)
+                && def_ruin.beads
                 && m.category == 1
             {
                 def_stats_ovr.spd = scale_off_075(def_stats_ovr.spd);
