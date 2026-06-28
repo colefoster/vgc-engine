@@ -8,6 +8,15 @@ use serde::{Deserialize, Serialize};
 
 use vgc_engine_data as data;
 
+/// PR-LC3: bit layout for `Pokemon::move_locks`. See the field doc for
+/// the read-side gate in `Battle::legal_choices_into`.
+pub const MOVE_LOCK_CHOICE: u8 = 1 << 0;
+pub const MOVE_LOCK_ENCORE: u8 = 1 << 1;
+pub const MOVE_LOCK_DISABLE: u8 = 1 << 2;
+pub const MOVE_LOCK_THROAT_CHOP: u8 = 1 << 3;
+pub const MOVE_LOCK_TAUNT: u8 = 1 << 4;
+pub const MOVE_LOCK_HEAL_BLOCK: u8 = 1 << 5;
+
 /// Stable indexing of the six battle stats. Matches PS's order in
 /// `sim/pokemon.ts` (StatsTable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,6 +583,28 @@ pub struct Pokemon {
     /// `species_id` on construction.
     #[serde(skip)]
     pub can_mega_evolve: bool,
+    /// PR-LC3: per-mon "any move-locker active" bitset, derived from the 6
+    /// volatile-backed lock families read by `Battle::legal_choices_into`'s
+    /// hot loop (~18.4% self-time on the doubles flamegraph). Bits:
+    ///   0 = Choice / Gorilla Tactics lock (`locked_move_slot() != 255`)
+    ///   1 = Encore active (`encore_turns() > 0`)
+    ///   2 = Disable active (`disabled_move_slot() != 255`)
+    ///   3 = Throat Chop active (`throat_chop_turns() > 0`)
+    ///   4 = Taunt active (`taunt_turns() > 0`)
+    ///   5 = Heal Block active (`heal_block_turns() > 0`)
+    ///   6-7 reserved
+    /// A zero byte lets `legal_choices_into` skip the entire 6-condition
+    /// cascade on the common (no-lock) path. MUST stay in sync with the 6
+    /// underlying fields; the canonical helper is
+    /// `Pokemon::sync_move_locks`, called from every setter / ticker /
+    /// clearer in this file and from the switch-in blanket-volatile-reset
+    /// site in `Battle`. The runtime debug-rescan assertion at the top of
+    /// `Battle::resolve_end_of_turn` recomputes from live data and
+    /// `debug_assert_eq!`s — fix the missed site, don't disable the
+    /// assertion. `#[serde(skip)]` keeps wire format stable; recomputed
+    /// from the underlying volatiles on construction.
+    #[serde(skip)]
+    pub move_locks: u8,
     /// The last item this mon genuinely **consumed** during its current
     /// active stint — PS `Pokemon.lastItem`. `u16::MAX` = none. Set ONLY
     /// when the holder uses up its own item (a Berry eaten, a Herb / Sash /
@@ -892,6 +923,8 @@ impl Pokemon {
             ability_id,
             item_id,
             can_mega_evolve,
+            // PR-LC3: fresh mons have no volatiles → no locks.
+            move_locks: 0,
             stats,
             current_hp,
             ivs,
@@ -1173,6 +1206,38 @@ impl Pokemon {
         self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
     }
 
+    /// PR-LC3: recompute the `move_locks` bitset from the 6 volatile-
+    /// backed lock families. Called from every setter / clearer / ticker
+    /// on this `Pokemon` that touches one of those families, and from the
+    /// switch-in blanket `volatiles.clear()` site in `Battle`. See the
+    /// `move_locks` field doc for the bit layout. The debug-rescan
+    /// assertion at the top of `Battle::resolve_end_of_turn` enforces
+    /// consistency; if it fires, a mutation site is missing a
+    /// `sync_move_locks` call.
+    #[inline]
+    pub fn sync_move_locks(&mut self) {
+        let mut b = 0u8;
+        if self.locked_move_slot() != 255 {
+            b |= MOVE_LOCK_CHOICE;
+        }
+        if self.encore_turns() > 0 {
+            b |= MOVE_LOCK_ENCORE;
+        }
+        if self.disabled_move_slot() != 255 {
+            b |= MOVE_LOCK_DISABLE;
+        }
+        if self.throat_chop_turns() > 0 {
+            b |= MOVE_LOCK_THROAT_CHOP;
+        }
+        if self.taunt_turns() > 0 {
+            b |= MOVE_LOCK_TAUNT;
+        }
+        if self.heal_block_turns() > 0 {
+            b |= MOVE_LOCK_HEAL_BLOCK;
+        }
+        self.move_locks = b;
+    }
+
     /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
     /// Set by self-switch moves (U-turn etc.); consumed by the engine's
     /// deferred-switch sweep.
@@ -1321,12 +1386,14 @@ impl Pokemon {
     pub fn set_locked_move_slot(&mut self, slot: u8) {
         if slot == 255 {
             self.volatiles.remove(VolatileKind::Locked);
+            self.move_locks &= !MOVE_LOCK_CHOICE;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::Locked,
                 turns_remaining: 0,
                 payload: slot as u32,
             });
+            self.move_locks |= MOVE_LOCK_CHOICE;
         }
     }
 
@@ -1404,12 +1471,14 @@ impl Pokemon {
     pub fn set_encore(&mut self, turns: u8, slot: u8) {
         if turns == 0 {
             self.volatiles.remove(VolatileKind::Encore);
+            self.move_locks &= !MOVE_LOCK_ENCORE;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::Encore,
                 turns_remaining: 0,
                 payload: ((turns as u32) << 8) | (slot as u32 & 0xFF),
             });
+            self.move_locks |= MOVE_LOCK_ENCORE;
         }
     }
 
@@ -1417,6 +1486,7 @@ impl Pokemon {
     #[inline]
     pub fn clear_encore(&mut self) {
         self.volatiles.remove(VolatileKind::Encore);
+        self.move_locks &= !MOVE_LOCK_ENCORE;
     }
 
     /// Remaining Disable turns; `0` when not disabled. Stored in the
@@ -1448,12 +1518,14 @@ impl Pokemon {
     pub fn set_disable(&mut self, turns: u8, slot: u8) {
         if turns == 0 {
             self.volatiles.remove(VolatileKind::Disable);
+            self.move_locks &= !MOVE_LOCK_DISABLE;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::Disable,
                 turns_remaining: turns,
                 payload: slot as u32 & 0xFF,
             });
+            self.move_locks |= MOVE_LOCK_DISABLE;
         }
     }
 
@@ -1461,6 +1533,7 @@ impl Pokemon {
     #[inline]
     pub fn clear_disable(&mut self) {
         self.volatiles.remove(VolatileKind::Disable);
+        self.move_locks &= !MOVE_LOCK_DISABLE;
     }
 
     /// `true` while infatuated (the Attract volatile is present).
@@ -1540,6 +1613,7 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::Disable);
+            self.move_locks &= !MOVE_LOCK_DISABLE;
         }
     }
 
@@ -1561,12 +1635,14 @@ impl Pokemon {
     pub fn set_throat_chop(&mut self, turns: u8) {
         if turns == 0 {
             self.volatiles.remove(VolatileKind::ThroatChop);
+            self.move_locks &= !MOVE_LOCK_THROAT_CHOP;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::ThroatChop,
                 turns_remaining: turns,
                 payload: 0,
             });
+            self.move_locks |= MOVE_LOCK_THROAT_CHOP;
         }
     }
 
@@ -1585,6 +1661,7 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::ThroatChop);
+            self.move_locks &= !MOVE_LOCK_THROAT_CHOP;
         }
     }
 
@@ -1616,12 +1693,14 @@ impl Pokemon {
     pub fn set_heal_block(&mut self, turns: u8) {
         if turns == 0 {
             self.volatiles.remove(VolatileKind::HealBlock);
+            self.move_locks &= !MOVE_LOCK_HEAL_BLOCK;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::HealBlock,
                 turns_remaining: turns,
                 payload: 0,
             });
+            self.move_locks |= MOVE_LOCK_HEAL_BLOCK;
         }
     }
 
@@ -1641,6 +1720,7 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::HealBlock);
+            self.move_locks &= !MOVE_LOCK_HEAL_BLOCK;
         }
     }
 
@@ -1768,12 +1848,14 @@ impl Pokemon {
     pub fn set_taunt(&mut self, turns: u8) {
         if turns == 0 {
             self.volatiles.remove(VolatileKind::Taunt);
+            self.move_locks &= !MOVE_LOCK_TAUNT;
         } else {
             self.volatiles.add(Volatile {
                 kind: VolatileKind::Taunt,
                 turns_remaining: turns,
                 payload: 0,
             });
+            self.move_locks |= MOVE_LOCK_TAUNT;
         }
     }
 
@@ -1792,6 +1874,7 @@ impl Pokemon {
         };
         if rem == 0 {
             self.volatiles.remove(VolatileKind::Taunt);
+            self.move_locks &= !MOVE_LOCK_TAUNT;
         }
     }
 
