@@ -8654,6 +8654,37 @@ impl Battle {
         self.update_attract_sources();
     }
 
+    /// PR-EOT2 helper: any active mon on either side carries the given
+    /// volatile kind. Used by the volatile-driven residual phases
+    /// (Leech Seed, Curse, Salt Cure, Partial Trap, Yawn, Perish Song)
+    /// for an O(active_count) bitmask precheck that skips the entire
+    /// phase when no holder is on the field. Reads the `VolatileSet`
+    /// `present` bitmask (O(1) per mon); the body it skips includes a
+    /// per-slot `volatiles.get`, `is_alive`, ability-table lookup, and
+    /// damage arithmetic. PS doesn't add these volatiles during the
+    /// residual loop, so a present-empty field at phase entry stays
+    /// present-empty through the body.
+    #[inline]
+    fn eot_any_active_has_volatile(
+        &self,
+        n: u8,
+        kind: crate::pokemon::VolatileKind,
+    ) -> bool {
+        let mask = 1u64 << (kind as u8);
+        for side in [SideRef::P1, SideRef::P2] {
+            let sd = self.side(side);
+            for slot in 0..n {
+                if sd
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.volatiles.present & mask != 0)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// EOT sub-phase `weather_chip`. Extracted from
     /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
     /// pre-F3 inline version; the section's own PS-citation comments
@@ -8871,6 +8902,10 @@ impl Battle {
         //    `(side << 8) | slot`.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip the entire phase if no active mon is seeded.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::LeechSeed) {
+            return;
+        }
         for target_side in [SideRef::P1, SideRef::P2] {
             for target_slot in 0..n {
                 let (chip, source_side, source_slot, magic_guard) = match self
@@ -8937,6 +8972,30 @@ impl Battle {
         // the HP loss but the toxic counter still ticks unconditionally.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: single-pass precheck — if no active mon carries
+        // burn / poison / toxic, the entire phase is a no-op (no
+        // Magic Guard / Heatproof / Poison Heal ability lookups, no
+        // toxic-counter increment). PS's `residualOrder` dispatch
+        // (`sim/battle.ts` `Battle#residualEvent`) doesn't add status
+        // during this phase, so a status-empty field at entry stays
+        // status-empty through the body.
+        let mut any_status = false;
+        'precheck: for side in [SideRef::P1, SideRef::P2] {
+            let sd = self.side(side);
+            for slot in 0..n {
+                if let Some(m) = sd.active_mon(slot as usize) {
+                    if m.is_alive()
+                        && matches!(m.status, Status::Burn | Status::Poison | Status::Toxic)
+                    {
+                        any_status = true;
+                        break 'precheck;
+                    }
+                }
+            }
+        }
+        if !any_status {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let (dmg, mg, poison_heal) = match self.side(side).active_mon(slot as usize) {
@@ -9034,6 +9093,10 @@ impl Battle {
         //     <https://bulbapedia.bulbagarden.net/wiki/Curse_(move)>.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip if no active mon is cursed.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Curse) {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
@@ -9072,6 +9135,10 @@ impl Battle {
         //     persists until its own duration expires).
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip if no active mon is partial-trapped.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::PartialTrap) {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let (chip, magic_guard, expires) = match self
@@ -9143,6 +9210,10 @@ impl Battle {
         //     Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip if no active mon is salt-cured.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::SaltCure) {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let (chip, magic_guard) = match self.side(side).active_mon(slot as usize) {
@@ -9186,6 +9257,10 @@ impl Battle {
         //     `try_set_status_from`. Cleared on switch-out via `volatiles.clear()`.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip if no active mon is drowsy.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Yawn) {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 let fire = match self.side(side).active_mon(slot as usize) {
@@ -9237,6 +9312,10 @@ impl Battle {
         //     <https://bulbapedia.bulbagarden.net/wiki/Perish_Song_(move)>.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
+        // PR-EOT2: skip if no active mon carries Perish Song.
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::PerishSong) {
+            return;
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
