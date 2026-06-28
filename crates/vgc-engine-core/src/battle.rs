@@ -2855,25 +2855,7 @@ impl Battle {
             self.side_mut(actor_side).conditions.round_used_this_turn = true;
         }
         if move_id == data::move_id::SHELLSIDEARM {
-            let opp = actor_side.opposing();
-            let primary_target = match target {
-                Some(Target { side, slot }) if side == opp => Some(slot as usize),
-                _ => (0..self.format().active_count())
-                    .find(|&s| self.side(opp).active_mon(s).map_or(false, |p| p.is_alive())),
-            };
-            if let Some(tslot) = primary_target {
-                if let Some(def_mon) = self.side(opp).active_mon(tslot) {
-                    let atk = crate::damage::apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
-                    let spa = crate::damage::apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
-                    let def = crate::damage::apply_boost(def_mon.stats.def as u32, def_mon.boosts[1]).max(1);
-                    let spd = crate::damage::apply_boost(def_mon.stats.spd as u32, def_mon.boosts[3]).max(1);
-                    // Cross-multiply to avoid floor division noise.
-                    if atk * spd > spa * def {
-                        m_owned.category = 0; // Physical
-                        m_owned.makes_contact = true;
-                    }
-                }
-            }
+            self.shell_side_arm_modify_move(actor_side, &attacker, target, &mut m_owned);
         }
         let m = &m_owned;
 
@@ -3103,255 +3085,16 @@ impl Battle {
         }
 
         // 4. Status-move dispatch.
+        // 4. Status-move dispatch — outlined into `resolve_status_move_branch`
+        //    (PR-LC4). Status moves cover Prankster-Dark immunity, Psychic
+        //    Terrain priority block, Good as Gold, Crafty Shield, Magic
+        //    Bounce, then `resolve_status_move` + Throat Spray. The damaging
+        //    path below dominates ~6× at the bench's random-picker mix;
+        //    outlining keeps the icache compact. Byte-identical behavior.
         if m.category == 2 {
-            // Prankster + Dark-type immunity (gen 7+). Prankster-boosted
-            // status moves that target an opposing mon fail vs a Dark-
-            // type target. Side-targeted (Tailwind/Reflect/Light Screen)
-            // and self-targeted status moves are NOT blocked. PS
-            // data/abilities.ts:prankster — sets `pranksterBoosted` on
-            // the move; data/conditions.ts checks it at onTryHit vs
-            // Dark targets.
-            let prankster_boosted = attacker.ability_id == data::ability_id::PRANKSTER;
-            let opposing_targeting = is_targeting_move(m.target);
-            if prankster_boosted && opposing_targeting {
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                let all_targets_dark = (0..n)
-                    .filter_map(|slot| self.side(opp).active_mon(slot as usize))
-                    .filter(|t| t.is_alive())
-                    .all(|t| {
-                        let s = t.species();
-                        (0..s.num_types as usize).any(|i| s.types[i] == 15) // Dark = 15
-                    });
-                let any_alive_target = (0..n)
-                    .filter_map(|slot| self.side(opp).active_mon(slot as usize))
-                    .any(|t| t.is_alive());
-                if any_alive_target && all_targets_dark {
-                    return;
-                }
-            }
-            // Psychic Terrain blocks priority moves against a grounded
-            // opponent — PS data/moves.ts:psychicterrain `onTryHit`
-            // (priority 4, so it runs ahead of Crafty Shield / Magic Bounce
-            // below). For Status moves the only effective-priority bump we
-            // model is Prankster (+1); when that lifts the move above 0 and
-            // the resolved single target is a grounded, non-semi-invulnerable
-            // FOE, the move fails outright. Self/ally/side targets are exempt
-            // (`is_targeting_move` + the `tside != actor_side` test).
-            let eff_priority = m.priority as i32
-                + if attacker.ability_id == data::ability_id::PRANKSTER { 1 } else { 0 };
-            if eff_priority > 0
-                && matches!(self.terrain, crate::terrain::Terrain::Psychic)
-                && is_targeting_move(m.target)
-            {
-                let opp = actor_side.opposing();
-                let n = self.format().active_count() as u8;
-                let resolved: Option<(SideRef, u8)> = match target {
-                    Some(t) => Some((t.side, t.slot)),
-                    None => {
-                        let mut count = 0u8;
-                        let mut only = 0u8;
-                        for slot in 0..n {
-                            if self
-                                .side(opp)
-                                .active_mon(slot as usize)
-                                .is_some_and(|t| t.is_alive())
-                            {
-                                count += 1;
-                                only = slot;
-                            }
-                        }
-                        if count == 1 { Some((opp, only)) } else { None }
-                    }
-                };
-                if let Some((tside, tslot)) = resolved {
-                    let blocked = tside != actor_side
-                        && self
-                            .side(tside)
-                            .active_mon(tslot as usize)
-                            .is_some_and(|t| t.is_alive() && t.is_grounded() && t.semi_invuln == 0);
-                    if blocked {
-                        return;
-                    }
-                }
-            }
-            // Good as Gold — PS `data/abilities.ts:1585` goodasgold.
-            //   onTryHit(target, source, move) {
-            //     if (move.category === 'Status' && target !== source) {
-            //       this.add('-immune', target, '[from] ability: Good as Gold');
-            //       return null;
-            //     }
-            //   }
-            //   flags: { breakable: 1 },
-            // A status move aimed at a Good as Gold holder fails, UNLESS the
-            // holder is the user itself (`target !== source`). Side / field
-            // status moves (Tailwind, Stealth Rock, Trick Room) don't "target"
-            // the holder and are unaffected — they carry a non-targeting
-            // `target` code, so `is_targeting_move` gates them out. Breakable,
-            // so an attacker with Mold Breaker / Teravolt / Turboblaze bypasses
-            // it. We resolve the move's single explicit target; ally-targeted
-            // status moves at a Good as Gold ally are blocked too (PS's
-            // `target !== source` covers any non-self target). Gholdengo
-            // signature. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Good_as_Gold_(Ability)>.
-            if is_targeting_move(m.target) {
-                // Mycelium Might — PS `data/abilities.ts:myceliummight`
-                // `onModifyMove` sets `move.ignoreAbility = true` for Status
-                // moves, so the move bypasses the target's ability exactly
-                // like Mold Breaker. This whole block only runs for Status
-                // moves (`m.category == 2`), so MYCELIUMMIGHT joins the
-                // mold-breaker set unconditionally here. Bulbapedia:
-                // <https://bulbapedia.bulbagarden.net/wiki/Mycelium_Might_(Ability)>.
-                let attacker_breaks_mold = matches!(
-                    attacker.ability_id,
-                    data::ability_id::MOLDBREAKER
-                        | data::ability_id::TERAVOLT
-                        | data::ability_id::TURBOBLAZE
-                        | data::ability_id::MYCELIUMMIGHT
-                );
-                if !attacker_breaks_mold {
-                    // Resolve the move's effective single target. An explicit
-                    // `target` (doubles, or any move issued with a slot) is
-                    // honored directly. For a `None` target on an opposing-
-                    // targeting move (the singles default — see the
-                    // Prankster-vs-Dark block, which also scans the foe side),
-                    // the implied target is the lone living foe.
-                    let resolved: Option<(SideRef, u8)> = match target {
-                        Some(t) => Some((t.side, t.slot)),
-                        None => {
-                            let opp = actor_side.opposing();
-                            let n = self.format().active_count() as u8;
-                            // Only auto-resolve when the implied target is
-                            // unambiguous (singles, or a single living foe).
-                            // Count living foes without allocating.
-                            let mut count = 0u8;
-                            let mut only = 0u8;
-                            for slot in 0..n {
-                                if self.side(opp).active_mon(slot as usize)
-                                    .is_some_and(|t| t.is_alive())
-                                {
-                                    count += 1;
-                                    only = slot;
-                                }
-                            }
-                            if count == 1 { Some((opp, only)) } else { None }
-                        }
-                    };
-                    if let Some((tside, tslot)) = resolved {
-                        let is_self = tside == actor_side && tslot == actor_slot;
-                        let target_good_as_gold = self
-                            .side(tside)
-                            .active_mon(tslot as usize)
-                            .map(|tm| tm.is_alive() && tm.effective_ability_id() == data::ability_id::GOODASGOLD)
-                            .unwrap_or(false);
-                        if !is_self && target_good_as_gold {
-                            return;
-                        }
-                    }
-                }
-            }
-            // Crafty Shield — PS data/moves.ts:craftyshield
-            // `condition.onTryHit` (onTryHitPriority 3, so it runs before
-            // Magic Bounce): a STATUS move aimed at a mon on the shielded
-            // side is blocked unless `move.target` is `self` (1) or `all`
-            // (12). We resolve the move's single target the same way the
-            // Good as Gold gate above does (explicit target, or the lone
-            // living foe in singles); allAdjacentFoes (6) spread status is
-            // covered separately against the opposing side. Side-guard
-            // family — no stall counter, no Prankster interaction.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Crafty_Shield_(move)>.
-            if !matches!(m.target, 1 | 12) {
-                let cs_blocked = if matches!(m.target, 6) {
-                    // allAdjacentFoes status spread (e.g. Growl) — blocked
-                    // if the foe side is shielded.
-                    self.side(actor_side.opposing())
-                        .conditions
-                        .crafty_shield_this_turn
-                } else {
-                    let resolved: Option<(SideRef, u8)> = match target {
-                        Some(t) => Some((t.side, t.slot)),
-                        None => {
-                            let opp = actor_side.opposing();
-                            let n = self.format().active_count() as u8;
-                            let mut count = 0u8;
-                            let mut only = 0u8;
-                            for slot in 0..n {
-                                if self
-                                    .side(opp)
-                                    .active_mon(slot as usize)
-                                    .is_some_and(|t| t.is_alive())
-                                {
-                                    count += 1;
-                                    only = slot;
-                                }
-                            }
-                            if count == 1 { Some((opp, only)) } else { None }
-                        }
-                    };
-                    match resolved {
-                        Some((tside, tslot)) => {
-                            let is_self = tside == actor_side && tslot == actor_slot;
-                            !is_self
-                                && self.side(tside).conditions.crafty_shield_this_turn
-                        }
-                        None => false,
-                    }
-                };
-                if cs_blocked {
-                    return;
-                }
-            }
-            // Magic Bounce — PS `data/abilities.ts:2392` magicbounce.
-            //   onTryHit(target, source, move) {
-            //     if (target === source || move.hasBounced ||
-            //         !move.flags['reflectable'] || target.isSemiInvulnerable())
-            //       return;
-            //     const newMove = this.dex.getActiveMove(move.id);
-            //     newMove.hasBounced = true;
-            //     newMove.pranksterBoosted = false;
-            //     this.actions.useMove(newMove, target, { target: source });
-            //     return null;
-            //   }
-            // When an opponent targets a Magic Bounce holder with a
-            // reflectable status move, the move is re-resolved with the
-            // BOUNCER as source and the original ATTACKER as target. We
-            // re-dispatch straight into `resolve_status_move_inner` (the
-            // bounce hook lives only here in `try_use_move`), so the bounced
-            // copy structurally cannot re-bounce — PS's once-only
-            // `hasBounced` guard is satisfied by construction.
-            //
-            // NOT bypassed by Mold Breaker: PS Magic Bounce's onTryHit runs
-            // regardless of the attacker's `ignoreAbility`, so we deliberately
-            // do not consult `attacker_breaks_mold` here. `pranksterBoosted`
-            // is reset on the bounced copy in PS — the engine doesn't carry
-            // per-move mutable state, but the bounced re-dispatch already
-            // skips the Prankster-vs-Dark gate above (it runs once, on the
-            // original cast), so the observable result matches.
-            // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Bounce_(Ability)>.
-            if m.is_reflectable {
-                if let Some((b_side, b_slot)) = self.find_magic_bounce_target(actor_side, m) {
-                    // Re-resolve: bouncer is the new source, original
-                    // attacker (actor_side/actor_slot) is the forced target.
-                    self.resolve_status_move_inner(
-                        b_side,
-                        b_slot,
-                        m,
-                        move_id,
-                        Some(Target { side: actor_side, slot: actor_slot }),
-                        Some((actor_side, actor_slot)),
-                        pending_kind,
-                        will_act,
-                    );
-                    // Throat Spray etc. key off the user; the original
-                    // attacker's move was bounced and produced no on-user
-                    // effect, so nothing further fires for the caster.
-                    return;
-                }
-            }
-            self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
-            // Throat Spray: sound-flag status moves (Sing, Heal Bell,
-            // Roar of Time... Growl) trigger the +1 SpA on the user.
-            self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
+            self.resolve_status_move_branch(
+                actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
+            );
             return;
         }
 
@@ -3445,15 +3188,8 @@ impl Battle {
         // `onTry`), so we simply return on failure — no damage, target HP
         // unchanged. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Poltergeist_(move)>.
-        if move_id == data::move_id::POLTERGEIST {
-            let has_item = targets.first().is_some_and(|&(ts, tslot)| {
-                self.side(ts)
-                    .active_mon(tslot as usize)
-                    .is_some_and(|t| t.item_id != u16::MAX)
-            });
-            if !has_item {
-                return;
-            }
+        if move_id == data::move_id::POLTERGEIST && self.poltergeist_target_has_no_item(&targets) {
+            return;
         }
 
         // Variable-BP moves carry `basePower: 0` in PS and compute the
@@ -3604,24 +3340,30 @@ impl Battle {
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/No_Guard_(Ability)>.
         let attacker_no_guard =
             attacker.effective_ability_id() == data::ability_id::NOGUARD;
-        if attacker_ability_id == data::ability_id::HADRONENGINE
-            && special_move
-            && matches!(self.terrain, crate::terrain::Terrain::Electric)
-        {
-            // PS chainModify([5461, 4096]) — fixed-point ≈ 1.3333.
-            atk_stats_ovr.spa =
-                ((atk_stats_ovr.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
-        }
-        // Orichalcum Pulse: Koraidon's signature — Atk ×5461/4096 (≈1.333)
-        // on physical moves while Sun is up. Symmetric counterpart to
-        // Hadron Engine. PS gates on `isWeather(['sunnyday','desolateland'])`;
-        // we only carry standard Sun (no Primal Sun yet).
-        if attacker_ability_id == data::ability_id::ORICHALCUMPULSE
-            && physical_move
-            && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
-        {
-            atk_stats_ovr.atk =
-                ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+        // Hadron Engine / Orichalcum Pulse — signature paradox boosters.
+        // Both are rare-ability + gated on terrain/weather; outlined into
+        // `apply_rare_attacker_ability_atk_mods` together with Water Bubble
+        // / Toxic Boost / Flare Boost below to keep the hot icache compact.
+        // Ruin abilities stay inline — a non-Ruin attacker still feels them
+        // when an opponent holds the ability, so they can't be gated on
+        // attacker_ability_id alone. See PR-LC4.
+        if matches!(
+            attacker_ability_id,
+            data::ability_id::HADRONENGINE
+                | data::ability_id::ORICHALCUMPULSE
+                | data::ability_id::WATERBUBBLE
+                | data::ability_id::TOXICBOOST
+                | data::ability_id::FLAREBOOST
+        ) {
+            self.apply_rare_attacker_ability_atk_mods(
+                actor_side,
+                actor_slot,
+                &attacker,
+                m,
+                physical_move,
+                special_move,
+                &mut atk_stats_ovr,
+            );
         }
         // Ruin abilities (gen 9 paradox quartet): Tablets of Ruin
         // (Wo-Chien, lowers Atk) / Vessel of Ruin (Chi-Yu, lowers SpA) /
@@ -3670,47 +3412,10 @@ impl Battle {
             atk_stats_ovr.spa = scale_off_075(atk_stats_ovr.spa);
         }
 
-        // Water Bubble — Araquanid signature. On the attacker side it
-        // doubles the offensive stat for Water-type moves (PS
-        // `onModifyAtk` and `onModifySpA`: `if (move.type === 'Water')
-        // return this.chainModify(2);`). PS data/abilities.ts:waterbubble.
-        // Water type code = 2. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
-            if physical_move {
-                atk_stats_ovr.atk =
-                    ((atk_stats_ovr.atk as u32 * 2).min(u16::MAX as u32)) as u16;
-            } else if special_move {
-                atk_stats_ovr.spa =
-                    ((atk_stats_ovr.spa as u32 * 2).min(u16::MAX as u32)) as u16;
-            }
-        }
-        // Toxic Boost / Flare Boost — PS `data/abilities.ts:toxicboost`
-        // and `:flareboost`. Toxic Boost: `onBasePower` returns
-        // `chainModify(1.5)` on physical moves while the holder has psn
-        // or tox status. Flare Boost: same on special moves while the
-        // holder has brn status. Both are flagged `breakable: 0` (not
-        // on PS's breakable list), so Mold Breaker does NOT bypass.
-        // Implemented as an Atk/SpA ×1.5 here (same path Choice Band
-        // uses) — equivalent to a BP ×1.5 in pokeRound space because the
-        // final base-damage formula is multiplicative in Atk.
-        // Conkeldurr / Zangoose / Swellow signature.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Boost_(Ability)>
-        //             <https://bulbapedia.bulbagarden.net/wiki/Flare_Boost_(Ability)>.
-        if attacker_ability_id == data::ability_id::TOXICBOOST
-            && physical_move
-            && matches!(attacker.status, Status::Poison | Status::Toxic)
-        {
-            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
-        }
-        if attacker_ability_id == data::ability_id::FLAREBOOST
-            && special_move
-            && matches!(attacker.status, Status::Burn)
-        {
-            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
-                .min(u16::MAX as u32)) as u16;
-        }
+        // Water Bubble / Toxic Boost / Flare Boost — outlined into the
+        // cold `apply_rare_attacker_ability_atk_mods` helper alongside
+        // Hadron Engine / Orichalcum Pulse above (gated by the same
+        // `matches!` on attacker_ability_id). See PR-LC4.
         let _ = special_move;
         let mut any_damage_dealt: u16 = 0;
         // Did the move attempt resolution against at least one LIVE target?
@@ -4888,24 +4593,7 @@ impl Battle {
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Beat_Up_(move)>.
             let mut beat_up_base_atks: [u16; 6] = [0; 6];
             if move_id == data::move_id::BEATUP {
-                let mut count: usize = 0;
-                let side = self.side(actor_side);
-                // Team index of the ACTIVE user (always eligible). `active`
-                // maps a battlefield slot to a team-Vec index.
-                let active_idx = side.active[actor_slot as usize] as usize;
-                for (idx, member) in side.team.iter().enumerate() {
-                    if count >= 6 {
-                        break;
-                    }
-                    let is_active = idx == active_idx;
-                    let eligible = is_active
-                        || (!member.fainted && matches!(member.status, Status::None));
-                    if eligible {
-                        beat_up_base_atks[count] = member.species().base_stats[1] as u16;
-                        count += 1;
-                    }
-                }
-                hits = count.max(1) as u32;
+                hits = self.beat_up_build_atk_table(actor_side, actor_slot, &mut beat_up_base_atks);
             }
             // Defender post-formula halves: Thick Fat (Fire/Ice, breakable),
             // Water Bubble (Fire, not breakable). Routed through
@@ -5061,17 +4749,7 @@ impl Battle {
         ) && had_live_target
             && any_damage_dealt == 0
         {
-            let user = self.side(actor_side).active_mon(actor_slot as usize);
-            let skip = user.is_some_and(crate::ability::has_magic_guard);
-            if !skip {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    let crash = (a.stats.hp / 2).max(1);
-                    a.current_hp = a.current_hp.saturating_sub(crash);
-                    if a.current_hp == 0 {
-                        a.fainted = true;
-                    }
-                }
-            }
+            self.apply_crash_damage(actor_side, actor_slot);
         }
 
         self.apply_self_effects(
@@ -5094,6 +4772,382 @@ impl Battle {
             any_damage_dealt,
             drag_target,
         );
+    }
+
+    // ===== PR-LC4: cold helpers outlined from resolve_move_with_pending =====
+    //
+    // The branches below are rare on the average step — Shell Side Arm
+    // (one species, one slot), Poltergeist (one move, gated on target
+    // holding an item), Beat Up (one move), Jump Kick / High Jump Kick /
+    // Axe Kick / Supercell Slam crash recoil (rare-move + no-connect),
+    // the status-move dispatch (chosen ~once every ~7 actions in the
+    // random picker), and several signature/paradox ability cascades
+    // (Hadron Engine, Orichalcum Pulse, Tablets of Ruin, Vessel of Ruin,
+    // Water Bubble, Toxic Boost, Flare Boost). Each helper is marked
+    // `#[cold]` + `#[inline(never)]` so the icache of the damaging-move
+    // hot path stays compact. No RNG draws moved; behavior byte-identical
+    // to the prior inline bodies.
+
+    /// Shell Side Arm — PS data/moves.ts:shellsidearm `onModifyMove`.
+    /// Cross-compares boosted Atk/Def vs SpA/SpD against the resolved
+    /// primary target; on a strict atk-side win, flips the move category
+    /// to Physical and tags it makes-contact. Status branch leaves the
+    /// default special category in place (PS ties default to special in
+    /// our model — see citation in the call site).
+    #[cold]
+    #[inline(never)]
+    fn shell_side_arm_modify_move(
+        &self,
+        actor_side: SideRef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+        m_owned: &mut data::MoveDef,
+    ) {
+        let opp = actor_side.opposing();
+        let primary_target = match target {
+            Some(Target { side, slot }) if side == opp => Some(slot as usize),
+            _ => (0..self.format().active_count())
+                .find(|&s| self.side(opp).active_mon(s).map_or(false, |p| p.is_alive())),
+        };
+        if let Some(tslot) = primary_target {
+            if let Some(def_mon) = self.side(opp).active_mon(tslot) {
+                let atk = crate::damage::apply_boost(attacker.stats.atk as u32, attacker.boosts[0]);
+                let spa = crate::damage::apply_boost(attacker.stats.spa as u32, attacker.boosts[2]);
+                let def = crate::damage::apply_boost(def_mon.stats.def as u32, def_mon.boosts[1]).max(1);
+                let spd = crate::damage::apply_boost(def_mon.stats.spd as u32, def_mon.boosts[3]).max(1);
+                // Cross-multiply to avoid floor division noise.
+                if atk * spd > spa * def {
+                    m_owned.category = 0; // Physical
+                    m_owned.makes_contact = true;
+                }
+            }
+        }
+    }
+
+    /// Poltergeist target-has-item gate — PS data/moves.ts:poltergeist (num 809)
+    /// `onTry(source, target) { return !!target.item; }`. Returns true when
+    /// the resolved primary target holds no item (move fails). The item is
+    /// never consumed; the move's only mechanical effect is this gate.
+    #[cold]
+    #[inline(never)]
+    fn poltergeist_target_has_no_item(&self, targets: &[(SideRef, u8)]) -> bool {
+        let has_item = targets.first().is_some_and(|&(ts, tslot)| {
+            self.side(ts)
+                .active_mon(tslot as usize)
+                .is_some_and(|t| t.item_id != u16::MAX)
+        });
+        !has_item
+    }
+
+    /// Beat Up — PS data/moves.ts:beatup (gen-5+). Builds the per-hit
+    /// base-Attack table from eligible party members (active is always
+    /// eligible; others must be alive and unstatused), bounded to 6, and
+    /// returns the number of hits (≥1). gen-5+ uses the ACTIVE user's
+    /// stats for every strike — only base-power scales per-member —
+    /// reflected in `calculate_beat_up_hit`'s `[u16; 6]` lookup.
+    #[cold]
+    #[inline(never)]
+    fn beat_up_build_atk_table(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        beat_up_base_atks: &mut [u16; 6],
+    ) -> u32 {
+        let mut count: usize = 0;
+        let side = self.side(actor_side);
+        let active_idx = side.active[actor_slot as usize] as usize;
+        for (idx, member) in side.team.iter().enumerate() {
+            if count >= 6 {
+                break;
+            }
+            let is_active = idx == active_idx;
+            let eligible = is_active
+                || (!member.fainted && matches!(member.status, Status::None));
+            if eligible {
+                beat_up_base_atks[count] = member.species().base_stats[1] as u16;
+                count += 1;
+            }
+        }
+        count.max(1) as u32
+    }
+
+    /// Crash damage — Jump Kick / High Jump Kick / Axe Kick / Supercell
+    /// Slam: 1/2 max HP self-damage when the move fails to connect on any
+    /// target (miss / Protect / immunity). Gated by `had_live_target`
+    /// (PS skips on a no-target fizzle, battle-actions.ts:512) and
+    /// `any_damage_dealt == 0` (PS `onMoveFail` proxy). Magic Guard
+    /// blocks; Rock Head does NOT (PS scopes Rock Head to `recoil` only).
+    /// PS: this.damage(source.baseMaxhp / 2, source, source, ...).
+    #[cold]
+    #[inline(never)]
+    fn apply_crash_damage(&mut self, actor_side: SideRef, actor_slot: u8) {
+        let user = self.side(actor_side).active_mon(actor_slot as usize);
+        let skip = user.is_some_and(crate::ability::has_magic_guard);
+        if !skip {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                let crash = (a.stats.hp / 2).max(1);
+                a.current_hp = a.current_hp.saturating_sub(crash);
+                if a.current_hp == 0 {
+                    a.fainted = true;
+                }
+            }
+        }
+    }
+
+    /// Rare attacker-ability stat-modifier cascade — Hadron Engine
+    /// (Iron Moth SpA ×5461/4096 in Electric Terrain), Orichalcum Pulse
+    /// (Koraidon Atk ×5461/4096 in Sun), Water Bubble (×2 Water atk),
+    /// Toxic Boost (×1.5 phys atk while poisoned), Flare Boost (×1.5
+    /// spec atk while burned). Each branch mirrors the prior inline
+    /// body byte-identically — same chainModify factors, same gating
+    /// order, same pokeRound rounding. Outlined because the common case
+    /// is "attacker ability is none of these" — gated at the call site
+    /// by a `matches!` on these five ability IDs. Tablets/Vessel of
+    /// Ruin stay inline because they fire on non-Ruin attackers too.
+    /// PS refs: data/abilities.ts:{hadronengine,orichalcumpulse,
+    /// waterbubble,toxicboost,flareboost}.
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_rare_attacker_ability_atk_mods(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        attacker: &Pokemon,
+        m: &data::MoveDef,
+        physical_move: bool,
+        special_move: bool,
+        atk_stats_ovr: &mut crate::pokemon::FinalStats,
+    ) {
+        let attacker_ability_id = attacker.ability_id;
+        if attacker_ability_id == data::ability_id::HADRONENGINE
+            && special_move
+            && matches!(self.terrain, crate::terrain::Terrain::Electric)
+        {
+            atk_stats_ovr.spa =
+                ((atk_stats_ovr.spa as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+        }
+        if attacker_ability_id == data::ability_id::ORICHALCUMPULSE
+            && physical_move
+            && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)
+        {
+            atk_stats_ovr.atk =
+                ((atk_stats_ovr.atk as u32 * 5461 / 4096).min(u16::MAX as u32)) as u16;
+        }
+        // Ruin abilities (Tablets/Vessel of Ruin) stay INLINE in
+        // `resolve_move_with_pending` because their effect fires on
+        // non-Ruin attackers when a foe holds the ability — so they can't
+        // be gated on `attacker_ability_id` alone. Outlining them here
+        // would either double-apply or skip the foe-side case.
+        if attacker_ability_id == data::ability_id::WATERBUBBLE && m.type_ == 2 {
+            if physical_move {
+                atk_stats_ovr.atk =
+                    ((atk_stats_ovr.atk as u32 * 2).min(u16::MAX as u32)) as u16;
+            } else if special_move {
+                atk_stats_ovr.spa =
+                    ((atk_stats_ovr.spa as u32 * 2).min(u16::MAX as u32)) as u16;
+            }
+        }
+        if attacker_ability_id == data::ability_id::TOXICBOOST
+            && physical_move
+            && matches!(attacker.status, Status::Poison | Status::Toxic)
+        {
+            atk_stats_ovr.atk = ((atk_stats_ovr.atk as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
+        if attacker_ability_id == data::ability_id::FLAREBOOST
+            && special_move
+            && matches!(attacker.status, Status::Burn)
+        {
+            atk_stats_ovr.spa = ((atk_stats_ovr.spa as u32 * 3 / 2)
+                .min(u16::MAX as u32)) as u16;
+        }
+    }
+
+    /// Status-move dispatch — extracted from `resolve_move_with_pending`
+    /// in PR-LC4. Runs the Prankster-vs-Dark immunity, Psychic-Terrain
+    /// priority block, Good-as-Gold target gate, Crafty Shield gate,
+    /// Magic Bounce re-resolve, then `resolve_status_move` itself + the
+    /// Throat Spray on-user effect. Behavior byte-identical to the
+    /// previous inline body. All RNG draws (the inner `resolve_status_move`
+    /// performs its own per-effect draws) stay inside this method —
+    /// PsGen5 draw discipline is preserved.
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_status_move_branch(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        m: &data::MoveDef,
+        attacker: &Pokemon,
+        target: Option<Target>,
+        pending_kind: &[[u8; 2]; 2],
+        will_act: bool,
+    ) {
+        // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
+        let prankster_boosted = attacker.ability_id == data::ability_id::PRANKSTER;
+        let opposing_targeting = is_targeting_move(m.target);
+        if prankster_boosted && opposing_targeting {
+            let opp = actor_side.opposing();
+            let n = self.format().active_count() as u8;
+            let all_targets_dark = (0..n)
+                .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                .filter(|t| t.is_alive())
+                .all(|t| {
+                    let s = t.species();
+                    (0..s.num_types as usize).any(|i| s.types[i] == 15) // Dark = 15
+                });
+            let any_alive_target = (0..n)
+                .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                .any(|t| t.is_alive());
+            if any_alive_target && all_targets_dark {
+                return;
+            }
+        }
+        // Psychic Terrain — PS data/moves.ts:psychicterrain onTryHit.
+        let eff_priority = m.priority as i32
+            + if attacker.ability_id == data::ability_id::PRANKSTER { 1 } else { 0 };
+        if eff_priority > 0
+            && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+            && is_targeting_move(m.target)
+        {
+            let opp = actor_side.opposing();
+            let n = self.format().active_count() as u8;
+            let resolved: Option<(SideRef, u8)> = match target {
+                Some(t) => Some((t.side, t.slot)),
+                None => {
+                    let mut count = 0u8;
+                    let mut only = 0u8;
+                    for slot in 0..n {
+                        if self
+                            .side(opp)
+                            .active_mon(slot as usize)
+                            .is_some_and(|t| t.is_alive())
+                        {
+                            count += 1;
+                            only = slot;
+                        }
+                    }
+                    if count == 1 { Some((opp, only)) } else { None }
+                }
+            };
+            if let Some((tside, tslot)) = resolved {
+                let blocked = tside != actor_side
+                    && self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .is_some_and(|t| t.is_alive() && t.is_grounded() && t.semi_invuln == 0);
+                if blocked {
+                    return;
+                }
+            }
+        }
+        // Good as Gold — PS data/abilities.ts:1585 goodasgold.
+        if is_targeting_move(m.target) {
+            // Mycelium Might joins the mold-breaker set for Status moves
+            // (PS data/abilities.ts:myceliummight onModifyMove sets
+            // move.ignoreAbility for Status). This block only runs for
+            // Status moves.
+            let attacker_breaks_mold = matches!(
+                attacker.ability_id,
+                data::ability_id::MOLDBREAKER
+                    | data::ability_id::TERAVOLT
+                    | data::ability_id::TURBOBLAZE
+                    | data::ability_id::MYCELIUMMIGHT
+            );
+            if !attacker_breaks_mold {
+                let resolved: Option<(SideRef, u8)> = match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => {
+                        let opp = actor_side.opposing();
+                        let n = self.format().active_count() as u8;
+                        let mut count = 0u8;
+                        let mut only = 0u8;
+                        for slot in 0..n {
+                            if self.side(opp).active_mon(slot as usize)
+                                .is_some_and(|t| t.is_alive())
+                            {
+                                count += 1;
+                                only = slot;
+                            }
+                        }
+                        if count == 1 { Some((opp, only)) } else { None }
+                    }
+                };
+                if let Some((tside, tslot)) = resolved {
+                    let is_self = tside == actor_side && tslot == actor_slot;
+                    let target_good_as_gold = self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .map(|tm| tm.is_alive() && tm.effective_ability_id() == data::ability_id::GOODASGOLD)
+                        .unwrap_or(false);
+                    if !is_self && target_good_as_gold {
+                        return;
+                    }
+                }
+            }
+        }
+        // Crafty Shield — PS data/moves.ts:craftyshield onTryHit (prio 3).
+        if !matches!(m.target, 1 | 12) {
+            let cs_blocked = if matches!(m.target, 6) {
+                self.side(actor_side.opposing())
+                    .conditions
+                    .crafty_shield_this_turn
+            } else {
+                let resolved: Option<(SideRef, u8)> = match target {
+                    Some(t) => Some((t.side, t.slot)),
+                    None => {
+                        let opp = actor_side.opposing();
+                        let n = self.format().active_count() as u8;
+                        let mut count = 0u8;
+                        let mut only = 0u8;
+                        for slot in 0..n {
+                            if self
+                                .side(opp)
+                                .active_mon(slot as usize)
+                                .is_some_and(|t| t.is_alive())
+                            {
+                                count += 1;
+                                only = slot;
+                            }
+                        }
+                        if count == 1 { Some((opp, only)) } else { None }
+                    }
+                };
+                match resolved {
+                    Some((tside, tslot)) => {
+                        let is_self = tside == actor_side && tslot == actor_slot;
+                        !is_self
+                            && self.side(tside).conditions.crafty_shield_this_turn
+                    }
+                    None => false,
+                }
+            };
+            if cs_blocked {
+                return;
+            }
+        }
+        // Magic Bounce — PS data/abilities.ts:2392 magicbounce.
+        if m.is_reflectable {
+            if let Some((b_side, b_slot)) = self.find_magic_bounce_target(actor_side, m) {
+                self.resolve_status_move_inner(
+                    b_side,
+                    b_slot,
+                    m,
+                    move_id,
+                    Some(Target { side: actor_side, slot: actor_slot }),
+                    Some((actor_side, actor_slot)),
+                    pending_kind,
+                    will_act,
+                );
+                return;
+            }
+        }
+        self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
+        // Throat Spray on user — sound-flag status moves only.
+        self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
     }
 
     /// One iteration of the per-target multi-hit loop. Lifted verbatim
