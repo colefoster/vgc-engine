@@ -42,6 +42,21 @@ After Phase 4 (gen 9 doubles) ships, backfill gens follow:
 - Don't trust your memory on a mechanic's RNG outcomes — read PS source. (Bulbapedia is often slightly wrong on probabilities.)
 - Don't ship a mechanic without a corresponding `chance` enumeration (the MCTS frontier). It's easier to add it while the mechanic is fresh than to retrofit later.
 
+## ResidualIndex hygiene (PR-EOT3+)
+
+`Battle::residual_index` caches "which active slots have residual X" as a bitset per family (status DOT, item chip, leech seed, ...). The cache is read in `resolve_end_of_turn` to skip phases that have nothing to do.
+
+**Rule:** when you mutate a field the index tracks (`Pokemon::status`, `Pokemon::item`, volatiles, weather, terrain), you must keep the index in sync. Two ways:
+
+1. **Use the canonical setter** (`try_set_status_from_src`, `set_item_from`, `set_weather`, etc.) — they sync automatically. Prefer this.
+2. **Call the sync helper** for that family within ~6 lines of the direct write (`battle.sync_status_dot_bit(side, slot)` for status; analogous helpers for future families).
+
+For tests or fixtures that mutate a Pokemon *not* installed in a Battle slot (clones for `calculate_damage`, `effective_speed`, TeamBuilder scratch), add a trailing `// AUDIT-OK: <one-line reason>` comment.
+
+**Static guard:** `bash tools/audit-residual-index/audit.sh` grep-checks every tracked field. Run before opening a PR. Catches missed sync sites that the debug-build `debug_assert_eq!` would otherwise only catch at test time.
+
+**Runtime guard:** `resolve_end_of_turn` re-derives the index from live state and `debug_assert_eq!`s against the cached value under `#[cfg(debug_assertions)]`. Don't disable the assertion — fix the missed sync site.
+
 ## For LLM agents specifically
 
 - Default to spawning subagents (Explore / general-purpose) for cross-repo lookups — PS source, pkmn/engine source, Bulbapedia. Don't pull all of PS into the main context.
