@@ -2379,6 +2379,30 @@ pub fn damage_range_in_ctx(
     (min, max)
 }
 
+/// Bundle of per-target invariants threaded through the multi-hit loop
+/// in `apply_single_hit` → `compute_per_hit_damage`. Built ONCE per
+/// target (at `PerTargetContext` construction) and borrowed per hit;
+/// the only per-hit variable is `hit_idx` itself (passed alongside).
+///
+/// All fields are grep-verified invariant across every hit of one
+/// multi-hit move (Beat Up included — `beat_up_base_atks` is the
+/// per-ally lookup table; the per-hit index reads from it).
+///
+/// Plain `Copy` scalar bundle — no heap, no references. Lives in
+/// `PerTargetContext` so it doesn't allocate or move per hit. PR-LC7.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PerHitInvariants {
+    pub move_id: u16,
+    pub base_power: u32,
+    pub inputs: DamageInputs,
+    pub beat_up_ctx_opt: Option<DamageContext>,
+    pub beat_up_base_atks: [u16; 6],
+    pub crit_immune: bool,
+    pub crit_stage: u8,
+    pub base_hit_dmg: u16,
+    pub fixed_dmg_snapshot: Option<u16>,
+}
+
 /// Bundle of non-roll inputs the caller assembles for one damaging hit.
 /// All fields map 1:1 to `DamageContext` — the helper just routes them
 /// in. Lets `damage_range_for` take a single struct instead of ~18 args.
