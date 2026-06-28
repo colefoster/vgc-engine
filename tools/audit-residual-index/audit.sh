@@ -30,6 +30,17 @@ declare -a FIELDS=(
   # `resolve_end_of_turn` catches drift the static audit misses.
   'weather'     'sync_weather_terrain_cache'      '(crate::weather::)?Weather::(None|Sun|Rain|Sand|Snow)'
   'terrain'     'sync_weather_terrain_cache'      '(crate::terrain::)?Terrain::(None|Electric|Grassy|Psychic|Misty)'
+  # PR-LC2: cached `can_mega_evolve` on Pokemon. Any direct write to
+  # `.item_id` whose RHS is a mega stone id (`*ITE` / `*ITEX` / `*ITEY`),
+  # or to `.species_id` whose RHS is a mega forme id (`*MEGA*`), must be
+  # followed by a `sync_can_mega_evolve` call within ~6 lines. Bare
+  # clears (`u16::MAX`) and arbitrary `tm.item_id = item` swaps already
+  # land via the dedicated swap/clear callsites we audit by hand; the
+  # value-regex below catches the cases where a tracked-value literal
+  # is being written. The runtime debug-rescan assertion at the top of
+  # `resolve_end_of_turn` catches drift the static audit misses.
+  'item_id'     'sync_can_mega_evolve'            '(data::)?item_id::[A-Z0-9_]*ITE[XY]?\b'
+  'species_id'  'sync_can_mega_evolve'            '(data::)?species_id::[A-Z0-9_]*MEGA[A-Z0-9_]*'
   # PR-EOT4+ will add: 'item' 'sync_item_chip_bit' 'Item::(Leftovers|BlackSludge|StickyBarb)', etc.
 )
 
