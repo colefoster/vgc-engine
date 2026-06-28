@@ -21,7 +21,15 @@ cd "$(git rev-parse --show-toplevel)"
 # don't need the sync, and the debug-rescan assertion in
 # resolve_end_of_turn catches any case the static audit misses.
 declare -a FIELDS=(
-  'status'      'sync_status_dot_bit'      'Status::(Burn|Poison|Toxic)'
+  'status'      'sync_status_dot_bit'             'Status::(Burn|Poison|Toxic)'
+  # PR-LC1: cached effective-weather / effective-terrain on Battle.
+  # Any direct write to `.weather` / `.terrain` must be followed by a
+  # `sync_weather_terrain_cache` call within ~6 lines (or use the
+  # public `set_weather` / `set_terrain` helpers, which sync
+  # automatically). The runtime debug-rescan assertion at the top of
+  # `resolve_end_of_turn` catches drift the static audit misses.
+  'weather'     'sync_weather_terrain_cache'      '(crate::weather::)?Weather::(None|Sun|Rain|Sand|Snow)'
+  'terrain'     'sync_weather_terrain_cache'      '(crate::terrain::)?Terrain::(None|Electric|Grassy|Psychic|Misty)'
   # PR-EOT4+ will add: 'item' 'sync_item_chip_bit' 'Item::(Leftovers|BlackSludge|StickyBarb)', etc.
 )
 
