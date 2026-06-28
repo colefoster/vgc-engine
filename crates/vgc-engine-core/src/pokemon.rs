@@ -560,6 +560,20 @@ pub struct Pokemon {
     /// Doodle). Reset to the sentinel on switch-out.
     pub ability_override: u16,
     pub item_id: u16,
+    /// PR-LC2: cached `data::mega_stone_for(item_id, species_id).is_some()`.
+    /// Read in `Battle::legal_choices_into` to gate the Mega-Evolve choice
+    /// without the per-call binary search through the mega-stone table
+    /// (the flamegraph put `mega_stone_for` at ~1.4% self-time of the
+    /// doubles bench). MUST be kept in sync with `item_id` /
+    /// `species_id` writes; the canonical helper is
+    /// `Pokemon::sync_can_mega_evolve`. The runtime debug-rescan
+    /// assertion at the top of `Battle::resolve_end_of_turn` recomputes
+    /// from live data and `debug_assert_eq!`s — fix the missed mutation
+    /// site, don't disable the assertion. `#[serde(skip)]` keeps wire
+    /// format stable; the field is recomputed from `item_id` /
+    /// `species_id` on construction.
+    #[serde(skip)]
+    pub can_mega_evolve: bool,
     /// The last item this mon genuinely **consumed** during its current
     /// active stint — PS `Pokemon.lastItem`. `u16::MAX` = none. Set ONLY
     /// when the holder uses up its own item (a Berry eaten, a Herb / Sash /
@@ -866,6 +880,8 @@ impl Pokemon {
         nature_id: u8,
         tera_type: u8,
     ) -> Self {
+        // PR-LC2: derived cache, must match `sync_can_mega_evolve`.
+        let can_mega_evolve = data::mega_stone_for(item_id, species_id).is_some();
         Pokemon {
             // ---- identity (from params) ----
             species_id,
@@ -875,6 +891,7 @@ impl Pokemon {
             pp,
             ability_id,
             item_id,
+            can_mega_evolve,
             stats,
             current_hp,
             ivs,
@@ -1143,6 +1160,17 @@ impl Pokemon {
     pub fn consume_item(&mut self) {
         self.consumed_item = self.item_id;
         self.item_id = u16::MAX;
+        self.sync_can_mega_evolve();
+    }
+
+    /// PR-LC2: recompute the `can_mega_evolve` cache from `item_id` /
+    /// `species_id`. Call after any direct write to either of those
+    /// fields on a mon installed in a battle slot. The runtime
+    /// debug-rescan assertion at the top of `Battle::resolve_end_of_turn`
+    /// catches missed call sites under `cfg(debug_assertions)`.
+    #[inline]
+    pub fn sync_can_mega_evolve(&mut self) {
+        self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
     }
 
     /// `true` while `VolatileKind::PendingSelfSwitch` is on this mon.
