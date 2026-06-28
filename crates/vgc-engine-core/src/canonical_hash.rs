@@ -275,7 +275,7 @@ mod tests {
         // Battle::new). Set Snow to force a divergence.
         let a = fixture();
         let mut b = fixture();
-        b.weather = crate::weather::Weather::Snow;
+        b.set_weather(crate::weather::Weather::Snow);
         b.weather_turns = 5;
         assert_ne!(a.canonical_hash(), b.canonical_hash());
     }
