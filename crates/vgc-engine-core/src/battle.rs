@@ -30,6 +30,58 @@ use crate::side::{Side, SideRef};
 use serde::{Deserialize, Serialize};
 use vgc_engine_data as data;
 
+/// Per-Battle bitset index of which active slots currently carry residual
+/// state that fires during the EOT pipeline. One `u8` per residual family,
+/// one bit per absolute active slot:
+///   p1 slot 0 -> bit 0, p1 slot 1 -> bit 1,
+///   p2 slot 0 -> bit 2, p2 slot 1 -> bit 3.
+/// Singles uses only bits 0 and 2.
+///
+/// PR-EOT3 wires ONLY `status_dot`. Future PRs (EOT4+) will add
+/// `item_chip`, `leech_seed`, `sand_chip`, etc. The index is the
+/// authoritative "does anyone take DOT this EOT?" precheck — the full
+/// slot loop still reads `Pokemon` for Magic Guard / Poison Heal /
+/// Heatproof per-mon predicates. Invariant (status_dot): bit set iff
+/// `active_mon(slot)` has status in {Burn, Poison, Toxic}. Alive-agnostic
+/// — a fainted mon with Burn keeps its bit set; the EOT body's
+/// `is_alive()` gate makes the damage `0`, no drift, no perf cost.
+///
+/// PS analog: `sim/battle.ts` doesn't carry an equivalent — PS rescans the
+/// `residualOrder` event subscribers every EOT. We materialize the set
+/// because Rust slot iteration + ability lookups dominate the EOT cost.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub(crate) struct ResidualIndex {
+    /// Bit per absolute slot where the active mon has a damaging status
+    /// (Burn / Poison / Toxic). Maintained at status set / cure sites and
+    /// on switch-in. Read by `eot_status_dot` as a fast precheck.
+    pub status_dot: u8,
+}
+
+impl ResidualIndex {
+    #[inline]
+    pub(crate) fn abs_slot(side: SideRef, slot: u8) -> u8 {
+        match side {
+            SideRef::P1 => slot,
+            SideRef::P2 => 2 + slot,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn set_status_dot(&mut self, side: SideRef, slot: u8, on: bool) {
+        let bit = 1u8 << Self::abs_slot(side, slot);
+        if on {
+            self.status_dot |= bit;
+        } else {
+            self.status_dot &= !bit;
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn status_is_dot(s: Status) -> bool {
+    matches!(s, Status::Burn | Status::Poison | Status::Toxic)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleConfig {
     pub format: Format,
@@ -316,6 +368,10 @@ pub struct Battle {
     /// excludes the in-flight per-action cursor by design).
     #[serde(skip)]
     pub(crate) pending_yield: Option<crate::step_machine::PendingYield>,
+    /// PR-EOT3: per-residual-family bitset index over active slots. Maintained
+    /// at status set/cure sites + switch-in; consumed by `eot_status_dot` as
+    /// the "any DOT?" precheck. See [`ResidualIndex`].
+    pub(crate) residual_index: ResidualIndex,
 }
 
 impl Battle {
@@ -370,6 +426,7 @@ impl Battle {
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
             pending_yield: None,
+            residual_index: ResidualIndex::default(),
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2064,6 +2121,11 @@ impl Battle {
         // Heavy Boots immunity is deferred (no item handler yet); Magic
         // Guard is the only ability that blocks Stealth Rock and gets
         // checked at damage time.
+        // PR-EOT3: recompute the slot's status_dot bit from the incoming
+        // mon BEFORE hazards run. Toxic Spikes will route through
+        // `try_set_status_from` and sync again on its own; the pre-sync
+        // is for incoming mons that arrive already statused.
+        self.sync_status_dot_bit(side, actor_slot);
         self.apply_stealth_rock_to(side, actor_slot);
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
@@ -5340,6 +5402,7 @@ impl Battle {
                         t.status = Status::None;
                     }
                 }
+                // (Freeze is not a DOT — no status_dot bit change.)
             }
         }
 
@@ -8241,6 +8304,22 @@ impl Battle {
         }
     }
 
+    /// PR-EOT3: recompute the `residual_index.status_dot` bit for one
+    /// active slot from the current `active_mon(slot)`. Call this at every
+    /// status-mutating site (set / cure / Rest / Heal Bell / Natural Cure /
+    /// switch-in) so the EOT precheck stays in sync. Invariant is alive-
+    /// agnostic — a fainted mon with Burn keeps its bit set (the EOT
+    /// body's `is_alive()` gate makes its damage 0). The debug rescan
+    /// assertion at the top of `eot_status_dot` enforces this exactly.
+    #[inline]
+    pub(crate) fn sync_status_dot_bit(&mut self, side: SideRef, slot: u8) {
+        let on = self
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| status_is_dot(m.status));
+        self.residual_index.set_status_dot(side, slot, on);
+    }
+
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
         self.try_set_status_from(side, slot, status, side);
     }
@@ -8426,6 +8505,8 @@ impl Battle {
                 m.set_sleep_turns(sleep_turns);
             }
         }
+        // PR-EOT3: status_dot bit reflects the newly-applied status.
+        self.sync_status_dot_bit(side, slot);
         // Status-cure berries (Cheri / Chesto / Pecha / Rawst / Aspear) —
         // PS data/items.ts `<berry>` carry `onUpdate(pokemon)`:
         //   if (pokemon.status === '<id>') pokemon.eatItem();
@@ -8972,32 +9053,52 @@ impl Battle {
         // the HP loss but the toxic counter still ticks unconditionally.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
-        // PR-EOT2: single-pass precheck — if no active mon carries
-        // burn / poison / toxic, the entire phase is a no-op (no
-        // Magic Guard / Heatproof / Poison Heal ability lookups, no
-        // toxic-counter increment). PS's `residualOrder` dispatch
-        // (`sim/battle.ts` `Battle#residualEvent`) doesn't add status
-        // during this phase, so a status-empty field at entry stays
-        // status-empty through the body.
-        let mut any_status = false;
-        'precheck: for side in [SideRef::P1, SideRef::P2] {
-            let sd = self.side(side);
-            for slot in 0..n {
-                if let Some(m) = sd.active_mon(slot as usize) {
-                    if m.is_alive()
-                        && matches!(m.status, Status::Burn | Status::Poison | Status::Toxic)
-                    {
-                        any_status = true;
-                        break 'precheck;
+        // PR-EOT3: ResidualIndex.status_dot is the precheck. Maintained at
+        // every status set/cure/switch-in mutation site. Bit set iff the
+        // active mon at that absolute slot carries Burn / Poison / Toxic
+        // (alive-agnostic — the body's `is_alive()` guard handles fainted).
+        //
+        // PR-EOT3 debug rescan — full slot loop must agree with the bitset.
+        // If this fires, a status-mutation site is missing a
+        // `sync_status_dot_bit(...)` call. Don't disable; fix the site.
+        #[cfg(debug_assertions)]
+        {
+            let mut rescan: u8 = 0;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    if let Some(m) = self.side(side).active_mon(slot as usize) {
+                        if status_is_dot(m.status) {
+                            rescan |= 1u8 << ResidualIndex::abs_slot(side, slot);
+                        }
                     }
                 }
             }
+            debug_assert_eq!(
+                rescan, self.residual_index.status_dot,
+                "ResidualIndex.status_dot drift — a mutation site is missing a sync"
+            );
         }
-        if !any_status {
+        if self.residual_index.status_dot == 0 {
             return;
         }
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
+        // PR-EOT3: iterate only the set bits of `status_dot`. Bit order
+        // (0..4 → P1.0, P1.1, P2.0, P2.1) matches the previous
+        // side-then-slot walk exactly. Per-slot reads still consult
+        // `active_mon` for Magic Guard / Poison Heal / Heatproof.
+        let dot_bits = self.residual_index.status_dot;
+        for abs_slot in 0..4u8 {
+            if (dot_bits >> abs_slot) & 1 == 0 {
+                continue;
+            }
+            let (side, slot) = if abs_slot < 2 {
+                (SideRef::P1, abs_slot)
+            } else {
+                (SideRef::P2, abs_slot - 2)
+            };
+            if slot >= n {
+                continue;
+            }
+            {
                 let (dmg, mg, poison_heal) = match self.side(side).active_mon(slot as usize) {
                     Some(m) if m.is_alive() => {
                         // Heatproof halves burn DOT — PS data/abilities.ts:
@@ -10052,6 +10153,9 @@ impl Battle {
                     a.set_ally_switch_volatile(next_counter);
                 }
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
+                // PR-EOT3: the two active slots' DOT bits swap with them.
+                self.sync_status_dot_bit(actor_side, actor_slot);
+                self.sync_status_dot_bit(actor_side, partner_slot as u8);
                 self.ally_switch_pending = Some(actor_side);
             }
             data::move_id::RAGEPOWDER | data::move_id::FOLLOWME => {
@@ -10239,6 +10343,13 @@ impl Battle {
                     mon.status = Status::None;
                     mon.set_toxic_counter(0);
                     mon.set_sleep_turns(0);
+                }
+                // PR-EOT3: resync the DOT bit for every active slot on the
+                // user's side (Heal Bell / Aromatherapy can have cleared
+                // DOTs on the actives among the cured team members).
+                let n = self.format().active_count() as u8;
+                for s in 0..n {
+                    self.sync_status_dot_bit(actor_side, s);
                 }
             }
             data::move_id::DEFOG => {
@@ -11739,6 +11850,8 @@ impl Battle {
                     // wake on the third attempt, matching PS Rest cadence.
                     a.set_sleep_turns(3);
                 }
+                // PR-EOT3: Rest overwrites any prior status (incl. DOT) with Sleep.
+                self.sync_status_dot_bit(actor_side, actor_slot);
             }
             data::move_id::WISH => {
                 // Wish — delayed self/slot heal. PS data/moves.ts:wish
@@ -11899,6 +12012,10 @@ impl Battle {
                             p.set_toxic_counter(0);
                             p.set_sleep_turns(0);
                         }
+                    }
+                    // PR-EOT3: a cure here may have cleared a DOT.
+                    if cures {
+                        self.sync_status_dot_bit(actor_side, slot);
                     }
                 }
             }
@@ -13590,6 +13707,8 @@ fn cure_status_berry_if_matching(b: &mut Battle, side: SideRef, slot: u8) {
         m.set_sleep_turns(0);
         m.consume_item();
     }
+    // PR-EOT3: status cleared by berry — clear the DOT bit (if it was set).
+    b.sync_status_dot_bit(side, slot);
 }
 
 pub(crate) fn is_sound_move(slug: &str) -> bool {
@@ -18656,6 +18775,7 @@ mod tests {
         let max = b.p1.team[0].stats.hp;
         let burn_chip = (max / 16).max(1);
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.p1.team[0].current_hp = burn_chip;
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
@@ -27264,6 +27384,7 @@ mod tests {
         //     land its one hit (Burn halves the physical hit but it is > 0).
         let dmg1_statused_user = run(&|b| {
             b.p1.team[0].status = Status::Burn; // active user, still eligible
+            b.sync_status_dot_bit(SideRef::P1, 0);
             for i in 1..6 {
                 b.p1.team[i].status = Status::Paralysis;
             }
@@ -29540,6 +29661,7 @@ mod tests {
         let max = b.p1.team[0].stats.hp as u32;
         b.p1.team[0].current_hp = (max / 2) as u16;
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
@@ -29566,6 +29688,7 @@ mod tests {
         let max = b.p1.team[0].stats.hp as u32;
         b.p1.team[0].current_hp = (max / 2) as u16;
         b.p1.team[0].status = Status::Poison;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
@@ -30626,6 +30749,7 @@ mod tests {
         // Stamp distinguishing per-mon state on the slot-0 occupant.
         b.p1.team[0].boosts[0] = 2; // +2 Atk on indeedee
         b.p1.team[0].status = crate::pokemon::Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
 
         b.step(
             &[
@@ -33425,6 +33549,7 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         let hp_pre = b.p2.team[0].current_hp;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
@@ -33656,6 +33781,7 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
         b.p1.team[0].status = crate::pokemon::Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.step(
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
             &[Choice::Pass { actor_slot: 0 }],
@@ -33678,6 +33804,7 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
         assert_eq!(b.weather, crate::weather::Weather::Rain);
         b.p2.team[0].status = crate::pokemon::Status::Burn;
+        b.sync_status_dot_bit(SideRef::P2, 0);
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }],
@@ -33702,6 +33829,7 @@ mod tests {
                 let p2 = TeamBuilder::from_json(p2_json).unwrap();
                 let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
                 b.p2.team[0].status = crate::pokemon::Status::Burn;
+                b.sync_status_dot_bit(SideRef::P2, 0);
                 b.step(
                     &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
                     &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
@@ -34901,6 +35029,7 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         // Hand-set Gliscor's status to Toxic and partial HP.
         b.p1.team[0].status = Status::Toxic;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.p1.team[0].set_toxic_counter(1);
         let max = b.p1.team[0].stats.hp;
         b.p1.team[0].current_hp = max / 2;
@@ -35488,6 +35617,7 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
         // Active user is statused; two BENCHED allies carry status + counters.
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.p1.team[1].status = Status::Toxic;
         b.p1.team[1].set_toxic_counter(3);
         b.p1.team[2].status = Status::Sleep;
@@ -35535,6 +35665,7 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.p1.team[1].status = Status::Poison; // benched Soundproof ally
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -35562,6 +35693,7 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
         b.p1.team[0].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 0);
         b.p1.team[1].status = Status::Poison;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
