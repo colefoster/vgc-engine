@@ -977,7 +977,7 @@ mod tests {
         let qf = data::ABILITIES.iter().position(|a| a.slug == "quickfeet").expect("quickfeet") as u16;
         mon.ability_id = qf;
         let healthy = effective_speed(&mon, false, crate::weather::Weather::None);
-        mon.status = Status::Burn; // statused but not paralyzed
+        mon.status = Status::Burn; // statused but not paralyzed // AUDIT-OK: standalone clone, not a Battle slot
         let burned = effective_speed(&mon, false, crate::weather::Weather::None);
         assert!(burned > healthy, "Quick Feet should raise Spe when statused (h={healthy}, b={burned})");
 
