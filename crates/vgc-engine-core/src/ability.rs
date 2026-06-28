@@ -471,6 +471,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         // (Primal Rain etc.) don't apply in this format.
         if battle.weather != w {
             battle.weather = w;
+            // PR-LC1: weather field changed — refresh cache.
+            battle.sync_weather_terrain_cache();
             // Weather rocks — PS `data/items.ts:{damp,heat,smooth,icy}rock`
             // `onModifyDuration(duration, source, effect)` returns 8 when
             // `effect.id` matches `raindance`/`sunnyday`/`sandstorm`/`snowscape`.
@@ -517,6 +519,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     if let Some(t) = new_terrain {
         if battle.terrain != t {
             battle.terrain = t;
+            // PR-LC1: terrain field changed — refresh cache.
+            battle.sync_weather_terrain_cache();
             // Terrain Extender — PS `data/items.ts:terrainextender`
             //   onModifyDuration(duration, source, effect) {
             //     if (effect && [...terrains].includes(effect.id)) return 8;
@@ -1288,6 +1292,8 @@ pub fn on_damaging_hit(
         && battle.weather != crate::weather::Weather::Sand
     {
         battle.weather = crate::weather::Weather::Sand;
+        // PR-LC1: weather field changed — refresh cache.
+        battle.sync_weather_terrain_cache();
         let holds_smooth_rock = battle
             .side(target_side)
             .active_mon(target_slot as usize)
