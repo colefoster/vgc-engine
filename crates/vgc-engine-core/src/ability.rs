@@ -1961,6 +1961,9 @@ pub fn on_damaging_hit(
                 {
                     am.item_id = item;
                 }
+                // PR-EOT4: Magician moved the item from target → attacker.
+                battle.sync_item_chip_bit(target_side, target_slot);
+                battle.sync_item_chip_bit(attacker_side, attacker_slot);
             }
         }
     }
@@ -2076,6 +2079,9 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(r) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 r.item_id = partner_item;
             }
+            // PR-EOT4: Symbiosis handed `partner_item` from donor → recipient.
+            battle.sync_item_chip_bit(side, partner_slot);
+            battle.sync_item_chip_bit(side, slot);
             break;
         }
     }

@@ -37,24 +37,40 @@ use vgc_engine_data as data;
 ///   p2 slot 0 -> bit 2, p2 slot 1 -> bit 3.
 /// Singles uses only bits 0 and 2.
 ///
-/// PR-EOT3 wires ONLY `status_dot`. Future PRs (EOT4+) will add
-/// `item_chip`, `leech_seed`, `sand_chip`, etc. The index is the
-/// authoritative "does anyone take DOT this EOT?" precheck — the full
-/// slot loop still reads `Pokemon` for Magic Guard / Poison Heal /
-/// Heatproof per-mon predicates. Invariant (status_dot): bit set iff
-/// `active_mon(slot)` has status in {Burn, Poison, Toxic}. Alive-agnostic
-/// — a fainted mon with Burn keeps its bit set; the EOT body's
-/// `is_alive()` gate makes the damage `0`, no drift, no perf cost.
+/// PR-EOT3 wired `status_dot`. PR-EOT4 wires `item_chip`. Future PRs will
+/// add `leech_seed`, `sand_chip`, etc. The index is the authoritative
+/// "does anyone need this EOT phase?" precheck — the full slot loop still
+/// reads `Pokemon` for per-mon predicates (Magic Guard / Poison Heal /
+/// Heatproof / Heal Block / Poison-type for Black Sludge).
+///
+/// Invariant (status_dot): bit set iff `active_mon(slot)` has status in
+/// {Burn, Poison, Toxic}. Alive-agnostic — a fainted mon with Burn keeps
+/// its bit set; the EOT body's `is_alive()` gate makes the damage `0`,
+/// no drift, no perf cost.
+///
+/// Invariant (item_chip): bit set iff `active_mon(slot)` holds an item
+/// in {Leftovers, Black Sludge, Sticky Barb}. Alive-agnostic, same
+/// reasoning. Read by `eot_item_residual` (Leftovers / Black Sludge,
+/// PS onResidualOrder 5) and ALSO consulted by `eot_late_item_residual`
+/// for the Sticky Barb sub-arm. Magic Room does NOT clear the bit —
+/// `on_residual` reads `effective_item_id()`, which already returns
+/// `u16::MAX` under Magic Room and short-circuits.
 ///
 /// PS analog: `sim/battle.ts` doesn't carry an equivalent — PS rescans the
 /// `residualOrder` event subscribers every EOT. We materialize the set
-/// because Rust slot iteration + ability lookups dominate the EOT cost.
+/// because Rust slot iteration + item-arm dispatch dominate the EOT cost.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(crate) struct ResidualIndex {
     /// Bit per absolute slot where the active mon has a damaging status
     /// (Burn / Poison / Toxic). Maintained at status set / cure sites and
     /// on switch-in. Read by `eot_status_dot` as a fast precheck.
     pub status_dot: u8,
+    /// Bit per absolute slot where the active mon holds an item that
+    /// participates in the EOT item-residual phase (Leftovers, Black
+    /// Sludge, Sticky Barb). Maintained at every item set / consume /
+    /// transfer site and on switch-in. Read by `eot_item_residual` and
+    /// `eot_late_item_residual` as a fast precheck.
+    pub item_chip: u8,
 }
 
 impl ResidualIndex {
@@ -75,11 +91,34 @@ impl ResidualIndex {
             self.status_dot &= !bit;
         }
     }
+
+    #[inline]
+    pub(crate) fn set_item_chip(&mut self, side: SideRef, slot: u8, on: bool) {
+        let bit = 1u8 << Self::abs_slot(side, slot);
+        if on {
+            self.item_chip |= bit;
+        } else {
+            self.item_chip &= !bit;
+        }
+    }
 }
 
 #[inline]
 pub(crate) fn status_is_dot(s: Status) -> bool {
     matches!(s, Status::Burn | Status::Poison | Status::Toxic)
+}
+
+/// PR-EOT4: items tracked by `ResidualIndex.item_chip`. Bit set when the
+/// active mon's RAW `item_id` (not `effective_item_id` — Magic Room is
+/// handled at read time inside the EOT body) matches one of these. The
+/// EOT pre-check skips both `eot_item_residual` (Leftovers / Black
+/// Sludge — PS order 5) and `eot_late_item_residual`'s Sticky Barb arm
+/// (PS order 28 sub-order 3).
+#[inline]
+pub(crate) fn item_is_chip(item_id: u16) -> bool {
+    item_id == data::item_id::LEFTOVERS
+        || item_id == data::item_id::BLACKSLUDGE
+        || item_id == data::item_id::STICKYBARB
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -433,6 +472,17 @@ impl Battle {
         // ordering matches turn-order but at battle start it's by side
         // and slot; refinement deferred).
         let n = b.format().active_count() as u8;
+        // PR-EOT4: starting actives may already hold Leftovers / Black
+        // Sludge / Sticky Barb. `do_switch` syncs on every later
+        // switch-in, but the initial sendout doesn't route through it.
+        // Sync before `on_switch_in` so any item that's about to be
+        // consumed at battle start (e.g. White Herb cleanup) starts
+        // from a correct bit.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                b.sync_item_chip_bit(side, slot);
+            }
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 crate::ability::on_switch_in(&mut b, side, slot);
@@ -2126,6 +2176,10 @@ impl Battle {
         // `try_set_status_from` and sync again on its own; the pre-sync
         // is for incoming mons that arrive already statused.
         self.sync_status_dot_bit(side, actor_slot);
+        // PR-EOT4: incoming mon may carry Leftovers / Black Sludge /
+        // Sticky Barb. (Hazards never modify item_id, so this single
+        // sync covers the whole switch.)
+        self.sync_item_chip_bit(side, actor_slot);
         self.apply_stealth_rock_to(side, actor_slot);
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
@@ -3261,6 +3315,10 @@ impl Battle {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.consume_item();
             }
+            // PR-EOT4: Fling consumed the user's held item (which may
+            // have been Leftovers / Black Sludge / Sticky Barb — all
+            // three carry fling BP).
+            self.sync_item_chip_bit(actor_side, actor_slot);
         }
 
         // 5. Enumerate targets (spread or single).
@@ -5237,6 +5295,8 @@ impl Battle {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     t.item_id = u16::MAX;
                 }
+                // PR-EOT4: target's item just got knocked off.
+                self.sync_item_chip_bit(ctx.tside, ctx.tslot);
             }
         }
         if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) {
@@ -8002,6 +8062,9 @@ impl Battle {
         if let Some(m) = self.side_mut(b_side).active_mon_mut(b_slot as usize) {
             m.item_id = a_item;
         }
+        // PR-EOT4: Trick / Switcheroo just swapped both holders' items.
+        self.sync_item_chip_bit(a_side, a_slot);
+        self.sync_item_chip_bit(b_side, b_slot);
         true
     }
 
@@ -8318,6 +8381,25 @@ impl Battle {
             .active_mon(slot as usize)
             .is_some_and(|m| status_is_dot(m.status));
         self.residual_index.set_status_dot(side, slot, on);
+    }
+
+    /// PR-EOT4: recompute the `residual_index.item_chip` bit for one
+    /// active slot from the current `active_mon(slot)`'s raw `item_id`.
+    /// Call this at every item-mutating site (set / consume / Knock Off
+    /// / Trick / Switcheroo / Bestow / Magician / Symbiosis / Sticky
+    /// Barb contact transfer / Recycle / Fling) so the EOT precheck
+    /// stays in sync. Reads `item_id` raw — Magic Room suppression is
+    /// handled at read time inside `on_residual` /
+    /// `on_residual_late` via `effective_item_id()`, so it does NOT
+    /// affect the bit. Alive-agnostic for the same reason as
+    /// `sync_status_dot_bit`.
+    #[inline]
+    pub(crate) fn sync_item_chip_bit(&mut self, side: SideRef, slot: u8) {
+        let on = self
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| item_is_chip(m.item_id));
+        self.residual_index.set_item_chip(side, slot, on);
     }
 
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
@@ -8960,10 +9042,54 @@ impl Battle {
         // 5. Item residuals (Leftovers, Black Sludge, ...) — PS order 5.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                crate::item::on_residual(self, side, slot);
+        // PR-EOT4: `ResidualIndex.item_chip` is the precheck. Bit set
+        // iff the active mon at that absolute slot holds Leftovers /
+        // Black Sludge / Sticky Barb. Sticky Barb fires in the LATE
+        // phase, but we keep one shared bitset because the three items
+        // are mutually exclusive (a mon holds one item) and the bitset
+        // is cheap to share — `eot_late_item_residual` reads the same
+        // field. Magic Room is handled at read time inside
+        // `on_residual` via `effective_item_id()`; the bit stays set.
+        //
+        // Debug rescan — full slot loop must agree with the bitset.
+        // If this fires, an item-mutation site is missing a
+        // `sync_item_chip_bit(...)` call.
+        #[cfg(debug_assertions)]
+        {
+            let mut rescan: u8 = 0;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    if let Some(m) = self.side(side).active_mon(slot as usize) {
+                        if item_is_chip(m.item_id) {
+                            rescan |= 1u8 << ResidualIndex::abs_slot(side, slot);
+                        }
+                    }
+                }
             }
+            debug_assert_eq!(
+                rescan, self.residual_index.item_chip,
+                "ResidualIndex.item_chip drift — a mutation site is missing a sync"
+            );
+        }
+        if self.residual_index.item_chip == 0 {
+            return;
+        }
+        // Iterate only the set bits. Bit order (0..4 → P1.0, P1.1, P2.0,
+        // P2.1) matches the previous side-then-slot walk exactly.
+        let chip_bits = self.residual_index.item_chip;
+        for abs_slot in 0..4u8 {
+            if (chip_bits >> abs_slot) & 1 == 0 {
+                continue;
+            }
+            let (side, slot) = if abs_slot < 2 {
+                (SideRef::P1, abs_slot)
+            } else {
+                (SideRef::P2, abs_slot - 2)
+            };
+            if slot >= n {
+                continue;
+            }
+            crate::item::on_residual(self, side, slot);
         }
     }
 
@@ -10834,6 +10960,9 @@ impl Battle {
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     t.item_id = item;
                 }
+                // PR-EOT4: Bestow handed `item` from giver to recipient.
+                self.sync_item_chip_bit(actor_side, actor_slot);
+                self.sync_item_chip_bit(tside, tslot);
             }
             data::move_id::WHIRLWIND | data::move_id::ROAR => {
                 // Phazing status moves — drag the target out for a RANDOM
@@ -11355,6 +11484,12 @@ impl Battle {
                         a.consumed_item = u16::MAX;
                     }
                 }
+                // PR-EOT4: Recycle may have restored Leftovers / Black
+                // Sludge / Sticky Barb (Sticky Barb is excluded by
+                // `consumed_item`-not-set on its transfer path, but
+                // Leftovers / Black Sludge consumed by Fling are
+                // Recycle-recoverable).
+                self.sync_item_chip_bit(actor_side, actor_slot);
             }
             data::move_id::SOAK => {
                 // PS data/moves.ts:soak — set the target's typing to pure
