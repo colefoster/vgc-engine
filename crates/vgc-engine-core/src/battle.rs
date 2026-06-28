@@ -766,6 +766,13 @@ impl Battle {
         };
         if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
             m.species_id = new_species_id;
+            // PR-LC2: species changed → recompute `can_mega_evolve`.
+            // Covers Mega Evolution itself (post-mega, the mega forme
+            // no longer matches its stone), Stance Change, Mimikyu
+            // Disguise bust, Transform/Imposter (via `transform_into`),
+            // and every other forme-change site that routes through
+            // `set_forme`.
+            m.sync_can_mega_evolve();
             if let Some(stats) = recomputed {
                 // Preserve HP stat (max HP) and current_hp; update the 5
                 // battle stats from the recomputed spread.
@@ -1181,8 +1188,13 @@ impl Battle {
         // `mega_stone_for` table). `step()` still accepts agent-built
         // `Terastallize` / `MegaEvolve` directly (these are additive).
         let can_tera = !s.conditions.tera_used;
-        let can_mega = !s.conditions.mega_used
-            && data::mega_stone_for(active.item_id, active.species_id).is_some();
+        // PR-LC2: read the cached `can_mega_evolve` instead of the
+        // per-call `data::mega_stone_for(...)` lookup (~1.4% of the
+        // doubles-bench self-time in the flamegraph). Cache is kept
+        // in sync by `Pokemon::sync_can_mega_evolve`, called at every
+        // `item_id` / `species_id` mutation site; a debug-rescan
+        // assertion at the top of `resolve_end_of_turn` enforces it.
+        let can_mega = !s.conditions.mega_used && active.can_mega_evolve;
 
         // PS `sim/pokemon.ts` `getMoves` tracks `hasValidMove`; if every
         // moveslot is unselectable (`disabled`, which includes `pp <= 0`) it
@@ -5355,6 +5367,7 @@ impl Battle {
             if can_knock {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     t.item_id = u16::MAX;
+                    t.sync_can_mega_evolve();
                 }
             }
         }
@@ -8117,9 +8130,11 @@ impl Battle {
         }
         if let Some(m) = self.side_mut(a_side).active_mon_mut(a_slot as usize) {
             m.item_id = b_item;
+            m.sync_can_mega_evolve();
         }
         if let Some(m) = self.side_mut(b_side).active_mon_mut(b_slot as usize) {
             m.item_id = a_item;
+            m.sync_can_mega_evolve();
         }
         true
     }
@@ -8843,6 +8858,23 @@ impl Battle {
                 self.cached_terrain, live_t,
                 "PR-LC1: cached_terrain drift — a mutation site is missing a sync_weather_terrain_cache call"
             );
+            // PR-LC2: rescan `can_mega_evolve` from live `item_id` /
+            // `species_id`. If this fires, an `item_id` or `species_id`
+            // mutation site is missing a `sync_can_mega_evolve` call —
+            // find and fix the site, do NOT disable the assertion.
+            let active_count = self.format().active_count();
+            for &side in &[SideRef::P1, SideRef::P2] {
+                for slot in 0..active_count {
+                    if let Some(m) = self.side(side).active_mon(slot) {
+                        let live = data::mega_stone_for(m.item_id, m.species_id).is_some();
+                        debug_assert_eq!(
+                            m.can_mega_evolve, live,
+                            "PR-LC2: can_mega_evolve drift on {:?}.{} — a mutation site is missing a sync_can_mega_evolve call",
+                            side, slot
+                        );
+                    }
+                }
+            }
         }
         // PS gen-9 `sim/battle.ts` residualOrder dispatch — each
         // sub-phase is a named helper for ease of reading and to
@@ -10972,9 +11004,11 @@ impl Battle {
                 };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.item_id = u16::MAX;
+                    a.sync_can_mega_evolve();
                 }
                 if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                     t.item_id = item;
+                    t.sync_can_mega_evolve();
                 }
             }
             data::move_id::WHIRLWIND | data::move_id::ROAR => {
@@ -11495,6 +11529,7 @@ impl Battle {
                     if a.item_id == u16::MAX && a.consumed_item != u16::MAX {
                         a.item_id = a.consumed_item;
                         a.consumed_item = u16::MAX;
+                        a.sync_can_mega_evolve();
                     }
                 }
             }
