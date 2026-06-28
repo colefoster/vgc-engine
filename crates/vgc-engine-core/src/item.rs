@@ -672,12 +672,14 @@ pub fn on_attacker_contact_hit(
                 .active_mon_mut(target_slot as usize)
             {
                 t.item_id = u16::MAX;
+                t.sync_can_mega_evolve();
             }
             if let Some(a) = battle
                 .side_mut(attacker_side)
                 .active_mon_mut(attacker_slot as usize)
             {
                 a.item_id = barb_id;
+                a.sync_can_mega_evolve();
             }
         }
     }
