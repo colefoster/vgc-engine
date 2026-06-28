@@ -242,7 +242,15 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
     match space {
         DrawSpace::UniformRange(n) => (0..n).map(|v| (RngEvent::Range(v), 1u32, n)).collect(),
         DrawSpace::UniformDamage => (0..16u8).map(|v| (RngEvent::DamageRoll(v), 1u32, 16)).collect(),
-        DrawSpace::UniformPercent { .. } => (1..=100u8).map(|v| (RngEvent::PercentRoll(v), 1u32, 100)).collect(),
+        DrawSpace::UniformPercent { threshold } => match threshold {
+            None => (1..=100u8).map(|v| (RngEvent::PercentRoll(v), 1u32, 100)).collect(),
+            Some(0) => vec![(RngEvent::PercentRoll(100), 100, 100)],
+            Some(t) if t >= 100 => vec![(RngEvent::PercentRoll(1), 100, 100)],
+            Some(t) => vec![
+                (RngEvent::PercentRoll(1), t as u32, 100),
+                (RngEvent::PercentRoll(t + 1), (100 - t) as u32, 100),
+            ],
+        },
         DrawSpace::Crit { num, denom } => vec![
             (RngEvent::Crit(true), num, denom),
             (RngEvent::Crit(false), denom - num, denom),
