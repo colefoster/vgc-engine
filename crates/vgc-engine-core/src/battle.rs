@@ -26967,7 +26967,7 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let hex = data::MOVES.iter().position(|m| m.slug == "hex").unwrap() as u16;
         let mut p2_statused = p2.clone();
-        p2_statused[0].status = Status::Burn;
+        p2_statused[0].status = Status::Burn; // AUDIT-OK: TeamBuilder clone, not a Battle slot
         let dmg_clean = calculate_damage(&p1[0], &p2[0], hex,
             DamageContext { roll: 15, ..DamageContext::default() });
         let dmg_burned = calculate_damage(&p1[0], &p2_statused[0], hex,
