@@ -372,6 +372,23 @@ pub struct Battle {
     /// at status set/cure sites + switch-in; consumed by `eot_status_dot` as
     /// the "any DOT?" precheck. See [`ResidualIndex`].
     pub(crate) residual_index: ResidualIndex,
+    /// PR-LC1: cached `effective_weather()` result. Invariant: matches
+    /// `recompute_effective_weather()` for the current state. Updated
+    /// whenever `weather`, ability presence (Cloud Nine / Air Lock /
+    /// Neutralizing Gas), or active mons (switch-in/out, faint) change.
+    /// `#[serde(skip)]` because the value is derivable from canonical
+    /// state — keeping it out of the wire format keeps serialization
+    /// stable. A debug-build assertion at the top of `resolve_end_of_turn`
+    /// re-derives and `debug_assert_eq!`s every turn.
+    #[serde(skip)]
+    pub(crate) cached_weather: crate::weather::Weather,
+    /// PR-LC1: cached `effective_terrain()` result. Same invariant as
+    /// `cached_weather`. Terrain currently has no in-game suppression
+    /// mechanic (no Cloud Nine analog for terrain), so this is a
+    /// straight echo of `self.terrain`; the cache exists for future
+    /// suppression rules and uniformity with the weather cache.
+    #[serde(skip)]
+    pub(crate) cached_terrain: crate::terrain::Terrain,
 }
 
 impl Battle {
@@ -427,6 +444,13 @@ impl Battle {
             wish_pending: [[None; 2]; 2],
             pending_yield: None,
             residual_index: ResidualIndex::default(),
+            // PR-LC1: initialized to None to match the freshly-cleared
+            // weather/terrain fields above. Re-synced from live state
+            // at the end of `with_rng` after switch-in abilities run
+            // (Drizzle / Drought / Sand Stream / surge abilities can
+            // set weather or terrain from on_switch_in).
+            cached_weather: crate::weather::Weather::None,
+            cached_terrain: crate::terrain::Terrain::None,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -442,6 +466,12 @@ impl Battle {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
         }
+        // PR-LC1: prime the effective-weather/terrain cache after
+        // battle-start abilities have potentially set weather
+        // (Drizzle / Drought / Sand Stream / Snow Warning) and terrain
+        // (the four surge abilities), and after any suppression-relevant
+        // abilities (Cloud Nine / Air Lock / Neutralizing Gas) are live.
+        b.sync_weather_terrain_cache();
         b
     }
 
@@ -522,13 +552,31 @@ impl Battle {
     /// <https://bulbapedia.bulbagarden.net/wiki/Cloud_Nine_(Ability)>,
     /// <https://bulbapedia.bulbagarden.net/wiki/Air_Lock_(Ability)>.
     pub fn effective_weather(&self) -> crate::weather::Weather {
-        // Fast path: with no weather set there is nothing to suppress, so skip
-        // the 4-mon Cloud Nine / Air Lock ability scan entirely. The old code
-        // returned `self.weather` (None) whether or not suppression fired, so
-        // this is behaviour-identical — it just avoids `weather_suppressed()`'s
-        // per-call scan on the common (no-weather) path. `effective_weather` is
-        // queried all over the damage / accuracy / residual paths, so this is
-        // the hot, weatherless-battle case (performance review finding #2).
+        // PR-LC1: read the cached field. The previous per-call scan
+        // (Cloud Nine / Air Lock check) is now performed once at every
+        // mutation site (see `sync_weather_terrain_cache`) instead of
+        // here. Flamegraph baseline: this function was 3.2% self-time
+        // because the damage / accuracy / residual paths call it many
+        // times per turn; the cached read is a plain field load.
+        self.cached_weather
+    }
+
+    /// PR-LC1: effective terrain — caches `self.terrain` via the same
+    /// sync infrastructure as `effective_weather`. Today there is no
+    /// in-game suppression rule for terrain (no Cloud Nine analog), so
+    /// the cached value is a straight echo of `self.terrain`. The
+    /// helper exists so future suppression rules have one place to land
+    /// and to keep the cache layer symmetric.
+    pub fn effective_terrain(&self) -> crate::terrain::Terrain {
+        self.cached_terrain
+    }
+
+    /// PR-LC1: recompute `effective_weather` from live state. The body
+    /// is the pre-PR-LC1 logic; called only from
+    /// `sync_weather_terrain_cache` (mutation sites) and the debug
+    /// assertion at the top of `resolve_end_of_turn`. Never called on
+    /// the hot read path.
+    fn recompute_effective_weather(&self) -> crate::weather::Weather {
         if matches!(self.weather, crate::weather::Weather::None) {
             return crate::weather::Weather::None;
         }
@@ -537,6 +585,54 @@ impl Battle {
         } else {
             self.weather
         }
+    }
+
+    /// PR-LC1: recompute `effective_terrain` from live state. Today a
+    /// straight echo of `self.terrain`; kept as a function so a future
+    /// suppression mechanic (e.g. a hypothetical "Cloud Nine for
+    /// terrain") has one place to land.
+    fn recompute_effective_terrain(&self) -> crate::terrain::Terrain {
+        self.terrain
+    }
+
+    /// PR-LC1: refresh `cached_weather` + `cached_terrain` from live
+    /// state. MUST be called at every mutation site that could change
+    /// the result of `effective_weather()` / `effective_terrain()`:
+    ///   - `weather` / `terrain` field writes (setters + EOT expiry +
+    ///     direct production writes like Snowscape & Sand Spit),
+    ///   - active-mon changes (switch-in / switch-out / faint), and
+    ///   - ability mutations (Skill Swap, Worry Seed, Entrainment,
+    ///     Role Play, Doodle, Simple Beam, Gastro Acid (set/clear),
+    ///     Mega Evolution, Neutralizing Gas activation/deactivation,
+    ///     Trace).
+    ///
+    /// Called once at the top of `step()` as a safety net so harness
+    /// callers that poke `battle.weather` directly (tests, fixtures)
+    /// Just Work. The debug assertion at the top of
+    /// `resolve_end_of_turn` catches any mutation site missing the
+    /// call.
+    pub(crate) fn sync_weather_terrain_cache(&mut self) {
+        self.cached_weather = self.recompute_effective_weather();
+        self.cached_terrain = self.recompute_effective_terrain();
+    }
+
+    /// PR-LC1: public weather setter used by tests/fixtures that need
+    /// to install a weather state directly (no on-move duration logic).
+    /// Production code paths (`set_weather_from_move`, Sand Spit, the
+    /// Snowscape direct-write) call `sync_weather_terrain_cache` after
+    /// their own writes. Tests previously wrote `b.weather = X;`
+    /// directly; with the cache layer they must route through this
+    /// setter so the cache stays consistent. The audit script flags
+    /// any unhelped `.weather = Weather::X` write outside this helper.
+    pub fn set_weather(&mut self, w: crate::weather::Weather) {
+        self.weather = w;
+        self.sync_weather_terrain_cache();
+    }
+
+    /// PR-LC1: public terrain setter — same role as `set_weather`.
+    pub fn set_terrain(&mut self, t: crate::terrain::Terrain) {
+        self.terrain = t;
+        self.sync_weather_terrain_cache();
     }
 
     /// Effective weather as seen by an individual Pokémon. Same as
@@ -1227,6 +1323,14 @@ impl Battle {
     pub fn step(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) -> StepResult {
         use crate::rng::{DrawSpace, RngEvent};
         use crate::step_machine::{StepCursor, StepProgress};
+        // PR-LC1: sync the effective-weather/terrain cache at turn
+        // entry. Safety net for test/fixture callers that poke
+        // `battle.weather` / `battle.terrain` directly between steps,
+        // and a cheap (single suppressor scan) guarantee that the
+        // turn opens with a fresh cache before any `effective_weather()`
+        // reads fire. Per-mutation syncs inside `step` keep the cache
+        // current across the turn.
+        self.sync_weather_terrain_cache();
         let mut cursor = StepCursor::start(p1_choices, p2_choices);
         loop {
             match self.step_one(&mut cursor) {
@@ -1693,6 +1797,8 @@ impl Battle {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
                 self.weather = crate::weather::Weather::None;
+                // PR-LC1: weather field changed — refresh cache.
+                self.sync_weather_terrain_cache();
                 // Weather just expired — refresh paradox boosters on
                 // both sides so Protosynthesis users drop their volatile.
                 let n = self.format().active_count() as u8;
@@ -1751,6 +1857,8 @@ impl Battle {
             self.terrain_turns -= 1;
             if self.terrain_turns == 0 {
                 self.terrain = crate::terrain::Terrain::None;
+                // PR-LC1: terrain field changed — refresh cache.
+                self.sync_weather_terrain_cache();
                 // Refresh paradox boosters — Quark Drive users drop
                 // their volatile when E-Terrain expires.
                 let n = self.format().active_count() as u8;
@@ -2130,6 +2238,15 @@ impl Battle {
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
         self.apply_sticky_web_to(side, actor_slot);
+        // PR-LC1: switching changes the active-mon set, which can flip
+        // weather suppression on or off (Cloud Nine / Air Lock /
+        // Neutralizing Gas joining or leaving the field). Sync the
+        // cache before returning so callers see the post-switch state.
+        // Note: `apply_switches` calls `on_switch_in` AFTER `do_switch`
+        // returns; that path's own ability mutations (e.g. Trace into a
+        // suppressor) re-sync via the central sync point at the top of
+        // `step()` and via per-mutation syncs in the ability dispatcher.
+        self.sync_weather_terrain_cache();
         true
     }
 
@@ -2155,6 +2272,8 @@ impl Battle {
             return;
         }
         self.weather = w;
+        // PR-LC1: weather field changed — refresh cache.
+        self.sync_weather_terrain_cache();
         let item_id = self
             .side(actor_side)
             .active_mon(actor_slot as usize)
@@ -8706,6 +8825,25 @@ impl Battle {
     /// named `eot_*` helper so a future PR can yield from inside
     /// any one of them without disturbing the others.
     fn resolve_end_of_turn(&mut self) {
+        // PR-LC1 debug-rescan: the cached effective-weather / terrain
+        // values must match a live recompute at every EOT. If this
+        // fires, a mutation site is missing a
+        // `sync_weather_terrain_cache` call — find and fix the site,
+        // do NOT disable the assertion. Static guard is
+        // `tools/audit-residual-index/audit.sh`'s weather/terrain rows.
+        #[cfg(debug_assertions)]
+        {
+            let live_w = self.recompute_effective_weather();
+            debug_assert_eq!(
+                self.cached_weather, live_w,
+                "PR-LC1: cached_weather drift — a mutation site is missing a sync_weather_terrain_cache call"
+            );
+            let live_t = self.recompute_effective_terrain();
+            debug_assert_eq!(
+                self.cached_terrain, live_t,
+                "PR-LC1: cached_terrain drift — a mutation site is missing a sync_weather_terrain_cache call"
+            );
+        }
         // PS gen-9 `sim/battle.ts` residualOrder dispatch — each
         // sub-phase is a named helper for ease of reading and to
         // give PR-F4+ a per-phase yield seam (no yields here yet).
@@ -9605,6 +9743,8 @@ impl Battle {
             return;
         }
         self.terrain = terrain;
+        // PR-LC1: terrain field changed — refresh cache.
+        self.sync_weather_terrain_cache();
         let setter_item = self
             .side(setter_side)
             .active_mon(setter_slot as usize)
@@ -10391,6 +10531,8 @@ impl Battle {
                 // Clear Terrain (gen 8+).
                 self.terrain = crate::terrain::Terrain::None;
                 self.terrain_turns = 0;
+                // PR-LC1: terrain field changed — refresh cache.
+                self.sync_weather_terrain_cache();
             }
             data::move_id::TIDYUP => {
                 // PS data/moves.ts:tidyup onHit. Status move, target "self",
@@ -11644,6 +11786,8 @@ impl Battle {
                 // gen-9 rename of Hail (same `Weather::Snow` here). The
                 // cosmetic `priorityChargeCallback` flavor is skipped.
                 self.weather = crate::weather::Weather::Snow;
+                // PR-LC1: weather field changed — refresh cache.
+                self.sync_weather_terrain_cache();
                 // Icy Rock extends Snow 5 → 8 (PS data/items.ts:icyrock).
                 let user_item = self
                     .side(actor_side)
@@ -18461,7 +18605,7 @@ mod tests {
         b.p2.conditions.reflect_turns = 5;
         b.p2.conditions.light_screen_turns = 5;
         b.p2.conditions.aurora_veil_turns = 5;
-        b.terrain = crate::terrain::Terrain::Electric;
+        b.set_terrain(crate::terrain::Terrain::Electric);
         b.terrain_turns = 5;
         let eva_before = b.p2.team[0].boosts[6];
         b.step(
@@ -19916,7 +20060,7 @@ mod tests {
         b.p2.team[0].current_hp = p2_max / 2;
         let p1_before = b.p1.team[0].current_hp;
         let p2_before = b.p2.team[0].current_hp;
-        b.terrain = crate::terrain::Terrain::Grassy;
+        b.set_terrain(crate::terrain::Terrain::Grassy);
         b.terrain_turns = 5;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -19956,7 +20100,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(foe_json).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             if psychic {
-                b.terrain = crate::terrain::Terrain::Psychic;
+                b.set_terrain(crate::terrain::Terrain::Psychic);
                 b.terrain_turns = 5;
             }
             let max = b.p2.team[0].stats.hp;
@@ -19989,7 +20133,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(snorlax).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             if psychic {
-                b.terrain = crate::terrain::Terrain::Psychic;
+                b.set_terrain(crate::terrain::Terrain::Psychic);
                 b.terrain_turns = 5;
             }
             b.step(
@@ -20024,7 +20168,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(foe_json).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             if misty {
-                b.terrain = crate::terrain::Terrain::Misty;
+                b.set_terrain(crate::terrain::Terrain::Misty);
                 b.terrain_turns = 5;
             }
             b.step(
@@ -20184,7 +20328,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(leafeon).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             if sun {
-                b.weather = crate::weather::Weather::Sun;
+                b.set_weather(crate::weather::Weather::Sun);
                 b.weather_turns = 5;
             }
             b.step(
@@ -20455,7 +20599,7 @@ mod tests {
         let dmg_no = start_hp - no_terrain.p2.team[0].current_hp;
 
         let mut with_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
-        with_terrain.terrain = crate::terrain::Terrain::Electric;
+        with_terrain.set_terrain(crate::terrain::Terrain::Electric);
         with_terrain.terrain_turns = 5;
         let start_hp_b = with_terrain.p2.team[0].current_hp;
         with_terrain.step(
@@ -20492,7 +20636,7 @@ mod tests {
         let dmg_no = start - no_terrain.p2.team[0].current_hp;
 
         let mut with_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1b, p2b);
-        with_terrain.terrain = crate::terrain::Terrain::Electric;
+        with_terrain.set_terrain(crate::terrain::Terrain::Electric);
         with_terrain.terrain_turns = 5;
         let start_b = with_terrain.p2.team[0].current_hp;
         with_terrain.step(
@@ -20565,7 +20709,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.weather = crate::weather::Weather::Sun;
+        b.set_weather(crate::weather::Weather::Sun);
         b.weather_turns = 5;
         let snorlax_hp_before = b.p2.team[0].current_hp;
         b.step(
@@ -21196,7 +21340,7 @@ mod tests {
         // mon "in". For battle-start sendouts the seed dispatches before
         // terrain exists; here we re-call try_consume_terrain_seed
         // explicitly to mimic an on_switch_in event after terrain is up.
-        b.terrain = crate::terrain::Terrain::Electric;
+        b.set_terrain(crate::terrain::Terrain::Electric);
         b.terrain_turns = 5;
         crate::item::try_consume_terrain_seed(&mut b, SideRef::P1, 0);
         assert_eq!(b.p1.team[0].boosts[1], 1, "Electric Seed gives +1 Def");
@@ -21215,7 +21359,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.terrain = crate::terrain::Terrain::Electric;
+        b.set_terrain(crate::terrain::Terrain::Electric);
         b.terrain_turns = 5;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -21241,7 +21385,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.terrain = crate::terrain::Terrain::Electric;
+        b.set_terrain(crate::terrain::Terrain::Electric);
         b.terrain_turns = 5;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -21552,7 +21696,7 @@ mod tests {
         // Clear terrain (proxy for "no E-Terrain on the field"). Hadron
         // Engine's SpA modifier should drop and damage should match the
         // Levitate baseline within one HP.
-        b.terrain = crate::terrain::Terrain::None;
+        b.set_terrain(crate::terrain::Terrain::None);
         b.terrain_turns = 0;
         let snor_hp_before = b.p2.team[0].current_hp;
         b.step(
@@ -29514,7 +29658,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.weather = crate::weather::Weather::Sun;
+        b.set_weather(crate::weather::Weather::Sun);
         b.weather_turns = 5;
         let max = b.p1.team[0].stats.hp;
         b.p1.team[0].current_hp = 1;
@@ -29710,7 +29854,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.weather = crate::weather::Weather::Rain;
+        b.set_weather(crate::weather::Weather::Rain);
         b.weather_turns = 5;
         let max = b.p1.team[0].stats.hp;
         b.p1.team[0].current_hp = 1;
@@ -29733,7 +29877,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.weather = crate::weather::Weather::Sand;
+        b.set_weather(crate::weather::Weather::Sand);
         b.weather_turns = 5;
         let max = b.p1.team[0].stats.hp;
         b.p1.team[0].current_hp = 1;
@@ -31432,7 +31576,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        b.weather = crate::weather::Weather::Rain;
+        b.set_weather(crate::weather::Weather::Rain);
         let snorlax_hp = b.p2.team[0].current_hp;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
@@ -31787,7 +31931,7 @@ mod tests {
         let p1b = TeamBuilder::from_json(p1_json).unwrap();
         let p2b = TeamBuilder::from_json(p2_json).unwrap();
         let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
-        b2.weather = crate::weather::Weather::None;
+        b2.set_weather(crate::weather::Weather::None);
         let tt_hp_before2 = b2.p2.team[0].current_hp;
         b2.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -31830,7 +31974,7 @@ mod tests {
         let p1b = TeamBuilder::from_json(p1_json).unwrap();
         let p2b = TeamBuilder::from_json(p2_json).unwrap();
         let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1b, p2b);
-        b2.weather = crate::weather::Weather::None;
+        b2.set_weather(crate::weather::Weather::None);
         let hp_before2 = b2.p2.team[0].current_hp;
         b2.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
@@ -32114,7 +32258,7 @@ mod tests {
             let atk = TeamBuilder::from_json(atk_json).unwrap();
             let nrm = TeamBuilder::from_json(normal_json).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, atk, nrm);
-            b.weather = crate::weather::Weather::Sun;
+            b.set_weather(crate::weather::Weather::Sun);
             b.weather_turns = 5;
             b.step(
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
@@ -33291,7 +33435,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(p2_json).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             // Clear any Drizzle-set weather so we observe the move's own set.
-            b.weather = crate::weather::Weather::None;
+            b.set_weather(crate::weather::Weather::None);
             b.weather_turns = 0;
             b.step(
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -33321,7 +33465,7 @@ mod tests {
             let p2 = TeamBuilder::from_json(p2_json).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
             // Force Snow for Aurora Veil eligibility.
-            b.weather = crate::weather::Weather::Snow;
+            b.set_weather(crate::weather::Weather::Snow);
             b.weather_turns = 5;
             b.step(
                 &[Choice::Move { actor_slot: 0, move_slot: slot, target: None }],
@@ -33519,7 +33663,7 @@ mod tests {
         let p1b = TeamBuilder::from_json(p1_json).unwrap();
         let p2b = TeamBuilder::from_json(p2_json).unwrap();
         let mut b2 = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1b, p2b);
-        b2.weather = crate::weather::Weather::Sun;
+        b2.set_weather(crate::weather::Weather::Sun);
         b2.weather_turns = 5;
         b2.p2.team[0].current_hp = b2.p2.team[0].stats.hp;
         let hp_pre2 = b2.p2.team[0].current_hp;
@@ -33886,7 +34030,7 @@ mod tests {
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
             if !sand_on {
                 // Override the ability-set Sand back to None for control.
-                b.weather = crate::weather::Weather::None;
+                b.set_weather(crate::weather::Weather::None);
                 b.weather_turns = 0;
             }
             let before = b.p2.team[0].current_hp;
