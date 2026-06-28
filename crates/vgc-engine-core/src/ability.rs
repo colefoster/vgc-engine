@@ -1961,11 +1961,13 @@ pub fn on_damaging_hit(
                     battle.side_mut(target_side).active_mon_mut(target_slot as usize)
                 {
                     tm.item_id = u16::MAX;
+                    tm.sync_can_mega_evolve();
                 }
                 if let Some(am) =
                     battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize)
                 {
                     am.item_id = item;
+                    am.sync_can_mega_evolve();
                 }
             }
         }
@@ -2074,6 +2076,7 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
             // Unburden, mirroring PS's `takeItem` → `onTakeItem`).
             if let Some(p) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
                 p.item_id = u16::MAX;
+                p.sync_can_mega_evolve();
                 if p.ability_id == data::ability_id::UNBURDEN {
                     p.unburden_active = true;
                 }
@@ -2081,6 +2084,7 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
             // Recipient receives the donated item.
             if let Some(r) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 r.item_id = partner_item;
+                r.sync_can_mega_evolve();
             }
             break;
         }
