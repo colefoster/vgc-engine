@@ -748,6 +748,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.status = crate::pokemon::Status::None;
                 }
             }
+            // PR-EOT3: any Poison/Toxic just cleared on an active slot.
+            battle.sync_status_dot_bit(side, s);
         }
     }
 
@@ -869,6 +871,10 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.status = crate::pokemon::Status::None;
         }
+        // PR-EOT3: status cleared on the leaving mon. The subsequent
+        // `do_switch` slot swap will resync from the incoming mon, but
+        // sync here too so the index is consistent at every step.
+        battle.sync_status_dot_bit(side, slot);
     }
     // Zero to Hero — PS `data/abilities.ts:zerotohero` onSwitchOut:
     //   if (pokemon.baseSpecies.baseSpecies !== 'Palafin') return;
@@ -998,6 +1004,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.status = crate::pokemon::Status::None;
                 }
+                // PR-EOT3: Shed Skin may have just cleared a DOT.
+                battle.sync_status_dot_bit(side, slot);
             }
         }
     }
@@ -1018,6 +1026,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 m.status = crate::pokemon::Status::None;
             }
         }
+        // PR-EOT3: Hydration may have cleared a DOT.
+        battle.sync_status_dot_bit(side, slot);
     }
 
     // Healer — PS `data/abilities.ts:1772`:
@@ -1047,6 +1057,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
                     ally.status = crate::pokemon::Status::None;
                 }
+                // PR-EOT3: Healer may have cleared a DOT on the ally slot.
+                battle.sync_status_dot_bit(side, s);
             }
         }
     }
