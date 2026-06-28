@@ -20,7 +20,7 @@
 
 use crate::choice::{Choice, Target};
 use crate::damage::{
-    calculate_damage, type_effectiveness, DamageContext, DamagePipeline, PostFormulaInputs,
+    calculate_damage, type_effectiveness, DamageContext, DamagePipeline, PerHitInvariants, PostFormulaInputs,
 };
 use crate::format::Format;
 use crate::order::{action_order, ActionOrder, ScheduledAction};
@@ -4762,6 +4762,21 @@ impl Battle {
             // is pure plumbing — behavior byte-identical to the
             // pre-PR-D1 inline body. See
             // `docs/per-target-context-design.md`.
+            // PR-LC7: PerHitInvariants — built once per target, borrowed
+            // through every iteration of the per-hit loop. Replaces what
+            // was a 13-arg shuffle into `compute_per_hit_damage`. Every
+            // field is grep-verified invariant across hits of one target.
+            let per_hit_inv = PerHitInvariants {
+                move_id,
+                base_power: m.base_power as u32,
+                inputs,
+                beat_up_ctx_opt,
+                beat_up_base_atks,
+                crit_immune,
+                crit_stage,
+                base_hit_dmg,
+                fixed_dmg_snapshot,
+            };
             let mut ctx = PerTargetContext {
                 tside,
                 tslot,
@@ -4779,19 +4794,13 @@ impl Battle {
                 no_guard_pair,
                 damaging,
                 crit,
-                crit_immune,
-                crit_stage,
-                inputs,
-                beat_up_ctx_opt,
-                beat_up_base_atks,
-                fixed_dmg_snapshot,
                 piercing_drill_quarter,
                 pipeline,
-                base_hit_dmg,
                 hits,
                 any_damage_dealt,
                 drag_target,
                 target_fainted_this_hit: false,
+                per_hit_inv,
             };
             // Per-hit driver — body lifted into `Battle::apply_single_hit`
             // in PR-D2. Faint / multiaccuracy-miss early-returns inside
@@ -5599,26 +5608,19 @@ impl Battle {
         if self.roll_multiaccuracy_or_break(ctx, hit_idx) {
             return;
         }
-        let m = &ctx.move_def;
         // Per-hit damage — Beat Up per-ally arm + normal-move
         // per-hit re-roll arm, both threading through the
         // DamagePipeline (attacker item + Friend Guard). Lifted
         // into `compute_per_hit_damage`; PS draw site + identity
-        // + order preserved (see method docs).
+        // + order preserved (see method docs). PR-LC7: 13-arg
+        // shuffle collapsed into `&PerHitInvariants` built once at
+        // PerTargetContext construction.
         let mut dmg: u16 = self.compute_per_hit_damage(
             hit_idx,
             &ctx.attacker,
             &ctx.defender,
-            ctx.move_id,
-            m.base_power as u32,
-            ctx.inputs,
+            &ctx.per_hit_inv,
             &mut ctx.pipeline,
-            ctx.beat_up_ctx_opt,
-            ctx.beat_up_base_atks,
-            ctx.crit_immune,
-            ctx.crit_stage,
-            ctx.base_hit_dmg,
-            ctx.fixed_dmg_snapshot,
         );
 
         // Substitute interception. If the defender has a sub up, the
@@ -6738,43 +6740,43 @@ impl Battle {
     /// + damage-roll RNG draws fire at the same call points in the same
     /// order; the keyed `set_move_context` set by the per-target outer
     /// scope is carried into `self.rng` unchanged.
-    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn compute_per_hit_damage(
         &mut self,
         hit_idx: u32,
         attacker: &Pokemon,
         defender: &Pokemon,
-        move_id: u16,
-        base_power: u32,
-        inputs: crate::damage::DamageInputs,
+        inv: &PerHitInvariants,
         pipeline: &mut DamagePipeline,
-        beat_up_ctx_opt: Option<DamageContext>,
-        beat_up_base_atks: [u16; 6],
-        crit_immune: bool,
-        crit_stage: u8,
-        base_hit_dmg: u16,
-        fixed_dmg_snapshot: Option<u16>,
     ) -> u16 {
-        if move_id == data::move_id::BEATUP {
+        // PR-LC7: 13-arg → 5-arg via `&PerHitInvariants`. `#[inline(always)]`
+        // is load-bearing — LC5 lesson is that the auto-inliner doesn't
+        // reach into the 2400-line resolve_move_with_pending → apply_single_hit
+        // call tree, and without it a helper-extraction regresses. The
+        // struct lives on `PerTargetContext::per_hit_inv` (constructed once
+        // per target); we borrow it here so multi-hit moves (Population
+        // Bomb, Bullet Seed, Triple Axel, Beat Up) don't reshuffle the
+        // invariant scalars on every iteration.
+        if inv.move_id == data::move_id::BEATUP {
             if hit_idx == 0 {
-                let ctx = beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
+                let ctx = inv.beat_up_ctx_opt.expect("Beat Up always builds DamageContext");
                 let raw = crate::damage::calculate_beat_up_hit(
-                    attacker, defender, ctx, beat_up_base_atks[0],
+                    attacker, defender, ctx, inv.beat_up_base_atks[0],
                 );
                 pipeline.current = raw;
                 pipeline.apply_attacker_item(true);
                 pipeline.current
             } else {
-                let hc = if crit_immune {
+                let hc = if inv.crit_immune {
                     false
                 } else {
-                    self.rng.crit_with_stage(crit_stage)
+                    self.rng.crit_with_stage(inv.crit_stage)
                 };
-                let mut inp = inputs;
+                let mut inp = inv.inputs;
                 inp.crit = hc;
-                let member_bp = 5 + (beat_up_base_atks[hit_idx as usize] as u32 / 10);
+                let member_bp = 5 + (inv.beat_up_base_atks[hit_idx as usize] as u32 / 10);
                 let (raw, _) = self.roll_initial_damage(
-                    attacker, defender, move_id, None, inp, Some(member_bp),
+                    attacker, defender, inv.move_id, None, inp, Some(member_bp),
                 );
                 pipeline.current = raw;
                 pipeline.apply_attacker_item(true);
@@ -6782,27 +6784,27 @@ impl Battle {
             }
         } else {
             let ramped =
-                matches!(move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL);
+                matches!(inv.move_id, data::move_id::TRIPLEKICK | data::move_id::TRIPLEAXEL);
             if hit_idx == 0 {
-                base_hit_dmg
+                inv.base_hit_dmg
             } else {
-                let hc = if fixed_dmg_snapshot.is_some() || crit_immune {
+                let hc = if inv.fixed_dmg_snapshot.is_some() || inv.crit_immune {
                     false
                 } else {
-                    self.rng.crit_with_stage(crit_stage)
+                    self.rng.crit_with_stage(inv.crit_stage)
                 };
-                let mut inp = inputs;
+                let mut inp = inv.inputs;
                 inp.crit = hc;
                 let bp_ov = if ramped {
-                    Some(base_power * (hit_idx + 1))
+                    Some(inv.base_power * (hit_idx + 1))
                 } else {
                     None
                 };
                 let (rd, rctx) = self.roll_initial_damage(
-                    attacker, defender, move_id, fixed_dmg_snapshot, inp, bp_ov,
+                    attacker, defender, inv.move_id, inv.fixed_dmg_snapshot, inp, bp_ov,
                 );
                 pipeline.current = rd;
-                pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
+                pipeline.apply_attacker_item(inv.fixed_dmg_snapshot.is_none());
                 if let Some(ref c) = rctx {
                     pipeline.apply_friend_guard(c);
                 }
@@ -12953,18 +12955,21 @@ pub(crate) struct PerTargetContext {
 
     // ---- crit + damage inputs (computed once per target) ----
     pub crit: bool,
-    pub crit_immune: bool,
-    pub crit_stage: u8,
-    pub inputs: crate::damage::DamageInputs,
-    pub beat_up_ctx_opt: Option<DamageContext>,
-    pub beat_up_base_atks: [u16; 6],
-    pub fixed_dmg_snapshot: Option<u16>,
     pub piercing_drill_quarter: bool,
 
     // ---- per-hit pipeline state ----
     pub pipeline: DamagePipeline,
-    pub base_hit_dmg: u16,
     pub hits: u32,
+
+    // ---- per-hit damage invariants (PR-LC7) ----
+    // Built ONCE at PerTargetContext construction; borrowed per hit
+    // through `compute_per_hit_damage`. Collapses what was a 13-arg
+    // call into `&PerHitInvariants` + hit_idx + pipeline + atk/def
+    // refs. Holds the scalar invariants (move_id, base_power,
+    // DamageInputs, crit_immune/stage, beat_up table + ctx, base_hit_dmg,
+    // fixed_dmg_snapshot) — every field grep-verified invariant across
+    // hits of one multi-hit move.
+    pub per_hit_inv: PerHitInvariants,
 
     // ---- mutable accumulators (read back by per-target tail) ----
     pub any_damage_dealt: u16,
