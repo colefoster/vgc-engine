@@ -403,7 +403,7 @@ fn schedule_move(
             // outcome. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Quick_Draw_(Ability)>.
             let frac = if m.ability_id == data::ability_id::QUICKDRAW && category != 2 {
-                if rng.percent_1_100() <= 30 { -1i8 } else { frac }
+                if rng.percent_1_100_t(30) <= 30 { -1i8 } else { frac }
             } else {
                 frac
             };

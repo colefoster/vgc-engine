@@ -142,7 +142,7 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
         DrawSpace::UniformDamage => (0..16u8)
             .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
             .collect(),
-        DrawSpace::UniformPercent => (1..=100u8)
+        DrawSpace::UniformPercent { .. } => (1..=100u8)
             .map(|v| (RngEvent::PercentRoll(v), 1u32, 100))
             .collect(),
         DrawSpace::Crit { num, denom } => vec![
@@ -386,6 +386,50 @@ mod tests {
     /// outcome-frontier sites that the seam currently records (action
     /// tiebreaks marginalize via [`DrawSpace::Tiebreak`]), so this is the
     /// minimum exercise of the pipeline.
+    /// PR-A integration smoke: when a damaging move that has a
+    /// non-sure-hit accuracy is resolved through `Battle::step`, the
+    /// accuracy site must record `DrawSpace::UniformPercent { threshold:
+    /// Some(_) }` — i.e. the new `percent_1_100_t` path is wired up, not
+    /// the legacy `percent_1_100` path. Hurricane has 70% accuracy and
+    /// drives the canonical hit/miss draw.
+    #[test]
+    fn accuracy_site_records_threshold_some() {
+        use vgc_engine_core::{DrawSpace, RngDecision};
+        // Switch in Pelipper (slot index 1 on P1) so Hurricane is the
+        // active mon's move. Then both players move-attack; P1 attacks
+        // with Hurricane (move_slot 0).
+        let mut b = fixture();
+        let _ = b.step(&[switch_choice(1)], &[switch_choice(1)]);
+        let mut rec = b.clone();
+        rec.set_rng(Rng::recording(7));
+        let _ = rec.step(&[move_choice(0)], &[move_choice(0)]);
+        let log = rec
+            .rng_mut()
+            .take_recording_log()
+            .expect("Recording RNG installed above");
+        let accuracy_sites: Vec<_> = log
+            .iter()
+            .filter(|d| d.key.decision == RngDecision::Accuracy)
+            .collect();
+        assert!(
+            !accuracy_sites.is_empty(),
+            "expected at least one accuracy draw in the recorded log",
+        );
+        for site in &accuracy_sites {
+            match site.space {
+                DrawSpace::UniformPercent { threshold: Some(t) } => {
+                    assert!(
+                        (1..=100).contains(&t),
+                        "threshold {t} out of 1..=100",
+                    );
+                }
+                other => panic!(
+                    "accuracy draw must carry Some(threshold) after PR-A; got {other:?}",
+                ),
+            }
+        }
+    }
+
     #[test]
     fn switch_only_produces_unit_prob_outcome() {
         let b = fixture();
@@ -538,7 +582,7 @@ mod tests {
                 (DrawSpace::Tiebreak, RngEvent::Tiebreak(_)) => {}
                 (DrawSpace::UniformRange(n), RngEvent::Range(v)) => assert!(v < n),
                 (DrawSpace::UniformDamage, RngEvent::DamageRoll(v)) => assert!(v < 16),
-                (DrawSpace::UniformPercent, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
+                (DrawSpace::UniformPercent { .. }, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
                 (DrawSpace::Crit { num: _, denom: _ }, RngEvent::Crit(_)) => {}
                 (s, d) => panic!("DrawSpace/RngEvent mismatch: {s:?} vs {d:?}"),
             }
