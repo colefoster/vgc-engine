@@ -120,6 +120,11 @@ struct State<'a> {
     cfg: &'a Cfg,
     tt: HashMap<u64, Solved>,
     start: Instant,
+    /// Set true the first time the wall_cap or node_budget fires inside
+    /// a payoff() or solve() call. Once set, every solve() returns
+    /// Prov::NodeLimit so the parent unwinds quickly instead of waiting
+    /// for double_oracle to drain over leaf substitutes.
+    aborted: bool,
 }
 
 fn leaf_eval(b: &Battle, decompose: bool) -> f64 {
@@ -138,6 +143,12 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut State<'_>) -> Solved
     N_RECURSIVE_NODES.fetch_add(1, Ordering::Relaxed);
     let d = state.cfg.decompose;
 
+    // Sticky abort: once wall_cap/node_budget tripped anywhere, every
+    // recursive node immediately returns a leaf so the parent
+    // double_oracle calls drain to a leaf-only matrix and exit cleanly.
+    if state.aborted {
+        return Solved { value: leaf_eval(battle, d), provenance: Prov::NodeLimit, depth_remaining };
+    }
     if battle.is_terminal() {
         return Solved { value: leaf_eval(battle, d), provenance: Prov::Terminal, depth_remaining };
     }
@@ -147,6 +158,7 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut State<'_>) -> Solved
     if N_RECURSIVE_NODES.load(Ordering::Relaxed) >= state.cfg.node_budget
         || state.start.elapsed() >= state.cfg.wall_cap
     {
+        state.aborted = true;
         return Solved { value: leaf_eval(battle, d), provenance: Prov::NodeLimit, depth_remaining };
     }
 
@@ -177,9 +189,20 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut State<'_>) -> Solved
         None => return Solved { value: leaf_eval(battle, d), provenance: Prov::NodeLimit, depth_remaining },
     };
 
-    let provenance = if any_estimated { Prov::DepthLimit } else { Prov::Exact };
+    // If the abort flag tripped during this subtree's payoff() calls,
+    // the value mixes real outcomes with leaf substitutes — flag it
+    // NodeLimit (not DepthLimit) so the §4 summary table is honest.
+    let provenance = if state.aborted {
+        Prov::NodeLimit
+    } else if any_estimated {
+        Prov::DepthLimit
+    } else {
+        Prov::Exact
+    };
     let out = Solved { value: sol.value, provenance, depth_remaining };
-    state.tt.insert(hash, out.clone());
+    if !state.aborted {
+        state.tt.insert(hash, out.clone());
+    }
     out
 }
 
@@ -201,12 +224,17 @@ impl<'a, 'b> MatrixGame for DoublesGame<'a, 'b> {
         let c = self.col[j].as_array();
         let decompose = self.state.cfg.decompose;
 
-        // Mid-cell wall_cap check: if exceeded, mark NodeLimit and return
-        // a stand-in leaf eval so double_oracle doesn't crash on NaN. The
-        // parent will surface Prov::NodeLimit because we flip any_estimated.
-        if N_RECURSIVE_NODES.load(Ordering::Relaxed) >= self.state.cfg.node_budget
+        // Mid-cell wall_cap check: if exceeded, set the sticky abort
+        // flag and return a stand-in leaf eval so double_oracle doesn't
+        // crash on NaN. With `aborted` set, all subsequent payoff() and
+        // solve() calls bypass enumerate_outcomes entirely and return a
+        // constant leaf — double_oracle drains the rest of its
+        // best-response sweep in microseconds instead of seconds.
+        if self.state.aborted
+            || N_RECURSIVE_NODES.load(Ordering::Relaxed) >= self.state.cfg.node_budget
             || self.state.start.elapsed() >= self.state.cfg.wall_cap
         {
+            self.state.aborted = true;
             *self.any_estimated = true;
             return leaf_eval(self.battle, decompose);
         }
@@ -236,7 +264,7 @@ impl<'a, 'b> MatrixGame for DoublesGame<'a, 'b> {
 }
 
 fn endgame_solve_doubles(b: &Battle, cfg: &Cfg) -> Solved {
-    let mut state = State { cfg, tt: HashMap::new(), start: Instant::now() };
+    let mut state = State { cfg, tt: HashMap::new(), start: Instant::now(), aborted: false };
     solve(b, cfg.max_depth, &mut state)
 }
 
@@ -403,8 +431,39 @@ fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration
         record_seed: 0xC0DE, lossy_damage_3bucket: false, decompose: false,
         wall_cap,
     };
+    // Visible progress: wall_cap silence used to look like a hang.
+    eprintln!("  [{scenario} d={depth}] running (wall_cap={:.0?})...", wall_cap);
+    let _ = std::io::stderr().flush();
+
+    // Watchdog: a single `enumerate_outcomes_with` call can take >1 min
+    // on midgame cells (lots of survive-rolls × secondaries), and the
+    // in-payoff wall_cap check fires only between cells — never inside.
+    // To bound TOTAL wall, run the solve on a background thread and bail
+    // out of the main thread when the watchdog budget elapses, even if
+    // the worker is mid-enumerate. The orphaned worker keeps a CPU until
+    // process::exit() at the end of main() reaps it.
+    let watchdog = wall_cap + Duration::from_secs(15);
+    let (tx, rx) = std::sync::mpsc::channel::<Solved>();
     let t0 = Instant::now();
-    let sol = endgame_solve_doubles(&b, &cfg);
+    let cfg_thread = Cfg {
+        max_depth: cfg.max_depth, node_budget: cfg.node_budget,
+        record_seed: cfg.record_seed, lossy_damage_3bucket: cfg.lossy_damage_3bucket,
+        decompose: cfg.decompose, wall_cap: cfg.wall_cap,
+    };
+    let battle_thread = b.clone();
+    std::thread::spawn(move || {
+        let s = endgame_solve_doubles(&battle_thread, &cfg_thread);
+        let _ = tx.send(s);
+    });
+
+    let (sol, timed_out) = match rx.recv_timeout(watchdog) {
+        Ok(s) => (s, false),
+        Err(_) => {
+            // Watchdog fired. The worker is stuck inside enumerate_outcomes.
+            // Synthesize a NodeLimit result so §4 still gets a row.
+            (Solved { value: hp_ratio_leaf(&b), provenance: Prov::NodeLimit, depth_remaining: depth }, true)
+        }
+    };
     let wall = t0.elapsed();
     let r = RunResult {
         wall, value: sol.value, provenance: sol.provenance,
@@ -417,8 +476,10 @@ fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration
         tt_hits: N_TT_HITS.load(Ordering::Relaxed),
     };
     println!(
-        "  [{scenario} d={depth}] wall={:>10.3?}  value={:+.4}  prov={:?}  nodes={}  enum={}  payoff={}  raw={}  outc={}  tt={}/{}",
-        r.wall, r.value, r.provenance, r.nodes, r.enumerate_calls, r.payoff_calls,
+        "  [{scenario} d={depth}] wall={:>10.3?}  value={:+.4}  prov={:?}{}  nodes={}  enum={}  payoff={}  raw={}  outc={}  tt={}/{}",
+        r.wall, r.value, r.provenance,
+        if timed_out { " [WATCHDOG]" } else { "" },
+        r.nodes, r.enumerate_calls, r.payoff_calls,
         r.raw_combos_total, r.outcomes_total, r.tt_hits, r.tt_lookups,
     );
     let _ = std::io::stdout().flush();
@@ -454,12 +515,32 @@ fn main() {
     }
     let _ = std::io::stdout().flush();
 
+    // §6 runs BEFORE §3 because §3's watchdog leaks orphaned threads
+    // (each stuck inside an uninterruptible enumerate_outcomes_with
+    // call); running §6 afterwards drops cell timings by ~5× from CPU
+    // contention. Section number kept as "§6" for report consistency.
+    println!("\n── §6. Top-5 most-expanded root joint cells (Midgame) ──");
+    {
+        let (tx6, rx6) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            top_cells(&scenario_midgame(), 5, Duration::from_secs(20));
+            let _ = tx6.send(());
+        });
+        if rx6.recv_timeout(Duration::from_secs(35)).is_err() {
+            println!("  [watchdog] §6 aborted: a single cell exceeded the 35s budget");
+        }
+    }
+    let _ = std::io::stdout().flush();
+
     // Per-solve wall cap. Most depth-1 solves exceed 120s on this matrix,
     // so we apply a tight wall_cap and report Provenance::NodeLimit when it
-    // fires — that itself is the measurement.
-    let per_solve_wall = Duration::from_secs(240);
+    // fires — that itself is the measurement. With 5 runs total, a 30s
+    // cap keeps the whole §3 block under ~4 minutes (each run overshoots
+    // by up to ~15s for the watchdog buffer when a single
+    // enumerate_outcomes call exceeds wall_cap and can't be interrupted).
+    let per_solve_wall = Duration::from_secs(30);
 
-    println!("\n── §3. Recursive solves (wall cap = 240s per solve) ──");
+    println!("\n── §3. Recursive solves (wall cap = 30s per solve) ──");
     let _ = std::io::stdout().flush();
     let mut grid: Vec<(String, Vec<RunResult>)> = Vec::new();
     // d=1 for all 3 scenarios; d=2 and d=3 only for Midgame (representative
@@ -492,15 +573,30 @@ fn main() {
     }
 
     // ─── §5. Decomposition: midgame d=2 with timers on (shortened cap) ──
-    println!("\n── §5. Bottleneck decomposition: Midgame 2HKO @ d=2 (wall cap = 60s) ──");
+    println!("\n── §5. Bottleneck decomposition: Midgame 2HKO @ d=2 (wall cap = 30s) ──");
     reset_counters();
     let b = scenario_midgame();
     let cfg = Cfg {
         max_depth: 2, node_budget: 100_000_000, record_seed: 0xC0DE,
-        lossy_damage_3bucket: false, decompose: true, wall_cap: Duration::from_secs(60),
+        lossy_damage_3bucket: false, decompose: true, wall_cap: Duration::from_secs(30),
     };
     let t0 = Instant::now();
-    let sol = endgame_solve_doubles(&b, &cfg);
+    // Same watchdog pattern as run_one: enumerate_outcomes can't be
+    // interrupted mid-call, so bound the worker on a thread.
+    let (tx, rx) = std::sync::mpsc::channel::<Solved>();
+    let b_clone = b.clone();
+    let cfg_clone = Cfg {
+        max_depth: cfg.max_depth, node_budget: cfg.node_budget,
+        record_seed: cfg.record_seed, lossy_damage_3bucket: cfg.lossy_damage_3bucket,
+        decompose: cfg.decompose, wall_cap: cfg.wall_cap,
+    };
+    std::thread::spawn(move || {
+        let s = endgame_solve_doubles(&b_clone, &cfg_clone);
+        let _ = tx.send(s);
+    });
+    let sol = rx.recv_timeout(Duration::from_secs(45)).unwrap_or(Solved {
+        value: hp_ratio_leaf(&b), provenance: Prov::NodeLimit, depth_remaining: 2,
+    });
     let wall = t0.elapsed();
     let enum_calls = N_ENUMERATE_CALLS.load(Ordering::Relaxed);
     let outcomes = N_OUTCOMES_TOTAL.load(Ordering::Relaxed);
@@ -539,9 +635,9 @@ fn main() {
     }
     let _ = std::io::stdout().flush();
 
-    // ─── §6. Top-5 most-expanded root cells: Midgame (shortened cap) ─
-    println!("\n── §6. Top-5 most-expanded root joint cells (Midgame) ──");
-    top_cells(&scenario_midgame(), 5, Duration::from_secs(30));
-
     println!("\nDone. See docs/perf/2v2_baseline_2026_06_29.md for the writeup.");
+    let _ = std::io::stdout().flush();
+    // Reap any leaked watchdog threads (each one is stuck inside an
+    // enumerate_outcomes_with call we can't safely interrupt).
+    std::process::exit(0);
 }
