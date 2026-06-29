@@ -256,7 +256,22 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
             (RngEvent::Crit(true), num, denom),
             (RngEvent::Crit(false), denom - num, denom),
         ],
-        DrawSpace::Tiebreak => vec![(drawn, 1, 1)],
+        DrawSpace::Tiebreak { speeds_tied } => {
+            if speeds_tied {
+                // PR-E: at a real speed tie the nonce is the deciding sort
+                // key, so binary-enumerate both orderings. The recorded
+                // value covers one branch; the alt value comparator-flips
+                // against the partner tied entry's recorded nonce (`0` vs
+                // `u64::MAX` straddle every other recorded u64).
+                let alt = match drawn {
+                    RngEvent::Tiebreak(0) => RngEvent::Tiebreak(u64::MAX),
+                    _ => RngEvent::Tiebreak(0),
+                };
+                vec![(drawn, 1, 2), (alt, 1, 2)]
+            } else {
+                vec![(drawn, 1, 1)]
+            }
+        }
     }
 }
 
