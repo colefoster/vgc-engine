@@ -1384,7 +1384,7 @@ impl Battle {
                     // the pre-F2 draw site at byte identity — part-a
                     // has already set the move context for this draw.
                     let event = match space {
-                        DrawSpace::UniformDamage => {
+                        DrawSpace::UniformDamage { .. } => {
                             RngEvent::DamageRoll(self.rng.damage_roll())
                         }
                         // F2 only yields UniformDamage (confusion
@@ -4567,8 +4567,45 @@ impl Battle {
             } else {
                 None
             };
+            // PR-D: derive an exact KO partition for the recorded damage
+            // draw when the call site is "simple" — single target, no
+            // post-formula multipliers fire (Life Orb / Friend Guard), no
+            // Sub/Sash/Sturdy/Endure interposes, and the move is single-
+            // hit. Defensive: any uncertainty falls back to `None` and the
+            // downstream solver expands to the full 16-bucket uniform.
+            // Multi-target spread, multi-hit, fixed-damage, and Beat Up are
+            // all out of scope (documented in PR-D acceptance).
+            let ko_split_hp = {
+                let m = &data::MOVES[move_id as usize];
+                let defender_full_hp = defender.stats.hp;
+                let sturdy_risk = defender.effective_ability_id() == data::ability_id::STURDY
+                    && defender.current_hp == defender_full_hp
+                    && !attacker_breaks_mold;
+                let sash_risk = defender.item_id == data::item_id::FOCUSSASH
+                    && defender.current_hp == defender_full_hp;
+                let endure_risk = defender
+                    .volatiles
+                    .has(crate::pokemon::VolatileKind::Endure);
+                let sub_risk = defender.substitute_hp() > 0;
+                let life_orb_active = life_orb;
+                let multihit = m.multihit_min > 0;
+                let eligible = !is_spread
+                    && fixed_damage.is_none()
+                    && !multihit
+                    && !sturdy_risk
+                    && !sash_risk
+                    && !endure_risk
+                    && !sub_risk
+                    && !life_orb_active
+                    && !defender_friend_guarded;
+                if eligible {
+                    Some(defender.current_hp)
+                } else {
+                    None
+                }
+            };
             let (mut dmg, beat_up_ctx_opt) =
-                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, fickle_override);
+                self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, fickle_override, ko_split_hp);
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
             // Fat / Water Bubble / Knock Off / type-resist berries) — PS
@@ -6691,6 +6728,37 @@ impl Battle {
     ///   - Fixed-damage moves draw NO PRNG value (PS returns the
     ///     pre-computed value before `randomizer`); this method short-
     ///     circuits on the `Some(fd)` arm without touching `self.rng`.
+    /// PR-D: derive the KO partition for a single-hit single-target damage
+    /// roll, given the engine's pre-pipeline (post-formula) max damage and
+    /// the defender's current HP.
+    ///
+    /// Returns the lowest roll value `k` in `0..=15` such that all rolls
+    /// `>= k` produce a KO. `Some(0)` means every roll KOes; `Some(16)`
+    /// means no roll KOes; `Some(k)` with `0 < k < 16` means rolls `0..k`
+    /// survive and `k..=15` KO.
+    ///
+    /// The exact relation `dmg(v) = floor(base * (85 + v) / 100)` is
+    /// monotone in `v`, so this scan never produces a non-contiguous KO
+    /// set. Uses `hi` (the max-roll damage from `damage_range_for`) as
+    /// the pre-roll base — equivalent to the formula's `damage * 100/100`
+    /// at `MAX_ROLL`.
+    fn compute_ko_split(base_max: u16, defender_hp: u16) -> u8 {
+        if defender_hp == 0 {
+            // Defender already KO'd — degenerate; every roll trivially KOs.
+            return 0;
+        }
+        let base = base_max as u64;
+        let hp = defender_hp as u64;
+        for v in 0..=15u8 {
+            // floor(base * (85 + v) / 100) >= hp
+            let d = base * (85 + v as u64) / 100;
+            if d >= hp {
+                return v;
+            }
+        }
+        16
+    }
+
     fn roll_initial_damage(
         &mut self,
         attacker: &Pokemon,
@@ -6699,6 +6767,7 @@ impl Battle {
         fixed_damage: Option<u16>,
         inputs: crate::damage::DamageInputs,
         bp_override: Option<u32>,
+        ko_split_hp: Option<u16>,
     ) -> (u16, Option<DamageContext>) {
         if let Some(fd) = fixed_damage {
             return (fd, None);
@@ -6709,6 +6778,15 @@ impl Battle {
         // two duplicated 18-field struct literals; `damage_range_for`
         // collapses them. See `damage::damage_range_for` for the
         // input bundle.
+        //
+        // `ko_split_hp` (PR-D) is `Some(defender_hp)` when the caller has
+        // verified the site is simple enough to enrich the recorded
+        // `DrawSpace::UniformDamage` with an exact KO partition (single
+        // target, no Sub/Sash/Sturdy/Endure, no Life Orb / Friend Guard /
+        // multi-hit, etc.). `None` falls back to the legacy 16-bucket
+        // recording. On the Splitmix hot path we do nothing extra — the
+        // recording-bearing RNG variants are the only ones that consume
+        // `ko_split` downstream.
         let (mut dmg_ctx, roll) = match &self.rng {
             // Splitmix path skips the (lo, hi) precomputation
             // (it doesn't need a hint) — saves two calculate_damage
@@ -6721,7 +6799,14 @@ impl Battle {
                 let (ctx, lo, hi) = crate::damage::damage_range_for(
                     attacker, defender, move_id, inputs, bp_override,
                 );
-                (ctx, self.rng.damage_roll_hint(lo, hi))
+                let r = match ko_split_hp {
+                    Some(hp) => {
+                        let k = Self::compute_ko_split(hi, hp);
+                        self.rng.damage_roll_hint_t(lo, hi, k)
+                    }
+                    None => self.rng.damage_roll_hint(lo, hi),
+                };
+                (ctx, r)
             }
         };
         dmg_ctx.roll = roll;
@@ -6790,8 +6875,10 @@ impl Battle {
                 let mut inp = inv.inputs;
                 inp.crit = hc;
                 let member_bp = 5 + (inv.beat_up_base_atks[hit_idx as usize] as u32 / 10);
+                // Beat Up multi-hit: per-member damage depends on ally HP and
+                // count varies; KO partition is too entangled. Pass `None`.
                 let (raw, _) = self.roll_initial_damage(
-                    attacker, defender, inv.move_id, None, inp, Some(member_bp),
+                    attacker, defender, inv.move_id, None, inp, Some(member_bp), None,
                 );
                 pipeline.current = raw;
                 pipeline.apply_attacker_item(true);
@@ -6815,8 +6902,11 @@ impl Battle {
                 } else {
                     None
                 };
+                // Multi-hit subsequent hit (hit_idx >= 1): cumulative damage
+                // across hits means a single-hit KO partition doesn't capture
+                // the per-hit reality. Pass `None`.
                 let (rd, rctx) = self.roll_initial_damage(
-                    attacker, defender, inv.move_id, inv.fixed_dmg_snapshot, inp, bp_ov,
+                    attacker, defender, inv.move_id, inv.fixed_dmg_snapshot, inp, bp_ov, None,
                 );
                 pipeline.current = rd;
                 pipeline.apply_attacker_item(inv.fixed_dmg_snapshot.is_none());
@@ -36679,18 +36769,9 @@ mod tests {
     // PR-F: sweep regression — when an ability's percent-proc fires via
     // `percent_1_100_t`, the Recording log MUST carry the threshold so PR-B's
     // expand() can collapse the 100-outcome uniform to a 2-bucket frontier.
-    // We exercise the threshold-aware draw directly (no full battle scenario)
-    // by snapshotting the recording log under representative seeds — a full
-    // ability scenario would require additional fixtures we don't need to
-    // prove the plumbing reaches the recorder.
     #[test]
     fn pr_f_threshold_aware_percent_draws_record_threshold() {
         use crate::rng::{DrawSpace, Rng, RngDecision};
-        // Each migrated category exercises percent_1_100_t with a literal
-        // threshold (33/50/30/30/30/30/30/33). Verify each threshold value
-        // round-trips into DrawSpace::UniformPercent { threshold: Some(_) }.
-        // This protects against future refactors silently dropping the
-        // threshold (e.g. by reverting a call site to percent_1_100).
         for &th in &[30u8, 33, 50] {
             let mut r = Rng::recording(0xF00D_BEEF ^ th as u64);
             r.set_move_context(1, 0, 7, 2);
@@ -36705,6 +36786,77 @@ mod tests {
                 "expected UniformPercent {{ threshold: Some({th}) }} in log {:?}",
                 log.iter().map(|d| d.space).collect::<Vec<_>>()
             );
+        }
+    }
+
+    // ---- PR-D: compute_ko_split ----
+
+    #[test]
+    fn compute_ko_split_always_ko() {
+        assert_eq!(Battle::compute_ko_split(300, 100), 0);
+    }
+
+    #[test]
+    fn compute_ko_split_never_ko() {
+        assert_eq!(Battle::compute_ko_split(10, 100), 16);
+    }
+
+    #[test]
+    fn compute_ko_split_midway() {
+        assert_eq!(Battle::compute_ko_split(100, 90), 5);
+    }
+
+    #[test]
+    fn compute_ko_split_boundary_just_max_ko() {
+        assert_eq!(Battle::compute_ko_split(100, 100), 15);
+    }
+
+    #[test]
+    fn recording_damage_roll_carries_ko_split_when_eligible() {
+        const P1J: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        const P2J: &str = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"leftovers","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(P1J).unwrap();
+        let p2 = TeamBuilder::from_json(P2J).unwrap();
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 1 },
+            p1,
+            p2,
+        );
+        b.set_rng(crate::rng::Rng::recording(0xD00D_F00D));
+
+        let p1_choices = [Choice::Move {
+            actor_slot: 0,
+            move_slot: 0,
+            target: Some(Target { side: SideRef::P2, slot: 0 }),
+        }];
+        let p2_choices = [Choice::Move {
+            actor_slot: 0,
+            move_slot: 1,
+            target: Some(Target { side: SideRef::P1, slot: 0 }),
+        }];
+        b.step(&p1_choices, &p2_choices);
+
+        let log = b
+            .rng
+            .recording_log()
+            .expect("Recording RNG carries a log");
+        let damage_entry = log
+            .iter()
+            .find(|e| {
+                matches!(e.space, crate::rng::DrawSpace::UniformDamage { .. })
+                    && e.key.move_id == data::move_id::EARTHQUAKE
+            })
+            .expect("Earthquake should have produced a damage roll");
+        match damage_entry.space {
+            crate::rng::DrawSpace::UniformDamage { ko_split } => {
+                assert!(ko_split.is_some());
+                assert_eq!(ko_split, Some(0));
+            }
+            _ => unreachable!(),
         }
     }
 }

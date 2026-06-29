@@ -241,8 +241,19 @@ fn enumerate_outcomes_impl(
 fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
     match space {
         DrawSpace::UniformRange(n) => (0..n).map(|v| (RngEvent::Range(v), 1u32, n)).collect(),
-        // Engine-side: always 16-bucket; PR-C's lossy 3-bucket collapse lives solver-side only.
-        DrawSpace::UniformDamage => (0..16u8).map(|v| (RngEvent::DamageRoll(v), 1u32, 16)).collect(),
+        // Engine-side: PR-D's exact 2-bucket collapse when `ko_split` is
+        // known; otherwise full 16-bucket. PR-C's lossy 3-bucket lives
+        // solver-side only — engine-side never lies about probability
+        // mass.
+        DrawSpace::UniformDamage { ko_split } => match ko_split {
+            Some(0) => vec![(RngEvent::DamageRoll(15), 16, 16)],
+            Some(k) if k >= 16 => vec![(RngEvent::DamageRoll(0), 16, 16)],
+            Some(k) => vec![
+                (RngEvent::DamageRoll(0), k as u32, 16),
+                (RngEvent::DamageRoll(15), (16 - k) as u32, 16),
+            ],
+            None => (0..16u8).map(|v| (RngEvent::DamageRoll(v), 1u32, 16)).collect(),
+        },
         DrawSpace::UniformPercent { threshold } => match threshold {
             None => (1..=100u8).map(|v| (RngEvent::PercentRoll(v), 1u32, 100)).collect(),
             Some(0) => vec![(RngEvent::PercentRoll(100), 100, 100)],
