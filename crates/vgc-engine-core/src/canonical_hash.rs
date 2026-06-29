@@ -31,6 +31,7 @@
 //!
 //! See `plans/endgame_solver_campaign.md` § M2 for the projection spec.
 
+use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -38,8 +39,126 @@ use std::hash::{Hash, Hasher};
 use crate::battle::{Battle, BattleConfig, FutureEffect, WishEffect};
 use crate::pokemon::Pokemon;
 use crate::side::{Side, SideConditions, SideRef};
+
+// `FinalStats`, `StatSpread`, `VolatileSet`, `Status` are reached
+// through `&Pokemon` field access in the manual `Serialize` impl
+// below — no direct imports needed.
 use crate::terrain::Terrain;
 use crate::weather::Weather;
+
+/// Canonical projection of one Pokémon — every field that the engine
+/// genuinely consults from this state onward. Notable OMISSIONS (all
+/// proven safe in PR-J by the cited reset sites):
+///
+/// - `last_attacker`, `last_attacker_category`, `last_damage_taken`,
+///   `last_phys_attacker`, `last_phys_damage`, `last_spec_attacker`,
+///   `last_spec_damage`: all cleared at the top of every `step()` in
+///   `Battle::start_turn` (`battle.rs:1543-1549`) and again on
+///   `on_switch_in` (`battle.rs:2205-2211`). Only ever read WITHIN the
+///   step that set them (Counter / Mirror Coat / Metal Burst /
+///   Stamina / Anger Point / Berserk), so any value carried into a TT
+///   lookup point is dead-on-arrival — the next step wipes it before
+///   any consumer can see it.
+/// - `can_mega_evolve` and `move_locks` are already `#[serde(skip)]`
+///   on `Pokemon` (derived caches of `item_id` / `species_id` and the
+///   volatile bitset respectively), so they're inert here too.
+struct CanonicalPokemonView<'a>(&'a Pokemon);
+
+impl<'a> Serialize for CanonicalPokemonView<'a> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let p = self.0;
+        // Field count below MUST equal the number of `serialize_field`
+        // calls — serde checks this in debug builds.
+        let mut s = ser.serialize_struct("Pokemon", 41)?;
+        s.serialize_field("species_id", &p.species_id)?;
+        s.serialize_field("level", &p.level)?;
+        s.serialize_field("gender", &(p.gender as u8))?;
+        s.serialize_field("moves", &p.moves)?;
+        s.serialize_field("pp", &p.pp)?;
+        s.serialize_field("ability_id", &p.ability_id)?;
+        s.serialize_field("ability_override", &p.ability_override)?;
+        s.serialize_field("item_id", &p.item_id)?;
+        s.serialize_field("consumed_item", &p.consumed_item)?;
+        s.serialize_field("stats", &p.stats)?;
+        s.serialize_field("current_hp", &p.current_hp)?;
+        s.serialize_field("ivs", &p.ivs)?;
+        s.serialize_field("evs", &p.evs)?;
+        s.serialize_field("nature_id", &p.nature_id)?;
+        s.serialize_field("status", &(p.status as u8))?;
+        s.serialize_field("boosts", &p.boosts)?;
+        s.serialize_field("fainted", &p.fainted)?;
+        s.serialize_field("turns_active", &p.turns_active)?;
+        // PR-J — last_attacker / last_attacker_category /
+        // last_damage_taken / last_phys_* / last_spec_* OMITTED:
+        // wiped at top of every `step()` by `Battle::start_turn`
+        // (`battle.rs:1543-1549`) and on `on_switch_in`
+        // (`battle.rs:2205-2211`). Only ever read WITHIN the step
+        // that set them (Counter / Mirror Coat / Metal Burst /
+        // Stamina / Anger Point / Berserk), so any carryover
+        // across a TT lookup boundary is dead-on-arrival.
+        s.serialize_field("last_used_move_slot", &p.last_used_move_slot)?;
+        s.serialize_field("last_used_move_target", &p.last_used_move_target)?;
+        s.serialize_field("boosted_stat", &p.boosted_stat)?;
+        s.serialize_field("booster_locked", &p.booster_locked)?;
+        s.serialize_field("volatiles", &p.volatiles)?;
+        s.serialize_field("semi_invuln", &p.semi_invuln)?;
+        s.serialize_field("charging_turns", &p.charging_turns)?;
+        s.serialize_field("charging_move_slot", &p.charging_move_slot)?;
+        s.serialize_field("must_recharge", &p.must_recharge)?;
+        s.serialize_field("lockin_turns", &p.lockin_turns)?;
+        s.serialize_field("lockin_move_slot", &p.lockin_move_slot)?;
+        s.serialize_field("tera_type", &p.tera_type)?;
+        s.serialize_field("terastallized", &p.terastallized)?;
+        s.serialize_field("stellar_boosted_types", &p.stellar_boosted_types)?;
+        s.serialize_field("crit_stage_volatile", &p.crit_stage_volatile)?;
+        s.serialize_field("ability_suppressed", &p.ability_suppressed)?;
+        s.serialize_field("item_suppressed", &p.item_suppressed)?;
+        s.serialize_field("slow_start_active_turns", &p.slow_start_active_turns)?;
+        s.serialize_field("truant_loafing", &p.truant_loafing)?;
+        s.serialize_field("type_override", &p.type_override)?;
+        s.serialize_field("protean_used", &p.protean_used)?;
+        s.serialize_field("disguise_busted", &p.disguise_busted)?;
+        s.serialize_field("syrup_triggered", &p.syrup_triggered)?;
+        s.serialize_field("micle_next_move", &p.micle_next_move)?;
+        s.serialize_field("unburden_active", &p.unburden_active)?;
+        s.serialize_field("commanding", &p.commanding)?;
+        s.serialize_field("commanded", &p.commanded)?;
+        s.serialize_field("cud_chew_berry", &p.cud_chew_berry)?;
+        s.serialize_field("cud_chew_counter", &p.cud_chew_counter)?;
+        s.end()
+    }
+}
+
+/// Newtype wrapper around `&SideConditions` whose `Serialize` impl
+/// emits the persistent fields only. Notable OMISSIONS (all cleared
+/// at end of step in `Battle::end_of_turn`, `battle.rs:1828-1835`,
+/// so they're always `false` at any non-mid-step TT lookup site):
+///
+/// - `wide_guard_this_turn`, `quick_guard_this_turn`,
+///   `mat_block_this_turn`, `crafty_shield_this_turn`,
+///   `round_used_this_turn`.
+struct CanonicalSideConditionsView<'a>(&'a SideConditions);
+
+impl<'a> Serialize for CanonicalSideConditionsView<'a> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let c = self.0;
+        let mut s = ser.serialize_struct("SideConditions", 12)?;
+        s.serialize_field("tailwind_turns", &c.tailwind_turns)?;
+        s.serialize_field("reflect_turns", &c.reflect_turns)?;
+        s.serialize_field("light_screen_turns", &c.light_screen_turns)?;
+        s.serialize_field("aurora_veil_turns", &c.aurora_veil_turns)?;
+        s.serialize_field("safeguard_turns", &c.safeguard_turns)?;
+        s.serialize_field("mist_turns", &c.mist_turns)?;
+        s.serialize_field("stealth_rock", &c.stealth_rock)?;
+        s.serialize_field("toxic_spikes_layers", &c.toxic_spikes_layers)?;
+        s.serialize_field("spikes_layers", &c.spikes_layers)?;
+        s.serialize_field("sticky_web", &c.sticky_web)?;
+        s.serialize_field("tera_used", &c.tera_used)?;
+        s.serialize_field("mega_used", &c.mega_used)?;
+        // PR-J — *_this_turn fields intentionally omitted.
+        s.end()
+    }
+}
 
 /// Canonical projection of one side: the active slots positionally,
 /// the bench sorted by a canonical key, and the side-wide conditions.
@@ -47,10 +166,10 @@ use crate::weather::Weather;
 /// "no replacement available" sentinel).
 #[derive(Serialize)]
 struct CanonicalSideView<'a> {
-    active_0: Option<&'a Pokemon>,
-    active_1: Option<&'a Pokemon>,
-    bench: Vec<&'a Pokemon>,
-    conditions: &'a SideConditions,
+    active_0: Option<CanonicalPokemonView<'a>>,
+    active_1: Option<CanonicalPokemonView<'a>>,
+    bench: Vec<CanonicalPokemonView<'a>>,
+    conditions: CanonicalSideConditionsView<'a>,
 }
 
 /// Canonical projection of the whole battle. Excludes RNG state and every
@@ -96,8 +215,8 @@ fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8) {
 fn canonical_side<'a>(side: &'a Side) -> CanonicalSideView<'a> {
     let a0 = side.active[0];
     let a1 = side.active[1];
-    let active_0 = (a0 != 255).then(|| &side.team[a0 as usize]);
-    let active_1 = (a1 != 255).then(|| &side.team[a1 as usize]);
+    let active_0 = (a0 != 255).then(|| CanonicalPokemonView(&side.team[a0 as usize]));
+    let active_1 = (a1 != 255).then(|| CanonicalPokemonView(&side.team[a1 as usize]));
     let mut bench: Vec<&Pokemon> = side
         .team
         .iter()
@@ -106,7 +225,14 @@ fn canonical_side<'a>(side: &'a Side) -> CanonicalSideView<'a> {
         .map(|(_, p)| p)
         .collect();
     bench.sort_by_key(|p| bench_sort_key(p));
-    CanonicalSideView { active_0, active_1, bench, conditions: &side.conditions }
+    let bench_views: Vec<CanonicalPokemonView<'a>> =
+        bench.into_iter().map(CanonicalPokemonView).collect();
+    CanonicalSideView {
+        active_0,
+        active_1,
+        bench: bench_views,
+        conditions: CanonicalSideConditionsView(&side.conditions),
+    }
 }
 
 impl Battle {
@@ -278,6 +404,47 @@ mod tests {
         b.set_weather(crate::weather::Weather::Snow);
         b.weather_turns = 5;
         assert_ne!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    #[test]
+    fn last_attacker_carryover_collapses() {
+        // PR-J — `last_attacker` / `last_damage_taken` / `last_phys_*` /
+        // `last_spec_*` / `last_attacker_category` are wiped at the
+        // top of every `step()` in `Battle::start_turn`
+        // (`battle.rs:1543-1549`). Two states differing only in those
+        // fields step IDENTICALLY from here on, so the TT MUST collapse
+        // them. Asserts the field-by-field equality this PR set out to
+        // produce.
+        let a = fixture();
+        let mut b = fixture();
+        let a0 = b.p1.active[0] as usize;
+        let m = &mut b.p1.team[a0];
+        m.last_attacker = (1, 0);
+        m.last_attacker_category = 0;
+        m.last_damage_taken = 42;
+        m.last_phys_attacker = (1, 0);
+        m.last_phys_damage = 42;
+        m.last_spec_attacker = (1, 1);
+        m.last_spec_damage = 7;
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    #[test]
+    fn this_turn_side_guard_flags_collapse() {
+        // PR-J — `wide_guard_this_turn` / `quick_guard_this_turn` /
+        // `mat_block_this_turn` / `crafty_shield_this_turn` /
+        // `round_used_this_turn` are cleared at end-of-turn
+        // (`battle.rs:1828-1835`), so they're always `false` at the
+        // TT lookup site of any non-mid-step node. Two states
+        // differing only in those flags step IDENTICALLY from here on.
+        let a = fixture();
+        let mut b = fixture();
+        b.p1.conditions.wide_guard_this_turn = true;
+        b.p1.conditions.quick_guard_this_turn = true;
+        b.p2.conditions.mat_block_this_turn = true;
+        b.p2.conditions.crafty_shield_this_turn = true;
+        b.p1.conditions.round_used_this_turn = true;
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
     }
 
     #[test]

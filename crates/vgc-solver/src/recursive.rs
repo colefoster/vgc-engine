@@ -131,7 +131,8 @@ pub fn endgame_solve(
     mut leaf: impl FnMut(&Battle) -> f64,
 ) -> SolvedNode {
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0 };
+    let mut stats = SolverStats::default();
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt: &mut tt, nodes: 0, stats: &mut stats };
     solve(battle, cfg.max_depth, &mut state)
 }
 
@@ -143,8 +144,42 @@ pub fn endgame_solve_with_tt(
     mut leaf: impl FnMut(&Battle) -> f64,
     tt: &mut HashMap<u64, SolvedNode>,
 ) -> SolvedNode {
-    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0 };
+    let mut stats = SolverStats::default();
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats: &mut stats };
     solve(battle, cfg.max_depth, &mut state)
+}
+
+/// Same as [`endgame_solve_with_tt`] but additionally records TT
+/// instrumentation into `stats`. Used by the PR-J hit-rate benchmark
+/// at `examples/tt_hit_rate.rs`. The counters are write-only telemetry;
+/// the solver never consults them on the hot path.
+pub fn endgame_solve_with_tt_stats(
+    battle: &Battle,
+    cfg: &SolverConfig,
+    mut leaf: impl FnMut(&Battle) -> f64,
+    tt: &mut HashMap<u64, SolvedNode>,
+    stats: &mut SolverStats,
+) -> SolvedNode {
+    let mut state = SolverState { cfg, leaf: &mut leaf, tt, nodes: 0, stats };
+    solve(battle, cfg.max_depth, &mut state)
+}
+
+/// TT / node-count telemetry written by the recursive solver. All
+/// counters are best-effort u64s; the only invariant is
+/// `tt_hits <= tt_lookups`. Resettable via `Default::default()`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SolverStats {
+    /// Number of times the solver consulted the TT for a key. Counted
+    /// once per non-terminal, non-budget-capped node.
+    pub tt_lookups: u64,
+    /// Number of TT lookups that returned a usable cached
+    /// (`cached.depth_remaining >= request`) entry. Drives the
+    /// hit-rate metric this PR is optimising.
+    pub tt_hits: u64,
+    /// Total recursive nodes opened — equivalently, total `solve`
+    /// invocations. Sanity counter so the hit-rate ratio's denominator
+    /// can be sanity-checked against the work done.
+    pub nodes_visited: u64,
 }
 
 /// Borrowed bag of mutable state threaded through the recursion. Kept
@@ -154,6 +189,7 @@ struct SolverState<'a> {
     leaf: &'a mut dyn FnMut(&Battle) -> f64,
     tt: &'a mut HashMap<u64, SolvedNode>,
     nodes: u64,
+    stats: &'a mut SolverStats,
 }
 
 fn leaf_node(value: f64, provenance: Provenance, depth_remaining: u32) -> SolvedNode {
@@ -168,6 +204,7 @@ fn leaf_node(value: f64, provenance: Provenance, depth_remaining: u32) -> Solved
 
 fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> SolvedNode {
     state.nodes += 1;
+    state.stats.nodes_visited += 1;
 
     // Terminal: always leaf-evaluate (winner-aware leaf should return
     // ±1 / 0 per convention).
@@ -195,8 +232,10 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
 
     // TT lookup. Hit if cached value is at least as deep as our request.
     let hash = battle.canonical_hash();
+    state.stats.tt_lookups += 1;
     if let Some(cached) = state.tt.get(&hash) {
         if cached.depth_remaining >= depth_remaining {
+            state.stats.tt_hits += 1;
             return cached.clone();
         }
     }
