@@ -201,6 +201,16 @@ impl<'a, 'b> MatrixGame for DoublesGame<'a, 'b> {
         let c = self.col[j].as_array();
         let decompose = self.state.cfg.decompose;
 
+        // Mid-cell wall_cap check: if exceeded, mark NodeLimit and return
+        // a stand-in leaf eval so double_oracle doesn't crash on NaN. The
+        // parent will surface Prov::NodeLimit because we flip any_estimated.
+        if N_RECURSIVE_NODES.load(Ordering::Relaxed) >= self.state.cfg.node_budget
+            || self.state.start.elapsed() >= self.state.cfg.wall_cap
+        {
+            *self.any_estimated = true;
+            return leaf_eval(self.battle, decompose);
+        }
+
         N_ENUMERATE_CALLS.fetch_add(1, Ordering::Relaxed);
         let t0 = if decompose { Some(Instant::now()) } else { None };
         let frontier = enumerate_outcomes_with(
@@ -389,7 +399,7 @@ fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration
     reset_counters();
     let b = build();
     let cfg = Cfg {
-        max_depth: depth, node_budget: 1_000_000,
+        max_depth: depth, node_budget: 100_000_000,
         record_seed: 0xC0DE, lossy_damage_3bucket: false, decompose: false,
         wall_cap,
     };
@@ -447,15 +457,18 @@ fn main() {
     // Per-solve wall cap. Most depth-1 solves exceed 120s on this matrix,
     // so we apply a tight wall_cap and report Provenance::NodeLimit when it
     // fires — that itself is the measurement.
-    let per_solve_wall = Duration::from_secs(60);
+    let per_solve_wall = Duration::from_secs(240);
 
-    println!("\n── §3. Recursive solves (wall cap = 60s per solve) ──");
+    println!("\n── §3. Recursive solves (wall cap = 240s per solve) ──");
     let _ = std::io::stdout().flush();
     let mut grid: Vec<(String, Vec<RunResult>)> = Vec::new();
+    // d=1 for all 3 scenarios; d=2 and d=3 only for Midgame (representative
+    // non-OHKO case) to fit in the wall-clock budget.
     for (name, build) in scenarios {
         let mut rs = Vec::new();
-        for d in [1u32, 2, 3] {
-            let r = run_one(name, *build, d, per_solve_wall);
+        let depths: &[u32] = if *name == "Midgame 2HKO" { &[1, 2, 3] } else { &[1] };
+        for d in depths {
+            let r = run_one(name, *build, *d, per_solve_wall);
             rs.push(r);
         }
         grid.push((name.to_string(), rs));
@@ -478,13 +491,13 @@ fn main() {
         println!("|");
     }
 
-    // ─── §5. Decomposition: midgame d=2 with timers on ──────────────
+    // ─── §5. Decomposition: midgame d=2 with timers on (shortened cap) ──
     println!("\n── §5. Bottleneck decomposition: Midgame 2HKO @ d=2 (wall cap = 60s) ──");
     reset_counters();
     let b = scenario_midgame();
     let cfg = Cfg {
-        max_depth: 2, node_budget: 1_000_000, record_seed: 0xC0DE,
-        lossy_damage_3bucket: false, decompose: true, wall_cap: per_solve_wall,
+        max_depth: 2, node_budget: 100_000_000, record_seed: 0xC0DE,
+        lossy_damage_3bucket: false, decompose: true, wall_cap: Duration::from_secs(60),
     };
     let t0 = Instant::now();
     let sol = endgame_solve_doubles(&b, &cfg);
@@ -526,9 +539,9 @@ fn main() {
     }
     let _ = std::io::stdout().flush();
 
-    // ─── §6. Top-5 most-expanded root cells: Midgame ────────────────
+    // ─── §6. Top-5 most-expanded root cells: Midgame (shortened cap) ─
     println!("\n── §6. Top-5 most-expanded root joint cells (Midgame) ──");
-    top_cells(&scenario_midgame(), 5, Duration::from_secs(120));
+    top_cells(&scenario_midgame(), 5, Duration::from_secs(30));
 
     println!("\nDone. See docs/perf/2v2_baseline_2026_06_29.md for the writeup.");
 }
