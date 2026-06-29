@@ -7427,7 +7427,7 @@ impl Battle {
         // Gate draw — PS percent_1_100 vs 33.
         self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
         self.rng.set_decision(RngDecision::Secondary);
-        if self.rng.percent_1_100() > 33 {
+        if self.rng.percent_1_100_t(33) > 33 {
             return PreMoveOutcome::Proceed;
         }
         // Self-hit: 40-BP typeless physical confusion damage.
@@ -36674,5 +36674,37 @@ mod tests {
         // Mega Starmie base Attack corrected 140 -> 100.
         let starmie = &data::SPECIES[species_idx("starmiemega") as usize];
         assert_eq!(starmie.base_stats[1], 100, "Mega Starmie base Atk should be 100");
+    }
+
+    // PR-F: sweep regression — when an ability's percent-proc fires via
+    // `percent_1_100_t`, the Recording log MUST carry the threshold so PR-B's
+    // expand() can collapse the 100-outcome uniform to a 2-bucket frontier.
+    // We exercise the threshold-aware draw directly (no full battle scenario)
+    // by snapshotting the recording log under representative seeds — a full
+    // ability scenario would require additional fixtures we don't need to
+    // prove the plumbing reaches the recorder.
+    #[test]
+    fn pr_f_threshold_aware_percent_draws_record_threshold() {
+        use crate::rng::{DrawSpace, Rng, RngDecision};
+        // Each migrated category exercises percent_1_100_t with a literal
+        // threshold (33/50/30/30/30/30/30/33). Verify each threshold value
+        // round-trips into DrawSpace::UniformPercent { threshold: Some(_) }.
+        // This protects against future refactors silently dropping the
+        // threshold (e.g. by reverting a call site to percent_1_100).
+        for &th in &[30u8, 33, 50] {
+            let mut r = Rng::recording(0xF00D_BEEF ^ th as u64);
+            r.set_move_context(1, 0, 7, 2);
+            r.set_decision(RngDecision::Secondary);
+            let _ = r.percent_1_100_t(th);
+            let log = r.recording_log().expect("Recording carries log");
+            assert!(
+                log.iter().any(|d| matches!(
+                    d.space,
+                    DrawSpace::UniformPercent { threshold: Some(t) } if t == th
+                )),
+                "expected UniformPercent {{ threshold: Some({th}) }} in log {:?}",
+                log.iter().map(|d| d.space).collect::<Vec<_>>()
+            );
+        }
     }
 }

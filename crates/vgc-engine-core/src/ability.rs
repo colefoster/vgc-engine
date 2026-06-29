@@ -1004,7 +1004,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             .unwrap_or(false);
         if statused {
             // Use percent_1_100: 1..=33 → cure.
-            if rng.percent_1_100() <= 33 {
+            if rng.percent_1_100_t(33) <= 33 {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.status = crate::pokemon::Status::None;
                 }
@@ -1057,7 +1057,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             if !ally_statused { continue; }
             // Champions buffs Healer from gen 9's 30% to 50% (PS
             // data/mods/champions/abilities.ts: healer `randomChance(1, 2)`).
-            if rng.percent_1_100() <= 50 {
+            if rng.percent_1_100_t(50) <= 50 {
                 if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
                     ally.status = crate::pokemon::Status::None;
                 }
@@ -1614,7 +1614,7 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
-            if attacker_alive && rng.percent_1_100() <= 30 {
+            if attacker_alive && rng.percent_1_100_t(30) <= 30 {
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
                 // Safeguard on the attacker's side vetoes it.
@@ -1673,7 +1673,7 @@ pub fn on_damaging_hit(
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive());
-        if attacker_alive && rng.percent_1_100() <= 30 {
+        if attacker_alive && rng.percent_1_100_t(30) <= 30 {
             // Gender gate: opposite, non-genderless (M↔F). Source = the
             // Cute Charm holder; target of infatuation = the attacker.
             let holder_gender = battle
@@ -1745,7 +1745,7 @@ pub fn on_damaging_hit(
         let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
         if attacker_eligible
             && move_id != data::move_id::STRUGGLE
-            && rng.percent_1_100() <= 30
+            && rng.percent_1_100_t(30) <= 30
             && !aroma_veil_protects
         {
             // The disabled slot is the attacker's move-array index that
@@ -1888,7 +1888,7 @@ pub fn on_damaging_hit(
     if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
         && target_alive
-        && rng.percent_1_100() <= 30
+        && rng.percent_1_100_t(30) <= 30
     {
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
@@ -1921,7 +1921,7 @@ pub fn on_damaging_hit(
                 m.effective_ability_id() == data::ability_id::SHIELDDUST
                     || m.effective_item_id() == data::item_id::COVERTCLOAK
             });
-        if !blocked && rng.percent_1_100() <= 30 {
+        if !blocked && rng.percent_1_100_t(30) <= 30 {
             battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Toxic);
         }
     }
