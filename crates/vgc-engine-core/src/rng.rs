@@ -286,10 +286,19 @@ pub enum DrawSpace {
     /// Crit Bernoulli (`num/denom` for `true`). Stage 3+ guaranteed crits
     /// are NOT recorded (no random draw); same convention as PS / Oracle.
     Crit { num: u32, denom: u32 },
-    /// Speed-tie nonce / opaque `u64` draw (`RngEvent::Tiebreak`). The
-    /// probability space is `2^64`; enumerators should marginalize this
-    /// out (it's an ordering tag, not a meaningful branch).
-    Tiebreak,
+    /// Speed-tie nonce / opaque `u64` draw (`RngEvent::Tiebreak`).
+    ///
+    /// `speeds_tied` records whether the engine call site detected an
+    /// ACTUAL speed tie at this draw (the nonce is the deciding sort key):
+    /// - `false` — no tie / unmigrated site. The 2^64 nonce is just an
+    ///   ordering tag whose value doesn't change behavior; enumerators
+    ///   should marginalize the draw to the recorded value (1 outcome).
+    /// - `true` — two or more queued moves shared
+    ///   `(priority, frac_pri, speed_key)`; the nonce is the only thing
+    ///   that picks an ordering. Enumerators should binary-expand to two
+    ///   equally-weighted outcomes corresponding to the two orderings
+    ///   within the tied bracket. PR-E.
+    Tiebreak { speeds_tied: bool },
 }
 
 /// One recorded draw site, with its full probability space and the
@@ -526,6 +535,35 @@ impl Rng {
         }
     }
 
+    /// Patch the `speeds_tied` flag on the most recent `flags.len()`
+    /// Tiebreak entries in the recording / miss log, in scheduling order:
+    /// `flags[0]` applies to the OLDEST of those Tiebreak entries.
+    ///
+    /// Used by `order.rs` to mark whether each per-move tiebreak draw
+    /// happened at a real speed tie (the only situation where the nonce
+    /// changes behavior). The flag is purely metadata for the outcome-
+    /// frontier enumerator; the drawn nonce values are unchanged. PR-E.
+    /// No-op for non-recording RNG variants; the OracleKeyed miss-log is
+    /// patched symmetrically so its tiebreak entries carry the same flag
+    /// shape recorders see.
+    pub fn patch_recent_tiebreak_flags(&mut self, flags: &[bool]) {
+        let log: &mut Vec<RecordedDraw> = match self {
+            Rng::Recording(r) => &mut r.log,
+            Rng::OracleKeyed(k) => &mut k.miss_log,
+            _ => return,
+        };
+        let mut idx = flags.len();
+        for entry in log.iter_mut().rev() {
+            if idx == 0 {
+                break;
+            }
+            if matches!(entry.space, DrawSpace::Tiebreak { .. }) {
+                idx -= 1;
+                entry.space = DrawSpace::Tiebreak { speeds_tied: flags[idx] };
+            }
+        }
+    }
+
     /// Set the move-resolution context that subsequent keyed draws are
     /// attributed to. No-op for every variant that doesn't carry a
     /// context, so the battle can call it unconditionally at its
@@ -633,7 +671,14 @@ impl Rng {
             },
             Rng::Recording(r) => {
                 let v = r.step();
-                r.push(RngDecision::Tiebreak, DrawSpace::Tiebreak, RngEvent::Tiebreak(v));
+                // PR-E: default `speeds_tied: false`; `order.rs::
+                // mark_tied_tiebreaks` patches the flag to `true` on
+                // entries that actually tied, without redrawing the nonce.
+                r.push(
+                    RngDecision::Tiebreak,
+                    DrawSpace::Tiebreak { speeds_tied: false },
+                    RngEvent::Tiebreak(v),
+                );
                 v
             }
         }

@@ -275,6 +275,13 @@ type MoveEntry = (i32, i8, i64, u64, ScheduledAction);
 /// Quick Claw holder with a priority-≤0 move, one extra `rng.range(5)`
 /// draw — in that order. Shared by both `action_order` code paths so the
 /// RNG stream is identical regardless of which path runs.
+///
+/// The recorded tiebreak draw initially carries
+/// `DrawSpace::Tiebreak { speeds_tied: false }`. After every entry is
+/// scheduled, [`mark_tied_tiebreaks`] flips the flag to `true` on the
+/// entries whose `(priority, frac_pri, speed_key)` matches another
+/// entry's — i.e. the ones where the nonce is the deciding sort key. The
+/// drawn nonce value is never altered. PR-E.
 fn schedule_move(
     battle: &Battle,
     side: SideRef,
@@ -437,6 +444,46 @@ fn schedule_move(
     )
 }
 
+/// After every move entry has been scheduled, identify entries that share
+/// `(priority, frac_pri, speed_key)` with at least one other entry — i.e.
+/// the tiebreak nonce is the only thing deciding their order — and patch
+/// the matching `DrawSpace::Tiebreak { speeds_tied }` flag on the recording
+/// RNG log from `false` to `true`. PR-E.
+///
+/// This is metadata only: the nonce values are NOT redrawn, so the engine's
+/// RNG stream is byte-identical to the pre-PR-E behavior whether or not a
+/// real tie exists. The flag exists solely so the outcome-frontier
+/// enumerator can binary-expand the 2^64 nonce space into two equally-
+/// weighted orderings when (and only when) speeds genuinely tied.
+fn mark_tied_tiebreaks(entries: &[MoveEntry], rng: &mut Rng) {
+    if entries.len() < 2 {
+        return; // can't tie with yourself
+    }
+    // The heap-spill `action_order` branch only fires for offline replay
+    // scoring where the recording / oracle-miss layer is never installed;
+    // falling back to a no-op there is safe (and keeps this helper
+    // stack-bounded by ACTION_INLINE_CAP).
+    if entries.len() > ACTION_INLINE_CAP {
+        return;
+    }
+    let mut flags: [bool; ACTION_INLINE_CAP] = [false; ACTION_INLINE_CAP];
+    let mut any_tied = false;
+    let n = entries.len();
+    for i in 0..n {
+        let (p, f, s, _, _) = entries[i];
+        let tied = entries
+            .iter()
+            .enumerate()
+            .any(|(j, e)| j != i && e.0 == p && e.1 == f && e.2 == s);
+        flags[i] = tied;
+        any_tied |= tied;
+    }
+    if !any_tied {
+        return; // hot-path early exit; no log patch needed
+    }
+    rng.patch_recent_tiebreak_flags(&flags[..n]);
+}
+
 /// Resolve one turn's action order.
 ///
 /// `p1` and `p2` are the per-active-slot choices for each side. `Pass`
@@ -475,6 +522,7 @@ pub fn action_order(
                 }
             }
         }
+        mark_tied_tiebreaks(&moves, rng);
         moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
         let mut v = switches;
         v.extend(moves.into_iter().map(|t| t.4));
@@ -509,6 +557,7 @@ pub fn action_order(
         }
     }
 
+    mark_tied_tiebreaks(&moves[..n_move], rng);
     // The `rng.next_u64()` nonce makes every key unique, so unstable sort
     // produces the same ordering as the prior stable `sort_by_key` — and
     // `sort_unstable_by_key` never heap-allocates (stable sort can).
