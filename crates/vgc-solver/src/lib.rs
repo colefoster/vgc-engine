@@ -75,8 +75,10 @@ use vgc_engine_core::{
 pub mod nash;
 pub mod double_oracle;
 pub mod endgame;
+pub mod factoring;
 pub mod recursive;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
+pub use factoring::{classify_factorability, Factorability};
 pub use endgame::{
     hp_ratio_leaf, solve_turn, BattleMatrixGame, LeafEval, TurnSolution,
 };
