@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use vgc_engine_core::{Battle, Choice, SideRef};
 
 use crate::double_oracle::{double_oracle, MatrixGame};
-use crate::{enumerate_outcomes_with, EnumerateOpts};
+use crate::{enumerate_outcomes_factored, enumerate_outcomes_with, EnumerateOpts};
 
 /// Provenance of a [`SolvedNode`]'s `value`. Drives downstream filtering
 /// (e.g. ACT training only consumes `Terminal` + `Exact` policy labels;
@@ -104,6 +104,13 @@ pub struct SolverConfig {
     /// is monotone in HP (`hp_ratio_leaf`, `kho_race_leaf`). Default
     /// `false` preserves pre-PR-C 16-bucket behavior.
     pub lossy_damage_3bucket: bool,
+    /// PR-I.2 — opt in to action-independence tensor enumeration.
+    /// When `true`, each cell's outcome frontier is built via
+    /// [`crate::enumerate_outcomes_factored`], which consults the PR-I.1
+    /// classifier and runs the tensor-product path on the `FullyFactor`
+    /// subset of cells. Falls back per-cell to the full cross-product
+    /// otherwise. Default `false` preserves pre-PR-I.2 behavior bit-for-bit.
+    pub use_action_independence_factoring: bool,
 }
 
 impl Default for SolverConfig {
@@ -113,6 +120,7 @@ impl Default for SolverConfig {
             node_budget: 100_000,
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: false,
+            use_action_independence_factoring: false,
         }
     }
 }
@@ -325,13 +333,24 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         self.col_choices.len()
     }
     fn payoff(&mut self, i: usize, j: usize) -> f64 {
-        let frontier = enumerate_outcomes_with(
-            self.battle,
-            &[self.row_choices[i]],
-            &[self.col_choices[j]],
-            self.state.cfg.record_seed,
-            EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket },
-        );
+        let opts = EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket };
+        let frontier = if self.state.cfg.use_action_independence_factoring {
+            enumerate_outcomes_factored(
+                self.battle,
+                &[self.row_choices[i]],
+                &[self.col_choices[j]],
+                self.state.cfg.record_seed,
+                opts,
+            )
+        } else {
+            enumerate_outcomes_with(
+                self.battle,
+                &[self.row_choices[i]],
+                &[self.col_choices[j]],
+                self.state.cfg.record_seed,
+                opts,
+            )
+        };
         let mut acc = 0.0;
         for outcome in &frontier.outcomes {
             let child = solve(&outcome.battle, self.depth_remaining, self.state);
@@ -395,6 +414,7 @@ mod tests {
             node_budget: 1,
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: false,
+            use_action_independence_factoring: false,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -427,6 +447,33 @@ mod tests {
         assert!(
             !cfg.lossy_damage_3bucket,
             "default SolverConfig must preserve pre-PR-C 16-bucket UniformDamage",
+        );
+    }
+
+    /// PR-I.2 — enabling action-independence factoring must not change
+    /// Nash values vs the baseline solver. Uses a small singles fixture
+    /// at depth 1 to keep wall-clock manageable in debug.
+    #[test]
+    fn solver_with_factoring_matches_baseline_nash() {
+        let b = fixture();
+        let cfg_off = SolverConfig {
+            max_depth: 1,
+            node_budget: 10_000,
+            record_seed: 0xC0_DE,
+            lossy_damage_3bucket: true,
+            use_action_independence_factoring: false,
+        };
+        let cfg_on = SolverConfig {
+            use_action_independence_factoring: true,
+            ..cfg_off
+        };
+        let s_off = endgame_solve(&b, &cfg_off, hp_ratio_leaf);
+        let s_on = endgame_solve(&b, &cfg_on, hp_ratio_leaf);
+        assert!(
+            (s_off.value - s_on.value).abs() < 1e-9,
+            "Nash value diverged with factoring on: off={} on={}",
+            s_off.value,
+            s_on.value,
         );
     }
 

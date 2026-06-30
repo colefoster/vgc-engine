@@ -46,7 +46,7 @@ pub use pokemon::{
     compute_stats, nature_by_id, nature_by_slug, nature_id, nature_id_by_slug, FinalStats,
     Nature, Pokemon, Stat, StatSpread, Status, Volatile, VolatileKind, VolatileSet,
 };
-pub use rng::{DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey};
+pub use rng::{DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, TeamBuilder, TeamLoadError, TeamMember};

@@ -69,7 +69,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use vgc_engine_core::{
-    Battle, Choice, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey,
+    Battle, Choice, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT,
 };
 
 pub mod nash;
@@ -433,6 +433,337 @@ fn discover_new_sites(
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// PR-I.2 — Action-independence tensor enumeration.
+//
+// See `docs/design/pr-i-action-independence.md` §3, especially §3.1 and §6.7.
+//
+// `enumerate_outcomes_factored` consults the PR-I.1 classifier (factoring.rs).
+// On `FullyFactor`, it runs the tensor enumeration path which collapses the
+// joint draw-site cross-product into a sum of per-actor enumerations + a
+// joint replay over post-dedup buckets. On `NoFactor` / `PartialFactor`, it
+// falls back to the existing full enumeration (PartialFactor is parked for
+// PR-I.3).
+//
+// **Soundness.** Classifier correctness is load-bearing — a false-positive
+// FullyFactor verdict silently produces a wrong frontier. PR-I.1 is
+// designed to be false-negative-biased; do NOT widen FullyFactor here.
+// ---------------------------------------------------------------------------
+
+/// Same as [`enumerate_outcomes_with`] but consults the [`Factorability`]
+/// classifier and uses a tensor-product enumeration on `FullyFactor`.
+///
+/// On `NoFactor` and `PartialFactor` (currently unimplemented), falls back
+/// to [`enumerate_outcomes_with`]. The returned frontier is semantically
+/// identical to the full enumeration's; the only difference is wall-clock
+/// cost on the FullyFactor path.
+pub fn enumerate_outcomes_factored(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    opts: EnumerateOpts,
+) -> OutcomeFrontier {
+    use factoring::{classify_factorability, Factorability};
+    match classify_factorability(base, p1_choices, p2_choices) {
+        Factorability::FullyFactor => {
+            // tensor_enumerate handles its own degenerate-case fallbacks
+            // (no recorded sites, NO_SLOT field draws, etc.) and returns
+            // None when the path isn't safe — caller falls back to full.
+            match tensor_enumerate(base, p1_choices, p2_choices, record_seed, opts) {
+                Some(f) => f,
+                None => enumerate_outcomes_with(base, p1_choices, p2_choices, record_seed, opts),
+            }
+        }
+        Factorability::PartialFactor { .. } | Factorability::NoFactor => {
+            // PartialFactor: deferred to PR-I.3. Both arms hit the full
+            // cross-product enumeration.
+            enumerate_outcomes_with(base, p1_choices, p2_choices, record_seed, opts)
+        }
+    }
+}
+
+/// Per-actor enumeration bucket: a representative draw-event tuple
+/// (one event per site that belongs to this actor) and the summed
+/// probability mass of all per-actor combos that mapped to the same
+/// canonical hash when other actors were pinned.
+struct ActorBucket {
+    /// One event per site index in `actor_site_indices` (positional;
+    /// the slot order matches the order in which the actor's sites
+    /// appear in the per_site list).
+    events: Vec<RngEvent>,
+    /// Sum of per-combo priors over all draw-tuples that produced this
+    /// bucket's per-actor canonical hash.
+    prob: f64,
+}
+
+/// Tensor-product enumeration for the FullyFactor case. Returns `None` if
+/// the path can't run safely (no recorded sites, field draws present, or
+/// lazy re-record loop didn't converge per-actor) — caller falls back to
+/// full enumeration.
+fn tensor_enumerate(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    opts: EnumerateOpts,
+) -> Option<OutcomeFrontier> {
+    // 1. Record pass — single walk through the joint step.
+    let mut rec = base.clone();
+    rec.set_rng(Rng::recording(record_seed));
+    let _ = rec.step(p1_choices, p2_choices);
+    let initial_log = rec
+        .rng_mut()
+        .take_recording_log()
+        .expect("RNG was set to Recording above");
+
+    // Per-site list mirrors enumerate_outcomes_with: one entry per recorded
+    // draw occurrence, in the order step() queried them.
+    let per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
+        .into_iter()
+        .map(|d| (d.key, expand(d.space, d.drawn, opts), d.space, d.drawn))
+        .collect();
+
+    // Degenerate: nothing to vary. Return one outcome with prob 1.
+    if per_site.is_empty() {
+        let h = rec.canonical_hash();
+        return Some(OutcomeFrontier {
+            outcomes: vec![Outcome { hash: h, battle: rec, prob: 1.0 }],
+            raw_combos: 1,
+            unmatched_total: 0,
+            lazy_iterations: 0,
+        });
+    }
+
+    // 2. Group per_site indices by actor.
+    let mut per_actor: HashMap<SlotRef, Vec<usize>> = HashMap::new();
+    for (i, (key, _, _, _)) in per_site.iter().enumerate() {
+        per_actor.entry(key.actor).or_default().push(i);
+    }
+
+    // Any site keyed to NO_SLOT (field / unattributable draw) — fall back.
+    // The classifier already rejects field setters on the move side; a
+    // NO_SLOT site here means a non-setter mechanic produced an
+    // unattributable draw we don't know how to bucket per-actor.
+    if per_actor.contains_key(&NO_SLOT) {
+        return None;
+    }
+
+    // If only one actor's draws are present, factoring is a no-op (the full
+    // path is already linear in actor count). Fall back so we don't pay
+    // the joint-replay cost for no benefit.
+    if per_actor.len() <= 1 {
+        return None;
+    }
+
+    // Deterministic actor order — sort by SlotRef so test fixtures are
+    // stable across runs.
+    let mut actors: Vec<SlotRef> = per_actor.keys().copied().collect();
+    actors.sort();
+
+    // Build the "recorded baseline" event vector — for any non-target site,
+    // we use the value the recorder drew. Indexed by site position in
+    // per_site, this becomes the pinning vector for per-actor passes.
+    let recorded_events: Vec<RngEvent> = per_site
+        .iter()
+        .map(|(_, _, _, drawn)| *drawn)
+        .collect();
+
+    // 3. Per-actor enumeration. For each actor, iterate the cross-product
+    //    of its own sites' expansions; pin every other site to its
+    //    recorded value; step() and dedup by canonical hash.
+    let mut per_actor_buckets: Vec<Vec<ActorBucket>> = Vec::with_capacity(actors.len());
+    let mut total_enum_combos = 0usize;
+    let mut unmatched_total = 0u32;
+
+    for &actor in &actors {
+        let indices = &per_actor[&actor];
+        let buckets = match enumerate_one_actor(
+            base,
+            p1_choices,
+            p2_choices,
+            record_seed,
+            &per_site,
+            &recorded_events,
+            indices,
+        ) {
+            Some((b, raw, u)) => {
+                total_enum_combos += raw;
+                unmatched_total += u;
+                b
+            }
+            None => return None,
+        };
+        if buckets.is_empty() {
+            return None;
+        }
+        per_actor_buckets.push(buckets);
+    }
+
+    // 4. Tensor product. For each combination of one bucket per actor,
+    //    construct the joint OracleKeyed table (all actors' draws set per
+    //    the bucket's representative tuple, other sites' draws — which
+    //    are by construction only the NO_SLOT field draws we already
+    //    rejected, so this is empty here — pinned to recorded). step(),
+    //    canonical hash, dedup, prob = product of bucket probs.
+    let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut raw_combos = 0usize;
+    let mut idx = vec![0usize; actors.len()];
+
+    loop {
+        // Build the joint event vector by site index. Start from recorded
+        // baseline (covers any site not owned by any actor — shouldn't
+        // exist after the NO_SLOT check, but defensive), then overlay
+        // each actor's bucket events at the actor's site indices.
+        let mut joint_events: Vec<RngEvent> = recorded_events.clone();
+        let mut prob = 1.0f64;
+        for (a_pos, &actor) in actors.iter().enumerate() {
+            let bucket = &per_actor_buckets[a_pos][idx[a_pos]];
+            let indices = &per_actor[&actor];
+            debug_assert_eq!(bucket.events.len(), indices.len());
+            for (slot_pos, &site_i) in indices.iter().enumerate() {
+                joint_events[site_i] = bucket.events[slot_pos];
+            }
+            prob *= bucket.prob;
+        }
+
+        // Construct the OracleKeyed table from joint events + per_site keys.
+        let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
+            table.entry(*key).or_default().push_back(joint_events[slot]);
+        }
+
+        let mut combo = base.clone();
+        combo.set_rng(Rng::oracle_keyed(table, record_seed));
+        let _ = combo.step(p1_choices, p2_choices);
+        if let Some(u) = combo.rng().unmatched_draws() {
+            unmatched_total += u;
+        }
+        let h = combo.canonical_hash();
+        raw_combos += 1;
+        dedup
+            .entry(h)
+            .and_modify(|e| e.prob += prob)
+            .or_insert(Outcome { hash: h, battle: combo, prob });
+
+        // Advance multi-dim index.
+        let mut k = 0;
+        let done = loop {
+            if k == idx.len() {
+                break true;
+            }
+            idx[k] += 1;
+            if idx[k] < per_actor_buckets[k].len() {
+                break false;
+            }
+            idx[k] = 0;
+            k += 1;
+        };
+        if done {
+            break;
+        }
+    }
+
+    let mut outcomes: Vec<Outcome> = dedup.into_values().collect();
+    outcomes.sort_by_key(|o| o.hash);
+    let _ = total_enum_combos; // diagnostic only; folded into nothing for now.
+    Some(OutcomeFrontier {
+        outcomes,
+        raw_combos,
+        unmatched_total,
+        lazy_iterations: 0,
+    })
+}
+
+/// Enumerate the cross-product of one actor's per_site entries, pinning
+/// every other site to the recorder-drawn value. Returns a vector of
+/// deduplicated [`ActorBucket`]s (one bucket per distinct canonical hash
+/// produced) plus diagnostic counters.
+///
+/// Returns `None` if any replay surfaced an `unmatched_draws` miss against
+/// the OracleKeyed table — that signals counter-factual sites the record
+/// pass didn't see (lazy re-record territory), which we don't try to
+/// handle in the factored path; the caller falls back to full enumeration.
+fn enumerate_one_actor(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    per_site: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
+    recorded_events: &[RngEvent],
+    actor_site_indices: &[usize],
+) -> Option<(Vec<ActorBucket>, usize, u32)> {
+    let n_sites = actor_site_indices.len();
+    let mut idx = vec![0usize; n_sites];
+
+    // Group buckets by canonical hash; store the first event-tuple seen
+    // plus accumulated prob.
+    let mut by_hash: HashMap<u64, ActorBucket> = HashMap::new();
+    let mut raw = 0usize;
+    let unmatched_total = 0u32;
+
+    loop {
+        // Construct table: actor sites get their varied events; all other
+        // sites get the recorded baseline value.
+        let mut joint_events: Vec<RngEvent> = recorded_events.to_vec();
+        let mut events_this_combo: Vec<RngEvent> = Vec::with_capacity(n_sites);
+        let mut prob = 1.0f64;
+        for (slot_pos, &site_i) in actor_site_indices.iter().enumerate() {
+            let (event, num, denom) = per_site[site_i].1[idx[slot_pos]];
+            joint_events[site_i] = event;
+            events_this_combo.push(event);
+            prob *= num as f64 / denom as f64;
+        }
+
+        let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
+            table.entry(*key).or_default().push_back(joint_events[slot]);
+        }
+
+        let mut combo = base.clone();
+        combo.set_rng(Rng::oracle_keyed(table, record_seed));
+        let _ = combo.step(p1_choices, p2_choices);
+        if let Some(u) = combo.rng().unmatched_draws() {
+            // Counter-factual site discovered. We bail and let the caller
+            // fall back to the full enumeration which has the lazy
+            // re-record machinery.
+            if u > 0 {
+                let _ = unmatched_total;
+                return None;
+            }
+        }
+        let h = combo.canonical_hash();
+        raw += 1;
+        by_hash
+            .entry(h)
+            .and_modify(|b| b.prob += prob)
+            .or_insert(ActorBucket {
+                events: events_this_combo,
+                prob,
+            });
+
+        // Advance multi-dim index.
+        let mut k = 0;
+        let done = loop {
+            if k == n_sites {
+                break true;
+            }
+            idx[k] += 1;
+            if idx[k] < per_site[actor_site_indices[k]].1.len() {
+                break false;
+            }
+            idx[k] = 0;
+            k += 1;
+        };
+        if done {
+            break;
+        }
+    }
+
+    let buckets: Vec<ActorBucket> = by_hash.into_values().collect();
+    Some((buckets, raw, unmatched_total))
 }
 
 #[cfg(test)]
@@ -1247,6 +1578,198 @@ mod tests {
         for o in &frontier.outcomes {
             assert_eq!(o.hash, o.battle.canonical_hash());
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // PR-I.2 — tensor enumeration tests.
+    //
+    // Use a doubles fixture (Tackle x4 vanilla) that the PR-I.1
+    // classifier reports as FullyFactor, and verify
+    // `enumerate_outcomes_factored` matches `enumerate_outcomes_with`
+    // outcome-for-outcome. Use 3-bucket damage collapse to keep the
+    // joint cross-product cheap enough to run in debug.
+    // ────────────────────────────────────────────────────────────────
+
+    const DBL_P1: &str = r#"[
+        {"species":"furret","level":50,"ability":"runaway","item":"choicescarf","nature":"hardy","moves":["tackle","watergun","ember","vinewhip"]},
+        {"species":"sentret","level":50,"ability":"runaway","item":"choicescarf","nature":"hardy","moves":["tackle","watergun","ember","vinewhip"]}
+    ]"#;
+    const DBL_P2: &str = r#"[
+        {"species":"bidoof","level":50,"ability":"unaware","item":"choicescarf","nature":"hardy","moves":["tackle","watergun","ember","vinewhip"]},
+        {"species":"bibarel","level":50,"ability":"unaware","item":"choicescarf","nature":"hardy","moves":["tackle","watergun","ember","vinewhip"]}
+    ]"#;
+
+    fn doubles_fixture() -> Battle {
+        let p1 = TeamBuilder::from_json(DBL_P1).unwrap();
+        let p2 = TeamBuilder::from_json(DBL_P2).unwrap();
+        Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2)
+    }
+
+    fn dbl_mv(actor_slot: u8, move_slot: u8, t_side: SideRef, t_slot: u8) -> Choice {
+        Choice::Move {
+            actor_slot,
+            move_slot,
+            target: Some(Target { side: t_side, slot: t_slot }),
+        }
+    }
+
+    fn clean_4way_attacks() -> ([Choice; 2], [Choice; 2]) {
+        let p1 = [
+            dbl_mv(0, 0, SideRef::P2, 0),
+            dbl_mv(1, 0, SideRef::P2, 1),
+        ];
+        let p2 = [
+            dbl_mv(0, 0, SideRef::P1, 0),
+            dbl_mv(1, 0, SideRef::P1, 1),
+        ];
+        (p1, p2)
+    }
+
+    /// FullyFactor case: tensor enumeration must produce the same
+    /// outcome set (hashes + probabilities) as the full cross-product.
+    /// This is the load-bearing correctness contract for PR-I.2.
+    #[test]
+    fn tensor_enumerate_matches_full_enumeration_on_factorable_case() {
+        use factoring::{classify_factorability, Factorability};
+        let b = doubles_fixture();
+        let (p1, p2) = clean_4way_attacks();
+        assert_eq!(
+            classify_factorability(&b, &p1, &p2),
+            Factorability::FullyFactor,
+            "fixture should classify as FullyFactor — guards downstream assert",
+        );
+        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+        let full = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
+        let factored = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
+
+        // Same outcome multiset, keyed by canonical hash.
+        let mut full_map: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+        for o in &full.outcomes {
+            full_map.insert(o.hash, o.prob);
+        }
+        let mut fact_map: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+        for o in &factored.outcomes {
+            fact_map.insert(o.hash, o.prob);
+        }
+        assert_eq!(
+            full_map.len(),
+            fact_map.len(),
+            "outcome count diverged: full={} factored={}",
+            full_map.len(),
+            fact_map.len(),
+        );
+        for (h, p_full) in &full_map {
+            let p_fact = fact_map.get(h).unwrap_or_else(|| {
+                panic!("hash {h:016x} present in full enumeration but missing from factored")
+            });
+            assert!(
+                (p_full - p_fact).abs() < 1e-9,
+                "prob mismatch for hash {h:016x}: full={p_full} factored={p_fact}",
+            );
+        }
+        // Probabilities sum to 1 on each side as a sanity tail.
+        let s_full: f64 = full.outcomes.iter().map(|o| o.prob).sum();
+        let s_fact: f64 = factored.outcomes.iter().map(|o| o.prob).sum();
+        assert!((s_full - 1.0).abs() < 1e-6, "full sum = {s_full}");
+        assert!((s_fact - 1.0).abs() < 1e-6, "fact sum = {s_fact}");
+    }
+
+    /// NoFactor case (Helping Hand actually yields PartialFactor; use a
+    /// spread move = Earthquake which is the canonical NoFactor breaker).
+    /// `enumerate_outcomes_factored` must fall back to the full
+    /// enumeration and produce an identical frontier.
+    #[test]
+    fn tensor_enumerate_falls_back_on_nofactor() {
+        use factoring::{classify_factorability, Factorability};
+        // Furret carries Earthquake in slot 1 — spread move = NoFactor.
+        let p1_json = r#"[
+            {"species":"furret","level":50,"ability":"runaway","item":"choicescarf","nature":"hardy","moves":["tackle","earthquake","ember","vinewhip"]},
+            {"species":"sentret","level":50,"ability":"runaway","item":"choicescarf","nature":"hardy","moves":["tackle","watergun","ember","vinewhip"]}
+        ]"#;
+        let p1t = TeamBuilder::from_json(p1_json).unwrap();
+        let p2t = TeamBuilder::from_json(DBL_P2).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1t, p2t);
+        let p1 = [
+            dbl_mv(0, 1, SideRef::P2, 0), // Earthquake — spread
+            dbl_mv(1, 0, SideRef::P2, 1),
+        ];
+        let p2 = [
+            dbl_mv(0, 0, SideRef::P1, 0),
+            dbl_mv(1, 0, SideRef::P1, 1),
+        ];
+        assert_eq!(
+            classify_factorability(&b, &p1, &p2),
+            Factorability::NoFactor,
+            "earthquake side must classify NoFactor",
+        );
+
+        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+        let full = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
+        let factored = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
+
+        // Identical frontiers — factored MUST fall back, not run tensor.
+        assert_eq!(full.outcomes.len(), factored.outcomes.len());
+        let mut fact_map: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
+        for o in &factored.outcomes {
+            fact_map.insert(o.hash, o.prob);
+        }
+        for o in &full.outcomes {
+            let p_fact = fact_map
+                .get(&o.hash)
+                .unwrap_or_else(|| panic!("NoFactor fallback missing hash {:016x}", o.hash));
+            assert!((o.prob - p_fact).abs() < 1e-9);
+        }
+    }
+
+    /// Perf smoke: timing diagnostic for the FullyFactor 4-way attack
+    /// fixture. Prints full vs factored wall-clock + raw_combos +
+    /// outcome counts. Does NOT assert a speedup — the current
+    /// implementation re-runs `step()` for every joint-bucket combo,
+    /// so the per-actor enumeration is overhead on top of the same
+    /// joint cross-product. The design's bounded-joint-pass shortcut
+    /// (skipping `step()` and composing canonical hashes from per-actor
+    /// results) is a follow-up; without it the per-cell win is ~0x on
+    /// this fixture. See commit body for details.
+    ///
+    /// Gated `#[ignore]` — run with
+    /// `cargo test --release -p vgc-solver -- --ignored tensor_enumerate_perf_smoke`.
+    #[test]
+    #[ignore]
+    fn tensor_enumerate_perf_smoke() {
+        let b = doubles_fixture();
+        let (p1, p2) = clean_4way_attacks();
+        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+
+        // Warm-up so the first call doesn't eat code-gen + cache miss cost.
+        let _ = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
+        let _ = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
+
+        let t0 = std::time::Instant::now();
+        let full = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
+        let dt_full = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let factored = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
+        let dt_fact = t1.elapsed();
+
+        println!(
+            "tensor_enumerate_perf_smoke: full={:?} ({} raw, {} outcomes), \
+             factored={:?} ({} raw, {} outcomes), speedup={:.2}x",
+            dt_full,
+            full.raw_combos,
+            full.outcomes.len(),
+            dt_fact,
+            factored.raw_combos,
+            factored.outcomes.len(),
+            dt_full.as_nanos() as f64 / dt_fact.as_nanos().max(1) as f64,
+        );
+        // Diagnostic only — outcome equivalence is asserted in
+        // `tensor_enumerate_matches_full_enumeration_on_factorable_case`.
+        assert_eq!(
+            full.outcomes.len(),
+            factored.outcomes.len(),
+            "factored outcome count must match full",
+        );
     }
 
     #[test]
