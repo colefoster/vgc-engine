@@ -1210,6 +1210,45 @@ mod tests {
         );
     }
 
+    /// PR-K2 — per-Pokemon classification for continuous-HP moves.
+    /// Garchomp is given Eruption as move slot 0 (replacing Earthquake).
+    /// Against the switching opponent (no defender damage roll fires on
+    /// the receiving side), the frontier must still be well-formed:
+    /// probabilities sum to 1, hashes equal `canonical_hash`, and
+    /// outcome count is positive. Because the attacker carries a
+    /// continuous-HP move, the attacker's HP is hashed under the
+    /// scaling (`floor(150 * hp / max)`) rule rather than the coarse
+    /// 8-bucket rule — but the attacker's HP is unchanged by Eruption
+    /// itself, so the dedup behaviour matches PR-K1 here. The test
+    /// pins the contract that PR-K2 doesn't BREAK probability mass or
+    /// hash canonicality when a scaling-class user is on the field.
+    #[test]
+    fn eruption_user_preserves_value_under_bucketing() {
+        use vgc_engine_core::data::move_id::ERUPTION;
+        let mut b = fixture();
+        // Replace Garchomp's slot-0 move (Earthquake) with Eruption so
+        // P1's active Pokemon is classified as a SCALING_HP_USER.
+        let a0 = b.p1.active[0] as usize;
+        b.p1.team[a0].moves[0] = ERUPTION;
+        // Sure-hit + damage-roll attack at the opponent (switching in)
+        // — exercises the canonical_hash on the post-step states.
+        let frontier = enumerate_outcomes(
+            &b,
+            &[move_choice(2)], // Aerial Ace — Garchomp keeps a sure-hit slot
+            &[switch_choice(1)],
+            11,
+        );
+        let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "Eruption-holder frontier probs sum to {total}, expected 1.0",
+        );
+        assert!(!frontier.outcomes.is_empty());
+        for o in &frontier.outcomes {
+            assert_eq!(o.hash, o.battle.canonical_hash());
+        }
+    }
+
     #[test]
     fn enumerate_outcomes_default_matches_enumerate_outcomes_with_default() {
         let b = fixture();
