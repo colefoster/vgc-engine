@@ -1138,6 +1138,61 @@ mod tests {
         );
     }
 
+    /// PR-K1 — universal coarse 8-bucket HP bucketing in
+    /// `canonical_hash` should collapse the 16-value damage-roll axis
+    /// (when the damage band sits inside ONE bucket) into a single
+    /// deduped outcome on the frontier. Aerial Ace from Garchomp into
+    /// Fluttermane (P2 slot 1 active after the switch) lands the
+    /// defender in one of the upper buckets; even if the band straddles
+    /// a boundary, the dedup must be ≥3× the pre-PR-K1 floor of 16
+    /// distinct post-HP states.
+    ///
+    /// The test is on the singles fixture (P1=Garchomp lead, P2 switches
+    /// in Fluttermane). With Aerial Ace's UniformDamage as the dominant
+    /// per-attack axis at full fidelity (no `lossy_damage_3bucket`),
+    /// the frontier must compress raw_combos by ≥3×. This is the
+    /// load-bearing validation that HP bucketing actually works at the
+    /// outcome-frontier seam.
+    #[test]
+    fn hp_bucketing_collapses_damage_roll_axis() {
+        let b = fixture();
+        // Aerial Ace: no accuracy site (sure-hit), damage roll fires
+        // (16 values), crit fires (2 values). Pre-PR-K1: 16 × 2 = 32
+        // post-hit HP states (potentially fewer when bands fold, but
+        // typically 16+ unique). Post-PR-K1: most of the 16 damage
+        // rolls land in 1-2 HP buckets, so outcomes ≈ 2-4.
+        let frontier = enumerate_outcomes(
+            &b,
+            &[move_choice(2)], // Aerial Ace
+            &[switch_choice(1)],
+            11,
+        );
+        // raw_combos counts the pre-dedup cross-product; outcomes is
+        // post-canonical-hash dedup. PR-K1's win is that the canonical
+        // hash collapses HP values within the same bucket, so
+        // `outcomes` shrinks even though `raw_combos` doesn't.
+        assert!(
+            frontier.outcomes.len() * 3 <= frontier.raw_combos,
+            "PR-K1 HP bucketing must collapse outcomes ≥3× vs raw_combos; \
+             got outcomes={}, raw_combos={}",
+            frontier.outcomes.len(),
+            frontier.raw_combos,
+        );
+        eprintln!(
+            "PR-K1 hp-bucket dedup: outcomes={} raw_combos={} ratio={:.2}x",
+            frontier.outcomes.len(),
+            frontier.raw_combos,
+            frontier.raw_combos as f64 / frontier.outcomes.len() as f64,
+        );
+        // Probabilities still sum to 1 — the collapse is a hash-side
+        // identification, not a probability rewrite.
+        let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "PR-K1 bucketed frontier probs sum to {total}, expected 1.0",
+        );
+    }
+
     #[test]
     fn enumerate_outcomes_with_3bucket_probs_sum_to_1() {
         let b = fixture();
