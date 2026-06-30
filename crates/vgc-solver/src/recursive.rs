@@ -111,6 +111,12 @@ pub struct SolverConfig {
     /// subset of cells. Falls back per-cell to the full cross-product
     /// otherwise. Default `false` preserves pre-PR-I.2 behavior bit-for-bit.
     pub use_action_independence_factoring: bool,
+    /// PR-L — auto-engage [`Self::lossy_damage_3bucket`] on a per-cell
+    /// basis when the pre-enum draw tensor exceeds this many lossless
+    /// combos. `None` = never auto-engage (pre-PR-L behavior). Default
+    /// `Some(10_000)` — see [`crate::EnumerateOpts::auto_lossy_damage_threshold`]
+    /// for the rationale.
+    pub auto_lossy_damage_threshold: Option<u32>,
 }
 
 impl Default for SolverConfig {
@@ -121,6 +127,7 @@ impl Default for SolverConfig {
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: false,
             use_action_independence_factoring: false,
+            auto_lossy_damage_threshold: Some(10_000),
         }
     }
 }
@@ -333,7 +340,10 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         self.col_choices.len()
     }
     fn payoff(&mut self, i: usize, j: usize) -> f64 {
-        let opts = EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket };
+        let opts = EnumerateOpts {
+            lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket,
+            auto_lossy_damage_threshold: self.state.cfg.auto_lossy_damage_threshold,
+        };
         let frontier = if self.state.cfg.use_action_independence_factoring {
             enumerate_outcomes_factored(
                 self.battle,
@@ -415,6 +425,7 @@ mod tests {
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: false,
             use_action_independence_factoring: false,
+            auto_lossy_damage_threshold: None,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -462,6 +473,7 @@ mod tests {
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: true,
             use_action_independence_factoring: false,
+            auto_lossy_damage_threshold: None,
         };
         let cfg_on = SolverConfig {
             use_action_independence_factoring: true,

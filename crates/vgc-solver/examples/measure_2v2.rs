@@ -112,6 +112,9 @@ struct Cfg {
     node_budget: u64,
     record_seed: u64,
     lossy_damage_3bucket: bool,
+    /// PR-L — auto-engage lossy_damage_3bucket on cells whose pre-enum
+    /// draw tensor exceeds this many lossless combos. `None` = pre-PR-L.
+    auto_lossy_damage_threshold: Option<u32>,
     decompose: bool,
     wall_cap: Duration,
 }
@@ -243,7 +246,10 @@ impl<'a, 'b> MatrixGame for DoublesGame<'a, 'b> {
         let t0 = if decompose { Some(Instant::now()) } else { None };
         let frontier = enumerate_outcomes_with(
             self.battle, &r, &c, self.state.cfg.record_seed,
-            EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket },
+            EnumerateOpts {
+                lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket,
+                auto_lossy_damage_threshold: self.state.cfg.auto_lossy_damage_threshold,
+            },
         );
         if let Some(t) = t0 {
             T_ENUMERATE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -425,10 +431,16 @@ struct RunResult {
 
 fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration) -> RunResult {
     reset_counters();
+    vgc_solver::reset_auto_lossy_engaged_count();
     let b = build();
     let cfg = Cfg {
         max_depth: depth, node_budget: 100_000_000,
-        record_seed: 0xC0DE, lossy_damage_3bucket: false, decompose: false,
+        record_seed: 0xC0DE, lossy_damage_3bucket: false,
+        // PR-L — adaptive long-tail lossy on cells whose pre-enum tensor
+        // exceeds 10_000 combos. Typical cells are ~12 combos so this
+        // engages only on the monster outliers identified by §6.
+        auto_lossy_damage_threshold: Some(10_000),
+        decompose: false,
         wall_cap,
     };
     // Visible progress: wall_cap silence used to look like a hang.
@@ -448,6 +460,7 @@ fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration
     let cfg_thread = Cfg {
         max_depth: cfg.max_depth, node_budget: cfg.node_budget,
         record_seed: cfg.record_seed, lossy_damage_3bucket: cfg.lossy_damage_3bucket,
+        auto_lossy_damage_threshold: cfg.auto_lossy_damage_threshold,
         decompose: cfg.decompose, wall_cap: cfg.wall_cap,
     };
     let battle_thread = b.clone();
@@ -475,12 +488,14 @@ fn run_one(scenario: &str, build: fn() -> Battle, depth: u32, wall_cap: Duration
         tt_lookups: N_TT_LOOKUPS.load(Ordering::Relaxed),
         tt_hits: N_TT_HITS.load(Ordering::Relaxed),
     };
+    let auto_lossy = vgc_solver::auto_lossy_engaged_count();
     println!(
-        "  [{scenario} d={depth}] wall={:>10.3?}  value={:+.4}  prov={:?}{}  nodes={}  enum={}  payoff={}  raw={}  outc={}  tt={}/{}",
+        "  [{scenario} d={depth}] wall={:>10.3?}  value={:+.4}  prov={:?}{}  nodes={}  enum={}  payoff={}  raw={}  outc={}  tt={}/{}  auto_lossy={}",
         r.wall, r.value, r.provenance,
         if timed_out { " [WATCHDOG]" } else { "" },
         r.nodes, r.enumerate_calls, r.payoff_calls,
         r.raw_combos_total, r.outcomes_total, r.tt_hits, r.tt_lookups,
+        auto_lossy,
     );
     let _ = std::io::stdout().flush();
     r
@@ -575,10 +590,13 @@ fn main() {
     // ─── §5. Decomposition: midgame d=2 with timers on (shortened cap) ──
     println!("\n── §5. Bottleneck decomposition: Midgame 2HKO @ d=2 (wall cap = 30s) ──");
     reset_counters();
+    vgc_solver::reset_auto_lossy_engaged_count();
     let b = scenario_midgame();
     let cfg = Cfg {
         max_depth: 2, node_budget: 100_000_000, record_seed: 0xC0DE,
-        lossy_damage_3bucket: false, decompose: true, wall_cap: Duration::from_secs(30),
+        lossy_damage_3bucket: false,
+        auto_lossy_damage_threshold: Some(10_000),
+        decompose: true, wall_cap: Duration::from_secs(30),
     };
     let t0 = Instant::now();
     // Same watchdog pattern as run_one: enumerate_outcomes can't be
@@ -588,6 +606,7 @@ fn main() {
     let cfg_clone = Cfg {
         max_depth: cfg.max_depth, node_budget: cfg.node_budget,
         record_seed: cfg.record_seed, lossy_damage_3bucket: cfg.lossy_damage_3bucket,
+        auto_lossy_damage_threshold: cfg.auto_lossy_damage_threshold,
         decompose: cfg.decompose, wall_cap: cfg.wall_cap,
     };
     std::thread::spawn(move || {
@@ -633,6 +652,10 @@ fn main() {
         println!("  avg outcomes per cell      = {:.1}", outcomes as f64 / payoff as f64);
         println!("  avg dedup ratio            = {:.2}×", raw as f64 / outcomes.max(1) as f64);
     }
+    let auto_lossy = vgc_solver::auto_lossy_engaged_count();
+    println!();
+    println!("  PR-L auto-lossy cells engaged = {auto_lossy}  (threshold={:?})",
+        cfg.auto_lossy_damage_threshold);
     let _ = std::io::stdout().flush();
 
     println!("\nDone. See docs/perf/2v2_baseline_2026_06_29.md for the writeup.");
