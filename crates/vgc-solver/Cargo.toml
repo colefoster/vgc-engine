@@ -9,3 +9,10 @@ description = "Outcome-frontier enumeration and endgame solver on top of vgc-eng
 
 [dependencies]
 vgc-engine-core = { workspace = true }
+
+[features]
+# Spike-only instrumentation for measure_2v2.rs — captures per-call
+# double_oracle stats (support sizes, iteration count, payoff() and
+# LP-solve invocations, wall-clock). Zero-cost when off: every counter
+# update is inside a `#[cfg(feature = "instrumentation")]` block.
+instrumentation = []
