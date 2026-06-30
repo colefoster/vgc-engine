@@ -37,12 +37,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::battle::{Battle, BattleConfig, FutureEffect, WishEffect};
-use crate::pokemon::Pokemon;
+use crate::pokemon::{Pokemon, Volatile, VolatileKind, VolatileSet};
 use crate::side::{Side, SideConditions, SideRef};
 
-// `FinalStats`, `StatSpread`, `VolatileSet`, `Status` are reached
-// through `&Pokemon` field access in the manual `Serialize` impl
-// below — no direct imports needed.
+// `FinalStats`, `StatSpread`, `Status` are reached through `&Pokemon`
+// field access in the manual `Serialize` impl below — no direct
+// imports needed.
 use crate::terrain::Terrain;
 use crate::weather::Weather;
 
@@ -234,7 +234,23 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("last_used_move_target", &p.last_used_move_target)?;
         s.serialize_field("boosted_stat", &p.boosted_stat)?;
         s.serialize_field("booster_locked", &p.booster_locked)?;
-        s.serialize_field("volatiles", &p.volatiles)?;
+        // PR-K3 — wrap the volatile registry to collapse the Substitute
+        // payload (sub_hp) from the full u16 to a `{0, 1}` presence flag.
+        // Every engine consult site reads `sub_hp > 0` (`battle.rs:5380,
+        // :10598, :10759, :10793, :11067, :12138, :12177, :12499, :12587`)
+        // or `sub_hp == 0` (`ability.rs:802`) — i.e. "is the sub there?".
+        // The only EXACT-value reader is the same-turn damage-absorption
+        // arithmetic at `battle.rs:5382-5385` (`absorbed = dmg.min(sub_hp_pre)`,
+        // then `next = sub_hp - absorbed`). That carries within one
+        // resolve_move_with_pending invocation only — at any inter-step
+        // TT lookup boundary the post-hit sub_hp is already baked into
+        // the state. Per design doc §8.1, two states with `sub_hp=50` and
+        // `sub_hp=80` are treated as TT-equivalent: the opponent's action
+        // *enumeration* is independent of the TT key (it depends on the
+        // canonical move legal-set), so only the resolved transition's
+        // value depends on sub_hp — and there it folds back into the
+        // `{break, no-break}` binary downstream of the lookup.
+        s.serialize_field("volatiles", &CanonicalVolatileSetView(&p.volatiles))?;
         s.serialize_field("semi_invuln", &p.semi_invuln)?;
         s.serialize_field("charging_turns", &p.charging_turns)?;
         s.serialize_field("charging_move_slot", &p.charging_move_slot)?;
@@ -259,6 +275,54 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("commanded", &p.commanded)?;
         s.serialize_field("cud_chew_berry", &p.cud_chew_berry)?;
         s.serialize_field("cud_chew_counter", &p.cud_chew_counter)?;
+        s.end()
+    }
+}
+
+/// PR-K3 — canonical projection of the `VolatileSet`. Emits the raw
+/// `items` / `len` / `present` triple (same shape as the derived
+/// `Serialize` PR-J keyed on) but normalizes the **Substitute** payload
+/// from the raw sub_hp (u16, up to ~max_hp/4 distinct values) to a
+/// single presence bit. Every other volatile's payload is emitted
+/// verbatim — `Sleep` (remaining turns), `Confusion` (remaining turns),
+/// `ToxicCounter` (1..=15), `Encore` / `Disable` / `Taunt` / `HealBlock`
+/// / `MagnetRise` / `ThroatChop` / `AllySwitch` / `PartialTrap` / `Stall`
+/// (all `payload`-encoded turns or slot info) all remain EXACT.
+///
+/// **Why Substitute is safe to collapse:**
+/// - Every read site reads `> 0` / `== 0` only (`battle.rs:5380, :10598,
+///   :10759, :10793, :11067, :12138, :12177, :12499, :12587`;
+///   `ability.rs:802`).
+/// - The damage-absorption arithmetic at `battle.rs:5382-5385` reads
+///   exact sub_hp but only **within the same resolve_move_with_pending**
+///   call — so the post-hit sub_hp is already baked into the state at
+///   any inter-step TT lookup site.
+/// - Design doc §8.1 explicitly authorizes the collapse.
+///
+/// **Why the other counter payloads are NOT collapsed:** Sleep /
+/// Confusion / Toxic / Encore / Disable / Taunt / HealBlock / MagnetRise
+/// / ThroatChop residual countdowns each gate a future-state cliff (the
+/// volatile clears at `turns_remaining == 0`). Collapsing `{turns=1,
+/// turns=3}` to "active" would merge states whose downstream evolution
+/// genuinely differs — different cliff turn → different Nash value. Per
+/// design doc §2 + conservative bias from the PR-K3 brief, keep exact.
+struct CanonicalVolatileSetView<'a>(&'a VolatileSet);
+
+impl<'a> Serialize for CanonicalVolatileSetView<'a> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        let vs = self.0;
+        // Copy the items array and patch any Substitute payload to 1.
+        // Volatile is `Copy`, so this is a stack memcpy.
+        let mut items: [Volatile; 8] = vs.items;
+        for v in items.iter_mut().take(vs.len as usize) {
+            if v.kind == VolatileKind::Substitute && v.payload > 0 {
+                v.payload = 1;
+            }
+        }
+        let mut s = ser.serialize_struct("VolatileSet", 3)?;
+        s.serialize_field("items", &items)?;
+        s.serialize_field("len", &vs.len)?;
+        s.serialize_field("present", &vs.present)?;
         s.end()
     }
 }
@@ -855,5 +919,87 @@ mod tests {
         a.p1.team[a0].current_hp = max - 5;
         b.p1.team[a0].current_hp = max - 6;
         assert_eq!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    // ----- PR-K3 — substitute-HP collapse + counter-exact preservation -----
+
+    #[test]
+    fn sub_hp_collapses_to_active_or_not() {
+        // Two states identical except for the EXACT sub_hp payload —
+        // both above 0 (i.e. "sub is up"). Per §8.1, the canonical
+        // projection normalizes this to a single presence bit, so the
+        // two states must hash equal.
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        a.p1.team[a0].volatiles.add(Volatile {
+            kind: VolatileKind::Substitute,
+            turns_remaining: 0,
+            payload: 50,
+        });
+        b.p1.team[a0].volatiles.add(Volatile {
+            kind: VolatileKind::Substitute,
+            turns_remaining: 0,
+            payload: 80,
+        });
+        assert_eq!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "sub_hp=50 vs sub_hp=80 must collapse to the same canonical hash"
+        );
+    }
+
+    #[test]
+    fn sub_hp_zero_vs_active_diverges() {
+        // sub absent (payload = 0) vs sub present (payload > 0) — these
+        // remain distinct. The `add()` path won't insert a payload=0
+        // Substitute (no caller does that) so we test absent-vs-present
+        // by leaving `a` with no Substitute volatile and adding one to
+        // `b`.
+        let a = fixture();
+        let mut b = fixture();
+        let a0 = b.p1.active[0] as usize;
+        b.p1.team[a0].volatiles.add(Volatile {
+            kind: VolatileKind::Substitute,
+            turns_remaining: 0,
+            payload: 50,
+        });
+        assert_ne!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "absent sub vs active sub must NOT collapse"
+        );
+    }
+
+    #[test]
+    fn sleep_counter_kept_exact() {
+        // Sleep duration encodes the cliff turn — different remaining
+        // turns → different downstream Nash value. Must NOT collapse.
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        a.p1.team[a0].set_sleep_turns(1);
+        b.p1.team[a0].set_sleep_turns(2);
+        assert_ne!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "sleep counter 1 vs 2 must remain distinct"
+        );
+    }
+
+    #[test]
+    fn tailwind_turns_kept_exact() {
+        // Side-condition Tailwind decrements at EOT (battle.rs:1814-1824).
+        // The cliff turn — when speed-boost vanishes — is Nash-load-bearing
+        // for switch / Protect / fast-mode scoring. Must NOT collapse.
+        let mut a = fixture();
+        let mut b = fixture();
+        a.p1.conditions.tailwind_turns = 1;
+        b.p1.conditions.tailwind_turns = 3;
+        assert_ne!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "tailwind_turns 1 vs 3 must remain distinct"
+        );
     }
 }
