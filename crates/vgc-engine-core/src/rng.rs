@@ -269,7 +269,19 @@ pub enum DrawSpace {
     /// Uniform integer in `0..n`. Drawn outcome is `RngEvent::Range(v)`.
     UniformRange(u32),
     /// Uniform damage bucket `0..16` (`RngEvent::DamageRoll`).
-    UniformDamage,
+    ///
+    /// `ko_split` records the KO partition derived at the draw site, when known:
+    /// - `None` — legacy / unmigrated site (or multi-target spread, Sub/Sash/
+    ///   Sturdy/Endure active, non-final multi-hit, or any complex chain).
+    ///   The enumerator must expand to the full 16-outcome uniform (or PR-C's
+    ///   lossy 3-bucket collapse if opted in).
+    /// - `Some(0)` — every roll in `0..=15` KOes (weight 16/16 KO bucket).
+    /// - `Some(16)` — no roll KOes (weight 16/16 no-KO bucket).
+    /// - `Some(k)` with `0 < k < 16` — rolls `0..k` do NOT KO (weight `k/16`),
+    ///   rolls `k..=15` DO KO (weight `(16-k)/16`). Final damage =
+    ///   `floor(base * (85 + roll) / 100)` is monotone in `roll`, so the KO
+    ///   set is always a contiguous high-tail of the roll distribution.
+    UniformDamage { ko_split: Option<u8> },
     /// Uniform percent roll `1..=100` (`RngEvent::PercentRoll`).
     ///
     /// `threshold` records the comparison threshold the engine used at the
@@ -920,10 +932,22 @@ impl Rng {
     /// outside the engine's plausible window, falls back to a Splitmix
     /// draw rather than forcing an out-of-range bucket.
     pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
+        self.damage_roll_hint_inner(dmg_min, dmg_max, None)
+    }
+
+    /// Same as [`Rng::damage_roll_hint`], but records the engine-derived
+    /// KO partition for the call site. See [`Rng::damage_roll_t`] /
+    /// [`DrawSpace::UniformDamage`].
+    pub fn damage_roll_hint_t(&mut self, dmg_min: u16, dmg_max: u16, ko_split: u8) -> u8 {
+        debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
+        self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split))
+    }
+
+    fn damage_roll_hint_inner(&mut self, dmg_min: u16, dmg_max: u16, ko_split: Option<u8>) -> u8 {
         match self {
             // OracleKeyed stores the exact engine-convention bucket, so
             // there's nothing to back-solve — defer to `damage_roll`.
-            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll(),
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll_inner(ko_split),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -936,7 +960,7 @@ impl Rng {
                     // middle (rather than panicking).
                     return 7;
                 }
-                self.damage_roll()
+                self.damage_roll_inner(ko_split)
             }
             Rng::OraclePartial { state, fallback } => {
                 if let Some(RngEvent::DamageHint(target)) =
@@ -948,13 +972,41 @@ impl Rng {
                     // Out-of-range: fall through to Splitmix.
                     return (Self::splitmix_step(fallback) & 0xF) as u8;
                 }
-                self.damage_roll()
+                self.damage_roll_inner(ko_split)
             }
         }
     }
 
     /// Convenience: a damage roll bucket in `0..=15`.
+    ///
+    /// Legacy entry point — the recorded [`DrawSpace::UniformDamage`]
+    /// carries `ko_split: None`, meaning "unmigrated site, enumerate all
+    /// 16 buckets (or PR-C's lossy 3-bucket when opted in)." Call sites
+    /// that can derive the KO partition cheaply should use
+    /// [`Rng::damage_roll_t`] instead so a downstream outcome-frontier
+    /// collapse can use the exact 2-bucket form (PR-D).
     pub fn damage_roll(&mut self) -> u8 {
+        self.damage_roll_inner(None)
+    }
+
+    /// Same as [`Rng::damage_roll`], but records the KO partition the
+    /// engine derived at the call site.
+    ///
+    /// `ko_split` semantics (see [`DrawSpace::UniformDamage`]):
+    /// - `0` — every roll in `0..=15` KOes the defender.
+    /// - `16` — no roll KOes.
+    /// - `0 < k < 16` — rolls `0..k` do NOT KO, rolls `k..=15` DO KO.
+    ///
+    /// Behaviorally identical to [`Rng::damage_roll`]; the partition
+    /// lives only in the `Recording` / `OracleKeyed` miss-log so the
+    /// enumeration layer can collapse the 16-outcome uniform into a
+    /// 2-bucket (KO / no-KO) frontier.
+    pub fn damage_roll_t(&mut self, ko_split: u8) -> u8 {
+        debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
+        self.damage_roll_inner(Some(ko_split))
+    }
+
+    fn damage_roll_inner(&mut self, ko_split: Option<u8>) -> u8 {
         match self {
             Rng::Splitmix(_) => (self.next_u64() & 0xF) as u8,
             Rng::Oracle(state) => match state.pop() {
@@ -984,7 +1036,7 @@ impl Rng {
                     let v = (k.fallback() & 0xF) as u8;
                     k.record_miss(
                         RngDecision::Damage,
-                        DrawSpace::UniformDamage,
+                        DrawSpace::UniformDamage { ko_split },
                         RngEvent::DamageRoll(v),
                     );
                     v
@@ -992,7 +1044,11 @@ impl Rng {
             },
             Rng::Recording(r) => {
                 let v = (r.step() & 0xF) as u8;
-                r.push(RngDecision::Damage, DrawSpace::UniformDamage, RngEvent::DamageRoll(v));
+                r.push(
+                    RngDecision::Damage,
+                    DrawSpace::UniformDamage { ko_split },
+                    RngEvent::DamageRoll(v),
+                );
                 v
             }
         }
@@ -1791,7 +1847,7 @@ mod tests {
         assert_eq!(log.len(), 4, "one entry per non-elided draw");
 
         // Each entry has the right space + drawn value + key context.
-        assert_eq!(log[0].space, DrawSpace::UniformDamage);
+        assert_eq!(log[0].space, DrawSpace::UniformDamage { ko_split: None });
         assert_eq!(log[0].drawn, RngEvent::DamageRoll(d));
         assert_eq!(log[0].key.decision, RngDecision::Damage);
         assert_eq!(log[0].key.turn, 3);
