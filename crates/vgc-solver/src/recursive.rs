@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use vgc_engine_core::{Battle, Choice, SideRef};
 
 use crate::double_oracle::{double_oracle, MatrixGame};
-use crate::enumerate_outcomes;
+use crate::{enumerate_outcomes_with, EnumerateOpts};
 
 /// Provenance of a [`SolvedNode`]'s `value`. Drives downstream filtering
 /// (e.g. ACT training only consumes `Terminal` + `Exact` policy labels;
@@ -97,6 +97,13 @@ pub struct SolverConfig {
     /// Choice of seed affects which single path the recorder walks but
     /// NOT the frontier the enumerator produces.
     pub record_seed: u64,
+    /// Opt in to PR-C's lossy 3-bucket `UniformDamage` collapse at the
+    /// solver layer. **Lossy**: trades post-hit HP fidelity (16 buckets
+    /// down to 3 representative HP values per damaging hit) for ~5× fewer
+    /// `step()` calls per frontier. Sound only when the leaf evaluator
+    /// is monotone in HP (`hp_ratio_leaf`, `kho_race_leaf`). Default
+    /// `false` preserves pre-PR-C 16-bucket behavior.
+    pub lossy_damage_3bucket: bool,
 }
 
 impl Default for SolverConfig {
@@ -105,6 +112,7 @@ impl Default for SolverConfig {
             max_depth: 8,
             node_budget: 100_000,
             record_seed: 0xC0_DE,
+            lossy_damage_3bucket: false,
         }
     }
 }
@@ -278,11 +286,12 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         self.col_choices.len()
     }
     fn payoff(&mut self, i: usize, j: usize) -> f64 {
-        let frontier = enumerate_outcomes(
+        let frontier = enumerate_outcomes_with(
             self.battle,
             &[self.row_choices[i]],
             &[self.col_choices[j]],
             self.state.cfg.record_seed,
+            EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket },
         );
         let mut acc = 0.0;
         for outcome in &frontier.outcomes {
@@ -346,6 +355,7 @@ mod tests {
             max_depth: 4,
             node_budget: 1,
             record_seed: 0xC0_DE,
+            lossy_damage_3bucket: false,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -370,5 +380,30 @@ mod tests {
         // the second call returns the same value.
         assert!((sol1.value - sol2.value).abs() < 1e-9);
         let _ = entries_after_first;
+    }
+
+    #[test]
+    fn solver_config_default_keeps_16_bucket() {
+        let cfg = SolverConfig::default();
+        assert!(
+            !cfg.lossy_damage_3bucket,
+            "default SolverConfig must preserve pre-PR-C 16-bucket UniformDamage",
+        );
+    }
+
+    #[test]
+    fn endgame_solve_lossy_damage_still_terminal() {
+        // A terminal state must solve to the same value regardless of the
+        // lossy-damage flag — terminal short-circuit fires before any
+        // frontier expansion.
+        let mut b = fixture();
+        b.set_ended(Some(SideRef::P1));
+        let cfg_default = SolverConfig::default();
+        let cfg_lossy = SolverConfig { lossy_damage_3bucket: true, ..SolverConfig::default() };
+        let s1 = endgame_solve(&b, &cfg_default, hp_ratio_leaf);
+        let s2 = endgame_solve(&b, &cfg_lossy, hp_ratio_leaf);
+        assert_eq!(s1.provenance, Provenance::Terminal);
+        assert_eq!(s2.provenance, Provenance::Terminal);
+        assert!((s1.value - s2.value).abs() < 1e-9);
     }
 }
