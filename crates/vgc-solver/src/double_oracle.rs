@@ -36,6 +36,8 @@
 use std::collections::HashMap;
 
 use crate::nash::solve_zero_sum;
+#[cfg(feature = "instrumentation")]
+use crate::instrumentation;
 
 /// Abstract 2-player zero-sum matrix game with on-demand payoff
 /// evaluation. Implementations are free to be lazy (compute on first
@@ -106,6 +108,13 @@ pub fn double_oracle<G: MatrixGame>(
         return None;
     }
 
+    // Instrumentation frame: push AFTER input validation (so early-None
+    // returns above don't leak), pop just before each remaining return.
+    #[cfg(feature = "instrumentation")]
+    let _instr_t0 = std::time::Instant::now();
+    #[cfg(feature = "instrumentation")]
+    instrumentation::push_frame();
+
     // Dedup the initial seeds while preserving caller-supplied order.
     let mut row_support: Vec<usize> = Vec::with_capacity(rc);
     for &i in initial_row_support {
@@ -124,6 +133,8 @@ pub fn double_oracle<G: MatrixGame>(
     // many times across iterations.
     let mut cache: HashMap<(usize, usize), f64> = HashMap::new();
     let payoff_at = |game: &mut G, cache: &mut HashMap<(usize, usize), f64>, i: usize, j: usize| -> f64 {
+        #[cfg(feature = "instrumentation")]
+        instrumentation::inc_payoff();
         if let Some(&v) = cache.get(&(i, j)) {
             return v;
         }
@@ -158,7 +169,16 @@ pub fn double_oracle<G: MatrixGame>(
         }
 
         // 2. Solve the sub-LP.
-        let sol = solve_zero_sum(&sub)?;
+        #[cfg(feature = "instrumentation")]
+        instrumentation::inc_lp_solve();
+        let sol = match solve_zero_sum(&sub) {
+            Some(s) => s,
+            None => {
+                #[cfg(feature = "instrumentation")]
+                let _ = instrumentation::pop_frame();
+                return None;
+            }
+        };
         last_value = sol.value;
         last_row_mixed = sol.row_strategy.clone();
         last_col_mixed = sol.col_strategy.clone();
@@ -229,14 +249,33 @@ pub fn double_oracle<G: MatrixGame>(
         .filter_map(|(&j, &p)| if p > 1e-9 { Some((j, p)) } else { None })
         .collect();
 
-    Some(DoubleOracleSolution {
+    let out = DoubleOracleSolution {
         value: last_value,
         row_strategy,
         col_strategy,
         iterations,
         row_support_size: row_support.len(),
         col_support_size: col_support.len(),
-    })
+    };
+
+    #[cfg(feature = "instrumentation")]
+    {
+        let (payoff_calls, lp_solve_calls) = instrumentation::pop_frame();
+        instrumentation::push_sample(instrumentation::DOSample {
+            row_count: rc,
+            col_count: cc,
+            row_support_size: out.row_support_size,
+            col_support_size: out.col_support_size,
+            row_strategy_size: out.row_strategy.len(),
+            col_strategy_size: out.col_strategy.len(),
+            iterations: out.iterations,
+            payoff_calls,
+            lp_solve_calls,
+            wall_ns: _instr_t0.elapsed().as_nanos() as u64,
+        });
+    }
+
+    Some(out)
 }
 
 #[cfg(test)]
