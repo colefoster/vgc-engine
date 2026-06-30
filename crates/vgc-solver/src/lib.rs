@@ -163,16 +163,38 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
         DrawSpace::UniformRange(n) => (0..n)
             .map(|v| (RngEvent::Range(v), 1u32, n))
             .collect(),
-        DrawSpace::UniformDamage => if opts.lossy_damage_3bucket {
-            vec![
-                (RngEvent::DamageRoll(0),  5, 16),
-                (RngEvent::DamageRoll(7),  6, 16),
-                (RngEvent::DamageRoll(15), 5, 16),
-            ]
-        } else {
-            (0..16u8)
-                .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
-                .collect()
+        DrawSpace::UniformDamage { ko_split } => match ko_split {
+            // All 16 rolls KO → single representative roll, max value
+            // so HP saturates to 0 across enumeration replays.
+            Some(0) => vec![(RngEvent::DamageRoll(15), 16, 16)],
+            // No roll KOs → single representative roll, min value so
+            // post-hit HP lands on the survivable side regardless of
+            // which roll the recorder originally picked.
+            Some(k) if k >= 16 => vec![(RngEvent::DamageRoll(0), 16, 16)],
+            // Mixed partition: rolls 0..k miss the KO threshold, rolls
+            // k..=15 cross it. Two exact buckets (no fidelity loss for
+            // the KO/survive question; HP-on-survive collapses to the
+            // min-roll value, which the downstream leaf must accept the
+            // same way it does for PR-C's lossy 3-bucket).
+            Some(k) => vec![
+                (RngEvent::DamageRoll(0), k as u32, 16),
+                (RngEvent::DamageRoll(15), (16 - k) as u32, 16),
+            ],
+            None => {
+                // Unknown KO partition — fall back to PR-C's lossy
+                // 3-bucket if opted in, else the full 16-bucket uniform.
+                if opts.lossy_damage_3bucket {
+                    vec![
+                        (RngEvent::DamageRoll(0),  5, 16),
+                        (RngEvent::DamageRoll(7),  6, 16),
+                        (RngEvent::DamageRoll(15), 5, 16),
+                    ]
+                } else {
+                    (0..16u8)
+                        .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
+                        .collect()
+                }
+            }
         },
         DrawSpace::UniformPercent { threshold } => match threshold {
             None => (1..=100u8)
@@ -651,7 +673,7 @@ mod tests {
             match (entry.space, entry.drawn) {
                 (DrawSpace::Tiebreak { .. }, RngEvent::Tiebreak(_)) => {}
                 (DrawSpace::UniformRange(n), RngEvent::Range(v)) => assert!(v < n),
-                (DrawSpace::UniformDamage, RngEvent::DamageRoll(v)) => assert!(v < 16),
+                (DrawSpace::UniformDamage { .. }, RngEvent::DamageRoll(v)) => assert!(v < 16),
                 (DrawSpace::UniformPercent { .. }, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
                 (DrawSpace::Crit { num: _, denom: _ }, RngEvent::Crit(_)) => {}
                 (s, d) => panic!("DrawSpace/RngEvent mismatch: {s:?} vs {d:?}"),
@@ -935,7 +957,7 @@ mod tests {
     #[test]
     fn expand_uniform_damage_default_16() {
         let out = expand(
-            DrawSpace::UniformDamage,
+            DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(7),
             EnumerateOpts::default(),
         );
@@ -948,7 +970,7 @@ mod tests {
     #[test]
     fn expand_uniform_damage_3bucket() {
         let out = expand(
-            DrawSpace::UniformDamage,
+            DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(7),
             EnumerateOpts { lossy_damage_3bucket: true },
         );
@@ -958,10 +980,122 @@ mod tests {
         assert_eq!(out[2], (RngEvent::DamageRoll(15), 5, 16));
     }
 
+    // ---- PR-D: exact 2-bucket ko_split collapse ----
+
+    #[test]
+    fn expand_uniform_damage_ko_split_some_3() {
+        let out = expand(
+            DrawSpace::UniformDamage { ko_split: Some(3) },
+            RngEvent::DamageRoll(7),
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], (RngEvent::DamageRoll(0), 3, 16));
+        assert_eq!(out[1], (RngEvent::DamageRoll(15), 13, 16));
+        let total: u32 = out.iter().map(|(_, n, _)| *n).sum();
+        assert_eq!(total, 16);
+    }
+
+    #[test]
+    fn expand_uniform_damage_ko_split_zero() {
+        // Every roll KOs → single representative roll at max value.
+        let out = expand(
+            DrawSpace::UniformDamage { ko_split: Some(0) },
+            RngEvent::DamageRoll(7),
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], (RngEvent::DamageRoll(15), 16, 16));
+    }
+
+    #[test]
+    fn expand_uniform_damage_ko_split_sixteen() {
+        // No roll KOs → single representative roll at min value.
+        let out = expand(
+            DrawSpace::UniformDamage { ko_split: Some(16) },
+            RngEvent::DamageRoll(7),
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], (RngEvent::DamageRoll(0), 16, 16));
+    }
+
+    #[test]
+    fn expand_uniform_damage_ko_split_none_default() {
+        let out = expand(
+            DrawSpace::UniformDamage { ko_split: None },
+            RngEvent::DamageRoll(7),
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 16);
+        for (i, e) in out.iter().enumerate() {
+            assert_eq!(*e, (RngEvent::DamageRoll(i as u8), 1, 16));
+        }
+    }
+
+    #[test]
+    fn expand_uniform_damage_ko_split_none_lossy() {
+        // None + lossy_damage_3bucket → PR-C's 3-bucket fallback.
+        let out = expand(
+            DrawSpace::UniformDamage { ko_split: None },
+            RngEvent::DamageRoll(7),
+            EnumerateOpts { lossy_damage_3bucket: true },
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (RngEvent::DamageRoll(0), 5, 16));
+        assert_eq!(out[1], (RngEvent::DamageRoll(7), 6, 16));
+        assert_eq!(out[2], (RngEvent::DamageRoll(15), 5, 16));
+    }
+
+    /// PR-D end-to-end shrink: a guaranteed-OHKO single-target single-hit
+    /// move with no Life Orb / Friend Guard / Sturdy / Sash / Sub / Endure
+    /// should record `ko_split: Some(0)` and collapse the damage axis from
+    /// 16 buckets to 1. Compares against the default 16-bucket frontier.
+    #[test]
+    fn enumerate_outcomes_with_ko_split_shrinks_raw_combos() {
+        use vgc_engine_core::{Battle, BattleConfig, Format, TeamBuilder};
+
+        const P1J: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"],"evs":{"hp":4,"atk":252,"spe":252}}
+        ]"#;
+        const P2J: &str = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"leftovers","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(P1J).unwrap();
+        let p2 = TeamBuilder::from_json(P2J).unwrap();
+        let b = Battle::new(
+            BattleConfig { format: Format::Singles, seed: 1 },
+            p1,
+            p2,
+        );
+        // P1 uses Earthquake (slot 0); P2 uses Quick Attack (slot 1).
+        let p1c = [Choice::Move {
+            actor_slot: 0,
+            move_slot: 0,
+            target: Some(Target { side: SideRef::P2, slot: 0 }),
+        }];
+        let p2c = [Choice::Move {
+            actor_slot: 0,
+            move_slot: 1,
+            target: Some(Target { side: SideRef::P1, slot: 0 }),
+        }];
+        let f = enumerate_outcomes(&b, &p1c, &p2c, 0x7777);
+        // Probability mass should sum to 1.
+        let total: f64 = f.outcomes.iter().map(|o| o.prob).sum();
+        assert!(
+            (total - 1.0).abs() < 1e-9,
+            "frontier probs should sum to 1, got {total}"
+        );
+        eprintln!(
+            "PR-D raw_combos (ko_split-eligible OHKO fixture): {}",
+            f.raw_combos
+        );
+    }
+
     #[test]
     fn expand_uniform_damage_3bucket_weights_sum_to_16() {
         let out = expand(
-            DrawSpace::UniformDamage,
+            DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(0),
             EnumerateOpts { lossy_damage_3bucket: true },
         );
