@@ -3673,7 +3673,10 @@ impl Battle {
                 // too: skip the accuracy roll entirely (no PRNG draw), same
                 // as a sure-hit move.
                 if !no_guard_pair {
-                    let roll = self.rng.percent_1_100() as u32;
+                    // OHKO accuracy: threshold-aware draw, eff_acc is the
+                    // level-adjusted hit %. PS `sim/battle-actions.ts`
+                    // OHKO check. Behavior unchanged.
+                    let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
                     if roll > eff_acc {
                         continue;
                     }
@@ -5324,7 +5327,13 @@ impl Battle {
         );
         if let Some(eff_acc) = acc_comp.threshold {
             self.rng.set_decision(RngDecision::Accuracy);
-            let roll = self.rng.percent_1_100() as u32;
+            // Threshold-aware draw: records `eff_acc` on the recorded
+            // DrawSpace::UniformPercent so a future enumerator pass can
+            // collapse the 100-outcome uniform into a 2-bucket hit/miss
+            // frontier. PS `sim/battle-actions.ts` accuracy compare
+            // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
+            // Behaviorally identical to the prior `percent_1_100()` call.
+            let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
             if roll > eff_acc {
                 // Multiaccuracy miss — PS breaks the multi-hit loop.
                 // Surface to the driver via the loop-stop flag.
@@ -6633,7 +6642,13 @@ impl Battle {
                 }
             }
             self.rng.set_decision(RngDecision::Accuracy);
-            let roll = self.rng.percent_1_100() as u32;
+            // Threshold-aware draw: records `eff_acc` on the recorded
+            // DrawSpace::UniformPercent so a future enumerator pass can
+            // collapse the 100-outcome uniform into a 2-bucket hit/miss
+            // frontier. PS `sim/battle-actions.ts` accuracy compare
+            // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
+            // Behaviorally identical to the prior `percent_1_100()` call.
+            let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
             if roll > eff_acc {
                 // Blunder Policy — the holder's own move missed due to
                 // accuracy. PS `sim/battle-actions.ts:740` consumes the
@@ -8060,7 +8075,10 @@ impl Battle {
         if m.accuracy == 255 {
             return true;
         }
-        let roll = self.rng.percent_1_100() as u32;
+        // Threshold-aware draw: PS `sim/battle-actions.ts` accuracy
+        // compare. Records `m.accuracy` on DrawSpace::UniformPercent so a
+        // future enumerator pass can collapse to hit/miss.
+        let roll = self.rng.percent_1_100_t(m.accuracy.min(100)) as u32;
         roll <= m.accuracy as u32
     }
 
@@ -13674,7 +13692,7 @@ fn apply_secondary_effect(
     // top-level `selfBoost`, applied once after the multihits — handled at the
     // move-resolution site, not here.)
     if let Some((boosts, chance)) = self_boost_secondary(move_slug) {
-        if rng.percent_1_100() <= sg(chance) {
+        if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Source == target (self): no Mirror Armor reflect, positive
             // boosts only. Clamps to +6 via the standard helper.
             battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
@@ -13717,7 +13735,7 @@ fn apply_secondary_effect(
     // popped 89 for flinch (no flinch) then 6 for status (≤10 = freeze
     // applied, diverged from PS=none).
     if let Some((status, chance)) = status_secondary(move_slug) {
-        if rng.percent_1_100() <= sg(chance) {
+        if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
             // the target's side vetoes it.
             battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
@@ -13728,7 +13746,7 @@ fn apply_secondary_effect(
         // PS rolls the flinch chance unconditionally; the flinch is then
         // vetoed by Inner Focus's onTryAddVolatile. We keep the draw so
         // the oracle stays aligned, then gate the actual flinch.
-        let flinched = rng.percent_1_100() <= chance;
+        let flinched = rng.percent_1_100_t(chance) <= chance;
         if flinched {
             // Inner Focus — PS `data/abilities.ts:2108`:
             //   onTryAddVolatile(status, pokemon) {
@@ -13774,7 +13792,7 @@ fn apply_secondary_effect(
     // (`onTryAddVolatile` fires before `onStart`), so the immunity checks
     // gate the second draw — matching PS's draw count site-for-site.
     if let Some(chance) = confuse_secondary(move_slug) {
-        if rng.percent_1_100() <= sg(chance) {
+        if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Can the confusion volatile actually be added? Mirrors PS's
             // `onTryAddVolatile` vetoes that run BEFORE `confusion.onStart`.
             let blocked = battle
@@ -13817,7 +13835,7 @@ fn apply_secondary_effect(
         }
     }
     if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
-        if rng.percent_1_100() <= sg(chance) {
+        if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Clear Body / White Smoke / Full Metal Body / Clear Amulet
             // veto any opposing stat drop. Per-stat blockers (Hyper
             // Cutter / Big Pecks / Keen Eye) gate on the specific stat
@@ -13865,7 +13883,7 @@ fn apply_secondary_effect(
     // handled by `try_set_status`. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Tri_Attack_(move)>.
     if move_slug == "triattack" {
-        if rng.percent_1_100() <= sg(20) {
+        if rng.percent_1_100_t(sg(20)) <= sg(20) {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Burn,
@@ -13878,7 +13896,7 @@ fn apply_secondary_effect(
     if move_slug == "direclaw" {
         // Champions rebalances Dire Claw's status chance from gen 9's 50% to
         // 30% (PS data/mods/champions/moves.ts: direclaw `secondary.chance: 30`).
-        if rng.percent_1_100() <= sg(30) {
+        if rng.percent_1_100_t(sg(30)) <= sg(30) {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Poison,
@@ -13903,7 +13921,7 @@ fn apply_secondary_effect(
     // <https://bulbapedia.bulbagarden.net/wiki/Triple_Arrows_(move)>.
     if move_slug == "triplearrows" {
         // Secondary 1: 50% -1 Def on the target.
-        if rng.percent_1_100() <= sg(50) {
+        if rng.percent_1_100_t(sg(50)) <= sg(50) {
             let blocked = battle.side(target_side).active_mon(target_slot as usize)
                 .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 1));
             if !blocked {
@@ -13916,7 +13934,7 @@ fn apply_secondary_effect(
         }
         // Secondary 2: 30% flinch. PS rolls unconditionally; Inner Focus then
         // vetoes the volatile (mirrors the generic flinch block above).
-        if rng.percent_1_100() <= sg(30) {
+        if rng.percent_1_100_t(sg(30)) <= sg(30) {
             let attacker_breaks_mold = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
@@ -14057,7 +14075,7 @@ fn apply_secondary_effect(
             // PS appends King's Rock's flinch at onModifyMovePriority -1, and
             // Serene Grace (-2) runs after, so its doubling DOES apply to the
             // appended 10% flinch. `sg` is a no-op without Serene Grace.
-            if rng.percent_1_100() <= sg(10) {
+            if rng.percent_1_100_t(sg(10)) <= sg(10) {
                 let attacker_breaks_mold = battle
                     .side(attacker_side)
                     .active_mon(attacker_slot as usize)
