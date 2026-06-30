@@ -59,9 +59,8 @@ fn main() {
     let cfg = SolverConfig {
         max_depth: 2,
         node_budget: 1_000_000,
-        record_seed: 0xC0_DE,
         lossy_damage_3bucket: true, // PR-C — shrinks frontier so depth=2 finishes in reasonable wall.
-        use_action_independence_factoring: false,
+        ..SolverConfig::default()
     };
 
     let mut tt: HashMap<u64, SolvedNode> = HashMap::new();
