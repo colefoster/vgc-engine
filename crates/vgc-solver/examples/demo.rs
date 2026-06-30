@@ -268,6 +268,7 @@ fn main() {
         max_depth: 8,
         node_budget: 1,
         record_seed: 0xC0DE,
+        lossy_damage_3bucket: false,
     };
     let sol = endgame_solve(&live, &cfg_nb, hp_ratio_leaf);
     println!("  provenance    = {:?}", sol.provenance);
