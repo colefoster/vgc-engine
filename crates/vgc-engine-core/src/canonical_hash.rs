@@ -92,20 +92,11 @@ struct CanonicalPokemonView<'a>(&'a Pokemon);
 /// could split (1/2, max) — kept unused so the index space matches the
 /// 8-slot inventory in the design doc §3.
 ///
-/// **Known limitation (PR-K1):** Pokemon carrying continuous-HP moves —
-/// Eruption / Water Spout / Dragon Energy / Endeavor / Pain Split /
-/// Super Fang / Ruination / Final Gambit — should ideally hash with
-/// EXACT HP because BP / fixed damage scales linearly with HP fraction
-/// (see design doc §1.C). PR-K1 bucketing is **lossy** for those
-/// holders. PR-K2 will gate per-Pokemon on `has_continuous_hp_move`
-/// and fall back to exact HP when any active mon owns one (Strategy A
-/// in design doc §4).
-///
 /// FIXME(gluttony): when Gluttony lands, the B8/B9 pinch-berry
 /// boundaries shift from 1/4 to 1/2 for Gluttony holders. Bucket 1's
 /// justification then needs an item-conditional refinement. Tracked
 /// in design doc §6 risk R6.
-fn hp_bucket(current_hp: u16, max_hp: u16) -> u8 {
+fn hp_bucket_coarse(current_hp: u16, max_hp: u16) -> u8 {
     if current_hp == 0 { return 0; }
     if current_hp == max_hp { return 7; }
     let hp = current_hp as u32;
@@ -115,6 +106,78 @@ fn hp_bucket(current_hp: u16, max_hp: u16) -> u8 {
     if 100 * hp <= 33 * max { return 3; }     // (1/3, 33%]
     if 2 * hp <= max { return 4; }            // (33%, 1/2]
     5                                          // (1/2, max)
+}
+
+/// PR-K2 — Pokemon whose user-side BP / damage scales with `current_hp`
+/// as a *monotone* function of HP fraction. Bucketing by the engine's
+/// own `floor(150 * hp / max)` formula collapses HP values that produce
+/// identical downstream BP / fixed-damage, preserving solver semantics.
+///
+/// - Eruption / Water Spout / Dragon Energy: `BP = max(1, floor(150 * hp / max))`
+///   (see `damage.rs:898-910`).
+/// - Final Gambit: damage = `attacker.current_hp` — every distinct HP
+///   value is a distinct damage value, but `floor(150 * hp / max)` is
+///   monotone non-decreasing in hp so HP values that share a quotient
+///   also share the resulting state's downstream branching equivalence
+///   class (the resulting defender HP collapses by the same hp_bucket
+///   rule on the other side).
+///
+/// See `docs/design/threshold-aware-canonical-hash.md` §4 Strategy A.
+const SCALING_HP_USER_MOVES: &[u16] = &[
+    crate::data::move_id::ERUPTION,
+    crate::data::move_id::WATERSPOUT,
+    crate::data::move_id::DRAGONENERGY,
+    crate::data::move_id::FINALGAMBIT,
+];
+
+/// PR-K2 — Pokemon whose move resolution reads `current_hp` (own or
+/// target) in a way that is NOT monotone in hp fraction (Endeavor sets
+/// defender.hp = attacker.hp; Pain Split averages; Super Fang/Ruination
+/// deal `target.hp / 2` fixed damage where parity matters). Bucketing
+/// would silently merge states with distinct post-resolution HP.
+///
+/// See `docs/design/threshold-aware-canonical-hash.md` §4 Strategy A.
+const EXACT_HP_USER_MOVES: &[u16] = &[
+    crate::data::move_id::ENDEAVOR,
+    crate::data::move_id::PAINSPLIT,
+    crate::data::move_id::SUPERFANG,
+    crate::data::move_id::RUINATION,
+];
+
+#[inline]
+fn has_any_move(mon: &Pokemon, moves: &[u16]) -> bool {
+    for m in mon.moves.iter() {
+        if moves.contains(m) {
+            return true;
+        }
+    }
+    false
+}
+
+/// PR-K2 — per-Pokemon classification. Pokemon carrying continuous-HP
+/// moves (§1.C in `docs/design/threshold-aware-canonical-hash.md`) get
+/// either an exact HP hash or a `floor(150 * hp / max)` scaling bucket,
+/// per move family. Pokemon without any such move use PR-K1's universal
+/// 8-bucket coarse projection.
+///
+/// Returns `u32` (was `u8` in PR-K1) so it can accommodate exact HP
+/// values up to `u16::MAX`. The 8 PR-K1 indices (0..=7) are still used
+/// for the coarse path; scaling holders emit values in `[0, 150]`;
+/// exact holders emit values in `[0, 65535]`. The three subdomains
+/// overlap numerically, but the path taken is a deterministic function
+/// of `mon.moves`, so two states whose moveset is identical and whose
+/// HP is in the same bucket / scaling class / exact value collide
+/// correctly. States with different movesets are already distinguished
+/// by the serialized `moves` field on the same Pokemon view.
+fn hp_bucket(mon: &Pokemon) -> u32 {
+    if has_any_move(mon, EXACT_HP_USER_MOVES) {
+        return mon.current_hp as u32;
+    }
+    if has_any_move(mon, SCALING_HP_USER_MOVES) {
+        let max = (mon.stats.hp as u32).max(1);
+        return (150u32 * mon.current_hp as u32) / max;
+    }
+    hp_bucket_coarse(mon.current_hp, mon.stats.hp) as u32
 }
 
 impl<'a> Serialize for CanonicalPokemonView<'a> {
@@ -146,7 +209,12 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         // Endeavor / Pain Split / Super Fang / Ruination / Final
         // Gambit) — PR-K2 fixes via per-Pokemon classification.
         // See `hp_bucket` and `docs/design/threshold-aware-canonical-hash.md`.
-        s.serialize_field("hp_bucket", &hp_bucket(p.current_hp, p.stats.hp))?;
+        // PR-K2 — per-Pokemon classification: Eruption/WaterSpout/
+        // DragonEnergy/FinalGambit users hash with `floor(150 * hp / max)`;
+        // Endeavor/PainSplit/SuperFang/Ruination users hash EXACT hp;
+        // everyone else uses PR-K1's 8-bucket coarse projection. The
+        // emitted field type widens to u32 to cover the exact-HP path.
+        s.serialize_field("hp_bucket", &hp_bucket(p))?;
         s.serialize_field("ivs", &p.ivs)?;
         s.serialize_field("evs", &p.evs)?;
         s.serialize_field("nature_id", &p.nature_id)?;
@@ -453,9 +521,9 @@ mod tests {
 
     #[test]
     fn hp_bucket_at_zero() {
-        assert_eq!(hp_bucket(0, 100), 0);
-        assert_eq!(hp_bucket(0, 1), 0);
-        assert_eq!(hp_bucket(0, 65535), 0);
+        assert_eq!(hp_bucket_coarse(0, 100), 0);
+        assert_eq!(hp_bucket_coarse(0, 1), 0);
+        assert_eq!(hp_bucket_coarse(0, 65535), 0);
     }
 
     #[test]
@@ -466,9 +534,9 @@ mod tests {
         // "Sturdy/Sash post-trigger boundary" the prompt cites is
         // captured implicitly: hp==1 lives strictly inside bucket 1,
         // never colliding with bucket 0 (KO) or bucket 7 (full).
-        assert_eq!(hp_bucket(1, 100), 1);
+        assert_eq!(hp_bucket_coarse(1, 100), 1);
         // At max=1, hp==1 IS full HP — bucket 7.
-        assert_eq!(hp_bucket(1, 1), 7);
+        assert_eq!(hp_bucket_coarse(1, 1), 7);
     }
 
     #[test]
@@ -478,19 +546,19 @@ mod tests {
         // of the next, exercising the <= vs < discipline from §3.
 
         // Bucket 0 — hp == 0.
-        assert_eq!(hp_bucket(0, 100), 0);
+        assert_eq!(hp_bucket_coarse(0, 100), 0);
 
         // Bucket 1 — (0, 1/4] → hp in 1..=25.
-        assert_eq!(hp_bucket(1, 100), 1);
-        assert_eq!(hp_bucket(25, 100), 1);   // 4*25=100 <= 100 → bucket 1
+        assert_eq!(hp_bucket_coarse(1, 100), 1);
+        assert_eq!(hp_bucket_coarse(25, 100), 1);   // 4*25=100 <= 100 → bucket 1
         // Boundary: hp=26 → 4*26=104 > 100 → leaves bucket 1.
-        assert_ne!(hp_bucket(26, 100), 1);
+        assert_ne!(hp_bucket_coarse(26, 100), 1);
 
         // Bucket 2 — (1/4, 1/3] → hp in 26..=33.
-        assert_eq!(hp_bucket(26, 100), 2);
-        assert_eq!(hp_bucket(33, 100), 2);   // 3*33=99 <= 100 → bucket 2
+        assert_eq!(hp_bucket_coarse(26, 100), 2);
+        assert_eq!(hp_bucket_coarse(33, 100), 2);   // 3*33=99 <= 100 → bucket 2
         // Boundary: hp=34 → 3*34=102 > 100 → leaves bucket 2.
-        assert_ne!(hp_bucket(34, 100), 2);
+        assert_ne!(hp_bucket_coarse(34, 100), 2);
 
         // Bucket 3 — (1/3, 33/100]. Mathematically degenerate on
         // integers: `100*hp <= 33*max` implies `hp <= 33*max/100 <
@@ -505,40 +573,40 @@ mod tests {
         for max in [1u16, 50, 100, 200, 300, 500, 1000, 65535] {
             for hp in 0..=max {
                 assert_ne!(
-                    hp_bucket(hp, max), 3,
+                    hp_bucket_coarse(hp, max), 3,
                     "bucket 3 must be unreachable (max={max}, hp={hp})"
                 );
             }
         }
 
         // Bucket 4 — (33%, 1/2] → at max=100, hp in 34..=50.
-        assert_eq!(hp_bucket(34, 100), 4);
-        assert_eq!(hp_bucket(50, 100), 4);   // 2*50=100 <= 100 → bucket 4
+        assert_eq!(hp_bucket_coarse(34, 100), 4);
+        assert_eq!(hp_bucket_coarse(50, 100), 4);   // 2*50=100 <= 100 → bucket 4
         // Boundary: hp=51 → 2*51=102 > 100 → leaves bucket 4.
-        assert_ne!(hp_bucket(51, 100), 4);
+        assert_ne!(hp_bucket_coarse(51, 100), 4);
 
         // Bucket 5 — (1/2, max) → at max=100, hp in 51..=99.
-        assert_eq!(hp_bucket(51, 100), 5);
-        assert_eq!(hp_bucket(99, 100), 5);
+        assert_eq!(hp_bucket_coarse(51, 100), 5);
+        assert_eq!(hp_bucket_coarse(99, 100), 5);
 
         // Bucket 7 — hp == max.
-        assert_eq!(hp_bucket(100, 100), 7);
+        assert_eq!(hp_bucket_coarse(100, 100), 7);
     }
 
     #[test]
     fn hp_bucket_max_hp_full() {
-        assert_eq!(hp_bucket(100, 100), 7);
-        assert_eq!(hp_bucket(1, 1), 7);
-        assert_eq!(hp_bucket(65535, 65535), 7);
+        assert_eq!(hp_bucket_coarse(100, 100), 7);
+        assert_eq!(hp_bucket_coarse(1, 1), 7);
+        assert_eq!(hp_bucket_coarse(65535, 65535), 7);
     }
 
     #[test]
     fn hp_bucket_off_by_one() {
         // Boundary at 1/2: 50/100 → bucket 4 (Sitrus eats — `<=`),
         // 49/100 → bucket 4 (still ≤50%), 51/100 → bucket 5 (>50%).
-        assert_eq!(hp_bucket(50, 100), 4);
-        assert_eq!(hp_bucket(49, 100), 4);
-        assert_eq!(hp_bucket(51, 100), 5);
+        assert_eq!(hp_bucket_coarse(50, 100), 4);
+        assert_eq!(hp_bucket_coarse(49, 100), 4);
+        assert_eq!(hp_bucket_coarse(51, 100), 5);
     }
 
     #[test]
@@ -554,8 +622,8 @@ mod tests {
         // Garchomp; pick HP=130 and HP=160 — both > max/2, both < max.
         a.p1.team[a0].current_hp = max - 50;
         b.p1.team[a0].current_hp = max - 20;
-        assert_eq!(hp_bucket(max - 50, max), 5);
-        assert_eq!(hp_bucket(max - 20, max), 5);
+        assert_eq!(hp_bucket_coarse(max - 50, max), 5);
+        assert_eq!(hp_bucket_coarse(max - 20, max), 5);
         assert_eq!(
             a.canonical_hash(),
             b.canonical_hash(),
@@ -573,8 +641,8 @@ mod tests {
         let max = a.p1.team[a0].stats.hp;
         a.p1.team[a0].current_hp = max - 1;    // bucket 5
         b.p1.team[a0].current_hp = max / 2;    // bucket 4
-        assert_eq!(hp_bucket(max - 1, max), 5);
-        assert_eq!(hp_bucket(max / 2, max), 4);
+        assert_eq!(hp_bucket_coarse(max - 1, max), 5);
+        assert_eq!(hp_bucket_coarse(max / 2, max), 4);
         assert_ne!(
             a.canonical_hash(),
             b.canonical_hash(),
@@ -667,5 +735,125 @@ mod tests {
         assert_eq!(h_b, c.canonical_hash());
         // And differs from the populated baseline.
         assert_ne!(a.canonical_hash(), h_b);
+    }
+
+    // ----- PR-K2 — per-Pokemon continuous-HP classification -----
+
+    /// Build a minimal `Pokemon` for unit-testing `hp_bucket`. We only
+    /// need `current_hp`, `stats.hp`, and `moves`; everything else can
+    /// stay at the team-builder defaults from the fixture above.
+    fn make_mon_with_moves(moves: [u16; 4], cur: u16, max: u16) -> Pokemon {
+        let mut b = fixture();
+        let a0 = b.p1.active[0] as usize;
+        let p = &mut b.p1.team[a0];
+        p.moves = moves;
+        p.stats.hp = max;
+        p.current_hp = cur;
+        b.p1.team.remove(a0)
+    }
+
+    #[test]
+    fn hp_bucket_unchanged_for_normal_movesets() {
+        // No continuous-HP move → bucket equals PR-K1 coarse value
+        // (as u32). Pick a representative HP in bucket 5.
+        use crate::data::move_id::{EARTHQUAKE, DRAGONCLAW, AERIALACE, IRONHEAD};
+        let mon = make_mon_with_moves(
+            [EARTHQUAKE, DRAGONCLAW, AERIALACE, IRONHEAD],
+            120,
+            150,
+        );
+        assert_eq!(hp_bucket(&mon), hp_bucket_coarse(120, 150) as u32);
+        assert_eq!(hp_bucket(&mon), 5);
+    }
+
+    #[test]
+    fn hp_bucket_scales_for_eruption_user() {
+        // Eruption user: bucket = floor(150 * hp / max). HP 100/100
+        // gives 150; HP 99/100 gives 148 — distinct values, so two
+        // states whose HP differ by 1 within bucket-5 still diverge.
+        use crate::data::move_id::{ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT};
+        let full = make_mon_with_moves([ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT], 100, 100);
+        let one_less = make_mon_with_moves([ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT], 99, 100);
+        assert_eq!(hp_bucket(&full), 150);
+        assert_eq!(hp_bucket(&one_less), 148);
+        assert_ne!(hp_bucket(&full), hp_bucket(&one_less));
+    }
+
+    #[test]
+    fn hp_bucket_exact_for_endeavor_user() {
+        // Endeavor user: every distinct current_hp maps to a distinct
+        // bucket. HP 73/100 vs 76/100 must NOT collide (they would
+        // collide under PR-K1's coarse bucket 5).
+        use crate::data::move_id::{ENDEAVOR, QUICKATTACK, PROTECT, REVERSAL};
+        let lo = make_mon_with_moves([ENDEAVOR, QUICKATTACK, PROTECT, REVERSAL], 73, 100);
+        let hi = make_mon_with_moves([ENDEAVOR, QUICKATTACK, PROTECT, REVERSAL], 76, 100);
+        assert_eq!(hp_bucket(&lo), 73);
+        assert_eq!(hp_bucket(&hi), 76);
+        assert_ne!(hp_bucket(&lo), hp_bucket(&hi));
+    }
+
+    #[test]
+    fn hp_bucket_scaling_collapses_within_band() {
+        // Eruption user with max_hp = 300: floor(150 * 150 / 300) = 75
+        // and floor(150 * 151 / 300) = 75 too. So HP 150 and 151 collapse
+        // to the same scaling bucket — confirming the dedup behavior.
+        use crate::data::move_id::{ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT};
+        let a = make_mon_with_moves([ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT], 150, 300);
+        let b = make_mon_with_moves([ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT], 151, 300);
+        assert_eq!(hp_bucket(&a), 75);
+        assert_eq!(hp_bucket(&b), 75);
+        assert_eq!(hp_bucket(&a), hp_bucket(&b));
+    }
+
+    #[test]
+    fn eruption_user_hash_diverges_for_in_bucket_hp_delta() {
+        // End-to-end: two battles whose Pokemon-1 has Eruption + 1 HP
+        // delta inside PR-K1's bucket 5 must produce different
+        // canonical hashes — i.e. the per-Pokemon classification is
+        // engaged at the serialize site.
+        use crate::data::move_id::{ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT};
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        a.p1.team[a0].moves = [ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT];
+        b.p1.team[a0].moves = [ERUPTION, EARTHQUAKE, ROCKSLIDE, PROTECT];
+        let max = a.p1.team[a0].stats.hp;
+        // Pick HP values whose `floor(150 * hp / max)` differs by at
+        // least 1. With max ≈ 183 (Garchomp), one HP unit is worth
+        // ~0.82 scaling units, so a delta of 2 reliably crosses a
+        // floor boundary (149 vs 147 in the example).
+        let hp_a = max - 1;
+        let hp_b = max - 3;
+        let scale_a = (150u32 * hp_a as u32) / max as u32;
+        let scale_b = (150u32 * hp_b as u32) / max as u32;
+        assert_ne!(scale_a, scale_b, "fixture should pick HPs in distinct scaling buckets");
+        a.p1.team[a0].current_hp = hp_a;
+        b.p1.team[a0].current_hp = hp_b;
+        // Both still in PR-K1's bucket 5 (>1/2, <max), but the
+        // scaling formula gives distinct values.
+        assert_eq!(hp_bucket_coarse(hp_a, max), 5);
+        assert_eq!(hp_bucket_coarse(hp_b, max), 5);
+        assert_ne!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "Eruption user with 1 HP delta inside bucket 5 must diverge",
+        );
+    }
+
+    #[test]
+    fn non_continuous_user_hash_collapses_within_bucket() {
+        // Sanity check the contrapositive: a Pokemon WITHOUT a
+        // continuous-HP move keeps PR-K1's collapse behavior — two
+        // in-bucket HP values still hash equal.
+        use crate::data::move_id::{EARTHQUAKE, DRAGONCLAW, AERIALACE, IRONHEAD};
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        a.p1.team[a0].moves = [EARTHQUAKE, DRAGONCLAW, AERIALACE, IRONHEAD];
+        b.p1.team[a0].moves = [EARTHQUAKE, DRAGONCLAW, AERIALACE, IRONHEAD];
+        let max = a.p1.team[a0].stats.hp;
+        a.p1.team[a0].current_hp = max - 5;
+        b.p1.team[a0].current_hp = max - 6;
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
     }
 }
