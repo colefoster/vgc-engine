@@ -82,7 +82,8 @@ pub use endgame::{
 };
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
-    endgame_solve, endgame_solve_with_tt, EstReason, Provenance, SolvedNode, SolverConfig,
+    endgame_solve, endgame_solve_with_tt, endgame_solve_with_tt_stats, EstReason, Provenance,
+    SolvedNode, SolverConfig, SolverStats,
 };
 
 /// Stable ordinal for [`RngDecision`] used to sort discovered miss-log
