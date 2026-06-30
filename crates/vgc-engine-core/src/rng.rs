@@ -271,10 +271,18 @@ pub enum DrawSpace {
     /// Uniform damage bucket `0..16` (`RngEvent::DamageRoll`).
     UniformDamage,
     /// Uniform percent roll `1..=100` (`RngEvent::PercentRoll`).
-    /// The hit-threshold (or secondary-proc threshold) is caller-context;
-    /// this seam records only the raw 100-outcome uniform. The caller
-    /// collapses to hit/miss after dedup.
-    UniformPercent,
+    ///
+    /// `threshold` records the comparison threshold the engine used at the
+    /// draw site, when known:
+    /// - `None` — legacy / unmigrated site. The enumerator must expand to
+    ///   the full 100-outcome uniform.
+    /// - `Some(t)` — the engine compared the roll against `t`, with the
+    ///   convention `roll <= t` ⇒ "hit" branch, `roll > t` ⇒ "miss" branch
+    ///   (rolls `1..=t` take one branch, `t+1..=100` take the other). A
+    ///   future enumerator pass may collapse the 100 outcomes into two
+    ///   weighted buckets (`t/100` hit, `(100-t)/100` miss) without
+    ///   changing the recorded probability mass.
+    UniformPercent { threshold: Option<u8> },
     /// Crit Bernoulli (`num/denom` for `true`). Stage 3+ guaranteed crits
     /// are NOT recorded (no random draw); same convention as PS / Oracle.
     Crit { num: u32, denom: u32 },
@@ -946,7 +954,31 @@ impl Rng {
     }
 
     /// Convenience: percent roll (1..=100). PS uses 1..=100 inclusive.
+    ///
+    /// This is the legacy entry point — the recorded [`DrawSpace`] carries
+    /// `threshold: None`, meaning "unmigrated site, enumerate the full
+    /// 100-outcome uniform." Call sites that know the comparison
+    /// threshold should use [`Rng::percent_1_100_t`] instead so a future
+    /// outcome-frontier collapse can use the 2-bucket form.
     pub fn percent_1_100(&mut self) -> u8 {
+        self.percent_1_100_inner(None)
+    }
+
+    /// Same as [`Rng::percent_1_100`], but records the comparison
+    /// threshold the engine is about to apply to the drawn value.
+    ///
+    /// `threshold` is the value used in a `roll <= threshold` ("hit") test
+    /// at the call site — typically the move's effective accuracy, a
+    /// secondary's `chance`, or a fixed-percent gate (Custap-style 30%,
+    /// King's Rock 10%, …). Behaviorally identical to the no-threshold
+    /// form; the threshold lives only in the `Recording` / `OracleKeyed`
+    /// miss-log so the enumeration layer can collapse the 100-outcome
+    /// uniform into a 2-bucket (hit/miss) frontier.
+    pub fn percent_1_100_t(&mut self, threshold: u8) -> u8 {
+        self.percent_1_100_inner(Some(threshold))
+    }
+
+    fn percent_1_100_inner(&mut self, threshold: Option<u8>) -> u8 {
         match self {
             Rng::Splitmix(_) => ((self.next_u64() % 100) as u8) + 1,
             Rng::Oracle(state) => match state.pop() {
@@ -982,7 +1014,7 @@ impl Rng {
                         let v = ((k.fallback() % 100) as u8) + 1;
                         k.record_miss(
                             decision,
-                            DrawSpace::UniformPercent,
+                            DrawSpace::UniformPercent { threshold },
                             RngEvent::PercentRoll(v),
                         );
                         v
@@ -992,7 +1024,7 @@ impl Rng {
             Rng::Recording(r) => {
                 let v = ((r.step() % 100) as u8) + 1;
                 let decision = r.ctx_decision;
-                r.push(decision, DrawSpace::UniformPercent, RngEvent::PercentRoll(v));
+                r.push(decision, DrawSpace::UniformPercent { threshold }, RngEvent::PercentRoll(v));
                 v
             }
         }
@@ -1722,7 +1754,7 @@ mod tests {
         assert_eq!(log[0].key.target, 2);
         assert_eq!(log[0].key.move_id, 42);
 
-        assert_eq!(log[1].space, DrawSpace::UniformPercent);
+        assert_eq!(log[1].space, DrawSpace::UniformPercent { threshold: None });
         assert_eq!(log[1].drawn, RngEvent::PercentRoll(p));
         assert_eq!(log[1].key.decision, RngDecision::Accuracy);
 
@@ -1805,5 +1837,67 @@ mod tests {
         assert_eq!(replay.crit_with_stage(0), c);
         assert_eq!(replay.range(13), v);
         assert_eq!(replay.unmatched_draws(), Some(0), "every site keyed cleanly");
+    }
+
+    #[test]
+    fn recording_percent_threshold_some() {
+        // percent_1_100_t records the threshold on DrawSpace::UniformPercent
+        // so a future enumerator pass can collapse the 100-outcome uniform
+        // into a 2-bucket hit/miss frontier.
+        let mut r = Rng::recording(123);
+        r.set_move_context(1, 0, 7, 2);
+        r.set_decision(RngDecision::Accuracy);
+        let v = r.percent_1_100_t(85);
+        let log = r.recording_log().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0].space,
+            DrawSpace::UniformPercent { threshold: Some(85) }
+        );
+        assert_eq!(log[0].drawn, RngEvent::PercentRoll(v));
+        assert_eq!(log[0].key.decision, RngDecision::Accuracy);
+    }
+
+    #[test]
+    fn recording_percent_threshold_none() {
+        // Legacy percent_1_100 still records `threshold: None`, marking the
+        // site as "unmigrated — enumerate the full 100-outcome uniform."
+        let mut r = Rng::recording(456);
+        r.set_move_context(1, 0, 7, 2);
+        r.set_decision(RngDecision::Secondary);
+        let _ = r.percent_1_100();
+        let log = r.recording_log().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0].space,
+            DrawSpace::UniformPercent { threshold: None }
+        );
+    }
+
+    #[test]
+    fn recording_percent_threshold_roundtrips_through_oracle_keyed() {
+        // Record with a threshold, build an OracleKeyed table from the log,
+        // and replay — the drawn value must reproduce byte-for-byte. The
+        // threshold annotation is metadata for enumeration; it must not
+        // affect the value the replay RNG returns.
+        let mut r = Rng::recording(0xC0FF_EE00);
+        r.set_move_context(2, 1, 33, 3);
+        r.set_decision(RngDecision::Accuracy);
+        let v = r.percent_1_100_t(95);
+        let log = r.take_recording_log().unwrap();
+        assert!(matches!(
+            log[0].space,
+            DrawSpace::UniformPercent { threshold: Some(95) }
+        ));
+
+        let mut t: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for entry in &log {
+            t.entry(entry.key).or_default().push_back(entry.drawn);
+        }
+        let mut replay = Rng::oracle_keyed(t, 0);
+        replay.set_move_context(2, 1, 33, 3);
+        replay.set_decision(RngDecision::Accuracy);
+        assert_eq!(replay.percent_1_100_t(95), v);
+        assert_eq!(replay.unmatched_draws(), Some(0));
     }
 }
