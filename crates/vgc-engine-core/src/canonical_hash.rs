@@ -64,6 +64,59 @@ use crate::weather::Weather;
 ///   volatile bitset respectively), so they're inert here too.
 struct CanonicalPokemonView<'a>(&'a Pokemon);
 
+/// PR-K1 — universal coarse 8-bucket HP hash projection.
+///
+/// Maps `(current_hp, max_hp)` to a bucket index whose boundaries are
+/// the union of every `if hp <op> threshold` site in the engine. Two
+/// HP values in the same bucket take the same branch at every consult
+/// site, so collapsing them in the TT key is lossless within engine
+/// semantics for Pokemon that don't carry continuous-HP-fraction moves.
+///
+/// See `docs/design/threshold-aware-canonical-hash.md` §3 for the
+/// soundness analysis and §1 catalog of consult sites.
+///
+/// **Boundaries (integer-safe predicates, identical to engine code):**
+///
+/// | Bucket | Predicate                              | Range          |
+/// |--------|----------------------------------------|----------------|
+/// | 0      | `hp == 0`                              | KO             |
+/// | 1      | `0 < hp && 4*hp <= max`                | `(0, 1/4]`     |
+/// | 2      | `4*hp > max && 3*hp <= max`            | `(1/4, 1/3]`   |
+/// | 3      | `3*hp > max && 100*hp <= 33*max`       | `(1/3, 33%]`   |
+/// | 4      | `100*hp > 33*max && 2*hp <= max`       | `(33%, 1/2]`   |
+/// | 5      | `2*hp > max && hp < max`               | `(1/2, max)`   |
+/// | 6      | (reserved — unused in coarse form)     |                |
+/// | 7      | `hp == max`                            | full HP        |
+///
+/// Bucket 6 is reserved for a future Multiscale-half refinement that
+/// could split (1/2, max) — kept unused so the index space matches the
+/// 8-slot inventory in the design doc §3.
+///
+/// **Known limitation (PR-K1):** Pokemon carrying continuous-HP moves —
+/// Eruption / Water Spout / Dragon Energy / Endeavor / Pain Split /
+/// Super Fang / Ruination / Final Gambit — should ideally hash with
+/// EXACT HP because BP / fixed damage scales linearly with HP fraction
+/// (see design doc §1.C). PR-K1 bucketing is **lossy** for those
+/// holders. PR-K2 will gate per-Pokemon on `has_continuous_hp_move`
+/// and fall back to exact HP when any active mon owns one (Strategy A
+/// in design doc §4).
+///
+/// FIXME(gluttony): when Gluttony lands, the B8/B9 pinch-berry
+/// boundaries shift from 1/4 to 1/2 for Gluttony holders. Bucket 1's
+/// justification then needs an item-conditional refinement. Tracked
+/// in design doc §6 risk R6.
+fn hp_bucket(current_hp: u16, max_hp: u16) -> u8 {
+    if current_hp == 0 { return 0; }
+    if current_hp == max_hp { return 7; }
+    let hp = current_hp as u32;
+    let max = max_hp as u32;
+    if 4 * hp <= max { return 1; }            // (0, 1/4]
+    if 3 * hp <= max { return 2; }            // (1/4, 1/3]
+    if 100 * hp <= 33 * max { return 3; }     // (1/3, 33%]
+    if 2 * hp <= max { return 4; }            // (33%, 1/2]
+    5                                          // (1/2, max)
+}
+
 impl<'a> Serialize for CanonicalPokemonView<'a> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let p = self.0;
@@ -80,7 +133,20 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("item_id", &p.item_id)?;
         s.serialize_field("consumed_item", &p.consumed_item)?;
         s.serialize_field("stats", &p.stats)?;
-        s.serialize_field("current_hp", &p.current_hp)?;
+        // PR-K1 — hash the coarse 8-bucket HP projection, NOT exact HP.
+        // The 8 buckets are unions of the open intervals between every
+        // engine-consulted HP threshold (Sturdy / Sash / Multiscale /
+        // Sitrus / Oran / Berserk / Anger Shell / Belly Drum / Fillet
+        // Away / Custap / pinch berries / Defeatist / Overgrow-family /
+        // Substitute cost / Clangorous Soul / KO). Two HP values in
+        // the same bucket produce identical downstream branches at
+        // every consult site, so collapsing them in the TT key is
+        // lossless within engine semantics. Lossy for Pokemon carrying
+        // continuous-HP moves (Eruption / Water Spout / Dragon Energy /
+        // Endeavor / Pain Split / Super Fang / Ruination / Final
+        // Gambit) — PR-K2 fixes via per-Pokemon classification.
+        // See `hp_bucket` and `docs/design/threshold-aware-canonical-hash.md`.
+        s.serialize_field("hp_bucket", &hp_bucket(p.current_hp, p.stats.hp))?;
         s.serialize_field("ivs", &p.ivs)?;
         s.serialize_field("evs", &p.evs)?;
         s.serialize_field("nature_id", &p.nature_id)?;
@@ -370,11 +436,150 @@ mod tests {
 
     #[test]
     fn active_hp_change_diverges() {
+        // Cross-bucket HP change MUST diverge: full HP (bucket 7) vs
+        // some lower bucket. Pick a drop large enough to leave the
+        // bucket (50% / bucket 4 by construction — 1 HP is bucket 5
+        // which would also diverge, but 50% is the load-bearing
+        // boundary that exercises Sitrus/Defeatist/Belly Drum etc.).
         let a = fixture();
         let mut b = fixture();
         let a0 = b.p1.active[0] as usize;
-        b.p1.team[a0].current_hp = b.p1.team[a0].current_hp.saturating_sub(10);
+        let max = b.p1.team[a0].stats.hp;
+        b.p1.team[a0].current_hp = max / 2;
         assert_ne!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    // ----- PR-K1 — hp_bucket tests -----
+
+    #[test]
+    fn hp_bucket_at_zero() {
+        assert_eq!(hp_bucket(0, 100), 0);
+        assert_eq!(hp_bucket(0, 1), 0);
+        assert_eq!(hp_bucket(0, 65535), 0);
+    }
+
+    #[test]
+    fn hp_bucket_at_one() {
+        // hp == 1: just above KO. Engine-relevant for Sturdy / Focus
+        // Sash post-trigger and for Substitute-cost gating. With
+        // max=100, 4*1=4 <= 100 → bucket 1 (the <=1/4 bucket). The
+        // "Sturdy/Sash post-trigger boundary" the prompt cites is
+        // captured implicitly: hp==1 lives strictly inside bucket 1,
+        // never colliding with bucket 0 (KO) or bucket 7 (full).
+        assert_eq!(hp_bucket(1, 100), 1);
+        // At max=1, hp==1 IS full HP — bucket 7.
+        assert_eq!(hp_bucket(1, 1), 7);
+    }
+
+    #[test]
+    fn hp_bucket_at_each_boundary() {
+        // max=100 has clean integer boundaries for every predicate.
+        // We assert at the high end of every bucket and the low end
+        // of the next, exercising the <= vs < discipline from §3.
+
+        // Bucket 0 — hp == 0.
+        assert_eq!(hp_bucket(0, 100), 0);
+
+        // Bucket 1 — (0, 1/4] → hp in 1..=25.
+        assert_eq!(hp_bucket(1, 100), 1);
+        assert_eq!(hp_bucket(25, 100), 1);   // 4*25=100 <= 100 → bucket 1
+        // Boundary: hp=26 → 4*26=104 > 100 → leaves bucket 1.
+        assert_ne!(hp_bucket(26, 100), 1);
+
+        // Bucket 2 — (1/4, 1/3] → hp in 26..=33.
+        assert_eq!(hp_bucket(26, 100), 2);
+        assert_eq!(hp_bucket(33, 100), 2);   // 3*33=99 <= 100 → bucket 2
+        // Boundary: hp=34 → 3*34=102 > 100 → leaves bucket 2.
+        assert_ne!(hp_bucket(34, 100), 2);
+
+        // Bucket 3 — (1/3, 33/100]. Mathematically degenerate on
+        // integers: `100*hp <= 33*max` implies `hp <= 33*max/100 <
+        // max/3`, so the window between bucket 2's close
+        // (`3*hp <= max`) and bucket 3's close (`100*hp <= 33*max`)
+        // is empty for every integer max. The bucket index is
+        // reserved for predicate-chain symmetry with the Clangorous
+        // Soul 33/100 gate; in practice any hp satisfying `3*hp > max`
+        // also satisfies `100*hp > 33*max` and falls straight through
+        // to the bucket-4 check. Asserting "no integer hp lands in
+        // bucket 3" is the right invariant.
+        for max in [1u16, 50, 100, 200, 300, 500, 1000, 65535] {
+            for hp in 0..=max {
+                assert_ne!(
+                    hp_bucket(hp, max), 3,
+                    "bucket 3 must be unreachable (max={max}, hp={hp})"
+                );
+            }
+        }
+
+        // Bucket 4 — (33%, 1/2] → at max=100, hp in 34..=50.
+        assert_eq!(hp_bucket(34, 100), 4);
+        assert_eq!(hp_bucket(50, 100), 4);   // 2*50=100 <= 100 → bucket 4
+        // Boundary: hp=51 → 2*51=102 > 100 → leaves bucket 4.
+        assert_ne!(hp_bucket(51, 100), 4);
+
+        // Bucket 5 — (1/2, max) → at max=100, hp in 51..=99.
+        assert_eq!(hp_bucket(51, 100), 5);
+        assert_eq!(hp_bucket(99, 100), 5);
+
+        // Bucket 7 — hp == max.
+        assert_eq!(hp_bucket(100, 100), 7);
+    }
+
+    #[test]
+    fn hp_bucket_max_hp_full() {
+        assert_eq!(hp_bucket(100, 100), 7);
+        assert_eq!(hp_bucket(1, 1), 7);
+        assert_eq!(hp_bucket(65535, 65535), 7);
+    }
+
+    #[test]
+    fn hp_bucket_off_by_one() {
+        // Boundary at 1/2: 50/100 → bucket 4 (Sitrus eats — `<=`),
+        // 49/100 → bucket 4 (still ≤50%), 51/100 → bucket 5 (>50%).
+        assert_eq!(hp_bucket(50, 100), 4);
+        assert_eq!(hp_bucket(49, 100), 4);
+        assert_eq!(hp_bucket(51, 100), 5);
+    }
+
+    #[test]
+    fn hash_collapses_for_same_bucket() {
+        // Two battles differing only in defender HP within the same
+        // bucket must hash equal — the load-bearing PR-K1 invariant.
+        // Pick the wide (1/2, max) band on Garchomp's max_hp.
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        let max = a.p1.team[a0].stats.hp;
+        // Both inside bucket 5: (1/2, max). max=183 for L50 adamant
+        // Garchomp; pick HP=130 and HP=160 — both > max/2, both < max.
+        a.p1.team[a0].current_hp = max - 50;
+        b.p1.team[a0].current_hp = max - 20;
+        assert_eq!(hp_bucket(max - 50, max), 5);
+        assert_eq!(hp_bucket(max - 20, max), 5);
+        assert_eq!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "HP differences within bucket 5 must collapse in the hash"
+        );
+    }
+
+    #[test]
+    fn hash_distinguishes_across_buckets() {
+        // Two battles whose defender HP is in different buckets must
+        // hash differently. Pick bucket 5 (>50%) vs bucket 4 (≤50%).
+        let mut a = fixture();
+        let mut b = fixture();
+        let a0 = a.p1.active[0] as usize;
+        let max = a.p1.team[a0].stats.hp;
+        a.p1.team[a0].current_hp = max - 1;    // bucket 5
+        b.p1.team[a0].current_hp = max / 2;    // bucket 4
+        assert_eq!(hp_bucket(max - 1, max), 5);
+        assert_eq!(hp_bucket(max / 2, max), 4);
+        assert_ne!(
+            a.canonical_hash(),
+            b.canonical_hash(),
+            "cross-bucket HP changes must diverge in the hash"
+        );
     }
 
     #[test]
