@@ -189,7 +189,23 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
             (RngEvent::Crit(true), num, denom),
             (RngEvent::Crit(false), denom - num, denom),
         ],
-        DrawSpace::Tiebreak => vec![(drawn, 1, 1)],
+        DrawSpace::Tiebreak { speeds_tied } => {
+            if speeds_tied {
+                // PR-E: at a real speed tie the nonce is the deciding sort
+                // key, so binary-enumerate both orderings (1/2 each). The
+                // recorded value covers one branch; the alt value
+                // comparator-flips against the partner tied entry's
+                // recorded nonce (`0` vs `u64::MAX` straddle every other
+                // recorded u64).
+                let alt = match drawn {
+                    RngEvent::Tiebreak(0) => RngEvent::Tiebreak(u64::MAX),
+                    _ => RngEvent::Tiebreak(0),
+                };
+                vec![(drawn, 1, 2), (alt, 1, 2)]
+            } else {
+                vec![(drawn, 1, 1)]
+            }
+        }
     }
 }
 
@@ -633,7 +649,7 @@ mod tests {
         // RngKey and a DrawSpace consistent with their RngEvent.
         for entry in &log {
             match (entry.space, entry.drawn) {
-                (DrawSpace::Tiebreak, RngEvent::Tiebreak(_)) => {}
+                (DrawSpace::Tiebreak { .. }, RngEvent::Tiebreak(_)) => {}
                 (DrawSpace::UniformRange(n), RngEvent::Range(v)) => assert!(v < n),
                 (DrawSpace::UniformDamage, RngEvent::DamageRoll(v)) => assert!(v < 16),
                 (DrawSpace::UniformPercent { .. }, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
@@ -775,6 +791,143 @@ mod tests {
             }
         }
         assert!(saw_percent, "fixture should have triggered at least one percent draw");
+    }
+
+    // ---- PR-E: binary-enumerate Tiebreak draws when speeds tie ----
+
+    #[test]
+    fn expand_tiebreak_no_tie_marginalizes() {
+        let drawn = RngEvent::Tiebreak(0xABCD_1234_DEAD_BEEF);
+        let out = expand(
+            DrawSpace::Tiebreak { speeds_tied: false },
+            drawn,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out, vec![(drawn, 1, 1)]);
+    }
+
+    #[test]
+    fn expand_tiebreak_with_tie_two_outcomes() {
+        let drawn = RngEvent::Tiebreak(0xABCD_1234_DEAD_BEEF);
+        let out = expand(
+            DrawSpace::Tiebreak { speeds_tied: true },
+            drawn,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 2);
+        // Weights sum to 1: both branches are 1/2 each.
+        let total: f64 = out.iter().map(|(_, n, d)| *n as f64 / *d as f64).sum();
+        assert!((total - 1.0).abs() < 1e-12);
+        for (_, n, d) in &out {
+            assert_eq!((*n, *d), (1u32, 2u32));
+        }
+    }
+
+    #[test]
+    fn expand_tiebreak_with_tie_distinct_values() {
+        // Two branches must carry different Tiebreak values, otherwise
+        // they would dedupe into a single ordering and PR-E's
+        // binary-enumeration would be a no-op.
+        let drawn = RngEvent::Tiebreak(0xABCD_1234_DEAD_BEEF);
+        let out = expand(
+            DrawSpace::Tiebreak { speeds_tied: true },
+            drawn,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 2);
+        let v0 = match out[0].0 {
+            RngEvent::Tiebreak(v) => v,
+            other => panic!("expected Tiebreak event, got {other:?}"),
+        };
+        let v1 = match out[1].0 {
+            RngEvent::Tiebreak(v) => v,
+            other => panic!("expected Tiebreak event, got {other:?}"),
+        };
+        assert_ne!(v0, v1, "alt branch must carry a different nonce");
+        // And the alt is one of the comparator-straddle sentinels so it
+        // flips against any other recorded u64 the partner draw might
+        // carry.
+        let alt = if v0 == 0xABCD_1234_DEAD_BEEF { v1 } else { v0 };
+        assert!(
+            alt == 0 || alt == u64::MAX,
+            "alt nonce should be 0 or u64::MAX (comparator-flip sentinel); got {alt}",
+        );
+    }
+
+    /// Drawn == 0 ⇒ alt branch picks `u64::MAX` (the other straddle
+    /// sentinel) — verifies the branch picks a *different* sentinel even
+    /// when the recorder happened to draw the lower one.
+    #[test]
+    fn expand_tiebreak_with_tie_drawn_zero_picks_max_alt() {
+        let drawn = RngEvent::Tiebreak(0);
+        let out = expand(
+            DrawSpace::Tiebreak { speeds_tied: true },
+            drawn,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, RngEvent::Tiebreak(0));
+        assert_eq!(out[1].0, RngEvent::Tiebreak(u64::MAX));
+    }
+
+    /// Frontier-level: when two attackers have IDENTICAL effective speeds
+    /// (same species, level, nature, EV spread, no Speed-modifying items),
+    /// the recorded `DrawSpace::Tiebreak` must carry `speeds_tied: true`
+    /// and `expand()` must emit two outcomes. With distinct attacks both
+    /// sides take, the post-step canonical states differ between
+    /// "P1-moves-first" and "P2-moves-first", so the frontier should
+    /// surface 2 deduped outcomes. When speeds DON'T tie, the same fixture
+    /// shape collapses to a single outcome.
+    #[test]
+    fn frontier_binary_enumerates_real_speed_tie() {
+        use vgc_engine_core::Rng;
+        // Two mirrored Garchomps — same species/nature/EVs/item ⇒
+        // identical effective speed. Both queue Earthquake.
+        const TIED_P1: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        const TIED_P2: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(TIED_P1).unwrap();
+        let p2 = TeamBuilder::from_json(TIED_P2).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+
+        // Confirm the recorder flags the tiebreak entries as tied.
+        let mut rec = b.clone();
+        rec.set_rng(Rng::recording(99));
+        let _ = rec.step(&[move_choice(0)], &[move_choice(0)]);
+        let log = rec.rng_mut().take_recording_log().unwrap();
+        let tied_count = log
+            .iter()
+            .filter(|d| matches!(d.space, DrawSpace::Tiebreak { speeds_tied: true }))
+            .count();
+        assert!(
+            tied_count >= 2,
+            "expected at least 2 speeds_tied=true Tiebreak entries (one per tied actor), got {tied_count}; log: {log:#?}",
+        );
+
+        // No-tie control: cripple P2's speed with a Speed-debuffing nature
+        // mismatch — `relaxed` is -Spe vs `adamant`'s neutral Spe. Same
+        // species/EVs but different effective speed.
+        const NOTIE_P2: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"relaxed","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p1n = TeamBuilder::from_json(TIED_P1).unwrap();
+        let p2n = TeamBuilder::from_json(NOTIE_P2).unwrap();
+        let b_n = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1n, p2n);
+        let mut rec_n = b_n.clone();
+        rec_n.set_rng(Rng::recording(99));
+        let _ = rec_n.step(&[move_choice(0)], &[move_choice(0)]);
+        let log_n = rec_n.rng_mut().take_recording_log().unwrap();
+        let tied_count_n = log_n
+            .iter()
+            .filter(|d| matches!(d.space, DrawSpace::Tiebreak { speeds_tied: true }))
+            .count();
+        assert_eq!(
+            tied_count_n, 0,
+            "no-tie fixture should record zero speeds_tied=true Tiebreak entries; got {tied_count_n}",
+        );
     }
 
     // ---- PR-C: opt-in 3-bucket UniformDamage collapse ----
