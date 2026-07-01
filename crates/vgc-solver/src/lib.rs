@@ -176,11 +176,15 @@ pub struct EnumerateOpts {
     /// remainder of this enumerate call. `None` (default) = never auto-
     /// engage; behavior is bit-for-bit identical to pre-PR-L.
     ///
-    /// Rationale for the recommended `Some(10_000)`: typical 2v2 cells run
-    /// ~12 raw_combos; long-tail "monster" cells (spread move × ally-target
-    /// secondary chains) can hit 262k+, dominating the wall-clock. 10k is
-    /// two orders of magnitude above typical, comfortably above the lazy-
-    /// loop's expansion overhead, and catches the 262k+ monsters.
+    /// Rationale for the `SolverConfig` default `Some(1_000)`: typical 2v2
+    /// cells run ~12 raw_combos; long-tail "monster" cells (spread move
+    /// × ally-target secondary chains) can hit 262k+, dominating the
+    /// wall-clock. PR-L originally shipped `Some(10_000)` (two orders of
+    /// magnitude above typical) but the PR-L2 corpus sweep
+    /// (`docs/perf/pr-l2-threshold-tuning-2026-06-30.md`) showed an
+    /// entire band of medium-large cells (~1k-10k combos) also collapse
+    /// safely. Lowering to `Some(1_000)` cuts OHKO d=1 wall by 4× with
+    /// 0 % Nash-value delta on every measured scenario/depth.
     pub auto_lossy_damage_threshold: Option<u32>,
 }
 
@@ -2022,8 +2026,8 @@ mod tests {
         };
         assert_eq!(
             cfg_default.auto_lossy_damage_threshold,
-            Some(10_000),
-            "SolverConfig default must enable auto-lossy at 10_000",
+            Some(1_000),
+            "SolverConfig default must enable auto-lossy at 1_000 (PR-L2)",
         );
         let cfg_off = SolverConfig {
             auto_lossy_damage_threshold: None,
@@ -2036,6 +2040,86 @@ mod tests {
             "smoke-fixture Nash value diverged: default={v_default} off={v_off} \
              (cells should be under threshold; engaged={})",
             auto_lossy_engaged_count(),
+        );
+    }
+
+    // ─── PR-L2 — default-threshold tuning gates ────────────────────────────
+
+    /// PR-L2 — the `SolverConfig::default()` `auto_lossy_damage_threshold`
+    /// must produce a Nash value within 1% of the lossless reference on
+    /// the smoke fixture. The default is chosen from the
+    /// `examples/sweep_threshold.rs` corpus measurement; this test pins
+    /// the relationship between that measurement and the shipped default
+    /// so a future re-tune can't silently regress fidelity.
+    #[test]
+    fn default_threshold_matches_lossless_within_1pct() {
+        use crate::endgame::hp_ratio_leaf;
+        use crate::recursive::{endgame_solve, SolverConfig};
+        let _g = pr_l_test_lock();
+        let b = fixture();
+        let cfg_default = SolverConfig {
+            max_depth: 1,
+            node_budget: 10_000,
+            ..SolverConfig::default()
+        };
+        let cfg_off = SolverConfig {
+            auto_lossy_damage_threshold: None,
+            ..cfg_default.clone()
+        };
+        let v_default = endgame_solve(&b, &cfg_default, hp_ratio_leaf).value;
+        let v_off = endgame_solve(&b, &cfg_off, hp_ratio_leaf).value;
+        let dnash = (v_default - v_off).abs();
+        assert!(
+            dnash < 0.01,
+            "default threshold {:?} drifted Nash value by {dnash} (>= 1%); \
+             v_default={v_default} v_lossless={v_off}",
+            cfg_default.auto_lossy_damage_threshold,
+        );
+    }
+
+    /// PR-L2 — engagement count must be monotone non-decreasing as the
+    /// threshold drops. Uses the Aerial-Ace 32-combo cell so the
+    /// sub-100 thresholds all engage, while `Some(1_000_000)` and
+    /// `None` never do.
+    #[test]
+    fn lowering_threshold_increases_engagement() {
+        let _g = pr_l_test_lock();
+        let (b, p1, p2) = big_tensor_battle_and_choices();
+
+        // Sweep thresholds from "never engage" down to "always engage on
+        // any cell with multiple draws". `None` is the lossless baseline.
+        let thresholds: &[Option<u32>] = &[
+            None,
+            Some(1_000_000),
+            Some(10_000),
+            Some(100),
+            Some(50),
+            Some(10),
+            Some(1),
+        ];
+        let mut counts = Vec::with_capacity(thresholds.len());
+        for &thr in thresholds {
+            reset_auto_lossy_engaged_count();
+            let _ = enumerate_outcomes_with(
+                &b, &[p1], &[p2], 7,
+                EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: thr },
+            );
+            counts.push(auto_lossy_engaged_count());
+        }
+        // Monotone non-decreasing across the descending-threshold sweep.
+        for w in counts.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "engagement counter regressed when threshold lowered: \
+                 counts={counts:?}",
+            );
+        }
+        // And the extreme low threshold (`Some(1)`) must engage at least
+        // once on this fixture; the lossless reference must not.
+        assert_eq!(counts[0], 0, "None must never engage; counts={counts:?}");
+        assert!(
+            *counts.last().unwrap() >= 1,
+            "Some(1) must engage on the 32-combo fixture; counts={counts:?}",
         );
     }
 }

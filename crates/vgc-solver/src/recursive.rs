@@ -111,11 +111,21 @@ pub struct SolverConfig {
     /// subset of cells. Falls back per-cell to the full cross-product
     /// otherwise. Default `false` preserves pre-PR-I.2 behavior bit-for-bit.
     pub use_action_independence_factoring: bool,
-    /// PR-L — auto-engage [`Self::lossy_damage_3bucket`] on a per-cell
-    /// basis when the pre-enum draw tensor exceeds this many lossless
-    /// combos. `None` = never auto-engage (pre-PR-L behavior). Default
-    /// `Some(10_000)` — see [`crate::EnumerateOpts::auto_lossy_damage_threshold`]
-    /// for the rationale.
+    /// PR-L / PR-L2 — auto-engage [`Self::lossy_damage_3bucket`] on a
+    /// per-cell basis when the pre-enum draw tensor exceeds this many
+    /// lossless combos. `None` = never auto-engage (pre-PR-L behavior).
+    ///
+    /// **Default `Some(1_000)`** (PR-L2; tightened from PR-L's
+    /// `Some(10_000)`). Corpus sweep in
+    /// `docs/perf/pr-l2-threshold-tuning-2026-06-30.md` shows
+    /// `Some(1_000)` matches the lossless Nash value bit-for-bit
+    /// (0 % delta on every measured `(scenario, depth)`) while
+    /// cutting OHKO d=1 wall from 14.87 s to 3.71 s (4× vs the old
+    /// `Some(10_000)` default; 14× vs lossless `None`) and giving
+    /// Midgame d=2 47 % more recursive nodes inside the same wall.
+    ///
+    /// See [`crate::EnumerateOpts::auto_lossy_damage_threshold`] for the
+    /// per-cell soundness argument.
     pub auto_lossy_damage_threshold: Option<u32>,
 }
 
@@ -127,7 +137,10 @@ impl Default for SolverConfig {
             record_seed: 0xC0_DE,
             lossy_damage_3bucket: false,
             use_action_independence_factoring: false,
-            auto_lossy_damage_threshold: Some(10_000),
+            // PR-L2 — lowered from Some(10_000) after the corpus sweep
+            // showed Some(1_000) gives a 4× wall win on OHKO d=1 with
+            // 0 % Nash delta. See docs/perf/pr-l2-threshold-tuning-2026-06-30.md.
+            auto_lossy_damage_threshold: Some(1_000),
         }
     }
 }
