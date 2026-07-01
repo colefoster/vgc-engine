@@ -96,6 +96,8 @@ pub mod double_oracle;
 pub mod endgame;
 pub mod factoring;
 pub mod recursive;
+#[cfg(feature = "instrumentation")]
+pub mod instrumentation;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
 pub use factoring::{classify_factorability, Factorability};
 pub use endgame::{
