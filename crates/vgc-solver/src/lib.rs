@@ -67,10 +67,29 @@
 //!   side `chance.rs` stays on 16 buckets unconditionally.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vgc_engine_core::{
     Battle, Choice, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT,
 };
+
+/// PR-L — process-global counter of `(state, joint_choice)` cells where the
+/// pre-enum draw tensor exceeded [`EnumerateOpts::auto_lossy_damage_threshold`]
+/// and the 3-bucket UniformDamage collapse was auto-engaged for that call.
+///
+/// Pure telemetry — the solver never reads it on the hot path. Tests and the
+/// `measure_2v2` example consult it to attribute long-tail savings.
+static AUTO_LOSSY_ENGAGED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot the PR-L auto-lossy engagement counter.
+pub fn auto_lossy_engaged_count() -> u64 {
+    AUTO_LOSSY_ENGAGED_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the PR-L auto-lossy engagement counter to zero.
+pub fn reset_auto_lossy_engaged_count() {
+    AUTO_LOSSY_ENGAGED_COUNT.store(0, Ordering::Relaxed);
+}
 
 pub mod nash;
 pub mod double_oracle;
@@ -151,6 +170,18 @@ pub struct EnumerateOpts {
     /// in HP and you can accept the approximation. See `crates/vgc-solver/
     /// src/lib.rs` module docs for the soundness analysis.
     pub lossy_damage_3bucket: bool,
+    /// PR-L — when `Some(N)`, cells whose pre-enumeration draw tensor size
+    /// (∏ᵢ outcome_count(per_site[i].space) under LOSSLESS expansion)
+    /// exceeds `N` auto-engage [`Self::lossy_damage_3bucket`] for the
+    /// remainder of this enumerate call. `None` (default) = never auto-
+    /// engage; behavior is bit-for-bit identical to pre-PR-L.
+    ///
+    /// Rationale for the recommended `Some(10_000)`: typical 2v2 cells run
+    /// ~12 raw_combos; long-tail "monster" cells (spread move × ally-target
+    /// secondary chains) can hit 262k+, dominating the wall-clock. 10k is
+    /// two orders of magnitude above typical, comfortably above the lazy-
+    /// loop's expansion overhead, and catches the 262k+ monsters.
+    pub auto_lossy_damage_threshold: Option<u32>,
 }
 
 /// Expand a [`DrawSpace`] into its full outcome distribution as
@@ -231,6 +262,37 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
     }
 }
 
+/// PR-L — outcome count for a [`DrawSpace`] under LOSSLESS expansion, used to
+/// size the pre-enumeration draw tensor. Mirrors the per-arm count produced
+/// by [`expand`] when `lossy_damage_3bucket` is false. Saturates at `u32`
+/// (the largest single-site count is 100); the product across sites can
+/// overflow u32 and is accumulated in u64 by the caller.
+fn outcome_count_lossless(space: DrawSpace) -> u32 {
+    match space {
+        DrawSpace::UniformRange(n) => n as u32,
+        DrawSpace::UniformDamage { ko_split } => match ko_split {
+            Some(0) => 1,
+            Some(k) if k >= 16 => 1,
+            Some(_) => 2,
+            None => 16,
+        },
+        DrawSpace::UniformPercent { threshold } => match threshold {
+            None => 100,
+            Some(0) => 1,
+            Some(t) if t >= 100 => 1,
+            Some(_) => 2,
+        },
+        DrawSpace::Crit { .. } => 2,
+        DrawSpace::Tiebreak { speeds_tied } => {
+            if speeds_tied {
+                2
+            } else {
+                1
+            }
+        }
+    }
+}
+
 /// Run one `(state, joint_choice)` through the record-pass + enumeration
 /// pipeline and return the deduped outcome frontier.
 ///
@@ -272,13 +334,36 @@ pub fn enumerate_outcomes_with(
         .take_recording_log()
         .expect("RNG was set to Recording above");
 
+    // PR-L — auto-lossy threshold check. Compute the pre-enum draw tensor
+    // size from the initial recording pass and, if it exceeds the caller's
+    // threshold, switch on `lossy_damage_3bucket` for the remainder of this
+    // call. Decided ONCE on the initial site list; the resulting
+    // `effective_opts` propagates through the lazy re-record loop so a
+    // later iteration can't surprise-toggle the policy mid-call.
+    let mut effective_opts = opts;
+    if !effective_opts.lossy_damage_3bucket {
+        if let Some(threshold) = opts.auto_lossy_damage_threshold {
+            let mut tensor: u64 = 1;
+            for d in &initial_log {
+                tensor = tensor.saturating_mul(outcome_count_lossless(d.space) as u64);
+                if tensor > threshold as u64 {
+                    break;
+                }
+            }
+            if tensor > threshold as u64 {
+                effective_opts.lossy_damage_3bucket = true;
+                AUTO_LOSSY_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     // Per-site list: one entry per draw occurrence, in the order step()
     // queried them. Same key may appear at multiple slots — the
     // OracleKeyed table FIFO-pops per key, so iteration order over this
     // list is the order in which a key's events get queued.
     let mut per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
         .into_iter()
-        .map(|d| (d.key, expand(d.space, d.drawn, opts), d.space, d.drawn))
+        .map(|d| (d.key, expand(d.space, d.drawn, effective_opts), d.space, d.drawn))
         .collect();
 
     // Degenerate case: no recorded sites. The step had no random branches.
@@ -301,7 +386,7 @@ pub fn enumerate_outcomes_with(
         let pass = enumerate_pass(base, p1_choices, p2_choices, record_seed, &per_site);
 
         // Did any combo's replay discover counter-factual sites?
-        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs, opts);
+        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs, effective_opts);
 
         if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS {
             // Convergence (or budget exhausted — bail with the current
@@ -519,11 +604,30 @@ fn tensor_enumerate(
         .take_recording_log()
         .expect("RNG was set to Recording above");
 
+    // PR-L — same auto-lossy check as enumerate_outcomes_with so the
+    // factored path respects the threshold knob too.
+    let mut effective_opts = opts;
+    if !effective_opts.lossy_damage_3bucket {
+        if let Some(threshold) = opts.auto_lossy_damage_threshold {
+            let mut tensor: u64 = 1;
+            for d in &initial_log {
+                tensor = tensor.saturating_mul(outcome_count_lossless(d.space) as u64);
+                if tensor > threshold as u64 {
+                    break;
+                }
+            }
+            if tensor > threshold as u64 {
+                effective_opts.lossy_damage_3bucket = true;
+                AUTO_LOSSY_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     // Per-site list mirrors enumerate_outcomes_with: one entry per recorded
     // draw occurrence, in the order step() queried them.
     let per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
         .into_iter()
-        .map(|d| (d.key, expand(d.space, d.drawn, opts), d.space, d.drawn))
+        .map(|d| (d.key, expand(d.space, d.drawn, effective_opts), d.space, d.drawn))
         .collect();
 
     // Degenerate: nothing to vary. Return one outcome with prob 1.
@@ -1303,7 +1407,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(7),
-            EnumerateOpts { lossy_damage_3bucket: true },
+            EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], (RngEvent::DamageRoll(0),  5, 16));
@@ -1370,7 +1474,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(7),
-            EnumerateOpts { lossy_damage_3bucket: true },
+            EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], (RngEvent::DamageRoll(0), 5, 16));
@@ -1428,7 +1532,7 @@ mod tests {
         let out = expand(
             DrawSpace::UniformDamage { ko_split: None },
             RngEvent::DamageRoll(0),
-            EnumerateOpts { lossy_damage_3bucket: true },
+            EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
         let total: u32 = out.iter().map(|(_, n, _)| *n).sum();
         assert_eq!(total, 16);
@@ -1452,7 +1556,7 @@ mod tests {
             &[move_choice(2)],
             &[switch_choice(1)],
             11,
-            EnumerateOpts { lossy_damage_3bucket: true },
+            EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
         // Damage roll is the dominant cross-product axis here; 16→3 should
         // shrink raw_combos by ~5×. Use a conservative >=3× lower bound to
@@ -1532,7 +1636,7 @@ mod tests {
             &[move_choice(2)],
             &[switch_choice(1)],
             11,
-            EnumerateOpts { lossy_damage_3bucket: true },
+            EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
         let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
         assert!(
@@ -1638,7 +1742,7 @@ mod tests {
             Factorability::FullyFactor,
             "fixture should classify as FullyFactor — guards downstream assert",
         );
-        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+        let opts = EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() };
         let full = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
         let factored = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
 
@@ -1703,7 +1807,7 @@ mod tests {
             "earthquake side must classify NoFactor",
         );
 
-        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+        let opts = EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() };
         let full = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
         let factored = enumerate_outcomes_factored(&b, &p1, &p2, 0xC0_DE, opts);
 
@@ -1738,7 +1842,7 @@ mod tests {
     fn tensor_enumerate_perf_smoke() {
         let b = doubles_fixture();
         let (p1, p2) = clean_4way_attacks();
-        let opts = EnumerateOpts { lossy_damage_3bucket: true };
+        let opts = EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() };
 
         // Warm-up so the first call doesn't eat code-gen + cache miss cost.
         let _ = enumerate_outcomes_with(&b, &p1, &p2, 0xC0_DE, opts);
@@ -1789,5 +1893,149 @@ mod tests {
             assert_eq!(oa.hash, oc.hash);
             assert!((oa.prob - oc.prob).abs() < 1e-12);
         }
+    }
+
+    // ─── PR-L — adaptive auto-lossy on long-tail cells ─────────────────────
+
+    /// Garchomp-Aerial-Ace fixture: sure-hit, so the recorder walks the
+    /// damage(16) × crit(2) path on every seed. Tensor sits at 32 lossless
+    /// combos, comfortably above a 25-combo test threshold and comfortably
+    /// below the production 10_000 threshold.
+    fn big_tensor_battle_and_choices() -> (Battle, Choice, Choice) {
+        let b = fixture();
+        // Aerial Ace = move_slot 2. Defender switches (no draws on its side).
+        (b, move_choice(2), switch_choice(1))
+    }
+
+    /// Serialize the four PR-L tests so their reads of the process-global
+    /// [`AUTO_LOSSY_ENGAGED_COUNT`] don't race against each other. The
+    /// rest of the suite never sets `auto_lossy_damage_threshold`, so it
+    /// can't perturb the counter — only these four can.
+    fn pr_l_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn auto_lossy_off_preserves_full_lossless() {
+        let _g = pr_l_test_lock();
+        let (b, p1, p2) = big_tensor_battle_and_choices();
+        reset_auto_lossy_engaged_count();
+        let baseline = enumerate_outcomes_with(
+            &b, &[p1], &[p2], 7,
+            EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None },
+        );
+        let off = enumerate_outcomes_with(
+            &b, &[p1], &[p2], 7,
+            EnumerateOpts::default(),
+        );
+        assert_eq!(baseline.outcomes.len(), off.outcomes.len());
+        assert_eq!(baseline.raw_combos, off.raw_combos);
+        for (a, c) in baseline.outcomes.iter().zip(off.outcomes.iter()) {
+            assert_eq!(a.hash, c.hash);
+            assert!((a.prob - c.prob).abs() < 1e-12);
+        }
+        assert_eq!(
+            auto_lossy_engaged_count(),
+            0,
+            "auto_lossy_damage_threshold = None must never engage",
+        );
+    }
+
+    #[test]
+    fn auto_lossy_engages_above_threshold() {
+        let _g = pr_l_test_lock();
+        let (b, p1, p2) = big_tensor_battle_and_choices();
+        reset_auto_lossy_engaged_count();
+        let auto = enumerate_outcomes_with(
+            &b, &[p1], &[p2], 7,
+            EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: Some(25) },
+        );
+        let engaged = auto_lossy_engaged_count();
+        assert!(
+            engaged >= 1,
+            "expected auto-lossy to engage on a >25-combo cell, got engaged={engaged}",
+        );
+        // Frontier must match what an explicit lossy_damage_3bucket=true
+        // call would have produced.
+        let explicit = enumerate_outcomes_with(
+            &b, &[p1], &[p2], 7,
+            EnumerateOpts { lossy_damage_3bucket: true, auto_lossy_damage_threshold: None },
+        );
+        assert_eq!(auto.outcomes.len(), explicit.outcomes.len());
+        assert_eq!(auto.raw_combos, explicit.raw_combos);
+        for (a, e) in auto.outcomes.iter().zip(explicit.outcomes.iter()) {
+            assert_eq!(a.hash, e.hash);
+            assert!((a.prob - e.prob).abs() < 1e-12);
+        }
+        // Probabilities still sum to 1.
+        let total: f64 = auto.outcomes.iter().map(|o| o.prob).sum();
+        assert!((total - 1.0).abs() < 1e-9, "auto-lossy probs sum to {total}");
+    }
+
+    #[test]
+    fn auto_lossy_does_not_engage_on_small_cells() {
+        // A pure switch/switch cell records only a handful of Tiebreak
+        // draws (each 1 or 2 outcomes). The lossless tensor sits well
+        // below 10_000.
+        let _g = pr_l_test_lock();
+        let b = fixture();
+        reset_auto_lossy_engaged_count();
+        let baseline = enumerate_outcomes_with(
+            &b, &[switch_choice(1)], &[switch_choice(1)], 17,
+            EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None },
+        );
+        let auto = enumerate_outcomes_with(
+            &b, &[switch_choice(1)], &[switch_choice(1)], 17,
+            EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: Some(10_000) },
+        );
+        assert_eq!(
+            auto_lossy_engaged_count(),
+            0,
+            "switch/switch tensor is small; auto-lossy must NOT engage",
+        );
+        assert_eq!(baseline.outcomes.len(), auto.outcomes.len());
+        assert_eq!(baseline.raw_combos, auto.raw_combos);
+        for (a, c) in baseline.outcomes.iter().zip(auto.outcomes.iter()) {
+            assert_eq!(a.hash, c.hash);
+            assert!((a.prob - c.prob).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn solver_with_default_auto_lossy_matches_lossless_on_smoke() {
+        // Smoke fixture: a depth-1 switch/switch sub-game. Cells are
+        // small enough that auto-lossy (threshold 10_000) never engages,
+        // so the Nash value matches the auto-lossy=None reference.
+        use crate::endgame::hp_ratio_leaf;
+        use crate::recursive::{endgame_solve, SolverConfig};
+        let _g = pr_l_test_lock();
+        let b = fixture();
+        reset_auto_lossy_engaged_count();
+        let cfg_default = SolverConfig {
+            max_depth: 1,
+            node_budget: 10_000,
+            ..SolverConfig::default()
+        };
+        assert_eq!(
+            cfg_default.auto_lossy_damage_threshold,
+            Some(10_000),
+            "SolverConfig default must enable auto-lossy at 10_000",
+        );
+        let cfg_off = SolverConfig {
+            auto_lossy_damage_threshold: None,
+            ..cfg_default.clone()
+        };
+        let v_default = endgame_solve(&b, &cfg_default, hp_ratio_leaf).value;
+        let v_off = endgame_solve(&b, &cfg_off, hp_ratio_leaf).value;
+        assert!(
+            (v_default - v_off).abs() < 1e-9,
+            "smoke-fixture Nash value diverged: default={v_default} off={v_off} \
+             (cells should be under threshold; engaged={})",
+            auto_lossy_engaged_count(),
+        );
     }
 }
