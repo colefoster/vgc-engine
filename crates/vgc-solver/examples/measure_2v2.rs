@@ -53,6 +53,9 @@ static N_LEAF_EVALS: AtomicU64 = AtomicU64::new(0);
 
 static T_ENUMERATE_NS: AtomicU64 = AtomicU64::new(0);
 static T_LEAF_NS: AtomicU64 = AtomicU64::new(0);
+static T_DO_NS: AtomicU64 = AtomicU64::new(0);
+static T_HASH_NS: AtomicU64 = AtomicU64::new(0);
+static T_LEGAL_NS: AtomicU64 = AtomicU64::new(0);
 
 fn reset_counters() {
     N_ENUMERATE_CALLS.store(0, Ordering::Relaxed);
@@ -65,6 +68,9 @@ fn reset_counters() {
     N_LEAF_EVALS.store(0, Ordering::Relaxed);
     T_ENUMERATE_NS.store(0, Ordering::Relaxed);
     T_LEAF_NS.store(0, Ordering::Relaxed);
+    T_DO_NS.store(0, Ordering::Relaxed);
+    T_HASH_NS.store(0, Ordering::Relaxed);
+    T_LEGAL_NS.store(0, Ordering::Relaxed);
 }
 
 // ─── Doubles joint action helpers ────────────────────────────────────────
@@ -162,7 +168,9 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut State<'_>) -> Solved
         return Solved { value: leaf_eval(battle, d), provenance: Prov::NodeLimit, depth_remaining };
     }
 
+    let t_hash = if d { Some(Instant::now()) } else { None };
     let hash = battle.canonical_hash();
+    if let Some(t) = t_hash { T_HASH_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed); }
     N_TT_LOOKUPS.fetch_add(1, Ordering::Relaxed);
     if let Some(c) = state.tt.get(&hash) {
         if c.depth_remaining >= depth_remaining {
@@ -171,8 +179,10 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut State<'_>) -> Solved
         }
     }
 
+    let t_legal = if d { Some(Instant::now()) } else { None };
     let row = joint_actions(battle, SideRef::P1);
     let col = joint_actions(battle, SideRef::P2);
+    if let Some(t) = t_legal { T_LEGAL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed); }
     if row.is_empty() || col.is_empty() {
         return Solved { value: leaf_eval(battle, d), provenance: Prov::Terminal, depth_remaining };
     }
@@ -515,19 +525,12 @@ fn main() {
     }
     let _ = std::io::stdout().flush();
 
-    // Under `--features instrumentation` we skip §3 and §6: the spike's
-    // budget is reserved for §5 (240s) + the §7 spike fixtures.
-    #[cfg(feature = "instrumentation")]
-    let skip_3_6 = true;
-    #[cfg(not(feature = "instrumentation"))]
-    let skip_3_6 = false;
-
     // §6 runs BEFORE §3 because §3's watchdog leaks orphaned threads
     // (each stuck inside an uninterruptible enumerate_outcomes_with
     // call); running §6 afterwards drops cell timings by ~5× from CPU
     // contention. Section number kept as "§6" for report consistency.
-    if !skip_3_6 { println!("\n── §6. Top-5 most-expanded root joint cells (Midgame) ──"); }
-    if !skip_3_6 {
+    println!("\n── §6. Top-5 most-expanded root joint cells (Midgame) ──");
+    {
         let (tx6, rx6) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             top_cells(&scenario_midgame(), 5, Duration::from_secs(20));
@@ -545,28 +548,22 @@ fn main() {
     // cap keeps the whole §3 block under ~4 minutes (each run overshoots
     // by up to ~15s for the watchdog buffer when a single
     // enumerate_outcomes call exceeds wall_cap and can't be interrupted).
-    let per_solve_wall = Duration::from_secs(30);
+    let per_solve_wall = Duration::from_secs(240);
 
-    let grid: Vec<(String, Vec<RunResult>)> = if skip_3_6 {
-        println!("\n── §3. Skipped (spike mode — instrumentation feature on) ──");
-        Vec::new()
-    } else {
-        println!("\n── §3. Recursive solves (wall cap = 30s per solve) ──");
-        let _ = std::io::stdout().flush();
-        let mut grid: Vec<(String, Vec<RunResult>)> = Vec::new();
-        // d=1 for all 3 scenarios; d=2 and d=3 only for Midgame (representative
-        // non-OHKO case) to fit in the wall-clock budget.
-        for (name, build) in scenarios {
-            let mut rs = Vec::new();
-            let depths: &[u32] = if *name == "Midgame 2HKO" { &[1, 2, 3] } else { &[1] };
-            for d in depths {
-                let r = run_one(name, *build, *d, per_solve_wall);
-                rs.push(r);
-            }
-            grid.push((name.to_string(), rs));
+    println!("\n── §3. Recursive solves (wall cap = 240s per solve) ──");
+    let _ = std::io::stdout().flush();
+    let mut grid: Vec<(String, Vec<RunResult>)> = Vec::new();
+    // d=1 for all 3 scenarios; d=2 and d=3 only for Midgame (representative
+    // non-OHKO case) to fit in the wall-clock budget.
+    for (name, build) in scenarios {
+        let mut rs = Vec::new();
+        let depths: &[u32] = &[1, 2, 3];
+        for d in depths {
+            let r = run_one(name, *build, *d, per_solve_wall);
+            rs.push(r);
         }
-        grid
-    };
+        grid.push((name.to_string(), rs));
+    }
 
     println!("\n── §4. Summary table ──");
     println!("| {:18} | {:>16} | {:>16} | {:>16} |", "scenario", "d=1", "d=2", "d=3");
@@ -588,12 +585,6 @@ fn main() {
     // ─── §5. Decomposition: midgame d=2 with timers on (shortened cap) ──
     println!("\n── §5. Bottleneck decomposition: Midgame 2HKO @ d=2 (wall cap = 240s) ──");
     reset_counters();
-    // Drain any DO samples accumulated by §3 so §5's histograms cleanly
-    // reflect only the Midgame d=2 solve.
-    #[cfg(feature = "instrumentation")]
-    {
-        let _ = vgc_solver::instrumentation::take_samples();
-    }
     let b = scenario_midgame();
     let cfg = Cfg {
         max_depth: 2, node_budget: 100_000_000, record_seed: 0xC0DE,
@@ -627,6 +618,8 @@ fn main() {
     let tt_lookups = N_TT_LOOKUPS.load(Ordering::Relaxed);
     let t_enum = T_ENUMERATE_NS.load(Ordering::Relaxed);
     let t_leaf = T_LEAF_NS.load(Ordering::Relaxed);
+    let t_hash = T_HASH_NS.load(Ordering::Relaxed);
+    let t_legal = T_LEGAL_NS.load(Ordering::Relaxed);
     let wall_ns = wall.as_nanos() as u64;
 
     println!("  wall                       = {:.3?}", wall);
@@ -643,8 +636,12 @@ fn main() {
         Duration::from_nanos(t_enum), 100.0 * t_enum as f64 / wall_ns.max(1) as f64);
     println!("  Time inside leaf eval          = {:>10.3?} ({:.1}%)",
         Duration::from_nanos(t_leaf), 100.0 * t_leaf as f64 / wall_ns.max(1) as f64);
-    let residual = wall_ns.saturating_sub(t_enum + t_leaf);
-    println!("  Recursion + DO + glue residual = {:>10.3?} ({:.1}%)",
+    println!("  Time inside canonical_hash     = {:>10.3?} ({:.1}%)",
+        Duration::from_nanos(t_hash), 100.0 * t_hash as f64 / wall_ns.max(1) as f64);
+    println!("  Time inside legal_choices+joint= {:>10.3?} ({:.1}%)",
+        Duration::from_nanos(t_legal), 100.0 * t_legal as f64 / wall_ns.max(1) as f64);
+    let residual = wall_ns.saturating_sub(t_enum + t_leaf + t_hash + t_legal);
+    println!("  DO + LP + recursion-glue resid = {:>10.3?} ({:.1}%)",
         Duration::from_nanos(residual), 100.0 * residual as f64 / wall_ns.max(1) as f64);
     if payoff > 0 {
         println!();
@@ -654,184 +651,9 @@ fn main() {
     }
     let _ = std::io::stdout().flush();
 
-    // ─── §7. DO support-size + iteration histograms ──────────────────
-    #[cfg(feature = "instrumentation")]
-    {
-        println!("\n── §7. DO per-call stats (Midgame d=2 from §5 above) ──");
-        let samples = vgc_solver::instrumentation::take_samples();
-        report_do_samples("Midgame d=2", &samples);
-    }
-
-    // Run the additional spike fixtures for cross-scale comparison.
-    #[cfg(feature = "instrumentation")]
-    {
-        let spike_wall = Duration::from_secs(240);
-        for (label, build_fn, depth) in &[
-            ("OHKO d=1", scenario_ohko as fn() -> Battle, 1u32),
-            ("Switch-heavy d=2", scenario_switch as fn() -> Battle, 2u32),
-        ] {
-            let _ = vgc_solver::instrumentation::take_samples(); // drain stale
-            reset_counters();
-            let b = build_fn();
-            let cfg = Cfg {
-                max_depth: *depth, node_budget: 100_000_000,
-                record_seed: 0xC0DE, lossy_damage_3bucket: false, decompose: false,
-                wall_cap: spike_wall,
-            };
-            eprintln!("  [spike {label}] running (wall_cap={:.0?})...", spike_wall);
-            let _ = std::io::stderr().flush();
-            let (tx, rx) = std::sync::mpsc::channel::<Solved>();
-            let b_clone = b.clone();
-            let cfg_clone = Cfg {
-                max_depth: cfg.max_depth, node_budget: cfg.node_budget,
-                record_seed: cfg.record_seed, lossy_damage_3bucket: cfg.lossy_damage_3bucket,
-                decompose: cfg.decompose, wall_cap: cfg.wall_cap,
-            };
-            std::thread::spawn(move || {
-                let s = endgame_solve_doubles(&b_clone, &cfg_clone);
-                let _ = tx.send(s);
-            });
-            let watchdog = spike_wall + Duration::from_secs(20);
-            let _sol = rx.recv_timeout(watchdog).unwrap_or(Solved {
-                value: 0.0, provenance: Prov::NodeLimit, depth_remaining: *depth,
-            });
-            let samples = vgc_solver::instrumentation::take_samples();
-            println!();
-            report_do_samples(label, &samples);
-            let _ = std::io::stdout().flush();
-        }
-    }
-
     println!("\nDone. See docs/perf/2v2_baseline_2026_06_29.md for the writeup.");
     let _ = std::io::stdout().flush();
     // Reap any leaked watchdog threads (each one is stuck inside an
     // enumerate_outcomes_with call we can't safely interrupt).
     std::process::exit(0);
-}
-
-#[cfg(feature = "instrumentation")]
-fn report_do_samples(label: &str, samples: &[vgc_solver::instrumentation::DOSample]) {
-    println!("  [{label}] DO calls observed = {}", samples.len());
-    if samples.is_empty() {
-        return;
-    }
-
-    fn stats_u64(vals: &mut Vec<u64>) -> (u64, u64, u64, u64) {
-        vals.sort();
-        let n = vals.len();
-        let min = *vals.first().unwrap();
-        let max = *vals.last().unwrap();
-        let med = vals[n / 2];
-        let p95 = vals[((n as f64 * 0.95).floor() as usize).min(n - 1)];
-        (min, med, p95, max)
-    }
-    fn stats_f64(vals: &mut Vec<f64>) -> (f64, f64, f64, f64) {
-        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let n = vals.len();
-        let min = vals[0];
-        let max = vals[n - 1];
-        let med = vals[n / 2];
-        let p95 = vals[((n as f64 * 0.95).floor() as usize).min(n - 1)];
-        (min, med, p95, max)
-    }
-
-    let mut iters: Vec<u64> = samples.iter().map(|s| s.iterations as u64).collect();
-    let mut payoff: Vec<u64> = samples.iter().map(|s| s.payoff_calls).collect();
-    let mut lpsv: Vec<u64> = samples.iter().map(|s| s.lp_solve_calls).collect();
-    let mut wall_ms: Vec<f64> = samples.iter().map(|s| s.wall_ns as f64 / 1e6).collect();
-    let mut row_s: Vec<u64> = samples.iter().map(|s| s.row_support_size as u64).collect();
-    let mut col_s: Vec<u64> = samples.iter().map(|s| s.col_support_size as u64).collect();
-    let mut row_strat: Vec<u64> = samples.iter().map(|s| s.row_strategy_size as u64).collect();
-    let mut col_strat: Vec<u64> = samples.iter().map(|s| s.col_strategy_size as u64).collect();
-    // Combined support distribution: each call contributes 2 entries
-    // (row + col) for the architecture-G "S per side" measurement.
-    let mut combined_support: Vec<u64> = samples
-        .iter()
-        .flat_map(|s| [s.row_support_size as u64, s.col_support_size as u64])
-        .collect();
-    let mut combined_strategy: Vec<u64> = samples
-        .iter()
-        .flat_map(|s| [s.row_strategy_size as u64, s.col_strategy_size as u64])
-        .collect();
-
-    let (i_min, i_med, i_p95, i_max) = stats_u64(&mut iters);
-    let (p_min, p_med, p_p95, p_max) = stats_u64(&mut payoff);
-    let (l_min, l_med, l_p95, l_max) = stats_u64(&mut lpsv);
-    let (w_min, w_med, w_p95, w_max) = stats_f64(&mut wall_ms);
-    let (rs_min, rs_med, rs_p95, rs_max) = stats_u64(&mut row_s);
-    let (cs_min, cs_med, cs_p95, cs_max) = stats_u64(&mut col_s);
-    let (rst_min, rst_med, rst_p95, rst_max) = stats_u64(&mut row_strat);
-    let (cst_min, cst_med, cst_p95, cst_max) = stats_u64(&mut col_strat);
-    let (sc_min, sc_med, sc_p95, sc_max) = stats_u64(&mut combined_support);
-    let (str_min, str_med, str_p95, str_max) = stats_u64(&mut combined_strategy);
-
-    println!();
-    println!("  metric                   min        median       p95         max");
-    println!("  ──────────────────────── ────────── ─────────── ─────────── ────────────");
-    println!("  iterations (I)           {:>10} {:>11} {:>11} {:>12}", i_min, i_med, i_p95, i_max);
-    println!("  payoff_calls             {:>10} {:>11} {:>11} {:>12}", p_min, p_med, p_p95, p_max);
-    println!("  lp_solve_calls           {:>10} {:>11} {:>11} {:>12}", l_min, l_med, l_p95, l_max);
-    println!("  wall_per_call (ms)       {:>10.2} {:>11.2} {:>11.2} {:>12.2}", w_min, w_med, w_p95, w_max);
-    println!("  row_support_size         {:>10} {:>11} {:>11} {:>12}", rs_min, rs_med, rs_p95, rs_max);
-    println!("  col_support_size         {:>10} {:>11} {:>11} {:>12}", cs_min, cs_med, cs_p95, cs_max);
-    println!("  row_strategy_size (>0)   {:>10} {:>11} {:>11} {:>12}", rst_min, rst_med, rst_p95, rst_max);
-    println!("  col_strategy_size (>0)   {:>10} {:>11} {:>11} {:>12}", cst_min, cst_med, cst_p95, cst_max);
-    println!("  combined support (S)     {:>10} {:>11} {:>11} {:>12}", sc_min, sc_med, sc_p95, sc_max);
-    println!("  combined strategy (S>0)  {:>10} {:>11} {:>11} {:>12}", str_min, str_med, str_p95, str_max);
-
-    // Histogram helper: bucket boundaries chosen for the S and I ranges
-    // we hypothesized (8-30 for S, 15-40 for I).
-    fn hist(label: &str, vals: &[u64], buckets: &[u64]) {
-        println!();
-        println!("  Histogram: {label}");
-        let n = vals.len();
-        let mut counts = vec![0usize; buckets.len() + 1];
-        for &v in vals {
-            let mut placed = false;
-            for (i, &b) in buckets.iter().enumerate() {
-                if v <= b {
-                    counts[i] += 1;
-                    placed = true;
-                    break;
-                }
-            }
-            if !placed {
-                *counts.last_mut().unwrap() += 1;
-            }
-        }
-        let mut lo = 0u64;
-        for (i, &b) in buckets.iter().enumerate() {
-            let pct = 100.0 * counts[i] as f64 / n as f64;
-            let bar = "█".repeat((pct / 2.0).round() as usize);
-            println!("    [{:>4}..{:>4}] {:>6}  {:>5.1}%  {}", lo, b, counts[i], pct, bar);
-            lo = b + 1;
-        }
-        let pct = 100.0 * counts[buckets.len()] as f64 / n as f64;
-        let bar = "█".repeat((pct / 2.0).round() as usize);
-        println!("    [{:>4}..∞   ] {:>6}  {:>5.1}%  {}", lo, counts[buckets.len()], pct, bar);
-    }
-
-    let i_vals: Vec<u64> = samples.iter().map(|s| s.iterations as u64).collect();
-    hist("DO iterations (I)", &i_vals, &[0, 1, 3, 5, 8, 12, 16, 24, 40, 80, 160]);
-
-    let s_vals = combined_support; // already sorted but order doesn't matter
-    hist("Combined support sizes (S, row+col samples)", &s_vals, &[1, 2, 4, 8, 16, 24, 32, 48, 64, 100, 200]);
-
-    let strat_vals = combined_strategy;
-    hist("Combined nonzero-prob strategy sizes (S_strict)", &strat_vals, &[1, 2, 4, 8, 16, 24, 32, 48, 64, 100, 200]);
-
-    let p_vals: Vec<u64> = samples.iter().map(|s| s.payoff_calls).collect();
-    hist("payoff_calls per DO call", &p_vals, &[10, 50, 100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000]);
-
-    let w_vals: Vec<u64> = samples.iter().map(|s| s.wall_ns / 1_000_000).collect(); // ms
-    hist("wall_per_call (ms)", &w_vals, &[1, 5, 10, 50, 100, 500, 1_000, 5_000, 10_000, 30_000, 60_000]);
-
-    // Aggregate context: how much time DO calls collectively burned.
-    let total_wall_ms: f64 = samples.iter().map(|s| s.wall_ns as f64 / 1e6).sum();
-    let total_payoff: u64 = samples.iter().map(|s| s.payoff_calls).sum();
-    let total_lp: u64 = samples.iter().map(|s| s.lp_solve_calls).sum();
-    let total_iters: u64 = samples.iter().map(|s| s.iterations as u64).sum();
-    println!();
-    println!("  totals: DO calls = {}, sum wall = {:.2} ms, sum payoff_calls = {}, sum lp_solve = {}, sum iterations = {}",
-        samples.len(), total_wall_ms, total_payoff, total_lp, total_iters);
 }
