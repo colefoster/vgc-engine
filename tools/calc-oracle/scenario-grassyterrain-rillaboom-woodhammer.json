@@ -1,0 +1,20 @@
+{
+  "name": "grassyterrain_rillaboom_woodhammer_into_greattusk",
+  "attacker": {
+    "species": "Rillaboom",
+    "level": 50,
+    "ability": "Grassy Surge",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Great Tusk",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Wood Hammer",
+  "field": { "terrain": "Grassy" },
+  "trials": 500
+}

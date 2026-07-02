@@ -1,0 +1,68 @@
+{
+  "name": "ironfist_infernape_drainpunch_into_amoonguss",
+  "move": "Drain Punch",
+  "damage": [
+    33,
+    33,
+    33,
+    33,
+    34,
+    34,
+    35,
+    35,
+    36,
+    36,
+    36,
+    36,
+    37,
+    37,
+    38,
+    39
+  ],
+  "damage_crit": [
+    49,
+    50,
+    50,
+    51,
+    51,
+    52,
+    52,
+    53,
+    54,
+    54,
+    55,
+    55,
+    56,
+    57,
+    57,
+    58
+  ],
+  "damage_union": [
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58
+  ],
+  "range": [
+    33,
+    39
+  ],
+  "range_crit": [
+    49,
+    58
+  ],
+  "desc": "252+ Atk Iron Fist Infernape Drain Punch vs. 252 HP / 252+ Def Amoonguss: 33-39 (14.9 - 17.6%) -- possible 6HKO"
+}

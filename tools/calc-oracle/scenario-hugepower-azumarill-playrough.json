@@ -1,0 +1,19 @@
+{
+  "name": "hugepower_azumarill_playrough_into_amoonguss",
+  "attacker": {
+    "species": "Azumarill",
+    "level": 50,
+    "ability": "Huge Power",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 252, "spd": 4 }
+  },
+  "defender": {
+    "species": "Amoonguss",
+    "level": 50,
+    "ability": "Regenerator",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Play Rough",
+  "trials": 500
+}
