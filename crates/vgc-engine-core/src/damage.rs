@@ -356,10 +356,13 @@ impl DamagePipeline {
             d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
         }
         if inp.attacker_item_id == crate::data::item_id::WISEGLASSES && inp.special_move && d > 0 {
-            d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+            // PS `chainModify([4505, 4096])` → `modify()` → pokeRound with
+            // `+ 2047` bias (sim/battle.ts:2334-2345, data/items.ts:wiseglasses).
+            d = (((d as u32) * 4505 + 2047) / 4096).min(u16::MAX as u32) as u16;
         }
         if inp.attacker_item_id == crate::data::item_id::MUSCLEBAND && inp.physical_move && d > 0 {
-            d = ((d as u32) * 4505 / 4096).min(u16::MAX as u32) as u16;
+            // Same pokeRound bias as Wise Glasses; data/items.ts:muscleband.
+            d = (((d as u32) * 4505 + 2047) / 4096).min(u16::MAX as u32) as u16;
         }
         if inp.attacker_item_id == crate::data::item_id::EXPERTBELT && d > 0 {
             if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX) {
