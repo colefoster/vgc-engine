@@ -31,10 +31,6 @@ const KNOWN_FAILURES: &[&str] = &[
     // isn't consistently applied on Terapagos-Terastal. Tera is banned
     // in Reg M-B (target format), so this is aspirational coverage.
     "scenario-stellar-tera-offtype",
-    // Beads of Ruin: engine emits calc's expected range PLUS an extra
-    // ~1.33× band, suggesting the aura may double-apply when the
-    // holder is Chi-Yu (which also has Beads-of-Ruin as its innate).
-    "scenario-beadsofruin-chiyu-heatwave",
     // Grassy Terrain heal-tick confound: harness-limitation, not an
     // engine bug. Grounded defender heals 1/16 HP at end-of-turn
     // BEFORE the HP-delta read, so observed damage undercounts by
