@@ -1,0 +1,20 @@
+{
+  "name": "wiseglasses_fluttermane_moonblast_into_roaringmoon",
+  "attacker": {
+    "species": "Flutter Mane",
+    "level": 50,
+    "item": "Wise Glasses",
+    "ability": "Protosynthesis",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Roaring Moon",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 4, "spd": 252 }
+  },
+  "move": "Moonblast",
+  "trials": 500
+}

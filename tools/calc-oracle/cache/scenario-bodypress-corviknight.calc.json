@@ -1,0 +1,66 @@
+{
+  "name": "bodypress_corviknight_into_greattusk",
+  "move": "Body Press",
+  "damage": [
+    27,
+    27,
+    27,
+    28,
+    28,
+    28,
+    29,
+    29,
+    29,
+    30,
+    30,
+    30,
+    31,
+    31,
+    31,
+    32
+  ],
+  "damage_crit": [
+    40,
+    41,
+    41,
+    42,
+    42,
+    43,
+    43,
+    44,
+    44,
+    45,
+    45,
+    46,
+    46,
+    47,
+    47,
+    48
+  ],
+  "damage_union": [
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48
+  ],
+  "range": [
+    27,
+    32
+  ],
+  "range_crit": [
+    40,
+    48
+  ],
+  "desc": "252+ Def Corviknight Body Press vs. 252 HP / 252+ Def Great Tusk: 27-32 (12.1 - 14.4%) -- possible 7HKO"
+}
