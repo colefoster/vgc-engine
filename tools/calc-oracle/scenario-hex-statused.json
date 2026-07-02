@@ -1,0 +1,20 @@
+{
+  "name": "hex_fluttermane_into_burned_ironhands",
+  "attacker": {
+    "species": "Flutter Mane",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Iron Hands",
+    "level": 50,
+    "ability": "Quark Drive",
+    "nature": "Careful",
+    "evs": { "hp": 252, "atk": 4, "spd": 252 },
+    "status": "brn"
+  },
+  "move": "Hex",
+  "trials": 500
+}

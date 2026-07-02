@@ -1,0 +1,68 @@
+{
+  "name": "adaptability_shadowball_dragapult_into_clefable",
+  "move": "Shadow Ball",
+  "damage": [
+    60,
+    60,
+    62,
+    62,
+    64,
+    64,
+    64,
+    66,
+    66,
+    66,
+    68,
+    68,
+    68,
+    70,
+    70,
+    72
+  ],
+  "damage_crit": [
+    90,
+    92,
+    92,
+    94,
+    96,
+    96,
+    98,
+    98,
+    100,
+    100,
+    102,
+    102,
+    104,
+    104,
+    106,
+    108
+  ],
+  "damage_union": [
+    60,
+    62,
+    64,
+    66,
+    68,
+    70,
+    72,
+    90,
+    92,
+    94,
+    96,
+    98,
+    100,
+    102,
+    104,
+    106,
+    108
+  ],
+  "range": [
+    60,
+    72
+  ],
+  "range_crit": [
+    90,
+    108
+  ],
+  "desc": "252 SpA Adaptability Dragapult Shadow Ball vs. 252 HP / 252+ SpD Clefable: 60-72 (29.7 - 35.6%) -- 25.3% chance to 3HKO"
+}

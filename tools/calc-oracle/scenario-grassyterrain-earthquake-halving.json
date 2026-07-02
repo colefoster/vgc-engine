@@ -1,0 +1,20 @@
+{
+  "name": "grassyterrain_earthquake_halving_landorust_into_rillaboom",
+  "attacker": {
+    "species": "Landorus-Therian",
+    "level": 50,
+    "ability": "Sheer Force",
+    "nature": "Jolly",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Rillaboom",
+    "level": 50,
+    "ability": "Grassy Surge",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Earthquake",
+  "field": { "terrain": "Grassy" },
+  "trials": 500
+}

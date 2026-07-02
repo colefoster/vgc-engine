@@ -1,0 +1,21 @@
+{
+  "name": "sand_tyranitar_spd_boost_ironbundle_hydropump",
+  "attacker": {
+    "species": "Iron Bundle",
+    "level": 50,
+    "item": "Choice Specs",
+    "ability": "Quark Drive",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Tyranitar",
+    "level": 50,
+    "ability": "Sand Stream",
+    "nature": "Careful",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Hydro Pump",
+  "field": { "weather": "Sand" },
+  "trials": 500
+}

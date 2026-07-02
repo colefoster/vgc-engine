@@ -1,0 +1,20 @@
+{
+  "name": "guts_machamp_burned_closecombat_into_amoonguss",
+  "attacker": {
+    "species": "Machamp",
+    "level": 50,
+    "ability": "Guts",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 },
+    "status": "brn"
+  },
+  "defender": {
+    "species": "Amoonguss",
+    "level": 50,
+    "ability": "Regenerator",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Close Combat",
+  "trials": 500
+}

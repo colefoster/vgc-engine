@@ -44,6 +44,9 @@ pub use explore::{
 pub mod fuzz;
 pub use fuzz::{run_fuzz, FuzzOptions, FuzzReport, LearnsetCache};
 
+pub mod calc_oracle;
+pub use calc_oracle::{observe_scenario, CalcExpectation, Observation, Scenario};
+
 use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
     Target, TeamBuilder,

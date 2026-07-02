@@ -1,0 +1,19 @@
+{
+  "name": "ironfist_infernape_drainpunch_into_amoonguss",
+  "attacker": {
+    "species": "Infernape",
+    "level": 50,
+    "ability": "Iron Fist",
+    "nature": "Adamant",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Amoonguss",
+    "level": 50,
+    "ability": "Regenerator",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Drain Punch",
+  "trials": 500
+}
