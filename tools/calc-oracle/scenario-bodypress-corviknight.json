@@ -1,0 +1,19 @@
+{
+  "name": "bodypress_corviknight_into_greattusk",
+  "attacker": {
+    "species": "Corviknight",
+    "level": 50,
+    "ability": "Mirror Armor",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "defender": {
+    "species": "Great Tusk",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Impish",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Body Press",
+  "trials": 500
+}

@@ -1,0 +1,22 @@
+{
+  "name": "psyshock_iron_valiant_into_chiyu",
+  "move": "Psyshock",
+  "damage": [
+    0
+  ],
+  "damage_crit": [
+    0
+  ],
+  "damage_union": [
+    0
+  ],
+  "range": [
+    0,
+    0
+  ],
+  "range_crit": [
+    0,
+    0
+  ],
+  "desc": "(fullDesc unavailable: damage[damage.length - 1] === 0.)"
+}

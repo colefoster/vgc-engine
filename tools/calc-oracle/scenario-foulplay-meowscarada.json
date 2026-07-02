@@ -1,0 +1,19 @@
+{
+  "name": "foulplay_meowscarada_into_ironhands",
+  "attacker": {
+    "species": "Meowscarada",
+    "level": 50,
+    "ability": "Overgrow",
+    "nature": "Jolly",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Iron Hands",
+    "level": 50,
+    "ability": "Quark Drive",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 252, "spd": 4 }
+  },
+  "move": "Foul Play",
+  "trials": 500
+}

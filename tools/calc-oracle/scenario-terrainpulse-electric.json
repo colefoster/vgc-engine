@@ -1,0 +1,20 @@
+{
+  "name": "terrainpulse_electric_pincurchin_into_amoonguss",
+  "attacker": {
+    "species": "Pincurchin",
+    "level": 50,
+    "ability": "Electric Surge",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Amoonguss",
+    "level": 50,
+    "ability": "Regenerator",
+    "nature": "Calm",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Terrain Pulse",
+  "field": { "terrain": "Electric" },
+  "trials": 500
+}

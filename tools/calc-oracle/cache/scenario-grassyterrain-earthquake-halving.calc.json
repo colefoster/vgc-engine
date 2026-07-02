@@ -1,0 +1,61 @@
+{
+  "name": "grassyterrain_earthquake_halving_landorust_into_rillaboom",
+  "move": "Earthquake",
+  "damage": [
+    18,
+    18,
+    18,
+    18,
+    18,
+    19,
+    19,
+    19,
+    19,
+    20,
+    20,
+    20,
+    21,
+    21,
+    21,
+    21
+  ],
+  "damage_crit": [
+    27,
+    27,
+    27,
+    27,
+    28,
+    28,
+    29,
+    29,
+    29,
+    30,
+    30,
+    30,
+    30,
+    31,
+    31,
+    32
+  ],
+  "damage_union": [
+    18,
+    19,
+    20,
+    21,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32
+  ],
+  "range": [
+    18,
+    21
+  ],
+  "range_crit": [
+    27,
+    32
+  ],
+  "desc": "252 Atk Landorus-Therian Earthquake vs. 252 HP / 252+ Def Rillaboom in Grassy Terrain: 18-21 (8.6 - 10.1%)"
+}

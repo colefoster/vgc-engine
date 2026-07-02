@@ -1,0 +1,19 @@
+{
+  "name": "technician_scizor_bulletpunch_into_fluttermane",
+  "attacker": {
+    "species": "Scizor",
+    "level": 50,
+    "ability": "Technician",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 252, "spd": 4 }
+  },
+  "defender": {
+    "species": "Flutter Mane",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "move": "Bullet Punch",
+  "trials": 500
+}

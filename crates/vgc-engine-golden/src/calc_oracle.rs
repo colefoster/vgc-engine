@@ -1,0 +1,226 @@
+//! Reusable core of the `calc_oracle` example, shared with the
+//! `calc_oracle_suite` integration test.
+//!
+//! Given a scenario JSON (attacker + defender + move + trials), runs N
+//! battles where the attacker uses the named move into a Splash-using
+//! defender and reports every observed damage value. The test suite
+//! asserts that set is a subset of `@smogon/calc`'s 16-roll expected
+//! damage array (`damage ∪ damage_crit`), independent of PS.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use vgc_engine_core::{
+    Battle, BattleConfig, Format, Pokemon, SideRef, Status, TeamBuilder,
+};
+
+use crate::parse_turn_actions;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PokemonSpec {
+    pub species: String,
+    #[serde(default = "default_level")]
+    pub level: u8,
+    #[serde(default)]
+    pub item: Option<String>,
+    #[serde(default)]
+    pub ability: Option<String>,
+    #[serde(default)]
+    pub nature: Option<String>,
+    #[serde(default)]
+    pub evs: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub ivs: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub tera_type: Option<String>,
+    #[serde(default)]
+    pub terastallized: bool,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+fn default_level() -> u8 { 50 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Scenario {
+    pub name: String,
+    pub attacker: PokemonSpec,
+    pub defender: PokemonSpec,
+    #[serde(rename = "move")]
+    pub move_name: String,
+    #[serde(default = "default_trials")]
+    pub trials: u32,
+}
+
+fn default_trials() -> u32 { 200 }
+
+#[derive(Debug, Serialize)]
+pub struct Observation {
+    pub name: String,
+    #[serde(rename = "move")]
+    pub move_name: String,
+    pub trials: u32,
+    pub target_max_hp: u16,
+    pub observed_damage: Vec<u16>,
+    pub observed_unique: Vec<u16>,
+    pub fainted_count: u32,
+    pub missed_count: u32,
+    pub errors: Vec<String>,
+}
+
+/// The subset of `@smogon/calc`'s output the test suite needs.
+#[derive(Debug, Deserialize)]
+pub struct CalcExpectation {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub damage: Vec<u32>,
+    #[serde(default)]
+    pub damage_crit: Vec<u32>,
+    #[serde(default)]
+    pub damage_union: Vec<u32>,
+}
+
+fn label_of(k: &str) -> &'static str {
+    match k {
+        "hp" => "HP", "atk" => "Atk", "def" => "Def",
+        "spa" => "SpA", "spd" => "SpD", "spe" => "Spe",
+        _ => "",
+    }
+}
+
+fn render_team(spec: &PokemonSpec, primary_move: &str) -> String {
+    let mut s = String::new();
+    s.push_str(&spec.species);
+    if let Some(item) = &spec.item {
+        s.push_str(" @ ");
+        s.push_str(item);
+    }
+    s.push('\n');
+    if let Some(ability) = &spec.ability {
+        s.push_str("Ability: ");
+        s.push_str(ability);
+        s.push('\n');
+    }
+    s.push_str(&format!("Level: {}\n", spec.level));
+    if let Some(tt) = &spec.tera_type {
+        s.push_str("Tera Type: ");
+        s.push_str(tt);
+        s.push('\n');
+    }
+    if !spec.evs.is_empty() {
+        let parts: Vec<String> = ["hp", "atk", "def", "spa", "spd", "spe"]
+            .iter()
+            .filter_map(|k| spec.evs.get(*k).map(|v| format!("{} {}", v, label_of(k))))
+            .collect();
+        if !parts.is_empty() {
+            s.push_str("EVs: ");
+            s.push_str(&parts.join(" / "));
+            s.push('\n');
+        }
+    }
+    if let Some(n) = &spec.nature {
+        s.push_str(n);
+        s.push_str(" Nature\n");
+    }
+    s.push_str("- ");
+    s.push_str(primary_move);
+    s.push('\n');
+    s.push_str("- Splash\n- Splash\n- Splash\n");
+    s
+}
+
+/// Run `sc.trials` iterations of a one-turn battle and collect every
+/// non-faint, non-miss damage observation on the defender.
+pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
+    let p1_text = render_team(&sc.attacker, &sc.move_name);
+    let p2_text = render_team(&sc.defender, "Splash");
+    let p1_team = TeamBuilder::from_showdown_text(&p1_text)
+        .map_err(|e| format!("p1 team parse: {e:?}"))?;
+    let p2_team = TeamBuilder::from_showdown_text(&p2_text)
+        .map_err(|e| format!("p2 team parse: {e:?}"))?;
+
+    let p1_choices = parse_turn_actions(
+        &serde_json::Value::String("move 1".into()),
+        SideRef::P1, 1,
+    ).map_err(|e| format!("p1 action: {e}"))?;
+    let p2_choices = parse_turn_actions(
+        &serde_json::Value::String("move 1".into()),
+        SideRef::P2, 1,
+    ).map_err(|e| format!("p2 action: {e}"))?;
+
+    let mut observed = Vec::with_capacity(sc.trials as usize);
+    let mut fainted = 0u32;
+    let mut missed = 0u32;
+    let mut target_max: u16 = 0;
+    let mut errors = Vec::new();
+
+    for i in 0..sc.trials {
+        let cfg = BattleConfig { format: Format::Singles, seed: i as u64 };
+        let mut battle = Battle::new(cfg, p1_team.clone(), p2_team.clone());
+        if sc.attacker.terastallized {
+            battle.p1.team[0].terastallized = true;
+        }
+        if sc.defender.terastallized {
+            battle.p2.team[0].terastallized = true;
+        }
+        if let Some(s) = &sc.attacker.status {
+            battle.p1.team[0].status = parse_status(s)?;
+        }
+        if let Some(s) = &sc.defender.status {
+            battle.p2.team[0].status = parse_status(s)?;
+        }
+        let max = max_hp(&battle.p2.team[0]);
+        target_max = max;
+        let _ = battle.step(&p1_choices, &p2_choices);
+        let Some(mon) = battle.p2.active_mon(0) else {
+            errors.push(format!("trial {i}: defender slot empty"));
+            continue;
+        };
+        let dmg = max.saturating_sub(mon.current_hp);
+        if mon.fainted {
+            fainted += 1;
+            continue;
+        }
+        if dmg == 0 {
+            missed += 1;
+            continue;
+        }
+        observed.push(dmg);
+    }
+
+    let mut unique = observed.clone();
+    unique.sort_unstable();
+    unique.dedup();
+
+    let mut observed_sorted = observed.clone();
+    observed_sorted.sort_unstable();
+
+    Ok(Observation {
+        name: sc.name.clone(),
+        move_name: sc.move_name.clone(),
+        trials: sc.trials,
+        target_max_hp: target_max,
+        observed_damage: observed_sorted,
+        observed_unique: unique,
+        fainted_count: fainted,
+        missed_count: missed,
+        errors,
+    })
+}
+
+fn max_hp(mon: &Pokemon) -> u16 { mon.stats.hp }
+
+fn parse_status(s: &str) -> Result<Status, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "none" | "" => Ok(Status::None),
+        "brn" | "burn" => Ok(Status::Burn),
+        "par" | "paralysis" => Ok(Status::Paralysis),
+        "frz" | "freeze" => Ok(Status::Freeze),
+        "psn" | "poison" => Ok(Status::Poison),
+        "tox" | "toxic" => Ok(Status::Toxic),
+        "slp" | "sleep" => Ok(Status::Sleep),
+        other => Err(format!("unknown status: {other}")),
+    }
+}
