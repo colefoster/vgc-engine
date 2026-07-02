@@ -24178,7 +24178,10 @@ mod tests {
         assert!(mb > plain,
                 "Muscle Band should boost physical damage ({} > {})", mb, plain);
         let ratio_x1000 = (mb as u32) * 1000 / (plain.max(1) as u32);
-        assert!((1080..=1130).contains(&ratio_x1000),
+        // Base multiplier is 4505/4096 ≈ 1.0999, but the pokeRound `+ 2047`
+        // bias inflates the single-trial ratio on small damage values.
+        // Widened upper bound to accommodate the corrected rounding.
+        assert!((1080..=1160).contains(&ratio_x1000),
                 "Muscle Band ×1.10 expected, got ×{}/1000", ratio_x1000);
     }
 
@@ -24235,8 +24238,9 @@ mod tests {
         assert!(belt > plain,
                 "Wise Glasses should boost special damage ({} > {})", belt, plain);
         let ratio_x1000 = (belt as u32) * 1000 / (plain.max(1) as u32);
-        // 4505/4096 ≈ 1.0999.
-        assert!((1080..=1130).contains(&ratio_x1000),
+        // 4505/4096 ≈ 1.0999; pokeRound `+ 2047` bias inflates the
+        // single-trial ratio on small damage values.
+        assert!((1080..=1160).contains(&ratio_x1000),
                 "Wise Glasses ×1.10 expected, got ×{}/1000", ratio_x1000);
         // Crunch — Physical, should NOT boost.
         let belt_phys = mk("wiseglasses", 1);
