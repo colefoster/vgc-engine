@@ -1088,6 +1088,17 @@ pub(crate) fn calculate_damage_with_bp(
             _ => 150,
         };
         (m.type_, bp_local)
+    } else if move_id == data::move_id::FACADE
+        && !matches!(attacker.status, Status::None | Status::Sleep)
+    {
+        // PS data/moves.ts:facade `basePowerCallback`:
+        //   if (pokemon.status && pokemon.status !== 'slp') return move.basePower * 2;
+        // BP doubles (70 → 140) when the user carries a non-volatile
+        // status other than Sleep. The paired burn-Atk-halve carveout
+        // lives at damage.rs:2254 (`move_id != FACADE`), matching PS
+        // `sim/pokemon.ts` `ignoreBurnHalving` for Facade. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Facade_(move)>.
+        (m.type_, (m.base_power as u32) * 2)
     } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
