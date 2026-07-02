@@ -1,0 +1,20 @@
+{
+  "name": "choiceband_kingambit_ironhead_into_fluttermane",
+  "attacker": {
+    "species": "Kingambit",
+    "level": 50,
+    "item": "Choice Band",
+    "ability": "Defiant",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 252, "spd": 4 }
+  },
+  "defender": {
+    "species": "Flutter Mane",
+    "level": 50,
+    "ability": "Protosynthesis",
+    "nature": "Timid",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "move": "Iron Head",
+  "trials": 500
+}

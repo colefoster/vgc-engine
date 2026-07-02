@@ -1,0 +1,68 @@
+{
+  "name": "snow_icetype_def_boost_kingambit_ironhead_into_ninetalesalola",
+  "move": "Iron Head",
+  "damage": [
+    180,
+    180,
+    184,
+    184,
+    192,
+    192,
+    192,
+    196,
+    196,
+    196,
+    204,
+    204,
+    204,
+    208,
+    208,
+    216
+  ],
+  "damage_crit": [
+    268,
+    276,
+    276,
+    280,
+    288,
+    288,
+    292,
+    292,
+    300,
+    300,
+    304,
+    304,
+    312,
+    312,
+    316,
+    324
+  ],
+  "damage_union": [
+    180,
+    184,
+    192,
+    196,
+    204,
+    208,
+    216,
+    268,
+    276,
+    280,
+    288,
+    292,
+    300,
+    304,
+    312,
+    316,
+    324
+  ],
+  "range": [
+    180,
+    216
+  ],
+  "range_crit": [
+    268,
+    324
+  ],
+  "desc": "252+ Atk Kingambit Iron Head vs. 252 HP / 252+ Def Ninetales-Alola in Snow: 180-216 (100 - 120%) -- guaranteed OHKO"
+}
