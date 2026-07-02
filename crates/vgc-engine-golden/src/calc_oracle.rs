@@ -173,6 +173,16 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         }
         let max = max_hp(&battle.p2.team[0]);
         target_max = max;
+        // Snapshot pre-step defender status. PS resolves residual-damage
+        // status ticks (Burn / Poison / Toxic) at end-of-turn BEFORE we
+        // read `current_hp`, so a trial where the move inflicted a fresh
+        // status reports `move_damage + tick` — an EOT confound identical
+        // to the Grassy Terrain heal-tick harness limitation already noted
+        // in the calc-oracle suite. We filter those trials rather than
+        // back the tick out: exact tick math varies by ability (Poison
+        // Heal, Magic Guard, Heatproof) and status. Status-chance RNG
+        // draws are unaffected — only observation is filtered.
+        let pre_status = battle.p2.team[0].status;
         let _ = battle.step(&p1_choices, &p2_choices);
         let Some(mon) = battle.p2.active_mon(0) else {
             errors.push(format!("trial {i}: defender slot empty"));
@@ -185,6 +195,16 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         }
         if dmg == 0 {
             missed += 1;
+            continue;
+        }
+        if mon.status != pre_status
+            && matches!(
+                mon.status,
+                Status::Burn | Status::Poison | Status::Toxic
+            )
+        {
+            // Move inflicted a residual-damage status this turn; drop
+            // the observation to avoid mixing an EOT tick into the roll.
             continue;
         }
         observed.push(dmg);
