@@ -1,0 +1,20 @@
+{
+  "name": "snow_icetype_def_boost_kingambit_ironhead_into_ninetalesalola",
+  "attacker": {
+    "species": "Kingambit",
+    "level": 50,
+    "ability": "Defiant",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 252, "spd": 4 }
+  },
+  "defender": {
+    "species": "Ninetales-Alola",
+    "level": 50,
+    "ability": "Snow Warning",
+    "nature": "Bold",
+    "evs": { "hp": 252, "def": 252, "spd": 4 }
+  },
+  "move": "Iron Head",
+  "field": { "weather": "Snow" },
+  "trials": 500
+}

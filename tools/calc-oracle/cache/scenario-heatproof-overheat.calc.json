@@ -1,0 +1,67 @@
+{
+  "name": "heatproof_overheat_chandelure_into_bronzong",
+  "move": "Overheat",
+  "damage": [
+    86,
+    90,
+    90,
+    90,
+    92,
+    92,
+    92,
+    96,
+    96,
+    96,
+    98,
+    98,
+    98,
+    102,
+    102,
+    104
+  ],
+  "damage_crit": [
+    132,
+    132,
+    134,
+    134,
+    138,
+    138,
+    140,
+    140,
+    144,
+    144,
+    146,
+    146,
+    150,
+    150,
+    152,
+    156
+  ],
+  "damage_union": [
+    86,
+    90,
+    92,
+    96,
+    98,
+    102,
+    104,
+    132,
+    134,
+    138,
+    140,
+    144,
+    146,
+    150,
+    152,
+    156
+  ],
+  "range": [
+    86,
+    104
+  ],
+  "range_crit": [
+    132,
+    156
+  ],
+  "desc": "252+ SpA Chandelure Overheat vs. 252 HP / 252+ SpD Heatproof Bronzong: 86-104 (49.4 - 59.7%) -- 99.6% chance to 2HKO"
+}

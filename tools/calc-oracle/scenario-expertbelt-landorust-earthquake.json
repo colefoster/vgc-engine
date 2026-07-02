@@ -1,0 +1,20 @@
+{
+  "name": "expertbelt_landorust_earthquake_into_ironhands",
+  "attacker": {
+    "species": "Landorus-Therian",
+    "level": 50,
+    "item": "Expert Belt",
+    "ability": "Intimidate",
+    "nature": "Jolly",
+    "evs": { "hp": 4, "atk": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Iron Hands",
+    "level": 50,
+    "ability": "Quark Drive",
+    "nature": "Adamant",
+    "evs": { "hp": 252, "atk": 4, "spd": 252 }
+  },
+  "move": "Earthquake",
+  "trials": 500
+}

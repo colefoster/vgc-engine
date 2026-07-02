@@ -1,0 +1,20 @@
+{
+  "name": "weatherball_rain_pelipper_into_landorust",
+  "attacker": {
+    "species": "Pelipper",
+    "level": 50,
+    "ability": "Drizzle",
+    "nature": "Modest",
+    "evs": { "hp": 4, "spa": 252, "spe": 252 }
+  },
+  "defender": {
+    "species": "Landorus-Therian",
+    "level": 50,
+    "ability": "Intimidate",
+    "nature": "Careful",
+    "evs": { "hp": 252, "def": 4, "spd": 252 }
+  },
+  "move": "Weather Ball",
+  "field": { "weather": "Rain" },
+  "trials": 500
+}
