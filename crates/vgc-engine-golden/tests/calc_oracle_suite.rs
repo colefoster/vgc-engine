@@ -35,10 +35,6 @@ const KNOWN_FAILURES: &[&str] = &[
     // ~1.33× band, suggesting the aura may double-apply when the
     // holder is Chi-Yu (which also has Beads-of-Ruin as its innate).
     "scenario-beadsofruin-chiyu-heatwave",
-    // Expert Belt: every observed damage is exactly 1 lower than
-    // expected — rounding order in the 1.2× SE multiplier. Off-by-1,
-    // low-impact but structural.
-    "scenario-expertbelt-landorust-earthquake",
     // Grassy Terrain heal-tick confound: harness-limitation, not an
     // engine bug. Grounded defender heals 1/16 HP at end-of-turn
     // BEFORE the HP-delta read, so observed damage undercounts by
