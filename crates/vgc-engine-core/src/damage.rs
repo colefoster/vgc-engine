@@ -363,7 +363,12 @@ impl DamagePipeline {
         }
         if inp.attacker_item_id == crate::data::item_id::EXPERTBELT && d > 0 {
             if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX) {
-                d = ((d as u32) * 4915 / 4096).min(u16::MAX as u32) as u16;
+                // PS `chainModify([4915, 4096])` routes through `modify`,
+                // which is pokeRound: `floor((value * modifier + 2047) / 4096)`
+                // (sim/battle.ts:2334-2345, data/items.ts:expertbelt). Missing
+                // `+ 2047` here caused the Expert Belt off-by-1 seen by the
+                // calc-oracle harness (Life Orb on L356 already has it).
+                d = (((d as u32) * 4915 + 2047) / 4096).min(u16::MAX as u32) as u16;
             }
         }
         self.current = d;
