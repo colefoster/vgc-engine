@@ -341,10 +341,14 @@ impl DamagePipeline {
     ///
     /// PS refs:
     ///   data/items.ts:lifeorb chainModify([5324,4096]); pokeRound
-    ///   data/items.ts:wiseglasses move.category === 'Special' ×4505/4096
-    ///   data/items.ts:muscleband move.category === 'Physical' ×4505/4096
     ///   data/items.ts:expertbelt onBasePower
     ///     `target.runEffectiveness(move) > 0 → chainModify([4915,4096])`
+    ///
+    /// Muscle Band + Wise Glasses used to live here at the final-damage
+    /// step. PS applies them via `onBasePower` (base-power multiplier
+    /// chain), which produces different rounding than final-damage at
+    /// most move/stat magnitudes. They've been moved into the `bp_mod`
+    /// chain in `calculate_damage_with_bp`.
     #[inline]
     pub fn apply_attacker_item(&mut self, apply_life_orb: bool) {
         if self.fixed {
@@ -354,15 +358,6 @@ impl DamagePipeline {
         let mut d = self.current;
         if apply_life_orb && inp.life_orb && d > 0 {
             d = (((d as u32) * 5324 + 2047) / 4096).min(u16::MAX as u32) as u16;
-        }
-        if inp.attacker_item_id == crate::data::item_id::WISEGLASSES && inp.special_move && d > 0 {
-            // PS `chainModify([4505, 4096])` → `modify()` → pokeRound with
-            // `+ 2047` bias (sim/battle.ts:2334-2345, data/items.ts:wiseglasses).
-            d = (((d as u32) * 4505 + 2047) / 4096).min(u16::MAX as u32) as u16;
-        }
-        if inp.attacker_item_id == crate::data::item_id::MUSCLEBAND && inp.physical_move && d > 0 {
-            // Same pokeRound bias as Wise Glasses; data/items.ts:muscleband.
-            d = (((d as u32) * 4505 + 2047) / 4096).min(u16::MAX as u32) as u16;
         }
         if inp.attacker_item_id == crate::data::item_id::EXPERTBELT && d > 0 {
             if matches!(inp.effectiveness, TypeEff::DoubleX | TypeEff::QuadrupleX) {
@@ -1443,6 +1438,31 @@ pub(crate) fn calculate_damage_with_bp(
         && attacker.effective_item_id() == data::item_id::PUNCHINGGLOVE
     {
         bp_mod = chain_modify(bp_mod, 4506, 4096);
+    }
+
+    // Muscle Band — PS `data/items.ts:muscleband` `onBasePower`:
+    //   if (move.category === 'Physical') return this.chainModify([4505, 4096]);
+    // ×4505/4096 (≈×1.1) BP on the holder's physical moves. Runs at the
+    // base-power step (chained into `bp_mod`, applied once via pokeRound at
+    // the end of the block), NOT at the final-damage step — hand-authored
+    // scenarios happened to agree there, but the generator matrix (PR #81)
+    // showed off-by-1 vs PS at other magnitudes.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Muscle_Band>.
+    if m.category == 0
+        && attacker.effective_item_id() == data::item_id::MUSCLEBAND
+    {
+        bp_mod = chain_modify(bp_mod, 4505, 4096);
+    }
+
+    // Wise Glasses — PS `data/items.ts:wiseglasses` `onBasePower`:
+    //   if (move.category === 'Special') return this.chainModify([4505, 4096]);
+    // ×4505/4096 (≈×1.1) BP on the holder's special moves. Same base-power
+    // step as Muscle Band; see comment above.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wise_Glasses>.
+    if m.category == 1
+        && attacker.effective_item_id() == data::item_id::WISEGLASSES
+    {
+        bp_mod = chain_modify(bp_mod, 4505, 4096);
     }
 
     // Mega Launcher — PS `data/abilities.ts:megalauncher` `onBasePower`
