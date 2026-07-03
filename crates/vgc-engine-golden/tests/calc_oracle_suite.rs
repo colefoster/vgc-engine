@@ -50,31 +50,14 @@ const KNOWN_FAILURES: &[&str] = &[
     "scenario-gen-chiyu-overheat-vs-amoonguss-no-item-wx-sand",
     "scenario-gen-chiyu-overheat-vs-amoonguss-wise-glasses-wx-sand",
     "scenario-gen-landorus-eq-vs-ironhands-expert-belt-wx-sand",
+    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-sand",
     "scenario-gen-landorus-eq-vs-ironhands-no-item-wx-sand",
     // Grassy Terrain heal-tick confound (grounded Iron Hands).
     "scenario-gen-landorus-eq-vs-ironhands-choice-band-tr-grassy",
     "scenario-gen-landorus-eq-vs-ironhands-expert-belt-tr-grassy",
     "scenario-gen-landorus-eq-vs-ironhands-life-orb-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-no-item-tr-grassy",
-    // Muscle Band across all field states — real bug. Engine applies
-    // Muscle Band at the final-damage step (crates/vgc-engine-core/src/
-    // damage.rs apply_attacker_item), but PS applies it via `onBasePower`
-    // — different rounding-chain position, and the compound with the
-    // other multipliers accumulates ≥1-point deltas that the pokeRound
-    // bias (#80) can't reconcile alone. Fix requires moving Muscle Band
-    // into the base-power step of the damage chain.
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-clear",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-tr-electric",
     "scenario-gen-landorus-eq-vs-ironhands-muscle-band-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-tr-psychic",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-rain",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-sand",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-snow",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-sun",
-    // Wise Glasses + Overheat in rain — leftover after filtering; needs
-    // triage. Likely the same base-power vs final-damage ordering as
-    // Muscle Band above (Wise Glasses is Special's counterpart).
-    "scenario-gen-chiyu-overheat-vs-amoonguss-wise-glasses-wx-rain",
+    "scenario-gen-landorus-eq-vs-ironhands-no-item-tr-grassy",
 ];
 
 use std::collections::BTreeSet;
