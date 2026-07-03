@@ -1,0 +1,68 @@
+{
+  "name": "scenario-gen-landorus-eq-vs-ironhands-life-orb-tr-grassy",
+  "move": "Earthquake",
+  "damage": [
+    127,
+    127,
+    127,
+    133,
+    133,
+    135,
+    135,
+    135,
+    140,
+    140,
+    143,
+    143,
+    143,
+    148,
+    148,
+    151
+  ],
+  "damage_crit": [
+    190,
+    190,
+    195,
+    198,
+    198,
+    203,
+    203,
+    205,
+    205,
+    211,
+    213,
+    213,
+    218,
+    218,
+    221,
+    226
+  ],
+  "damage_union": [
+    127,
+    133,
+    135,
+    140,
+    143,
+    148,
+    151,
+    190,
+    195,
+    198,
+    203,
+    205,
+    211,
+    213,
+    218,
+    221,
+    226
+  ],
+  "range": [
+    127,
+    151
+  ],
+  "range_crit": [
+    190,
+    226
+  ],
+  "desc": "252+ Atk Life Orb Landorus-Therian Earthquake vs. 252 HP / 0 Def Iron Hands in Grassy Terrain: 127-151 (48.6 - 57.8%) -- 46.1% chance to 2HKO after Grassy Terrain recovery"
+}

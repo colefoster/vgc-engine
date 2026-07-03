@@ -1,0 +1,31 @@
+{
+  "attacker": {
+    "ability": "Supreme Overlord",
+    "evs": {
+      "atk": 252,
+      "hp": 4,
+      "spe": 252
+    },
+    "item": "Choice Band",
+    "level": 50,
+    "nature": "Adamant",
+    "species": "Kingambit"
+  },
+  "defender": {
+    "ability": "Protosynthesis",
+    "evs": {
+      "def": 4,
+      "hp": 252,
+      "spd": 252
+    },
+    "level": 50,
+    "nature": "Timid",
+    "species": "Flutter Mane"
+  },
+  "field": {
+    "weather": "Sun"
+  },
+  "move": "Iron Head",
+  "name": "scenario-gen-kingambit-ironhead-vs-fluttermane-choice-band-wx-sun",
+  "trials": 500
+}
