@@ -1,0 +1,68 @@
+{
+  "name": "scenario-gen-landorus-eq-vs-ironhands-no-item-tr-grassy",
+  "move": "Earthquake",
+  "damage": [
+    98,
+    98,
+    98,
+    102,
+    102,
+    104,
+    104,
+    104,
+    108,
+    108,
+    110,
+    110,
+    110,
+    114,
+    114,
+    116
+  ],
+  "damage_crit": [
+    146,
+    146,
+    150,
+    152,
+    152,
+    156,
+    156,
+    158,
+    158,
+    162,
+    164,
+    164,
+    168,
+    168,
+    170,
+    174
+  ],
+  "damage_union": [
+    98,
+    102,
+    104,
+    108,
+    110,
+    114,
+    116,
+    146,
+    150,
+    152,
+    156,
+    158,
+    162,
+    164,
+    168,
+    170,
+    174
+  ],
+  "range": [
+    98,
+    116
+  ],
+  "range_crit": [
+    146,
+    174
+  ],
+  "desc": "252+ Atk Landorus-Therian Earthquake vs. 252 HP / 0 Def Iron Hands in Grassy Terrain: 98-116 (37.5 - 44.4%) -- guaranteed 3HKO after Grassy Terrain recovery"
+}
