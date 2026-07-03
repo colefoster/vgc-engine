@@ -1,0 +1,70 @@
+{
+  "name": "scenario-gen-landorus-eq-vs-ironhands-muscle-band-tr-grassy",
+  "move": "Earthquake",
+  "damage": [
+    104,
+    108,
+    108,
+    108,
+    110,
+    110,
+    114,
+    114,
+    116,
+    116,
+    116,
+    120,
+    120,
+    122,
+    122,
+    126
+  ],
+  "damage_crit": [
+    158,
+    162,
+    162,
+    164,
+    168,
+    168,
+    170,
+    170,
+    174,
+    176,
+    176,
+    180,
+    182,
+    182,
+    186,
+    188
+  ],
+  "damage_union": [
+    104,
+    108,
+    110,
+    114,
+    116,
+    120,
+    122,
+    126,
+    158,
+    162,
+    164,
+    168,
+    170,
+    174,
+    176,
+    180,
+    182,
+    186,
+    188
+  ],
+  "range": [
+    104,
+    126
+  ],
+  "range_crit": [
+    158,
+    188
+  ],
+  "desc": "252+ Atk Muscle Band Landorus-Therian Earthquake vs. 252 HP / 0 Def Iron Hands in Grassy Terrain: 104-126 (39.8 - 48.2%) -- guaranteed 3HKO after Grassy Terrain recovery"
+}

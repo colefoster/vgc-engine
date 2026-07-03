@@ -1,0 +1,68 @@
+{
+  "name": "scenario-gen-landorus-eq-vs-ironhands-expert-belt-tr-grassy",
+  "move": "Earthquake",
+  "damage": [
+    118,
+    118,
+    118,
+    122,
+    122,
+    125,
+    125,
+    125,
+    130,
+    130,
+    132,
+    132,
+    132,
+    137,
+    137,
+    139
+  ],
+  "damage_crit": [
+    175,
+    175,
+    180,
+    182,
+    182,
+    187,
+    187,
+    190,
+    190,
+    194,
+    197,
+    197,
+    202,
+    202,
+    204,
+    209
+  ],
+  "damage_union": [
+    118,
+    122,
+    125,
+    130,
+    132,
+    137,
+    139,
+    175,
+    180,
+    182,
+    187,
+    190,
+    194,
+    197,
+    202,
+    204,
+    209
+  ],
+  "range": [
+    118,
+    139
+  ],
+  "range_crit": [
+    175,
+    209
+  ],
+  "desc": "252+ Atk Expert Belt Landorus-Therian Earthquake vs. 252 HP / 0 Def Iron Hands in Grassy Terrain: 118-139 (45.2 - 53.2%) -- 0.4% chance to 2HKO after Grassy Terrain recovery"
+}
