@@ -1,0 +1,30 @@
+{
+  "attacker": {
+    "ability": "Beads of Ruin",
+    "evs": {
+      "hp": 4,
+      "spa": 252,
+      "spe": 252
+    },
+    "level": 50,
+    "nature": "Modest",
+    "species": "Chi-Yu"
+  },
+  "defender": {
+    "ability": "Regenerator",
+    "evs": {
+      "def": 4,
+      "hp": 252,
+      "spd": 252
+    },
+    "level": 50,
+    "nature": "Calm",
+    "species": "Amoonguss"
+  },
+  "field": {
+    "terrain": "Grassy"
+  },
+  "move": "Overheat",
+  "name": "scenario-gen-chiyu-overheat-vs-amoonguss-no-item-tr-grassy",
+  "trials": 500
+}

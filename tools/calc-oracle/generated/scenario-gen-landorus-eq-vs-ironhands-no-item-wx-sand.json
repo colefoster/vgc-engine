@@ -1,0 +1,30 @@
+{
+  "attacker": {
+    "ability": "Intimidate",
+    "evs": {
+      "atk": 252,
+      "hp": 4,
+      "spe": 252
+    },
+    "level": 50,
+    "nature": "Adamant",
+    "species": "Landorus-Therian"
+  },
+  "defender": {
+    "ability": "Quark Drive",
+    "evs": {
+      "atk": 4,
+      "hp": 252,
+      "spd": 252
+    },
+    "level": 50,
+    "nature": "Careful",
+    "species": "Iron Hands"
+  },
+  "field": {
+    "weather": "Sand"
+  },
+  "move": "Earthquake",
+  "name": "scenario-gen-landorus-eq-vs-ironhands-no-item-wx-sand",
+  "trials": 500
+}
