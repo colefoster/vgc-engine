@@ -163,6 +163,38 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         &serde_json::Value::String("move 1".into()),
         SideRef::P2, 1,
     ).map_err(|e| format!("p2 action: {e}"))?;
+    // Control: p1 also uses Splash (its move slot 4). Renders the same
+    // field state as a real trial but with zero move-damage, so any HP
+    // delta on the defender is the pure EOT delta — sand tick, Grassy
+    // Terrain heal, whatever. We subtract this from every real trial's
+    // observation, back-solving the move-damage the calc oracle wants.
+    let p1_splash = parse_turn_actions(
+        &serde_json::Value::String("move 4".into()),
+        SideRef::P1, 1,
+    ).map_err(|e| format!("p1 splash action: {e}"))?;
+    let eot_delta_defender: i32 = {
+        let cfg = BattleConfig { format: Format::Singles, seed: 0xEC0_DE };
+        let mut b = Battle::new(cfg, p1_team.clone(), p2_team.clone());
+        if sc.attacker.terastallized { b.p1.team[0].terastallized = true; }
+        if sc.defender.terastallized { b.p2.team[0].terastallized = true; }
+        if let Some(s) = &sc.attacker.status { b.p1.team[0].status = parse_status(s)?; }
+        if let Some(s) = &sc.defender.status { b.p2.team[0].status = parse_status(s)?; }
+        if let Some(field) = &sc.field {
+            if let Some(w) = &field.weather { b.set_weather(parse_weather(w)?); }
+            if let Some(t) = &field.terrain { b.set_terrain(parse_terrain(t)?); }
+        }
+        // Set defender to half HP so an EOT heal (Grassy Terrain,
+        // Leftovers, ...) has room to register — at full HP the heal
+        // caps to zero and we'd under-measure the delta. Sand chip and
+        // other damage sources are unaffected by HP level.
+        let max_hp = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = (max_hp / 2).max(1);
+        let before = b.p2.team[0].current_hp as i32;
+        let _ = b.step(&p1_splash, &p2_choices);
+        let after = b.p2.team[0].current_hp as i32;
+        // Positive = net damage on defender, negative = net heal.
+        before - after
+    };
 
     let mut observed = Vec::with_capacity(sc.trials as usize);
     let mut fainted = 0u32;
@@ -230,11 +262,23 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
                 Status::Burn | Status::Poison | Status::Toxic
             )
         {
-            // Move inflicted a residual-damage status this turn; drop
-            // the observation to avoid mixing an EOT tick into the roll.
+            // Move inflicted a fresh residual-damage status this turn;
+            // its tick differs from the control (which assumes any
+            // pre-existing status was already there). Drop to avoid
+            // mixing an unknown-magnitude tick into the roll.
             continue;
         }
-        observed.push(dmg);
+        // Back out the deterministic EOT delta measured by the control
+        // trial so the observation is pure move-damage.
+        let true_dmg = (dmg as i32) - eot_delta_defender;
+        if true_dmg <= 0 {
+            // Move dealt no damage this trial (e.g., a miss that also
+            // failed to trigger EOT damage subtraction cleanly), or the
+            // EOT heal exceeded the move damage. Skip.
+            missed += 1;
+            continue;
+        }
+        observed.push(true_dmg as u16);
     }
 
     let mut unique = observed.clone();

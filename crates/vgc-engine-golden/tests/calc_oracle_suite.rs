@@ -31,33 +31,6 @@ const KNOWN_FAILURES: &[&str] = &[
     // isn't consistently applied on Terapagos-Terastal. Tera is banned
     // in Reg M-B (target format), so this is aspirational coverage.
     "scenario-stellar-tera-offtype",
-    // Grassy Terrain heal-tick confound: harness-limitation, not an
-    // engine bug. Grounded defender heals 1/16 HP at end-of-turn
-    // BEFORE the HP-delta read, so observed damage undercounts by
-    // one heal tick. To fix, expose a scenario field that skips EOT
-    // effects or reads HP mid-turn.
-    "scenario-grassyterrain-rillaboom-woodhammer",
-    "scenario-grassyterrain-earthquake-halving",
-    // -------------------------------------------------------------------
-    // Generated matrix (examples/gen_calc_scenarios.rs) failures.
-    // -------------------------------------------------------------------
-    // Sand-tick EOT confound: Iron Hands is Electric/Fighting → takes
-    // 1/16 max HP sand damage at end-of-turn, before the HP-delta read.
-    // Same harness limitation as the Grassy Terrain entries above.
-    "scenario-gen-chiyu-overheat-vs-amoonguss-choice-specs-wx-sand",
-    "scenario-gen-chiyu-overheat-vs-amoonguss-expert-belt-wx-sand",
-    "scenario-gen-chiyu-overheat-vs-amoonguss-life-orb-wx-sand",
-    "scenario-gen-chiyu-overheat-vs-amoonguss-no-item-wx-sand",
-    "scenario-gen-chiyu-overheat-vs-amoonguss-wise-glasses-wx-sand",
-    "scenario-gen-landorus-eq-vs-ironhands-expert-belt-wx-sand",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-wx-sand",
-    "scenario-gen-landorus-eq-vs-ironhands-no-item-wx-sand",
-    // Grassy Terrain heal-tick confound (grounded Iron Hands).
-    "scenario-gen-landorus-eq-vs-ironhands-choice-band-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-expert-belt-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-life-orb-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-muscle-band-tr-grassy",
-    "scenario-gen-landorus-eq-vs-ironhands-no-item-tr-grassy",
 ];
 
 use std::collections::BTreeSet;
