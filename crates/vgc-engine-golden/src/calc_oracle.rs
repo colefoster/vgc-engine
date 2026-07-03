@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use vgc_engine_core::terrain::Terrain;
+use vgc_engine_core::weather::Weather;
 use vgc_engine_core::{
     Battle, BattleConfig, Format, Pokemon, SideRef, Status, TeamBuilder,
 };
@@ -51,6 +53,18 @@ pub struct Scenario {
     pub move_name: String,
     #[serde(default = "default_trials")]
     pub trials: u32,
+    #[serde(default)]
+    pub field: Option<FieldSpec>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FieldSpec {
+    /// One of "Sun" | "Rain" | "Sand" | "Snow".
+    #[serde(default)]
+    pub weather: Option<String>,
+    /// One of "Electric" | "Grassy" | "Psychic" | "Misty".
+    #[serde(default)]
+    pub terrain: Option<String>,
 }
 
 fn default_trials() -> u32 { 200 }
@@ -171,6 +185,19 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         if let Some(s) = &sc.defender.status {
             battle.p2.team[0].status = parse_status(s)?;
         }
+        // Force weather/terrain when the scenario declares one, so the
+        // generator can cross field states without needing an on-team
+        // ability (Drizzle/Drought/Psychic Surge) to set them. Existing
+        // hand-authored scenarios that already set the field via an
+        // ability just re-assert the same value here (idempotent).
+        if let Some(field) = &sc.field {
+            if let Some(w) = &field.weather {
+                battle.set_weather(parse_weather(w)?);
+            }
+            if let Some(t) = &field.terrain {
+                battle.set_terrain(parse_terrain(t)?);
+            }
+        }
         let max = max_hp(&battle.p2.team[0]);
         target_max = max;
         // Snapshot pre-step defender status. PS resolves residual-damage
@@ -231,6 +258,28 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
 }
 
 fn max_hp(mon: &Pokemon) -> u16 { mon.stats.hp }
+
+fn parse_weather(s: &str) -> Result<Weather, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "" | "none" | "clear" => Ok(Weather::None),
+        "sun" | "harshsunshine" | "sunny" => Ok(Weather::Sun),
+        "rain" => Ok(Weather::Rain),
+        "sand" | "sandstorm" => Ok(Weather::Sand),
+        "snow" | "hail" => Ok(Weather::Snow),
+        other => Err(format!("unknown weather: {other}")),
+    }
+}
+
+fn parse_terrain(s: &str) -> Result<Terrain, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "" | "none" => Ok(Terrain::None),
+        "electric" => Ok(Terrain::Electric),
+        "grassy" => Ok(Terrain::Grassy),
+        "psychic" => Ok(Terrain::Psychic),
+        "misty" => Ok(Terrain::Misty),
+        other => Err(format!("unknown terrain: {other}")),
+    }
+}
 
 fn parse_status(s: &str) -> Result<Status, String> {
     match s.to_ascii_lowercase().as_str() {
