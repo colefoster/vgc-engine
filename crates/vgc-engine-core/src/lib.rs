@@ -23,6 +23,7 @@ pub mod canonical_hash;
 #[cfg(feature = "chance")]
 pub mod chance;
 pub mod damage;
+pub mod damage_api;
 pub mod item;
 pub mod order;
 pub mod rng;
@@ -37,6 +38,7 @@ pub use damage::{
     calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
     TypeEff,
 };
+pub use damage_api::{damage_only, DamageQuery};
 pub use format::Format;
 pub use format_rules::{
     rules_for, verify_showdown_text, verify_team, FormatRules, Rule, Violation, REG_M_B,
