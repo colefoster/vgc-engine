@@ -225,6 +225,23 @@ fn every_scenario_stays_within_calc_spec() {
             .collect();
 
         let is_known = KNOWN_FAILURES.contains(&stem);
+        // Guard against silent false-pass: since `observed_unique` is
+        // a subset of `expected`, an EMPTY observed set (engine dealt
+        // 0 damage on every roll) would pass the `out_of_spec.is_empty()`
+        // check even though the calc says the move deals positive
+        // damage. Under the `damage_only` API this should only happen
+        // when the calc also expects zero (immunity / true-fail path);
+        // otherwise the engine has a spec bug the harness must
+        // surface. Skip only when `expected` is entirely zero (rare
+        // but valid — some future no-op scenario).
+        let expected_positive = expected.iter().any(|v| *v > 0);
+        if obs.observed_unique.is_empty() && expected_positive && !is_known {
+            failures.push(format!(
+                "{stem}: engine observed 0 damage on all 16 rolls, but calc expected non-zero: {:?}",
+                expected.iter().copied().collect::<Vec<u32>>()
+            ));
+            continue;
+        }
         if !out_of_spec.is_empty() {
             if !is_known {
                 let expected_sorted: Vec<u32> = expected.iter().copied().collect();

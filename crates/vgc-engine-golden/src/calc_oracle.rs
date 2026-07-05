@@ -1,11 +1,17 @@
 //! Reusable core of the `calc_oracle` example, shared with the
 //! `calc_oracle_suite` integration test.
 //!
-//! Given a scenario JSON (attacker + defender + move + trials), runs N
-//! battles where the attacker uses the named move into a Splash-using
-//! defender and reports every observed damage value. The test suite
-//! asserts that set is a subset of `@smogon/calc`'s 16-roll expected
-//! damage array (`damage ∪ damage_crit`), independent of PS.
+//! Given a scenario JSON (attacker + defender + move + trials), returns
+//! the 16-roll damage array the engine deals under that field state.
+//! The test suite asserts the set is a subset of `@smogon/calc`'s
+//! 16-roll expected damage array (`damage ∪ damage_crit`), independent
+//! of PS.
+//!
+//! Uses `vgc_engine_core::damage_only` — the "Option 2" pure-damage
+//! API — instead of the pre-existing random-trial back-solver. Each
+//! scenario yields exactly sixteen deterministic damage values from
+//! sixteen forced-roll runs of the same synthetic battle; the
+//! back-out-EOT-tick control trial is gone.
 
 use std::collections::BTreeMap;
 
@@ -13,11 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use vgc_engine_core::terrain::Terrain;
 use vgc_engine_core::weather::Weather;
-use vgc_engine_core::{
-    Battle, BattleConfig, Format, Pokemon, SideRef, Status, TeamBuilder,
-};
-
-use crate::parse_turn_actions;
+use vgc_engine_core::{damage_only, DamageQuery, Pokemon, Status, TeamBuilder};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PokemonSpec {
@@ -145,8 +147,15 @@ fn render_team(spec: &PokemonSpec, primary_move: &str) -> String {
     s
 }
 
-/// Run `sc.trials` iterations of a one-turn battle and collect every
-/// non-faint, non-miss damage observation on the defender.
+/// Compute the engine's 16-roll damage array for the scenario via the
+/// `damage_only` API.
+///
+/// Legacy vestige: [`Observation`] still carries `trials` / `fainted_count`
+/// / `missed_count`. The new API produces exactly 16 deterministic
+/// values, so `trials = 16` and the two counters are always `0`. The
+/// spec-check downstream only reads `observed_unique`, so retaining the
+/// fields keeps the wire shape stable for anyone deserializing existing
+/// harness dumps.
 pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
     let p1_text = render_team(&sc.attacker, &sc.move_name);
     let p2_text = render_team(&sc.defender, "Splash");
@@ -155,153 +164,69 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
     let p2_team = TeamBuilder::from_showdown_text(&p2_text)
         .map_err(|e| format!("p2 team parse: {e:?}"))?;
 
-    let p1_choices = parse_turn_actions(
-        &serde_json::Value::String("move 1".into()),
-        SideRef::P1, 1,
-    ).map_err(|e| format!("p1 action: {e}"))?;
-    let p2_choices = parse_turn_actions(
-        &serde_json::Value::String("move 1".into()),
-        SideRef::P2, 1,
-    ).map_err(|e| format!("p2 action: {e}"))?;
-    // Control: p1 also uses Splash (its move slot 4). Renders the same
-    // field state as a real trial but with zero move-damage, so any HP
-    // delta on the defender is the pure EOT delta — sand tick, Grassy
-    // Terrain heal, whatever. We subtract this from every real trial's
-    // observation, back-solving the move-damage the calc oracle wants.
-    let p1_splash = parse_turn_actions(
-        &serde_json::Value::String("move 4".into()),
-        SideRef::P1, 1,
-    ).map_err(|e| format!("p1 splash action: {e}"))?;
-    let eot_delta_defender: i32 = {
-        let cfg = BattleConfig { format: Format::Singles, seed: 0xEC0_DE };
-        let mut b = Battle::new(cfg, p1_team.clone(), p2_team.clone());
-        if sc.attacker.terastallized { b.p1.team[0].terastallized = true; }
-        if sc.defender.terastallized { b.p2.team[0].terastallized = true; }
-        if let Some(s) = &sc.attacker.status { b.p1.team[0].status = parse_status(s)?; }
-        if let Some(s) = &sc.defender.status { b.p2.team[0].status = parse_status(s)?; }
-        if let Some(field) = &sc.field {
-            if let Some(w) = &field.weather { b.set_weather(parse_weather(w)?); }
-            if let Some(t) = &field.terrain { b.set_terrain(parse_terrain(t)?); }
-        }
-        // Set defender to half HP so an EOT heal (Grassy Terrain,
-        // Leftovers, ...) has room to register — at full HP the heal
-        // caps to zero and we'd under-measure the delta. Sand chip and
-        // other damage sources are unaffected by HP level.
-        let max_hp = b.p2.team[0].stats.hp;
-        b.p2.team[0].current_hp = (max_hp / 2).max(1);
-        let before = b.p2.team[0].current_hp as i32;
-        let _ = b.step(&p1_splash, &p2_choices);
-        let after = b.p2.team[0].current_hp as i32;
-        // Positive = net damage on defender, negative = net heal.
-        before - after
+    let mut attacker: Pokemon = p1_team.into_iter().next()
+        .ok_or_else(|| "p1 team empty".to_string())?;
+    let mut defender: Pokemon = p2_team.into_iter().next()
+        .ok_or_else(|| "p2 team empty".to_string())?;
+
+    if sc.attacker.terastallized { attacker.terastallized = true; }
+    if sc.defender.terastallized { defender.terastallized = true; }
+    if let Some(s) = &sc.attacker.status { attacker.status = parse_status(s)?; }
+    if let Some(s) = &sc.defender.status { defender.status = parse_status(s)?; }
+
+    let weather = sc
+        .field
+        .as_ref()
+        .and_then(|f| f.weather.as_ref())
+        .map(|w| parse_weather(w))
+        .transpose()?
+        .unwrap_or(Weather::None);
+    let terrain = sc
+        .field
+        .as_ref()
+        .and_then(|f| f.terrain.as_ref())
+        .map(|t| parse_terrain(t))
+        .transpose()?
+        .unwrap_or(Terrain::None);
+
+    // First slot of the built attacker holds the primary move (see
+    // `render_team` — primary is line 1, then three Splashes). The
+    // `damage_only` API re-writes moves[0] regardless, but we pass
+    // the same id so the debug shape is coherent.
+    let move_id = attacker.moves[0];
+    let target_max = defender.stats.hp;
+
+    let q = DamageQuery {
+        attacker,
+        defender,
+        move_id,
+        weather,
+        terrain,
+        is_crit: false,
+        is_spread: false,
     };
+    let rolls = damage_only(&q);
 
-    let mut observed = Vec::with_capacity(sc.trials as usize);
-    let mut fainted = 0u32;
-    let mut missed = 0u32;
-    let mut target_max: u16 = 0;
-    let mut errors = Vec::new();
-
-    for i in 0..sc.trials {
-        let cfg = BattleConfig { format: Format::Singles, seed: i as u64 };
-        let mut battle = Battle::new(cfg, p1_team.clone(), p2_team.clone());
-        if sc.attacker.terastallized {
-            battle.p1.team[0].terastallized = true;
-        }
-        if sc.defender.terastallized {
-            battle.p2.team[0].terastallized = true;
-        }
-        if let Some(s) = &sc.attacker.status {
-            battle.p1.team[0].status = parse_status(s)?;
-        }
-        if let Some(s) = &sc.defender.status {
-            battle.p2.team[0].status = parse_status(s)?;
-        }
-        // Force weather/terrain when the scenario declares one, so the
-        // generator can cross field states without needing an on-team
-        // ability (Drizzle/Drought/Psychic Surge) to set them. Existing
-        // hand-authored scenarios that already set the field via an
-        // ability just re-assert the same value here (idempotent).
-        if let Some(field) = &sc.field {
-            if let Some(w) = &field.weather {
-                battle.set_weather(parse_weather(w)?);
-            }
-            if let Some(t) = &field.terrain {
-                battle.set_terrain(parse_terrain(t)?);
-            }
-        }
-        let max = max_hp(&battle.p2.team[0]);
-        target_max = max;
-        // Snapshot pre-step defender status. PS resolves residual-damage
-        // status ticks (Burn / Poison / Toxic) at end-of-turn BEFORE we
-        // read `current_hp`, so a trial where the move inflicted a fresh
-        // status reports `move_damage + tick` — an EOT confound identical
-        // to the Grassy Terrain heal-tick harness limitation already noted
-        // in the calc-oracle suite. We filter those trials rather than
-        // back the tick out: exact tick math varies by ability (Poison
-        // Heal, Magic Guard, Heatproof) and status. Status-chance RNG
-        // draws are unaffected — only observation is filtered.
-        let pre_status = battle.p2.team[0].status;
-        let _ = battle.step(&p1_choices, &p2_choices);
-        let Some(mon) = battle.p2.active_mon(0) else {
-            errors.push(format!("trial {i}: defender slot empty"));
-            continue;
-        };
-        let dmg = max.saturating_sub(mon.current_hp);
-        if mon.fainted {
-            fainted += 1;
-            continue;
-        }
-        if dmg == 0 {
-            missed += 1;
-            continue;
-        }
-        if mon.status != pre_status
-            && matches!(
-                mon.status,
-                Status::Burn | Status::Poison | Status::Toxic
-            )
-        {
-            // Move inflicted a fresh residual-damage status this turn;
-            // its tick differs from the control (which assumes any
-            // pre-existing status was already there). Drop to avoid
-            // mixing an unknown-magnitude tick into the roll.
-            continue;
-        }
-        // Back out the deterministic EOT delta measured by the control
-        // trial so the observation is pure move-damage.
-        let true_dmg = (dmg as i32) - eot_delta_defender;
-        if true_dmg <= 0 {
-            // Move dealt no damage this trial (e.g., a miss that also
-            // failed to trigger EOT damage subtraction cleanly), or the
-            // EOT heal exceeded the move damage. Skip.
-            missed += 1;
-            continue;
-        }
-        observed.push(true_dmg as u16);
-    }
-
+    let mut observed: Vec<u16> = rolls.iter().copied().filter(|v| *v > 0).collect();
+    observed.sort_unstable();
     let mut unique = observed.clone();
-    unique.sort_unstable();
     unique.dedup();
-
-    let mut observed_sorted = observed.clone();
-    observed_sorted.sort_unstable();
 
     Ok(Observation {
         name: sc.name.clone(),
         move_name: sc.move_name.clone(),
-        trials: sc.trials,
+        // Vestigial after the `damage_only` rewrite — see the doc
+        // comment on `Observation`. Left at the deterministic 16 to
+        // match the number of engine calls made.
+        trials: 16,
         target_max_hp: target_max,
-        observed_damage: observed_sorted,
+        observed_damage: observed,
         observed_unique: unique,
-        fainted_count: fainted,
-        missed_count: missed,
-        errors,
+        fainted_count: 0,
+        missed_count: 0,
+        errors: Vec::new(),
     })
 }
-
-fn max_hp(mon: &Pokemon) -> u16 { mon.stats.hp }
 
 fn parse_weather(s: &str) -> Result<Weather, String> {
     match s.to_ascii_lowercase().as_str() {
