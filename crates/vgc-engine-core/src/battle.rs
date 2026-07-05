@@ -368,6 +368,38 @@ pub struct Battle {
     /// excludes the in-flight per-action cursor by design).
     #[serde(skip)]
     pub(crate) pending_yield: Option<crate::step_machine::PendingYield>,
+    /// Damage-only-API forcing hook. When `Some(k)`, every damage roll
+    /// draw in [`Battle::roll_initial_damage`] returns bucket `k`
+    /// (`0..=15`) without touching `self.rng`. Used by
+    /// [`crate::damage_api::damage_only`] to synthesize the 16-roll
+    /// damage array by running the same battle 16 times with `k = 0..=15`
+    /// and reading the pre-EOT defender HP delta. Always `None` in
+    /// production. `#[serde(skip)]` — a transient synth hook.
+    #[serde(skip)]
+    pub(crate) force_damage_roll: Option<u8>,
+    /// Sibling of `force_damage_roll` for the crit draw. When `Some(v)`,
+    /// the crit check in `resolve_move_with_pending` returns `v` without
+    /// drawing from `self.rng`. `damage_only` sets this per the caller's
+    /// `is_crit` flag.
+    #[serde(skip)]
+    pub(crate) force_crit: Option<bool>,
+    /// `damage_only` capture channel. When `Some(_)`, every call to
+    /// [`Battle::apply_damage_step`] adds its `effective_dmg` (the
+    /// post-pipeline pre-HP-cap value) into this accumulator. Lets the
+    /// synth path read the true damage the move WOULD have dealt,
+    /// unclipped by the defender's remaining HP — the natural clip via
+    /// `defender_max_hp - defender.current_hp` under-measures on a KO.
+    /// `None` in production. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) captured_move_damage: Option<u32>,
+    /// `damage_only` accuracy forcing hook. When `Some(true)`, every
+    /// accuracy check in `resolve_move_with_pending` skips the RNG
+    /// draw and reports a hit; `Some(false)` reports a miss (unused,
+    /// exposed for symmetry). `None` in production. Without this the
+    /// synth path silently reads 0 damage on any less-than-100%-acc
+    /// move that happens to draw a miss on its forced seed.
+    #[serde(skip)]
+    pub(crate) force_accuracy_hit: Option<bool>,
     /// PR-EOT3: per-residual-family bitset index over active slots. Maintained
     /// at status set/cure sites + switch-in; consumed by `eot_status_dot` as
     /// the "any DOT?" precheck. See [`ResidualIndex`].
@@ -455,6 +487,10 @@ impl Battle {
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
             pending_yield: None,
+            force_damage_roll: None,
+            force_crit: None,
+            captured_move_damage: None,
+            force_accuracy_hit: None,
             residual_index: ResidualIndex::default(),
             // PR-LC1: initialized to None to match the freshly-cleared
             // weather/terrain fields above. Re-synced from live state
@@ -645,6 +681,25 @@ impl Battle {
     pub fn set_terrain(&mut self, t: crate::terrain::Terrain) {
         self.terrain = t;
         self.sync_weather_terrain_cache();
+    }
+
+    /// Damage-only-API forcing hook — see [`Battle::force_damage_roll`].
+    /// When `Some(k)`, every damage roll draw returns bucket `k`
+    /// (`0..=15`) without consuming from `self.rng`.
+    pub fn set_force_damage_roll(&mut self, k: Option<u8>) {
+        debug_assert!(k.map_or(true, |v| v < 16), "force_damage_roll bucket must be 0..=15");
+        self.force_damage_roll = k;
+    }
+
+    /// Sibling of [`Battle::set_force_damage_roll`] for the crit draw.
+    pub fn set_force_crit(&mut self, v: Option<bool>) {
+        self.force_crit = v;
+    }
+
+    /// Sibling of [`Battle::set_force_damage_roll`] for the accuracy
+    /// draw. `Some(true)` = force hit, `Some(false)` = force miss.
+    pub fn set_force_accuracy_hit(&mut self, v: Option<bool>) {
+        self.force_accuracy_hit = v;
     }
 
     /// Effective weather as seen by an individual Pokémon. Same as
@@ -4289,6 +4344,11 @@ impl Battle {
                 );
             let crit = if fixed_damage.is_some() || crit_immune {
                 false
+            } else if let Some(v) = self.force_crit {
+                // `damage_only` synthesis path — bypass the RNG draw so
+                // the caller's `is_crit` flag deterministically selects
+                // the crit or no-crit damage row.
+                v
             } else {
                 self.rng.crit_with_stage(crit_stage)
             };
@@ -5363,15 +5423,24 @@ impl Battle {
             ctx.damaging, &ctx.pending_kind,
         );
         if let Some(eff_acc) = acc_comp.threshold {
-            self.rng.set_decision(RngDecision::Accuracy);
-            // Threshold-aware draw: records `eff_acc` on the recorded
-            // DrawSpace::UniformPercent so a future enumerator pass can
-            // collapse the 100-outcome uniform into a 2-bucket hit/miss
-            // frontier. PS `sim/battle-actions.ts` accuracy compare
-            // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
-            // Behaviorally identical to the prior `percent_1_100()` call.
-            let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
-            if roll > eff_acc {
+            // `damage_only` synth path: force hit / miss without a
+            // draw. Otherwise fall through to the normal RNG.
+            let missed = match self.force_accuracy_hit {
+                Some(true) => false,
+                Some(false) => true,
+                None => {
+                    self.rng.set_decision(RngDecision::Accuracy);
+                    // Threshold-aware draw: records `eff_acc` on the recorded
+                    // DrawSpace::UniformPercent so a future enumerator pass can
+                    // collapse the 100-outcome uniform into a 2-bucket hit/miss
+                    // frontier. PS `sim/battle-actions.ts` accuracy compare
+                    // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
+                    // Behaviorally identical to the prior `percent_1_100()` call.
+                    let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
+                    roll > eff_acc
+                }
+            };
+            if missed {
                 // Multiaccuracy miss — PS breaks the multi-hit loop.
                 // Surface to the driver via the loop-stop flag.
                 ctx.target_fainted_this_hit = true;
@@ -6000,6 +6069,12 @@ impl Battle {
     /// Sturdy / Endure / Focus Sash). The method does NOT itself draw
     /// RNG. Behavior byte-identical to the inline block it replaces.
     pub(crate) fn apply_damage_step(&mut self, app: DamageApplication) -> ApplyResult {
+        // `damage_only` capture — accumulate the pre-HP-cap damage
+        // for every hit that lands, so a KO doesn't clip the reported
+        // value. `None` in production. See `Battle::captured_move_damage`.
+        if let Some(acc) = self.captured_move_damage.as_mut() {
+            *acc = acc.saturating_add(app.effective_dmg as u32);
+        }
         let mut result = ApplyResult::default();
         let cross_side = app.target_side != app.attacker_side;
         if let Some(t) = self
@@ -6678,15 +6753,24 @@ impl Battle {
                     a.micle_next_move = false;
                 }
             }
-            self.rng.set_decision(RngDecision::Accuracy);
-            // Threshold-aware draw: records `eff_acc` on the recorded
-            // DrawSpace::UniformPercent so a future enumerator pass can
-            // collapse the 100-outcome uniform into a 2-bucket hit/miss
-            // frontier. PS `sim/battle-actions.ts` accuracy compare
-            // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
-            // Behaviorally identical to the prior `percent_1_100()` call.
-            let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
-            if roll > eff_acc {
+            // `damage_only` synth path forcing hook: skip the RNG
+            // draw and pin the hit/miss outcome.
+            let missed = match self.force_accuracy_hit {
+                Some(true) => false,
+                Some(false) => true,
+                None => {
+                    self.rng.set_decision(RngDecision::Accuracy);
+                    // Threshold-aware draw: records `eff_acc` on the recorded
+                    // DrawSpace::UniformPercent so a future enumerator pass can
+                    // collapse the 100-outcome uniform into a 2-bucket hit/miss
+                    // frontier. PS `sim/battle-actions.ts` accuracy compare
+                    // (`accuracy = this.battle.random(100); if (accuracy >= move.accuracy) miss`).
+                    // Behaviorally identical to the prior `percent_1_100()` call.
+                    let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
+                    roll > eff_acc
+                }
+            };
+            if missed {
                 // Blunder Policy — the holder's own move missed due to
                 // accuracy. PS `sim/battle-actions.ts:740` consumes the
                 // item and grants +2 Spe on the miss branch (non-OHKO;
@@ -6771,6 +6855,18 @@ impl Battle {
     ) -> (u16, Option<DamageContext>) {
         if let Some(fd) = fixed_damage {
             return (fd, None);
+        }
+        // `damage_only` synthesis fast-path: skip the RNG draw entirely
+        // and use the caller-forced bucket. Also skips the (lo, hi)
+        // range computation on the hint-consuming RNG variants — we
+        // don't need it since no draw is being back-solved.
+        if let Some(k) = self.force_damage_roll {
+            let mut ctx = crate::damage::ctx_from_inputs(inputs);
+            ctx.roll = k;
+            let dmg = crate::damage::calculate_damage_with_bp(
+                attacker, defender, move_id, ctx, bp_override,
+            );
+            return (dmg, Some(ctx));
         }
         // Single DamageContext template (`roll: 0` placeholder),
         // built once and reused for both the pre-roll range and
@@ -6869,6 +6965,8 @@ impl Battle {
             } else {
                 let hc = if inv.crit_immune {
                     false
+                } else if let Some(v) = self.force_crit {
+                    v
                 } else {
                     self.rng.crit_with_stage(inv.crit_stage)
                 };
@@ -6892,6 +6990,8 @@ impl Battle {
             } else {
                 let hc = if inv.fixed_dmg_snapshot.is_some() || inv.crit_immune {
                     false
+                } else if let Some(v) = self.force_crit {
+                    v
                 } else {
                     self.rng.crit_with_stage(inv.crit_stage)
                 };
@@ -8164,6 +8264,11 @@ impl Battle {
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
         if m.accuracy == 255 {
             return true;
+        }
+        // `damage_only` synth path — force the accuracy result to
+        // avoid a silent 0-damage read on <100% moves.
+        if let Some(v) = self.force_accuracy_hit {
+            return v;
         }
         // Threshold-aware draw: PS `sim/battle-actions.ts` accuracy
         // compare. Records `m.accuracy` on DrawSpace::UniformPercent so a
