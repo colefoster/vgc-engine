@@ -1,0 +1,20 @@
+[package]
+name = "vgc-engine-calc-oracle-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local webui for browsing the calc-oracle scenario suite: filter, view 16-roll bars, edit, and re-run against @smogon/calc expectations."
+
+[[bin]]
+name = "vgc-engine-calc-oracle-web"
+path = "src/main.rs"
+
+[dependencies]
+vgc-engine-golden = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }

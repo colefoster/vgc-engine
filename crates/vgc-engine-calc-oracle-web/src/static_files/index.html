@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>calc-oracle</title>
+<link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+<header>
+  <h1>calc-oracle</h1>
+  <div class="counters" id="counters">loading…</div>
+  <div class="actions">
+    <button id="btn-runall">Run all</button>
+    <button id="btn-new">+ New</button>
+  </div>
+</header>
+<main>
+  <aside id="left">
+    <div class="filter">
+      <input type="search" id="f-text" placeholder="search…"/>
+      <label>attacker <select id="f-attacker"><option value="">any</option></select></label>
+      <label>item <select id="f-item"><option value="">any</option></select></label>
+      <label>weather <select id="f-weather"><option value="">any</option></select></label>
+      <label>terrain <select id="f-terrain"><option value="">any</option></select></label>
+      <div class="radios">
+        <label><input type="radio" name="status" value="all" checked/> all</label>
+        <label><input type="radio" name="status" value="failing"/> failing</label>
+        <label><input type="radio" name="status" value="passing"/> passing</label>
+        <label><input type="radio" name="status" value="known"/> known-fail</label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="f-hand" checked/> hand</label>
+        <label><input type="checkbox" id="f-gen" checked/> gen</label>
+      </div>
+    </div>
+    <ul id="scenario-list"></ul>
+  </aside>
+  <section id="right">
+    <div id="detail-empty">Select a scenario on the left.</div>
+    <div id="detail" hidden>
+      <div class="d-head">
+        <h2 id="d-title"></h2>
+        <div>
+          <button id="btn-run">Run</button>
+          <button id="btn-edit">Edit</button>
+        </div>
+      </div>
+      <div id="d-summary"></div>
+      <div id="d-svg"></div>
+      <div id="d-values"></div>
+    </div>
+    <div id="editor" hidden>
+      <div class="d-head">
+        <h2 id="e-title">Edit scenario</h2>
+        <div>
+          <button id="btn-save">Save</button>
+          <button id="btn-cancel">Cancel</button>
+        </div>
+      </div>
+      <textarea id="e-text" spellcheck="false"></textarea>
+      <div id="e-err"></div>
+    </div>
+    <div id="runall" hidden>
+      <h3>Run all progress</h3>
+      <div id="runall-status">0 / 0</div>
+      <ul id="runall-log"></ul>
+    </div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

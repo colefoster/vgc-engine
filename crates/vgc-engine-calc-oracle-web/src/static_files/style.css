@@ -1,0 +1,40 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.4 -apple-system, system-ui, sans-serif; color: #222; background: #fafafa; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #ddd; background: #fff; position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 15px; margin: 0; }
+.counters { font-family: ui-monospace, monospace; font-size: 12px; color: #555; }
+.actions { margin-left: auto; display: flex; gap: 6px; }
+button { font: inherit; padding: 4px 10px; border: 1px solid #bbb; background: #fff; border-radius: 3px; cursor: pointer; }
+button:hover { background: #eef; }
+main { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 42px); }
+aside#left { border-right: 1px solid #ddd; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
+.filter { padding: 8px; border-bottom: 1px solid #eee; display: flex; flex-direction: column; gap: 4px; }
+.filter input[type=search] { padding: 4px 6px; border: 1px solid #bbb; border-radius: 3px; }
+.filter label { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #555; }
+.filter select { font: inherit; padding: 2px 4px; }
+.filter .radios, .filter .checks { display: flex; gap: 8px; flex-wrap: wrap; }
+.filter .radios label, .filter .checks label { justify-content: flex-start; gap: 3px; }
+#scenario-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+#scenario-list li { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 6px; }
+#scenario-list li:hover { background: #f2f6ff; }
+#scenario-list li.sel { background: #dde8ff; }
+#scenario-list .pill { font-size: 10px; padding: 1px 5px; border-radius: 8px; }
+#scenario-list .pill.pass { background: #d5f5d5; color: #196619; }
+#scenario-list .pill.fail { background: #f8d5d5; color: #7a1919; }
+#scenario-list .pill.known { background: #fce2b3; color: #8a4a00; }
+#scenario-list .pill.unrun { background: #eee; color: #666; }
+#scenario-list .stem { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+section#right { padding: 12px 20px; overflow: auto; }
+.d-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.d-head h2 { font-size: 15px; margin: 0; font-family: ui-monospace, monospace; }
+#d-summary { font-family: ui-monospace, monospace; font-size: 12px; color: #444; margin-bottom: 12px; white-space: pre-wrap; }
+#d-svg svg { display: block; background: #fff; border: 1px solid #ddd; padding: 8px; }
+#d-values { font-family: ui-monospace, monospace; font-size: 11px; margin-top: 12px; white-space: pre-wrap; color: #333; }
+#editor textarea { width: 100%; height: 60vh; font: 12px/1.4 ui-monospace, monospace; border: 1px solid #bbb; border-radius: 3px; padding: 8px; }
+#e-err { color: #b22; font-family: ui-monospace, monospace; margin-top: 8px; white-space: pre-wrap; }
+#runall { position: fixed; right: 20px; bottom: 20px; background: #fff; border: 1px solid #bbb; border-radius: 5px; padding: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 40vh; overflow: auto; width: 320px; }
+#runall h3 { margin: 0 0 6px 0; font-size: 13px; }
+#runall ul { list-style: none; padding: 0; margin: 0; font: 11px ui-monospace, monospace; }
+#runall li.pass { color: #196619; }
+#runall li.fail { color: #b22; }
+#runall li.known { color: #8a4a00; }
