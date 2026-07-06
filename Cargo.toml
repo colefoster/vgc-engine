@@ -9,6 +9,7 @@ members = [
     "crates/vgc-engine-golden",
     "crates/vgc-engine-conformance",
     "crates/vgc-solver",
+    "crates/vgc-engine-calc-oracle-web",
 ]
 # vgc-engine-py is built via maturin; excluded from default `cargo build` /
 # `cargo test --workspace` because the pyo3 `extension-module` feature
@@ -21,6 +22,7 @@ default-members = [
     "crates/vgc-engine-golden",
     "crates/vgc-engine-conformance",
     "crates/vgc-solver",
+    "crates/vgc-engine-calc-oracle-web",
 ]
 
 [workspace.package]
