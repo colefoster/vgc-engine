@@ -38,3 +38,27 @@ section#right { padding: 12px 20px; overflow: auto; }
 #runall li.pass { color: #196619; }
 #runall li.fail { color: #b22; }
 #runall li.known { color: #8a4a00; }
+
+.history-strip { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 8px; min-height: 12px; }
+.history-strip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; cursor: help; }
+.history-strip .dot-sc { background: #4a8; }
+.history-strip .dot-calc { background: #8ab; }
+.diagnose { margin-top: 12px; padding: 8px 10px; background: #fff8e1; border: 1px solid #e0c98a; border-radius: 4px; }
+.diagnose h4 { margin: 0 0 4px 0; font-size: 12px; color: #8a4a00; }
+.diagnose #d-diag-label { font-family: ui-monospace, monospace; font-size: 12px; margin-bottom: 6px; }
+.diagnose svg { background: #fff; border: 1px solid #eee; }
+.hist-values { font: 10px ui-monospace, monospace; color: #666; margin-top: 3px; }
+.form fieldset { border: 1px solid #ddd; border-radius: 3px; padding: 6px 10px; margin: 6px 0; }
+.form legend { font-size: 12px; color: #555; padding: 0 4px; }
+.form label { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-size: 12px; color: #333; }
+.form input[type=text], .form input[type=number], .form select { font: inherit; padding: 2px 4px; border: 1px solid #bbb; border-radius: 3px; }
+.form .evs { display: flex; flex-wrap: wrap; gap: 6px; }
+.form .evs label { flex: 1 1 90px; }
+.form .evs input { width: 60px; }
+.tab { background: #eef; }
+.tab.active { background: #cde; border-color: #99a; }
+#e-cross-log { font: 11px ui-monospace, monospace; margin-top: 8px; max-height: 220px; overflow: auto; border: 1px solid #eee; padding: 4px; }
+#e-cross-log .xgen-status { color: #196619; font-weight: bold; }
+#regen { position: fixed; right: 20px; bottom: 20px; background: #fff; border: 1px solid #bbb; border-radius: 5px; padding: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 50vh; overflow: auto; width: 460px; }
+#regen h3 { margin: 0 0 6px 0; font-size: 13px; }
+#regen pre { margin: 0; font: 11px ui-monospace, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }
