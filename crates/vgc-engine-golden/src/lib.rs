@@ -49,6 +49,9 @@ pub use calc_oracle::{observe_scenario, CalcExpectation, Observation, Scenario};
 
 pub mod calc_cache;
 
+pub mod diagnosis;
+pub use diagnosis::classify_deltas;
+
 use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Pokemon, Rng, RngEvent, SideRef, Status, StepResult,
     Target, TeamBuilder,

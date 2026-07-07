@@ -23,9 +23,9 @@ use serde_json::Value;
 
 use vgc_engine_golden::calc_cache::{
     cache_path_for_stem, collect_scenarios, invalidate_cache_for_stem, load_or_generate_calc,
-    oracle_dir, scenario_path_for_stem, KNOWN_FAILURES,
+    oracle_dir, repo_root, scenario_path_for_stem, KNOWN_FAILURES,
 };
-use vgc_engine_golden::{observe_scenario, CalcExpectation, Scenario};
+use vgc_engine_golden::{classify_deltas, observe_scenario, CalcExpectation, Scenario};
 
 // ---------------------------------------------------------------------------
 // Static assets — embedded so the binary is a single artifact.
@@ -44,6 +44,7 @@ struct ScenarioSummary {
     stem: String,
     name: String,
     attacker_species: String,
+    attacker_item: String,
     defender_species: String,
     #[serde(rename = "move")]
     move_name: String,
@@ -72,6 +73,8 @@ struct RunResult {
     known_failure: bool,
     target_max_hp: u16,
     desc: String,
+    diagnosis: Option<String>,
+    delta_histogram: Vec<i32>,
     err: Option<String>,
 }
 
@@ -86,6 +89,11 @@ fn summary_for(path: &std::path::Path) -> Option<ScenarioSummary> {
     let name = raw.get("name").and_then(|v| v.as_str()).unwrap_or(&stem).to_string();
     let attacker_species = raw
         .pointer("/attacker/species")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let attacker_item = raw
+        .pointer("/attacker/item")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -122,6 +130,7 @@ fn summary_for(path: &std::path::Path) -> Option<ScenarioSummary> {
         stem,
         name,
         attacker_species,
+        attacker_item,
         defender_species,
         move_name,
         weather,
@@ -199,6 +208,8 @@ fn run_stem(stem: &str) -> RunResult {
                 known_failure,
                 target_max_hp: 0,
                 desc: String::new(),
+                diagnosis: None,
+                delta_histogram: vec![],
                 err: Some(format!("scenario not found: {stem}")),
             };
         }
@@ -230,6 +241,12 @@ fn run_stem(stem: &str) -> RunResult {
         .collect();
     let pass = out_of_spec.is_empty()
         && !(obs.observed_unique.is_empty() && expected_set.iter().any(|v| *v > 0));
+    let (diagnosis, delta_histogram) = if pass {
+        (None, vec![])
+    } else {
+        let (label, deltas) = classify_deltas(&obs.observed_damage, &union, obs.target_max_hp);
+        (Some(label), deltas)
+    };
     RunResult {
         stem: stem.to_string(),
         observed: obs.observed_damage,
@@ -241,6 +258,8 @@ fn run_stem(stem: &str) -> RunResult {
         known_failure,
         target_max_hp: obs.target_max_hp,
         desc: desc_for(&scenario),
+        diagnosis,
+        delta_histogram,
         err: None,
     }
 }
@@ -257,6 +276,8 @@ fn err_result(stem: &str, known_failure: bool, msg: String) -> RunResult {
         known_failure,
         target_max_hp: 0,
         desc: String::new(),
+        diagnosis: None,
+        delta_histogram: vec![],
         err: Some(msg),
     }
 }
@@ -393,6 +414,106 @@ async fn post_scenario(Json(body): Json<Value>) -> Response {
 }
 
 // ---------------------------------------------------------------------------
+// Git history
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct HistoryEntry {
+    sha: String,
+    date: String,
+    subject: String,
+    path: String,
+}
+
+async fn scenario_history(AxumPath(stem): AxumPath<String>) -> Response {
+    let Some(sc_path) = scenario_path_for_stem(&stem) else {
+        return (StatusCode::NOT_FOUND, format!("no scenario: {stem}")).into_response();
+    };
+    let cache_path = cache_path_for_stem(&stem);
+    let root = repo_root();
+    let mut entries: Vec<HistoryEntry> = Vec::new();
+    for (path, label) in [(&sc_path, "scenario"), (&cache_path, "calc")] {
+        // git log for this path — read-only.
+        let rel = match path.strip_prefix(&root) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => path.clone(),
+        };
+        let out = std::process::Command::new("git")
+            .arg("-C").arg(&root)
+            .args([
+                "log",
+                "--follow",
+                "--pretty=format:%H%x1f%cI%x1f%s",
+                "--",
+            ])
+            .arg(&rel)
+            .output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() { continue; }
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let parts: Vec<&str> = line.split('\u{1f}').collect();
+            if parts.len() < 3 { continue; }
+            entries.push(HistoryEntry {
+                sha: parts[0].to_string(),
+                date: parts[1].to_string(),
+                subject: parts[2].to_string(),
+                path: label.to_string(),
+            });
+        }
+    }
+    // Sort newest first by date string (ISO-8601 lexicographic).
+    entries.sort_by(|a, b| b.date.cmp(&a.date));
+    Json(entries).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Batch regen
+// ---------------------------------------------------------------------------
+
+async fn regen_matrix() -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(64);
+    tokio::spawn(async move {
+        use std::io::{BufRead, BufReader};
+        let root = repo_root();
+        let mut child = match std::process::Command::new("cargo")
+            .arg("run").arg("--release")
+            .arg("-p").arg("vgc-engine-golden")
+            .arg("--example").arg("gen_calc_scenarios")
+            .current_dir(&root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let line = format!("{{\"line\":\"spawn error: {e}\"}}\n");
+                let _ = tx.send(Ok(line)).await;
+                return;
+            }
+        };
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                let escaped = serde_json::to_string(&line).unwrap_or_else(|_| "\"\"".into());
+                let out = format!("{{\"line\":{escaped}}}\n");
+                if tx.send(Ok(out)).await.is_err() { break; }
+            }
+        }
+        let status = child.wait();
+        let done = match status {
+            Ok(s) => format!("{{\"done\":true,\"status\":\"{}\"}}\n", s),
+            Err(e) => format!("{{\"done\":true,\"err\":\"{e}\"}}\n"),
+        };
+        let _ = tx.send(Ok(done)).await;
+    });
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(Body::from_stream(stream))
+        .unwrap()
+}
+
+// ---------------------------------------------------------------------------
 // Static file handlers
 // ---------------------------------------------------------------------------
 
@@ -433,6 +554,8 @@ async fn main() {
         .route("/api/scenarios/:stem", get(get_scenario).put(put_scenario))
         .route("/api/run/:stem", post(run_one))
         .route("/api/run-all", post(run_all))
+        .route("/api/scenarios/:stem/history", get(scenario_history))
+        .route("/api/regen", post(regen_matrix))
         .with_state(state);
 
     let addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
