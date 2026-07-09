@@ -200,39 +200,11 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
         DrawSpace::UniformRange(n) => (0..n)
             .map(|v| (RngEvent::Range(v), 1u32, n))
             .collect(),
-        DrawSpace::UniformDamage { ko_split } => match ko_split {
-            // All 16 rolls KO → single representative roll, max value
-            // so HP saturates to 0 across enumeration replays.
-            Some(0) => vec![(RngEvent::DamageRoll(15), 16, 16)],
-            // No roll KOs → single representative roll, min value so
-            // post-hit HP lands on the survivable side regardless of
-            // which roll the recorder originally picked.
-            Some(k) if k >= 16 => vec![(RngEvent::DamageRoll(0), 16, 16)],
-            // Mixed partition: rolls 0..k miss the KO threshold, rolls
-            // k..=15 cross it. Two exact buckets (no fidelity loss for
-            // the KO/survive question; HP-on-survive collapses to the
-            // min-roll value, which the downstream leaf must accept the
-            // same way it does for PR-C's lossy 3-bucket).
-            Some(k) => vec![
-                (RngEvent::DamageRoll(0), k as u32, 16),
-                (RngEvent::DamageRoll(15), (16 - k) as u32, 16),
-            ],
-            None => {
-                // Unknown KO partition — fall back to PR-C's lossy
-                // 3-bucket if opted in, else the full 16-bucket uniform.
-                if opts.lossy_damage_3bucket {
-                    vec![
-                        (RngEvent::DamageRoll(0),  5, 16),
-                        (RngEvent::DamageRoll(7),  6, 16),
-                        (RngEvent::DamageRoll(15), 5, 16),
-                    ]
-                } else {
-                    (0..16u8)
-                        .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
-                        .collect()
-                }
-            }
-        },
+        // Bit-exact hp_bucket-segment collapse (shared with chance.rs).
+        // `segments` supersedes the old lossy `ko_split` survivor pinning.
+        DrawSpace::UniformDamage { ko_split: _, segments } => {
+            vgc_engine_core::expand_uniform_damage(segments, opts.lossy_damage_3bucket)
+        }
         DrawSpace::UniformPercent { threshold } => match threshold {
             None => (1..=100u8)
                 .map(|v| (RngEvent::PercentRoll(v), 1u32, 100))
@@ -276,10 +248,8 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
 fn outcome_count_lossless(space: DrawSpace) -> u32 {
     match space {
         DrawSpace::UniformRange(n) => n as u32,
-        DrawSpace::UniformDamage { ko_split } => match ko_split {
-            Some(0) => 1,
-            Some(k) if k >= 16 => 1,
-            Some(_) => 2,
+        DrawSpace::UniformDamage { ko_split: _, segments } => match segments {
+            Some(s) => s.len as u32,
             None => 16,
         },
         DrawSpace::UniformPercent { threshold } => match threshold {
@@ -407,6 +377,43 @@ pub fn enumerate_outcomes_with(
             };
         }
 
+        per_site.extend(new_sites);
+        lazy_iterations += 1;
+    }
+}
+
+/// DIAGNOSTIC (throwaway) — return the per-draw-site breakdown for one
+/// `(state, joint_choice)` cell after the lazy re-record loop converges.
+/// Each tuple is `(DrawSpace, representatives_under_lossless_expand)`.
+/// Used by the `min_doubles_timing` example to attribute enumeration cost.
+pub fn diagnose_cell_sites(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+) -> (Vec<(DrawSpace, usize)>, usize) {
+    let opts = EnumerateOpts::default();
+    // Initial record pass.
+    let mut rec = base.clone();
+    rec.set_rng(Rng::recording(record_seed));
+    let _ = rec.step(p1_choices, p2_choices);
+    let initial_log = rec.rng_mut().take_recording_log().unwrap_or_default();
+
+    let mut per_site: Vec<(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)> = initial_log
+        .into_iter()
+        .map(|d| (d.key, expand(d.space, d.drawn, opts), d.space, d.drawn))
+        .collect();
+
+    let mut lazy_iterations = 0u32;
+    loop {
+        let pass = enumerate_pass(base, p1_choices, p2_choices, record_seed, &per_site);
+        let new_sites = discover_new_sites(&per_site, &pass.combo_miss_logs, opts);
+        if new_sites.is_empty() || lazy_iterations >= MAX_LAZY_ITERATIONS {
+            let raw: usize = per_site.iter().map(|s| s.1.len()).product();
+            let out: Vec<(DrawSpace, usize)> =
+                per_site.iter().map(|s| (s.2, s.1.len())).collect();
+            return (out, raw);
+        }
         per_site.extend(new_sites);
         lazy_iterations += 1;
     }
@@ -1116,7 +1123,7 @@ mod tests {
                 (DrawSpace::UniformRange(n), RngEvent::Range(v)) => assert!(v < n),
                 (DrawSpace::UniformDamage { .. }, RngEvent::DamageRoll(v)) => assert!(v < 16),
                 (DrawSpace::UniformPercent { .. }, RngEvent::PercentRoll(v)) => assert!((1..=100).contains(&v)),
-                (DrawSpace::Crit { num: _, denom: _ }, RngEvent::Crit(_)) => {}
+                (DrawSpace::Crit { .. }, RngEvent::Crit(_)) => {}
                 (s, d) => panic!("DrawSpace/RngEvent mismatch: {s:?} vs {d:?}"),
             }
             assert!(
@@ -1395,13 +1402,19 @@ mod tests {
 
     // ---- PR-C: opt-in 3-bucket UniformDamage collapse ----
 
+    fn ud(ko_split: Option<u8>, segments: Option<vgc_engine_core::DamageSegments>) -> DrawSpace {
+        DrawSpace::UniformDamage { ko_split, segments }
+    }
+    fn segs(list: &[(u8, u8)]) -> vgc_engine_core::DamageSegments {
+        let mut s = [(0u8, 0u8); 16];
+        for (i, &e) in list.iter().enumerate() { s[i] = e; }
+        vgc_engine_core::DamageSegments { segs: s, len: list.len() as u8 }
+    }
+
     #[test]
     fn expand_uniform_damage_default_16() {
-        let out = expand(
-            DrawSpace::UniformDamage { ko_split: None },
-            RngEvent::DamageRoll(7),
-            EnumerateOpts::default(),
-        );
+        // No segments → full 16-uniform (lossless fallback).
+        let out = expand(ud(None, None), RngEvent::DamageRoll(7), EnumerateOpts::default());
         assert_eq!(out.len(), 16);
         for (i, entry) in out.iter().enumerate() {
             assert_eq!(*entry, (RngEvent::DamageRoll(i as u8), 1, 16));
@@ -1411,7 +1424,7 @@ mod tests {
     #[test]
     fn expand_uniform_damage_3bucket() {
         let out = expand(
-            DrawSpace::UniformDamage { ko_split: None },
+            ud(None, None),
             RngEvent::DamageRoll(7),
             EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
@@ -1421,53 +1434,42 @@ mod tests {
         assert_eq!(out[2], (RngEvent::DamageRoll(15), 5, 16));
     }
 
-    // ---- PR-D: exact 2-bucket ko_split collapse ----
+    // ---- hp_bucket-segment collapse (supersedes lossy ko_split) ----
 
     #[test]
-    fn expand_uniform_damage_ko_split_some_3() {
-        let out = expand(
-            DrawSpace::UniformDamage { ko_split: Some(3) },
-            RngEvent::DamageRoll(7),
-            EnumerateOpts::default(),
-        );
+    fn expand_uniform_damage_segments_two() {
+        // Two contiguous bucket-segments: rolls 0..3 survive (rep 0, wt 3),
+        // rolls 3..16 KO (rep 3, wt 13). One rep per segment, weights = 16.
+        let out = expand(ud(Some(3), Some(segs(&[(0, 3), (3, 13)]))), RngEvent::DamageRoll(7), EnumerateOpts::default());
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], (RngEvent::DamageRoll(0), 3, 16));
-        assert_eq!(out[1], (RngEvent::DamageRoll(15), 13, 16));
-        let total: u32 = out.iter().map(|(_, n, _)| *n).sum();
-        assert_eq!(total, 16);
+        assert_eq!(out[1], (RngEvent::DamageRoll(3), 13, 16));
+        assert_eq!(out.iter().map(|(_, n, _)| *n).sum::<u32>(), 16);
     }
 
     #[test]
-    fn expand_uniform_damage_ko_split_zero() {
-        // Every roll KOs → single representative roll at max value.
-        let out = expand(
-            DrawSpace::UniformDamage { ko_split: Some(0) },
-            RngEvent::DamageRoll(7),
-            EnumerateOpts::default(),
-        );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0], (RngEvent::DamageRoll(15), 16, 16));
-    }
-
-    #[test]
-    fn expand_uniform_damage_ko_split_sixteen() {
-        // No roll KOs → single representative roll at min value.
-        let out = expand(
-            DrawSpace::UniformDamage { ko_split: Some(16) },
-            RngEvent::DamageRoll(7),
-            EnumerateOpts::default(),
-        );
+    fn expand_uniform_damage_segments_single_ko() {
+        // Every roll → same bucket (0, faint) → single representative.
+        let out = expand(ud(Some(0), Some(segs(&[(0, 16)]))), RngEvent::DamageRoll(7), EnumerateOpts::default());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], (RngEvent::DamageRoll(0), 16, 16));
     }
 
     #[test]
-    fn expand_uniform_damage_ko_split_none_default() {
-        let out = expand(
-            DrawSpace::UniformDamage { ko_split: None },
-            RngEvent::DamageRoll(7),
-            EnumerateOpts::default(),
-        );
+    fn expand_uniform_damage_segments_three_survivor_buckets() {
+        // The bug case: a survivor spanning 3 hp_buckets must NOT collapse
+        // to one — three reps, one per bucket, no dropped state.
+        let out = expand(ud(Some(16), Some(segs(&[(0, 6), (6, 5), (11, 5)]))), RngEvent::DamageRoll(7), EnumerateOpts::default());
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (RngEvent::DamageRoll(0), 6, 16));
+        assert_eq!(out[1], (RngEvent::DamageRoll(6), 5, 16));
+        assert_eq!(out[2], (RngEvent::DamageRoll(11), 5, 16));
+        assert_eq!(out.iter().map(|(_, n, _)| *n).sum::<u32>(), 16);
+    }
+
+    #[test]
+    fn expand_uniform_damage_none_default() {
+        let out = expand(ud(None, None), RngEvent::DamageRoll(7), EnumerateOpts::default());
         assert_eq!(out.len(), 16);
         for (i, e) in out.iter().enumerate() {
             assert_eq!(*e, (RngEvent::DamageRoll(i as u8), 1, 16));
@@ -1475,10 +1477,9 @@ mod tests {
     }
 
     #[test]
-    fn expand_uniform_damage_ko_split_none_lossy() {
-        // None + lossy_damage_3bucket → PR-C's 3-bucket fallback.
+    fn expand_uniform_damage_none_lossy() {
         let out = expand(
-            DrawSpace::UniformDamage { ko_split: None },
+            ud(None, None),
             RngEvent::DamageRoll(7),
             EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );
@@ -1536,7 +1537,7 @@ mod tests {
     #[test]
     fn expand_uniform_damage_3bucket_weights_sum_to_16() {
         let out = expand(
-            DrawSpace::UniformDamage { ko_split: None },
+            ud(None, None),
             RngEvent::DamageRoll(0),
             EnumerateOpts { lossy_damage_3bucket: true, ..Default::default() },
         );

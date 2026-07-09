@@ -61,7 +61,7 @@ impl PendingYield {
             // No RngKey published — the in-step path's RNG context has
             // already been set by part-a. The chance crate fans out by
             // descriptor; it does not look up by key.
-            PendingYield::ConfusionSelfHit { .. } => (None, DrawSpace::UniformDamage { ko_split: None }),
+            PendingYield::ConfusionSelfHit { .. } => (None, DrawSpace::UniformDamage { ko_split: None, segments: None }),
         }
     }
 }

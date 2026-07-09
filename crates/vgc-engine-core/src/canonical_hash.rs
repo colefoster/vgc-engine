@@ -170,14 +170,25 @@ fn has_any_move(mon: &Pokemon, moves: &[u16]) -> bool {
 /// correctly. States with different movesets are already distinguished
 /// by the serialized `moves` field on the same Pokemon view.
 fn hp_bucket(mon: &Pokemon) -> u32 {
+    hp_bucket_at(mon, mon.current_hp)
+}
+
+/// The `hp_bucket` value `mon` would have at a HYPOTHETICAL `current_hp`,
+/// using the same per-move classification as [`hp_bucket`]. Used by
+/// `compute_damage_segments` in `battle.rs` to partition the 16 damage
+/// rolls by the defender's post-hit canonical bucket (one representative
+/// roll per contiguous bucket-segment) — the hp_bucket-segment collapse
+/// that supersedes the lossy `ko_split` survivor pinning. `pub(crate)` —
+/// engine-only.
+pub(crate) fn hp_bucket_at(mon: &Pokemon, hp: u16) -> u32 {
     if has_any_move(mon, EXACT_HP_USER_MOVES) {
-        return mon.current_hp as u32;
+        return hp as u32;
     }
     if has_any_move(mon, SCALING_HP_USER_MOVES) {
         let max = (mon.stats.hp as u32).max(1);
-        return (150u32 * mon.current_hp as u32) / max;
+        return (150u32 * hp as u32) / max;
     }
-    hp_bucket_coarse(mon.current_hp, mon.stats.hp) as u32
+    hp_bucket_coarse(hp, mon.stats.hp) as u32
 }
 
 impl<'a> Serialize for CanonicalPokemonView<'a> {
