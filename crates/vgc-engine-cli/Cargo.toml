@@ -5,13 +5,28 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Debug harness CLI for vgc-engine"
+description = "CLI for vgc-engine: the `vgc` fast-calc front end + a debug harness"
+
+# The `vgc` bin (fast damage-calc front end) depends only on the core
+# engine + clap, so it builds even while the debug harness's heavier deps
+# (replay / golden) are unavailable. The debug harness lives behind the
+# opt-in `debug-harness` feature.
+[[bin]]
+name = "vgc"
+path = "src/bin/vgc.rs"
 
 [[bin]]
 name = "vgc-engine-cli"
 path = "src/main.rs"
+required-features = ["debug-harness"]
+
+[features]
+# Off by default so a plain `cargo build -p vgc-engine-cli` builds just the
+# `vgc` bin. Enable to build the debug harness: `--features debug-harness`.
+debug-harness = ["dep:vgc-engine-replay", "dep:vgc-engine-golden"]
 
 [dependencies]
 vgc-engine-core = { workspace = true }
-vgc-engine-replay = { workspace = true }
-vgc-engine-golden = { workspace = true }
+clap = { workspace = true }
+vgc-engine-replay = { workspace = true, optional = true }
+vgc-engine-golden = { workspace = true, optional = true }
