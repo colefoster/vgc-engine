@@ -400,6 +400,16 @@ pub struct Battle {
     /// move that happens to draw a miss on its forced seed.
     #[serde(skip)]
     pub(crate) force_accuracy_hit: Option<bool>,
+    /// `damage_only` spread forcing hook. When `Some(true)`, the move
+    /// resolver treats the move as a multi-target spread hit (setting
+    /// `DamageContext.is_spread`, PS's ×0.75 step-2 modifier) even though
+    /// the synthetic battle runs in Singles with a single target. When
+    /// `None` (production) the flag is computed from `targets.len() > 1`
+    /// as usual. Lets the pure-damage API model a Doubles spread move
+    /// without constructing a real 2v2 field. `Some(false)` forces the
+    /// non-spread path (unused, exposed for symmetry). `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) force_is_spread: Option<bool>,
     /// PR-EOT3: per-residual-family bitset index over active slots. Maintained
     /// at status set/cure sites + switch-in; consumed by `eot_status_dot` as
     /// the "any DOT?" precheck. See [`ResidualIndex`].
@@ -491,6 +501,7 @@ impl Battle {
             force_crit: None,
             captured_move_damage: None,
             force_accuracy_hit: None,
+            force_is_spread: None,
             residual_index: ResidualIndex::default(),
             // PR-LC1: initialized to None to match the freshly-cleared
             // weather/terrain fields above. Re-synced from live state
@@ -700,6 +711,17 @@ impl Battle {
     /// draw. `Some(true)` = force hit, `Some(false)` = force miss.
     pub fn set_force_accuracy_hit(&mut self, v: Option<bool>) {
         self.force_accuracy_hit = v;
+    }
+
+    /// Sibling of [`Battle::set_force_accuracy_hit`] for the spread flag.
+    /// When `Some(true)`, the move resolver forces
+    /// `DamageContext.is_spread` on (PS's ×0.75 multi-target modifier)
+    /// even in a Singles synthetic battle. `None` restores the normal
+    /// `targets.len() > 1` computation. Used by the `damage_only` /
+    /// fast-calc API to model a Doubles spread move without a real 2v2
+    /// field.
+    pub fn set_force_is_spread(&mut self, v: Option<bool>) {
+        self.force_is_spread = v;
     }
 
     /// Effective weather as seen by an individual Pokémon. Same as
@@ -3262,7 +3284,11 @@ impl Battle {
         // moves and tracksTarget bypass are handled internally. See
         // [`Battle::resolve_targets`] for the cited PS source.
         targets = self.resolve_targets(actor_side, actor_slot, move_id, &attacker, m, targets);
-        let is_spread = targets.len() > 1;
+        // Normally the spread flag is "the move actually hit >1 target".
+        // The `damage_only` / fast-calc API runs a Singles synthetic
+        // battle but can request the Doubles spread multiplier via
+        // `force_is_spread` — honor that override when present.
+        let is_spread = self.force_is_spread.unwrap_or(targets.len() > 1);
 
         // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
         // "attacks using the target's item"; mechanically the only effect is
