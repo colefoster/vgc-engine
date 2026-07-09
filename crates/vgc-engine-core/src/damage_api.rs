@@ -52,9 +52,10 @@ pub struct DamageQuery {
     /// Doubles-shape targeting: `false` = single-target (no spread
     /// halving), `true` = the move hits multiple targets and PS's
     /// ×0.75 spread multiplier applies. `damage_only` still runs the
-    /// synthetic battle in Singles for simplicity — the flag is
-    /// threaded via `is_spread` on the built `DamageContext`, matching
-    /// how a Doubles spread move would be calculated.
+    /// synthetic battle in Singles for simplicity, then forces the
+    /// resolver's `is_spread` flag on via [`Battle::set_force_is_spread`]
+    /// so the ×0.75 modifier (damage.rs step 2) applies exactly as it
+    /// would for a real Doubles spread move.
     pub is_spread: bool,
 }
 
@@ -105,17 +106,16 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     battle.set_force_damage_roll(Some(k));
     battle.set_force_crit(Some(q.is_crit));
     battle.set_force_accuracy_hit(Some(true));
+    // Doubles spread: the synth battle runs in Singles (single target),
+    // so we force the resolver's `is_spread` flag on when the caller
+    // asked for it. This threads PS's ×0.75 multi-target modifier
+    // (DamageContext.is_spread, damage.rs step 2) through the real
+    // damage pipeline without building a 2v2 field.
+    battle.set_force_is_spread(if q.is_spread { Some(true) } else { None });
     // Enable the damage-capture accumulator (see
     // `Battle::captured_move_damage`) so a KO doesn't clip the
     // reported value at defender_max_hp.
     battle.captured_move_damage = Some(0);
-
-    // Doubles spread flag is threaded via a per-move context in the
-    // real engine; for the synth path we don't need to fake doubles
-    // (the calc-oracle's spread scenarios all set `is_spread = false`
-    // and rely on Doubles context in a real battle). If a future
-    // caller needs `is_spread = true`, that path lands in a follow-up.
-    let _ = q.is_spread;
 
     let defender_max_hp = battle.p2.team[0].stats.hp;
     let p1_choices = [Choice::Move {
@@ -274,6 +274,49 @@ mod tests {
         // Sun boosts Fire damage ×1.5 — every roll should be strictly
         // higher (allowing rounding, so use >=).
         assert!(sun[0] > no_weather[0], "sun should boost Fire: sun[0]={}, none[0]={}", sun[0], no_weather[0]);
+    }
+
+    #[test]
+    fn spread_applies_075_multiplier() {
+        // Garchomp Earthquake into Iron Hands, Doubles spread. Ground-
+        // truth from @smogon/calc with `gameType: 'Doubles'` (isSpread):
+        //   single: [162,164,164,168,168,170,174,174,176,180,180,182,186,186,188,192]
+        //   spread: [120,122,122,126,126,128,128,132,132,134,134,138,138,140,140,144]
+        // The spread row is the single row × 3072/4096 (×0.75), applied
+        // post-formula per PS damage step 2 — NOT a naive ×0.75 of each
+        // single value (order of pokeRound in the pipeline differs), so we
+        // assert the exact calc array rather than derive it.
+        let atk = build_mon(
+            "Garchomp @ \nAbility: Rough Skin\nLevel: 50\n\
+             EVs: 4 HP / 252 Atk / 252 Spe\nJolly Nature\n\
+             - Earthquake\n- Splash\n- Splash\n- Splash\n",
+        );
+        let def = build_mon(
+            "Iron Hands @ \nAbility: Quark Drive\nLevel: 50\n\
+             EVs: 252 HP / 4 Atk / 252 SpD\nAdamant Nature\n\
+             - Splash\n- Splash\n- Splash\n- Splash\n",
+        );
+        let q_single = DamageQuery {
+            move_id: atk.moves[0],
+            attacker: atk,
+            defender: def,
+            weather: Weather::None,
+            terrain: Terrain::None,
+            is_crit: false,
+            is_spread: false,
+        };
+        let single = damage_only(&q_single);
+        assert_eq!(
+            single,
+            [162, 164, 164, 168, 168, 170, 174, 174, 176, 180, 180, 182, 186, 186, 188, 192],
+            "single-target EQ vs Iron Hands should match @smogon/calc: {single:?}"
+        );
+        let spread = damage_only(&DamageQuery { is_spread: true, ..q_single });
+        assert_eq!(
+            spread,
+            [120, 122, 122, 126, 126, 128, 128, 132, 132, 134, 134, 138, 138, 140, 140, 144],
+            "spread EQ vs Iron Hands should match @smogon/calc Doubles (×0.75): {spread:?}"
+        );
     }
 
     #[test]
