@@ -490,6 +490,18 @@ impl QuickMon {
         Err(CalcError::BadSegment(seg.to_string()))
     }
 
+    /// Build the engine [`Pokemon`] this `QuickMon` describes, filling the
+    /// species-primary ability when none was set (matching @smogon/calc's
+    /// default). `primary_move` seeds `moves[0]` — [`calc`] re-writes it to
+    /// the real move id anyway, but `build_member` needs at least one move.
+    ///
+    /// Public so the calc-oracle harness (`calc_oracle.rs`) can reuse the
+    /// exact same builder path the CLI/calc use, instead of rendering a
+    /// Showdown-text block and re-parsing it.
+    pub fn to_pokemon(&self, primary_move: &str) -> Result<Pokemon, CalcError> {
+        self.build(primary_move)
+    }
+
     /// Build the engine [`Pokemon`], filling the species-primary ability
     /// when none was set (matching @smogon/calc's default). `primary_move`
     /// seeds moves[0]; `calc` re-writes it to the real move id anyway, but
@@ -565,7 +577,8 @@ impl Field {
 
 /// 1-hit KO probability, computed exactly from the 16 damage rolls
 /// against the defender's current HP.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KoChance {
     /// Every roll KOs.
     Guaranteed,
@@ -599,7 +612,7 @@ fn ko_word(hits: u8) -> String {
 
 /// Result of a single-move damage calc: the 16 rolls plus derived range,
 /// percentages, and 1-hit KO estimate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DamageResult {
     /// The 16 damage rolls, ascending (roll 0..=15).
     pub rolls: [u16; 16],
@@ -612,6 +625,12 @@ pub struct DamageResult {
     pub max_pct: f32,
     /// Exact 1-hit KO probability from the 16 rolls vs current HP.
     pub ko_chance: KoChance,
+    /// Minimum hits to KO (2HKO/3HKO/…) plus its exact probability, from
+    /// convolving the roll distribution against remaining HP. Subsumes
+    /// `ko_chance` (the `hits == 1` case) but reported separately so
+    /// callers can show either the terse single-hit verdict or the full
+    /// NHKO label.
+    pub multi_hit: MultiHitKo,
     /// The crit-row result, when the caller asked for a non-crit calc we
     /// still compute the crit companion so callers can show both. `None`
     /// on a crit calc (no nested crit) or a 0-damage calc.
@@ -685,6 +704,9 @@ fn shape_result(
     // 1-hit KO from the rolls vs the defender's CURRENT hp (full by
     // default; `current_hp` respects a pre-damaged defender if set).
     let ko_chance = ko_from_rolls(&rolls, def.current_hp);
+    // Multi-hit KO (2HKO/3HKO/…) via convolution — pure arithmetic on the
+    // same rolls, no extra engine calls.
+    let multi_hit = multi_hit_ko(&rolls, def.current_hp);
 
     DamageResult {
         rolls,
@@ -694,15 +716,112 @@ fn shape_result(
         min_pct,
         max_pct,
         ko_chance,
+        multi_hit,
         crit: None,
     }
 }
 
+/// The number of unmodified hits of this move needed to KO the defender,
+/// and the exact probability that that many hits does it.
+///
+/// "NHKO" in calc parlance: the smallest hit-count `n` for which *some*
+/// combination of the 16-roll distribution sums to at least the target's
+/// remaining HP, plus `chance` = the exact probability (over iid rolls)
+/// that a run of `n` hits reaches the HP. `chance == 1.0` is a
+/// *guaranteed* NHKO. `hits == 0` means the move can never KO (max damage
+/// is 0, e.g. an immune target).
+///
+/// This is a pure-arithmetic companion to [`KoChance`] (which is the
+/// single-hit case): no extra engine calls, just a convolution of the
+/// already-computed roll distribution against remaining HP.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct MultiHitKo {
+    /// Minimum hits to KO (1 = OHKO, 2 = 2HKO, ...). `0` = never KOs.
+    pub hits: u8,
+    /// Exact probability that `hits` unmodified hits KO the target
+    /// (0.0..=1.0). `1.0` = guaranteed NHKO.
+    pub chance: f32,
+}
+
+impl MultiHitKo {
+    /// Human label, e.g. "guaranteed 2HKO", "56.3% to 3HKO", "no KO".
+    pub fn label(&self) -> String {
+        if self.hits == 0 {
+            return "no KO".to_string();
+        }
+        let hko = ko_word(self.hits);
+        if self.chance >= 1.0 {
+            format!("guaranteed {hko}")
+        } else {
+            format!("{:.1}% to {hko}", self.chance * 100.0)
+        }
+    }
+}
+
+/// Compute the minimum-hits-to-KO plus its exact probability by
+/// convolving the 16 equiprobable damage rolls against `remaining_hp`.
+///
+/// Each hit independently draws one of the 16 `rolls` uniformly. We build
+/// the distribution of the running damage sum hit-by-hit (a discrete
+/// convolution, capped at `remaining_hp` so the state space stays tiny),
+/// and stop at the first hit-count whose surviving-probability mass drops
+/// below 1 — i.e. the first `n` where P(sum ≥ hp) > 0. `chance` is that
+/// probability. Guaranteed OHKO short-circuits to `{1, 1.0}`.
+///
+/// Zero-damage moves (max roll 0) never KO → `{0, 0.0}`. A pre-fainted
+/// defender (`remaining_hp == 0`) is a `{1, 1.0}` guaranteed OHKO.
+pub fn multi_hit_ko(rolls: &[u16; 16], remaining_hp: u16) -> MultiHitKo {
+    if remaining_hp == 0 {
+        return MultiHitKo { hits: 1, chance: 1.0 };
+    }
+    let max_roll = *rolls.iter().max().unwrap();
+    if max_roll == 0 {
+        return MultiHitKo { hits: 0, chance: 0.0 };
+    }
+    let hp = remaining_hp as u32;
+
+    // `dist[d]` = probability the running damage sum equals exactly `d`,
+    // for d in 0..hp. Mass that reaches/exceeds `hp` is a KO and leaves
+    // the tracked state (accumulated into `ko_prob`). Start with all mass
+    // at damage 0 (before any hit).
+    let mut dist = vec![0.0f64; hp as usize];
+    dist[0] = 1.0;
+    let mut ko_prob = 0.0f64;
+    let each = 1.0f64 / 16.0;
+
+    // Safety cap: hp hits guarantees at least `hp` damage (every roll ≥ 1
+    // once max_roll > 0 — but min roll could be 0, so also break when the
+    // surviving mass is negligible). `max_roll > 0` guarantees termination
+    // because dist mass strictly migrates upward each hit.
+    for n in 1..=(hp.max(1) as usize + 1) {
+        let mut next = vec![0.0f64; hp as usize];
+        for (d, &p) in dist.iter().enumerate() {
+            if p == 0.0 {
+                continue;
+            }
+            for &r in rolls.iter() {
+                let sum = d as u32 + r as u32;
+                if sum >= hp {
+                    ko_prob += p * each;
+                } else {
+                    next[sum as usize] += p * each;
+                }
+            }
+        }
+        dist = next;
+        if ko_prob > 0.0 {
+            // First hit-count that can KO. Round to f32 for the API.
+            let chance = ko_prob.min(1.0) as f32;
+            return MultiHitKo { hits: n as u8, chance };
+        }
+    }
+    // Unreachable in practice (max_roll > 0 forces a KO within hp hits),
+    // but stay total: report a guaranteed KO at the cap.
+    MultiHitKo { hits: (hp as u8).max(1), chance: 1.0 }
+}
+
 /// Exact 1-hit KO probability: count rolls that meet/exceed the target's
 /// remaining HP. All 16 → Guaranteed; none → None; else a rounded pct.
-///
-/// TODO(PR-2): multi-hit KO (2HKO/3HKO) — needs the residual/EOT model
-/// and a survives-N-turns convolution. PR-1 reports the 1-hit case only.
 fn ko_from_rolls(rolls: &[u16; 16], remaining_hp: u16) -> KoChance {
     if remaining_hp == 0 {
         return KoChance::Guaranteed;
@@ -876,5 +995,89 @@ mod tests {
             *x = 140;
         }
         assert_eq!(ko_from_rolls(&mixed, 130), KoChance::Chance { pct: 50 });
+    }
+
+    #[test]
+    fn multi_hit_ko_guaranteed_ohko() {
+        // Every roll ≥ 100 → guaranteed OHKO.
+        let rolls = [120u16; 16];
+        let mh = multi_hit_ko(&rolls, 100);
+        assert_eq!(mh.hits, 1);
+        assert_eq!(mh.chance, 1.0);
+        assert_eq!(mh.label(), "guaranteed OHKO");
+    }
+
+    #[test]
+    fn multi_hit_ko_zero_damage_never_kos() {
+        let rolls = [0u16; 16];
+        let mh = multi_hit_ko(&rolls, 100);
+        assert_eq!(mh.hits, 0);
+        assert_eq!(mh.chance, 0.0);
+        assert_eq!(mh.label(), "no KO");
+    }
+
+    #[test]
+    fn multi_hit_ko_guaranteed_2hko() {
+        // All rolls 60; hp 100. One hit (max 60) can't KO; two hits (120)
+        // always do → guaranteed 2HKO.
+        let rolls = [60u16; 16];
+        let mh = multi_hit_ko(&rolls, 100);
+        assert_eq!(mh.hits, 2);
+        assert_eq!(mh.chance, 1.0);
+        assert_eq!(mh.label(), "guaranteed 2HKO");
+    }
+
+    #[test]
+    fn multi_hit_ko_chance_2hko_probability() {
+        // Two-outcome roll: 8×40 and 8×60, hp = 100. A 2HKO needs sum ≥
+        // 100. Pairs: 40+40=80 (no), 40+60=100 (yes), 60+40=100 (yes),
+        // 60+60=120 (yes). Each roll is p=1/2 for 40 vs 60, so P(KO in 2) =
+        // 1 - P(both 40) = 1 - 1/4 = 3/4.
+        let mut rolls = [40u16; 16];
+        for x in rolls.iter_mut().take(8) {
+            *x = 60;
+        }
+        let mh = multi_hit_ko(&rolls, 100);
+        assert_eq!(mh.hits, 2);
+        assert!(
+            (mh.chance - 0.75).abs() < 1e-4,
+            "expected 0.75, got {}",
+            mh.chance
+        );
+    }
+
+    #[test]
+    fn multi_hit_ko_uniform_convolution_matches_bruteforce() {
+        // Spread EQ vs Iron Hands (from `calc_spread_applies_075`): a
+        // non-OHKO whose 2HKO probability we brute-force over all 16² pairs
+        // and compare to the convolution.
+        let atk = QuickMon::parse("Garchomp / Jolly / 4 HP / 252 Atk / 252 Spe").unwrap();
+        let def = QuickMon::parse("Iron Hands / Adamant / 252 HP / 4 Atk / 252 SpD").unwrap();
+        let r = calc(&atk, &def, "eq", Field::none().spread(true)).unwrap();
+        let hp = r.defender_max_hp as u32;
+        assert!(r.max < r.defender_max_hp, "should not be a OHKO");
+        // Brute-force 2HKO probability.
+        let mut ko = 0u32;
+        for &a in r.rolls.iter() {
+            for &b in r.rolls.iter() {
+                if a as u32 + b as u32 >= hp {
+                    ko += 1;
+                }
+            }
+        }
+        let brute = ko as f32 / 256.0;
+        // If the convolution says 2HKO, its chance must match brute force.
+        if r.multi_hit.hits == 2 {
+            assert!(
+                (r.multi_hit.chance - brute).abs() < 1e-4,
+                "conv {} vs brute {}",
+                r.multi_hit.chance,
+                brute
+            );
+        } else {
+            // Otherwise it must be a guaranteed 2HKO region we short of —
+            // fail loudly so we notice a model change.
+            panic!("expected a 2HKO for spread EQ vs Iron Hands, got {:?}", r.multi_hit);
+        }
     }
 }
