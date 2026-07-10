@@ -23,7 +23,8 @@
 use std::collections::{HashMap, HashSet};
 
 use vgc_engine_core::{
-    set_ko_split_disabled, Battle, BattleConfig, Choice, Format, SideRef, Target, TeamBuilder,
+    set_ko_split_disabled, Battle, BattleConfig, Choice, Format, SideRef, Status, Target,
+    TeamBuilder,
 };
 use vgc_solver::{
     enumerate_outcomes_with, set_joint_collapse_disabled, take_joint_collapse_engaged,
@@ -355,9 +356,11 @@ fn mutual_focus_sitrus_defender_tensor_fires_bit_exact() {
     // Strong-ish attackers so two hits can dip the Sitrus holder past ½ for
     // SOME rolls (crossing the berry threshold within the group) but never
     // to 0 (defender is a huge-HP wall that survives 2 hits). Distinct speeds.
+    // Strength (BP 80, NO secondary — Body Slam's paralysis secondary would
+    // now correctly trip the participation-gating bail).
     const SP1: &str = r#"[
-        {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["bodyslam"],"evs":{"hp":252,"atk":252}},
-        {"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["bodyslam"],"evs":{"hp":252,"atk":252}}
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["strength"],"evs":{"hp":252,"atk":252}},
+        {"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["strength"],"evs":{"hp":252,"atk":252}}
     ]"#;
     const SP2: &str = r#"[
         {"species":"blissey","level":50,"ability":"naturalcure","item":"sitrusberry","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}},
@@ -402,4 +405,73 @@ fn mutual_focus_ko_possible_tensor_bails_bit_exact() {
     assert_tensor_bailed(&b, &p1, &p2);
     let l1 = cell_l1(&b, &p1, &p2);
     assert!(l1 < EPS, "KO-possible mutual-focus not bit-exact under bail: L1={l1:.3e}");
+}
+
+// ---------------------------------------------------------------------------
+// Chance-gated NON-PARTICIPATION bail (the code-review Critical). An
+// attacker's hit can vanish/become chance-dependent WITHOUT a faint (full
+// paralysis, flinch, confusion, sleep/freeze, Attract, Truant), coupling the
+// defender's HP to a chance node the tensor would treat as independent. The
+// gate must BAIL (full-enum) on any such gate present OR inflictable this
+// turn. Both cases assert `assert_tensor_bailed` + bit-exact L1<1e-9.
+// ---------------------------------------------------------------------------
+
+/// PRE-EXISTING participation gate: a coupled attacker is ALREADY paralyzed.
+/// It's one of two attackers focusing P2s0 (so its hit is part of the coupled
+/// group); its 25% full-para skip couples the defender's final HP to the para
+/// coin. The gate must bail; the flat path stays bit-exact.
+#[test]
+#[ignore]
+fn mutual_focus_pre_paralyzed_attacker_tensor_bails_bit_exact() {
+    const PP1: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["tackle"],"evs":{"hp":252,"atk":252}},
+        {"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["tackle"],"evs":{"hp":252,"atk":252}}
+    ]"#;
+    const PP2: &str = r#"[
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(PP1).unwrap(),
+        TeamBuilder::from_json(PP2).unwrap(),
+    );
+    // Paralyze P1 slot-0 (a coupled attacker). Its 25% skip decouples one of
+    // the two hits on P2s0 from certainty.
+    let a0 = b.p1.active[0] as usize;
+    b.p1.team[a0].status = Status::Paralysis;
+    // Both P1 attackers focus P2s0; P2 passes.
+    let p1 = [mv(0, SideRef::P2, 0), mv(1, SideRef::P2, 0)];
+    let p2 = [pass(0), pass(1)];
+    assert_tensor_bailed(&b, &p1, &p2);
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "pre-paralyzed coupled attacker not bit-exact under bail: L1={l1:.3e}");
+}
+
+/// MID-TURN-INFLICTABLE participation gate: a coupled attacker's move carries
+/// a paralysis secondary (Body Slam, 30%). A faster mon could para a slower
+/// not-yet-acted coupled attacker mid-turn, gating its hit. The blunt "any
+/// cell move has_secondary → bail" branch must trip. Bit-exact under bail.
+#[test]
+#[ignore]
+fn mutual_focus_secondary_inflictable_tensor_bails_bit_exact() {
+    // Body Slam (BP 85, 30% paralysis secondary) on the coupled attackers.
+    const MI1: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["bodyslam"],"evs":{"hp":252,"atk":252}},
+        {"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["bodyslam"],"evs":{"hp":252,"atk":252}}
+    ]"#;
+    const MI2: &str = r#"[
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(MI1).unwrap(),
+        TeamBuilder::from_json(MI2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), mv(1, SideRef::P2, 0)];
+    let p2 = [pass(0), pass(1)];
+    assert_tensor_bailed(&b, &p1, &p2);
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "secondary-inflictable coupled cell not bit-exact under bail: L1={l1:.3e}");
 }
