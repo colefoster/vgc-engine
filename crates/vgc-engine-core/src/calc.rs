@@ -599,6 +599,23 @@ impl KoChance {
             KoChance::Chance { pct } => format!("{pct}% to {hko}"),
         }
     }
+
+    /// Exact number of the 16 rolls that KO — the inverse of the rounded
+    /// `pct` (each count 0..=16 maps to a distinct rounded percent, so the
+    /// round-trip is exact). Used by the EV-threshold search to compare
+    /// against a target probability without float rounding.
+    fn count16(&self) -> u8 {
+        match self {
+            KoChance::None => 0,
+            KoChance::Guaranteed => 16,
+            KoChance::Chance { pct } => ((*pct as u32 * 16 + 50) / 100) as u8,
+        }
+    }
+}
+
+/// Round a count-out-of-16 to a whole percent (matches `ko_from_rolls`).
+fn pct16(count: u8) -> u8 {
+    ((count as u32 * 100 + 8) / 16) as u8
 }
 
 fn ko_word(hits: u8) -> String {
@@ -922,78 +939,106 @@ fn set_atk_ev(mon: &mut QuickMon, stat: AtkStat, ev: u8) {
     }
 }
 
-/// Minimum EVs in `stat` for `defender` to **survive** one hit of
-/// `attacker`'s `move_` (survive = no roll KOs). Binary-searches the
-/// 0..=252 EV grid; the defender's other EVs are taken as-is from `def`.
+/// Result of an EV-threshold search ([`min_evs_to_survive`] /
+/// [`min_evs_to_ko`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvSearch {
+    /// Least EVs (a multiple of 4, in the searched stat) that meet the
+    /// target roll-count, or `None` if even 252 EVs fall short.
+    pub evs: Option<u8>,
+    /// At MAX (252) EVs: the number of the 16 rolls the defender SURVIVES
+    /// (`survive`) or the attacker KOs on (`ko`), `0..=16`. When `evs` is
+    /// `None` this is the residual — the *best achievable* — so a near-miss
+    /// reads as "survives 14/16 even maxed" rather than a flat failure.
+    pub rolls_at_max: u8,
+    /// [`rolls_at_max`] as a rounded percent (`0..=100`), for display.
+    pub pct_at_max: u8,
+}
+
+/// Minimum EVs in `stat` for `defender` to **survive** at least
+/// `min_survive_rolls` of the 16 damage rolls of `attacker`'s `move_`. Pass
+/// `16` for the strict "survives every roll" benchmark; `15` for "survives
+/// all but the highest roll", etc. — the count is exact (no rounding).
 ///
-/// Returns `Some(ev)` (a multiple of 4) or `None` if even 252 EVs don't
-/// survive. Survival is monotonic in defensive EVs, so binary search is
-/// exact.
+/// Binary-searches the 0..=252 EV grid (survival is monotonic in defensive
+/// EVs). Returns [`EvSearch`]: `evs = Some(..)` when the target is reachable,
+/// or `None` with `rolls_at_max` = the survive-count at 252 EVs when it
+/// isn't — so "can't survive" reads as the truer "survives N/16 even maxed".
 pub fn min_evs_to_survive(
     attacker: &QuickMon,
     defender: &QuickMon,
     move_: &str,
     stat: DefStat,
     field: Field,
-) -> Result<Option<u8>, CalcError> {
+    min_survive_rolls: u8,
+) -> Result<EvSearch, CalcError> {
     // Resolve once so a bad move errors before the search loop.
     resolve_move(move_)?;
-    let survives_at = |ev: u8| -> Result<bool, CalcError> {
+    let target = min_survive_rolls.min(16);
+    // Number of the 16 rolls the defender SURVIVES at `ev` in `stat`.
+    let survive_count = |ev: u8| -> Result<u8, CalcError> {
         let mut d = defender.clone();
         set_def_ev(&mut d, stat, ev);
-        Ok(matches!(calc(attacker, &d, move_, field)?.ko_chance, KoChance::None))
+        Ok(16 - calc(attacker, &d, move_, field)?.ko_chance.count16())
     };
-    // Fast reject: max investment still dies.
-    if !survives_at(252)? {
-        return Ok(None);
+
+    let sc_max = survive_count(252)?;
+    if sc_max < target {
+        return Ok(EvSearch { evs: None, rolls_at_max: sc_max, pct_at_max: pct16(sc_max) });
     }
-    // Binary search for the least grid index that survives.
+    // Binary search for the least grid index that meets the target.
     let mut lo = 0usize;
-    let mut hi = EV_GRID.len() - 1; // known to survive at hi
+    let mut hi = EV_GRID.len() - 1; // known to meet at hi
     while lo < hi {
         let mid = (lo + hi) / 2;
-        if survives_at(EV_GRID[mid])? {
+        if survive_count(EV_GRID[mid])? >= target {
             hi = mid;
         } else {
             lo = mid + 1;
         }
     }
-    Ok(Some(EV_GRID[lo]))
+    Ok(EvSearch { evs: Some(EV_GRID[lo]), rolls_at_max: sc_max, pct_at_max: pct16(sc_max) })
 }
 
-/// Minimum EVs in `stat` for `attacker`'s `move_` to **guaranteed-KO**
-/// `defender` (every roll KOs). Binary-searches the 0..=252 EV grid;
-/// `attacker`'s other EVs are taken as-is.
+/// Minimum EVs in `stat` for `attacker`'s `move_` to **KO** `defender` on at
+/// least `min_ko_rolls` of the 16 rolls. Pass `16` for the strict
+/// "guaranteed KO" benchmark; `15` for "KOs on all but the lowest roll".
 ///
-/// Returns `Some(ev)` or `None` if even 252 EVs don't guarantee the KO.
-/// Guaranteed-KO is monotonic in offensive EVs, so binary search is exact.
+/// Binary-searches the 0..=252 EV grid (KO chance is monotonic in offensive
+/// EVs). Returns [`EvSearch`]: `evs = Some(..)` when reachable, or `None`
+/// with `rolls_at_max` = the KO-count at 252 EVs when not — so "can't KO"
+/// reads as the truer "KOs on N/16 even maxed".
 pub fn min_evs_to_ko(
     attacker: &QuickMon,
     defender: &QuickMon,
     move_: &str,
     stat: AtkStat,
     field: Field,
-) -> Result<Option<u8>, CalcError> {
+    min_ko_rolls: u8,
+) -> Result<EvSearch, CalcError> {
     resolve_move(move_)?;
-    let kos_at = |ev: u8| -> Result<bool, CalcError> {
+    let target = min_ko_rolls.min(16);
+    let ko_count = |ev: u8| -> Result<u8, CalcError> {
         let mut a = attacker.clone();
         set_atk_ev(&mut a, stat, ev);
-        Ok(matches!(calc(&a, defender, move_, field)?.ko_chance, KoChance::Guaranteed))
+        Ok(calc(&a, defender, move_, field)?.ko_chance.count16())
     };
-    if !kos_at(252)? {
-        return Ok(None);
+
+    let kc_max = ko_count(252)?;
+    if kc_max < target {
+        return Ok(EvSearch { evs: None, rolls_at_max: kc_max, pct_at_max: pct16(kc_max) });
     }
     let mut lo = 0usize;
     let mut hi = EV_GRID.len() - 1;
     while lo < hi {
         let mid = (lo + hi) / 2;
-        if kos_at(EV_GRID[mid])? {
+        if ko_count(EV_GRID[mid])? >= target {
             hi = mid;
         } else {
             lo = mid + 1;
         }
     }
-    Ok(Some(EV_GRID[lo]))
+    Ok(EvSearch { evs: Some(EV_GRID[lo]), rolls_at_max: kc_max, pct_at_max: pct16(kc_max) })
 }
 
 /// Run `damage_only` for one (crit / non-crit) row and shape the result.
@@ -1505,7 +1550,9 @@ mod tests {
         )
         .unwrap();
         let def = QuickMon::parse("Flutter Mane / Timid / 252 SpA / 252 Spe").unwrap();
-        let got = min_evs_to_survive(&atk, &def, "iron head", DefStat::Hp, Field::none()).unwrap();
+        let got = min_evs_to_survive(&atk, &def, "iron head", DefStat::Hp, Field::none(), 16)
+            .unwrap()
+            .evs;
         // Whatever the threshold, verify the binary-search invariant: the
         // returned EV survives and one grid step lower does not.
         match got {
@@ -1552,7 +1599,9 @@ mod tests {
         let def = QuickMon::parse("Flutter Mane / Timid / 4 HP").unwrap();
         // EQ vs frail Flutter Mane OHKOs easily; the min Atk EV to
         // *guarantee* it exists and is well under 252.
-        let got = min_evs_to_ko(&atk, &def, "earthquake", AtkStat::Atk, Field::none()).unwrap();
+        let got = min_evs_to_ko(&atk, &def, "earthquake", AtkStat::Atk, Field::none(), 16)
+            .unwrap()
+            .evs;
         match got {
             Some(ev) => {
                 let mut a = atk.clone();
@@ -1571,6 +1620,28 @@ mod tests {
                 }
             }
             None => panic!("EQ should guaranteed-OHKO frail Flutter Mane at some Atk EV"),
+        }
+    }
+
+    #[test]
+    fn ev_threshold_monotone_and_residual() {
+        // Structural invariants that hold regardless of the exact damage:
+        // a lower survival target never needs MORE EVs, and an unreachable
+        // strict target reports a residual survival % below 100.
+        let atk = QuickMon::parse("Kingambit @ Life Orb / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Flutter Mane / Timid / 252 SpA / 252 Spe").unwrap();
+        let strict =
+            min_evs_to_survive(&atk, &def, "iron head", DefStat::Hp, Field::none(), 16).unwrap();
+        let lenient =
+            min_evs_to_survive(&atk, &def, "iron head", DefStat::Hp, Field::none(), 8).unwrap();
+        assert!(strict.rolls_at_max <= 16 && strict.pct_at_max <= 100);
+        if strict.evs.is_none() {
+            assert!(strict.rolls_at_max < 16, "unreachable ⇒ survives < 16/16 even maxed");
+        }
+        match (strict.evs, lenient.evs) {
+            (Some(s), Some(l)) => assert!(l <= s, "lenient target can't need more EVs than strict"),
+            (Some(_), None) => panic!("a lower survival target can't be harder than a higher one"),
+            (None, _) => {}
         }
     }
 }
