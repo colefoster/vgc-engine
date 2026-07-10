@@ -796,6 +796,7 @@ name = "vgc-engine-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "serde_json",
  "vgc-engine-core",
  "vgc-engine-golden",
  "vgc-engine-replay",
