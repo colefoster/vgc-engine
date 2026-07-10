@@ -1,5 +1,18 @@
 # Tiebreak collapse — design note (v1)
 
+> **STATUS: SHELVED 2026-07-10 — sound but VACUOUS. Do not merge; do not re-attempt losslessly.**
+> The gate is correct (bit-exact audit passes; 2 adversarial-review blockers noted below in the
+> revision history were identified — crash-damage moves + weather/terrain damage-bound
+> understatement — and would need fixing IF revived). But it fires **0×** on both the Staraptor
+> mirror floor case and a realistic 7-team corpus (11,237 tied brackets, 0.00%). Real doubles —
+> and the mirror equilibrium — are structurally target-COUPLED (focus-fire + spread moves):
+> `compute_coupled_targets` blocks 82.8%, non-inert abilities the rest; `held-item`-only-blocker =
+> 0, so a v2 inert-item allowlist unlocks nothing. On the focus-fire mirror the tiebreak GENUINELY
+> decides the KO race, so no lossless collapse can ever fire. The floor case needs DEPTH reduction
+> (KO-race certificate) or a lossy method, not width collapse. See memory
+> `project_tiebreak_collapse_dead_end`.
+
+
 **Goal.** Cut the doubles solver's speed-tie branching. In the identical-speed mirror,
 each turn spawns `2^4 = 16` outcome replays purely from four `DrawSpace::Tiebreak{speeds_tied:true}`
 sites (four per-action nonces sharing one `(priority, frac_pri, speed_key)` bracket — see
