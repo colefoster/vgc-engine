@@ -48,6 +48,10 @@ enum Command {
         /// Force a critical hit.
         #[arg(long)]
         crit: bool,
+        /// Emit the full `DamageResult` as JSON instead of the
+        /// human-readable block.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -108,13 +112,13 @@ fn format_result(
         return out;
     }
 
-    // KO label: PR-1 reports the exact 1-hit case. A guaranteed OHKO or a
-    // chance-to-OHKO is exact; otherwise we can only say "not a OHKO" here
-    // (multi-hit KO is PR-2), so fall through to a range without a KO tag.
+    // KO label: prefer the exact single-hit verdict when the move KOs in
+    // one (guaranteed / chance-to-OHKO); otherwise fall back to the
+    // multi-hit NHKO label (2HKO/3HKO/…) from the roll convolution.
     let ko_tag = match &r.ko_chance {
         KoChance::Guaranteed => " — guaranteed OHKO".to_string(),
         KoChance::Chance { pct } => format!(" — {pct}% to OHKO"),
-        KoChance::None => String::new(),
+        KoChance::None => format!(" — {}", r.multi_hit.label()),
     };
 
     out.push_str(&format!(
@@ -137,6 +141,7 @@ fn run() -> Result<(), String> {
             terrain,
             spread,
             crit,
+            json,
         } => {
             let atk = QuickMon::parse(&attacker).map_err(|e| e.to_string())?;
             let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
@@ -158,6 +163,13 @@ fn run() -> Result<(), String> {
             } else {
                 &result
             };
+
+            if json {
+                let s = serde_json::to_string_pretty(shown)
+                    .map_err(|e| format!("json serialize: {e}"))?;
+                println!("{s}");
+                return Ok(());
+            }
 
             let atk_name = display_species(&atk.species);
             let def_name = display_species(&def.species);

@@ -17,9 +17,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use vgc_engine_core::calc::QuickMon;
 use vgc_engine_core::terrain::Terrain;
 use vgc_engine_core::weather::Weather;
-use vgc_engine_core::{damage_only, DamageQuery, Pokemon, Status, TeamBuilder};
+use vgc_engine_core::{damage_only, DamageQuery, Pokemon, StatSpread, Status};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PokemonSpec {
@@ -98,53 +99,45 @@ pub struct CalcExpectation {
     pub damage_union: Vec<u32>,
 }
 
-fn label_of(k: &str) -> &'static str {
-    match k {
-        "hp" => "HP", "atk" => "Atk", "def" => "Def",
-        "spa" => "SpA", "spd" => "SpD", "spe" => "Spe",
-        _ => "",
-    }
-}
-
-fn render_team(spec: &PokemonSpec, primary_move: &str) -> String {
-    let mut s = String::new();
-    s.push_str(&spec.species);
-    if let Some(item) = &spec.item {
-        s.push_str(" @ ");
-        s.push_str(item);
-    }
-    s.push('\n');
-    if let Some(ability) = &spec.ability {
-        s.push_str("Ability: ");
-        s.push_str(ability);
-        s.push('\n');
-    }
-    s.push_str(&format!("Level: {}\n", spec.level));
-    if let Some(tt) = &spec.tera_type {
-        s.push_str("Tera Type: ");
-        s.push_str(tt);
-        s.push('\n');
-    }
-    if !spec.evs.is_empty() {
-        let parts: Vec<String> = ["hp", "atk", "def", "spa", "spd", "spe"]
-            .iter()
-            .filter_map(|k| spec.evs.get(*k).map(|v| format!("{} {}", v, label_of(k))))
-            .collect();
-        if !parts.is_empty() {
-            s.push_str("EVs: ");
-            s.push_str(&parts.join(" / "));
-            s.push('\n');
+/// Apply a `{stat: value}` map onto a [`StatSpread`], keyed by the same
+/// lowercase stat slugs the scenario JSON uses (`hp`/`atk`/…/`spe`).
+fn apply_spread(base: StatSpread, map: &BTreeMap<String, u8>) -> StatSpread {
+    let mut sp = base;
+    for (k, &v) in map {
+        match k.as_str() {
+            "hp" => sp.hp = v,
+            "atk" => sp.atk = v,
+            "def" => sp.def = v,
+            "spa" => sp.spa = v,
+            "spd" => sp.spd = v,
+            "spe" => sp.spe = v,
+            _ => {}
         }
     }
+    sp
+}
+
+/// Convert a scenario [`PokemonSpec`] into a [`QuickMon`] carrying the
+/// same field state, so both the calc-oracle harness and the `vgc calc`
+/// CLI construct the engine `Pokemon` through the identical
+/// `QuickMon::to_pokemon` → `build_member` path (no render-to-text and
+/// re-parse round-trip).
+fn spec_to_quickmon(spec: &PokemonSpec) -> Result<QuickMon, String> {
+    let mut mon = QuickMon::new(&spec.species).map_err(|e| e.to_string())?;
+    mon.level = spec.level;
+    mon.item = spec.item.clone();
+    mon.ability = spec.ability.clone();
     if let Some(n) = &spec.nature {
-        s.push_str(n);
-        s.push_str(" Nature\n");
+        mon.nature = n.to_ascii_lowercase();
     }
-    s.push_str("- ");
-    s.push_str(primary_move);
-    s.push('\n');
-    s.push_str("- Splash\n- Splash\n- Splash\n");
-    s
+    mon.evs = apply_spread(StatSpread::ZERO, &spec.evs);
+    mon.ivs = apply_spread(StatSpread::MAX_IV, &spec.ivs);
+    mon.tera_type = spec.tera_type.clone();
+    mon.terastallized = spec.terastallized;
+    if let Some(s) = &spec.status {
+        mon.status = parse_status(s)?;
+    }
+    Ok(mon)
 }
 
 /// Compute the engine's 16-roll damage array for the scenario via the
@@ -157,22 +150,16 @@ fn render_team(spec: &PokemonSpec, primary_move: &str) -> String {
 /// fields keeps the wire shape stable for anyone deserializing existing
 /// harness dumps.
 pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
-    let p1_text = render_team(&sc.attacker, &sc.move_name);
-    let p2_text = render_team(&sc.defender, "Splash");
-    let p1_team = TeamBuilder::from_showdown_text(&p1_text)
-        .map_err(|e| format!("p1 team parse: {e:?}"))?;
-    let p2_team = TeamBuilder::from_showdown_text(&p2_text)
-        .map_err(|e| format!("p2 team parse: {e:?}"))?;
-
-    let mut attacker: Pokemon = p1_team.into_iter().next()
-        .ok_or_else(|| "p1 team empty".to_string())?;
-    let mut defender: Pokemon = p2_team.into_iter().next()
-        .ok_or_else(|| "p2 team empty".to_string())?;
-
-    if sc.attacker.terastallized { attacker.terastallized = true; }
-    if sc.defender.terastallized { defender.terastallized = true; }
-    if let Some(s) = &sc.attacker.status { attacker.status = parse_status(s)?; }
-    if let Some(s) = &sc.defender.status { defender.status = parse_status(s)?; }
+    // Build both mons through the shared `QuickMon` path — the exact same
+    // builder the `vgc calc` CLI and `calc::calc` use — rather than
+    // rendering Showdown text and re-parsing it. `to_pokemon` seeds
+    // moves[0] with the primary move; `damage_only` re-writes it anyway.
+    let attacker: Pokemon = spec_to_quickmon(&sc.attacker)?
+        .to_pokemon(&resolve_move_slug(&sc.move_name)?)
+        .map_err(|e| format!("build attacker: {e}"))?;
+    let defender: Pokemon = spec_to_quickmon(&sc.defender)?
+        .to_pokemon("splash")
+        .map_err(|e| format!("build defender: {e}"))?;
 
     let weather = sc
         .field
@@ -189,10 +176,9 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         .transpose()?
         .unwrap_or(Terrain::None);
 
-    // First slot of the built attacker holds the primary move (see
-    // `render_team` — primary is line 1, then three Splashes). The
-    // `damage_only` API re-writes moves[0] regardless, but we pass
-    // the same id so the debug shape is coherent.
+    // `to_pokemon` seeded moves[0] with the resolved primary move. The
+    // `damage_only` API re-writes moves[0] regardless, but we pass the same
+    // id so the debug shape is coherent.
     let move_id = attacker.moves[0];
     let target_max = defender.stats.hp;
 
@@ -226,6 +212,12 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         missed_count: 0,
         errors: Vec::new(),
     })
+}
+
+/// Resolve a scenario's move name (display name or slug) to a dex slug via
+/// the same resolver `vgc calc` uses.
+fn resolve_move_slug(name: &str) -> Result<String, String> {
+    vgc_engine_core::calc::resolve_move(name).map_err(|e| e.to_string())
 }
 
 fn parse_weather(s: &str) -> Result<Weather, String> {
