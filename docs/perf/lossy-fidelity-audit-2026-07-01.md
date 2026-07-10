@@ -1,3 +1,18 @@
+> **⚠️ SUPERSEDED IN PART — see
+> [`lossy-fidelity-audit-revisit-2026-07-09.md`](lossy-fidelity-audit-revisit-2026-07-09.md).**
+> This audit's fixtures are all **1v1-active** (both slot-1 mons fainted),
+> so they are structurally blind to the mutual-focus target coupling that
+> dominates real 2-active doubles — and its "lossless" baseline used the
+> pre-#87 buggy `ko_split`. The 2026-07-09 revisit re-ran the methodology on
+> genuine 2-active fixtures on the post-#87 engine and found the **forced
+> `lossy_damage_3bucket` collapse flips the root policy** on a 2-active state
+> (spread → double-focus) at identical Nash value. The "100 % top-1
+> agreement / 0 top-1 disagreements" headlines below **do not hold** for the
+> forced collapse on 2-active states. Nash-*value* parity still holds; it is
+> just the wrong safety metric for a best-move / policy-target consumer.
+> `auto(1000)` survives on the revisit corpus (it doesn't engage on cells
+> that small).
+
 # Lossy fidelity audit — action-choice + adversarial boundaries (2026-07-01)
 
 Companion to `pr-l2-threshold-tuning-2026-06-30.md`. The L2 sweep showed
