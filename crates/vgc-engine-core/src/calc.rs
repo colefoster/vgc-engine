@@ -675,6 +675,106 @@ pub fn calc_default(
     calc(attacker, defender, move_, Field::none())
 }
 
+// ---------------------------------------------------------------------------
+// Thin helper family (PR-4): terse yes/no wrappers over `calc` /
+// `effective_speed` for the common questions a player asks a calculator.
+// ---------------------------------------------------------------------------
+
+/// The 1-hit KO probability of `attacker`'s `move_` against `defender`.
+/// Thin wrapper over [`calc`] returning just the [`KoChance`].
+pub fn ohko_chance(
+    attacker: &QuickMon,
+    defender: &QuickMon,
+    move_: &str,
+    field: Field,
+) -> Result<KoChance, CalcError> {
+    Ok(calc(attacker, defender, move_, field)?.ko_chance)
+}
+
+/// Does `defender` **guaranteed-survive** a single hit of `attacker`'s
+/// `move_`? True iff even the maximum roll leaves it above 0 HP (i.e. the
+/// hit is not a guaranteed OHKO — every roll fails to KO). Zero-damage /
+/// immune hits trivially survive.
+pub fn survives(
+    attacker: &QuickMon,
+    defender: &QuickMon,
+    move_: &str,
+    field: Field,
+) -> Result<bool, CalcError> {
+    let ko = calc(attacker, defender, move_, field)?.ko_chance;
+    // Survives-for-sure = the move never KOs on any roll.
+    Ok(matches!(ko, KoChance::None))
+}
+
+/// Field context affecting a mon's effective speed: per-side tailwind,
+/// weather (Swift Swim / Chlorophyll / Sand Rush / Slush Rush), and Trick
+/// Room (which *reverses* the comparison without changing the stat).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpeedContext {
+    pub weather: Weather,
+    pub tailwind: bool,
+    pub trick_room: bool,
+}
+
+impl SpeedContext {
+    pub fn none() -> Self {
+        SpeedContext::default()
+    }
+}
+
+/// A mon's **effective** speed under `ctx` — boosts, paralysis, Choice
+/// Scarf / Iron Ball, Paradox Spe, Unburden, tailwind, and weather speed
+/// abilities all folded in (see [`crate::order::effective_speed`]). This
+/// is the "speed tier" a player reads off a calc.
+///
+/// Trick Room does **not** change this number — it flips the *comparison*
+/// (see [`outspeeds`]).
+pub fn speed_tier(mon: &QuickMon, ctx: SpeedContext) -> Result<u16, CalcError> {
+    // Any move keeps `build_member` happy; speed is move-independent.
+    let p = mon.to_pokemon("splash")?;
+    Ok(crate::order::effective_speed(&p, ctx.tailwind, ctx.weather))
+}
+
+/// The winner of a speed comparison between two mons, respecting Trick
+/// Room. A speed **tie** (equal effective speed) is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedWinner {
+    /// The first mon (`a`) moves first.
+    A,
+    /// The second mon (`b`) moves first.
+    B,
+    /// Equal effective speed — a coin-flip speed tie.
+    Tie,
+}
+
+/// Does `a` move before `b`? Compares effective speeds under `ctx`,
+/// respecting Trick Room (slower moves first). Returns [`SpeedWinner`].
+///
+/// Only the speed *stat* comparison is modeled — move priority is a
+/// per-move property the caller handles separately.
+pub fn outspeeds(a: &QuickMon, b: &QuickMon, ctx: SpeedContext) -> Result<SpeedWinner, CalcError> {
+    let sa = speed_tier(a, ctx)?;
+    let sb = speed_tier(b, ctx)?;
+    Ok(match sa.cmp(&sb) {
+        std::cmp::Ordering::Equal => SpeedWinner::Tie,
+        std::cmp::Ordering::Greater => {
+            if ctx.trick_room {
+                SpeedWinner::B
+            } else {
+                SpeedWinner::A
+            }
+        }
+        std::cmp::Ordering::Less => {
+            if ctx.trick_room {
+                SpeedWinner::A
+            } else {
+                SpeedWinner::B
+            }
+        }
+    })
+}
+
 /// Run `damage_only` for one (crit / non-crit) row and shape the result.
 /// Does NOT populate the nested `crit` field (caller handles that).
 fn shape_result(
@@ -1079,5 +1179,62 @@ mod tests {
             // fail loudly so we notice a model change.
             panic!("expected a 2HKO for spread EQ vs Iron Hands, got {:?}", r.multi_hit);
         }
+    }
+
+    #[test]
+    fn survives_and_ohko_chance() {
+        // Immune target trivially survives, no OHKO.
+        let chomp = QuickMon::new("chomp").unwrap();
+        let lando = QuickMon::new("lando").unwrap();
+        assert!(survives(&chomp, &lando, "eq", Field::none()).unwrap());
+        assert_eq!(
+            ohko_chance(&chomp, &lando, "eq", Field::none()).unwrap(),
+            KoChance::None
+        );
+
+        // Spread EQ vs bulky Iron Hands: not a OHKO → survives.
+        let atk = QuickMon::parse("Garchomp / Jolly / 252 Atk").unwrap();
+        let def = QuickMon::parse("Iron Hands / Adamant / 252 HP / 252 SpD").unwrap();
+        assert!(survives(&atk, &def, "eq", Field::none().spread(true)).unwrap());
+    }
+
+    #[test]
+    fn speed_tier_boosts_and_scarf() {
+        // Base: Jolly max-Spe Garchomp = 169 at level 50 (well-known tier).
+        let chomp = QuickMon::parse("Garchomp / Jolly / 252 Spe").unwrap();
+        let base = speed_tier(&chomp, SpeedContext::none()).unwrap();
+        assert_eq!(base, 169, "Jolly 252 Spe Garchomp base speed tier");
+
+        // Tailwind doubles it.
+        let tw = speed_tier(
+            &chomp,
+            SpeedContext { tailwind: true, ..SpeedContext::none() },
+        )
+        .unwrap();
+        assert_eq!(tw, base * 2);
+
+        // Choice Scarf = ×1.5.
+        let scarf = QuickMon::parse("Garchomp @ Choice Scarf / Jolly / 252 Spe").unwrap();
+        assert_eq!(speed_tier(&scarf, SpeedContext::none()).unwrap(), base * 3 / 2);
+    }
+
+    #[test]
+    fn outspeeds_and_trick_room() {
+        let fast = QuickMon::parse("Garchomp / Jolly / 252 Spe").unwrap();
+        let slow = QuickMon::parse("Iron Hands / Brave / 0 Spe").unwrap();
+        // Normal: the faster mon moves first.
+        assert_eq!(outspeeds(&fast, &slow, SpeedContext::none()).unwrap(), SpeedWinner::A);
+        // Trick Room reverses it.
+        assert_eq!(
+            outspeeds(
+                &fast,
+                &slow,
+                SpeedContext { trick_room: true, ..SpeedContext::none() }
+            )
+            .unwrap(),
+            SpeedWinner::B
+        );
+        // Mirror match = speed tie.
+        assert_eq!(outspeeds(&fast, &fast, SpeedContext::none()).unwrap(), SpeedWinner::Tie);
     }
 }

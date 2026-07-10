@@ -11,7 +11,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use vgc_engine_core::calc::{calc, DamageResult, Field, KoChance, QuickMon};
+use vgc_engine_core::calc::{
+    calc, speed_tier, DamageResult, Field, KoChance, QuickMon, SpeedContext, SpeedWinner,
+};
 use vgc_engine_core::{Terrain, Weather};
 
 #[derive(Parser)]
@@ -52,6 +54,53 @@ enum Command {
         /// human-readable block.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Does the defender survive one hit? `vgc survives <atk> <def> <move>`.
+    /// Prints "survives" / "does not survive" (+ the KO chance) and exits
+    /// 0 iff it survives every roll.
+    Survives {
+        attacker: String,
+        defender: String,
+        move_: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        terrain: Option<String>,
+        #[arg(long)]
+        spread: bool,
+    },
+
+    /// Compare two mons' speed: `vgc outspeeds <a> <b>`. Respects tailwind,
+    /// weather speed abilities, and Trick Room.
+    Outspeeds {
+        /// First mon.
+        a: String,
+        /// Second mon.
+        b: String,
+        /// Weather: sun | rain | sand | snow (Swift Swim / Chlorophyll / …).
+        #[arg(long)]
+        weather: Option<String>,
+        /// `a` has tailwind up.
+        #[arg(long)]
+        tailwind_a: bool,
+        /// `b` has tailwind up.
+        #[arg(long)]
+        tailwind_b: bool,
+        /// Trick Room is active (slower moves first).
+        #[arg(long)]
+        trick_room: bool,
+    },
+
+    /// Print a mon's effective speed tier: `vgc speed <mon>`. Folds in
+    /// boosts, paralysis, Choice Scarf / Iron Ball, Paradox Spe, Unburden,
+    /// tailwind, and weather speed abilities.
+    Speed {
+        mon: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        tailwind: bool,
     },
 }
 
@@ -130,7 +179,7 @@ fn format_result(
     out
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<ExitCode, String> {
     let cli = Cli::parse();
     match cli.command {
         Command::Calc {
@@ -168,7 +217,7 @@ fn run() -> Result<(), String> {
                 let s = serde_json::to_string_pretty(shown)
                     .map_err(|e| format!("json serialize: {e}"))?;
                 println!("{s}");
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
 
             let atk_name = display_species(&atk.species);
@@ -180,14 +229,116 @@ fn run() -> Result<(), String> {
                 .unwrap_or_else(|_| move_.clone());
 
             print!("{}", format_result(&atk_name, &def_name, &move_name, shown));
-            Ok(())
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Survives {
+            attacker,
+            defender,
+            move_,
+            weather,
+            terrain,
+            spread,
+        } => {
+            let atk = QuickMon::parse(&attacker).map_err(|e| e.to_string())?;
+            let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
+            let mut field = Field::none();
+            if let Some(w) = weather {
+                field.weather = parse_weather(&w)?;
+            }
+            if let Some(t) = terrain {
+                field.terrain = parse_terrain(&t)?;
+            }
+            field.spread = spread;
+
+            let r = calc(&atk, &def, &move_, field).map_err(|e| e.to_string())?;
+            let lives = matches!(r.ko_chance, KoChance::None);
+            let def_name = display_species(&def.species);
+            let atk_name = display_species(&atk.species);
+            let move_name = vgc_engine_core::calc::resolve_move(&move_)
+                .map(|slug| display_move(&slug))
+                .unwrap_or_else(|_| move_.clone());
+            let verdict = if lives { "survives" } else { "does NOT survive" };
+            let ko = match &r.ko_chance {
+                KoChance::Guaranteed => "guaranteed OHKO".to_string(),
+                KoChance::Chance { pct } => format!("{pct}% to OHKO"),
+                KoChance::None => r.multi_hit.label(),
+            };
+            println!("{def_name} {verdict} {atk_name} {move_name} — {ko}");
+            // Exit 0 iff it survives every roll (scriptable).
+            Ok(if lives { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+        }
+
+        Command::Outspeeds {
+            a,
+            b,
+            weather,
+            tailwind_a,
+            tailwind_b,
+            trick_room,
+        } => {
+            let ma = QuickMon::parse(&a).map_err(|e| e.to_string())?;
+            let mb = QuickMon::parse(&b).map_err(|e| e.to_string())?;
+            let w = match weather {
+                Some(ref s) => parse_weather(s)?,
+                None => Weather::None,
+            };
+            // Tailwind is per-side, so compute each speed under its own
+            // context and compare directly (rather than the shared-context
+            // `outspeeds`, which assumes one tailwind for both).
+            let sa = speed_tier(
+                &ma,
+                SpeedContext { weather: w, tailwind: tailwind_a, trick_room },
+            )
+            .map_err(|e| e.to_string())?;
+            let sb = speed_tier(
+                &mb,
+                SpeedContext { weather: w, tailwind: tailwind_b, trick_room },
+            )
+            .map_err(|e| e.to_string())?;
+            let winner = match sa.cmp(&sb) {
+                std::cmp::Ordering::Equal => SpeedWinner::Tie,
+                std::cmp::Ordering::Greater => {
+                    if trick_room { SpeedWinner::B } else { SpeedWinner::A }
+                }
+                std::cmp::Ordering::Less => {
+                    if trick_room { SpeedWinner::A } else { SpeedWinner::B }
+                }
+            };
+            let a_name = display_species(&ma.species);
+            let b_name = display_species(&mb.species);
+            let tr = if trick_room { " (Trick Room)" } else { "" };
+            match winner {
+                SpeedWinner::A => {
+                    println!("{a_name} ({sa}) moves before {b_name} ({sb}){tr}")
+                }
+                SpeedWinner::B => {
+                    println!("{b_name} ({sb}) moves before {a_name} ({sa}){tr}")
+                }
+                SpeedWinner::Tie => {
+                    println!("speed tie: {a_name} and {b_name} both {sa}{tr}")
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Speed { mon, weather, tailwind } => {
+            let m = QuickMon::parse(&mon).map_err(|e| e.to_string())?;
+            let w = match weather {
+                Some(ref s) => parse_weather(s)?,
+                None => Weather::None,
+            };
+            let spe = speed_tier(&m, SpeedContext { weather: w, tailwind, trick_room: false })
+                .map_err(|e| e.to_string())?;
+            println!("{} — {} Spe", display_species(&m.species), spe);
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
