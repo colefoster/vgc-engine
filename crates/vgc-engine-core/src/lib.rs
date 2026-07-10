@@ -40,7 +40,8 @@ pub use damage::{
     TypeEff,
 };
 pub use calc::{
-    calc, calc_default, CalcError, DamageResult, Field, KoChance, QuickMon,
+    calc, calc_default, ohko_chance, outspeeds, speed_tier, survives, CalcError, DamageResult,
+    Field, KoChance, MultiHitKo, QuickMon, SpeedContext, SpeedWinner,
 };
 pub use damage_api::{damage_only, DamageQuery};
 pub use format::Format;
