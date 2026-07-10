@@ -3035,6 +3035,54 @@ impl Battle {
             return false;
         }
 
+        // CHANCE-GATED NON-PARTICIPATION bail (blunt, deny-by-default).
+        //
+        // An attacker's hit on a coupled defender can vanish or become
+        // chance-dependent WITHOUT the attacker fainting — e.g. full
+        // paralysis (25% skip), a confusion self-hit (33%), a flinch from a
+        // faster hit this turn, a sleep/freeze wake roll, Attract (50%), or
+        // Truant loaf. Any of these couples the defender's post-turn HP to a
+        // chance node the tensor would treat as an independent damage roll,
+        // dropping the skip branch. `mutual_focus_tensor_safe` must forbid
+        // the tensor whenever such a gate is present or could be inflicted
+        // THIS turn. Over-approximate freely — a false bail only costs perf.
+        //
+        // Mirrors `check_pre_move_status` (paralysis / confusion / attract /
+        // sleep / freeze / truant / flinch); PS onBeforeMove chain.
+        for act in order_a.as_slice() {
+            let (actor_slot, move_slot) = match act.choice {
+                Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
+                _ => continue,
+            };
+            if let Some(mon) = self.side(act.side).active_mon(actor_slot as usize) {
+                // (a) a participation-gating status/volatile/flinch is ALREADY
+                //     present on an acting mon.
+                if matches!(
+                    mon.status,
+                    Status::Paralysis | Status::Sleep | Status::Freeze
+                ) || mon.volatiles.has(crate::pokemon::VolatileKind::Confusion)
+                    || mon.volatiles.has(crate::pokemon::VolatileKind::Attract)
+                    || mon.flinched_this_turn()
+                    || (mon.effective_ability_id() == data::ability_id::TRUANT
+                        && mon.truant_loafing)
+                {
+                    return false;
+                }
+                // (b) a move in the cell carries ANY secondary — a faster mon
+                //     could inflict para/sleep/freeze/confusion/attract/flinch
+                //     on a slower, not-yet-acted coupled attacker mid-turn.
+                //     Blunt over-approximation: bail on any secondary at all
+                //     (a stat-drop secondary is harmless, but surgically
+                //     distinguishing is how completeness holes creep in).
+                let mid = mon.moves[(move_slot as usize).min(3)];
+                if (mid as usize) < data::MOVES.len() && data::MOVES[mid as usize].has_secondary {
+                    return false;
+                }
+            }
+        }
+
         // Walk the order tracking max cumulative incoming damage per active
         // slot from prior MOVE actions. If any attacker's own action is
         // preceded by enough max-incoming to reach 0 HP, the hit set is
