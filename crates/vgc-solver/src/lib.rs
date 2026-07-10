@@ -91,6 +91,30 @@ pub fn reset_auto_lossy_engaged_count() {
     AUTO_LOSSY_ENGAGED_COUNT.store(0, Ordering::Relaxed);
 }
 
+/// Process-global telemetry for the mutual-focus defender-joint tensor.
+/// `ENGAGED` counts cells where a coupled defender was present AND the gate
+/// proved independence (tensor fired); `COUPLED_SEEN` counts cells where a
+/// coupled defender was present at all (fired OR gate-bailed). The
+/// tensor-coverage fraction is `ENGAGED / COUPLED_SEEN`. Pure telemetry —
+/// never read on the solver hot path; the `min_doubles_timing` example
+/// consults them to report honest coverage.
+static TENSOR_ENGAGED_COUNT: AtomicU64 = AtomicU64::new(0);
+static TENSOR_COUPLED_SEEN_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot `(engaged, coupled_seen)` for the mutual-focus tensor.
+pub fn tensor_coverage_counts() -> (u64, u64) {
+    (
+        TENSOR_ENGAGED_COUNT.load(Ordering::Relaxed),
+        TENSOR_COUPLED_SEEN_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Reset the mutual-focus tensor coverage counters to zero.
+pub fn reset_tensor_coverage_counts() {
+    TENSOR_ENGAGED_COUNT.store(0, Ordering::Relaxed);
+    TENSOR_COUPLED_SEEN_COUNT.store(0, Ordering::Relaxed);
+}
+
 thread_local! {
     /// Dev/audit toggle: when true, [`defender_joint_enumerate`] is skipped
     /// so mutual-focus cells fall through to the flat lossless 16^k
@@ -504,6 +528,8 @@ fn defender_joint_enumerate(
     if coupled_defenders.is_empty() {
         return None; // no mutual focus — flat path handles single-hit collapse
     }
+    // Telemetry: a coupled defender is present (fires OR gate-bails below).
+    TENSOR_COUPLED_SEEN_COUNT.fetch_add(1, Ordering::Relaxed);
 
     // 2. Provable-independence gate (engine-side, structural — not sampled).
     if !base.mutual_focus_tensor_safe(p1_choices, p2_choices) {
@@ -615,6 +641,8 @@ fn defender_joint_enumerate(
 
     let mut outcomes: Vec<Outcome> = dedup.into_values().collect();
     outcomes.sort_by_key(|o| o.hash);
+    // Telemetry: the tensor fired (returned a real frontier).
+    TENSOR_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
     Some(OutcomeFrontier { outcomes, raw_combos, unmatched_total: 0, lazy_iterations: 0 })
 }
 
