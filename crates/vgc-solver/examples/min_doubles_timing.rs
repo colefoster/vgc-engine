@@ -15,8 +15,8 @@ use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, SideRef, TeamBuilder,
 };
 use vgc_solver::{
-    diagnose_cell_sites, enumerate_outcomes_with, hp_ratio_leaf, solve_double_oracle,
-    EnumerateOpts, MatrixGame,
+    diagnose_cell_sites, enumerate_outcomes_with, hp_ratio_leaf, reset_tensor_coverage_counts,
+    solve_double_oracle, tensor_coverage_counts, EnumerateOpts, MatrixGame,
 };
 use vgc_engine_core::{DrawSpace, set_ko_split_disabled};
 
@@ -425,9 +425,11 @@ fn main() {
         .and_then(|s| s.parse().ok()).unwrap_or(12u64);
     DIAG_CELLS_LEFT.store(diag_cells, Ordering::Relaxed);
 
+    reset_tensor_coverage_counts();
     let t0 = Instant::now();
     let (sol, policy) = solve_root(&battle, &cfg);
     let wall = t0.elapsed();
+    let (tensor_engaged, tensor_coupled_seen) = tensor_coverage_counts();
 
     let prov = match sol.provenance {
         Prov::Exact => "Exact",
@@ -445,6 +447,14 @@ fn main() {
     println!("node_budget  : {}  (cap hit: {})",
         cfg.node_budget,
         N_NODES.load(Ordering::Relaxed) >= cfg.node_budget);
+    println!(
+        "mutual-focus tensor: engaged {} / {} coupled cells ({:.1}% coverage); {} bailed to full-enum",
+        tensor_engaged,
+        tensor_coupled_seen,
+        if tensor_coupled_seen == 0 { 0.0 }
+            else { 100.0 * tensor_engaged as f64 / tensor_coupled_seen as f64 },
+        tensor_coupled_seen - tensor_engaged,
+    );
 
     let dn = DIAG_N_CELLS.load(Ordering::Relaxed);
     if dn > 0 {
