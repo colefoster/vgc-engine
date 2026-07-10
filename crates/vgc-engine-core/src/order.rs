@@ -444,6 +444,237 @@ fn schedule_move(
     )
 }
 
+thread_local! {
+    /// GROUND-TRUTH TESTING KNOB (dev/audit): suppress the tiebreak commute
+    /// collapse so the solver enumerates the full `2^k` ordering frontier as a
+    /// reference. Never set in production. Mirrors `battle::KO_SPLIT_DISABLED`.
+    static TIEBREAK_COLLAPSE_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Set the [`TIEBREAK_COLLAPSE_DISABLED`] audit knob (dev/tests only).
+pub fn set_tiebreak_collapse_disabled(disabled: bool) {
+    TIEBREAK_COLLAPSE_DISABLED.with(|d| d.set(disabled));
+}
+
+fn tiebreak_collapse_disabled() -> bool {
+    TIEBREAK_COLLAPSE_DISABLED.with(|d| d.get())
+}
+
+thread_local! {
+    /// Per-thread count of tied brackets the commute gate collapsed (left
+    /// `speeds_tied:false` so the solver enumerates one ordering instead of
+    /// `2^k`). Diagnostic / anti-vacuous audit hook only — never read by engine
+    /// logic. Thread-local (not a global atomic) so parallel test threads —
+    /// and the record pass, which runs on the caller's thread — read only their
+    /// own collapses. Monotonic within a thread.
+    static TIEBREAK_COLLAPSE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Read this thread's tiebreak-collapse count (audit / tests).
+pub fn tiebreak_collapse_count() -> u64 {
+    TIEBREAK_COLLAPSE_COUNT.with(|c| c.get())
+}
+
+/// Abilities PROVEN order-inert inside a plain-damage tiebreak bracket:
+/// switch-in-only effects (Intimidate, weather/terrain setters, Trace,
+/// Download) and static damage multipliers read — never mutated — in
+/// `damage.rs`. DENY-BY-DEFAULT: any ability NOT listed forbids the collapse,
+/// including every ability with an `ability::on_damaging_hit` / on-KO /
+/// on-flinch / HP-threshold / own-HP-reading hook. A false omission only
+/// costs perf; widening the list is safe follow-up. See
+/// `docs/perf/tiebreak-collapse-design.md`.
+const TIEBREAK_INERT_ABILITIES: &[u16] = &[
+    // Switch-in-only (fire before any move; inert during the move turn).
+    data::ability_id::INTIMIDATE,
+    data::ability_id::DOWNLOAD,
+    data::ability_id::TRACE,
+    // Pure type-immunity, no on-hit mutation.
+    data::ability_id::LEVITATE,
+    // Static offensive multipliers (read-only in damage.rs).
+    data::ability_id::ADAPTABILITY,
+    data::ability_id::TECHNICIAN,
+    data::ability_id::RECKLESS,
+    data::ability_id::RIVALRY,
+    data::ability_id::IRONFIST,
+    data::ability_id::STRONGJAW,
+    data::ability_id::SHARPNESS,
+    data::ability_id::TOUGHCLAWS,
+    data::ability_id::MEGALAUNCHER,
+    data::ability_id::PUNKROCK,
+    data::ability_id::TINTEDLENS,
+    data::ability_id::SNIPER,
+    data::ability_id::SANDFORCE,
+    data::ability_id::HUGEPOWER,
+    data::ability_id::PUREPOWER,
+    // Static defensive multiplier (read-only; each defender is hit at most
+    // once under condition 3, so it cannot alter that mon's own attack).
+    data::ability_id::THICKFAT,
+];
+
+/// Order-relevant abilities grounded in real engine hooks that MUST NEVER
+/// appear in [`TIEBREAK_INERT_ABILITIES`]. Not consulted at runtime (the
+/// allowlist is authoritative) — a unit test asserts the two sets are
+/// disjoint so a curation slip is caught at test time.
+#[cfg(test)]
+const TIEBREAK_ORDER_RELEVANT_ABILITIES: &[u16] = &[
+    data::ability_id::WEAKARMOR,
+    data::ability_id::STAMINA,
+    data::ability_id::ANGERPOINT,
+    data::ability_id::BERSERK,
+    data::ability_id::JUSTIFIED,
+    data::ability_id::RATTLED,
+    data::ability_id::STEAMENGINE,
+    data::ability_id::COLORCHANGE,
+    data::ability_id::ROUGHSKIN,
+    data::ability_id::IRONBARBS,
+    data::ability_id::STATIC,
+    data::ability_id::FLAMEBODY,
+    data::ability_id::CURSEDBODY,
+    data::ability_id::EFFECTSPORE,
+    data::ability_id::GORILLATACTICS,
+    data::ability_id::ANALYTIC,
+    data::ability_id::DEFEATIST,
+    data::ability_id::GUTS,
+];
+
+/// Fixed-base-power damaging moves whose BP or effect still reads same-turn
+/// turn-order state (a conditional doubler, a pending-move / damaged-this-turn
+/// check, or a first-turn-out gate). Variable-BP moves (`base_power == 0`:
+/// Grass Knot, Gyro Ball, Reversal, Eruption, Low Kick, …) are already denied
+/// by the `base_power > 0` requirement — these carry a nonzero BP so they need
+/// explicit naming. DENY-BY-DEFAULT posture; the final code-review re-hunts.
+const TIEBREAK_ORDER_READING_MOVES: &[u16] = &[
+    data::move_id::FAKEOUT,
+    data::move_id::SUCKERPUNCH,
+    data::move_id::PURSUIT,
+    data::move_id::FOCUSPUNCH,
+    data::move_id::ROUND,
+    data::move_id::RETALIATE,
+    data::move_id::FIRSTIMPRESSION,
+    data::move_id::PAYBACK,
+    data::move_id::ASSURANCE,
+    data::move_id::BOLTBEAK,
+    data::move_id::FISHIOUSREND,
+    data::move_id::BEATUP,
+];
+
+/// Fixed-damage / OHKO / Counter-family moves whose damage the formula does
+/// NOT bound (so the pre-action faint check can't certify them). Mirrors the
+/// id set in [`Battle::mutual_focus_tensor_safe`].
+fn is_fixed_or_ohko(mid: u16) -> bool {
+    matches!(
+        mid,
+        data::move_id::SEISMICTOSS
+            | data::move_id::NIGHTSHADE
+            | data::move_id::DRAGONRAGE
+            | data::move_id::SONICBOOM
+            | data::move_id::SUPERFANG
+            | data::move_id::RUINATION
+            | data::move_id::ENDEAVOR
+            | data::move_id::FINALGAMBIT
+            | data::move_id::COUNTER
+            | data::move_id::MIRRORCOAT
+            | data::move_id::METALBURST
+            | data::move_id::FISSURE
+            | data::move_id::HORNDRILL
+            | data::move_id::GUILLOTINE
+            | data::move_id::SHEERCOLD
+    )
+}
+
+/// SOUND speed-tie collapse gate (deny-by-default). Returns `true` only when
+/// EVERY ordering of the tied bracket provably reaches the same
+/// `canonical_hash`, so the solver may enumerate a single representative
+/// ordering instead of `2^k`. A false `true` silently drops reachable states,
+/// so this over-approximates aggressively — see
+/// `docs/perf/tiebreak-collapse-design.md` and the adversarial-review holes it
+/// closes. Called ONLY under Recording (see `mark_tied_tiebreaks`).
+fn tiebreak_commute_safe(battle: &Battle, entries: &[MoveEntry], has_switch: bool) -> bool {
+    // Doubles only, and no mid-turn switch (a switch re-resolves targets /
+    // brings in a fresh mon the per-mon checks below didn't screen).
+    if has_switch || battle.format().active_count() < 2 {
+        return false;
+    }
+    // (3) Distinct single targets, no global coupler. `compute_coupled_targets`
+    // returns 0 exactly when no defender is hit twice AND no spread / redirect
+    // / Ally Switch / Instruct is in play.
+    let mut order = ActionOrder::new();
+    for e in entries {
+        order.push(e.4);
+    }
+    if battle.compute_coupled_targets(&order) != 0 {
+        return false;
+    }
+    // (6) Every ACTIVE mon (both attacker AND defender roles — attacker-side
+    // hooks like Magician / Gorilla Tactics matter too) must hold NO item
+    // (kills the whole item-hazard class for v1: Life Orb / Weakness Policy /
+    // Rocky Helmet / berries / Sash / …) and have an inert ability.
+    let n_active = battle.format().active_count();
+    for side in [SideRef::P1, SideRef::P2] {
+        for slot in 0..n_active {
+            if let Some(mon) = battle.side(side).active_mon(slot) {
+                if mon.item_id != u16::MAX {
+                    return false; // holds an item → possible on-hit/HP hook
+                }
+                if !TIEBREAK_INERT_ABILITIES.contains(&mon.effective_ability_id()) {
+                    return false;
+                }
+            }
+        }
+    }
+    // (4) Every tied action is a plain fixed-BP damaging move, and (5) no hit
+    // could KO a defender that also has a queued action (pre-action faint →
+    // order-ambiguous). Self-HP hazards (recoil / drain) are denied per-move,
+    // and contact-chip / heal items are denied by the item==none rule above,
+    // so the target-only faint bound is sufficient.
+    for e in entries {
+        let act = e.4;
+        let (actor_slot, move_slot, target) = match act.choice {
+            Choice::Move { actor_slot, move_slot, target }
+            | Choice::Terastallize { actor_slot, move_slot, target }
+            | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
+            _ => return false, // non-move action
+        };
+        let Some(attacker) = battle.side(act.side).active_mon(actor_slot as usize) else {
+            return false;
+        };
+        let mid = attacker.moves[(move_slot as usize).min(3)];
+        if (mid as usize) >= data::MOVES.len() {
+            return false; // Struggle / empty slot — unknown, bail.
+        }
+        let m = &data::MOVES[mid as usize];
+        if m.category == 2 // Status
+            || m.base_power == 0 // variable BP (order / HP / weight / speed-reading)
+            || m.has_secondary
+            || m.self_max_hp_recoil_num != 0
+            || m.recoil_num != 0
+            || m.drain_num != 0
+            || m.multihit_max > 1
+            || is_fixed_or_ohko(mid)
+            || TIEBREAK_ORDER_READING_MOVES.contains(&mid)
+        {
+            return false;
+        }
+        // (5) pre-action faint bound.
+        let Some(tgt) = target else {
+            return false; // a damaging move with no single target — bail.
+        };
+        let Some(defender) = battle.side(tgt.side).active_mon(tgt.slot as usize) else {
+            return false;
+        };
+        let (_lo, hi) = crate::damage::damage_range(attacker, defender, mid);
+        let max_hit = ((hi as u32) * 3 + 1) / 2; // crit ×1.5 upper bound, round up.
+        let defender_acts = entries
+            .iter()
+            .any(|o| o.4.side == tgt.side && o.4.actor_slot == tgt.slot);
+        if defender_acts && max_hit >= defender.current_hp as u32 {
+            return false; // possible pre-action faint → order-ambiguous.
+        }
+    }
+    true
+}
+
 /// After every move entry has been scheduled, identify entries that share
 /// `(priority, frac_pri, speed_key)` with at least one other entry — i.e.
 /// the tiebreak nonce is the only thing deciding their order — and patch
@@ -455,7 +686,14 @@ fn schedule_move(
 /// real tie exists. The flag exists solely so the outcome-frontier
 /// enumerator can binary-expand the 2^64 nonce space into two equally-
 /// weighted orderings when (and only when) speeds genuinely tied.
-fn mark_tied_tiebreaks(entries: &[MoveEntry], rng: &mut Rng) {
+///
+/// TIEBREAK COLLAPSE: when a tied bracket provably COMMUTES
+/// ([`tiebreak_commute_safe`]) the flag is left `false`, so the enumerator
+/// marginalizes the bracket to one ordering instead of `2^k`. Gated on
+/// Recording mode — `speeds_tied` is read only by the solver's frontier
+/// enumerator; self-play / PsGen5 / conformance decide order from the real
+/// nonce — so the hot path and conformance are untouched.
+fn mark_tied_tiebreaks(battle: &Battle, entries: &[MoveEntry], has_switch: bool, rng: &mut Rng) {
     if entries.len() < 2 {
         return; // can't tie with yourself
     }
@@ -480,6 +718,18 @@ fn mark_tied_tiebreaks(entries: &[MoveEntry], rng: &mut Rng) {
     }
     if !any_tied {
         return; // hot-path early exit; no log patch needed
+    }
+    // Recording-only collapse: leave the flags `false` when the bracket
+    // provably commutes. `recording_log().is_some()` is true only on the
+    // solver's record pass; `patch_recent_tiebreak_flags` is itself a no-op
+    // off Recording, so this guard just skips the (heavier) commute check on
+    // the hot path.
+    if !tiebreak_collapse_disabled()
+        && rng.recording_log().is_some()
+        && tiebreak_commute_safe(battle, entries, has_switch)
+    {
+        TIEBREAK_COLLAPSE_COUNT.with(|c| c.set(c.get() + 1));
+        return;
     }
     rng.patch_recent_tiebreak_flags(&flags[..n]);
 }
@@ -522,7 +772,7 @@ pub fn action_order(
                 }
             }
         }
-        mark_tied_tiebreaks(&moves, rng);
+        mark_tied_tiebreaks(battle, &moves, !switches.is_empty(), rng);
         moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
         let mut v = switches;
         v.extend(moves.into_iter().map(|t| t.4));
@@ -557,7 +807,7 @@ pub fn action_order(
         }
     }
 
-    mark_tied_tiebreaks(&moves[..n_move], rng);
+    mark_tied_tiebreaks(battle, &moves[..n_move], n_switch > 0, rng);
     // The `rng.next_u64()` nonce makes every key unique, so unstable sort
     // produces the same ordering as the prior stable `sort_by_key` — and
     // `sort_unstable_by_key` never heap-allocates (stable sort can).
@@ -1083,5 +1333,19 @@ mod tests {
         let first_g = order_g.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
         assert_eq!(first_g.side, SideRef::P1,
                    "Grassy Terrain: Grassy Glide should out-prioritize Flutter Mane");
+    }
+
+    /// Curation guard: no ability the engine implements with an order-relevant
+    /// hook (on-damaging-hit / on-KO / HP-threshold / own-HP read) may appear
+    /// in the tiebreak-collapse inert allowlist. A slip here is a silent
+    /// state-drop, so this must stay green.
+    #[test]
+    fn tiebreak_inert_allowlist_excludes_order_relevant_abilities() {
+        for &deny in super::TIEBREAK_ORDER_RELEVANT_ABILITIES {
+            assert!(
+                !super::TIEBREAK_INERT_ABILITIES.contains(&deny),
+                "ability id {deny} is order-relevant but is in the inert allowlist",
+            );
+        }
     }
 }
