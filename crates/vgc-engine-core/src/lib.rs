@@ -49,7 +49,10 @@ pub use format::Format;
 pub use format_rules::{
     rules_for, verify_showdown_text, verify_team, FormatRules, Rule, Violation, REG_M_B,
 };
-pub use order::{action_order, effective_speed, ScheduledAction};
+pub use order::{
+    action_order, effective_speed, set_tiebreak_collapse_disabled, tiebreak_collapse_count,
+    ScheduledAction,
+};
 pub use pokemon::{
     compute_stats, nature_by_id, nature_by_slug, nature_id, nature_id_by_slug, FinalStats,
     Nature, Pokemon, Stat, StatSpread, Status, Volatile, VolatileKind, VolatileSet,

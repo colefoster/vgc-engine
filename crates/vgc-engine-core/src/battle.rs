@@ -2901,7 +2901,7 @@ impl Battle {
     /// a redirect/spread could reach — deliberately avoiding a clever
     /// predicate (the factoring-classifier trap). Over-conservative only
     /// costs perf; it never drops a state.
-    fn compute_coupled_targets(&self, order: &crate::order::ActionOrder) -> u8 {
+    pub(crate) fn compute_coupled_targets(&self, order: &crate::order::ActionOrder) -> u8 {
         // Singles has a single defender per side and one attacker — no two
         // hits can couple, so collapse is always sound. Skip the guard.
         if self.format().active_count() < 2 {
