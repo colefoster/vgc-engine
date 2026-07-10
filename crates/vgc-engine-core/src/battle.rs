@@ -436,6 +436,15 @@ pub struct Battle {
     /// non-spread path (unused, exposed for symmetry). `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) force_is_spread: Option<bool>,
+    /// `damage_only` move-gate bypass. When `true`, action-order-conditional
+    /// move `onTry` gates (Sucker Punch's "target must be attacking") are
+    /// treated as PASSED, so the fast-calc API reports the damage a move
+    /// WOULD deal. Matches @smogon/calc, which shows Sucker Punch's damage
+    /// regardless of the (synthetic, forced-Splash) defender's action —
+    /// otherwise the gate fails and the calc reads a spurious "0 / immune".
+    /// `false` in production. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) force_move_gate_ok: bool,
     /// PR-EOT3: per-residual-family bitset index over active slots. Maintained
     /// at status set/cure sites + switch-in; consumed by `eot_status_dot` as
     /// the "any DOT?" precheck. See [`ResidualIndex`].
@@ -529,6 +538,7 @@ impl Battle {
             captured_move_damage: None,
             force_accuracy_hit: None,
             force_is_spread: None,
+            force_move_gate_ok: false,
             residual_index: ResidualIndex::default(),
             // PR-LC1: initialized to None to match the freshly-cleared
             // weather/terrain fields above. Re-synced from live state
@@ -749,6 +759,15 @@ impl Battle {
     /// field.
     pub fn set_force_is_spread(&mut self, v: Option<bool>) {
         self.force_is_spread = v;
+    }
+
+    /// Sibling of [`Battle::set_force_is_spread`] for action-conditional
+    /// move gates. When `true`, Sucker Punch's "target must be attacking"
+    /// `onTry` check is treated as passed — the fast-calc convention of
+    /// showing the damage a move *would* deal. `false` restores normal
+    /// gating. Used by the `damage_only` / fast-calc API.
+    pub fn set_force_move_gate_ok(&mut self, v: bool) {
+        self.force_move_gate_ok = v;
     }
 
     /// Effective weather as seen by an individual Pokémon. Same as
@@ -7686,13 +7705,18 @@ impl Battle {
             // sometimes pass target: None when target: "normal" auto-
             // resolves), check whether any opposing actor is queued
             // with a damaging move.
-            let ok = match target {
-                Some(Target { side, slot }) if side == actor_side.opposing() => {
-                    let s = slot as usize & 1;
-                    pending_kind[opp][s] == 1
-                }
-                _ => pending_kind[opp].iter().any(|&k| k == 1),
-            };
+            // Fast-calc convention: `force_move_gate_ok` bypasses the
+            // "target must be attacking" gate so `damage_only` reports the
+            // damage Sucker Punch would deal (@smogon/calc parity) instead
+            // of a spurious 0 against the synthetic forced-Splash defender.
+            let ok = self.force_move_gate_ok
+                || match target {
+                    Some(Target { side, slot }) if side == actor_side.opposing() => {
+                        let s = slot as usize & 1;
+                        pending_kind[opp][s] == 1
+                    }
+                    _ => pending_kind[opp].iter().any(|&k| k == 1),
+                };
             if !ok {
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
