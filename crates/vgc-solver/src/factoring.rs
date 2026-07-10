@@ -80,6 +80,47 @@ pub fn classify_factorability(
         (SideRef::P2, &p2_choices[1]),
     ];
 
+    // ---- Mutual-focus breaker (defense-in-depth) ----
+    //
+    // If ≥2 move-actions declare the SAME defender slot, this is a
+    // mutual-focus cell whose coupled damage rolls are handled SOUNDLY by
+    // the defender-joint tensor (`defender_joint_enumerate`), gated by
+    // `Battle::mutual_focus_tensor_safe`. The actor-grouped
+    // `tensor_enumerate` / `enumerate_one_actor` factoring path is UNSOUND
+    // on co-targeting/KO coupling and must NEVER handle these cells. It's
+    // off by default, but returning NoFactor here guarantees that flipping
+    // `use_action_independence_factoring` can never silently route
+    // mutual-focus through the unsound path, bypassing the joint-tensor gate.
+    {
+        let mut tgt_counts = [0u8; 4];
+        for (side, ch) in actors.iter() {
+            let tgt = match ch {
+                Choice::Move { target, .. }
+                | Choice::Terastallize { target, .. }
+                | Choice::MegaEvolve { target, .. } => *target,
+                _ => None,
+            };
+            if let Some(t) = tgt {
+                // Only OPPOSING-side targets couple as a mutual-focus defender
+                // group (an ally-targeting support move like Helping Hand is
+                // not a damaging co-target and doesn't create the coupling the
+                // defender-joint tensor owns). This mirrors what
+                // `defender_joint_enumerate` actually groups (damage/crit
+                // sites keyed to an opposing defender).
+                if t.side != *side {
+                    let bit =
+                        (match t.side { SideRef::P1 => 0usize, SideRef::P2 => 2 }) + t.slot as usize;
+                    if bit < 4 {
+                        tgt_counts[bit] += 1;
+                    }
+                }
+            }
+        }
+        if tgt_counts.iter().any(|&c| c >= 2) {
+            return Factorability::NoFactor;
+        }
+    }
+
     // ---- Joint-action breakers (any actor's chosen move triggers it) ----
 
     // (G) Speed reorder moves — Trick Room, Tailwind, After You, Quash,
@@ -524,6 +565,18 @@ mod tests {
             Factorability::FullyFactor,
             "clean 4-singleton tackle turn must be FullyFactor",
         );
+    }
+
+    // Mutual-focus breaker (defense-in-depth): ≥2 actions on ONE defender
+    // must be NoFactor so the unsound actor-grouped factoring path can never
+    // handle a cell the sound defender-joint tensor owns.
+    #[test]
+    fn mutual_focus_is_no_factor() {
+        let b = doubles_battle(baseline_p1_json(), baseline_p2_json());
+        // BOTH P1 attackers target P2 slot 0.
+        let p1 = [mv(0, 0, SideRef::P2, 0), mv(1, 0, SideRef::P2, 0)];
+        let p2 = [mv(0, 0, SideRef::P1, 0), mv(1, 0, SideRef::P1, 1)];
+        assert_no_factor(&b, &p1, &p2, "mutual focus (2 attackers on one defender)");
     }
 
     // (A) Spread move
