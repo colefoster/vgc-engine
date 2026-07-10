@@ -12,8 +12,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use vgc_engine_core::calc::{
-    best_move, calc, matchup, speed_tier, DamageResult, Field, KoChance, MoveDamage, QuickMon,
-    SpeedContext, SpeedWinner,
+    best_move, calc, matchup, min_evs_to_ko, min_evs_to_survive, speed_tier, AtkStat, DamageResult,
+    DefStat, Field, KoChance, MoveDamage, QuickMon, SpeedContext, SpeedWinner,
 };
 use vgc_engine_core::{Terrain, Weather};
 
@@ -138,6 +138,44 @@ enum Command {
         /// Trick Room active (slower moves first).
         #[arg(long)]
         trick_room: bool,
+    },
+
+    /// Min EVs for the defender to survive one hit:
+    /// `vgc survive-evs <atk> <def> <move>`. `--stat` picks which
+    /// defensive stat to invest (hp|def|spd; default hp).
+    #[command(name = "survive-evs")]
+    SurviveEvs {
+        attacker: String,
+        defender: String,
+        move_: String,
+        /// Defensive stat to invest: hp | def | spd.
+        #[arg(long, default_value = "hp")]
+        stat: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        terrain: Option<String>,
+        #[arg(long)]
+        spread: bool,
+    },
+
+    /// Min EVs for the attacker to guarantee the KO:
+    /// `vgc ko-evs <atk> <def> <move>`. `--stat` picks the offensive stat
+    /// (atk|spa; default atk).
+    #[command(name = "ko-evs")]
+    KoEvs {
+        attacker: String,
+        defender: String,
+        move_: String,
+        /// Offensive stat to invest: atk | spa.
+        #[arg(long, default_value = "atk")]
+        stat: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        terrain: Option<String>,
+        #[arg(long)]
+        spread: bool,
     },
 }
 
@@ -432,6 +470,101 @@ fn run() -> Result<ExitCode, String> {
             println!("  {}", fmt_move_damage(&b_name, &a_name, &m.b_best));
             Ok(ExitCode::SUCCESS)
         }
+
+        Command::SurviveEvs {
+            attacker,
+            defender,
+            move_,
+            stat,
+            weather,
+            terrain,
+            spread,
+        } => {
+            let atk = QuickMon::parse(&attacker).map_err(|e| e.to_string())?;
+            let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
+            let field = build_field(weather, terrain, spread)?;
+            let ds = parse_def_stat(&stat)?;
+            let got = min_evs_to_survive(&atk, &def, &move_, ds, field)
+                .map_err(|e| e.to_string())?;
+            let def_name = display_species(&def.species);
+            let atk_name = display_species(&atk.species);
+            let move_name = vgc_engine_core::calc::resolve_move(&move_)
+                .map(|slug| display_move(&slug))
+                .unwrap_or_else(|_| move_.clone());
+            match got {
+                Some(ev) => {
+                    println!(
+                        "{def_name} needs {ev} {} EVs to survive {atk_name} {move_name}",
+                        stat.to_ascii_uppercase()
+                    );
+                    Ok(ExitCode::SUCCESS)
+                }
+                None => {
+                    println!(
+                        "{def_name} cannot survive {atk_name} {move_name} even at 252 {} EVs",
+                        stat.to_ascii_uppercase()
+                    );
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+
+        Command::KoEvs {
+            attacker,
+            defender,
+            move_,
+            stat,
+            weather,
+            terrain,
+            spread,
+        } => {
+            let atk = QuickMon::parse(&attacker).map_err(|e| e.to_string())?;
+            let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
+            let field = build_field(weather, terrain, spread)?;
+            let as_ = parse_atk_stat(&stat)?;
+            let got =
+                min_evs_to_ko(&atk, &def, &move_, as_, field).map_err(|e| e.to_string())?;
+            let def_name = display_species(&def.species);
+            let atk_name = display_species(&atk.species);
+            let move_name = vgc_engine_core::calc::resolve_move(&move_)
+                .map(|slug| display_move(&slug))
+                .unwrap_or_else(|_| move_.clone());
+            match got {
+                Some(ev) => {
+                    println!(
+                        "{atk_name} needs {ev} {} EVs to guarantee the KO on {def_name} with {move_name}",
+                        stat.to_ascii_uppercase()
+                    );
+                    Ok(ExitCode::SUCCESS)
+                }
+                None => {
+                    println!(
+                        "{atk_name} cannot guarantee a KO on {def_name} with {move_name} even at 252 {} EVs",
+                        stat.to_ascii_uppercase()
+                    );
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
+
+/// Parse a defensive-stat flag (hp | def | spd).
+fn parse_def_stat(s: &str) -> Result<DefStat, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "hp" => Ok(DefStat::Hp),
+        "def" => Ok(DefStat::Def),
+        "spd" | "spdef" => Ok(DefStat::Spd),
+        other => Err(format!("unknown defensive stat '{other}' (want hp|def|spd)")),
+    }
+}
+
+/// Parse an offensive-stat flag (atk | spa).
+fn parse_atk_stat(s: &str) -> Result<AtkStat, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "atk" | "attack" => Ok(AtkStat::Atk),
+        "spa" | "spatk" => Ok(AtkStat::Spa),
+        other => Err(format!("unknown offensive stat '{other}' (want atk|spa)")),
     }
 }
 
