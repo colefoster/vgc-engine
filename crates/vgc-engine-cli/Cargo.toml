@@ -28,5 +28,6 @@ debug-harness = ["dep:vgc-engine-replay", "dep:vgc-engine-golden"]
 [dependencies]
 vgc-engine-core = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
 vgc-engine-replay = { workspace = true, optional = true }
 vgc-engine-golden = { workspace = true, optional = true }
