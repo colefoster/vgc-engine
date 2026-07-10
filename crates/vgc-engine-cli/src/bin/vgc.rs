@@ -12,7 +12,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use vgc_engine_core::calc::{
-    calc, speed_tier, DamageResult, Field, KoChance, QuickMon, SpeedContext, SpeedWinner,
+    best_move, calc, matchup, speed_tier, DamageResult, Field, KoChance, MoveDamage, QuickMon,
+    SpeedContext, SpeedWinner,
 };
 use vgc_engine_core::{Terrain, Weather};
 
@@ -101,6 +102,42 @@ enum Command {
         weather: Option<String>,
         #[arg(long)]
         tailwind: bool,
+    },
+
+    /// Pick the hardest-hitting move: `vgc best <atk> <def> <moves>` where
+    /// `<moves>` is a comma-separated list (names or aliases).
+    Best {
+        attacker: String,
+        defender: String,
+        /// Comma-separated candidate moves, e.g. "eq,dragonclaw,poisonjab".
+        moves: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        terrain: Option<String>,
+        #[arg(long)]
+        spread: bool,
+    },
+
+    /// Two-sided matchup summary: `vgc matchup <a> <a_moves> <b> <b_moves>`.
+    /// Each `<*_moves>` is a comma-separated list. Reports each side's best
+    /// move, who moves first, and the KO verdicts.
+    Matchup {
+        a: String,
+        /// A's comma-separated moves.
+        a_moves: String,
+        b: String,
+        /// B's comma-separated moves.
+        b_moves: String,
+        #[arg(long)]
+        weather: Option<String>,
+        #[arg(long)]
+        terrain: Option<String>,
+        #[arg(long)]
+        spread: bool,
+        /// Trick Room active (slower moves first).
+        #[arg(long)]
+        trick_room: bool,
     },
 }
 
@@ -333,7 +370,113 @@ fn run() -> Result<ExitCode, String> {
             println!("{} — {} Spe", display_species(&m.species), spe);
             Ok(ExitCode::SUCCESS)
         }
+
+        Command::Best {
+            attacker,
+            defender,
+            moves,
+            weather,
+            terrain,
+            spread,
+        } => {
+            let atk = QuickMon::parse(&attacker).map_err(|e| e.to_string())?;
+            let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
+            let field = build_field(weather, terrain, spread)?;
+            let move_list = split_moves(&moves);
+            let refs: Vec<&str> = move_list.iter().map(|s| s.as_str()).collect();
+            let best = best_move(&atk, &def, &refs, field).map_err(|e| e.to_string())?;
+            let atk_name = display_species(&atk.species);
+            let def_name = display_species(&def.species);
+            println!("best: {}", fmt_move_damage(&atk_name, &def_name, &best));
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Matchup {
+            a,
+            a_moves,
+            b,
+            b_moves,
+            weather,
+            terrain,
+            spread,
+            trick_room,
+        } => {
+            let ma = QuickMon::parse(&a).map_err(|e| e.to_string())?;
+            let mb = QuickMon::parse(&b).map_err(|e| e.to_string())?;
+            let field = build_field(weather.clone(), terrain, spread)?;
+            let ctx = SpeedContext {
+                weather: match weather {
+                    Some(ref s) => parse_weather(s)?,
+                    None => Weather::None,
+                },
+                tailwind: false,
+                trick_room,
+            };
+            let av: Vec<String> = split_moves(&a_moves);
+            let bv: Vec<String> = split_moves(&b_moves);
+            let ar: Vec<&str> = av.iter().map(|s| s.as_str()).collect();
+            let br: Vec<&str> = bv.iter().map(|s| s.as_str()).collect();
+            let m = matchup(&ma, &ar, &mb, &br, field, ctx).map_err(|e| e.to_string())?;
+
+            let a_name = display_species(&ma.species);
+            let b_name = display_species(&mb.species);
+            let tr = if trick_room { " (Trick Room)" } else { "" };
+            let speed_line = match m.speed_winner {
+                SpeedWinner::A => format!("{a_name} ({}) outspeeds {b_name} ({})", m.a_speed, m.b_speed),
+                SpeedWinner::B => format!("{b_name} ({}) outspeeds {a_name} ({})", m.b_speed, m.a_speed),
+                SpeedWinner::Tie => format!("speed tie ({})", m.a_speed),
+            };
+            println!("{a_name} vs. {b_name}{tr}");
+            println!("  speed: {speed_line}");
+            println!("  {}", fmt_move_damage(&a_name, &b_name, &m.a_best));
+            println!("  {}", fmt_move_damage(&b_name, &a_name, &m.b_best));
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+/// Build a `Field` from the shared weather/terrain/spread CLI flags.
+fn build_field(
+    weather: Option<String>,
+    terrain: Option<String>,
+    spread: bool,
+) -> Result<Field, String> {
+    let mut field = Field::none();
+    if let Some(w) = weather {
+        field.weather = parse_weather(&w)?;
+    }
+    if let Some(t) = terrain {
+        field.terrain = parse_terrain(&t)?;
+    }
+    field.spread = spread;
+    Ok(field)
+}
+
+/// Split a comma-separated move list, trimming and dropping empties.
+fn split_moves(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
+/// One-line summary of a `MoveDamage`: "Chomp Dragon Claw: 90–107
+/// (…%) — guaranteed 2HKO".
+fn fmt_move_damage(atk_name: &str, def_name: &str, md: &MoveDamage) -> String {
+    let r = &md.result;
+    let move_name = display_move(&md.move_slug);
+    let ko = match &r.ko_chance {
+        KoChance::Guaranteed => "guaranteed OHKO".to_string(),
+        KoChance::Chance { pct } => format!("{pct}% to OHKO"),
+        KoChance::None => r.multi_hit.label(),
+    };
+    if r.max == 0 {
+        return format!("{atk_name} {move_name} vs. {def_name}: 0 (immune)");
+    }
+    format!(
+        "{atk_name} {move_name} vs. {def_name}: {}–{} ({:.1}–{:.1}%) — {}",
+        r.min, r.max, r.min_pct, r.max_pct, ko
+    )
 }
 
 fn main() -> ExitCode {
