@@ -19,6 +19,7 @@ mod team_export;
 pub mod ability;
 mod accuracy;
 pub mod battle;
+pub mod calc;
 pub mod canonical_hash;
 #[cfg(feature = "chance")]
 pub mod chance;
@@ -37,6 +38,9 @@ pub use choice::{Choice, MoveSlot, Target};
 pub use damage::{
     calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
     TypeEff,
+};
+pub use calc::{
+    calc, calc_default, CalcError, DamageResult, Field, KoChance, QuickMon,
 };
 pub use damage_api::{damage_only, DamageQuery};
 pub use format::Format;
