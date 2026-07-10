@@ -112,6 +112,11 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     // (DamageContext.is_spread, damage.rs step 2) through the real
     // damage pipeline without building a 2v2 field.
     battle.set_force_is_spread(if q.is_spread { Some(true) } else { None });
+    // Fast-calc convention: bypass action-order move gates so a move like
+    // Sucker Punch (which fails unless the target is attacking) reports the
+    // damage it WOULD deal against the synthetic forced-Splash defender,
+    // matching @smogon/calc, instead of a spurious 0.
+    battle.set_force_move_gate_ok(true);
     // Enable the damage-capture accumulator (see
     // `Battle::captured_move_damage`) so a KO doesn't clip the
     // reported value at defender_max_hp.
@@ -213,6 +218,37 @@ mod tests {
             rolls,
             [99, 99, 101, 101, 103, 105, 105, 107, 107, 109, 110, 110, 113, 113, 114, 117]
         );
+    }
+
+    #[test]
+    fn sucker_punch_calcs_nonzero_despite_forced_splash_defender() {
+        // Regression: the synthetic calc battle forces the defender to
+        // Splash, which fails Sucker Punch's "target must be attacking"
+        // onTry gate and used to report a spurious 0 / "immune".
+        // `force_move_gate_ok` (set by damage_only) bypasses the gate so the
+        // calc shows the damage Sucker Punch would deal — @smogon/calc parity.
+        let atk = build_mon(
+            "Weavile @ \nAbility: Pressure\nLevel: 50\n\
+             EVs: 4 HP / 252 Atk / 252 Spe\nJolly Nature\n\
+             - Sucker Punch\n- Splash\n- Splash\n- Splash\n",
+        );
+        let def = build_mon(
+            "Garchomp @ \nAbility: Sand Veil\nLevel: 50\n\
+             EVs: 252 HP / 252 Def / 4 SpD\nImpish Nature\n\
+             - Splash\n- Splash\n- Splash\n- Splash\n",
+        );
+        let q = DamageQuery {
+            move_id: atk.moves[0],
+            attacker: atk,
+            defender: def,
+            weather: Weather::None,
+            terrain: Terrain::None,
+            is_crit: false,
+            is_spread: false,
+        };
+        let rolls = damage_only(&q);
+        assert!(rolls[0] > 0, "Sucker Punch should deal real damage, got {rolls:?}");
+        assert!(rolls[0] <= rolls[15], "rolls should be ascending: {rolls:?}");
     }
 
     #[test]
