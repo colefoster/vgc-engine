@@ -425,6 +425,13 @@ fn main() {
         .and_then(|s| s.parse().ok()).unwrap_or(12u64);
     DIAG_CELLS_LEFT.store(diag_cells, Ordering::Relaxed);
 
+    // NO_TENSOR=1 disables the mutual-focus joint tensor (falls back to the
+    // flat 16^k enumeration) — the A/B baseline for measuring the tensor's
+    // speedup on distinct-speed cells where it engages.
+    if std::env::var_os("NO_TENSOR").is_some() {
+        vgc_solver::set_joint_collapse_disabled(true);
+        println!("mutual-focus tensor: DISABLED (NO_TENSOR=1)");
+    }
     reset_tensor_coverage_counts();
     let t0 = Instant::now();
     let (sol, policy) = solve_root(&battle, &cfg);
