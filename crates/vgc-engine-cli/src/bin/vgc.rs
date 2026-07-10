@@ -151,6 +151,15 @@ enum Command {
         /// Defensive stat to invest: hp | def | spd.
         #[arg(long, default_value = "hp")]
         stat: String,
+        /// Tolerate up to N of the 16 rolls KO'ing you — survive the other
+        /// 16−N. `--allow 1` = survive 15/16 (all but the highest roll), the
+        /// common "live the roll" bogey. Default 0 = survive every roll.
+        #[arg(long)]
+        allow: Option<u8>,
+        /// Alternative to --allow: target survival as a percent of rolls
+        /// (e.g. `--chance 90`). Rounded up to a whole roll count.
+        #[arg(long, conflicts_with = "allow")]
+        chance: Option<u8>,
         #[arg(long)]
         weather: Option<String>,
         #[arg(long)]
@@ -170,6 +179,15 @@ enum Command {
         /// Offensive stat to invest: atk | spa.
         #[arg(long, default_value = "atk")]
         stat: String,
+        /// Tolerate up to N of the 16 rolls failing to KO — KO on the other
+        /// 16−N. `--allow 1` = KO on 15/16 (all but the lowest roll). Default
+        /// 0 = guaranteed KO (every roll).
+        #[arg(long)]
+        allow: Option<u8>,
+        /// Alternative to --allow: target KO chance as a percent of rolls
+        /// (e.g. `--chance 90`). Rounded up to a whole roll count.
+        #[arg(long, conflicts_with = "allow")]
+        chance: Option<u8>,
         #[arg(long)]
         weather: Option<String>,
         #[arg(long)]
@@ -476,6 +494,8 @@ fn run() -> Result<ExitCode, String> {
             defender,
             move_,
             stat,
+            allow,
+            chance,
             weather,
             terrain,
             spread,
@@ -484,25 +504,31 @@ fn run() -> Result<ExitCode, String> {
             let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
             let field = build_field(weather, terrain, spread)?;
             let ds = parse_def_stat(&stat)?;
-            let got = min_evs_to_survive(&atk, &def, &move_, ds, field)
+            let target = resolve_target_rolls(allow, chance);
+            let res = min_evs_to_survive(&atk, &def, &move_, ds, field, target)
                 .map_err(|e| e.to_string())?;
             let def_name = display_species(&def.species);
             let atk_name = display_species(&atk.species);
+            let s = stat.to_ascii_uppercase();
             let move_name = vgc_engine_core::calc::resolve_move(&move_)
                 .map(|slug| display_move(&slug))
                 .unwrap_or_else(|_| move_.clone());
-            match got {
+            match res.evs {
+                Some(ev) if target >= 16 => {
+                    println!("{def_name} needs {ev} {s} EVs to survive {atk_name} {move_name} (every roll)");
+                    Ok(ExitCode::SUCCESS)
+                }
                 Some(ev) => {
-                    println!(
-                        "{def_name} needs {ev} {} EVs to survive {atk_name} {move_name}",
-                        stat.to_ascii_uppercase()
-                    );
+                    println!("{def_name} needs {ev} {s} EVs to survive {atk_name} {move_name} on {target}/16 rolls");
                     Ok(ExitCode::SUCCESS)
                 }
                 None => {
+                    // Residual: report the truer picture instead of a flat
+                    // "can't survive" — even maxed, how many rolls does it live?
+                    let ko = 16 - res.rolls_at_max;
                     println!(
-                        "{def_name} cannot survive {atk_name} {move_name} even at 252 {} EVs",
-                        stat.to_ascii_uppercase()
+                        "{def_name} can't survive {atk_name} {move_name} on {target}/16 rolls — even at 252 {s} EVs it lives {}/16 ({}%); {ko} roll(s) KO",
+                        res.rolls_at_max, res.pct_at_max
                     );
                     Ok(ExitCode::FAILURE)
                 }
@@ -514,6 +540,8 @@ fn run() -> Result<ExitCode, String> {
             defender,
             move_,
             stat,
+            allow,
+            chance,
             weather,
             terrain,
             spread,
@@ -522,30 +550,47 @@ fn run() -> Result<ExitCode, String> {
             let def = QuickMon::parse(&defender).map_err(|e| e.to_string())?;
             let field = build_field(weather, terrain, spread)?;
             let as_ = parse_atk_stat(&stat)?;
-            let got =
-                min_evs_to_ko(&atk, &def, &move_, as_, field).map_err(|e| e.to_string())?;
+            let target = resolve_target_rolls(allow, chance);
+            let res =
+                min_evs_to_ko(&atk, &def, &move_, as_, field, target).map_err(|e| e.to_string())?;
             let def_name = display_species(&def.species);
             let atk_name = display_species(&atk.species);
+            let s = stat.to_ascii_uppercase();
             let move_name = vgc_engine_core::calc::resolve_move(&move_)
                 .map(|slug| display_move(&slug))
                 .unwrap_or_else(|_| move_.clone());
-            match got {
+            match res.evs {
+                Some(ev) if target >= 16 => {
+                    println!("{atk_name} needs {ev} {s} EVs to guarantee the KO on {def_name} with {move_name}");
+                    Ok(ExitCode::SUCCESS)
+                }
                 Some(ev) => {
-                    println!(
-                        "{atk_name} needs {ev} {} EVs to guarantee the KO on {def_name} with {move_name}",
-                        stat.to_ascii_uppercase()
-                    );
+                    println!("{atk_name} needs {ev} {s} EVs to KO {def_name} with {move_name} on {target}/16 rolls");
                     Ok(ExitCode::SUCCESS)
                 }
                 None => {
                     println!(
-                        "{atk_name} cannot guarantee a KO on {def_name} with {move_name} even at 252 {} EVs",
-                        stat.to_ascii_uppercase()
+                        "{atk_name} can't KO {def_name} with {move_name} on {target}/16 rolls — even at 252 {s} EVs it KOs on {}/16 ({}%)",
+                        res.rolls_at_max, res.pct_at_max
                     );
                     Ok(ExitCode::FAILURE)
                 }
             }
         }
+    }
+}
+
+/// Resolve the `--allow N` / `--chance PCT` flags to a target roll count
+/// (0..=16) for the EV-threshold search. `--allow N` tolerates N rolls
+/// failing → target `16−N`. `--chance PCT` → `ceil(PCT/100 · 16)`. Neither →
+/// 16 (strict: every roll). clap enforces the two are mutually exclusive.
+fn resolve_target_rolls(allow: Option<u8>, chance: Option<u8>) -> u8 {
+    if let Some(n) = allow {
+        16u8.saturating_sub(n.min(16))
+    } else if let Some(pct) = chance {
+        (((pct.min(100) as u32) * 16 + 99) / 100) as u8
+    } else {
+        16
     }
 }
 
