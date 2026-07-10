@@ -245,15 +245,12 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
         // known; otherwise full 16-bucket. PR-C's lossy 3-bucket lives
         // solver-side only — engine-side never lies about probability
         // mass.
-        DrawSpace::UniformDamage { ko_split } => match ko_split {
-            Some(0) => vec![(RngEvent::DamageRoll(15), 16, 16)],
-            Some(k) if k >= 16 => vec![(RngEvent::DamageRoll(0), 16, 16)],
-            Some(k) => vec![
-                (RngEvent::DamageRoll(0), k as u32, 16),
-                (RngEvent::DamageRoll(15), (16 - k) as u32, 16),
-            ],
-            None => (0..16u8).map(|v| (RngEvent::DamageRoll(v), 1u32, 16)).collect(),
-        },
+        // Bit-exact hp_bucket-segment collapse via the shared helper (SINGLE
+        // source of truth with the solver's `expand`). `segments` supersedes
+        // the old lossy `ko_split` survivor pinning that dropped states.
+        DrawSpace::UniformDamage { ko_split: _, segments } => {
+            crate::rng::expand_uniform_damage(segments, false)
+        }
         DrawSpace::UniformPercent { threshold } => match threshold {
             None => (1..=100u8).map(|v| (RngEvent::PercentRoll(v), 1u32, 100)).collect(),
             Some(0) => vec![(RngEvent::PercentRoll(100), 100, 100)],
