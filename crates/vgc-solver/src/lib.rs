@@ -91,6 +91,69 @@ pub fn reset_auto_lossy_engaged_count() {
     AUTO_LOSSY_ENGAGED_COUNT.store(0, Ordering::Relaxed);
 }
 
+/// Process-global telemetry for the mutual-focus defender-joint tensor.
+/// `ENGAGED` counts cells where a coupled defender was present AND the gate
+/// proved independence (tensor fired); `COUPLED_SEEN` counts cells where a
+/// coupled defender was present at all (fired OR gate-bailed). The
+/// tensor-coverage fraction is `ENGAGED / COUPLED_SEEN`. Pure telemetry —
+/// never read on the solver hot path; the `min_doubles_timing` example
+/// consults them to report honest coverage.
+static TENSOR_ENGAGED_COUNT: AtomicU64 = AtomicU64::new(0);
+static TENSOR_COUPLED_SEEN_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot `(engaged, coupled_seen)` for the mutual-focus tensor.
+pub fn tensor_coverage_counts() -> (u64, u64) {
+    (
+        TENSOR_ENGAGED_COUNT.load(Ordering::Relaxed),
+        TENSOR_COUPLED_SEEN_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Reset the mutual-focus tensor coverage counters to zero.
+pub fn reset_tensor_coverage_counts() {
+    TENSOR_ENGAGED_COUNT.store(0, Ordering::Relaxed);
+    TENSOR_COUPLED_SEEN_COUNT.store(0, Ordering::Relaxed);
+}
+
+thread_local! {
+    /// Dev/audit toggle: when true, [`defender_joint_enumerate`] is skipped
+    /// so mutual-focus cells fall through to the flat lossless 16^k
+    /// enumeration. Lets `collapse_soundness.rs` establish the truly-
+    /// uncollapsed ground-truth frontier to L1-compare the tensor against.
+    /// Never set in production. Paired with the engine's
+    /// `set_ko_split_disabled` (which suppresses the per-site segment
+    /// collapse) so the audit reference has BOTH collapses off.
+    static JOINT_COLLAPSE_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+
+    // Whether `defender_joint_enumerate` engaged (returned `Some`) on the
+    // most recent `enumerate_outcomes_with` call on this thread. Audit-only
+    // — lets tests assert the tensor actually FIRED (and didn't silently
+    // fall through to the flat path, making a bit-exact result vacuous).
+    static JOINT_COLLAPSE_ENGAGED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Dev/audit: disable the mutual-focus defender-joint tensor on this thread
+/// (default off). See [`JOINT_COLLAPSE_DISABLED`].
+pub fn set_joint_collapse_disabled(disabled: bool) {
+    JOINT_COLLAPSE_DISABLED.with(|d| d.set(disabled));
+}
+
+fn joint_collapse_disabled() -> bool {
+    JOINT_COLLAPSE_DISABLED.with(|d| d.get())
+}
+
+/// Read + clear the "joint collapse engaged" flag for the last enumerate
+/// call on this thread. Audit-only.
+pub fn take_joint_collapse_engaged() -> bool {
+    JOINT_COLLAPSE_ENGAGED.with(|d| {
+        let v = d.get();
+        d.set(false);
+        v
+    })
+}
+
 pub mod nash;
 pub mod double_oracle;
 pub mod endgame;
@@ -354,6 +417,27 @@ pub fn enumerate_outcomes_with(
         };
     }
 
+    // Sound mutual-focus tensor: when ≥1 defender is hit by ≥2 attackers AND
+    // the engine can PROVE the coupled groups are independent (no attacker
+    // can faint before it acts — see `Battle::mutual_focus_tensor_safe`),
+    // collapse each coupled defender's own hit-group by the true post-hit
+    // canonical_hash and tensor the groups. Bit-exact (dedup on real
+    // canonical_hash) and much smaller than the flat 16×16 cross-product.
+    // Returns `None` (→ flat path below) on: no coupled defenders, gate says
+    // unsafe, or a runtime hazard inside a sub-grid (counter-factual site).
+    if !joint_collapse_disabled() {
+        if let Some(frontier) = defender_joint_enumerate(
+            base,
+            p1_choices,
+            p2_choices,
+            record_seed,
+            &per_site,
+        ) {
+            JOINT_COLLAPSE_ENGAGED.with(|d| d.set(true));
+            return frontier;
+        }
+    }
+
     // 2. Lazy re-record loop. Each pass enumerates the current per-site
     //    cross-product through OracleKeyed; misses from any combo extend
     //    per_site for the next pass.
@@ -380,6 +464,253 @@ pub fn enumerate_outcomes_with(
         per_site.extend(new_sites);
         lazy_iterations += 1;
     }
+}
+
+/// Per-defender bucket for the mutual-focus tensor: a representative
+/// event-tuple over that defender's group sites (positional to the group's
+/// site-index list) and the summed probability of all group combos that
+/// deduped onto the same FULL canonical_hash when everything else was pinned.
+struct DefenderBucket {
+    events: Vec<RngEvent>,
+    prob: f64,
+}
+
+/// SOUND mutual-focus joint collapse. When ≥1 defender is hit by ≥2
+/// attackers this turn and [`Battle::mutual_focus_tensor_safe`] PROVES the
+/// coupled defender groups are independent (no attacker can faint before it
+/// acts, so the landing hit-set is roll-independent), collapse each coupled
+/// defender's own hit-group by the true post-hit `canonical_hash` and tensor
+/// the per-defender buckets against the flat cross-product of the remaining
+/// (non-coupled) sites.
+///
+/// **Why bit-exact.** Two group combos that produce the same FULL
+/// `canonical_hash` are TT-indistinguishable, so merging them reproduces the
+/// full-enumeration frontier's states exactly (the same dedup the flat path
+/// performs, applied within a group; this makes within-group effects — Life
+/// Orb recoil, Moxie/Beast-Boost KO boosts, an intervening faint, Sitrus
+/// consumption — self-completing). The TENSOR of group buckets is exact IFF the
+/// groups are independent — which the engine gate proves structurally (not
+/// by sampling). The final replay is a REAL full `step()` per tensor-combo
+/// whose result is hashed, so the *states* are never taken on faith; only
+/// the probability factorization relies on the (proven) independence.
+///
+/// Returns `None` — caller falls through to the flat lossless enumeration —
+/// when: no coupled defender, the gate says unsafe, or a runtime hazard
+/// (a sub-grid or tensor replay surfaces `unmatched_draws > 0`, i.e. a
+/// counter-factual site the record pass didn't cover — lazy-re-record
+/// territory the flat path owns).
+fn defender_joint_enumerate(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    per_site: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
+) -> Option<OutcomeFrontier> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // 1. Group damage/crit site indices by target defender (abs-slot in
+    //    key.target). Count distinct attackers per defender → coupled ones.
+    let mut sites_by_defender: BTreeMap<SlotRef, Vec<usize>> = BTreeMap::new();
+    let mut attackers_by_defender: BTreeMap<SlotRef, BTreeSet<SlotRef>> = BTreeMap::new();
+    for (i, (key, _, space, _)) in per_site.iter().enumerate() {
+        if matches!(space, DrawSpace::UniformDamage { .. } | DrawSpace::Crit { .. }) {
+            if key.target == NO_SLOT {
+                continue;
+            }
+            sites_by_defender.entry(key.target).or_default().push(i);
+            attackers_by_defender.entry(key.target).or_default().insert(key.actor);
+        }
+    }
+    let coupled_defenders: Vec<SlotRef> = attackers_by_defender
+        .iter()
+        .filter(|(_, atk)| atk.len() >= 2)
+        .map(|(d, _)| *d)
+        .collect();
+    if coupled_defenders.is_empty() {
+        return None; // no mutual focus — flat path handles single-hit collapse
+    }
+    // Telemetry: a coupled defender is present (fires OR gate-bails below).
+    TENSOR_COUPLED_SEEN_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // 2. Provable-independence gate (engine-side, structural — not sampled).
+    if !base.mutual_focus_tensor_safe(p1_choices, p2_choices) {
+        return None;
+    }
+
+    // 3. Partition site indices into per-coupled-defender GROUPS and the
+    //    REST. Every group site is enumerated at full fidelity (the engine
+    //    records coupled defenders' damage sites as 16-way UniformDamage
+    //    because compute_coupled_targets disables ko_split for them). REST
+    //    keeps its existing expansion.
+    let mut group_of_site: Vec<Option<usize>> = vec![None; per_site.len()];
+    let mut groups: Vec<Vec<usize>> = Vec::with_capacity(coupled_defenders.len());
+    for (g, d) in coupled_defenders.iter().enumerate() {
+        let idxs = sites_by_defender.get(d).cloned().unwrap_or_default();
+        for &si in &idxs {
+            group_of_site[si] = Some(g);
+        }
+        groups.push(idxs);
+    }
+    let rest_sites: Vec<usize> =
+        (0..per_site.len()).filter(|i| group_of_site[*i].is_none()).collect();
+
+    let recorded_events: Vec<RngEvent> =
+        per_site.iter().map(|(_, _, _, drawn)| *drawn).collect();
+
+    // 4. Per-group sub-enumeration. Pin all NON-group sites to recorded,
+    //    cross-product this group's sites, replay, dedup by FULL
+    //    canonical_hash → buckets. Bail (None) on any counter-factual site.
+    let mut group_buckets: Vec<Vec<DefenderBucket>> = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let buckets = enumerate_defender_group(
+            base, p1_choices, p2_choices, record_seed, per_site, &recorded_events, group,
+        )?;
+        if buckets.is_empty() {
+            return None;
+        }
+        group_buckets.push(buckets);
+    }
+
+    // 5. Tensor the group buckets against the flat cross-product of REST
+    //    sites. Each tensor-combo builds the joint OracleKeyed table, runs a
+    //    REAL full step(), hashes the true result, dedups. prob = ∏ group-
+    //    bucket prob × ∏ rest-site weight (independence is PROVEN, so the
+    //    factorization is exact). Bail on any unmatched draw.
+    let mut dedup: HashMap<u64, Outcome> = HashMap::new();
+    let mut raw_combos = 0usize;
+    let n_groups = group_buckets.len();
+    let n_rest = rest_sites.len();
+    let mut idx = vec![0usize; n_groups + n_rest];
+    loop {
+        let mut joint_events: Vec<RngEvent> = recorded_events.clone();
+        let mut prob = 1.0f64;
+        for g in 0..n_groups {
+            let bucket = &group_buckets[g][idx[g]];
+            debug_assert_eq!(bucket.events.len(), groups[g].len());
+            for (pos, &si) in groups[g].iter().enumerate() {
+                joint_events[si] = bucket.events[pos];
+            }
+            prob *= bucket.prob;
+        }
+        for r in 0..n_rest {
+            let si = rest_sites[r];
+            let (event, num, denom) = per_site[si].1[idx[n_groups + r]];
+            joint_events[si] = event;
+            prob *= num as f64 / denom as f64;
+        }
+
+        let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
+            table.entry(*key).or_default().push_back(joint_events[slot]);
+        }
+        let mut combo = base.clone();
+        combo.set_rng(Rng::oracle_keyed(table, record_seed));
+        let _ = combo.step(p1_choices, p2_choices);
+        if let Some(u) = combo.rng().unmatched_draws() {
+            if u > 0 {
+                return None; // counter-factual site → flat path owns this
+            }
+        }
+        let h = combo.canonical_hash();
+        raw_combos += 1;
+        dedup
+            .entry(h)
+            .and_modify(|e| e.prob += prob)
+            .or_insert(Outcome { hash: h, battle: combo, prob });
+
+        let mut k = 0;
+        let done = loop {
+            if k == idx.len() {
+                break true;
+            }
+            let dim = if k < n_groups {
+                group_buckets[k].len()
+            } else {
+                per_site[rest_sites[k - n_groups]].1.len()
+            };
+            idx[k] += 1;
+            if idx[k] < dim {
+                break false;
+            }
+            idx[k] = 0;
+            k += 1;
+        };
+        if done {
+            break;
+        }
+    }
+
+    let mut outcomes: Vec<Outcome> = dedup.into_values().collect();
+    outcomes.sort_by_key(|o| o.hash);
+    // Telemetry: the tensor fired (returned a real frontier).
+    TENSOR_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+    Some(OutcomeFrontier { outcomes, raw_combos, unmatched_total: 0, lazy_iterations: 0 })
+}
+
+/// Enumerate one coupled defender's hit-group sub-grid with every other site
+/// pinned to the recorder-drawn value; dedup by the FULL `canonical_hash` of
+/// the resulting battle (so within-group effects are captured automatically).
+/// Returns one [`DefenderBucket`] per distinct hash, or `None` if any replay
+/// surfaced a counter-factual site (`unmatched_draws > 0`).
+fn enumerate_defender_group(
+    base: &Battle,
+    p1_choices: &[Choice],
+    p2_choices: &[Choice],
+    record_seed: u64,
+    per_site: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
+    recorded_events: &[RngEvent],
+    group: &[usize],
+) -> Option<Vec<DefenderBucket>> {
+    let n = group.len();
+    let mut idx = vec![0usize; n];
+    let mut by_hash: HashMap<u64, DefenderBucket> = HashMap::new();
+
+    loop {
+        let mut joint_events: Vec<RngEvent> = recorded_events.to_vec();
+        let mut events_this: Vec<RngEvent> = Vec::with_capacity(n);
+        let mut prob = 1.0f64;
+        for (pos, &si) in group.iter().enumerate() {
+            let (event, num, denom) = per_site[si].1[idx[pos]];
+            joint_events[si] = event;
+            events_this.push(event);
+            prob *= num as f64 / denom as f64;
+        }
+
+        let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        for (slot, (key, _, _, _)) in per_site.iter().enumerate() {
+            table.entry(*key).or_default().push_back(joint_events[slot]);
+        }
+        let mut combo = base.clone();
+        combo.set_rng(Rng::oracle_keyed(table, record_seed));
+        let _ = combo.step(p1_choices, p2_choices);
+        if let Some(u) = combo.rng().unmatched_draws() {
+            if u > 0 {
+                return None;
+            }
+        }
+        let h = combo.canonical_hash();
+        by_hash
+            .entry(h)
+            .and_modify(|b| b.prob += prob)
+            .or_insert(DefenderBucket { events: events_this, prob });
+
+        let mut k = 0;
+        let done = loop {
+            if k == n {
+                break true;
+            }
+            idx[k] += 1;
+            if idx[k] < per_site[group[k]].1.len() {
+                break false;
+            }
+            idx[k] = 0;
+            k += 1;
+        };
+        if done {
+            break;
+        }
+    }
+
+    Some(by_hash.into_values().collect())
 }
 
 /// DIAGNOSTIC (throwaway) — return the per-draw-site breakdown for one
