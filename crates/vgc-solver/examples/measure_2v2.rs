@@ -253,7 +253,10 @@ impl<'a, 'b> MatrixGame for DoublesGame<'a, 'b> {
         let t0 = if decompose { Some(Instant::now()) } else { None };
         let frontier = enumerate_outcomes_with(
             self.battle, &r, &c, self.state.cfg.record_seed,
-            EnumerateOpts { lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket },
+            EnumerateOpts {
+                lossy_damage_3bucket: self.state.cfg.lossy_damage_3bucket,
+                auto_lossy_damage_threshold: None,
+            },
         );
         if let Some(t) = t0 {
             T_ENUMERATE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
