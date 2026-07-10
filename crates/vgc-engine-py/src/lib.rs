@@ -7,6 +7,10 @@
 //!   b = vgc_engine.Battle.from_teams(p1_json, p2_json, format="doubles")
 //!   choices = b.legal_choices(side=0, slot=0)
 //!   b.step_pass()           # both sides pass — turn ticks
+//!
+//!   # Fast damage calc (mirrors the `vgc calc` CLI):
+//!   r = vgc_engine.calc("chomp", "lando", "eq")
+//!   r["min"], r["max"], r["multi_hit"]["label"]
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -628,10 +632,147 @@ fn parse_and_verify(team_text: &str, format: &str) -> PyResult<Vec<String>> {
     })
 }
 
+/// Shape a `KoChance` into a small dict: `{"kind": "guaranteed"|"chance"|
+/// "none", "pct": int|None}`.
+fn ko_chance_dict<'py>(py: Python<'py>, ko: &core::calc::KoChance) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    match ko {
+        core::calc::KoChance::Guaranteed => {
+            d.set_item("kind", "guaranteed")?;
+            d.set_item("pct", 100u8)?;
+        }
+        core::calc::KoChance::Chance { pct } => {
+            d.set_item("kind", "chance")?;
+            d.set_item("pct", *pct)?;
+        }
+        core::calc::KoChance::None => {
+            d.set_item("kind", "none")?;
+            d.set_item("pct", py.None())?;
+        }
+    }
+    Ok(d)
+}
+
+/// Shape one `DamageResult` row into a Python dict (no nested crit — the
+/// caller decides whether to attach the crit companion).
+fn damage_result_dict<'py>(
+    py: Python<'py>,
+    r: &core::calc::DamageResult,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    let rolls = PyList::empty(py);
+    for &v in r.rolls.iter() {
+        rolls.append(v)?;
+    }
+    d.set_item("rolls", rolls)?;
+    d.set_item("min", r.min)?;
+    d.set_item("max", r.max)?;
+    d.set_item("defender_max_hp", r.defender_max_hp)?;
+    d.set_item("min_pct", r.min_pct)?;
+    d.set_item("max_pct", r.max_pct)?;
+    d.set_item("ko", ko_chance_dict(py, &r.ko_chance)?)?;
+
+    // Multi-hit NHKO (2HKO/3HKO/…) plus its exact probability, and a
+    // human label ("guaranteed 2HKO" / "56.3% to 3HKO" / "no KO").
+    let mh = PyDict::new(py);
+    mh.set_item("hits", r.multi_hit.hits)?;
+    mh.set_item("chance", r.multi_hit.chance)?;
+    mh.set_item("label", r.multi_hit.label())?;
+    d.set_item("multi_hit", mh)?;
+
+    Ok(d)
+}
+
+/// Fast damage calc, mirroring the `vgc calc` CLI.
+///
+/// `attacker` / `defender` accept the terse ` / `-delimited grammar (e.g.
+/// `"Garchomp @ Life Orb / Jolly / 252 Atk"`) or a bare species/alias
+/// (`"chomp"`). `move_` is a move name or alias (`"eq"`). Optional field:
+/// `weather` (`sun`|`rain`|`sand`|`snow`), `terrain`
+/// (`electric`|`grassy`|`psychic`|`misty`), `spread` (Doubles ×0.75).
+///
+/// Returns a dict:
+/// ```text
+/// {
+///   "rolls": [int; 16], "min": int, "max": int,
+///   "defender_max_hp": int, "min_pct": float, "max_pct": float,
+///   "ko":   {"kind": "guaranteed"|"chance"|"none", "pct": int|None},
+///   "multi_hit": {"hits": int, "chance": float, "label": str},
+///   "crit": { ...same shape, no nested crit... } | None
+/// }
+/// ```
+///
+///   import vgc_engine
+///   r = vgc_engine.calc("chomp", "lando", "eq")
+///   r["min"], r["max"], r["multi_hit"]["label"]
+#[pyfunction]
+#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false))]
+fn calc<'py>(
+    py: Python<'py>,
+    attacker: &str,
+    defender: &str,
+    move_: &str,
+    weather: Option<&str>,
+    terrain: Option<&str>,
+    spread: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let atk = core::calc::QuickMon::parse(attacker)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let def = core::calc::QuickMon::parse(defender)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let mut field = core::calc::Field::none();
+    if let Some(w) = weather {
+        field.weather = parse_weather(w)?;
+    }
+    if let Some(t) = terrain {
+        field.terrain = parse_terrain(t)?;
+    }
+    field.spread = spread;
+
+    let r = core::calc::calc(&atk, &def, move_, field)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+    let d = damage_result_dict(py, &r)?;
+    // Attach the crit companion (present on a non-crit, non-zero calc).
+    match &r.crit {
+        Some(c) => d.set_item("crit", damage_result_dict(py, c)?)?,
+        None => d.set_item("crit", py.None())?,
+    }
+    Ok(d)
+}
+
+/// Parse a weather slug into the core enum (Python-facing errors).
+fn parse_weather(s: &str) -> PyResult<core::Weather> {
+    match s.to_ascii_lowercase().as_str() {
+        "sun" | "harshsunshine" => Ok(core::Weather::Sun),
+        "rain" => Ok(core::Weather::Rain),
+        "sand" | "sandstorm" => Ok(core::Weather::Sand),
+        "snow" | "hail" => Ok(core::Weather::Snow),
+        other => Err(PyValueError::new_err(format!(
+            "unknown weather '{other}' (want sun|rain|sand|snow)"
+        ))),
+    }
+}
+
+/// Parse a terrain slug into the core enum (Python-facing errors).
+fn parse_terrain(s: &str) -> PyResult<core::Terrain> {
+    match s.to_ascii_lowercase().as_str() {
+        "electric" => Ok(core::Terrain::Electric),
+        "grassy" => Ok(core::Terrain::Grassy),
+        "psychic" => Ok(core::Terrain::Psychic),
+        "misty" => Ok(core::Terrain::Misty),
+        other => Err(PyValueError::new_err(format!(
+            "unknown terrain '{other}' (want electric|grassy|psychic|misty)"
+        ))),
+    }
+}
+
 #[pymodule]
 fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBattle>()?;
     m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
+    m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
