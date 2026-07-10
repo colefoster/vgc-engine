@@ -875,6 +875,127 @@ pub fn matchup(
     Ok(Matchup { a_best, b_best, speed_winner, a_speed, b_speed })
 }
 
+// ---------------------------------------------------------------------------
+// EV optimizers (PR-6): binary-search the minimum EV investment that hits a
+// survival / KO threshold, re-running `calc` at each probe.
+// ---------------------------------------------------------------------------
+
+/// The 64 legal EV values a single stat can take: 0, 4, 8, …, 252. Binary
+/// search walks this grid, not raw 0..=255.
+const EV_GRID: [u8; 64] = {
+    let mut g = [0u8; 64];
+    let mut i = 0;
+    while i < 64 {
+        g[i] = (i * 4) as u8;
+        i += 1;
+    }
+    g
+};
+
+/// A defensive stat a survival calc can invest in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefStat {
+    Hp,
+    Def,
+    Spd,
+}
+
+/// An offensive stat a KO calc can invest in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtkStat {
+    Atk,
+    Spa,
+}
+
+fn set_def_ev(mon: &mut QuickMon, stat: DefStat, ev: u8) {
+    match stat {
+        DefStat::Hp => mon.evs.hp = ev,
+        DefStat::Def => mon.evs.def = ev,
+        DefStat::Spd => mon.evs.spd = ev,
+    }
+}
+
+fn set_atk_ev(mon: &mut QuickMon, stat: AtkStat, ev: u8) {
+    match stat {
+        AtkStat::Atk => mon.evs.atk = ev,
+        AtkStat::Spa => mon.evs.spa = ev,
+    }
+}
+
+/// Minimum EVs in `stat` for `defender` to **survive** one hit of
+/// `attacker`'s `move_` (survive = no roll KOs). Binary-searches the
+/// 0..=252 EV grid; the defender's other EVs are taken as-is from `def`.
+///
+/// Returns `Some(ev)` (a multiple of 4) or `None` if even 252 EVs don't
+/// survive. Survival is monotonic in defensive EVs, so binary search is
+/// exact.
+pub fn min_evs_to_survive(
+    attacker: &QuickMon,
+    defender: &QuickMon,
+    move_: &str,
+    stat: DefStat,
+    field: Field,
+) -> Result<Option<u8>, CalcError> {
+    // Resolve once so a bad move errors before the search loop.
+    resolve_move(move_)?;
+    let survives_at = |ev: u8| -> Result<bool, CalcError> {
+        let mut d = defender.clone();
+        set_def_ev(&mut d, stat, ev);
+        Ok(matches!(calc(attacker, &d, move_, field)?.ko_chance, KoChance::None))
+    };
+    // Fast reject: max investment still dies.
+    if !survives_at(252)? {
+        return Ok(None);
+    }
+    // Binary search for the least grid index that survives.
+    let mut lo = 0usize;
+    let mut hi = EV_GRID.len() - 1; // known to survive at hi
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if survives_at(EV_GRID[mid])? {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(Some(EV_GRID[lo]))
+}
+
+/// Minimum EVs in `stat` for `attacker`'s `move_` to **guaranteed-KO**
+/// `defender` (every roll KOs). Binary-searches the 0..=252 EV grid;
+/// `attacker`'s other EVs are taken as-is.
+///
+/// Returns `Some(ev)` or `None` if even 252 EVs don't guarantee the KO.
+/// Guaranteed-KO is monotonic in offensive EVs, so binary search is exact.
+pub fn min_evs_to_ko(
+    attacker: &QuickMon,
+    defender: &QuickMon,
+    move_: &str,
+    stat: AtkStat,
+    field: Field,
+) -> Result<Option<u8>, CalcError> {
+    resolve_move(move_)?;
+    let kos_at = |ev: u8| -> Result<bool, CalcError> {
+        let mut a = attacker.clone();
+        set_atk_ev(&mut a, stat, ev);
+        Ok(matches!(calc(&a, defender, move_, field)?.ko_chance, KoChance::Guaranteed))
+    };
+    if !kos_at(252)? {
+        return Ok(None);
+    }
+    let mut lo = 0usize;
+    let mut hi = EV_GRID.len() - 1;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if kos_at(EV_GRID[mid])? {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Ok(Some(EV_GRID[lo]))
+}
+
 /// Run `damage_only` for one (crit / non-crit) row and shape the result.
 /// Does NOT populate the nested `crit` field (caller handles that).
 fn shape_result(
@@ -1373,5 +1494,83 @@ mod tests {
         // Iron Hands' best of {CC, Fake Out} is Close Combat (Fake Out is
         // 40 BP), so it should out-damage.
         assert_eq!(m.b_best.move_slug, "closecombat");
+    }
+
+    #[test]
+    fn min_evs_to_survive_monotone_and_exact() {
+        // Adamant Choice Band Kingambit Iron Head into Flutter Mane is a
+        // guaranteed OHKO at 0 HP EVs; find the min HP EVs to survive.
+        let atk = QuickMon::parse(
+            "Kingambit @ Choice Band / Adamant / 252 Atk",
+        )
+        .unwrap();
+        let def = QuickMon::parse("Flutter Mane / Timid / 252 SpA / 252 Spe").unwrap();
+        let got = min_evs_to_survive(&atk, &def, "iron head", DefStat::Hp, Field::none()).unwrap();
+        // Whatever the threshold, verify the binary-search invariant: the
+        // returned EV survives and one grid step lower does not.
+        match got {
+            Some(ev) => {
+                let mut lives = def.clone();
+                lives.evs.hp = ev;
+                assert!(
+                    matches!(
+                        calc(&atk, &lives, "iron head", Field::none()).unwrap().ko_chance,
+                        KoChance::None
+                    ),
+                    "returned EV {ev} should survive"
+                );
+                if ev >= 4 {
+                    let mut dies = def.clone();
+                    dies.evs.hp = ev - 4;
+                    assert!(
+                        !matches!(
+                            calc(&atk, &dies, "iron head", Field::none()).unwrap().ko_chance,
+                            KoChance::None
+                        ),
+                        "EV {} (one step below) should NOT survive",
+                        ev - 4
+                    );
+                }
+            }
+            None => {
+                // If unsurvivable even at 252, confirm that directly.
+                let mut maxed = def.clone();
+                maxed.evs.hp = 252;
+                assert!(matches!(
+                    calc(&atk, &maxed, "iron head", Field::none()).unwrap().ko_chance,
+                    KoChance::Guaranteed | KoChance::Chance { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn min_evs_to_ko_finds_threshold() {
+        // Garchomp Earthquake into a bulky Iron Hands: find min Atk EVs to
+        // guarantee the OHKO (may be None if it can't OHKO at all).
+        let atk = QuickMon::parse("Garchomp / Adamant / 0 Atk").unwrap();
+        let def = QuickMon::parse("Flutter Mane / Timid / 4 HP").unwrap();
+        // EQ vs frail Flutter Mane OHKOs easily; the min Atk EV to
+        // *guarantee* it exists and is well under 252.
+        let got = min_evs_to_ko(&atk, &def, "earthquake", AtkStat::Atk, Field::none()).unwrap();
+        match got {
+            Some(ev) => {
+                let mut a = atk.clone();
+                a.evs.atk = ev;
+                assert!(matches!(
+                    calc(&a, &def, "earthquake", Field::none()).unwrap().ko_chance,
+                    KoChance::Guaranteed
+                ));
+                if ev >= 4 {
+                    let mut a2 = atk.clone();
+                    a2.evs.atk = ev - 4;
+                    assert!(!matches!(
+                        calc(&a2, &def, "earthquake", Field::none()).unwrap().ko_chance,
+                        KoChance::Guaranteed
+                    ));
+                }
+            }
+            None => panic!("EQ should guaranteed-OHKO frail Flutter Mane at some Atk EV"),
+        }
     }
 }
