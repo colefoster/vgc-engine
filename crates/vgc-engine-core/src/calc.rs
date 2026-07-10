@@ -775,6 +775,106 @@ pub fn outspeeds(a: &QuickMon, b: &QuickMon, ctx: SpeedContext) -> Result<SpeedW
     })
 }
 
+// ---------------------------------------------------------------------------
+// Move selection + matchup summary (PR-5).
+// ---------------------------------------------------------------------------
+
+/// One move's calc against a defender, tagged with the move for ranking.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MoveDamage {
+    /// The move's dex slug (resolved).
+    pub move_slug: String,
+    /// Full damage result for this move.
+    pub result: DamageResult,
+}
+
+/// Calc every move in `moves` from `attacker` into `defender` and return
+/// the one that does the most damage, ranked by (in order): the best KO
+/// verdict (fewest hits to KO), then max roll, then min roll. Ties break
+/// toward the earlier move in `moves`.
+///
+/// `moves` is the candidate list (names or aliases) — `QuickMon` doesn't
+/// carry a moveset, so the caller supplies it. Errors if `moves` is empty
+/// or any move fails to resolve.
+pub fn best_move(
+    attacker: &QuickMon,
+    defender: &QuickMon,
+    moves: &[&str],
+    field: Field,
+) -> Result<MoveDamage, CalcError> {
+    if moves.is_empty() {
+        return Err(CalcError::BadSegment("no candidate moves given".to_string()));
+    }
+    let mut best: Option<MoveDamage> = None;
+    for &mv in moves {
+        let slug = resolve_move(mv)?;
+        let result = calc(attacker, defender, mv, field)?;
+        let cand = MoveDamage { move_slug: slug, result };
+        best = Some(match best {
+            None => cand,
+            Some(cur) => {
+                if move_beats(&cand.result, &cur.result) {
+                    cand
+                } else {
+                    cur
+                }
+            }
+        });
+    }
+    Ok(best.unwrap())
+}
+
+/// Is `a` a strictly better attacking result than `b`? Ranks by fewest
+/// hits-to-KO (a real KO beats a non-KO; `hits == 0` = never KOs, worst),
+/// then higher max roll, then higher min roll.
+fn move_beats(a: &DamageResult, b: &DamageResult) -> bool {
+    // Map hits-to-KO to a sortable key: 0 (never) is worst → treat as
+    // u8::MAX; otherwise fewer hits is better.
+    let ka = if a.multi_hit.hits == 0 { u8::MAX } else { a.multi_hit.hits };
+    let kb = if b.multi_hit.hits == 0 { u8::MAX } else { b.multi_hit.hits };
+    match ka.cmp(&kb) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => (a.max, a.min) > (b.max, b.min),
+    }
+}
+
+/// Symmetric two-sided matchup summary: each side's best move into the
+/// other, who moves first, and the KO verdicts. Built from two `best_move`
+/// calls plus one speed comparison.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Matchup {
+    /// `a`'s best move into `b`.
+    pub a_best: MoveDamage,
+    /// `b`'s best move into `a`.
+    pub b_best: MoveDamage,
+    /// Who moves first on the speed comparison (respecting Trick Room).
+    pub speed_winner: SpeedWinner,
+    /// `a`'s effective speed under the context.
+    pub a_speed: u16,
+    /// `b`'s effective speed under the context.
+    pub b_speed: u16,
+}
+
+/// Compute a full [`Matchup`] between `a` (with `a_moves`) and `b` (with
+/// `b_moves`). `field` shapes the damage calcs; `ctx` the speed compare.
+/// Spread is taken from `field.spread` for both sides' damage.
+pub fn matchup(
+    a: &QuickMon,
+    a_moves: &[&str],
+    b: &QuickMon,
+    b_moves: &[&str],
+    field: Field,
+    ctx: SpeedContext,
+) -> Result<Matchup, CalcError> {
+    let a_best = best_move(a, b, a_moves, field)?;
+    let b_best = best_move(b, a, b_moves, field)?;
+    let a_speed = speed_tier(a, ctx)?;
+    let b_speed = speed_tier(b, ctx)?;
+    let speed_winner = outspeeds(a, b, ctx)?;
+    Ok(Matchup { a_best, b_best, speed_winner, a_speed, b_speed })
+}
+
 /// Run `damage_only` for one (crit / non-crit) row and shape the result.
 /// Does NOT populate the nested `crit` field (caller handles that).
 fn shape_result(
@@ -1236,5 +1336,42 @@ mod tests {
         );
         // Mirror match = speed tie.
         assert_eq!(outspeeds(&fast, &fast, SpeedContext::none()).unwrap(), SpeedWinner::Tie);
+    }
+
+    #[test]
+    fn best_move_skips_immune_move() {
+        // Garchomp into Landorus-Therian (Flying → Ground-immune):
+        // Earthquake does 0, Dragon Claw does real damage → best_move must
+        // pick Dragon Claw, never the immune Earthquake.
+        let atk = QuickMon::parse("Garchomp / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Landorus-Therian / 4 HP").unwrap();
+        let best = best_move(&atk, &def, &["earthquake", "dragonclaw"], Field::none()).unwrap();
+        assert_eq!(best.move_slug, "dragonclaw", "non-immune move should win");
+        assert!(best.result.max > 0);
+
+        // Empty move list errors.
+        assert!(best_move(&atk, &def, &[], Field::none()).is_err());
+    }
+
+    #[test]
+    fn matchup_summary_symmetric() {
+        let a = QuickMon::parse("Garchomp / Jolly / 252 Atk / 252 Spe").unwrap();
+        let b = QuickMon::parse("Iron Hands / Brave / 252 HP / 252 Atk").unwrap();
+        let m = matchup(
+            &a,
+            &["earthquake"],
+            &b,
+            &["closecombat", "fakeout"],
+            Field::none(),
+            SpeedContext::none(),
+        )
+        .unwrap();
+        // Garchomp (Jolly 252 Spe) clearly outspeeds Brave Iron Hands.
+        assert_eq!(m.speed_winner, SpeedWinner::A);
+        assert!(m.a_speed > m.b_speed);
+        assert_eq!(m.a_best.move_slug, "earthquake");
+        // Iron Hands' best of {CC, Fake Out} is Close Combat (Fake Out is
+        // 40 BP), so it should out-damage.
+        assert_eq!(m.b_best.move_slug, "closecombat");
     }
 }
