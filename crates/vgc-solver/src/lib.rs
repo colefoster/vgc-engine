@@ -487,8 +487,8 @@ struct DefenderBucket {
 /// `canonical_hash` are TT-indistinguishable, so merging them reproduces the
 /// full-enumeration frontier's states exactly (the same dedup the flat path
 /// performs, applied within a group; this makes within-group effects — Life
-/// Orb recoil, Moxie/Beast-Boost KO boosts, an intervening faint, Anger
-/// Point — self-completing). The TENSOR of group buckets is exact IFF the
+/// Orb recoil, Moxie/Beast-Boost KO boosts, an intervening faint, Sitrus
+/// consumption — self-completing). The TENSOR of group buckets is exact IFF the
 /// groups are independent — which the engine gate proves structurally (not
 /// by sampling). The final replay is a REAL full `step()` per tensor-combo
 /// whose result is hashed, so the *states* are never taken on faith; only
