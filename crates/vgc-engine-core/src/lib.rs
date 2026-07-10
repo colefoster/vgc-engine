@@ -32,7 +32,7 @@ pub mod step_machine;
 pub mod terrain;
 pub mod weather;
 
-pub use battle::{Battle, BattleConfig, StepResult};
+pub use battle::{set_ko_split_disabled, Battle, BattleConfig, StepResult};
 pub use choice::{Choice, MoveSlot, Target};
 pub use damage::{
     calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
@@ -48,7 +48,10 @@ pub use pokemon::{
     compute_stats, nature_by_id, nature_by_slug, nature_id, nature_id_by_slug, FinalStats,
     Nature, Pokemon, Stat, StatSpread, Status, Volatile, VolatileKind, VolatileSet,
 };
-pub use rng::{DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
+pub use rng::{
+    expand_uniform_damage, DamageSegments, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent,
+    RngKey, SlotRef, NO_SLOT,
+};
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, TeamBuilder, TeamLoadError, TeamMember};

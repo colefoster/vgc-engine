@@ -264,24 +264,103 @@ impl PsGen5Rng {
 /// outcomes and probabilities WITHOUT re-deriving stage tables or accuracy
 /// math from the keyed events. Designed to enumerate efficiently — uniform
 /// spaces stay compact (no 16-entry vector for damage rolls).
+/// Contiguous roll→canonical-outcome partition for a single damage draw
+/// site, computed analytically at record time from the defender's per-roll
+/// post-hit `hp_bucket` (the SAME `hp_bucket_coarse` the TT keys on). Each
+/// segment is a run of consecutive rolls that produce the same defender
+/// canonical HP bucket; because `dmg(roll) = floor(base*(85+roll)/100)` is
+/// monotone in `roll`, the segments are always contiguous and ordered, and
+/// there are at most 8 (one per coarse bucket) — usually 1–3.
+///
+/// The enumerator emits ONE representative roll per segment weighted by the
+/// segment's roll count / 16. This is **bit-exact** for the outcome
+/// frontier: two rolls in the same segment produce the same defender
+/// `hp_bucket` ⇒ the same `canonical_hash` ⇒ the TT already merges them, so
+/// collapsing them here reproduces the full-enumeration frontier exactly
+/// (mass and states). Supersedes the older lossy `ko_split` min-roll
+/// pinning, which collapsed ALL survivor rolls to one bucket and thereby
+/// dropped reachable intermediate-HP states in the frontier (see the
+/// dropped-state audit — `crates/vgc-solver/tests/collapse_soundness.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DamageSegments {
+    /// `(representative_roll, roll_count)` per contiguous bucket-segment.
+    /// Only the first `len` entries are valid. `count`s sum to 16.
+    ///
+    /// Capacity 16 (not 8): a defender holding an exact-HP move (Super Fang
+    /// / Ruination / Endeavor / Pain Split) hashes on EXACT HP, so each of
+    /// the 16 rolls can be its own canonical bucket. Sizing for the worst
+    /// case keeps the partition bit-exact for those defenders too.
+    pub segs: [(u8, u8); 16],
+    pub len: u8,
+}
+
+impl DamageSegments {
+    pub fn as_slice(&self) -> &[(u8, u8)] {
+        &self.segs[..self.len as usize]
+    }
+}
+
+/// Shared expansion of a `UniformDamage` draw site into
+/// `(RngEvent, numerator, denominator=16)` outcomes. SINGLE SOURCE OF TRUTH
+/// for both enumerators — `crates/vgc-solver/src/lib.rs::expand` and
+/// `crates/vgc-engine-core/src/chance.rs::expand` both delegate here so the
+/// collapse policy cannot silently drift between them (it did once: the
+/// lossy `ko_split` survivor pin lived in both places and both dropped
+/// states — see `crates/vgc-solver/tests/collapse_soundness.rs`).
+///
+/// Priority:
+/// 1. `segments` present → emit one representative roll per contiguous
+///    hp_bucket segment, weighted by roll count / 16. **Bit-exact** for the
+///    outcome frontier (same-segment rolls share a `canonical_hash`).
+/// 2. else `lossy_3bucket` → PR-C's lossy {0,7,15} @ {5,6,5}/16.
+/// 3. else → full 16-outcome uniform (lossless, slow).
+///
+/// `ko_split` is intentionally NOT used to drive collapse — it was the
+/// lossy path. It survives only as diagnostic metadata on the DrawSpace.
+pub fn expand_uniform_damage(
+    segments: Option<DamageSegments>,
+    lossy_3bucket: bool,
+) -> Vec<(RngEvent, u32, u32)> {
+    if let Some(segs) = segments {
+        return segs
+            .as_slice()
+            .iter()
+            .map(|&(rep, cnt)| (RngEvent::DamageRoll(rep), cnt as u32, 16))
+            .collect();
+    }
+    if lossy_3bucket {
+        return vec![
+            (RngEvent::DamageRoll(0), 5, 16),
+            (RngEvent::DamageRoll(7), 6, 16),
+            (RngEvent::DamageRoll(15), 5, 16),
+        ];
+    }
+    (0..16u8)
+        .map(|v| (RngEvent::DamageRoll(v), 1u32, 16))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DrawSpace {
     /// Uniform integer in `0..n`. Drawn outcome is `RngEvent::Range(v)`.
     UniformRange(u32),
     /// Uniform damage bucket `0..16` (`RngEvent::DamageRoll`).
     ///
-    /// `ko_split` records the KO partition derived at the draw site, when known:
-    /// - `None` — legacy / unmigrated site (or multi-target spread, Sub/Sash/
-    ///   Sturdy/Endure active, non-final multi-hit, or any complex chain).
-    ///   The enumerator must expand to the full 16-outcome uniform (or PR-C's
-    ///   lossy 3-bucket collapse if opted in).
-    /// - `Some(0)` — every roll in `0..=15` KOes (weight 16/16 KO bucket).
-    /// - `Some(16)` — no roll KOes (weight 16/16 no-KO bucket).
-    /// - `Some(k)` with `0 < k < 16` — rolls `0..k` do NOT KO (weight `k/16`),
-    ///   rolls `k..=15` DO KO (weight `(16-k)/16`). Final damage =
-    ///   `floor(base * (85 + roll) / 100)` is monotone in `roll`, so the KO
-    ///   set is always a contiguous high-tail of the roll distribution.
-    UniformDamage { ko_split: Option<u8> },
+    /// `segments` records the exact roll→hp_bucket partition derived at the
+    /// draw site (see [`DamageSegments`]). When `Some`, the enumerator emits
+    /// one representative roll per contiguous bucket-segment — bit-exact for
+    /// the frontier. When `None` (legacy / spread / Sub-Sash-Sturdy-Endure /
+    /// multi-hit / any complex chain), the enumerator expands to the full
+    /// 16-outcome uniform (or PR-C's lossy 3-bucket if opted in).
+    ///
+    /// `ko_split` is retained ONLY as diagnostic metadata (the lowest roll
+    /// that KOes, or `None`); the enumerator no longer drives collapse from
+    /// it — `segments` is authoritative. Kept so existing tests / the
+    /// draw-report tooling can still read the KO threshold.
+    UniformDamage {
+        ko_split: Option<u8>,
+        segments: Option<DamageSegments>,
+    },
     /// Uniform percent roll `1..=100` (`RngEvent::PercentRoll`).
     ///
     /// `threshold` records the comparison threshold the engine used at the
@@ -932,7 +1011,7 @@ impl Rng {
     /// outside the engine's plausible window, falls back to a Splitmix
     /// draw rather than forcing an out-of-range bucket.
     pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
-        self.damage_roll_hint_inner(dmg_min, dmg_max, None)
+        self.damage_roll_hint_inner(dmg_min, dmg_max, None, None)
     }
 
     /// Same as [`Rng::damage_roll_hint`], but records the engine-derived
@@ -940,14 +1019,36 @@ impl Rng {
     /// [`DrawSpace::UniformDamage`].
     pub fn damage_roll_hint_t(&mut self, dmg_min: u16, dmg_max: u16, ko_split: u8) -> u8 {
         debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
-        self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split))
+        self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split), None)
     }
 
-    fn damage_roll_hint_inner(&mut self, dmg_min: u16, dmg_max: u16, ko_split: Option<u8>) -> u8 {
+    /// Same as [`Rng::damage_roll_hint_t`], but ALSO records the exact
+    /// roll→hp_bucket partition ([`DamageSegments`]) the engine derived at
+    /// the call site — the enumerator uses it for a bit-exact frontier
+    /// collapse (supersedes lossy `ko_split` survivor pinning). `ko_split`
+    /// is still passed for diagnostic metadata.
+    pub fn damage_roll_hint_seg(
+        &mut self,
+        dmg_min: u16,
+        dmg_max: u16,
+        ko_split: u8,
+        segments: DamageSegments,
+    ) -> u8 {
+        debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
+        self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split), Some(segments))
+    }
+
+    fn damage_roll_hint_inner(
+        &mut self,
+        dmg_min: u16,
+        dmg_max: u16,
+        ko_split: Option<u8>,
+        segments: Option<DamageSegments>,
+    ) -> u8 {
         match self {
             // OracleKeyed stores the exact engine-convention bucket, so
             // there's nothing to back-solve — defer to `damage_roll`.
-            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll_inner(ko_split),
+            Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll_inner_seg(ko_split, segments),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -960,7 +1061,7 @@ impl Rng {
                     // middle (rather than panicking).
                     return 7;
                 }
-                self.damage_roll_inner(ko_split)
+                self.damage_roll_inner_seg(ko_split, segments)
             }
             Rng::OraclePartial { state, fallback } => {
                 if let Some(RngEvent::DamageHint(target)) =
@@ -972,7 +1073,7 @@ impl Rng {
                     // Out-of-range: fall through to Splitmix.
                     return (Self::splitmix_step(fallback) & 0xF) as u8;
                 }
-                self.damage_roll_inner(ko_split)
+                self.damage_roll_inner_seg(ko_split, segments)
             }
         }
     }
@@ -1007,6 +1108,17 @@ impl Rng {
     }
 
     fn damage_roll_inner(&mut self, ko_split: Option<u8>) -> u8 {
+        self.damage_roll_inner_seg(ko_split, None)
+    }
+
+    /// Core damage-roll draw. `ko_split` / `segments` are recorded on the
+    /// `UniformDamage` DrawSpace so the enumerator can partition the 16
+    /// rolls; `segments` (when present) is authoritative and bit-exact.
+    fn damage_roll_inner_seg(
+        &mut self,
+        ko_split: Option<u8>,
+        segments: Option<DamageSegments>,
+    ) -> u8 {
         match self {
             Rng::Splitmix(_) => (self.next_u64() & 0xF) as u8,
             Rng::Oracle(state) => match state.pop() {
@@ -1036,7 +1148,7 @@ impl Rng {
                     let v = (k.fallback() & 0xF) as u8;
                     k.record_miss(
                         RngDecision::Damage,
-                        DrawSpace::UniformDamage { ko_split },
+                        DrawSpace::UniformDamage { ko_split, segments },
                         RngEvent::DamageRoll(v),
                     );
                     v
@@ -1046,7 +1158,7 @@ impl Rng {
                 let v = (r.step() & 0xF) as u8;
                 r.push(
                     RngDecision::Damage,
-                    DrawSpace::UniformDamage { ko_split },
+                    DrawSpace::UniformDamage { ko_split, segments },
                     RngEvent::DamageRoll(v),
                 );
                 v
@@ -1847,7 +1959,7 @@ mod tests {
         assert_eq!(log.len(), 4, "one entry per non-elided draw");
 
         // Each entry has the right space + drawn value + key context.
-        assert_eq!(log[0].space, DrawSpace::UniformDamage { ko_split: None });
+        assert_eq!(log[0].space, DrawSpace::UniformDamage { ko_split: None, segments: None });
         assert_eq!(log[0].drawn, RngEvent::DamageRoll(d));
         assert_eq!(log[0].key.decision, RngDecision::Damage);
         assert_eq!(log[0].key.turn, 3);
