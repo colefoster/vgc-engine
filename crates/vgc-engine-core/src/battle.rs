@@ -30,6 +30,23 @@ use crate::side::{Side, SideRef};
 use serde::{Deserialize, Serialize};
 use vgc_engine_data as data;
 
+thread_local! {
+    /// When true, the recorder suppresses ko_split enrichment (records
+    /// `UniformDamage { ko_split: None }` so the solver enumerates all 16
+    /// rolls). Dev/audit only — lets a single process compare shipped
+    /// ko_split against a truly-uncollapsed damage frontier.
+    static KO_SPLIT_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Dev/audit: disable ko_split enrichment on this thread (default off).
+pub fn set_ko_split_disabled(disabled: bool) {
+    KO_SPLIT_DISABLED.with(|d| d.set(disabled));
+}
+
+fn ko_split_disabled() -> bool {
+    KO_SPLIT_DISABLED.with(|d| d.get())
+}
+
 /// Per-Battle bitset index of which active slots currently carry residual
 /// state that fires during the EOT pipeline. One `u8` per residual family,
 /// one bit per absolute active slot:
@@ -358,6 +375,15 @@ pub struct Battle {
     pub(crate) rng: Rng,
     pub(crate) turn: u32,
     pub(crate) ended: Option<Option<SideRef>>,
+    /// Transient (step-scoped) bitset of absolute active slots that are
+    /// targeted by ≥2 move-actions THIS turn — set just before each
+    /// action resolves, cleared after. Bit layout: p1s0=0, p1s1=1,
+    /// p2s0=2, p2s1=3. When a defender's bit is set, the ko_split /
+    /// hp_bucket-segment collapse is disabled for hits on it (its damage
+    /// rolls couple with the other action's; per-site collapse would drop
+    /// reachable joint states). Never serialized — recomputed per action.
+    #[serde(skip)]
+    pub(crate) multi_targeted_defenders: u8,
     /// Transient native-chance yield request parked by a draw site
     /// inside the per-action resolver (PR-F2+). `step_one`'s
     /// `ActionLoop` arm `take()`s this after `process_one_action`
@@ -474,6 +500,7 @@ impl Battle {
         let p2 = Side::new(p2_team, config.format);
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
+            multi_targeted_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
@@ -1788,7 +1815,22 @@ impl Battle {
         let s = action.side as usize;
         let slot = (action.actor_slot as usize).min(1);
         pending_kind[s][slot] = 0;
+        // ko_split/segment collapse soundness: the per-hit hp_bucket
+        // partition is computed against ONE HP snapshot, so it is only
+        // joint-invariant when this defender is hit by a SINGLE move this
+        // turn. If two or more queued move-actions nominally target the
+        // same (side, slot), their damage rolls couple (the second hit's
+        // starting HP varies with the first hit's roll) and independent
+        // per-site collapse would drop/reweight reachable joint states.
+        // Scan the FULL turn order (not just later actions — an earlier
+        // hit couples too) and disable collapse for any multiply-targeted
+        // defender. Conservative: over-counting (spread/redirect) only
+        // forgoes collapse, never mis-collapses. See the same-target
+        // coupling case in `crates/vgc-solver/tests/collapse_soundness.rs`.
+        let coupled = self.compute_coupled_targets(order);
+        self.multi_targeted_defenders = coupled;
         self.resolve_move_with_pending(action, pending_kind, will_act);
+        self.multi_targeted_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
     }
 
@@ -2210,7 +2252,13 @@ impl Battle {
                 choice: Choice::Move { actor_slot, move_slot, target: Some(target) },
             };
             self.pursuit_intercepting = true;
+            // Interposed hit (Pursuit intercept) — conservatively disable
+            // damage collapse (its roll can couple with the switcher's other
+            // incoming hits this turn). Full-enumerate; always correct.
+            let saved_couple = self.multi_targeted_defenders;
+            self.multi_targeted_defenders = 0b1111;
             self.resolve_move_with_pending(action, &[[0u8; 2]; 2], false);
+            self.multi_targeted_defenders = saved_couple;
             self.pursuit_intercepting = false;
         }
     }
@@ -2780,6 +2828,133 @@ impl Battle {
             }
         }
         f
+    }
+
+    /// BLUNT, PROVABLY-SAFE coupling guard. Returns a bitset (abs-slot
+    /// layout, see `multi_targeted_defenders`) of active slots for which the
+    /// ko_split / hp_bucket-segment damage collapse MUST be disabled this
+    /// turn because a defender's damage rolls could couple with another
+    /// action's (which would make independent per-site collapse drop
+    /// reachable joint states).
+    ///
+    /// Contract (correct-but-conservative — "when in doubt, enumerate"):
+    /// collapse is permitted for a defender only when we can cheaply prove
+    /// that EXACTLY ONE damaging action resolves onto it, with no
+    /// target-altering effect in play. Concretely we DISABLE collapse
+    /// (set the defender's bit) when ANY of:
+    ///   1. ≥2 move-actions DECLARE this defender as their single target;
+    ///   2. any SPREAD move (target code 5/6/11) is queued this turn — it
+    ///      resolves onto multiple defenders, coupling them all;
+    ///   3. any redirection / target-pull effect could be active — a
+    ///      Follow Me / Rage Powder volatile on any active mon, or a
+    ///      Lightning Rod / Storm Drain / Sap Sipper ability on the field,
+    ///      or an Ally Switch queued — since RESOLVED targets can then
+    ///      differ from declared ones;
+    ///   4. an INSTRUCT action is queued — it synthesizes a re-hit action
+    ///      OUTSIDE `order` (see `resolve_move_with_pending` Instruct arm),
+    ///      so a defender that this scan sees as hit exactly once can be
+    ///      re-hit by the instructed move; the earlier hit would already
+    ///      have collapsed assuming nothing else touches that defender.
+    /// Cases 2, 3, and 4 are blunt: they set ALL FOUR defender bits (disable
+    /// collapse everywhere this turn) rather than reason about which slots
+    /// a redirect/spread could reach — deliberately avoiding a clever
+    /// predicate (the factoring-classifier trap). Over-conservative only
+    /// costs perf; it never drops a state.
+    fn compute_coupled_targets(&self, order: &crate::order::ActionOrder) -> u8 {
+        // Singles has a single defender per side and one attacker — no two
+        // hits can couple, so collapse is always sound. Skip the guard.
+        if self.format().active_count() < 2 {
+            return 0;
+        }
+        // (2)/(3): any spread move, redirect effect, or Ally Switch present
+        // this turn → disable collapse on every defender.
+        let mut any_global_couple = false;
+        for a in order.as_slice() {
+            match a.choice {
+                Choice::Move { move_slot, .. }
+                | Choice::Terastallize { move_slot, .. }
+                | Choice::MegaEvolve { move_slot, .. } => {
+                    if let Some(mon) = self.side(a.side).active_mon(a.actor_slot as usize) {
+                        let mid = mon.moves[(move_slot as usize).min(3)];
+                        // Struggle / empty slots carry a sentinel id outside
+                        // the MOVES table — skip them (they can't spread).
+                        if (mid as usize) < data::MOVES.len() {
+                            // Ally Switch (re-positions a slot → resolved
+                            // targets differ) and INSTRUCT (synthesizes a
+                            // re-hit action OUTSIDE `order`, so a defender
+                            // this scan sees as single-hit can still be hit
+                            // AGAIN by the instructed re-execution — the
+                            // earlier hit already collapsed assuming nothing
+                            // else touches it). Both force a global disable.
+                            if mid == data::move_id::ALLYSWITCH
+                                || mid == data::move_id::INSTRUCT
+                            {
+                                any_global_couple = true;
+                            }
+                            // Spread move (target code 5/6/11) — resolves
+                            // onto multiple defenders, coupling them. NOTE:
+                            // this OVERLAPS the `!is_spread` gate in the
+                            // `eligible` chain (a spread move never records
+                            // ko_split/segments anyway); it stays here as the
+                            // BLUNT global disable — a spread hit on one
+                            // defender couples with a SINGLE-target hit on a
+                            // DIFFERENT defender that would otherwise collapse.
+                            if matches!(data::MOVES[mid as usize].target, 5 | 6 | 11) {
+                                any_global_couple = true; // spread
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Redirect effects present anywhere on the field (volatiles +
+        // abilities). Blunt field scan; doubles-relevant only, but the
+        // check is cheap and singles simply won't carry these.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(mon) = self.side(side).active_mon(slot) {
+                    if !mon.is_alive() {
+                        continue;
+                    }
+                    if mon.redirecting_this_turn() {
+                        any_global_couple = true;
+                    }
+                    match mon.effective_ability_id() {
+                        data::ability_id::LIGHTNINGROD
+                        | data::ability_id::STORMDRAIN
+                        | data::ability_id::SAPSIPPER => any_global_couple = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if any_global_couple {
+            return 0b1111;
+        }
+        // (1): ≥2 declared single-targets on one defender slot.
+        let mut counts = [0u8; 4];
+        for a in order.as_slice() {
+            let tgt = match a.choice {
+                Choice::Move { target, .. }
+                | Choice::Terastallize { target, .. }
+                | Choice::MegaEvolve { target, .. } => target,
+                _ => None,
+            };
+            if let Some(t) = tgt {
+                let bit = ResidualIndex::abs_slot(t.side, t.slot) as usize;
+                if bit < 4 {
+                    counts[bit] = counts[bit].saturating_add(1);
+                }
+            }
+        }
+        let mut mask = 0u8;
+        for (bit, &c) in counts.iter().enumerate() {
+            if c >= 2 {
+                mask |= 1 << bit;
+            }
+        }
+        mask
     }
 
     fn resolve_move_with_pending(
@@ -4649,6 +4824,18 @@ impl Battle {
                 let sub_risk = defender.substitute_hp() > 0;
                 let life_orb_active = life_orb;
                 let multihit = m.multihit_min > 0;
+                // Same-target coupling: if this defender is hit by ≥2 move-
+                // actions this turn, its damage rolls couple with the other
+                // hit's (the second hit's starting HP varies with the first
+                // hit's roll), so independent per-site hp_bucket collapse
+                // would drop reachable joint states. Disable collapse for
+                // multiply-targeted defenders — they fall back to full
+                // 16-roll enumeration, which + post-step canonical_hash
+                // dedup is provably correct.
+                let defender_coupled = {
+                    let bit = ResidualIndex::abs_slot(tside, tslot);
+                    bit < 4 && (self.multi_targeted_defenders & (1 << bit)) != 0
+                };
                 let eligible = !is_spread
                     && fixed_damage.is_none()
                     && !multihit
@@ -4657,8 +4844,14 @@ impl Battle {
                     && !endure_risk
                     && !sub_risk
                     && !life_orb_active
-                    && !defender_friend_guarded;
-                if eligible {
+                    && !defender_friend_guarded
+                    && !defender_coupled;
+                // GROUND-TRUTH TESTING KNOB (dev/audit): the thread-local
+                // `ko_split_disabled()` suppresses ko_split so the solver
+                // enumerates all 16 rolls. Lets the audit compare shipped
+                // ko_split against a truly-uncollapsed frontier in one
+                // process. Never set in production.
+                if eligible && !ko_split_disabled() {
                     Some(defender.current_hp)
                 } else {
                     None
@@ -6826,6 +7019,53 @@ impl Battle {
     /// set. Uses `hi` (the max-roll damage from `damage_range_for`) as
     /// the pre-roll base — equivalent to the formula's `damage * 100/100`
     /// at `MAX_ROLL`.
+    /// Partition the 16 damage rolls of a single-target single-hit site by
+    /// the defender's post-hit `hp_bucket` — the SAME `hp_bucket_coarse`
+    /// projection `canonical_hash` (and thus the solver TT) keys on. Returns
+    /// contiguous `(representative_roll, roll_count)` segments (≤8, usually
+    /// 1–3). Because `dmg(roll)` is monotone non-decreasing in `roll`, the
+    /// post-hit HP is monotone non-increasing, so equal-bucket rolls are
+    /// always a contiguous run and the segment list is ordered.
+    ///
+    /// Two rolls in one segment yield the same defender `hp_bucket` ⇒ the
+    /// same `canonical_hash`, so the enumerator collapsing them to one
+    /// representative reproduces the full 16-roll frontier bit-exactly
+    /// (both the set of states AND their probability mass). This is the fix
+    /// for the ko_split survivor-pin state-drop bug. Recording path only —
+    /// the up-to-16 `calculate_damage_with_bp` calls never touch the
+    /// Splitmix hot loop. `bp_override` threads Fickle Beam's doubled BP.
+    fn compute_damage_segments(
+        attacker: &Pokemon,
+        defender: &Pokemon,
+        move_id: u16,
+        ctx: crate::damage::DamageContext,
+        bp_override: Option<u32>,
+        defender_hp: u16,
+    ) -> crate::rng::DamageSegments {
+        let mut segs = [(0u8, 0u8); 16];
+        let mut len = 0usize;
+        let mut cur_bucket: u32 = u32::MAX;
+        let mut c = ctx;
+        for r in 0..16u8 {
+            c.roll = r;
+            let dmg = crate::damage::calculate_damage_with_bp(
+                attacker, defender, move_id, c, bp_override,
+            );
+            let post_hp = defender_hp.saturating_sub(dmg);
+            let bucket = crate::canonical_hash::hp_bucket_at(defender, post_hp);
+            if bucket != cur_bucket {
+                // Start a new segment; representative = this (first) roll.
+                debug_assert!(len < 16, "damage segments exceeded 16 rolls");
+                segs[len] = (r, 1);
+                len += 1;
+                cur_bucket = bucket;
+            } else {
+                segs[len - 1].1 += 1;
+            }
+        }
+        crate::rng::DamageSegments { segs, len: len as u8 }
+    }
+
     fn compute_ko_split(base_max: u16, defender_hp: u16) -> u8 {
         if defender_hp == 0 {
             // Defender already KO'd — degenerate; every roll trivially KOs.
@@ -6898,7 +7138,15 @@ impl Battle {
                 let r = match ko_split_hp {
                     Some(hp) => {
                         let k = Self::compute_ko_split(hi, hp);
-                        self.rng.damage_roll_hint_t(lo, hi, k)
+                        // Bit-exact frontier collapse: partition the 16 rolls
+                        // by the defender's post-hit hp_bucket (the SAME
+                        // function the TT keys on) and record one rep per
+                        // contiguous bucket-segment. Supersedes the lossy
+                        // ko_split survivor pinning that dropped states.
+                        let segs = Self::compute_damage_segments(
+                            attacker, defender, move_id, ctx, bp_override, hp,
+                        );
+                        self.rng.damage_roll_hint_seg(lo, hi, k, segs)
                     }
                     None => self.rng.damage_roll_hint(lo, hi),
                 };
@@ -12652,7 +12900,13 @@ impl Battle {
                         target: dec_target(last_tgt_enc),
                     },
                 };
+                // Instruct re-execution — a second hit that can couple with
+                // the original on the same defender. Conservatively disable
+                // damage collapse (full-enumerate) for the re-run.
+                let saved_couple = self.multi_targeted_defenders;
+                self.multi_targeted_defenders = 0b1111;
                 self.resolve_move_with_pending(action, pending_kind, true);
+                self.multi_targeted_defenders = saved_couple;
             }
             data::move_id::SWAGGER => {
                 // Swagger — PS data/moves.ts:swagger. A foe-targeting STATUS
@@ -36961,9 +37215,13 @@ mod tests {
             })
             .expect("Earthquake should have produced a damage roll");
         match damage_entry.space {
-            crate::rng::DrawSpace::UniformDamage { ko_split } => {
+            crate::rng::DrawSpace::UniformDamage { ko_split, segments } => {
                 assert!(ko_split.is_some());
                 assert_eq!(ko_split, Some(0));
+                // Clean OHKO → all rolls faint → one bucket-0 segment.
+                let s = segments.expect("eligible site records segments");
+                assert_eq!(s.len, 1);
+                assert_eq!(s.segs[0].1, 16);
             }
             _ => unreachable!(),
         }
