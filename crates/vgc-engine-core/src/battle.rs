@@ -2979,6 +2979,158 @@ impl Battle {
         mask
     }
 
+    /// PROVABLE-INDEPENDENCE gate for the solver's per-defender joint
+    /// collapse (mutual-focus tensor).
+    ///
+    /// The solver may collapse a coupled defender's own hit-group (its
+    /// damage rolls × crits) by the true post-hit `canonical_hash`, and
+    /// TENSOR the per-defender groups against each other, ONLY when the
+    /// groups are provably independent — i.e. the set of hits that land
+    /// this turn does NOT depend on any roll. That fails when an attacker
+    /// can be reduced to 0 HP (faint) by hits resolving BEFORE its own
+    /// action: whether its own hit lands then depends on the earlier
+    /// hits' rolls, coupling the groups through the roll dimension. (A
+    /// defender is also an attacker in the mirror, so this is the central
+    /// case, not an edge.)
+    ///
+    /// Returns `true` ⇒ the solver may tensor the coupled groups (SOUND);
+    /// `false` ⇒ the cell must be fully enumerated. Deny-by-default:
+    /// bails on anything not cheaply proven safe (spread / redirect /
+    /// Instruct / Ally Switch via the global-couple check, speed ties, a
+    /// possible pre-action faint, fixed-damage / OHKO moves, or any
+    /// non-move action in the mix).
+    ///
+    /// Conservative bounds (over-estimating incoming damage only ever makes
+    /// us BAIL, never wrongly tensor — the safe direction):
+    ///   - Incoming damage per hit is upper-bounded by `damage_range`'s MAX
+    ///     (top roll) × 3/2 (crit ≤ ×1.5 over the non-crit top roll for
+    ///     gen-9) × `multihit_max` (Dragon Darts / Population Bomb strike
+    ///     count).
+    ///   - Fixed-damage / OHKO / Counter-family moves bypass the formula,
+    ///     so `damage_range` does NOT bound them → BAIL on any of them.
+    ///   - Any speed tie (order not unique under the nonce) → BAIL; the tie
+    ///     is a separate ordering branch and "pre-action hits" would be
+    ///     ill-defined across it.
+    pub fn mutual_focus_tensor_safe(&self, p1: &[Choice], p2: &[Choice]) -> bool {
+        if self.format().active_count() < 2 {
+            return false;
+        }
+        // Build the resolved order under a throwaway RNG. Detect speed ties
+        // by rebuilding under a second nonce seed and comparing the SLOT
+        // sequence: the per-action tiebreak nonce is the ONLY thing that
+        // reorders equal-(priority, frac_pri, speed) actions, so a differing
+        // order ⇒ a real tie ⇒ bail.
+        let mut rng_a = Rng::new(0x1111_2222_3333_4444);
+        let order_a = crate::order::action_order(self, p1, p2, &mut rng_a);
+        let mut rng_b = Rng::new(0xAAAA_BBBB_CCCC_DDDD);
+        let order_b = crate::order::action_order(self, p1, p2, &mut rng_b);
+        if !Self::same_action_slots(&order_a, &order_b) {
+            return false; // speed tie present
+        }
+
+        // Global-couple bail (spread / redirect / Instruct / Ally Switch, or
+        // the rare all-four-slots-doubly-targeted): the blunt guard returns
+        // all bits set, which the per-defender grouping can't reason about.
+        if self.compute_coupled_targets(&order_a) == 0b1111 {
+            return false;
+        }
+
+        // Walk the order tracking max cumulative incoming damage per active
+        // slot from prior MOVE actions. If any attacker's own action is
+        // preceded by enough max-incoming to reach 0 HP, the hit set is
+        // roll-dependent → bail.
+        let mut max_incoming = [0u32; 4]; // abs-slot indexed
+        for act in order_a.as_slice() {
+            let (actor_slot, move_slot, target) = match act.choice {
+                Choice::Move { actor_slot, move_slot, target }
+                | Choice::Terastallize { actor_slot, move_slot, target }
+                | Choice::MegaEvolve { actor_slot, move_slot, target } => {
+                    (actor_slot, move_slot, target)
+                }
+                // Any non-move action (mid-turn Switch) changes the field for
+                // everything downstream — bail.
+                _ => return false,
+            };
+            let attacker_abs = ResidualIndex::abs_slot(act.side, actor_slot) as usize;
+            // Before this attacker acts, could it already be fainted?
+            if attacker_abs < 4 {
+                if let Some(mon) = self.side(act.side).active_mon(actor_slot as usize) {
+                    if (max_incoming[attacker_abs] as u16) >= mon.current_hp {
+                        return false; // possible pre-action faint → coupled
+                    }
+                } else {
+                    return false;
+                }
+            }
+            // Accumulate this hit's MAX damage onto its declared target.
+            let Some(tgt) = target else { continue };
+            let tbit = ResidualIndex::abs_slot(tgt.side, tgt.slot) as usize;
+            if tbit >= 4 {
+                continue;
+            }
+            let (Some(attacker), Some(defender)) = (
+                self.side(act.side).active_mon(actor_slot as usize),
+                self.side(tgt.side).active_mon(tgt.slot as usize),
+            ) else {
+                return false;
+            };
+            let mid = attacker.moves[(move_slot as usize).min(3)];
+            if (mid as usize) >= data::MOVES.len() {
+                return false; // Struggle / empty slot — unknown, bail.
+            }
+            // Fixed-damage / OHKO / Counter moves bypass the formula, so
+            // `damage_range` does NOT bound them; an under-count could wrongly
+            // certify a cell where a pre-action faint IS possible → silent
+            // state drop. Bail on any of them (same id sets the resolver uses
+            // at its fixed-damage / OHKO branches).
+            let is_fixed_or_ohko = matches!(
+                mid,
+                data::move_id::SEISMICTOSS | data::move_id::NIGHTSHADE
+                    | data::move_id::DRAGONRAGE | data::move_id::SONICBOOM
+                    | data::move_id::SUPERFANG | data::move_id::RUINATION
+                    | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
+                    | data::move_id::COUNTER | data::move_id::MIRRORCOAT
+                    | data::move_id::METALBURST
+                    | data::move_id::FISSURE | data::move_id::HORNDRILL
+                    | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD
+            );
+            if is_fixed_or_ohko {
+                return false;
+            }
+            let (_lo, hi) = crate::damage::damage_range(attacker, defender, mid);
+            // Crit upper bound: gen-9 crit is ×1.5 on the damage step; the top
+            // non-crit roll × 3/2 equals the top crit roll. Round up.
+            let mut max_hit = ((hi as u32) * 3 + 1) / 2;
+            // Multi-hit moves deliver up to `multihit_max` strikes; scale.
+            let mh = data::MOVES[mid as usize].multihit_max;
+            if mh > 1 {
+                max_hit = max_hit.saturating_mul(mh as u32);
+            }
+            max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
+        }
+        true
+    }
+
+    /// True iff two `ActionOrder`s schedule the same (side, actor_slot)
+    /// actions in the same sequence — the ordering-identity check the
+    /// speed-tie detector in [`Self::mutual_focus_tensor_safe`] needs.
+    /// Ignores the `choice` payload (targets are identical across the two
+    /// throwaway-RNG builds); only the SLOT SEQUENCE can differ, and only
+    /// under a speed tie.
+    fn same_action_slots(
+        a: &crate::order::ActionOrder,
+        b: &crate::order::ActionOrder,
+    ) -> bool {
+        let sa = a.as_slice();
+        let sb = b.as_slice();
+        if sa.len() != sb.len() {
+            return false;
+        }
+        sa.iter()
+            .zip(sb.iter())
+            .all(|(x, y)| x.side == y.side && x.actor_slot == y.actor_slot)
+    }
+
     fn resolve_move_with_pending(
         &mut self,
         action: ScheduledAction,
