@@ -47,6 +47,12 @@ fn ko_split_disabled() -> bool {
     KO_SPLIT_DISABLED.with(|d| d.get())
 }
 
+/// Read the current thread-local `ko_split_disabled` flag. Lets a caller
+/// (e.g. the solver's `exact_hp` guard) snapshot and later restore it.
+pub fn ko_split_disabled_state() -> bool {
+    KO_SPLIT_DISABLED.with(|d| d.get())
+}
+
 /// Per-Battle bitset index of which active slots currently carry residual
 /// state that fires during the EOT pipeline. One `u8` per residual family,
 /// one bit per absolute active slot:
