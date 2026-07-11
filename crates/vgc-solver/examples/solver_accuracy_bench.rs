@@ -954,6 +954,7 @@ fn prod_config(depth: u32) -> SolverConfig {
         lossy_damage_3bucket: false,
         use_action_independence_factoring: false,
         auto_lossy_damage_threshold: None,
+        exact_hp: false,
     }
 }
 
@@ -1153,6 +1154,32 @@ fn run_scenario(s: &Scenario, max_abs_delta: &mut f64) -> Row {
              TT error, or a collapse dropping/reweighting states).\n",
             s.name, s.kind, prod.value, ref_value, delta, VALUE_TOL
         );
+    }
+
+    // ── CHECK 1b: first-class `exact_hp` toggle == the lossless reference. ──
+    // The production pass above runs the shipped collapses ON (bit-exact for
+    // the frontier). This check validates the NEW `SolverConfig::exact_hp`
+    // path — which forces the fully-lossless enumeration (ko_split OFF, joint
+    // tensor OFF, 16 damage rolls) and BYPASSES the TT — against the SAME
+    // independent oracle. `exact_hp` is the caller-facing way to get exactly
+    // what `ref_solve` computes, so its value must match to 1e-9.
+    let exact_cfg = SolverConfig { exact_hp: true, ..prod_config(s.depth) };
+    let exact = endgame_solve(&prod_battle, &exact_cfg, hp_ratio_leaf);
+    let exact_delta = (exact.value - ref_value).abs();
+    if exact_delta >= VALUE_TOL {
+        panic!(
+            "\n\n*** EXACT_HP ACCURACY VIOLATION [{}] ({}) ***\n\
+             endgame_solve(exact_hp=true) value = {:.17}\n\
+             independent lossless reference     = {:.17}\n\
+             |Δ| = {:.3e}  (tolerance {:.0e})\n\
+             The exact-HP toggle must reproduce the lossless reference oracle\n\
+             bit-for-bit — a gap means the exact path is NOT actually lossless\n\
+             (a collapse fired or the TT merged distinct-HP survivors).\n",
+            s.name, s.kind, exact.value, ref_value, exact_delta, VALUE_TOL
+        );
+    }
+    if exact_delta > *max_abs_delta {
+        *max_abs_delta = exact_delta;
     }
 
     // ── CHECK 2: production root policy is an EQUILIBRIUM vs ref matrix. ──
