@@ -33,7 +33,9 @@ pub mod step_machine;
 pub mod terrain;
 pub mod weather;
 
-pub use battle::{set_ko_split_disabled, Battle, BattleConfig, StepResult};
+pub use battle::{
+    ko_split_disabled_state, set_ko_split_disabled, Battle, BattleConfig, StepResult,
+};
 pub use choice::{Choice, MoveSlot, Target};
 pub use damage::{
     calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
