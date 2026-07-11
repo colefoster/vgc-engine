@@ -3678,10 +3678,24 @@ impl Battle {
         // moves and tracksTarget bypass are handled internally. See
         // [`Battle::resolve_targets`] for the cited PS source.
         targets = self.resolve_targets(actor_side, actor_slot, move_id, &attacker, m, targets);
-        // Normally the spread flag is "the move actually hit >1 target".
-        // The `damage_only` / fast-calc API runs a Singles synthetic
-        // battle but can request the Doubles spread multiplier via
-        // `force_is_spread` — honor that override when present.
+        // Spread flag: PS latches the ×0.75 spread modifier off the number of
+        // LIVE targets remaining after fainted/absent slots are pruned — NOT
+        // the move's declared target type. In `sim/battle-actions.ts:546`
+        // `move.spreadHit` is set only `if (targets.length > 1 && !move.smartTarget)`,
+        // where `targets` comes from `getMoveTargets` (line 467) → `adjacentFoes()`
+        // / `adjacentAllies()` → `side.foes()`/`side.allies()`, which filter
+        // `!!ally.hp` (`sim/side.ts:391`) and so drop fainted/empty slots BEFORE
+        // the flag is computed. The flag is then read once in `modifyDamage`
+        // (`sim/battle-actions.ts:1737`) with no recount. Consequence: in
+        // doubles a spread move whose second target is already fainted/absent
+        // sees `targets.length == 1`, so PS does NOT set `spreadHit` and the
+        // lone survivor takes FULL single-target damage. `enumerate_targets`
+        // above already prunes dead targets the same way (its `alive` closure),
+        // so `targets.len() > 1` here is byte-identical to PS's rule.
+        //
+        // The `damage_only` / fast-calc API runs a Singles synthetic battle
+        // but can request the Doubles spread multiplier via `force_is_spread`
+        // — honor that override when present.
         let is_spread = self.force_is_spread.unwrap_or(targets.len() > 1);
 
         // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
@@ -24282,6 +24296,92 @@ mod tests {
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
+    }
+
+    #[test]
+    fn spread_modifier_drops_when_only_one_live_target_remains() {
+        // PS parity: the ×0.75 spread modifier keys off the number of LIVE
+        // targets after fainted/absent slots are pruned, NOT the declared
+        // target type. `sim/battle-actions.ts:546` sets `move.spreadHit` only
+        // `if (targets.length > 1)`, and `getMoveTargets` → `adjacentFoes()` →
+        // `side.foes()` already filters `!!ally.hp` (`sim/side.ts:391`). So a
+        // spread move (Rock Slide / allAdjacentFoes) hitting exactly ONE live
+        // foe in doubles is treated as SINGLE-target: NO 0.75×, full damage.
+        //
+        // This test guards against the tempting-but-wrong "fix" of latching
+        // spread off the move's target type: it must FAIL if someone applies
+        // 0.75× to a lone survivor.
+        //
+        // Rock Slide in two doubles battles:
+        //   A) both foes alive       → survivor slot 1 takes the SPREAD hit (0.75×)
+        //   B) foe slot 0 pre-fainted → survivor slot 1 is the ONLY live target,
+        //                               so it takes FULL single-target damage.
+        // Correct PS behavior: B deals strictly MORE than A (dropped the 0.75×).
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","item":"lifeorb","nature":"adamant","moves":["rockslide","crunch","earthquake","dragondance"],"evs":{"atk":252,"spe":252,"hp":4}},
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"focussash","nature":"jolly","moves":["dragonclaw","earthquake","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"focussash","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"],"evs":{"hp":252,"def":252}},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"leftovers","nature":"careful","moves":["bodyslam","crunch","rest","yawn"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+
+        // Battle A: both foes alive.
+        let mut a = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        let snor_full_a = a.p2.team[1].current_hp;
+        a.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let snor_dmg_both = snor_full_a - a.p2.team[1].current_hp;
+
+        // Battle B: foe slot 0 (Pikachu) pre-fainted so Snorlax is the ONLY
+        // target Rock Slide can hit.
+        let mut bt = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 7 },
+            TeamBuilder::from_json(p1_json).unwrap(),
+            TeamBuilder::from_json(p2_json).unwrap(),
+        );
+        bt.p2.team[0].current_hp = 0; // Pikachu already down
+        let snor_full_b = bt.p2.team[1].current_hp;
+        bt.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Pass { actor_slot: 1 },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let snor_dmg_lone = snor_full_b - bt.p2.team[1].current_hp;
+
+        assert!(snor_dmg_both > 0, "sanity: Snorlax took Rock Slide in battle A");
+        assert!(snor_dmg_lone > 0, "sanity: Snorlax took Rock Slide in battle B");
+        // Lone live target ⇒ spreadHit unset ⇒ full damage, strictly MORE than
+        // the 0.75× spread hit when both foes were present. Matches PS
+        // `battle-actions.ts:546` (`targets.length > 1`).
+        assert!(
+            snor_dmg_lone > snor_dmg_both,
+            "lone-survivor spread move must drop the ×0.75 (full damage): \
+             lone={}, both={}",
+            snor_dmg_lone, snor_dmg_both
+        );
+        // The "both" case is the spread-reduced value (≈0.75× the lone hit);
+        // the ratio sits in a tight band around 0.75 (Life Orb's own pokeRound
+        // chains alongside the ×0.75, so it's not exactly 3/4). Assert the
+        // reduction is in the spread ballpark, not a 1-HP nudge.
+        let ratio_x100 = snor_dmg_both as u32 * 100 / snor_dmg_lone as u32;
+        assert!(
+            (70..=80).contains(&ratio_x100),
+            "both/lone should be ≈0.75 (spread modifier), got {}/100 \
+             (both={}, lone={})",
+            ratio_x100, snor_dmg_both, snor_dmg_lone
+        );
     }
 
     #[test]
