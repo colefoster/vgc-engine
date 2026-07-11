@@ -144,6 +144,12 @@ fn joint_collapse_disabled() -> bool {
     JOINT_COLLAPSE_DISABLED.with(|d| d.get())
 }
 
+/// Read the current thread-local `joint_collapse_disabled` flag. Lets a caller
+/// (e.g. the solver's `exact_hp` guard) snapshot and later restore it.
+pub fn joint_collapse_disabled_state() -> bool {
+    JOINT_COLLAPSE_DISABLED.with(|d| d.get())
+}
+
 /// Read + clear the "joint collapse engaged" flag for the last enumerate
 /// call on this thread. Audit-only.
 pub fn take_joint_collapse_engaged() -> bool {
