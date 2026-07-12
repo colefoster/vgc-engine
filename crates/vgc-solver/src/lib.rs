@@ -47,11 +47,16 @@
 //!
 //! ## Known v1 limitations
 //!
-//! - **Tiebreak marginalized.** `DrawSpace::Tiebreak` has a 2^64 space; the
-//!   enumerator collapses it to the single value the recorder drew. When
-//!   speeds are equal, the alternate ordering will not appear in the
-//!   frontier. Real ties are uncommon at the endgame; a future PR can
-//!   binary-enumerate when speeds tie.
+//! - **Tiebreak: 2-way binary-enumerated, ≥3-way under-enumerated.** A
+//!   genuine speed tie now records a Fisher-Yates `tiebreak_shuffle` draw per
+//!   adjacent tied pair (engine `order.rs`, PS `prng.shuffle`). For the
+//!   dominant 2-way tie `expand` binary-enumerates both orderings (½ each)
+//!   by flipping the drawn value's low bit — the swap decision `v % 2`. A
+//!   no-tie turn records ZERO tiebreak draws, so nothing to expand.
+//!   ≥3-way ties (a group of ≥3 identical-speed actors) draw `k-1` shuffle
+//!   values; `expand` still yields only 2 branches per draw, so those
+//!   orderings under-enumerate — astronomically rare at the endgame; a
+//!   future PR can enumerate the full `k!` orderings.
 //!
 //! - **Full percent enumeration.** `UniformPercent` expands to 100
 //!   outcomes per site; dedup collapses them but the step calls are paid.
@@ -291,15 +296,20 @@ fn expand(space: DrawSpace, drawn: RngEvent, opts: EnumerateOpts) -> Vec<(RngEve
         ],
         DrawSpace::Tiebreak { speeds_tied } => {
             if speeds_tied {
-                // PR-E: at a real speed tie the nonce is the deciding sort
-                // key, so binary-enumerate both orderings (1/2 each). The
-                // recorded value covers one branch; the alt value
-                // comparator-flips against the partner tied entry's
-                // recorded nonce (`0` vs `u64::MAX` straddle every other
-                // recorded u64).
+                // A real speed tie is now resolved by a single Fisher-Yates
+                // `tiebreak_shuffle` draw per adjacent tied pair (PS
+                // `prng.shuffle`), which the engine reduces `v % span` to a
+                // swap index. For the dominant 2-way tie (span = 2) the swap
+                // decision is exactly `v & 1`, so binary-enumerate both
+                // orderings (1/2 each) by flipping the LOW BIT of the drawn
+                // value — this guarantees `drawn` and `alt` land on opposite
+                // swap outcomes (the old `0`/`u64::MAX` straddle collided for
+                // even non-zero draws). ≥3-way ties (astronomically rare in
+                // the endgame) still under-enumerate to 2 branches — a
+                // documented v1 limitation.
                 let alt = match drawn {
-                    RngEvent::Tiebreak(0) => RngEvent::Tiebreak(u64::MAX),
-                    _ => RngEvent::Tiebreak(0),
+                    RngEvent::Tiebreak(v) => RngEvent::Tiebreak(v ^ 1),
+                    other => other,
                 };
                 vec![(drawn, 1, 2), (alt, 1, 2)]
             } else {
@@ -1651,19 +1661,19 @@ mod tests {
             other => panic!("expected Tiebreak event, got {other:?}"),
         };
         assert_ne!(v0, v1, "alt branch must carry a different nonce");
-        // And the alt is one of the comparator-straddle sentinels so it
-        // flips against any other recorded u64 the partner draw might
-        // carry.
+        // The alt flips the LOW BIT of the drawn value — the swap decision
+        // is `v % 2` for a 2-way Fisher-Yates step, so the two branches must
+        // differ in bit 0 to land on opposite orderings.
+        assert_ne!(v0 & 1, v1 & 1, "alt nonce must flip the low bit (swap decision)");
         let alt = if v0 == 0xABCD_1234_DEAD_BEEF { v1 } else { v0 };
-        assert!(
-            alt == 0 || alt == u64::MAX,
-            "alt nonce should be 0 or u64::MAX (comparator-flip sentinel); got {alt}",
+        assert_eq!(
+            alt, 0xABCD_1234_DEAD_BEEF ^ 1,
+            "alt nonce should be drawn ^ 1; got {alt}",
         );
     }
 
-    /// Drawn == 0 ⇒ alt branch picks `u64::MAX` (the other straddle
-    /// sentinel) — verifies the branch picks a *different* sentinel even
-    /// when the recorder happened to draw the lower one.
+    /// Drawn == 0 ⇒ alt branch is `0 ^ 1 = 1`, flipping the swap-decision
+    /// low bit so the two branches produce opposite orderings.
     #[test]
     fn expand_tiebreak_with_tie_drawn_zero_picks_max_alt() {
         let drawn = RngEvent::Tiebreak(0);
@@ -1674,7 +1684,7 @@ mod tests {
         );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0, RngEvent::Tiebreak(0));
-        assert_eq!(out[1].0, RngEvent::Tiebreak(u64::MAX));
+        assert_eq!(out[1].0, RngEvent::Tiebreak(1));
     }
 
     /// Frontier-level: when two attackers have IDENTICAL effective speeds
@@ -1709,9 +1719,11 @@ mod tests {
             .iter()
             .filter(|d| matches!(d.space, DrawSpace::Tiebreak { speeds_tied: true }))
             .count();
-        assert!(
-            tied_count >= 2,
-            "expected at least 2 speeds_tied=true Tiebreak entries (one per tied actor), got {tied_count}; log: {log:#?}",
+        // A 2-way tie is one Fisher-Yates shuffle step → exactly ONE
+        // speeds_tied=true draw (PS `prng.shuffle` draws k-1 = 1 for k=2).
+        assert_eq!(
+            tied_count, 1,
+            "expected exactly 1 speeds_tied=true Tiebreak entry for a 2-way tie, got {tied_count}; log: {log:#?}",
         );
 
         // No-tie control: cripple P2's speed with a Speed-debuffing nature
