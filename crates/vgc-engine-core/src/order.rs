@@ -9,7 +9,11 @@
 //!        - priority bracket (desc) — Fake Out +3 before Tackle 0 before
 //!          Trick Room −7
 //!        - effective speed (desc) — boosts applied, paralysis halved
-//!        - RNG nonce (consistent tiebreak; coin flip in expectation)
+//!        - genuine speed ties broken by a Fisher-Yates shuffle that draws
+//!          RNG ONLY when ≥2 actions share the full sort key — mirroring PS
+//!          `speedSort` (`sim/battle.ts:428`) + `prng.shuffle`
+//!          (`sim/prng.ts:150`). A fully speed-ordered turn draws ZERO
+//!          tie-RNG, keeping the downstream stream in phase with PS.
 //!   3. End-of-turn effects (its own PR).
 //!
 //! Deferred to subsequent PRs (each adds a single multiplier or override
@@ -264,30 +268,38 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
 
 /// One move action's sort key plus the action itself:
 /// (negative priority, fractional-priority sub-bucket, signed speed key,
-/// RNG nonce, action) — sorted ascending. `frac_pri` resolves Custap Berry
-/// (= -1, "first in bracket") vs Lagging Tail / Full Incense (= +1, "last
-/// in bracket"); default 0. PS analog: `onFractionalPriority`.
-type MoveEntry = (i32, i8, i64, u64, ScheduledAction);
+/// queue index, action) — sorted ascending. `frac_pri` resolves Custap
+/// Berry (= -1, "first in bracket") vs Lagging Tail / Full Incense (= +1,
+/// "last in bracket"); default 0. PS analog: `onFractionalPriority`.
+///
+/// The trailing `queue_index` is the action's original insertion position.
+/// It is the FINAL sort key, so `sort_unstable_by_key` is deterministic
+/// (replacing the old injective RNG nonce) WITHOUT drawing any RNG — and it
+/// is *excluded* from the tie-group key so genuinely speed-tied actions
+/// still land adjacent and get shuffled. PS's `comparePriority`
+/// (`sim/battle.ts:404`) has the analogous `subOrder`/`effectOrder` tail.
+type MoveEntry = (i32, i8, i64, u16, ScheduledAction);
 
 /// Compute the [`MoveEntry`] sort key for one queued move/terastallize.
 ///
-/// Consumes exactly one `rng.next_u64()` (the tiebreak nonce) and, for a
-/// Quick Claw holder with a priority-≤0 move, one extra `rng.range(5)`
-/// draw — in that order. Shared by both `action_order` code paths so the
-/// RNG stream is identical regardless of which path runs.
+/// Draws NO speed-tie RNG (that now happens once per genuine tie group in
+/// [`shuffle_tie_groups`], matching PS). It *may* still draw, for a Quick
+/// Claw holder with a priority-≤0 move, one `rng.range(5)`, and for a Quick
+/// Draw holder on a non-Status move, one `rng.percent_1_100_t(30)` — those
+/// fractional-priority draws are UNCHANGED and fire exactly as before (PS
+/// `onFractionalPriority`; see [`feedback_ps_draws_then_vetoes`]). Shared by
+/// both `action_order` code paths so the RNG stream is identical regardless
+/// of which path runs.
 ///
-/// The recorded tiebreak draw initially carries
-/// `DrawSpace::Tiebreak { speeds_tied: false }`. After every entry is
-/// scheduled, [`mark_tied_tiebreaks`] flips the flag to `true` on the
-/// entries whose `(priority, frac_pri, speed_key)` matches another
-/// entry's — i.e. the ones where the nonce is the deciding sort key. The
-/// drawn nonce value is never altered. PR-E.
+/// `queue_index` is the action's original insertion position, threaded
+/// through as the final (RNG-free) sort key for deterministic grouping.
 fn schedule_move(
     battle: &Battle,
     side: SideRef,
     actor_slot: u8,
     move_slot: u8,
     choice: Choice,
+    queue_index: u16,
     rng: &mut Rng,
 ) -> MoveEntry {
     let trick_room = battle.trick_room_turns > 0;
@@ -439,49 +451,59 @@ fn schedule_move(
         -priority,
         frac_pri,
         speed_key,
-        rng.next_u64(),
+        queue_index,
         ScheduledAction { side, actor_slot, choice },
     )
 }
 
-/// After every move entry has been scheduled, identify entries that share
-/// `(priority, frac_pri, speed_key)` with at least one other entry — i.e.
-/// the tiebreak nonce is the only thing deciding their order — and patch
-/// the matching `DrawSpace::Tiebreak { speeds_tied }` flag on the recording
-/// RNG log from `false` to `true`. PR-E.
+/// Break genuine speed ties in the **already-sorted** move slice with an
+/// in-place Fisher-Yates shuffle, drawing RNG ONLY on real ties — the exact
+/// PS behavior:
+///   * `speedSort` (`sim/battle.ts:428`) selection-sorts, and shuffles a
+///     block only when `nextIndexes.length > 1` (≥2 actions share the full
+///     sort key) — `sim/battle.ts:455`.
+///   * `prng.shuffle` (`sim/prng.ts:150`) is Fisher-Yates left-to-right:
+///     for a tie group of size `k` it draws exactly `k-1` values
+///     (`random(i, end)`, `sim/prng.ts:152`); the rightmost element draws
+///     nothing.
+/// A turn with no genuine tie draws ZERO RNG here, so the downstream damage
+/// / crit / secondary stream stays in phase with PS (the whole point of
+/// this PR). Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Speed#Speed_ties>.
 ///
-/// This is metadata only: the nonce values are NOT redrawn, so the engine's
-/// RNG stream is byte-identical to the pre-PR-E behavior whether or not a
-/// real tie exists. The flag exists solely so the outcome-frontier
-/// enumerator can binary-expand the 2^64 nonce space into two equally-
-/// weighted orderings when (and only when) speeds genuinely tied.
-fn mark_tied_tiebreaks(entries: &[MoveEntry], rng: &mut Rng) {
-    if entries.len() < 2 {
+/// `entries` must be pre-sorted by `(prio, frac_pri, speed_key, queue_idx)`
+/// so tie groups are contiguous runs. Runs are processed front-to-back —
+/// the same order PS's selection sort finds them — so the draw ORDER (not
+/// just count) matches. Heap-free: operates in place on the caller's fixed
+/// buffer; only `next_u64`-sized locals.
+fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
+    let n = entries.len();
+    if n < 2 {
         return; // can't tie with yourself
     }
-    // The heap-spill `action_order` branch only fires for offline replay
-    // scoring where the recording / oracle-miss layer is never installed;
-    // falling back to a no-op there is safe (and keeps this helper
-    // stack-bounded by ACTION_INLINE_CAP).
-    if entries.len() > ACTION_INLINE_CAP {
-        return;
+    // Key that defines a genuine tie: everything the games compare EXCEPT
+    // the deterministic queue-index tail. (prio, frac_pri, speed_key).
+    let key = |e: &MoveEntry| (e.0, e.1, e.2);
+    let mut start = 0usize;
+    while start < n {
+        // Extend the run while the tie key matches.
+        let mut end = start + 1;
+        while end < n && key(&entries[end]) == key(&entries[start]) {
+            end += 1;
+        }
+        let len = end - start;
+        if len >= 2 {
+            // Fisher-Yates, left-to-right; `k-1` draws (rightmost gets none).
+            for i in start..end - 1 {
+                let span = (end - i) as u64; // ≥ 2
+                let v = rng.tiebreak_shuffle();
+                let j = i + (v % span) as usize;
+                if j != i {
+                    entries.swap(i, j);
+                }
+            }
+        }
+        start = end;
     }
-    let mut flags: [bool; ACTION_INLINE_CAP] = [false; ACTION_INLINE_CAP];
-    let mut any_tied = false;
-    let n = entries.len();
-    for i in 0..n {
-        let (p, f, s, _, _) = entries[i];
-        let tied = entries
-            .iter()
-            .enumerate()
-            .any(|(j, e)| j != i && e.0 == p && e.1 == f && e.2 == s);
-        flags[i] = tied;
-        any_tied |= tied;
-    }
-    if !any_tied {
-        return; // hot-path early exit; no log patch needed
-    }
-    rng.patch_recent_tiebreak_flags(&flags[..n]);
 }
 
 /// Resolve one turn's action order.
@@ -505,6 +527,7 @@ pub fn action_order(
     if p1.len() + p2.len() > ACTION_INLINE_CAP {
         let mut switches: Vec<ScheduledAction> = Vec::new();
         let mut moves: Vec<MoveEntry> = Vec::new();
+        let mut queue_index: u16 = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             for c in choices {
                 match *c {
@@ -516,14 +539,17 @@ pub fn action_order(
                     | Choice::Terastallize { actor_slot, move_slot, .. }
                     | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         moves.push(schedule_move(
-                            battle, side, actor_slot, move_slot, *c, rng,
+                            battle, side, actor_slot, move_slot, *c, queue_index, rng,
                         ));
+                        queue_index += 1;
                     }
                 }
             }
         }
-        mark_tied_tiebreaks(&moves, rng);
+        // Sort into contiguous tie groups (queue-index tail = deterministic,
+        // RNG-free), THEN shuffle genuine ties in place.
         moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
+        shuffle_tie_groups(&mut moves, rng);
         let mut v = switches;
         v.extend(moves.into_iter().map(|t| t.4));
         return ActionOrder::Heap(v);
@@ -549,19 +575,22 @@ pub fn action_order(
                 Choice::Move { actor_slot, move_slot, .. }
                 | Choice::Terastallize { actor_slot, move_slot, .. }
                 | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
-                    moves[n_move] =
-                        schedule_move(battle, side, actor_slot, move_slot, *c, rng);
+                    moves[n_move] = schedule_move(
+                        battle, side, actor_slot, move_slot, *c, n_move as u16, rng,
+                    );
                     n_move += 1;
                 }
             }
         }
     }
 
-    mark_tied_tiebreaks(&moves[..n_move], rng);
-    // The `rng.next_u64()` nonce makes every key unique, so unstable sort
-    // produces the same ordering as the prior stable `sort_by_key` — and
-    // `sort_unstable_by_key` never heap-allocates (stable sort can).
+    // Sort into contiguous tie groups first. The `queue_index` tail makes
+    // every key unique, so `sort_unstable_by_key` is deterministic (it
+    // replaces the old injective RNG nonce) and never heap-allocates.
     moves[..n_move].sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
+    // THEN break genuine ties with a PS-faithful Fisher-Yates shuffle that
+    // draws RNG only when ≥2 actions share the full sort key.
+    shuffle_tie_groups(&mut moves[..n_move], rng);
     let mut out = ActionOrder::new();
     for s in &switches[..n_switch] {
         out.push(*s);
@@ -1083,5 +1112,98 @@ mod tests {
         let first_g = order_g.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap();
         assert_eq!(first_g.side, SideRef::P1,
                    "Grassy Terrain: Grassy Glide should out-prioritize Flutter Mane");
+    }
+
+    // ---- PS-faithful speed-tie shuffle: draw RNG only on a genuine tie ----
+
+    /// Count the speed-tie shuffle draws recorded for one `action_order`
+    /// call. Uses the `Recording` RNG so every draw site is logged; the new
+    /// `tiebreak_shuffle` draws tag `speeds_tied: true`.
+    fn count_tie_draws(b: &Battle, p1: &[Choice], p2: &[Choice]) -> usize {
+        use crate::rng::DrawSpace;
+        let mut rng = Rng::recording(0xDEAD_BEEF);
+        let _ = action_order(b, p1, p2, &mut rng);
+        rng.recording_log()
+            .unwrap()
+            .iter()
+            .filter(|d| matches!(d.space, DrawSpace::Tiebreak { .. }))
+            .count()
+    }
+
+    #[test]
+    fn no_tie_turn_draws_zero_tie_rng() {
+        // Fully speed-ordered turn: Flutter Mane (135) > Garchomp (102) >
+        // Iron Hands (50), all priority 0. No two actions share a sort key,
+        // so PS `speedSort` shuffles nothing — the engine must draw ZERO
+        // tie-RNG (the whole point of this PR: keep the stream in phase).
+        let b = make_battle();
+        let p1 = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
+            Choice::Pass { actor_slot: 1 },
+        ];
+        let p2 = [
+            Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+        ];
+        assert_eq!(
+            count_tie_draws(&b, &p1, &p2),
+            0,
+            "a fully speed-ordered turn must draw zero tie-RNG",
+        );
+    }
+
+    /// A pair of mirror Garchomps with identical spreads → genuine speed
+    /// tie. Both queue priority-0 Earthquake.
+    fn tied_mirror_battle() -> Battle {
+        const MIRROR: &str = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"lifeorb","nature":"adamant","moves":["earthquake","dragonclaw","protect","ironhead"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(MIRROR).unwrap();
+        let p2 = TeamBuilder::from_json(MIRROR).unwrap();
+        Battle::new(BattleConfig { format: crate::format::Format::Singles, seed: 1 }, p1, p2)
+    }
+
+    #[test]
+    fn genuine_two_way_tie_draws_exactly_one_value() {
+        // PS `prng.shuffle` draws k-1 = 1 value for a 2-way tie group.
+        let b = tied_mirror_battle();
+        let p1 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let p2 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }];
+        assert_eq!(
+            count_tie_draws(&b, &p1, &p2),
+            1,
+            "a genuine 2-way speed tie must draw exactly one shuffle value",
+        );
+    }
+
+    #[test]
+    fn genuine_two_way_tie_both_orderings_reachable() {
+        // Sweep seeds: the shuffle must land P1-first on some, P2-first on
+        // others (a real coin flip, not a fixed order).
+        let b = tied_mirror_battle();
+        let p1 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let p2 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }];
+        let mut p1_first = 0;
+        let mut p2_first = 0;
+        for seed in 0..200u64 {
+            let mut rng = Rng::new(seed);
+            let order = action_order(&b, &p1, &p2, &mut rng);
+            match order[0].side {
+                SideRef::P1 => p1_first += 1,
+                SideRef::P2 => p2_first += 1,
+            }
+        }
+        assert!(p1_first > 0 && p2_first > 0,
+            "both tie orderings must be reachable (P1-first={p1_first}, P2-first={p2_first})");
+    }
+
+    #[test]
+    fn tie_shuffle_is_deterministic_for_same_seed() {
+        let b = tied_mirror_battle();
+        let p1 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let p2 = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }];
+        let a = action_order(&b, &p1, &p2, &mut Rng::new(777));
+        let c = action_order(&b, &p1, &p2, &mut Rng::new(777));
+        assert_eq!(a, c, "same seed must yield the same tie ordering");
     }
 }

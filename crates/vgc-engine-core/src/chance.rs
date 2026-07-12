@@ -266,14 +266,17 @@ fn expand(space: DrawSpace, drawn: RngEvent) -> Vec<(RngEvent, u32, u32)> {
         ],
         DrawSpace::Tiebreak { speeds_tied } => {
             if speeds_tied {
-                // PR-E: at a real speed tie the nonce is the deciding sort
-                // key, so binary-enumerate both orderings. The recorded
-                // value covers one branch; the alt value comparator-flips
-                // against the partner tied entry's recorded nonce (`0` vs
-                // `u64::MAX` straddle every other recorded u64).
+                // A real speed tie is resolved by a single Fisher-Yates
+                // `tiebreak_shuffle` draw per adjacent tied pair (PS
+                // `prng.shuffle`), reduced `v % span` to a swap index. For
+                // the dominant 2-way tie (span = 2) the swap decision is
+                // `v & 1`, so binary-enumerate both orderings by flipping the
+                // LOW BIT — guaranteeing `drawn`/`alt` land on opposite swap
+                // outcomes. (≥3-way ties under-enumerate to 2 branches — a
+                // documented, astronomically rare endgame limitation.)
                 let alt = match drawn {
-                    RngEvent::Tiebreak(0) => RngEvent::Tiebreak(u64::MAX),
-                    _ => RngEvent::Tiebreak(0),
+                    RngEvent::Tiebreak(v) => RngEvent::Tiebreak(v ^ 1),
+                    other => other,
                 };
                 vec![(drawn, 1, 2), (alt, 1, 2)]
             } else {
