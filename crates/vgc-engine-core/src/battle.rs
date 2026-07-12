@@ -734,6 +734,33 @@ impl Battle {
         self.cached_terrain = self.recompute_effective_terrain();
     }
 
+    /// Recompute every `#[serde(skip)]` derived cache from canonical state.
+    ///
+    /// These caches (`cached_weather` / `cached_terrain` on `Battle`, and
+    /// `move_locks` / `can_mega_evolve` on each `Pokemon`) are excluded from
+    /// the wire format because they are pure functions of serialized fields.
+    /// `#[derive(Deserialize)]` leaves them at their `Default` (`0` / `false`)
+    /// after a round-trip, so a restored `Battle` MUST rehydrate them or the
+    /// caches silently disagree with live state — `legal_choices` would skip
+    /// the move-lock cascade on an Encored/Disabled mon and offer illegal
+    /// moves, and the `resolve_end_of_turn` debug-rescan would (correctly)
+    /// fire. This is invoked from the manual `Deserialize for Battle` impl so
+    /// every deserialize path (fuzz round-trip, pyo3 `from_json`, solver TT)
+    /// gets coherent caches for free.
+    ///
+    /// `cached_weather` / `cached_terrain` additionally have a top-of-`step`
+    /// safety net (`sync_weather_terrain_cache`), but `move_locks` /
+    /// `can_mega_evolve` do not — so this is their only rehydration hook.
+    pub fn rehydrate_caches(&mut self) {
+        self.sync_weather_terrain_cache();
+        for side in [SideRef::P1, SideRef::P2] {
+            for mon in self.side_mut(side).team.iter_mut() {
+                mon.sync_move_locks();
+                mon.sync_can_mega_evolve();
+            }
+        }
+    }
+
     /// PR-LC1: public weather setter used by tests/fixtures that need
     /// to install a weather state directly (no on-move duration logic).
     /// Production code paths (`set_weather_from_move`, Sand Spit, the
@@ -37531,6 +37558,62 @@ mod tests {
         assert!(
             b2.p1.team[0].item_suppressed,
             "item_suppressed round-trips"
+        );
+    }
+
+    #[test]
+    fn serde_round_trip_rehydrates_derived_caches() {
+        // PR-LC3: `move_locks` / `can_mega_evolve` (and the weather/terrain
+        // caches) are `#[serde(skip)]`. A raw `from_str` leaves them at their
+        // Default, which silently disagrees with live state — `legal_choices`
+        // would skip the move-lock cascade on an Encored mon and offer an
+        // illegal move. `Battle::rehydrate_caches` (called from every
+        // production deserialize path) must recompute them.
+        let p1 = r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","nature":"timid","moves":["encore","tailwind","moonblast","protect"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditex","nature":"adamant","moves":["flareblitz","dragonclaw","protect","roost"]}
+        ]"#;
+        let mut b = singles(p1, p2);
+        // Put P1.0 under Encore (sets the MOVE_LOCK_ENCORE bit live).
+        b.p1.team[0].set_encore(3, 1);
+        assert_ne!(b.p1.team[0].move_locks, 0, "sanity: Encore set the lock bit");
+        // P2.0 holds a mega stone → can_mega_evolve is live-true.
+        assert!(
+            b.p2.team[0].can_mega_evolve,
+            "sanity: Charizardite X holder can mega-evolve"
+        );
+
+        let json = serde_json::to_string(&b).expect("serialize");
+
+        // Raw deserialize: caches come back at Default (the latent bug).
+        let raw: Battle = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            raw.p1.team[0].move_locks, 0,
+            "raw deserialize drops the skipped move_locks cache to Default"
+        );
+        assert!(
+            !raw.p2.team[0].can_mega_evolve,
+            "raw deserialize drops the skipped can_mega_evolve cache to Default"
+        );
+
+        // After rehydration the caches match a fresh recompute from canonical
+        // state (the volatiles / item survived the round-trip).
+        let mut fixed: Battle = serde_json::from_str(&json).expect("deserialize");
+        fixed.rehydrate_caches();
+        assert_eq!(
+            fixed.p1.team[0].move_locks,
+            crate::pokemon::MOVE_LOCK_ENCORE,
+            "rehydrate recomputes move_locks from the surviving Encore volatile"
+        );
+        assert!(
+            fixed.p1.team[0].encore_turns() > 0,
+            "the Encore volatile itself survived the round-trip"
+        );
+        assert!(
+            fixed.p2.team[0].can_mega_evolve,
+            "rehydrate recomputes can_mega_evolve from the surviving item/species"
         );
     }
 
