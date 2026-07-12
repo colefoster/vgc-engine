@@ -23,8 +23,8 @@
 use std::collections::{HashMap, HashSet};
 
 use vgc_engine_core::{
-    set_ko_split_disabled, Battle, BattleConfig, Choice, Format, SideRef, Status, Target,
-    TeamBuilder,
+    set_crit_refine_disabled, set_ko_split_disabled, Battle, BattleConfig, Choice, Format,
+    SideRef, Status, Target, TeamBuilder,
 };
 use vgc_solver::{
     enumerate_outcomes_with, set_joint_collapse_disabled, take_joint_collapse_engaged,
@@ -541,32 +541,46 @@ fn spread_two_grounded_singleton_min_reduction() {
     assert!(on * 16 < full, "spread segmentation not load-bearing: on={on} full={full}");
 }
 
-// ---------------------------------------------------------------------------
-// PRE-EXISTING crit x segment hole (DISCOVERED, NOT introduced by Phase 1).
+// ===========================================================================
+// CRIT-CONDITIONAL damage segments (soundness fix). The damage roll and the
+// crit hit/miss are recorded as SEPARATE draw sites; the solver
+// cross-products them independently. A crit multiplies damage (×1.5 + crit
+// boost-ignoring), so a roll can land in a DIFFERENT hp_bucket under crit than
+// under non-crit. `compute_damage_segments` now partitions on the COMMON
+// REFINEMENT of the crit-false and crit-true bucket sequences, so every roll
+// in a segment shares its bucket under BOTH crit values → the
+// (segment-rep × {crit,no-crit}) cross-product is bit-exact.
 //
-// The flat segment collapse records the roll->hp_bucket partition at ONE crit
-// value (the recorder-drawn one) and the solver cross-products that partition
-// against the independent Crit site. When a CRIT pushes a survivor across an
-// hp_bucket boundary that the non-crit partition does NOT split at, the
-// crit-branch's extra bucket has no representative and its state is dropped.
-//
-// This is present on `main` for SINGLE-TARGET hits (is_spread == false) — the
-// `*_single_target_*` fixture proves it — so it is orthogonal to spread
-// segmentation. Phase 1 inherits it to the exact same degree; it does not make
-// it worse. Both fixtures are `#[ignore]` + `#[should_panic]` REGRESSION
-// MARKERS: they document the hole and will start failing (forcing this comment
-// to be revisited) once the crit-conditional-segment fix lands.
-// ---------------------------------------------------------------------------
+// Before the fix these cells dropped the crit-branch's extra bucket
+// (per-canonical-hash L1 ≈ 0.036). Each fixture below:
+//   (a) asserts L1 < 1e-9 with the refinement ON (the fix), AND
+//   (b) proves the refinement is LOAD-BEARING via `set_crit_refine_disabled`
+//       — with it off (old non-crit-only partition) L1 must be > EPS, so the
+//       assertion is not vacuously satisfied by the cell falling through.
+// Same bug CLASS as the ko_split survivor min-roll pinning (dropping
+// reachable states); the fix is the Option-B partition extended to the crit
+// dimension.
+// ===========================================================================
 
-/// PRE-EXISTING: single-target Choice-Band EQ into Snorlax. A crit pushes the
-/// top roll across the 1/3-HP bucket boundary (post_hp 89 = bucket 2 vs 90+ =
-/// bucket 4); the non-crit partition is a single bucket, so the crit-boundary
-/// state (mass ~0.018) is DROPPED. is_spread == false — this is NOT a spread
-/// bug. Expected L1 ~ 3.6e-2 until the crit-conditional-segment fix lands.
+/// L1 with the crit-conditional refinement DISABLED (old non-crit-only
+/// partition = the pre-fix buggy behavior). Used to prove the refinement is
+/// load-bearing: it must be > EPS on a crit-crosses-a-bucket cell.
+fn cell_l1_crit_refine_off(b: &Battle, p1: &[Choice], p2: &[Choice]) -> f64 {
+    set_crit_refine_disabled(true);
+    let l1 = cell_l1(b, p1, p2);
+    set_crit_refine_disabled(false);
+    l1
+}
+
+/// THE un-should_panic'd fixture. Single-target Choice-Band Earthquake into
+/// Snorlax: a crit pushes the top roll across the 1/3-HP bucket boundary that
+/// the non-crit partition does NOT split at, so the pre-fix collapse dropped
+/// the crit-boundary state (mass ~0.018, L1 ≈ 0.036). With the crit-conditional
+/// refinement it is bit-exact. `is_spread == false` — this is the pure
+/// single-target crit×segment case. Load-bearing: refinement-off L1 > EPS.
 #[test]
 #[ignore]
-#[should_panic(expected = "PRE-EXISTING crit x segment")]
-fn crit_boundary_single_target_drops_state_preexisting() {
+fn crit_boundary_single_target_bit_exact() {
     const P1: &str = r#"[
         {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
         {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
@@ -582,10 +596,319 @@ fn crit_boundary_single_target_drops_state_preexisting() {
     );
     let p1 = [mv(0, SideRef::P2, 0), pass(1)];
     let p2 = [pass(0), pass(1)];
+    // (a) FIX: bit-exact vs the fully-lossless 16×2 reference.
     let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "crit×segment not bit-exact after fix: L1={l1:.3e}");
+    // (b) LOAD-BEARING: the old non-crit-only partition dropped a state here.
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
     assert!(
-        l1 < EPS,
-        "PRE-EXISTING crit x segment hole (single-target, NOT spread): L1={l1:.3e}"
+        l1_off > EPS,
+        "crit-refinement not load-bearing on this cell (off L1={l1_off:.3e} \
+         ≤ EPS) — fixture no longer exercises the crit×segment hole"
+    );
+}
+
+/// SHARPEST case: crit crosses the KO threshold. A roll SURVIVES on non-crit
+/// but KOs on crit — so the non-crit partition never splits at the faint
+/// boundary the crit branch needs. The pre-fix collapse drops the
+/// crit-KO state (fainted bucket 0 has no representative). Tuned so the
+/// non-crit top roll leaves the defender alive while the crit of that same
+/// roll faints it.
+#[test]
+#[ignore]
+fn crit_crosses_ko_threshold_bit_exact() {
+    // Plain (no Choice Band) neutral-nature Garchomp Earthquake into Snorlax
+    // chipped to 85 HP: the non-crit rolls all SURVIVE (leave Snorlax alive)
+    // but a crit of the same rolls FAINTS it. So the non-crit partition never
+    // splits at the faint boundary (bucket 0) that the crit branch needs — the
+    // pre-fix collapse drops the crit-KO state (verified load-bearing via the
+    // HP scan: at hp=85 the frontier is exactly {survive, crit-faint}, and the
+    // old non-crit-only partition drops the faint state, L1 ≈ 0.057).
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"hardy","moves":["earthquake"],"evs":{}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let g = b.p2.active[0] as usize;
+    b.p2.team[g].current_hp = 85; // survives every non-crit roll; a crit faints
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "crit-crosses-KO not bit-exact: L1={l1:.3e}");
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "crit-crosses-KO not load-bearing (off L1={l1_off:.3e} ≤ EPS) — \
+         the crit must cross the faint boundary a non-crit roll doesn't"
+    );
+}
+
+/// Crit crosses a SITRUS-BERRY (½-HP) threshold. Some rolls stay above ½ HP on
+/// non-crit but a crit of the same roll dips the holder to ≤½ → the berry
+/// fires (heal + item removed = distinct canonical state). The non-crit
+/// partition never splits at the berry boundary, so the pre-fix collapse
+/// merges the consumed/not-consumed states across the crit branch.
+#[test]
+#[ignore]
+fn crit_crosses_sitrus_threshold_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Snorlax (max HP 267, Sitrus fires ≤133 = the ½-HP / bucket 4|5
+    // boundary) to 240: non-crit EQ leaves it above ½ (berry unused) but a crit
+    // of the same roll dips it ≤½ → Sitrus consumed (heal + item removed = a
+    // distinct canonical state). The non-crit-only partition never splits at
+    // the berry boundary, so the pre-fix collapse merges consumed/not-consumed
+    // across the crit branch (verified load-bearing at hp=240, L1 ≈ 0.047).
+    let g = b.p2.active[0] as usize;
+    b.p2.team[g].current_hp = 240;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "crit-crosses-Sitrus not bit-exact: L1={l1:.3e}");
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "crit-crosses-Sitrus not load-bearing (off L1={l1_off:.3e} ≤ EPS)"
+    );
+}
+
+/// HIGH-CRIT-RATIO move (num/denom ≠ 1/24). Stone Edge carries a +1 crit-stage
+/// delta → stage-1 crit rate 1/8, so the recorded `Crit { num, denom }` is
+/// 1/8 (NOT the default 1/24). The refinement uses whatever the RECORDED crit
+/// site weight is — the crit site is enumerated verbatim by the solver; the
+/// segment refinement only splits buckets, never re-weights the crit. A crit
+/// crosses a bucket boundary; bit-exact at the 1/8 weight. The refinement-off
+/// L1 (~0.0125, an eighth-scale mass) confirms the 1/8 crit weight is in play.
+#[test]
+#[ignore]
+fn high_crit_ratio_move_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["stoneedge"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip to 260 so a 1/8-rate crit straddles a bucket boundary the non-crit
+    // rolls don't (scan-verified load-bearing, L1 ≈ 0.0125 = 1/8-scale mass).
+    let g = b.p2.active[0] as usize;
+    b.p2.team[g].current_hp = 260;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "high-crit-ratio not bit-exact: L1={l1:.3e}");
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "high-crit-ratio not load-bearing (off L1={l1_off:.3e} ≤ EPS) — \
+         Stone Edge should still straddle a bucket under crit"
+    );
+}
+
+/// GUARANTEED CRIT (p_crit = 1, modeled via `force_crit`). PS records NO crit
+/// draw for a guaranteed crit, so there is no separate Crit site to
+/// cross-product; the actual damage replayed is the CRIT value. The segment
+/// partition must therefore split on the crit-TRUE bucket sequence. The
+/// crit-conditional refinement includes the crit branch, so it is bit-exact.
+/// This case is ALSO load-bearing: the old non-crit-only partition splits on
+/// crit-FALSE buckets while the replay lands crit-TRUE damage — so it pins the
+/// wrong representatives and drops states (refinement-off L1 > EPS). This
+/// fixture pins the p_crit=1 correctness: the emitted partition must equal the
+/// pure-crit partition.
+#[test]
+#[ignore]
+fn guaranteed_crit_focus_energy_bit_exact() {
+    // Garchomp uses Focus Energy turn 1 (via a pre-set volatile) so Earthquake
+    // is a guaranteed crit. We set the Focus Energy volatile directly.
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake","focusenergy"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Force Focus Energy (2 crit stages) + a move crit_stage_delta if any: use
+    // the engine's force_crit to model p_crit=1 deterministically (guaranteed
+    // crit records no draw, exactly the modeled case).
+    b.set_force_crit(Some(true));
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "guaranteed-crit not bit-exact: L1={l1:.3e}");
+    // p_crit = 1: the replay lands crit-TRUE damage, but the old non-crit-only
+    // partition splits on crit-FALSE buckets → wrong reps → dropped states.
+    // The refinement's crit branch is what makes the partition correct here.
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "guaranteed-crit refinement not load-bearing (off L1={l1_off:.3e} ≤ EPS)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADVERSARIAL crit×segment cases (composition with Phase 1 spread + edges).
+// ---------------------------------------------------------------------------
+
+/// SPREAD + crit (composes with Phase 1 spread segmentation). Each spread
+/// target draws its OWN damage roll AND its own crit; the crit-conditional
+/// refinement must apply to the spread segment path too. Earthquake hits both
+/// live grounded P2 mons; each is chipped so a crit straddles a bucket
+/// boundary the non-crit rolls don't. Bit-exact + load-bearing across BOTH
+/// independent spread targets simultaneously.
+#[test]
+#[ignore]
+fn spread_plus_crit_segments_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Both P2 mons at full HP, grounded and live → is_spread == true for both.
+    // Choice-Band spread EQ (×0.75) into full-HP Snorlax straddles a bucket
+    // boundary under crit that the non-crit rolls stay within (scan-verified
+    // load-bearing at full HP, off L1 ≈ 0.036) — the ×0.75 spread modifier is
+    // baked into the per-roll damage before the bucket partition, so the crit
+    // straddle lands on the actual SPREAD damage. This proves the
+    // crit-conditional refinement composes with Phase 1 spread segmentation.
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "spread+crit not bit-exact: L1={l1:.3e}");
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "spread+crit refinement not load-bearing (off L1={l1_off:.3e} ≤ EPS) — \
+         at least one spread target's crit must straddle a bucket the non-crit doesn't"
+    );
+}
+
+/// MULTI-BOUNDARY straddle: a chip HP where the crit and non-crit damage of
+/// the roll set land in bucket sequences separated by more than one boundary
+/// (the crit branch reaches buckets several steps away from the non-crit
+/// branch — the frontier here holds ≥3 distinct canonical states). The common
+/// refinement must still be exact: it splits wherever EITHER coordinate
+/// changes, so however far apart the crit and non-crit buckets are, each roll's
+/// crit-branch bucket has a representative. This is the sharpest test that the
+/// refinement is on the JOINT (roll, crit) space, not a single-boundary
+/// assumption. Scan-verified load-bearing at hp=180 (off L1 ≈ 0.031).
+#[test]
+#[ignore]
+fn crit_straddles_two_boundaries_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // hp=180: Choice-Band EQ non-crit spans the (¼,⅓]..(⅓,33%] region while a
+    // crit dives to (0,¼] or faint — a multi-boundary jump (scan-verified
+    // load-bearing at hp=180, L1 ≈ 0.031).
+    let g = b.p2.active[0] as usize;
+    b.p2.team[g].current_hp = 180;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "two-boundary crit straddle not bit-exact: L1={l1:.3e}");
+    let l1_off = cell_l1_crit_refine_off(&b, &p1, &p2);
+    assert!(
+        l1_off > EPS,
+        "two-boundary straddle not load-bearing (off L1={l1_off:.3e} ≤ EPS)"
+    );
+    // Self-validating "multi-boundary": the crit branch must reach buckets the
+    // non-crit branch doesn't, so the true frontier holds ≥3 distinct
+    // canonical states (survivor bucket(s) + a crit-branch bucket ≥2 steps
+    // away). A single-boundary straddle would yield only 2 states.
+    let states = dist(&b, &p1, &p2).len();
+    assert!(
+        states >= 3,
+        "expected ≥3 distinct states for a multi-boundary crit jump, got {states}"
+    );
+}
+
+/// MULTI-HIT + crit: multi-hit moves are EXCLUDED from segmentation
+/// (`!multihit` in the eligibility gate) because each strike re-rolls crit +
+/// damage and the strikes couple through the defender's running HP — so the
+/// solver enumerates the full per-hit cross-product and dedups on the real
+/// canonical_hash. This fixture pins that the multi-hit path stays bit-exact
+/// WITH crits in the mix (the crit-conditional refinement must NOT leak into
+/// the multi-hit path and mis-segment it). Double Kick (exactly 2 hits) into a
+/// wall — a 2-hit move keeps the full reference at 16²×2² = 1024 combos
+/// (tractable), unlike a 5-hit move whose 16⁵×2⁵ reference is a monster cell.
+#[test]
+#[ignore]
+fn multihit_plus_crit_bit_exact_via_full_enum() {
+    // Hitmonlee Double Kick (Fighting, 2 hits) — super-effective on Snorlax
+    // (Normal), so each strike is a meaningful chunk and crits are in the mix.
+    const P1: &str = r#"[
+        {"species":"hitmonlee","level":50,"ability":"limber","item":"choiceband","nature":"adamant","moves":["doublekick"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    // Multi-hit is un-segmented (bail path) → bit-exact by full enumeration.
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "multi-hit + crit not bit-exact: L1={l1:.3e}");
+    // Anti-vacuous: multi-hit must NOT segment (raw_combos unchanged vs full).
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    assert_eq!(
+        on, full,
+        "multi-hit unexpectedly segmented (on={on} full={full}) — the crit \
+         refinement must not leak into the multi-hit path"
     );
 }
 
