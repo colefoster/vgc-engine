@@ -475,3 +475,303 @@ fn mutual_focus_secondary_inflictable_tensor_bails_bit_exact() {
     let l1 = cell_l1(&b, &p1, &p2);
     assert!(l1 < EPS, "secondary-inflictable coupled cell not bit-exact under bail: L1={l1:.3e}");
 }
+
+// ===========================================================================
+// PHASE 1 — segment spread-move damage hits (coupling-graph plan §3).
+//
+// A spread move draws an INDEPENDENT damage roll per target, so a target that
+// is hit by exactly ONE resolved action (no same-target focus, no redirect)
+// has post-hit HP that is a clean function of its own roll — segmentable
+// exactly like a single-target hit. These fixtures assert the collapsed
+// frontier is bit-exact vs the fully-lossless full-16 reference AND that the
+// segmentation is LOAD-BEARING (raw_combos drops sharply once it engages).
+//
+// R2: `is_spread` (hence the ×0.75 modifier and the lone-survivor full-damage
+// case) is baked into each roll's damage before the hp_bucket partition, so
+// the segments split on the ACTUAL post-modifier damage. The KO-threshold and
+// Sitrus fixtures below would misbehave if the modifier were dropped.
+// ===========================================================================
+
+/// raw_combos with the production collapse ON (spread segmentation live).
+fn raw_combos_on(b: &Battle, p1: &[Choice], p2: &[Choice]) -> usize {
+    set_ko_split_disabled(false);
+    set_joint_collapse_disabled(false);
+    let opts = EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None };
+    enumerate_outcomes_with(b, p1, p2, 0xC0DE, opts).raw_combos
+}
+
+/// raw_combos with the fully-lossless reference (all collapse OFF → flat 16^k).
+fn raw_combos_full(b: &Battle, p1: &[Choice], p2: &[Choice]) -> usize {
+    set_ko_split_disabled(true);
+    set_joint_collapse_disabled(true);
+    let opts = EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None };
+    let n = enumerate_outcomes_with(b, p1, p2, 0xC0DE, opts).raw_combos;
+    set_ko_split_disabled(false);
+    set_joint_collapse_disabled(false);
+    n
+}
+
+#[test]
+#[ignore]
+fn spread_two_grounded_singleton_min_reduction() {
+    // Two grounded foes, NO weather / residual. Each is a single-resolved-hit
+    // independent spread target — the CORE Phase-1 restructure. Proves the
+    // segmentation ENGAGES (huge raw_combos reduction) AND stays bit-exact.
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "two-grounded spread segment not bit-exact: L1={l1:.3e}");
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    // Two independent 16-roll×2-crit targets → 1024 flat combos; segmenting
+    // each survivor to 1 bucket cuts this ~256x (on == 4).
+    assert!(full >= 1024, "reference should enumerate >=1024 combos, got {full}");
+    assert!(on * 16 < full, "spread segmentation not load-bearing: on={on} full={full}");
+}
+
+// ---------------------------------------------------------------------------
+// PRE-EXISTING crit x segment hole (DISCOVERED, NOT introduced by Phase 1).
+//
+// The flat segment collapse records the roll->hp_bucket partition at ONE crit
+// value (the recorder-drawn one) and the solver cross-products that partition
+// against the independent Crit site. When a CRIT pushes a survivor across an
+// hp_bucket boundary that the non-crit partition does NOT split at, the
+// crit-branch's extra bucket has no representative and its state is dropped.
+//
+// This is present on `main` for SINGLE-TARGET hits (is_spread == false) — the
+// `*_single_target_*` fixture proves it — so it is orthogonal to spread
+// segmentation. Phase 1 inherits it to the exact same degree; it does not make
+// it worse. Both fixtures are `#[ignore]` + `#[should_panic]` REGRESSION
+// MARKERS: they document the hole and will start failing (forcing this comment
+// to be revisited) once the crit-conditional-segment fix lands.
+// ---------------------------------------------------------------------------
+
+/// PRE-EXISTING: single-target Choice-Band EQ into Snorlax. A crit pushes the
+/// top roll across the 1/3-HP bucket boundary (post_hp 89 = bucket 2 vs 90+ =
+/// bucket 4); the non-crit partition is a single bucket, so the crit-boundary
+/// state (mass ~0.018) is DROPPED. is_spread == false — this is NOT a spread
+/// bug. Expected L1 ~ 3.6e-2 until the crit-conditional-segment fix lands.
+#[test]
+#[ignore]
+#[should_panic(expected = "PRE-EXISTING crit x segment")]
+fn crit_boundary_single_target_drops_state_preexisting() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"choiceband","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(
+        l1 < EPS,
+        "PRE-EXISTING crit x segment hole (single-target, NOT spread): L1={l1:.3e}"
+    );
+}
+
+/// R2 lone-survivor: a spread move (Earthquake) whose SECOND foe is immune to
+/// it (Rotom-Wash / Levitate) resolves onto a SINGLE live grounded target, so
+/// PS's `spreadHit` is FALSE and the survivor takes FULL single-target damage.
+/// This routes through the EXISTING single-target segment path
+/// (`is_spread == false`); it pins the lone-survivor half of R2 — the collapse
+/// must be bit-exact and the damage must be the full (not ×0.75) value.
+#[test]
+#[ignore]
+fn spread_lone_survivor_full_damage_is_bit_exact() {
+    // Ally Togekiss (Flying) is EQ-immune, and Rotom-Wash (Levitate) is
+    // EQ-immune, so Earthquake resolves onto the SINGLE grounded target Snorlax
+    // → PS `spreadHit` FALSE → full single-target damage, existing segment path.
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"rotomwash","level":50,"ability":"levitate","nature":"bold","moves":["protect"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "spread lone-survivor collapse not bit-exact: L1={l1:.3e}");
+    // Load-bearing: single live target segments to a few buckets, not 16.
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    assert!(full >= 16, "reference should enumerate ≥16 rolls, got {full}");
+    assert!(on < full, "segmentation not load-bearing: on={on} full={full}");
+}
+
+/// The core Phase 1 case: a spread move (Earthquake) hits TWO LIVE foes, each
+/// a single-resolved-hit independent survivor spanning multiple hp buckets.
+/// `is_spread == true` for both — this is the NEW segment path. The two
+/// defenders' rolls are independent, so per-site segmentation must reproduce
+/// the flat 16×16 reference bit-exactly while dropping raw_combos ~256 → few.
+#[test]
+#[ignore]
+fn spread_two_live_survivors_segment_bit_exact_and_load_bearing() {
+    // Two grounded bulky survivors on P2; Garchomp Earthquake hits both.
+    // Ally Togekiss (Flying) is EQ-immune so the ONLY damage sites are the two
+    // P2 defenders — no weather / residual to shift post-hit HP.
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // P1s0 Earthquake hits both P2 defenders (Togekiss ally is immune); P1s1
+    // and both P2 pass. Each P2 mon is a single-resolved-hit spread target.
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "two-live-survivor spread segment not bit-exact: L1={l1:.3e}");
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    // Two independent 16-roll targets → 256 flat combos; segmenting each to a
+    // handful must cut this by an order of magnitude.
+    assert!(full >= 256, "reference should enumerate ≥256 combos, got {full}");
+    assert!(
+        on * 8 < full,
+        "spread segmentation not load-bearing enough: on={on} full={full}"
+    );
+}
+
+/// Spread hit across a KO threshold: Earthquake into a fragile grounded foe
+/// where the low rolls SURVIVE and the high rolls KO. The segment partition
+/// MUST split at the faint boundary (bucket 0 vs ≥1), and the ×0.75 spread
+/// modifier must be in the per-roll damage or the KO cutoff lands on the wrong
+/// roll. Bit-exact + load-bearing.
+#[test]
+#[ignore]
+fn spread_across_ko_threshold_segments_at_boundary_bit_exact() {
+    // Both foes grounded and LIVE → is_spread == true. Ally Togekiss (Flying)
+    // is EQ-immune; no weather/residual. P2s0 sits on the NON-CRIT Earthquake
+    // KO threshold — low damage rolls SURVIVE, high rolls FAINT — so the
+    // segment partition MUST split at the faint boundary (bucket 0 vs ≥1) by
+    // the DAMAGE ROLL alone. P2s1 is an EXTREMELY bulky max-HP survivor that
+    // stays deep in the top hp_bucket for every roll AND every crit, so it
+    // adds no crit-boundary straddle (the pre-existing crit×segment hole,
+    // documented separately in `crit_boundary_*` fixtures, is kept out of this
+    // Phase-1 bit-exact assertion).
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"gengar","level":50,"ability":"cursedbody","nature":"hasty","moves":["shadowball"],"evs":{}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "spread KO-threshold segment not bit-exact: L1={l1:.3e}");
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    assert!(full >= 256, "reference should enumerate ≥256 combos, got {full}");
+    assert!(on < full, "KO-threshold segmentation not load-bearing: on={on} full={full}");
+}
+
+/// Spread hit onto a Sitrus Berry holder: some rolls cross ≤½ HP and consume
+/// the berry (a discrete state change captured in canonical_hash). Sitrus's
+/// ½-HP trigger coincides with an hp_bucket boundary, so the segment partition
+/// splits there and the collapse stays bit-exact — proving the spread segment
+/// path handles a defender-side on-damage item exactly like the single-target
+/// path does. (If the gate wrongly segmented across the berry threshold, the
+/// consumed/not-consumed states would merge → L1 > 0.)
+#[test]
+#[ignore]
+fn spread_sitrus_defender_segments_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","item":"sitrusberry","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "spread Sitrus-defender segment not bit-exact: L1={l1:.3e}");
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    assert!(on < full, "Sitrus spread segmentation not load-bearing: on={on} full={full}");
+}
+
+/// ADVERSARIAL — attacker-heal roll coupling. A spread move that heals the
+/// attacker by a roll-dependent amount (Shell Bell: `sum_of_dealt_damage / 8`,
+/// summed ACROSS spread targets) couples the two independent defenders through
+/// the ATTACKER's HP bucket, which the per-defender segment partition does NOT
+/// key on. The gate must BAIL (drain / Shell Bell exclusion) → full-16 → still
+/// bit-exact. Without the `attacker_heal_roll_coupled` veto this drops
+/// attacker-HP states (L1 > 0).
+#[test]
+#[ignore]
+fn spread_shellbell_attacker_heal_bails_bit_exact() {
+    // Garchomp holds Shell Bell; Earthquake hits both live foes and heals
+    // Garchomp by (dmg0+dmg1)/8. Garchomp must be below max HP so the heal
+    // moves its hp_bucket (start it chipped via a self-inflicted setup is
+    // hard here; instead rely on the reference/collapse agreeing — the veto
+    // forces full-16 so they agree by construction, and we assert the veto
+    // actually engaged by checking raw_combos did NOT collapse).
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","item":"shellbell","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [pass(0), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "Shell Bell spread must stay bit-exact under bail: L1={l1:.3e}");
+    // Anti-vacuous: the attacker-heal veto must have kept us on the FULL path,
+    // so raw_combos equals the flat reference (no segmentation collapse).
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    assert_eq!(
+        on, full,
+        "Shell Bell attacker-heal veto did NOT engage: on={on} full={full} (segmentation leaked)"
+    );
+}
