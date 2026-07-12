@@ -952,6 +952,14 @@ impl Battle {
             .filter(|m| m.is_alive())
             .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts));
         let Some((sp, ab, st, boosts)) = payload else { return false };
+        // The transformer's ability BEFORE the copy — PS `oldAbility` in
+        // `sim/pokemon.ts:setAbility`. Used below to decide whether the copied
+        // ability's onStart re-fires.
+        let old_ab = self
+            .side(user_side)
+            .active_mon(user_slot as usize)
+            .map(|m| m.ability_id)
+            .unwrap_or(u16::MAX);
         // Swap species via the shared forme primitive (no base-stat recompute —
         // Transform copies the target's *actual* stat values, not a spread
         // recompute). `set_forme` preserves current_hp / the HP stat / boosts /
@@ -965,6 +973,19 @@ impl Battle {
             m.stats.hp = hp;
             // PS copies every boost stage from the target onto the transformer.
             m.boosts = boosts;
+        }
+        // PS `transformInto` -> `setAbility(target.ability, ..., isTransform=true)`
+        // (sim/pokemon.ts:1358). `setAbility` runs the acquired ability's onStart
+        // when `!isTransform || oldAbility.id !== ability.id` (sim/pokemon.ts:1946).
+        // Under Transform/Imposter `isTransform` is true, so the copied onStart
+        // fires only when the ability CHANGED. For an Intimidate holder (e.g.
+        // Ditto-Imposter -> Mawile, or a Transform move onto a Landorus-T) this
+        // means the copied Intimidate DOES drop the foes' Attack on switch-in /
+        // transform. We re-fire only Intimidate here — matching the Trace onStart
+        // precedent in `ability.rs`; other copied onStart abilities (Download,
+        // weather setters, ...) via transform remain future work.
+        if ab == data::ability_id::INTIMIDATE && ab != old_ab {
+            crate::ability::fire_intimidate(self, user_side, user_slot);
         }
         true
     }
@@ -34932,6 +34953,68 @@ mod tests {
         // stay at Ditto's HP.
         assert_eq!(b.p1.team[0].stats.atk, b.p2.team[0].stats.atk);
         assert_eq!(b.p1.team[0].stats.spe, b.p2.team[0].stats.spe);
+    }
+
+    #[test]
+    fn imposter_fires_copied_intimidate_on_switch_in() {
+        // Ditto with Imposter transforms into the foe on switch-in and copies
+        // its ability. When the foe has Intimidate, PS runs the copied
+        // Intimidate's onStart via `transformInto` -> `setAbility(...,
+        // isTransform=true)`; because the acquired ability (intimidate) differs
+        // from Ditto's own (imposter), `setAbility` fires `singleEvent('Start')`
+        // (sim/pokemon.ts:1946-1949), dropping the foe's Attack by 1. Before the
+        // fix `transform_into` copied the slug but never re-ran the onStart, so
+        // the engine MISSED the Atk drop (the atk (0,-1) corpus divergence).
+        let p1_json = r#"[
+            {"species":"ditto","level":50,"ability":"imposter","item":"choicescarf","nature":"hardy","moves":["transform","transform","transform","transform"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"careful","moves":["protect","fakeout","flareblitz","partingshot"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        // Imposter fires during `Battle::new`'s switch-in dispatch.
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Ditto became Incineroar and copied Intimidate.
+        assert_eq!(b.p1.team[0].species().slug, "incineroar",
+            "Imposter transforms Ditto into Incineroar");
+        assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::INTIMIDATE,
+            "Imposter copies Incineroar's Intimidate");
+        // The copied Intimidate dropped the foe's Attack by 1 stage.
+        assert_eq!(b.p2.team[0].boosts[0], -1,
+            "copied Intimidate lowers the foe's Atk by 1 on transform switch-in");
+    }
+
+    #[test]
+    fn transform_move_fires_copied_intimidate() {
+        // The Transform MOVE (not the Imposter ability) also runs the copied
+        // ability's onStart in PS — same `transformInto` -> `setAbility(...,
+        // isTransform=true)` path (sim/pokemon.ts:1358, 1946-1949). A Ditto with
+        // Limber (so no auto-Imposter) Transforms into an Intimidate holder and
+        // the copied Intimidate must fire, dropping the target's Attack.
+        let p1_json = r#"[
+            {"species":"ditto","level":50,"ability":"limber","item":"","nature":"hardy","moves":["transform","transform","transform","transform"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","item":"","nature":"careful","moves":["protect","fakeout","flareblitz","partingshot"],"evs":{"hp":252}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        // Limber: no auto-transform yet.
+        assert_eq!(b.p1.team[0].species().slug, "ditto", "no auto-transform with Limber");
+        // Incineroar's own lead Intimidate already dropped Ditto's Atk; assert
+        // the FOE's Atk is still untouched before Ditto transforms.
+        assert_eq!(b.p2.team[0].boosts[0], 0, "foe Atk untouched before the Transform");
+        // Ditto uses Transform on Incineroar; Incineroar Protects.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::INTIMIDATE,
+            "Transform copies Incineroar's Intimidate");
+        assert_eq!(b.p2.team[0].boosts[0], -1,
+            "copied Intimidate from the Transform move lowers the target's Atk by 1");
     }
 
     #[test]
