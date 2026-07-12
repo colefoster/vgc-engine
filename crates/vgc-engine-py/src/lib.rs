@@ -413,8 +413,10 @@ impl PyBattle {
     /// Reconstruct a battle from bincode bytes produced by `to_bytes`.
     #[staticmethod]
     fn from_bytes(data: &[u8]) -> PyResult<Self> {
-        let inner: core::Battle = bincode::deserialize(data)
+        let mut inner: core::Battle = bincode::deserialize(data)
             .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
+        // See `from_json`: recompute the `#[serde(skip)]` derived caches.
+        inner.rehydrate_caches();
         Ok(Self { inner })
     }
 
@@ -428,8 +430,12 @@ impl PyBattle {
     /// Reconstruct a battle from a JSON string produced by `to_json`.
     #[staticmethod]
     fn from_json(data: &str) -> PyResult<Self> {
-        let inner: core::Battle = serde_json::from_str(data)
+        let mut inner: core::Battle = serde_json::from_str(data)
             .map_err(|e| PyValueError::new_err(format!("from_json failed: {e}")))?;
+        // `#[serde(skip)]` derived caches (move_locks / can_mega_evolve /
+        // cached weather+terrain) come back at their Default after a
+        // round-trip; recompute them from canonical state.
+        inner.rehydrate_caches();
         Ok(Self { inner })
     }
 

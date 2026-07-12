@@ -538,7 +538,12 @@ fn run_one(
         // assert identical, then continue from the restored state.
         if io_checks && turn == 2 {
             let s1 = serde_json::to_string(&battle).map_err(|e| e.to_string())?;
-            let restored: Battle = serde_json::from_str(&s1).map_err(|e| e.to_string())?;
+            let mut restored: Battle = serde_json::from_str(&s1).map_err(|e| e.to_string())?;
+            // `#[serde(skip)]` derived caches (move_locks / can_mega_evolve /
+            // cached weather+terrain) come back at their Default and must be
+            // recomputed from canonical state, exactly as every production
+            // deserialize path (pyo3 from_json / from_bytes) does.
+            restored.rehydrate_caches();
             let s2 = serde_json::to_string(&restored).map_err(|e| e.to_string())?;
             if s1 != s2 {
                 return Err(format!("turn {turn}: serde round-trip changed state"));
