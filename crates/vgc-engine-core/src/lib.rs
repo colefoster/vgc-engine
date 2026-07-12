@@ -34,7 +34,8 @@ pub mod terrain;
 pub mod weather;
 
 pub use battle::{
-    ko_split_disabled_state, set_ko_split_disabled, Battle, BattleConfig, StepResult,
+    ko_split_disabled_state, set_crit_refine_disabled, set_ko_split_disabled, Battle,
+    BattleConfig, StepResult,
 };
 pub use choice::{Choice, MoveSlot, Target};
 pub use damage::{
