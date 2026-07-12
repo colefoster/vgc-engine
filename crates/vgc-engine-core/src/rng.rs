@@ -761,10 +761,12 @@ impl Rng {
                 _ => k.fallback(),
             },
             Rng::Recording(r) => {
+                // Generic opaque `u64` draw (`coin_flip`, misc). Speed-tie
+                // shuffles no longer come through here — they use
+                // [`Rng::tiebreak_shuffle`], which fires only on a genuine
+                // tie and tags `speeds_tied: true` directly. This residual
+                // path records `speeds_tied: false` (no tie context).
                 let v = r.step();
-                // PR-E: default `speeds_tied: false`; `order.rs::
-                // mark_tied_tiebreaks` patches the flag to `true` on
-                // entries that actually tied, without redrawing the nonce.
                 r.push(
                     RngDecision::Tiebreak,
                     DrawSpace::Tiebreak { speeds_tied: false },
@@ -778,6 +780,49 @@ impl Rng {
     /// True/false uniformly.
     pub fn coin_flip(&mut self) -> bool {
         (self.next_u64() & 1) == 1
+    }
+
+    /// One RNG draw for a Fisher-Yates step inside a **genuine** speed-tie
+    /// shuffle (`order.rs::action_order`). PS analog: `prng.shuffle`'s
+    /// `this.random(start, end)` call — one `next()` per iteration
+    /// (`sim/prng.ts:152`), fired only when a tie group has ≥2 members
+    /// (`sim/battle.ts:455` `if (nextIndexes.length > 1)`). Bulbapedia speed
+    /// ties: <https://bulbapedia.bulbagarden.net/wiki/Speed#Speed_ties>.
+    ///
+    /// Identical PRNG advance to [`next_u64`], but the recorder / keyed-miss
+    /// log tags the draw `DrawSpace::Tiebreak { speeds_tied: true }` directly
+    /// — unlike the old per-action nonce (`next_u64`), this site *only* fires
+    /// at a real tie, so the flag needs no post-hoc patch pass. The returned
+    /// value is reduced by the caller to a Fisher-Yates swap index.
+    pub fn tiebreak_shuffle(&mut self) -> u64 {
+        match self {
+            Rng::Recording(r) => {
+                let v = r.step();
+                r.push(
+                    RngDecision::Tiebreak,
+                    DrawSpace::Tiebreak { speeds_tied: true },
+                    RngEvent::Tiebreak(v),
+                );
+                v
+            }
+            Rng::OracleKeyed(k) => match k.take(RngDecision::Tiebreak) {
+                Some(RngEvent::Tiebreak(v)) => v,
+                _ => {
+                    let v = k.fallback();
+                    // A genuine tie shuffle is a real branch: record the miss
+                    // so the outcome-frontier enumerator can expand it.
+                    k.record_miss(
+                        RngDecision::Tiebreak,
+                        DrawSpace::Tiebreak { speeds_tied: true },
+                        RngEvent::Tiebreak(v),
+                    );
+                    v
+                }
+            },
+            // Oracle / OraclePartial / PsGen5 / Splitmix: same advance as
+            // `next_u64` (no recording layer to tag).
+            _ => self.next_u64(),
+        }
     }
 
     /// Uniform integer in `0..n`. `n == 0` returns 0.
