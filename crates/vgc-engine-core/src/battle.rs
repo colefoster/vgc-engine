@@ -390,6 +390,21 @@ pub struct Battle {
     /// reachable joint states). Never serialized — recomputed per action.
     #[serde(skip)]
     pub(crate) multi_targeted_defenders: u8,
+    /// Transient (step-scoped) bitset of absolute active slots for which a
+    /// SPREAD hit MAY still receive per-site hp_bucket segmentation this
+    /// turn (Phase 1 of the coupling-graph plan,
+    /// `docs/perf/monster-cell-coupling-graph.md` §3). A spread hit is
+    /// segmentable exactly like a single-target hit when its defender is hit
+    /// by a SINGLE resolved action this turn and no target-altering effect
+    /// (redirect / Ally Switch / Instruct) is in play — its post-hit HP is
+    /// then a clean function of that defender's own damage roll. Same bit
+    /// layout as `multi_targeted_defenders`. Never serialized; recomputed
+    /// per action. `defender_coupled` (multiply-targeted) and the
+    /// per-defender risk / attacker-heal checks in the eligibility gate
+    /// still veto individually — this bitset only lifts the blanket
+    /// `!is_spread` block for provably-independent spread defenders.
+    #[serde(skip)]
+    pub(crate) spread_segmentable_defenders: u8,
     /// Transient native-chance yield request parked by a draw site
     /// inside the per-action resolver (PR-F2+). `step_one`'s
     /// `ActionLoop` arm `take()`s this after `process_one_action`
@@ -526,6 +541,7 @@ impl Battle {
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
             multi_targeted_defenders: 0,
+            spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
@@ -1897,8 +1913,15 @@ impl Battle {
         // coupling case in `crates/vgc-solver/tests/collapse_soundness.rs`.
         let coupled = self.compute_coupled_targets(order);
         self.multi_targeted_defenders = coupled;
+        // Phase 1 (coupling-graph plan §3): allow a spread hit on a
+        // provably-independent (single-resolved-hit, no-redirect) defender to
+        // receive per-site hp_bucket segmentation, lifting the blanket
+        // `!is_spread` block for those defenders only.
+        self.spread_segmentable_defenders =
+            self.compute_segmentable_spread_defenders(order);
         self.resolve_move_with_pending(action, pending_kind, will_act);
         self.multi_targeted_defenders = 0;
+        self.spread_segmentable_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
     }
 
@@ -3019,6 +3042,130 @@ impl Battle {
         let mut mask = 0u8;
         for (bit, &c) in counts.iter().enumerate() {
             if c >= 2 {
+                mask |= 1 << bit;
+            }
+        }
+        mask
+    }
+
+    /// Phase 1 (coupling-graph plan §3): bitset of active slots for which a
+    /// SPREAD hit MAY be per-site hp_bucket-segmented this turn, exactly like
+    /// a single-target hit.
+    ///
+    /// A spread move draws an INDEPENDENT damage roll per target (the roll +
+    /// hit apply inside the `for &(tside, tslot) in targets` loop), so a
+    /// target's post-hit HP is a clean function of its OWN roll — PROVIDED
+    /// no other action also lands on it (which would couple the rolls, the
+    /// same-target-focus case handled by `compute_coupled_targets`) and no
+    /// target-altering effect can move a hit onto/off it.
+    ///
+    /// Contract (deny-by-default; over-conservative only costs perf):
+    ///   - Any redirect / Ally Switch / Instruct present (the SAME global
+    ///     bail `compute_coupled_targets` uses) → return 0. The resolved
+    ///     target set is then not statically known, so we must not segment.
+    ///   - Otherwise count the RESOLVED targets (via `enumerate_targets`,
+    ///     which prunes fainted/absent slots and expands spread) of every
+    ///     damaging move action. A defender is spread-segmentable iff exactly
+    ///     ONE action resolves onto it.
+    ///
+    /// The eligibility gate ANDs this with the SAME per-defender risk checks
+    /// a single-target hit already requires (no Sturdy/Sash/Endure/Sub/Life-
+    /// Orb/Friend-Guard, and — new — no roll-magnitude→attacker-HP heal:
+    /// drain moves / Shell Bell), so this bitset only lifts the blanket
+    /// `!is_spread` block; it never weakens a per-defender veto.
+    ///
+    /// R2 (`docs/perf/monster-cell-coupling-graph.md` §7): the segments are
+    /// computed from the same `ctx` whose `is_spread` flag is set by the
+    /// caller (`inputs.is_spread`), so the ×0.75 spread modifier — and the
+    /// lone-survivor "one live target ⇒ full damage" case (which makes
+    /// `is_spread` FALSE at the single remaining defender) — are already
+    /// baked into each roll's damage before the hp_bucket partition.
+    fn compute_segmentable_spread_defenders(
+        &self,
+        order: &crate::order::ActionOrder,
+    ) -> u8 {
+        if self.format().active_count() < 2 {
+            // Singles never has a spread hit on >1 live target; nothing to do.
+            return 0;
+        }
+        // Reuse the blunt global-couple bail: any spread turn that also
+        // carries a redirect / Ally Switch / Instruct returns 0b1111 there.
+        // We can't reason about resolved targets under redirection, so bail
+        // this optimization entirely (segment nothing extra).
+        //
+        // NOTE: `compute_coupled_targets` also returns 0b1111 for the plain
+        // "a spread move is present" case (that blunt spread global-couple is
+        // what THIS function is relaxing). So we cannot key off its full
+        // return; instead we re-derive only the redirect/Instruct/AllySwitch
+        // portion below.
+        for a in order.as_slice() {
+            if let Choice::Move { move_slot, .. }
+            | Choice::Terastallize { move_slot, .. }
+            | Choice::MegaEvolve { move_slot, .. } = a.choice
+            {
+                if let Some(mon) = self.side(a.side).active_mon(a.actor_slot as usize) {
+                    let mid = mon.moves[(move_slot as usize).min(3)];
+                    if (mid as usize) < data::MOVES.len()
+                        && (mid == data::move_id::ALLYSWITCH
+                            || mid == data::move_id::INSTRUCT)
+                    {
+                        return 0;
+                    }
+                }
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(mon) = self.side(side).active_mon(slot) {
+                    if !mon.is_alive() {
+                        continue;
+                    }
+                    if mon.redirecting_this_turn() {
+                        return 0;
+                    }
+                    match mon.effective_ability_id() {
+                        data::ability_id::LIGHTNINGROD
+                        | data::ability_id::STORMDRAIN
+                        | data::ability_id::SAPSIPPER => return 0,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Count RESOLVED damaging hits per defender across the whole turn.
+        let mut counts = [0u8; 4];
+        for a in order.as_slice() {
+            let (move_slot, chosen) = match a.choice {
+                Choice::Move { move_slot, target, .. }
+                | Choice::Terastallize { move_slot, target, .. }
+                | Choice::MegaEvolve { move_slot, target, .. } => (move_slot, target),
+                _ => continue,
+            };
+            let mon = match self.side(a.side).active_mon(a.actor_slot as usize) {
+                Some(m) if m.is_alive() => m,
+                _ => continue,
+            };
+            let mid = mon.moves[(move_slot as usize).min(3)];
+            if (mid as usize) >= data::MOVES.len() {
+                continue;
+            }
+            let m = &data::MOVES[mid as usize];
+            // Only foe-damaging target codes contribute a damage site that
+            // segments. Status / self / ally / field targets never do.
+            if !matches!(m.target, 0 | 4 | 10 | 13 | 14 | 5 | 6) {
+                continue;
+            }
+            let tgts = enumerate_targets(self, a.side, a.actor_slot, m, chosen);
+            for &(tside, tslot) in tgts.iter() {
+                let bit = ResidualIndex::abs_slot(tside, tslot) as usize;
+                if bit < 4 {
+                    counts[bit] = counts[bit].saturating_add(1);
+                }
+            }
+        }
+        let mut mask = 0u8;
+        for (bit, &c) in counts.iter().enumerate() {
+            if c == 1 {
                 mask |= 1 << bit;
             }
         }
@@ -5118,11 +5265,45 @@ impl Battle {
                 // multiply-targeted defenders — they fall back to full
                 // 16-roll enumeration, which + post-step canonical_hash
                 // dedup is provably correct.
-                let defender_coupled = {
-                    let bit = ResidualIndex::abs_slot(tside, tslot);
-                    bit < 4 && (self.multi_targeted_defenders & (1 << bit)) != 0
+                // Phase 1 (coupling-graph plan §3): the "this defender is
+                // provably hit by a single independent action" test. For a
+                // SINGLE-TARGET hit it is `!multi_targeted_defenders` (the
+                // existing same-target-focus / redirect / Instruct guard).
+                //
+                // For a SPREAD hit, `multi_targeted_defenders` is 0b1111 by
+                // construction (any spread turn trips the blunt spread global-
+                // couple in `compute_coupled_targets`, which `mutual_focus_
+                // tensor_safe` still relies on), so it CANNOT be the signal
+                // here. Instead use `spread_segmentable_defenders`, which is
+                // set exactly for spread targets proven to be hit by a single
+                // resolved action with no redirect — each such target draws
+                // its OWN roll, so its post-hit HP is a clean function of that
+                // roll (the same single-hit segment argument that is already
+                // lossless for single-target hits). Every OTHER per-defender
+                // veto below (Sturdy/Sash/Endure/Sub/Life-Orb/Friend-Guard/
+                // attacker-heal) still applies unchanged.
+                let bit = ResidualIndex::abs_slot(tside, tslot);
+                let defender_independent = if is_spread {
+                    bit < 4 && (self.spread_segmentable_defenders & (1 << bit)) != 0
+                } else {
+                    !(bit < 4 && (self.multi_targeted_defenders & (1 << bit)) != 0)
                 };
-                let eligible = !is_spread
+                // Roll-magnitude → ATTACKER-HP coupling. A drain move heals
+                // the attacker `round(dmg * num/den)` and Shell Bell heals
+                // `sum_of_dealt_damage / 8` — both a function of the damage
+                // ROLL, applied to a mon whose post-turn hp_bucket the
+                // segment partition does NOT key on (segments partition on
+                // the DEFENDER's hp_bucket only). Two rolls in one defender
+                // segment can then straddle an ATTACKER hp_bucket boundary,
+                // dropping a reachable attacker-HP state. For a SPREAD move
+                // Shell Bell's `any_damage_dealt` even sums across targets,
+                // coupling the independent defenders through the attacker.
+                // Blunt bail on both (single-target too — this also closes
+                // the pre-existing latent single-target case). PS
+                // `data/items.ts:shellbell`, `sim/battle-actions.ts` drain.
+                let attacker_heal_roll_coupled = m.drain_num > 0
+                    || attacker_item_id == data::item_id::SHELLBELL;
+                let eligible = defender_independent
                     && fixed_damage.is_none()
                     && !multihit
                     && !sturdy_risk
@@ -5130,8 +5311,8 @@ impl Battle {
                     && !endure_risk
                     && !sub_risk
                     && !life_orb_active
-                    && !defender_friend_guarded
-                    && !defender_coupled;
+                    && !attacker_heal_roll_coupled
+                    && !defender_friend_guarded;
                 // GROUND-TRUTH TESTING KNOB (dev/audit): the thread-local
                 // `ko_split_disabled()` suppresses ko_split so the solver
                 // enumerates all 16 rolls. Lets the audit compare shipped
