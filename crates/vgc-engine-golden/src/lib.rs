@@ -1492,8 +1492,37 @@ mod corpus_tests {
 
     #[test]
     fn synth_corpus_aggregates_sanely() {
-        let score = score_synth_corpus(&default_goldens_dir());
-        // The committed random goldens exist and load.
+        // `goldens/random/` is machine-generated, gitignored (see the crate
+        // `.gitignore`) breadth-corpus data — NOT committed. A fresh checkout
+        // / worktree won't have it, exactly like every other `random/`-only
+        // consumer (`corpus_zero_divergences` skips those entries; the
+        // `explore` example bails when the dir is absent). Skip-guard rather
+        // than hard-fail when the optional corpus hasn't been generated;
+        // regenerate it via the ps-golden-driver breadth tooling to exercise
+        // the aggregation on real data.
+        let dir = default_goldens_dir();
+        let have_data = std::fs::read_dir(&dir)
+            .map(|it| {
+                it.filter_map(|e| e.ok()).any(|e| {
+                    e.path()
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|n| n.ends_with(".input.json"))
+                })
+            })
+            .unwrap_or(false);
+        if !have_data {
+            eprintln!(
+                "skipping synth_corpus_aggregates_sanely: no generated goldens \
+                 under {} (gitignored breadth corpus, not present in a fresh \
+                 checkout)",
+                dir.display()
+            );
+            return;
+        }
+
+        let score = score_synth_corpus(&dir);
+        // The generated random goldens exist and load.
         assert!(score.battles_scored > 0, "no battles scored");
         // Agreement is a real fraction in [0, 100]%.
         let pct = score.agreement_pct();
