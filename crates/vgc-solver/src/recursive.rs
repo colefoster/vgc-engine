@@ -982,15 +982,19 @@ mod tests {
         // non-degenerate (neither side wins outright) — so the exact-HP path is
         // materially different from the bucketed TT path. Depth 2 exercises
         // multi-turn survivor propagation.
-        // Two bulky walls trading weak Tackles: neither KOs in the horizon, so
-        // `hp_ratio_leaf` yields a FRACTIONAL value that is sensitive to the
-        // exact post-hit survivor HP. Under the bucketed/segment path those
-        // survivor HPs collapse to representative rolls; under exact_hp all 16
-        // rolls survive distinctly — so the two modes produce DIFFERENT values,
-        // making this a genuinely non-vacuous correctness check that exact_hp
-        // reproduces the lossless reference (not merely a dominated ±1 game).
-        const A: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"atk":252}}]"#;
-        const D: &str = r#"[{"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["tackle"],"evs":{"hp":252,"def":252}}]"#;
+        // Garchomp Earthquake into a bulky Snorlax: a hard hit whose 16 rolls
+        // leave the survivor's HP spread across a WIDE band that the coarse
+        // canonical hp_bucket merges to a few representatives. `hp_ratio_leaf`
+        // is sensitive to the exact survivor HP, so at depth 2 the bucketed TT
+        // path's coarsening propagates a MATERIALLY different Nash value than
+        // the exact-HP path (measured |exact - fast| ≈ 0.36 here). Under
+        // exact_hp all 16 survivor HPs persist distinctly — reproducing the
+        // lossless reference bit-for-bit — making this a genuinely non-vacuous
+        // check. (The prior Snorlax-vs-Blissey Tackle fixture became vacuous
+        // after the crit-conditional damage-segment fix tightened the fast
+        // path to within 1e-14 of exact on it — see the crit×segment PR.)
+        const A: &str = r#"[{"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252}}]"#;
+        const D: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}]"#;
         let p1 = TeamBuilder::from_json(A).unwrap();
         let p2 = TeamBuilder::from_json(D).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
@@ -1055,7 +1059,7 @@ mod tests {
         // even if exact_hp did nothing. At depth 2 the fast path's coarse
         // survivor bucketing (segment/TT merge) propagates a materially
         // different downstream Nash value than the exact-HP path. Measured
-        // |exact - fast| ≈ 4.3e-4 here; assert a comfortably-nonzero gap.
+        // |exact - fast| ≈ 0.36 here; assert a comfortably-nonzero gap.
         assert!(
             (exact.value - fast1.value).abs() > 1e-6,
             "exact_hp made no difference vs the bucketed path (exact={}, fast={}) — \
