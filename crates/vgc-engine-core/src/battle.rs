@@ -2898,6 +2898,15 @@ impl Battle {
                 crate::item::on_switch_in(self, side, slot);
             }
         }
+        // PR-LC1: a self-switch (U-turn / Volt Switch / Flip Turn / Parting
+        // Shot / Teleport / Chilly Reception) can bring in a weather-setting
+        // ability (Drizzle / Drought / Sand Stream / Snow Warning) or change
+        // the active-mon set that gates weather suppression (Cloud Nine / Air
+        // Lock). Unlike the main `apply_switches` path, this one runs inside
+        // `turn_epilogue` AFTER the last top-of-`step` sync, so the cached
+        // effective weather/terrain must be refreshed here or the EOT residual
+        // pass (and the debug-rescan assertion) sees a stale cache.
+        self.sync_weather_terrain_cache();
     }
 
     /// PR-LC5: single-walk Ruin field scan used by `resolve_move_with_pending`.
