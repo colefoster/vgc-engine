@@ -36,6 +36,14 @@ thread_local! {
     /// rolls). Dev/audit only — lets a single process compare shipped
     /// ko_split against a truly-uncollapsed damage frontier.
     static KO_SPLIT_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// When true, `compute_damage_segments` partitions rolls by the NON-CRIT
+    /// hp_bucket ONLY (the old, buggy behavior) instead of the crit-conditional
+    /// common refinement. Dev/audit only — lets the collapse-soundness harness
+    /// prove the crit-refinement is LOAD-BEARING: with it disabled, a
+    /// crit-crosses-a-bucket fixture drops states (L1 > 0), and re-enabling it
+    /// restores L1 → 0. Never set in production.
+    static CRIT_REFINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Dev/audit: disable ko_split enrichment on this thread (default off).
@@ -45,6 +53,17 @@ pub fn set_ko_split_disabled(disabled: bool) {
 
 fn ko_split_disabled() -> bool {
     KO_SPLIT_DISABLED.with(|d| d.get())
+}
+
+/// Dev/audit: revert `compute_damage_segments` to the old non-crit-only
+/// partition on this thread (default off). Used by the collapse-soundness
+/// audit to prove the crit-conditional refinement is load-bearing.
+pub fn set_crit_refine_disabled(disabled: bool) {
+    CRIT_REFINE_DISABLED.with(|d| d.set(disabled));
+}
+
+fn crit_refine_disabled() -> bool {
+    CRIT_REFINE_DISABLED.with(|d| d.get())
 }
 
 /// Read the current thread-local `ko_split_disabled` flag. Lets a caller
@@ -7537,6 +7556,40 @@ impl Battle {
     /// for the ko_split survivor-pin state-drop bug. Recording path only —
     /// the up-to-16 `calculate_damage_with_bp` calls never touch the
     /// Splitmix hot loop. `bp_override` threads Fickle Beam's doubled BP.
+    /// Partition the 16 damage rolls into contiguous segments that share the
+    /// defender's post-hit `hp_bucket` (the projection `canonical_hash` keys
+    /// on), emitting one representative roll per segment.
+    ///
+    /// **Crit-conditional refinement (soundness fix).** The damage roll and
+    /// the crit hit/miss are recorded as SEPARATE draw sites and the solver
+    /// cross-products them independently. A crit multiplies damage (×1.5, with
+    /// the crit boost-ignoring rules), so a given roll can land in a DIFFERENT
+    /// `hp_bucket` under crit than under non-crit. If we partitioned at the
+    /// recorded crit value only, two rolls in one segment could straddle a
+    /// bucket boundary under the OTHER crit branch — that branch's extra
+    /// bucket has no representative and its reachable state is DROPPED
+    /// (per-canonical-hash L1 ≈ 0.036 on a Choice-Band single-target EQ; see
+    /// `crates/vgc-solver/tests/collapse_soundness.rs`). This is the same bug
+    /// CLASS as the `ko_split` survivor min-roll pinning (dropping reachable
+    /// states); the fix is the Option-B partition extended to the crit
+    /// dimension.
+    ///
+    /// The segment partition is therefore the COMMON REFINEMENT of the
+    /// non-crit bucket sequence and the crit bucket sequence: a new segment
+    /// starts whenever EITHER the crit=false bucket OR the crit=true bucket
+    /// changes. Within each refined segment every roll shares the same bucket
+    /// under BOTH crit values, so the (segment-rep × {crit,no-crit})
+    /// cross-product is bit-exact against the full 16×2 enumerate-then-dedup.
+    ///
+    /// Over-splitting is harmless: when the crit outcome is actually fixed
+    /// (guaranteed crit / crit-immune → no Crit draw site is recorded), the
+    /// extra crit-driven boundaries just emit a few redundant representatives
+    /// that re-merge on the post-`step()` `canonical_hash`. We refine
+    /// unconditionally rather than trying to detect whether a Crit draw exists
+    /// at this call site — the "over-couple when unsure" discipline (matches
+    /// the coupling-graph plan's §4.4).
+    ///
+    /// `ctx.crit` is IGNORED here (both branches are computed explicitly).
     fn compute_damage_segments(
         attacker: &Pokemon,
         defender: &Pokemon,
@@ -7547,21 +7600,44 @@ impl Battle {
     ) -> crate::rng::DamageSegments {
         let mut segs = [(0u8, 0u8); 16];
         let mut len = 0usize;
-        let mut cur_bucket: u32 = u32::MAX;
+        // Track the (non-crit, crit) bucket PAIR of the current segment; a
+        // change in EITHER coordinate opens a new segment (common refinement).
+        let mut cur_pair: (u32, u32) = (u32::MAX, u32::MAX);
+        // Audit knob: when set, revert to the old non-crit-only partition so
+        // the soundness harness can prove the refinement is load-bearing.
+        let refine = !crit_refine_disabled();
         let mut c = ctx;
         for r in 0..16u8 {
             c.roll = r;
-            let dmg = crate::damage::calculate_damage_with_bp(
+            c.crit = false;
+            let dmg_nc = crate::damage::calculate_damage_with_bp(
                 attacker, defender, move_id, c, bp_override,
             );
-            let post_hp = defender_hp.saturating_sub(dmg);
-            let bucket = crate::canonical_hash::hp_bucket_at(defender, post_hp);
-            if bucket != cur_bucket {
+            let bucket_nc = crate::canonical_hash::hp_bucket_at(
+                defender,
+                defender_hp.saturating_sub(dmg_nc),
+            );
+            let bucket_cr = if refine {
+                c.crit = true;
+                let dmg_cr = crate::damage::calculate_damage_with_bp(
+                    attacker, defender, move_id, c, bp_override,
+                );
+                crate::canonical_hash::hp_bucket_at(
+                    defender,
+                    defender_hp.saturating_sub(dmg_cr),
+                )
+            } else {
+                // Non-crit-only partition: the crit coordinate never triggers a
+                // split (constant), reproducing the pre-fix buggy behavior.
+                0
+            };
+            let pair = (bucket_nc, bucket_cr);
+            if pair != cur_pair {
                 // Start a new segment; representative = this (first) roll.
                 debug_assert!(len < 16, "damage segments exceeded 16 rolls");
                 segs[len] = (r, 1);
                 len += 1;
-                cur_bucket = bucket;
+                cur_pair = pair;
             } else {
                 segs[len - 1].1 += 1;
             }
