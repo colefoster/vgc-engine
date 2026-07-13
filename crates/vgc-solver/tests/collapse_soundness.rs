@@ -1098,3 +1098,83 @@ fn spread_shellbell_attacker_heal_bails_bit_exact() {
         "Shell Bell attacker-heal veto did NOT engage: on={on} full={full} (segmentation leaked)"
     );
 }
+
+/// REVERTED-BEHAVIOR GUARD (supersedes the removed Phase-2a/2b coupling-graph
+/// `breaker1_*` fixtures). The coupling graph tried to collapse cells where a
+/// spread-move DEFENDER also acts this turn (a "trigger defender that attacks").
+/// That machinery is reverted as a net regression (no speedup; the monster cell
+/// is irreducible). The pre-2a behavior — and the behavior we restore — is the
+/// whole-cell bail: when a spread move is present the mutual-focus joint tensor
+/// sees `compute_coupled_targets == 0b1111` and BAILS, handing the joint
+/// dimension to the flat enumeration path, which is always fully lossless.
+///
+/// Scenario: Garchomp Earthquake hits BOTH live P2 mons (spread), and BOTH P2
+/// mons also attack this turn (Snorlax + Blissey Tackle into P1). So each
+/// spread-defender is ALSO a same-turn actor — exactly the coupled-defender
+/// shape the reverted graph targeted.
+///
+/// This fixture pins the JOINT-tensor dimension (with the independent
+/// per-defender ko_split segment collapse held OFF via `set_ko_split_disabled`).
+/// Post-revert the tensor must BAIL (`assert_tensor_bailed`) → the joint
+/// dimension is bit-exact vs the fully-lossless reference. That is the exact
+/// soundness property the coupling graph was supposed to buy and now doesn't:
+/// the flat bail path loses nothing.
+///
+/// NB: the ORTHOGONAL Phase-1 per-defender spread-segment collapse (ko_split)
+/// is deliberately NOT under test here. On THIS coupled cell it is not
+/// bit-exact — a defender's own attack depends on whether it survived the
+/// spread hit — but that condition PRE-DATES this initiative (present identically
+/// on `a160893`, and never fixed by the coupling graph either), so it is out of
+/// scope for the revert. It is exercised in isolation by the `spread_*_segment`
+/// fixtures on independent (non-acting) defenders.
+#[test]
+#[ignore]
+fn spread_trigger_defender_that_attacks_tensor_bails_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // P1s0 Earthquake hits both grounded P2 mons (Togekiss ally is EQ-immune).
+    // Both P2 mons ALSO attack (Tackle into P1s0) — spread-defenders AND
+    // same-turn actors: the coupled-defender-that-attacks shape.
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 0), mv(1, SideRef::P1, 0)];
+
+    // A spread move present forces the whole-cell joint bail
+    // (compute_coupled_targets == 0b1111): the mutual-focus tensor must NOT
+    // engage.
+    assert_tensor_bailed(&b, &p1, &p2);
+
+    // Isolate the joint dimension: with per-defender ko_split segmentation OFF,
+    // the joint tensor's bail must reproduce the fully-lossless frontier
+    // bit-exactly (the flat path loses nothing).
+    set_ko_split_disabled(true);
+    set_joint_collapse_disabled(false);
+    let joint_only = dist(&b, &p1, &p2);
+    set_ko_split_disabled(true);
+    set_joint_collapse_disabled(true);
+    let full = dist(&b, &p1, &p2);
+    set_ko_split_disabled(false);
+    set_joint_collapse_disabled(false);
+    let mut keys: HashSet<u64> = joint_only.keys().copied().collect();
+    keys.extend(full.keys().copied());
+    let l1: f64 = keys
+        .iter()
+        .map(|k| {
+            (joint_only.get(k).copied().unwrap_or(0.0) - full.get(k).copied().unwrap_or(0.0)).abs()
+        })
+        .sum();
+    assert!(
+        l1 < EPS,
+        "trigger-defender-that-attacks joint bail must be bit-exact vs flat: L1={l1:.3e}"
+    );
+}

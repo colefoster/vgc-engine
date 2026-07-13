@@ -1,7 +1,58 @@
 # Taming Monster Cells: the Coupling-Graph Joint Tensor
 
-**Status:** design approved 2026-07-12. Phase 1 in progress.
-**Goal:** make deep, *lossless* endgame solving feasible by collapsing the pathological "monster cells" that dominate doubles solve time — without the policy-flip risk of the lossy 3-bucket fallback.
+> **⛔ SUPERSEDED / REVERTED (2026-07-13).** Phase 2a (#111) + Phase 2b (#112) — the
+> union-find coupling graph (Edge 1/2/3, hub slots, bounded-component fallback) — were
+> **reverted** as a net regression. See [§0 Postmortem](#0-postmortem--why-this-was-reverted)
+> below. **Phase 1 (#105, spread-segment in the flat path) and the crit-conditional
+> segment fix (#110) are KEPT** — they are independent, audited wins. The rest of this
+> document is retained as-is for the historical design record; do not read §3–§8 as
+> current behavior.
+
+---
+
+## 0. Postmortem — why this was reverted
+
+**Verdict: the monster cell is irreducible, and the coupling graph bought no speedup while
+adding per-cell bookkeeping overhead on *every* cell in *every* solve.**
+
+The design's premise (§1) was that the lossless `defender_joint_enumerate` machinery only
+needed *widening* to cover spread, and that widening would collapse the 87 monster cells that
+dominate wide-2v2 solve time. In practice, end-to-end measurement after Phase 2b showed:
+
+- **No net speedup** on any real solve. The coupling-graph components on a genuine monster
+  cell (spread × focus-fire, ≥4 damaging hits) do not factor — the hits are all mutually
+  coupled (co-target summation + faint-before-acting + the spread targets that also attack),
+  so the "connected component" is the *whole cell*. Enumerating one giant component via real
+  `step()` is exactly as expensive as the flat path it replaced. The cell is **irreducible**.
+- **A 5–125% *regression*** across the board from the graph's per-cell bookkeeping (union-find
+  build, trigger-hub scan, coupling-edge walks) — paid on every cell, including cells with
+  **no spread and no coupling at all** (e.g. no-spread endgames regressed **+125% at depth-2**).
+  Measured: endgame 2v1 depth-2 lossy went **~5.2 ms (pre-initiative) → ~11.7 ms (post-2b)**.
+
+Because a correctly-grouped coupling graph is **correctness-neutral over the flat path** (both
+enumerate real `step()` calls and dedup by the real `canonical_hash`), and the flat path is
+always fully lossless, the graph could only ever *win on speed* — and it did not. So it is
+pure overhead. Reverting restores the simpler pre-2a joint collapse that **bails on any spread**
+(the `compute_coupled_targets == 0b1111` whole-cell bail), handing spread cells to the flat
+enumeration path — where Phase 1's spread-segment collapse still cuts each independent spread
+hit 16 → ~3. "Double spread only" bails: a defender hit by ≥2 spread moves (mutually coupled)
+is irreducible and enumerates fully.
+
+**What was removed:** the union-find grouping, `coupling_hub_slots` / `compute_trigger_hub_defenders`
+/ the `trigger_hub_defenders` field, Edge 2/3 detection, the bounded-per-component fallback,
+and all the 2a/2b-specific `#[serde(skip)]` fields and soundness fixtures (`breaker1_*`,
+coupling-edge load-bearing tests, Absorb Bulb / Snowball guards, hub tests).
+
+**What was kept:** Phase 1 (#105) — spread hits still get `DamageSegments` and enumerate ~3 not
+16 *in the flat path*; the crit-conditional common-refinement segment partition (#110); and the
+pre-2a mutual-focus joint tensor (#96, target-bucketing on ≥2-attacker coupled defenders, which
+bails on spread).
+
+**Lesson (memory `project_branch_collapse_plan`, `feedback_collapse_soundness_review`):** the
+lever on the floor case is **depth reduction or lossy**, not more clever width-collapse. A
+collapse that is correctness-neutral over the flat path can only pay for itself in wall-clock;
+measure the *end-to-end solve* before merging, not per-cell raw-combo counts (which can shrink
+while total time grows from bookkeeping).
 
 ---
 
