@@ -3103,6 +3103,61 @@ impl Battle {
         mask
     }
 
+    /// Structural whole-cell bail shared by the spread-segmentation gate and
+    /// the mutual-focus tensor gate: `true` iff a redirect / target-pull /
+    /// re-execution effect is present this turn that makes the RESOLVED target
+    /// set differ from (or exceed) the statically-declared one —
+    /// Follow Me / Rage Powder (redirect volatile), Lightning Rod / Storm
+    /// Drain / Sap Sipper (redirect abilities), Ally Switch (re-positions a
+    /// slot), or Instruct (synthesizes a re-hit action outside `order`).
+    ///
+    /// This is exactly the `any_global_couple` set of `compute_coupled_targets`
+    /// **minus** the plain-spread case — spread by itself resolves onto a
+    /// STATICALLY-KNOWN target set (`enumerate_targets` derives it from field
+    /// geometry, ignoring the declared `chosen`), so a bare spread turn does
+    /// NOT change which vertices exist and can be handled by the coupling
+    /// graph's singleton-component path (`docs/perf/monster-cell-coupling-graph.md`
+    /// §4.2, §6 Phase 2a). The effects captured here DO change the vertex set,
+    /// which the fixed-vertex graph can't represent → whole-cell bail (§4.1
+    /// "structural residual"). Deny-by-default / blunt: a false positive only
+    /// costs perf.
+    fn redirect_or_reexec_whole_cell_bail(&self, order: &crate::order::ActionOrder) -> bool {
+        for a in order.as_slice() {
+            if let Choice::Move { move_slot, .. }
+            | Choice::Terastallize { move_slot, .. }
+            | Choice::MegaEvolve { move_slot, .. } = a.choice
+            {
+                if let Some(mon) = self.side(a.side).active_mon(a.actor_slot as usize) {
+                    let mid = mon.moves[(move_slot as usize).min(3)];
+                    if (mid as usize) < data::MOVES.len()
+                        && (mid == data::move_id::ALLYSWITCH || mid == data::move_id::INSTRUCT)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(mon) = self.side(side).active_mon(slot) {
+                    if !mon.is_alive() {
+                        continue;
+                    }
+                    if mon.redirecting_this_turn() {
+                        return true;
+                    }
+                    match mon.effective_ability_id() {
+                        data::ability_id::LIGHTNINGROD
+                        | data::ability_id::STORMDRAIN
+                        | data::ability_id::SAPSIPPER => return true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Phase 1 (coupling-graph plan §3): bitset of active slots for which a
     /// SPREAD hit MAY be per-site hp_bucket-segmented this turn, exactly like
     /// a single-target hit.
@@ -3153,39 +3208,8 @@ impl Battle {
         // what THIS function is relaxing). So we cannot key off its full
         // return; instead we re-derive only the redirect/Instruct/AllySwitch
         // portion below.
-        for a in order.as_slice() {
-            if let Choice::Move { move_slot, .. }
-            | Choice::Terastallize { move_slot, .. }
-            | Choice::MegaEvolve { move_slot, .. } = a.choice
-            {
-                if let Some(mon) = self.side(a.side).active_mon(a.actor_slot as usize) {
-                    let mid = mon.moves[(move_slot as usize).min(3)];
-                    if (mid as usize) < data::MOVES.len()
-                        && (mid == data::move_id::ALLYSWITCH
-                            || mid == data::move_id::INSTRUCT)
-                    {
-                        return 0;
-                    }
-                }
-            }
-        }
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..self.format().active_count() {
-                if let Some(mon) = self.side(side).active_mon(slot) {
-                    if !mon.is_alive() {
-                        continue;
-                    }
-                    if mon.redirecting_this_turn() {
-                        return 0;
-                    }
-                    match mon.effective_ability_id() {
-                        data::ability_id::LIGHTNINGROD
-                        | data::ability_id::STORMDRAIN
-                        | data::ability_id::SAPSIPPER => return 0,
-                        _ => {}
-                    }
-                }
-            }
+        if self.redirect_or_reexec_whole_cell_bail(order) {
+            return 0;
         }
         // Count RESOLVED damaging hits per defender across the whole turn.
         let mut counts = [0u8; 4];
@@ -3276,10 +3300,15 @@ impl Battle {
             return false; // speed tie present
         }
 
-        // Global-couple bail (spread / redirect / Instruct / Ally Switch, or
-        // the rare all-four-slots-doubly-targeted): the blunt guard returns
-        // all bits set, which the per-defender grouping can't reason about.
-        if self.compute_coupled_targets(&order_a) == 0b1111 {
+        // STRUCTURAL whole-cell bail (redirect / Instruct / Ally Switch): these
+        // change WHICH damage vertices exist, which the fixed-vertex coupling
+        // graph can't represent. Phase 2a (coupling-graph plan §4.2, §6)
+        // RELAXES the plain-spread cause of the old `0b1111` bail — a bare
+        // spread turn resolves onto a statically-known target set and its per-
+        // defender hits become singleton components (the same lossless per-site
+        // segmentation the flat path already does, now inside the joint tensor).
+        // Every OTHER `0b1111` cause stays a hard bail here.
+        if self.redirect_or_reexec_whole_cell_bail(&order_a) {
             return false;
         }
 
@@ -3328,6 +3357,77 @@ impl Battle {
                 if (mid as usize) < data::MOVES.len() && data::MOVES[mid as usize].has_secondary {
                     return false;
                 }
+                // (c) ROLL-MAGNITUDE → ATTACKER-HP coupling (drain / Shell
+                //     Bell). A drain move heals `round(dmg * num/den)` and Shell
+                //     Bell heals `sum_of_dealt_damage / 8` — a function of the
+                //     damage ROLL applied to the ATTACKER, whose post-turn
+                //     hp_bucket the per-defender coupling graph does NOT key on.
+                //     For a SPREAD move Shell Bell even sums across independent
+                //     defenders, coupling their SEPARATE components through the
+                //     attacker's HP — an edge the fixed-vertex graph can't
+                //     represent (would drop attacker-HP states). Mirrors the
+                //     `attacker_heal_roll_coupled` veto in the segment
+                //     eligibility gate (~5412). Blunt bail on both.
+                if (mid as usize) < data::MOVES.len()
+                    && (data::MOVES[mid as usize].drain_num > 0
+                        || mon.effective_item_id() == data::item_id::SHELLBELL)
+                {
+                    return false;
+                }
+                // (d) MULTI-HIT move — each strike re-rolls crit + damage and
+                //     the strikes couple through the defender's running HP. The
+                //     flat path deliberately EXCLUDES multi-hit from segment
+                //     collapse (`!multihit` in the eligibility gate ~5416); to
+                //     keep Phase 2a a pure restructure (the SET of cells that
+                //     engage vs bail must be identical to pre-2a apart from the
+                //     spread-singleton gain), a multi-hit cell must stay on the
+                //     flat path, not enter the coupling-graph tensor. Blunt bail.
+                if (mid as usize) < data::MOVES.len()
+                    && data::MOVES[mid as usize].multihit_max > 1
+                {
+                    return false;
+                }
+                // (e) TRIGGER-DEFENDER coupling — Edge 2 (coupling-graph plan
+                //     §4.1), DEFERRED to Phase 2b. An acting mon that ALSO takes
+                //     a hit this turn and carries a ROLL-DEPENDENT on-damaging-
+                //     hit self-trigger (Berserk / Anger Point / Weakness Policy /
+                //     Cell Battery / Anger Shell / Stamina / Water Compaction /
+                //     Steam Engine / Justified / Rattled / … + Emergency Exit /
+                //     Wimp Out, which REMOVE its action) has an OUTGOING hit (or
+                //     participation) whose result depends on WHICH incoming
+                //     rolls crossed the trigger threshold. Phase 2a does NOT add
+                //     the Edge-2 union that would keep such a mon's incoming and
+                //     outgoing hits in one component, so — per §4.4 "over-couple
+                //     when unsure" — bail the whole cell whenever ANY acting mon
+                //     carries such a trigger (blunt superset; a false bail only
+                //     costs perf). Phase 2b promotes this to a real coupling
+                //     edge. Without this bail a Berserk-defender-attacks cell
+                //     would engage the tensor while Edge 2 is missing.
+                let trig_ability = matches!(
+                    mon.effective_ability_id(),
+                    data::ability_id::BERSERK
+                        | data::ability_id::ANGERPOINT
+                        | data::ability_id::ANGERSHELL
+                        | data::ability_id::STAMINA
+                        | data::ability_id::WATERCOMPACTION
+                        | data::ability_id::STEAMENGINE
+                        | data::ability_id::JUSTIFIED
+                        | data::ability_id::RATTLED
+                        | data::ability_id::ELECTROMORPHOSIS
+                        | data::ability_id::WINDPOWER
+                        | data::ability_id::SEEDSOWER
+                        | data::ability_id::SANDSPIT
+                        | data::ability_id::COTTONDOWN
+                        | data::ability_id::EMERGENCYEXIT
+                        | data::ability_id::WIMPOUT
+                );
+                let trig_item = matches!(
+                    mon.effective_item_id(),
+                    data::item_id::WEAKNESSPOLICY | data::item_id::CELLBATTERY
+                );
+                if trig_ability || trig_item {
+                    return false;
+                }
             }
         }
 
@@ -3358,16 +3458,16 @@ impl Battle {
                     return false;
                 }
             }
-            // Accumulate this hit's MAX damage onto its declared target.
-            let Some(tgt) = target else { continue };
-            let tbit = ResidualIndex::abs_slot(tgt.side, tgt.slot) as usize;
-            if tbit >= 4 {
-                continue;
-            }
-            let (Some(attacker), Some(defender)) = (
-                self.side(act.side).active_mon(actor_slot as usize),
-                self.side(tgt.side).active_mon(tgt.slot as usize),
-            ) else {
+            // Accumulate this hit's MAX damage onto EACH defender it resolves
+            // onto. A SPREAD move (Phase 2a) has `target: None` and resolves
+            // onto several defenders via `enumerate_targets`; accumulating onto
+            // only the declared target (here `None`) would let a spread move
+            // that can faint a to-act attacker before it acts slip past the
+            // pre-action-faint bail → a silent Edge-3 state drop. So resolve the
+            // full target set and accumulate onto all of them. (Single-target
+            // moves resolve to exactly their declared target, preserving the
+            // pre-Phase-2a behavior bit-for-bit.)
+            let Some(attacker) = self.side(act.side).active_mon(actor_slot as usize).cloned() else {
                 return false;
             };
             let mid = attacker.moves[(move_slot as usize).min(3)];
@@ -3393,16 +3493,40 @@ impl Battle {
             if is_fixed_or_ohko {
                 return false;
             }
-            let (_lo, hi) = crate::damage::damage_range(attacker, defender, mid);
-            // Crit upper bound: gen-9 crit is ×1.5 on the damage step; the top
-            // non-crit roll × 3/2 equals the top crit roll. Round up.
-            let mut max_hit = ((hi as u32) * 3 + 1) / 2;
-            // Multi-hit moves deliver up to `multihit_max` strikes; scale.
-            let mh = data::MOVES[mid as usize].multihit_max;
-            if mh > 1 {
-                max_hit = max_hit.saturating_mul(mh as u32);
+            let m = &data::MOVES[mid as usize];
+            // Only foe/ally-damaging target codes contribute an incoming-damage
+            // site. Status / self / field targets deal no damage → skip (they
+            // also have no `damage_range`). Codes: 0 normal, 4 adjacentFoe,
+            // 10 any, 13 randomNormal, 14 scripted, 5 allAdjacent, 6
+            // allAdjacentFoes.
+            if !matches!(m.target, 0 | 4 | 10 | 13 | 14 | 5 | 6) {
+                continue;
             }
-            max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
+            // Resolve the ACTUAL target set (spread expands to all live
+            // targets; single-target yields exactly the declared/fallback slot).
+            let tgts = enumerate_targets(self, act.side, actor_slot, m, target);
+            for &(tside, tslot) in tgts.iter() {
+                let tbit = ResidualIndex::abs_slot(tside, tslot) as usize;
+                if tbit >= 4 {
+                    continue;
+                }
+                let Some(defender) = self.side(tside).active_mon(tslot as usize) else {
+                    return false;
+                };
+                let (_lo, hi) = crate::damage::damage_range(&attacker, defender, mid);
+                // Crit upper bound: gen-9 crit is ×1.5 on the damage step; the
+                // top non-crit roll × 3/2 equals the top crit roll. Round up.
+                // `damage_range` returns the raw (un-×0.75) single-target range,
+                // which OVER-estimates a spread hit — the safe direction (a
+                // higher bound only ever makes us BAIL, never wrongly tensor).
+                let mut max_hit = ((hi as u32) * 3 + 1) / 2;
+                // Multi-hit moves deliver up to `multihit_max` strikes; scale.
+                let mh = m.multihit_max;
+                if mh > 1 {
+                    max_hit = max_hit.saturating_mul(mh as u32);
+                }
+                max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
+            }
         }
         true
     }
