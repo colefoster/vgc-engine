@@ -21,13 +21,24 @@
 //! 2. Sorts the bench mons by a canonical key tuple so permutations collide.
 //! 3. Omits the RNG and the per-step transient queues entirely.
 //!
-//! The hash is computed by serializing the canonical view to JSON
-//! (struct-derived `Serialize` is field-order deterministic — no `HashMap`
-//! anywhere in the included state) and hashing those bytes with the std
-//! `DefaultHasher`. JSON is overkill for raw speed but it's the simplest
-//! stable canonicalizer we already have a dep on, and `canonical_hash`
-//! is not in the per-step hot path — it runs once per TT lookup at the
-//! solver layer, where allocations are fine.
+//! The hash is computed by feeding each canonical-view field DIRECTLY into
+//! the std `DefaultHasher`, in a deterministic order that mirrors the manual
+//! `Serialize` impls below field-for-field (no `HashMap` anywhere in the
+//! included state, so field order is the only ordering concern). Each view
+//! wrapper implements `Hash` by hashing the exact same fields the `Serialize`
+//! impl emits, in the same order, with the same nested canonicalization
+//! (`canonical_side`, sorted bench mons, Substitute-payload → presence bit,
+//! HP → bucket). This eliminates the previous serialize-to-`Vec<u8>` +
+//! hash-the-bytes round trip.
+//!
+//! **This IS now the solver's hottest path.** The endgame / outcome-frontier
+//! solver calls `canonical_hash` per TT lookup and per enumerated outcome —
+//! 15k–93k× per solved cell — and profiling showed the old
+//! `serde_json::to_vec` allocation was 69–77% of the per-combo wall. The
+//! direct-field-hash removes the JSON serialize and its heap allocation
+//! entirely while preserving the induced partition of battle states exactly
+//! (the `Serialize` impls remain as the reference definition of what fields
+//! are canonical; the `Hash` impls mirror them one-for-one).
 //!
 //! See `plans/endgame_solver_campaign.md` § M2 for the projection spec.
 
@@ -290,6 +301,92 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
     }
 }
 
+impl<'a> Hash for CanonicalPokemonView<'a> {
+    /// MIRRORS `Serialize for CanonicalPokemonView` field-for-field, in the
+    /// same order, with the same casts (`gender as u8`, `status as u8`) and
+    /// the same canonicalization (`hp_bucket`, `CanonicalVolatileSetView`).
+    /// Any edit to the `Serialize` impl above MUST be reflected here to keep
+    /// the induced partition identical.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let p = self.0;
+        p.species_id.hash(state);
+        p.level.hash(state);
+        (p.gender as u8).hash(state);
+        p.moves.hash(state);
+        p.pp.hash(state);
+        p.ability_id.hash(state);
+        p.ability_override.hash(state);
+        p.item_id.hash(state);
+        p.consumed_item.hash(state);
+        hash_final_stats(&p.stats, state);
+        // PR-K1/K2 — HP is hashed as the bucket/scaling/exact class, NOT
+        // exact HP. Mirrors `serialize_field("hp_bucket", &hp_bucket(p))`.
+        hp_bucket(p).hash(state);
+        hash_stat_spread(&p.ivs, state);
+        hash_stat_spread(&p.evs, state);
+        p.nature_id.hash(state);
+        (p.status as u8).hash(state);
+        p.boosts.hash(state);
+        p.fainted.hash(state);
+        p.turns_active.hash(state);
+        p.last_used_move_slot.hash(state);
+        p.last_used_move_target.hash(state);
+        p.boosted_stat.hash(state);
+        p.booster_locked.hash(state);
+        // PR-K3 — Substitute payload collapsed to a presence bit; see
+        // `CanonicalVolatileSetView`.
+        CanonicalVolatileSetView(&p.volatiles).hash(state);
+        p.semi_invuln.hash(state);
+        p.charging_turns.hash(state);
+        p.charging_move_slot.hash(state);
+        p.must_recharge.hash(state);
+        p.lockin_turns.hash(state);
+        p.lockin_move_slot.hash(state);
+        p.tera_type.hash(state);
+        p.terastallized.hash(state);
+        p.stellar_boosted_types.hash(state);
+        p.crit_stage_volatile.hash(state);
+        p.ability_suppressed.hash(state);
+        p.item_suppressed.hash(state);
+        p.slow_start_active_turns.hash(state);
+        p.truant_loafing.hash(state);
+        p.type_override.hash(state);
+        p.protean_used.hash(state);
+        p.disguise_busted.hash(state);
+        p.syrup_triggered.hash(state);
+        p.micle_next_move.hash(state);
+        p.unburden_active.hash(state);
+        p.commanding.hash(state);
+        p.commanded.hash(state);
+        p.cud_chew_berry.hash(state);
+        p.cud_chew_counter.hash(state);
+    }
+}
+
+/// Hash the six `FinalStats` fields (mirrors its derived `Serialize`, which
+/// emits them in declaration order). `FinalStats` doesn't derive `Hash`, so
+/// we hash its public fields directly.
+#[inline]
+fn hash_final_stats<H: Hasher>(s: &crate::pokemon::FinalStats, state: &mut H) {
+    s.hp.hash(state);
+    s.atk.hash(state);
+    s.def.hash(state);
+    s.spa.hash(state);
+    s.spd.hash(state);
+    s.spe.hash(state);
+}
+
+/// Hash the six `StatSpread` fields (mirrors its derived `Serialize`).
+#[inline]
+fn hash_stat_spread<H: Hasher>(s: &crate::pokemon::StatSpread, state: &mut H) {
+    s.hp.hash(state);
+    s.atk.hash(state);
+    s.def.hash(state);
+    s.spa.hash(state);
+    s.spd.hash(state);
+    s.spe.hash(state);
+}
+
 /// PR-K3 — canonical projection of the `VolatileSet`. Emits the raw
 /// `items` / `len` / `present` triple (same shape as the derived
 /// `Serialize` PR-J keyed on) but normalizes the **Substitute** payload
@@ -338,6 +435,34 @@ impl<'a> Serialize for CanonicalVolatileSetView<'a> {
     }
 }
 
+impl<'a> Hash for CanonicalVolatileSetView<'a> {
+    /// MIRRORS `Serialize for CanonicalVolatileSetView`: normalize any
+    /// Substitute payload to a `{0, 1}` presence bit, then hash the full
+    /// `items` array (all 8 slots, matching the serialized fixed-size array),
+    /// `len`, and `present`. Each `Volatile`'s fields are hashed in
+    /// declaration order (`kind` as its `u8` repr, `turns_remaining`,
+    /// `payload`) since `Volatile` doesn't derive `Hash`.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let vs = self.0;
+        let mut items: [Volatile; 8] = vs.items;
+        for v in items.iter_mut().take(vs.len as usize) {
+            if v.kind == VolatileKind::Substitute && v.payload > 0 {
+                v.payload = 1;
+            }
+        }
+        // The derived `Serialize` on `[Volatile; 8]` emits every element,
+        // so hash all 8 (not just the first `len`) to preserve the exact
+        // byte-set the JSON path fed the hasher.
+        for v in items.iter() {
+            (v.kind as u8).hash(state);
+            v.turns_remaining.hash(state);
+            v.payload.hash(state);
+        }
+        vs.len.hash(state);
+        vs.present.hash(state);
+    }
+}
+
 /// Newtype wrapper around `&SideConditions` whose `Serialize` impl
 /// emits the persistent fields only. Notable OMISSIONS (all cleared
 /// at end of step in `Battle::end_of_turn`, `battle.rs:1828-1835`,
@@ -369,6 +494,27 @@ impl<'a> Serialize for CanonicalSideConditionsView<'a> {
     }
 }
 
+impl<'a> Hash for CanonicalSideConditionsView<'a> {
+    /// MIRRORS `Serialize for CanonicalSideConditionsView` — the same 12
+    /// persistent fields in the same order; the `*_this_turn` flags stay
+    /// omitted.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let c = self.0;
+        c.tailwind_turns.hash(state);
+        c.reflect_turns.hash(state);
+        c.light_screen_turns.hash(state);
+        c.aurora_veil_turns.hash(state);
+        c.safeguard_turns.hash(state);
+        c.mist_turns.hash(state);
+        c.stealth_rock.hash(state);
+        c.toxic_spikes_layers.hash(state);
+        c.spikes_layers.hash(state);
+        c.sticky_web.hash(state);
+        c.tera_used.hash(state);
+        c.mega_used.hash(state);
+    }
+}
+
 /// Canonical projection of one side: the active slots positionally,
 /// the bench sorted by a canonical key, and the side-wide conditions.
 /// `active_0` / `active_1` are `None` when `Side::active[i] == 255` (the
@@ -379,6 +525,37 @@ struct CanonicalSideView<'a> {
     active_1: Option<CanonicalPokemonView<'a>>,
     bench: Vec<CanonicalPokemonView<'a>>,
     conditions: CanonicalSideConditionsView<'a>,
+}
+
+impl<'a> Hash for CanonicalSideView<'a> {
+    /// MIRRORS the derived `Serialize for CanonicalSideView` (field order:
+    /// active_0, active_1, bench, conditions). `Option` is hashed as a
+    /// presence discriminant + inner value; `bench` as length + elements
+    /// (the bench is already canonically sorted by `canonical_side`, so the
+    /// element order is deterministic). `hash_opt_view` distinguishes
+    /// `None` from `Some` exactly as serde's null-vs-object does.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_opt_view(&self.active_0, state);
+        hash_opt_view(&self.active_1, state);
+        // Length included so two benches of different sizes can't alias by
+        // a prefix; mirrors serde emitting the sequence length framing.
+        self.bench.len().hash(state);
+        for m in &self.bench {
+            m.hash(state);
+        }
+        self.conditions.hash(state);
+    }
+}
+
+#[inline]
+fn hash_opt_view<H: Hasher>(o: &Option<CanonicalPokemonView<'_>>, state: &mut H) {
+    match o {
+        None => 0u8.hash(state),
+        Some(v) => {
+            1u8.hash(state);
+            v.hash(state);
+        }
+    }
 }
 
 /// Canonical projection of the whole battle. Excludes RNG state and every
@@ -400,6 +577,101 @@ struct CanonicalBattleView<'a> {
     wish_pending: &'a [[Option<WishEffect>; 2]; 2],
     turn: u32,
     ended: &'a Option<Option<SideRef>>,
+}
+
+impl<'a> Hash for CanonicalBattleView<'a> {
+    /// MIRRORS the derived `Serialize for CanonicalBattleView` field-for-field
+    /// in declaration order. This is the top-level canonical projection; any
+    /// field added/removed/reordered here MUST be mirrored in the struct's
+    /// derived `Serialize` (and vice versa) or the induced partition drifts.
+    ///
+    /// `BattleConfig`, `FutureEffect`, and `WishEffect` don't derive `Hash`,
+    /// so their canonical fields are hashed explicitly below. `Weather`,
+    /// `Terrain`, and `SideRef` DO derive `Hash` (identical to their derived
+    /// `Serialize`), so we hash them directly.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // config: BattleConfig { format, seed }. Its derived `Serialize`
+        // emits both fields; `Format` derives `Hash`. `seed` is game-inert
+        // for TT purposes but was in the JSON bytes, so keep it to preserve
+        // the exact partition (two states differing only in seed hashed
+        // distinct before — keep that).
+        self.config.format.hash(state);
+        self.config.seed.hash(state);
+        self.p1.hash(state);
+        self.p2.hash(state);
+        self.weather.hash(state);
+        self.weather_turns.hash(state);
+        self.terrain.hash(state);
+        self.terrain_turns.hash(state);
+        self.trick_room_turns.hash(state);
+        self.gravity_turns.hash(state);
+        self.magic_room_turns.hash(state);
+        self.wonder_room_turns.hash(state);
+        hash_future_pending(self.future_pending, state);
+        hash_wish_pending(self.wish_pending, state);
+        self.turn.hash(state);
+        // ended: Option<Option<SideRef>>. serde serializes nested Option
+        // TRANSPARENTLY — both `None` and `Some(None)` emit `null` (the
+        // outer `Some` wrapper vanishes), so the JSON partition treated them
+        // as the SAME class. We MUST mirror that: `None` and `Some(None)`
+        // hash identically; only `Some(Some(sr))` is distinct (and distinct
+        // per `sr`). Flattening `ended` to `Option<&SideRef>` reproduces the
+        // exact serde behavior.
+        match self.ended.as_ref().and_then(|inner| inner.as_ref()) {
+            None => 0u8.hash(state),
+            Some(sr) => {
+                1u8.hash(state);
+                sr.hash(state);
+            }
+        }
+    }
+}
+
+/// Hash `[[Option<FutureEffect>; 2]; 2]` mirroring its derived `Serialize`
+/// (fixed 2×2 array → every cell emitted; `Option` = presence + value).
+/// `FutureEffect` doesn't derive `Hash`, so its four fields are hashed in
+/// declaration order.
+#[inline]
+fn hash_future_pending<H: Hasher>(
+    fp: &[[Option<FutureEffect>; 2]; 2],
+    state: &mut H,
+) {
+    for row in fp.iter() {
+        for cell in row.iter() {
+            match cell {
+                None => 0u8.hash(state),
+                Some(e) => {
+                    1u8.hash(state);
+                    e.turns.hash(state);
+                    e.source_side.hash(state);
+                    e.source_team_idx.hash(state);
+                    e.move_id.hash(state);
+                }
+            }
+        }
+    }
+}
+
+/// Hash `[[Option<WishEffect>; 2]; 2]` mirroring its derived `Serialize`.
+/// `WishEffect` doesn't derive `Hash`, so its two fields are hashed in
+/// declaration order.
+#[inline]
+fn hash_wish_pending<H: Hasher>(
+    wp: &[[Option<WishEffect>; 2]; 2],
+    state: &mut H,
+) {
+    for row in wp.iter() {
+        for cell in row.iter() {
+            match cell {
+                None => 0u8.hash(state),
+                Some(e) => {
+                    1u8.hash(state);
+                    e.turns.hash(state);
+                    e.heal.hash(state);
+                }
+            }
+        }
+    }
 }
 
 /// Sort key for canonical bench ordering. Tuple covers identity and
@@ -457,8 +729,11 @@ impl Battle {
     /// HP, etc. hash to DIFFERENT values.
     ///
     /// Suitable as the key type of the solver-side transposition table.
-    /// Not in the per-`step()` hot path — allocates an intermediate JSON
-    /// buffer.
+    /// This IS the solver's hottest path — the direct-field `Hash` impls
+    /// hash each canonical field straight into the `DefaultHasher` with no
+    /// intermediate serialize/alloc. The `Serialize` impls remain as the
+    /// authoritative definition of the canonical field set; the `Hash` impls
+    /// mirror them one-for-one, so the induced partition is unchanged.
     pub fn canonical_hash(&self) -> u64 {
         let view = CanonicalBattleView {
             config: &self.config,
@@ -477,10 +752,8 @@ impl Battle {
             turn: self.turn,
             ended: &self.ended,
         };
-        let bytes = serde_json::to_vec(&view)
-            .expect("canonical projection serializes by construction");
         let mut h = DefaultHasher::new();
-        bytes.hash(&mut h);
+        view.hash(&mut h);
         h.finish()
     }
 }
@@ -1011,6 +1284,429 @@ mod tests {
             a.canonical_hash(),
             b.canonical_hash(),
             "tailwind_turns 1 vs 3 must remain distinct"
+        );
+    }
+
+    // ----- Partition-preservation gate: field-hash IFF JSON-hash -----
+
+    /// Reference implementation of the OLD hash: serialize the canonical view
+    /// to JSON bytes (via the still-present `Serialize` impls) and hash those
+    /// bytes with `DefaultHasher` — i.e. exactly what `canonical_hash` did
+    /// before the direct-field-hash refactor. This is the ground-truth
+    /// partition the new hash MUST reproduce.
+    fn ref_json_hash(b: &Battle) -> u64 {
+        let view = CanonicalBattleView {
+            config: &b.config,
+            p1: canonical_side(&b.p1),
+            p2: canonical_side(&b.p2),
+            weather: &b.weather,
+            weather_turns: b.weather_turns,
+            terrain: &b.terrain,
+            terrain_turns: b.terrain_turns,
+            trick_room_turns: b.trick_room_turns,
+            gravity_turns: b.gravity_turns,
+            magic_room_turns: b.magic_room_turns,
+            wonder_room_turns: b.wonder_room_turns,
+            future_pending: &b.future_pending,
+            wish_pending: &b.wish_pending,
+            turn: b.turn,
+            ended: &b.ended,
+        };
+        let bytes =
+            serde_json::to_vec(&view).expect("canonical projection serializes");
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        h.finish()
+    }
+
+    /// The raw canonical JSON bytes — a *stronger* equivalence-class witness
+    /// than the reference hash (no `DefaultHasher` collision floor). Two
+    /// states are canonically EQUAL iff these byte vectors are equal.
+    fn ref_json_bytes(b: &Battle) -> Vec<u8> {
+        let view = CanonicalBattleView {
+            config: &b.config,
+            p1: canonical_side(&b.p1),
+            p2: canonical_side(&b.p2),
+            weather: &b.weather,
+            weather_turns: b.weather_turns,
+            terrain: &b.terrain,
+            terrain_turns: b.terrain_turns,
+            trick_room_turns: b.trick_room_turns,
+            gravity_turns: b.gravity_turns,
+            magic_room_turns: b.magic_room_turns,
+            wonder_room_turns: b.wonder_room_turns,
+            future_pending: &b.future_pending,
+            wish_pending: &b.wish_pending,
+            turn: b.turn,
+            ended: &b.ended,
+        };
+        serde_json::to_vec(&view).expect("canonical projection serializes")
+    }
+
+    /// Build a diverse corpus of battle states by mutating a base fixture
+    /// along every axis the canonical projection is sensitive to: HP (within
+    /// and across buckets), active slot, bench permutation, weather/terrain,
+    /// turns, faints, status counters, substitute payload, side conditions,
+    /// pending future/wish effects, and terminal `ended` state. Includes
+    /// EXPLICIT bench-permutation pairs (which must collapse) and near-miss
+    /// pairs (which must stay distinct).
+    fn corpus() -> Vec<Battle> {
+        let mut v = Vec::new();
+
+        // 0. Baseline.
+        v.push(fixture());
+
+        // 1. RNG advanced (must collapse into baseline's class).
+        {
+            let mut b = fixture();
+            for _ in 0..250 {
+                let _ = b.rng.next_u64();
+            }
+            v.push(b);
+        }
+
+        // 2. Transient per-step fields poked (must collapse into baseline).
+        {
+            let mut b = fixture();
+            b.pending_queue_reorder = Some((SideRef::P1, 1, false));
+            b.pursuit_intercepting = true;
+            b.pursuit_consumed = [[true, true], [false, true]];
+            b.ally_switch_pending = Some(SideRef::P1);
+            v.push(b);
+        }
+
+        // 3. Bench permutation on p1 (must collapse into baseline).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0];
+            let a1 = b.p1.active[1];
+            let idxs: Vec<usize> = (0..b.p1.team.len())
+                .filter(|i| *i as u8 != a0 && *i as u8 != a1)
+                .collect();
+            b.p1.team.swap(idxs[0], idxs[1]);
+            v.push(b);
+        }
+
+        // 4. Bench permutation on p2 (must collapse into baseline).
+        {
+            let mut b = fixture();
+            let a0 = b.p2.active[0];
+            let a1 = b.p2.active[1];
+            let idxs: Vec<usize> = (0..b.p2.team.len())
+                .filter(|i| *i as u8 != a0 && *i as u8 != a1)
+                .collect();
+            if idxs.len() >= 2 {
+                b.p2.team.swap(idxs[0], idxs[1]);
+            }
+            v.push(b);
+        }
+
+        // 5. Last-attacker carryover (must collapse — omitted from projection).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            let m = &mut b.p1.team[a0];
+            m.last_attacker = (1, 1);
+            m.last_damage_taken = 99;
+            m.last_phys_attacker = (1, 0);
+            m.last_phys_damage = 33;
+            v.push(b);
+        }
+
+        // 6. This-turn side-guard flags (must collapse — omitted).
+        {
+            let mut b = fixture();
+            b.p1.conditions.wide_guard_this_turn = true;
+            b.p2.conditions.crafty_shield_this_turn = true;
+            v.push(b);
+        }
+
+        // ---- The following are DISTINCT classes ----
+
+        // 7. Active-HP dropped across a bucket boundary (to 50% = bucket 4).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].current_hp = b.p1.team[a0].stats.hp / 2;
+            v.push(b);
+        }
+
+        // 8. Active-HP dropped to a DIFFERENT bucket (1 HP = bucket 1).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].current_hp = 1;
+            v.push(b);
+        }
+
+        // 9. Active slots swapped (position is significant).
+        {
+            let mut b = fixture();
+            b.p1.active.swap(0, 1);
+            v.push(b);
+        }
+
+        // 10. Turn advanced.
+        {
+            let mut b = fixture();
+            b.turn += 1;
+            v.push(b);
+        }
+
+        // 11. Weather → Snow.
+        {
+            let mut b = fixture();
+            b.set_weather(crate::weather::Weather::Snow);
+            b.weather_turns = 5;
+            v.push(b);
+        }
+
+        // 12. Terrain → Electric.
+        {
+            let mut b = fixture();
+            b.terrain = crate::terrain::Terrain::Electric;
+            b.terrain_turns = 5;
+            v.push(b);
+        }
+
+        // 13. Trick Room active.
+        {
+            let mut b = fixture();
+            b.trick_room_turns = 5;
+            v.push(b);
+        }
+
+        // 14. Active mon fainted (with empty replacement slot).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].fainted = true;
+            b.p1.team[a0].current_hp = 0;
+            v.push(b);
+        }
+
+        // 15. Empty active slot (255 sentinel).
+        {
+            let mut b = fixture();
+            b.p1.active[1] = 255;
+            v.push(b);
+        }
+
+        // 16. Status: sleep 1 turn.
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].set_sleep_turns(1);
+            v.push(b);
+        }
+
+        // 17. Status: sleep 2 turns (distinct from #16 — counter is exact).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].set_sleep_turns(2);
+            v.push(b);
+        }
+
+        // 18. Substitute up, payload 50.
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].volatiles.add(Volatile {
+                kind: VolatileKind::Substitute,
+                turns_remaining: 0,
+                payload: 50,
+            });
+            v.push(b);
+        }
+
+        // 19. Substitute up, payload 80 (must collapse into #18 — presence bit).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].volatiles.add(Volatile {
+                kind: VolatileKind::Substitute,
+                turns_remaining: 0,
+                payload: 80,
+            });
+            v.push(b);
+        }
+
+        // 20. Tailwind 1 turn.
+        {
+            let mut b = fixture();
+            b.p1.conditions.tailwind_turns = 1;
+            v.push(b);
+        }
+
+        // 21. Tailwind 3 turns (distinct — counter exact).
+        {
+            let mut b = fixture();
+            b.p1.conditions.tailwind_turns = 3;
+            v.push(b);
+        }
+
+        // 22. Stealth rock on p2.
+        {
+            let mut b = fixture();
+            b.p2.conditions.stealth_rock = true;
+            v.push(b);
+        }
+
+        // 23. Boosts applied to active p1.
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].boosts[1] = 2; // +2 atk
+            v.push(b);
+        }
+
+        // 24. Pending future effect.
+        {
+            let mut b = fixture();
+            b.future_pending[0][0] = Some(FutureEffect {
+                turns: 2,
+                source_side: 0,
+                source_team_idx: 0,
+                move_id: 1,
+            });
+            v.push(b);
+        }
+
+        // 25. Pending wish effect.
+        {
+            let mut b = fixture();
+            b.wish_pending[1][0] = Some(WishEffect { turns: 1, heal: 100 });
+            v.push(b);
+        }
+
+        // 26. Terminal: ended = Some(Some(P1)).
+        {
+            let mut b = fixture();
+            b.ended = Some(Some(SideRef::P1));
+            v.push(b);
+        }
+
+        // 27. Terminal: ended = Some(None) (draw) — distinct from #26.
+        {
+            let mut b = fixture();
+            b.ended = Some(None);
+            v.push(b);
+        }
+
+        // 28. Item consumed on active p1.
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            b.p1.team[a0].consumed_item = b.p1.team[a0].item_id;
+            b.p1.team[a0].item_id = 0;
+            v.push(b);
+        }
+
+        // 29. HP change WITHIN a bucket (must collapse into baseline for a
+        // non-continuous-HP mon — Garchomp lead has no scaling/exact move).
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            let max = b.p1.team[a0].stats.hp;
+            // max-5 and full HP are DIFFERENT buckets (5 vs 7), so this is
+            // its own class; add a sibling at max-6 that must join it.
+            b.p1.team[a0].current_hp = max - 5;
+            v.push(b);
+        }
+        {
+            let mut b = fixture();
+            let a0 = b.p1.active[0] as usize;
+            let max = b.p1.team[a0].stats.hp;
+            b.p1.team[a0].current_hp = max - 6; // same bucket 5 as #29
+            v.push(b);
+        }
+
+        v
+    }
+
+    #[test]
+    fn field_hash_preserves_json_partition() {
+        let states = corpus();
+
+        // (a) NO SPLITS + (b) NO NEW COLLISIONS, proven against the raw
+        // JSON bytes (the exact canonical-equality witness): for every pair,
+        // new-hash-equal IFF json-bytes-equal.
+        for i in 0..states.len() {
+            for j in 0..states.len() {
+                let bytes_eq =
+                    ref_json_bytes(&states[i]) == ref_json_bytes(&states[j]);
+                let hash_eq =
+                    states[i].canonical_hash() == states[j].canonical_hash();
+
+                if bytes_eq {
+                    // NO SPLIT: canonically-equal states MUST hash equal.
+                    assert!(
+                        hash_eq,
+                        "SPLIT: states {i} and {j} are canonically equal \
+                         (identical JSON bytes) but produced different \
+                         field-hashes",
+                    );
+                } else {
+                    // NO NEW COLLISION: canonically-distinct states must
+                    // hash distinct on this corpus (no DefaultHasher
+                    // collision is tolerated here — the corpus is small).
+                    assert!(
+                        !hash_eq,
+                        "COLLISION: states {i} and {j} are canonically \
+                         DISTINCT (different JSON bytes) but collided under \
+                         the field-hash",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn field_hash_matches_reference_hash_partition() {
+        // Cross-check via the reference DefaultHasher-of-JSON-bytes hash:
+        // group the corpus by the OLD hash, assert the NEW hash is constant
+        // within each group and distinct across groups. This is the exact
+        // "old-hash groups → new-hash constant-within/distinct-across"
+        // invariant from the brief.
+        use std::collections::HashMap;
+        let states = corpus();
+
+        // old-hash -> the single new-hash observed for that group.
+        let mut group_newhash: HashMap<u64, u64> = HashMap::new();
+        // new-hash -> the old-hash it came from (detect cross-group merges).
+        let mut newhash_group: HashMap<u64, u64> = HashMap::new();
+
+        for b in &states {
+            let old = ref_json_hash(b);
+            let new = b.canonical_hash();
+
+            match group_newhash.get(&old) {
+                Some(&existing) => assert_eq!(
+                    existing, new,
+                    "new hash not constant within old-hash group {old:#x}",
+                ),
+                None => {
+                    group_newhash.insert(old, new);
+                }
+            }
+            match newhash_group.get(&new) {
+                Some(&other_old) => assert_eq!(
+                    other_old, old,
+                    "new hash {new:#x} shared across distinct old-hash \
+                     groups {other_old:#x} and {old:#x} (partition merge)",
+                ),
+                None => {
+                    newhash_group.insert(new, old);
+                }
+            }
+        }
+
+        // Sanity: the corpus actually exercises multiple classes.
+        assert!(
+            group_newhash.len() >= 20,
+            "corpus should induce many distinct classes, got {}",
+            group_newhash.len()
         );
     }
 }
