@@ -137,21 +137,6 @@ thread_local! {
     // fall through to the flat path, making a bit-exact result vacuous).
     static JOINT_COLLAPSE_ENGAGED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
-
-    /// Number of coupling-graph connected components formed on the most recent
-    /// `defender_joint_enumerate` call that got past the damage-site / gate
-    /// bails on this thread. Audit-only (Phase 2a §5): lets a fixture assert
-    /// the union-find grouped the cell into the intended number of components
-    /// (e.g. "same-target double-hit + independent spread ⇒ exactly 2"), so a
-    /// silently-wrong grouping fails loudly rather than passing vacuously.
-    static LAST_CELL_COMPONENT_COUNT: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
-}
-
-/// Read the coupling-graph component count from the last engaged
-/// `defender_joint_enumerate` on this thread. Audit-only (Phase 2a).
-pub fn last_cell_component_count() -> usize {
-    LAST_CELL_COMPONENT_COUNT.with(|c| c.get())
 }
 
 /// Dev/audit: disable the mutual-focus defender-joint tensor on this thread
@@ -537,130 +522,52 @@ fn defender_joint_enumerate(
     record_seed: u64,
     per_site: &[(RngKey, Vec<(RngEvent, u32, u32)>, DrawSpace, RngEvent)],
 ) -> Option<OutcomeFrontier> {
-    use std::collections::BTreeMap;
-    // 1. COUPLING GRAPH (docs/perf/monster-cell-coupling-graph.md §4.2, Phase
-    //    2a). Vertices = the turn's DAMAGING sites (UniformDamage | Crit with a
-    //    real target). Union-find over them; the ONLY edge in 2a is Edge 1
-    //    (same-target summation): union all damage/crit sites that land on the
-    //    same defender slot (`key.target` equality — the recorder keys each
-    //    spread sub-hit AND its crit on the individual target slot, so a
-    //    defender's damage + crit sites naturally share a component). Connected
-    //    components = the groups we tensor. Edges 2 (trigger defenders) and 3
-    //    (faint-before-acting) are Phase 2b — NOT added here; cells needing
-    //    them still bail via `mutual_focus_tensor_safe`'s untouched structural
-    //    gate (pre-action-faint walk, participation gate, redirect/Instruct).
-    let damage_sites: Vec<usize> = per_site
-        .iter()
-        .enumerate()
-        .filter(|(_, (key, _, space, _))| {
-            matches!(space, DrawSpace::UniformDamage { .. } | DrawSpace::Crit { .. })
-                && key.target != NO_SLOT
-        })
-        .map(|(i, _)| i)
-        .collect();
-    if damage_sites.is_empty() {
-        return None; // no damage sites — flat path (no roll-coupled collapse)
-    }
-
-    // 2. Union-find over the damaging sites. Edge 1: same `key.target`.
-    //    `parent` is indexed by position within `damage_sites`.
-    let n_dmg = damage_sites.len();
-    let mut parent: Vec<usize> = (0..n_dmg).collect();
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]]; // path halving
-            x = parent[x];
-        }
-        x
-    }
-    // Union positions that share a target defender slot.
-    let mut first_pos_for_target: BTreeMap<SlotRef, usize> = BTreeMap::new();
-    for (pos, &si) in damage_sites.iter().enumerate() {
-        let tgt = per_site[si].0.target;
-        if let Some(&first) = first_pos_for_target.get(&tgt) {
-            let ra = find(&mut parent, first);
-            let rb = find(&mut parent, pos);
-            if ra != rb {
-                parent[ra] = rb;
+    use std::collections::{BTreeMap, BTreeSet};
+    // 1. Group damage/crit site indices by target defender (abs-slot in
+    //    key.target). Count distinct attackers per defender → coupled ones.
+    let mut sites_by_defender: BTreeMap<SlotRef, Vec<usize>> = BTreeMap::new();
+    let mut attackers_by_defender: BTreeMap<SlotRef, BTreeSet<SlotRef>> = BTreeMap::new();
+    for (i, (key, _, space, _)) in per_site.iter().enumerate() {
+        if matches!(space, DrawSpace::UniformDamage { .. } | DrawSpace::Crit { .. }) {
+            if key.target == NO_SLOT {
+                continue;
             }
-        } else {
-            first_pos_for_target.insert(tgt, pos);
+            sites_by_defender.entry(key.target).or_default().push(i);
+            attackers_by_defender.entry(key.target).or_default().insert(key.actor);
         }
     }
-    // Collect connected components → groups of ABSOLUTE site indices. Every
-    // component (INCLUDING singletons — single-target and spread-single-target
-    // defenders) becomes a group; each is enumerated by `enumerate_defender_group`
-    // via its per-site expansion (segments after Phase 1 → ~1-3 buckets, so a
-    // spread singleton is cheap; a focus-fired defender enumerates its full
-    // 16^k×crit sub-grid and dedups on the real canonical_hash).
-    let mut comp_of_root: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    let mut in_group: Vec<bool> = vec![false; per_site.len()];
-    for (pos, &si) in damage_sites.iter().enumerate() {
-        let root = find(&mut parent, pos);
-        let g = *comp_of_root.entry(root).or_insert_with(|| {
-            groups.push(Vec::new());
-            groups.len() - 1
-        });
-        groups[g].push(si);
-        in_group[si] = true;
+    let coupled_defenders: Vec<SlotRef> = attackers_by_defender
+        .iter()
+        .filter(|(_, atk)| atk.len() >= 2)
+        .map(|(d, _)| *d)
+        .collect();
+    if coupled_defenders.is_empty() {
+        return None; // no mutual focus — flat path handles single-hit collapse
     }
-
-    // 3. ENGAGEMENT SCOPE (Phase 2a guardrail: the SET of cells that engage vs
-    //    bail must be IDENTICAL to pre-2a APART FROM the spread improvement).
-    //    Engage ONLY when the cell either
-    //      (a) has a genuinely COUPLED component — a component whose sites come
-    //          from ≥2 distinct attackers (the old `attackers_by_defender >= 2`
-    //          mutual-focus condition), OR
-    //      (b) contains a SPREAD hit — one attacker whose damage sites land on
-    //          ≥2 distinct target slots (the Phase-2a coverage win: a clean
-    //          spread cell that USED to bail-to-flat now engages as singleton
-    //          components).
-    //    A cell of purely INDEPENDENT single-target single-hits keeps falling
-    //    through to the flat path exactly as before (returns None here), so the
-    //    non-spread engaging set is unchanged. Multi-hit-on-one-defender from a
-    //    single attacker is NOT coupling (one actor) and NOT spread → flat path,
-    //    matching the `mutual_focus_tensor_safe` multi-hit bail.
-    let mut attackers_of_target: BTreeMap<SlotRef, std::collections::BTreeSet<SlotRef>> =
-        BTreeMap::new();
-    let mut targets_of_attacker: BTreeMap<SlotRef, std::collections::BTreeSet<SlotRef>> =
-        BTreeMap::new();
-    for &si in &damage_sites {
-        let k = &per_site[si].0;
-        attackers_of_target.entry(k.target).or_default().insert(k.actor);
-        targets_of_attacker.entry(k.actor).or_default().insert(k.target);
-    }
-    let has_coupled_component = attackers_of_target.values().any(|a| a.len() >= 2);
-    let has_spread = targets_of_attacker.values().any(|t| t.len() >= 2);
-    if !has_coupled_component && !has_spread {
-        return None; // pure independent single-target hits — flat path (unchanged)
-    }
-
-    // Telemetry: a tensor-candidate cell (coupled and/or spread) — fires OR
-    // gate-bails below. Preserves the pre-2a `coupled_seen` semantics for
-    // purely single-target cells (they never reach here) so the accuracy
-    // bench's NoCoupling scenarios stay at `coupled_seen == 0`.
+    // Telemetry: a coupled defender is present (fires OR gate-bails below).
     TENSOR_COUPLED_SEEN_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    // 4. Provable-independence gate (engine-side, structural — not sampled).
-    //    Unchanged structural bails (redirect / Instruct / Ally Switch, speed
-    //    ties, pre-action faint, participation gates, fixed/OHKO, multi-hit,
-    //    attacker-heal, trigger defenders) still route the cell to full
-    //    enumeration; Phase 2a only relaxed the plain-spread global bail
-    //    (see `Battle::redirect_or_reexec_whole_cell_bail`).
+    // 2. Provable-independence gate (engine-side, structural — not sampled).
     if !base.mutual_focus_tensor_safe(p1_choices, p2_choices) {
         return None;
     }
-    // REST = only NON-damage sites (accuracy / secondary). Crit sites are
-    // damage vertices folded into their defender's component (crit is keyed on
-    // the same target as its damage roll), so they are NOT in `rest`. Every
-    // damaging site now belongs to a component; `rest_sites` shrinks to the
-    // residual chance nodes.
-    let rest_sites: Vec<usize> =
-        (0..per_site.len()).filter(|i| !in_group[*i]).collect();
 
-    // Telemetry: record the component count for the anti-vacuous audit guard.
-    LAST_CELL_COMPONENT_COUNT.with(|c| c.set(groups.len()));
+    // 3. Partition site indices into per-coupled-defender GROUPS and the
+    //    REST. Every group site is enumerated at full fidelity (the engine
+    //    records coupled defenders' damage sites as 16-way UniformDamage
+    //    because compute_coupled_targets disables ko_split for them). REST
+    //    keeps its existing expansion.
+    let mut group_of_site: Vec<Option<usize>> = vec![None; per_site.len()];
+    let mut groups: Vec<Vec<usize>> = Vec::with_capacity(coupled_defenders.len());
+    for (g, d) in coupled_defenders.iter().enumerate() {
+        let idxs = sites_by_defender.get(d).cloned().unwrap_or_default();
+        for &si in &idxs {
+            group_of_site[si] = Some(g);
+        }
+        groups.push(idxs);
+    }
+    let rest_sites: Vec<usize> =
+        (0..per_site.len()).filter(|i| group_of_site[*i].is_none()).collect();
 
     let recorded_events: Vec<RngEvent> =
         per_site.iter().map(|(_, _, _, drawn)| *drawn).collect();
