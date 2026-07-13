@@ -424,6 +424,27 @@ pub struct Battle {
     /// `!is_spread` block for provably-independent spread defenders.
     #[serde(skip)]
     pub(crate) spread_segmentable_defenders: u8,
+    /// Transient (step-scoped) bitset of absolute active slots that belong to a
+    /// TRIGGER-DEFENDER coupling hub component this turn (Phase 2b state-drop
+    /// fix, `docs/perf/monster-cell-coupling-graph.md` §4.1 Edge 2 / §4.3).
+    ///
+    /// A trigger-defender hub is a mon that ALSO acts and carries a roll-
+    /// dependent on-damaging-hit self-trigger that alters a DIFFERENT site's
+    /// damage (Berserk / Weakness Policy / Anger Point / the drain-heal /
+    /// faint-before-acting superset — see `coupling_hub_slots`). Within such a
+    /// component the coupling-graph tensor enumerates the sub-grid jointly, but
+    /// per-site hp_bucket segmentation is computed against ONE (un-boosted) HP
+    /// snapshot: a roll-dependent boost that pushes a coupled site's post-hit HP
+    /// across a bucket line would then be dropped. This bitset marks every slot
+    /// in a trigger hub component (BOTH the incoming hit(s) on the trigger mon
+    /// AND its outgoing hit(s), including on an INDEPENDENT third-mon victim) as
+    /// segmentation-INELIGIBLE, forcing full 16-roll enumeration so the real
+    /// joint step() + canonical_hash dedup reaches every trigger state. A hit is
+    /// vetoed when EITHER its defender slot OR its attacker slot is in this set.
+    /// Same bit layout as `multi_targeted_defenders`. Never serialized;
+    /// recomputed per action.
+    #[serde(skip)]
+    pub(crate) trigger_hub_defenders: u8,
     /// Transient native-chance yield request parked by a draw site
     /// inside the per-action resolver (PR-F2+). `step_one`'s
     /// `ActionLoop` arm `take()`s this after `process_one_action`
@@ -561,6 +582,7 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
+            trigger_hub_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
@@ -1965,9 +1987,17 @@ impl Battle {
         // `!is_spread` block for those defenders only.
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
+        // Phase 2b state-drop fix (coupling-graph plan §4.1 Edge 2 / §4.3):
+        // mark every slot in a trigger-defender hub component so the
+        // eligibility gate forces full 16-roll enumeration (no hp_bucket
+        // segmentation) for both its INCOMING hit and its OUTGOING hit — the
+        // latter possibly landing on an INDEPENDENT third-mon victim whose
+        // component would otherwise segment against the un-boosted snapshot.
+        self.trigger_hub_defenders = self.compute_trigger_hub_defenders(order);
         self.resolve_move_with_pending(action, pending_kind, will_act);
         self.multi_targeted_defenders = 0;
         self.spread_segmentable_defenders = 0;
+        self.trigger_hub_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
     }
 
@@ -3101,6 +3131,150 @@ impl Battle {
             }
         }
         mask
+    }
+
+    /// TRIGGER-DEFENDER hub-slot mask for the step-time segmentation-eligibility
+    /// gate (Phase 2b state-drop fix,
+    /// `docs/perf/monster-cell-coupling-graph.md` §4.1 Edge 2 / §4.3).
+    ///
+    /// Returns the abs-slot bitmask of coupling-hub slots this turn — the SAME
+    /// hubs the solver's [`Self::coupling_hub_slots`] unions into components,
+    /// but derived directly from the already-resolved `order` (this runs INSIDE
+    /// `resolve_move_with_pending`'s caller, which has the order in hand). Any
+    /// damage site whose DEFENDER or ATTACKER slot is a hub must enumerate at
+    /// full 16-roll resolution rather than hp_bucket-segment against a single
+    /// (pre-trigger) HP snapshot — otherwise a roll-dependent boost / heal /
+    /// faint that changes a coupled site's post-hit HP bucket is dropped.
+    ///
+    /// Hubs marked (superset, over-couple when unsure §4.4 — a false hub only
+    /// forgoes segmentation = slower, never drops a state):
+    ///   - **Edge 2 — trigger defender.** An acting mon carrying a roll-dependent
+    ///     on-damaging-hit self-trigger (Berserk / Weakness Policy / Anger Point /
+    ///     Cell Battery / Anger Shell / Stamina / … superset). Its incoming rolls
+    ///     change its OUTGOING damage (on a possibly-separate victim).
+    ///   - **Attacker-heal (drain / Shell Bell).** An acting mon whose outgoing
+    ///     roll heals its OWN HP.
+    ///   - **Edge 3 — faint-before-acting.** A slot whose MAX cumulative incoming
+    ///     can reach 0 HP before it acts (its outgoing hit is roll-dependent).
+    ///
+    /// This intentionally omits the speed-tie / redirect / participation
+    /// structural bails that `coupling_hub_slots` also checks: those force a
+    /// whole-cell flat fallback in the solver anyway, at which point NO site is
+    /// segmented, so the veto is moot. This helper only needs to fire when the
+    /// tensor DOES engage — exactly the hub cases above. Multi-hit and the
+    /// attacker-heal per-hit vetoes already exist in the eligibility gate; the
+    /// trigger-defender (Edge 2) and faint (Edge 3) cases are the NEW coverage.
+    fn compute_trigger_hub_defenders(&self, order: &crate::order::ActionOrder) -> u8 {
+        if self.format().active_count() < 2 {
+            return 0;
+        }
+        let mut hubs: u8 = 0;
+        // Pass A: Edge-2 trigger-ability/item + attacker-heal on any acting mon.
+        for a in order.as_slice() {
+            let (actor_slot, move_slot) = match a.choice {
+                Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
+                _ => continue,
+            };
+            let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else {
+                continue;
+            };
+            let actor_abs = ResidualIndex::abs_slot(a.side, actor_slot);
+            if actor_abs >= 4 {
+                continue;
+            }
+            // Edge 2 — trigger ability/item superset (same list as
+            // `coupling_hub_slots` check (e)). Any on-damaging-hit self-boost /
+            // stat trigger that can alter this mon's later outgoing damage.
+            let trig_ability = matches!(
+                mon.effective_ability_id(),
+                data::ability_id::BERSERK
+                    | data::ability_id::ANGERPOINT
+                    | data::ability_id::ANGERSHELL
+                    | data::ability_id::STAMINA
+                    | data::ability_id::WATERCOMPACTION
+                    | data::ability_id::STEAMENGINE
+                    | data::ability_id::JUSTIFIED
+                    | data::ability_id::RATTLED
+                    | data::ability_id::ELECTROMORPHOSIS
+                    | data::ability_id::WINDPOWER
+                    | data::ability_id::SEEDSOWER
+                    | data::ability_id::SANDSPIT
+                    | data::ability_id::COTTONDOWN
+            );
+            let trig_item = matches!(
+                mon.effective_item_id(),
+                data::item_id::WEAKNESSPOLICY | data::item_id::CELLBATTERY
+            );
+            if trig_ability || trig_item {
+                hubs |= 1 << actor_abs;
+            }
+            // Attacker-heal (drain / Shell Bell): the attacker's own HP bucket
+            // couples to its outgoing roll. (The per-hit eligibility gate
+            // already vetoes these, but include the slot so the VICTIM side of a
+            // spread heal is also covered — belt-and-braces, over-couple safe.)
+            let mid = mon.moves[(move_slot as usize).min(3)];
+            if (mid as usize) < data::MOVES.len()
+                && (data::MOVES[mid as usize].drain_num > 0
+                    || mon.effective_item_id() == data::item_id::SHELLBELL)
+            {
+                hubs |= 1 << actor_abs;
+            }
+        }
+        // Pass B: Edge-3 faint-before-acting. Walk the order tracking MAX
+        // cumulative incoming per slot; if an attacker could already be fainted
+        // when its turn comes, mark it a hub (its outgoing hit is roll-dependent
+        // on whether it survived). MAX-incoming over-estimate → only ADDS hubs.
+        let mut max_incoming = [0u32; 4];
+        for a in order.as_slice() {
+            let (actor_slot, move_slot, target) = match a.choice {
+                Choice::Move { actor_slot, move_slot, target }
+                | Choice::Terastallize { actor_slot, move_slot, target }
+                | Choice::MegaEvolve { actor_slot, move_slot, target } => {
+                    (actor_slot, move_slot, target)
+                }
+                _ => continue,
+            };
+            let attacker_abs = ResidualIndex::abs_slot(a.side, actor_slot) as usize;
+            if attacker_abs < 4 {
+                if let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) {
+                    if (max_incoming[attacker_abs] as u16) >= mon.current_hp {
+                        hubs |= 1 << attacker_abs;
+                    }
+                }
+            }
+            let Some(attacker) = self.side(a.side).active_mon(actor_slot as usize).cloned() else {
+                continue;
+            };
+            let mid = attacker.moves[(move_slot as usize).min(3)];
+            if (mid as usize) >= data::MOVES.len() {
+                continue;
+            }
+            let m = &data::MOVES[mid as usize];
+            if !matches!(m.target, 0 | 4 | 10 | 13 | 14 | 5 | 6) {
+                continue;
+            }
+            for &(tside, tslot) in
+                enumerate_targets(self, a.side, actor_slot, m, target).iter()
+            {
+                let tbit = ResidualIndex::abs_slot(tside, tslot) as usize;
+                if tbit >= 4 {
+                    continue;
+                }
+                let Some(defender) = self.side(tside).active_mon(tslot as usize) else {
+                    continue;
+                };
+                let (_lo, hi) = crate::damage::damage_range(&attacker, defender, mid);
+                let mut max_hit = ((hi as u32) * 3 + 1) / 2;
+                let mh = m.multihit_max;
+                if mh > 1 {
+                    max_hit = max_hit.saturating_mul(mh as u32);
+                }
+                max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
+            }
+        }
+        hubs
     }
 
     /// Structural whole-cell bail shared by the spread-segmentation gate and
@@ -5566,6 +5740,25 @@ impl Battle {
                 // `data/items.ts:shellbell`, `sim/battle-actions.ts` drain.
                 let attacker_heal_roll_coupled = m.drain_num > 0
                     || attacker_item_id == data::item_id::SHELLBELL;
+                // Phase 2b state-drop fix (coupling-graph plan §4.1 Edge 2 /
+                // §4.3). If EITHER this hit's defender OR its attacker belongs to
+                // a TRIGGER-DEFENDER hub component, the hp_bucket segmentation of
+                // THIS site is computed against a single (pre-trigger) HP
+                // snapshot, but a roll-dependent boost / heal / faint elsewhere
+                // in the component can shift this site's post-hit HP across a
+                // bucket line. Independent review (2026-07-12) confirmed a
+                // one-line "don't segment the INCOMING site" veto is
+                // INSUFFICIENT — the OUTGOING victim site (on a possibly-separate
+                // third mon) is also segmented and compounds the drop. Veto BOTH
+                // by checking the defender bit AND the attacker bit against
+                // `trigger_hub_defenders`, forcing the whole hub component to
+                // enumerate full-16 (the joint tensor's real step() +
+                // canonical_hash dedup then reaches every trigger state).
+                let attacker_abs = ResidualIndex::abs_slot(actor_side, actor_slot);
+                let in_trigger_hub = (bit < 4
+                    && (self.trigger_hub_defenders & (1 << bit)) != 0)
+                    || (attacker_abs < 4
+                        && (self.trigger_hub_defenders & (1 << attacker_abs)) != 0);
                 let eligible = defender_independent
                     && fixed_damage.is_none()
                     && !multihit
@@ -5575,6 +5768,7 @@ impl Battle {
                     && !sub_risk
                     && !life_orb_active
                     && !attacker_heal_roll_coupled
+                    && !in_trigger_hub
                     && !defender_friend_guarded;
                 // GROUND-TRUTH TESTING KNOB (dev/audit): the thread-local
                 // `ko_split_disabled()` suppresses ko_split so the solver
