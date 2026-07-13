@@ -424,27 +424,6 @@ pub struct Battle {
     /// `!is_spread` block for provably-independent spread defenders.
     #[serde(skip)]
     pub(crate) spread_segmentable_defenders: u8,
-    /// Transient (step-scoped) bitset of absolute active slots that belong to a
-    /// TRIGGER-DEFENDER coupling hub component this turn (Phase 2b state-drop
-    /// fix, `docs/perf/monster-cell-coupling-graph.md` §4.1 Edge 2 / §4.3).
-    ///
-    /// A trigger-defender hub is a mon that ALSO acts and carries a roll-
-    /// dependent on-damaging-hit self-trigger that alters a DIFFERENT site's
-    /// damage (Berserk / Weakness Policy / Anger Point / the drain-heal /
-    /// faint-before-acting superset — see `coupling_hub_slots`). Within such a
-    /// component the coupling-graph tensor enumerates the sub-grid jointly, but
-    /// per-site hp_bucket segmentation is computed against ONE (un-boosted) HP
-    /// snapshot: a roll-dependent boost that pushes a coupled site's post-hit HP
-    /// across a bucket line would then be dropped. This bitset marks every slot
-    /// in a trigger hub component (BOTH the incoming hit(s) on the trigger mon
-    /// AND its outgoing hit(s), including on an INDEPENDENT third-mon victim) as
-    /// segmentation-INELIGIBLE, forcing full 16-roll enumeration so the real
-    /// joint step() + canonical_hash dedup reaches every trigger state. A hit is
-    /// vetoed when EITHER its defender slot OR its attacker slot is in this set.
-    /// Same bit layout as `multi_targeted_defenders`. Never serialized;
-    /// recomputed per action.
-    #[serde(skip)]
-    pub(crate) trigger_hub_defenders: u8,
     /// Transient native-chance yield request parked by a draw site
     /// inside the per-action resolver (PR-F2+). `step_one`'s
     /// `ActionLoop` arm `take()`s this after `process_one_action`
@@ -582,7 +561,6 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
-            trigger_hub_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
             terrain: crate::terrain::Terrain::None, terrain_turns: 0,
             trick_room_turns: 0,
@@ -1987,17 +1965,9 @@ impl Battle {
         // `!is_spread` block for those defenders only.
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
-        // Phase 2b state-drop fix (coupling-graph plan §4.1 Edge 2 / §4.3):
-        // mark every slot in a trigger-defender hub component so the
-        // eligibility gate forces full 16-roll enumeration (no hp_bucket
-        // segmentation) for both its INCOMING hit and its OUTGOING hit — the
-        // latter possibly landing on an INDEPENDENT third-mon victim whose
-        // component would otherwise segment against the un-boosted snapshot.
-        self.trigger_hub_defenders = self.compute_trigger_hub_defenders(order);
         self.resolve_move_with_pending(action, pending_kind, will_act);
         self.multi_targeted_defenders = 0;
         self.spread_segmentable_defenders = 0;
-        self.trigger_hub_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
     }
 
@@ -3133,150 +3103,6 @@ impl Battle {
         mask
     }
 
-    /// TRIGGER-DEFENDER hub-slot mask for the step-time segmentation-eligibility
-    /// gate (Phase 2b state-drop fix,
-    /// `docs/perf/monster-cell-coupling-graph.md` §4.1 Edge 2 / §4.3).
-    ///
-    /// Returns the abs-slot bitmask of coupling-hub slots this turn — the SAME
-    /// hubs the solver's [`Self::coupling_hub_slots`] unions into components,
-    /// but derived directly from the already-resolved `order` (this runs INSIDE
-    /// `resolve_move_with_pending`'s caller, which has the order in hand). Any
-    /// damage site whose DEFENDER or ATTACKER slot is a hub must enumerate at
-    /// full 16-roll resolution rather than hp_bucket-segment against a single
-    /// (pre-trigger) HP snapshot — otherwise a roll-dependent boost / heal /
-    /// faint that changes a coupled site's post-hit HP bucket is dropped.
-    ///
-    /// Hubs marked (superset, over-couple when unsure §4.4 — a false hub only
-    /// forgoes segmentation = slower, never drops a state):
-    ///   - **Edge 2 — trigger defender.** An acting mon carrying a roll-dependent
-    ///     on-damaging-hit self-trigger (Berserk / Weakness Policy / Anger Point /
-    ///     Cell Battery / Anger Shell / Stamina / … superset). Its incoming rolls
-    ///     change its OUTGOING damage (on a possibly-separate victim).
-    ///   - **Attacker-heal (drain / Shell Bell).** An acting mon whose outgoing
-    ///     roll heals its OWN HP.
-    ///   - **Edge 3 — faint-before-acting.** A slot whose MAX cumulative incoming
-    ///     can reach 0 HP before it acts (its outgoing hit is roll-dependent).
-    ///
-    /// This intentionally omits the speed-tie / redirect / participation
-    /// structural bails that `coupling_hub_slots` also checks: those force a
-    /// whole-cell flat fallback in the solver anyway, at which point NO site is
-    /// segmented, so the veto is moot. This helper only needs to fire when the
-    /// tensor DOES engage — exactly the hub cases above. Multi-hit and the
-    /// attacker-heal per-hit vetoes already exist in the eligibility gate; the
-    /// trigger-defender (Edge 2) and faint (Edge 3) cases are the NEW coverage.
-    fn compute_trigger_hub_defenders(&self, order: &crate::order::ActionOrder) -> u8 {
-        if self.format().active_count() < 2 {
-            return 0;
-        }
-        let mut hubs: u8 = 0;
-        // Pass A: Edge-2 trigger-ability/item + attacker-heal on any acting mon.
-        for a in order.as_slice() {
-            let (actor_slot, move_slot) = match a.choice {
-                Choice::Move { actor_slot, move_slot, .. }
-                | Choice::Terastallize { actor_slot, move_slot, .. }
-                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
-                _ => continue,
-            };
-            let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else {
-                continue;
-            };
-            let actor_abs = ResidualIndex::abs_slot(a.side, actor_slot);
-            if actor_abs >= 4 {
-                continue;
-            }
-            // Edge 2 — trigger ability/item superset (same list as
-            // `coupling_hub_slots` check (e)). Any on-damaging-hit self-boost /
-            // stat trigger that can alter this mon's later outgoing damage.
-            let trig_ability = matches!(
-                mon.effective_ability_id(),
-                data::ability_id::BERSERK
-                    | data::ability_id::ANGERPOINT
-                    | data::ability_id::ANGERSHELL
-                    | data::ability_id::STAMINA
-                    | data::ability_id::WATERCOMPACTION
-                    | data::ability_id::STEAMENGINE
-                    | data::ability_id::JUSTIFIED
-                    | data::ability_id::RATTLED
-                    | data::ability_id::ELECTROMORPHOSIS
-                    | data::ability_id::WINDPOWER
-                    | data::ability_id::SEEDSOWER
-                    | data::ability_id::SANDSPIT
-                    | data::ability_id::COTTONDOWN
-            );
-            let trig_item = matches!(
-                mon.effective_item_id(),
-                data::item_id::WEAKNESSPOLICY | data::item_id::CELLBATTERY
-            );
-            if trig_ability || trig_item {
-                hubs |= 1 << actor_abs;
-            }
-            // Attacker-heal (drain / Shell Bell): the attacker's own HP bucket
-            // couples to its outgoing roll. (The per-hit eligibility gate
-            // already vetoes these, but include the slot so the VICTIM side of a
-            // spread heal is also covered — belt-and-braces, over-couple safe.)
-            let mid = mon.moves[(move_slot as usize).min(3)];
-            if (mid as usize) < data::MOVES.len()
-                && (data::MOVES[mid as usize].drain_num > 0
-                    || mon.effective_item_id() == data::item_id::SHELLBELL)
-            {
-                hubs |= 1 << actor_abs;
-            }
-        }
-        // Pass B: Edge-3 faint-before-acting. Walk the order tracking MAX
-        // cumulative incoming per slot; if an attacker could already be fainted
-        // when its turn comes, mark it a hub (its outgoing hit is roll-dependent
-        // on whether it survived). MAX-incoming over-estimate → only ADDS hubs.
-        let mut max_incoming = [0u32; 4];
-        for a in order.as_slice() {
-            let (actor_slot, move_slot, target) = match a.choice {
-                Choice::Move { actor_slot, move_slot, target }
-                | Choice::Terastallize { actor_slot, move_slot, target }
-                | Choice::MegaEvolve { actor_slot, move_slot, target } => {
-                    (actor_slot, move_slot, target)
-                }
-                _ => continue,
-            };
-            let attacker_abs = ResidualIndex::abs_slot(a.side, actor_slot) as usize;
-            if attacker_abs < 4 {
-                if let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) {
-                    if (max_incoming[attacker_abs] as u16) >= mon.current_hp {
-                        hubs |= 1 << attacker_abs;
-                    }
-                }
-            }
-            let Some(attacker) = self.side(a.side).active_mon(actor_slot as usize).cloned() else {
-                continue;
-            };
-            let mid = attacker.moves[(move_slot as usize).min(3)];
-            if (mid as usize) >= data::MOVES.len() {
-                continue;
-            }
-            let m = &data::MOVES[mid as usize];
-            if !matches!(m.target, 0 | 4 | 10 | 13 | 14 | 5 | 6) {
-                continue;
-            }
-            for &(tside, tslot) in
-                enumerate_targets(self, a.side, actor_slot, m, target).iter()
-            {
-                let tbit = ResidualIndex::abs_slot(tside, tslot) as usize;
-                if tbit >= 4 {
-                    continue;
-                }
-                let Some(defender) = self.side(tside).active_mon(tslot as usize) else {
-                    continue;
-                };
-                let (_lo, hi) = crate::damage::damage_range(&attacker, defender, mid);
-                let mut max_hit = ((hi as u32) * 3 + 1) / 2;
-                let mh = m.multihit_max;
-                if mh > 1 {
-                    max_hit = max_hit.saturating_mul(mh as u32);
-                }
-                max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
-            }
-        }
-        hubs
-    }
-
     /// Structural whole-cell bail shared by the spread-segmentation gate and
     /// the mutual-focus tensor gate: `true` iff a redirect / target-pull /
     /// re-execution effect is present this turn that makes the RESOLVED target
@@ -3425,72 +3251,41 @@ impl Battle {
         mask
     }
 
-    /// Thin boolean wrapper over [`Self::coupling_hub_slots`]: `true` iff the
-    /// cell may engage the coupling-graph tensor (some hub mask, possibly 0),
-    /// `false` iff a structural residual forces a whole-cell bail. Retained for
-    /// call sites / tests that only need the yes/no.
+    /// PROVABLE-INDEPENDENCE gate for the solver's per-defender joint
+    /// collapse (mutual-focus tensor).
+    ///
+    /// The solver may collapse a coupled defender's own hit-group (its
+    /// damage rolls × crits) by the true post-hit `canonical_hash`, and
+    /// TENSOR the per-defender groups against each other, ONLY when the
+    /// groups are provably independent — i.e. the set of hits that land
+    /// this turn does NOT depend on any roll. That fails when an attacker
+    /// can be reduced to 0 HP (faint) by hits resolving BEFORE its own
+    /// action: whether its own hit lands then depends on the earlier
+    /// hits' rolls, coupling the groups through the roll dimension. (A
+    /// defender is also an attacker in the mirror, so this is the central
+    /// case, not an edge.)
+    ///
+    /// Returns `true` ⇒ the solver may tensor the coupled groups (SOUND);
+    /// `false` ⇒ the cell must be fully enumerated. Deny-by-default:
+    /// bails on anything not cheaply proven safe (spread / redirect /
+    /// Instruct / Ally Switch via the global-couple check, speed ties, a
+    /// possible pre-action faint, fixed-damage / OHKO moves, or any
+    /// non-move action in the mix).
+    ///
+    /// Conservative bounds (over-estimating incoming damage only ever makes
+    /// us BAIL, never wrongly tensor — the safe direction):
+    ///   - Incoming damage per hit is upper-bounded by `damage_range`'s MAX
+    ///     (top roll) × 3/2 (crit ≤ ×1.5 over the non-crit top roll for
+    ///     gen-9) × `multihit_max` (Dragon Darts / Population Bomb strike
+    ///     count).
+    ///   - Fixed-damage / OHKO / Counter-family moves bypass the formula,
+    ///     so `damage_range` does NOT bound them → BAIL on any of them.
+    ///   - Any speed tie (order not unique under the nonce) → BAIL; the tie
+    ///     is a separate ordering branch and "pre-action hits" would be
+    ///     ill-defined across it.
     pub fn mutual_focus_tensor_safe(&self, p1: &[Choice], p2: &[Choice]) -> bool {
-        self.coupling_hub_slots(p1, p2).is_some()
-    }
-
-    /// COUPLING-EDGE analysis for the solver's per-defender joint collapse
-    /// (`docs/perf/monster-cell-coupling-graph.md` §4.1/§4.3/§6 Phase 2b).
-    ///
-    /// The solver groups the turn's damaging hits into connected components of a
-    /// coupling graph (union-find) and enumerates each component with a REAL
-    /// `step()` + real `canonical_hash` dedup, cross-producting independent
-    /// components. Soundness rests on the **load-bearing invariant**: every pair
-    /// of hits with a state-dependency path shares a component (§4.3). Edge 1
-    /// (same-target summation) is added by the solver directly from `key.target`
-    /// equality. This method supplies the remaining edges as a set of **coupling
-    /// hub slots**: for each hub slot S, the solver unions EVERY site (damage,
-    /// crit, accuracy, multihit-count, …) whose `key.actor == S` OR
-    /// `key.target == S` into one component. That blunt "all sites touching a
-    /// hub share a component" rule captures — conservatively (over-couple when
-    /// unsure, §4.4) — every coupling type below:
-    ///
-    ///   - **Edge 2 — trigger defender.** A mon that ALSO acts and carries a
-    ///     roll-dependent on-damaging-hit self-trigger (Berserk / Weakness
-    ///     Policy / Anger Point superset) → its incoming rolls change its
-    ///     outgoing damage. Hub = that slot (couples its incoming ↔ outgoing).
-    ///   - **Edge 3 — faint-before-acting.** A slot whose MAX cumulative
-    ///     incoming damage from prior actions can reach 0 HP before it acts →
-    ///     whether its outgoing hit lands is roll-dependent. Hub = that slot
-    ///     (MAX-incoming over-estimate → only ever ADDS hubs = safe). Chained
-    ///     faints self-compose: every faintable-before-acting slot is a hub, so
-    ///     A→B→C links transitively through the shared sites.
-    ///   - **Attacker-heal (drain / Shell Bell).** An attacker's outgoing roll
-    ///     heals ITS OWN HP; if it is also a defender, its post-turn HP bucket
-    ///     depends on both. Hub = the attacker slot (couples its outgoing ↔
-    ///     incoming; a spread Shell Bell's several outgoing hits share the hub
-    ///     too, so they land in one component — the §4.1 spread-heal coupling).
-    ///   - **Multi-hit.** The strike-count draw + per-strike damage/crit couple
-    ///     through the defender's running HP. Same-target Edge 1 already unions
-    ///     the per-strike DAMAGE sites; making both the multi-hit ATTACKER and
-    ///     its TARGET hubs additionally pulls the non-damage strike-count
-    ///     (`UniformRange`) site into that component (it would otherwise be an
-    ///     independently cross-producted `rest_site` → dropped joint states).
-    ///
-    /// Returns `Some(hub_mask)` (bit i set ⇒ abs-slot i is a coupling hub) when
-    /// the cell may engage; `None` for the **structural residual** that a
-    /// fixed-vertex graph cannot represent — a whole-cell bail (deny-by-default):
-    ///   - speed ties (a separate ordering branch),
-    ///   - redirect / Instruct / Ally Switch (changes WHICH vertices exist),
-    ///   - any non-move action (mid-turn Switch) in the mix,
-    ///   - fixed-damage / OHKO / Counter-family moves (unbounded incoming, so
-    ///     the faint-walk can't certify — and their hit can't be roll-segmented),
-    ///   - chance-gated NON-participation: a status/volatile/flinch already
-    ///     present on an acting mon, or an inflictable one (any move carrying a
-    ///     secondary) — para 25% skip / confusion / attract / sleep / freeze /
-    ///     flinch remove or gate a hit on a chance node the damage-roll graph
-    ///     can't model.
-    ///
-    /// Over-estimating incoming damage / over-listing hubs only ever ADDS
-    /// coupling (bigger components = slower, still exact); it never drops a
-    /// state — the safe direction throughout.
-    pub fn coupling_hub_slots(&self, p1: &[Choice], p2: &[Choice]) -> Option<u8> {
         if self.format().active_count() < 2 {
-            return None;
+            return false;
         }
         // Build the resolved order under a throwaway RNG. Detect speed ties
         // by rebuilding under a second nonce seed and comparing the SLOT
@@ -3502,14 +3297,8 @@ impl Battle {
         let mut rng_b = Rng::new(0xAAAA_BBBB_CCCC_DDDD);
         let order_b = crate::order::action_order(self, p1, p2, &mut rng_b);
         if !Self::same_action_slots(&order_a, &order_b) {
-            return None; // speed tie present
+            return false; // speed tie present
         }
-
-        // Coupling-hub accumulator (abs-slot bitmask). A slot becomes a hub
-        // when its incoming and outgoing hits must share a component (Edge 2 /
-        // Edge 3 / attacker-heal / multi-hit). The solver unions every site
-        // touching a hub slot (§4.1). Over-listing only enlarges components.
-        let mut hubs: u8 = 0u8;
 
         // STRUCTURAL whole-cell bail (redirect / Instruct / Ally Switch): these
         // change WHICH damage vertices exist, which the fixed-vertex coupling
@@ -3520,7 +3309,7 @@ impl Battle {
         // segmentation the flat path already does, now inside the joint tensor).
         // Every OTHER `0b1111` cause stays a hard bail here.
         if self.redirect_or_reexec_whole_cell_bail(&order_a) {
-            return None;
+            return false;
         }
 
         // CHANCE-GATED NON-PARTICIPATION bail (blunt, deny-by-default).
@@ -3545,11 +3334,8 @@ impl Battle {
                 _ => continue,
             };
             if let Some(mon) = self.side(act.side).active_mon(actor_slot as usize) {
-                let actor_abs = ResidualIndex::abs_slot(act.side, actor_slot);
                 // (a) a participation-gating status/volatile/flinch is ALREADY
-                //     present on an acting mon. STRUCTURAL residual (a chance
-                //     node that REMOVES/gates the whole action, not a damage
-                //     roll) → whole-cell bail (`None`), unchanged from 2a.
+                //     present on an acting mon.
                 if matches!(
                     mon.status,
                     Status::Paralysis | Status::Sleep | Status::Freeze
@@ -3559,86 +3345,64 @@ impl Battle {
                     || (mon.effective_ability_id() == data::ability_id::TRUANT
                         && mon.truant_loafing)
                 {
-                    return None;
+                    return false;
                 }
                 // (b) a move in the cell carries ANY secondary — a faster mon
                 //     could inflict para/sleep/freeze/confusion/attract/flinch
                 //     on a slower, not-yet-acted coupled attacker mid-turn.
                 //     Blunt over-approximation: bail on any secondary at all
                 //     (a stat-drop secondary is harmless, but surgically
-                //     distinguishing is how completeness holes creep in). Still
-                //     a whole-cell bail — a chance-gated non-participation the
-                //     damage-roll graph can't represent.
+                //     distinguishing is how completeness holes creep in).
                 let mid = mon.moves[(move_slot as usize).min(3)];
                 if (mid as usize) < data::MOVES.len() && data::MOVES[mid as usize].has_secondary {
-                    return None;
+                    return false;
                 }
-                // (c) ATTACKER-HEAL coupling (drain / Shell Bell) — Edge added
-                //     in Phase 2b (coupling-graph plan §4.1). A drain move heals
-                //     `round(dmg * num/den)` and Shell Bell heals
-                //     `sum_of_dealt_damage / 8`: a function of the OUTGOING damage
-                //     ROLL applied to the ATTACKER's OWN HP. If the attacker is
-                //     also a defender this turn, its post-turn hp_bucket depends
-                //     on BOTH its incoming and outgoing rolls. A spread Shell Bell
-                //     even sums across several defenders, coupling those otherwise
-                //     independent components through the attacker's HP. Make the
-                //     ATTACKER a coupling hub: the solver unions all of its
-                //     outgoing hits (spread siblings) with each other AND with any
-                //     incoming hit on it → one component, enumerated with a real
-                //     step() (the heal self-completes). (Was a whole-cell bail in
-                //     2a; the segment-eligibility gate ~5412 still vetoes per-site
-                //     collapse of these, so within the component they enumerate at
-                //     full 16 — correct.)
+                // (c) ROLL-MAGNITUDE → ATTACKER-HP coupling (drain / Shell
+                //     Bell). A drain move heals `round(dmg * num/den)` and Shell
+                //     Bell heals `sum_of_dealt_damage / 8` — a function of the
+                //     damage ROLL applied to the ATTACKER, whose post-turn
+                //     hp_bucket the per-defender coupling graph does NOT key on.
+                //     For a SPREAD move Shell Bell even sums across independent
+                //     defenders, coupling their SEPARATE components through the
+                //     attacker's HP — an edge the fixed-vertex graph can't
+                //     represent (would drop attacker-HP states). Mirrors the
+                //     `attacker_heal_roll_coupled` veto in the segment
+                //     eligibility gate (~5412). Blunt bail on both.
                 if (mid as usize) < data::MOVES.len()
                     && (data::MOVES[mid as usize].drain_num > 0
                         || mon.effective_item_id() == data::item_id::SHELLBELL)
                 {
-                    hubs |= 1 << actor_abs;
+                    return false;
                 }
-                // (d) MULTI-HIT move — Edge added in Phase 2b. Each strike
-                //     re-rolls crit + damage and the strikes couple through the
-                //     defender's running HP; the strike-COUNT draw
-                //     (`UniformRange`) gates how many damage draws land. Same-
-                //     target Edge 1 already unions the per-strike DAMAGE sites,
-                //     but the non-damage count site would be an independently
-                //     cross-producted `rest_site`. Make BOTH the multi-hit
-                //     attacker and its declared target coupling hubs so every
-                //     site touching either (count + per-strike damage/crit + the
-                //     defender's other incoming) folds into one component.
+                // (d) MULTI-HIT move — each strike re-rolls crit + damage and
+                //     the strikes couple through the defender's running HP. The
+                //     flat path deliberately EXCLUDES multi-hit from segment
+                //     collapse (`!multihit` in the eligibility gate ~5416); to
+                //     keep Phase 2a a pure restructure (the SET of cells that
+                //     engage vs bail must be identical to pre-2a apart from the
+                //     spread-singleton gain), a multi-hit cell must stay on the
+                //     flat path, not enter the coupling-graph tensor. Blunt bail.
                 if (mid as usize) < data::MOVES.len()
                     && data::MOVES[mid as usize].multihit_max > 1
                 {
-                    hubs |= 1 << actor_abs;
-                    // Its resolved target(s) are also hubs (the running-HP
-                    // coupling lives on the defender). Resolve the real target
-                    // set (single-target yields exactly the declared slot).
-                    if let Choice::Move { target, .. }
-                    | Choice::Terastallize { target, .. }
-                    | Choice::MegaEvolve { target, .. } = act.choice
-                    {
-                        let m = &data::MOVES[mid as usize];
-                        for &(tside, tslot) in
-                            enumerate_targets(self, act.side, actor_slot, m, target).iter()
-                        {
-                            let tbit = ResidualIndex::abs_slot(tside, tslot);
-                            if tbit < 4 {
-                                hubs |= 1 << tbit;
-                            }
-                        }
-                    }
+                    return false;
                 }
                 // (e) TRIGGER-DEFENDER coupling — Edge 2 (coupling-graph plan
-                //     §4.1), added in Phase 2b. An acting mon that ALSO takes a
-                //     hit this turn and carries a ROLL-DEPENDENT on-damaging-hit
-                //     self-trigger (Berserk / Anger Point / Weakness Policy /
+                //     §4.1), DEFERRED to Phase 2b. An acting mon that ALSO takes
+                //     a hit this turn and carries a ROLL-DEPENDENT on-damaging-
+                //     hit self-trigger (Berserk / Anger Point / Weakness Policy /
                 //     Cell Battery / Anger Shell / Stamina / Water Compaction /
-                //     Steam Engine / Justified / Rattled / …) has an OUTGOING hit
-                //     whose result depends on WHICH incoming rolls crossed the
-                //     trigger threshold. Make the mon a coupling hub → the solver
-                //     keeps its incoming and outgoing hits in one component; the
-                //     boost fires inside the component's real step() and self-
-                //     completes. Blunt SUPERSET (any on-damaging-hit self-boost /
-                //     stat trigger on a mon that also acts), §4.4 over-couple.
+                //     Steam Engine / Justified / Rattled / … + Emergency Exit /
+                //     Wimp Out, which REMOVE its action) has an OUTGOING hit (or
+                //     participation) whose result depends on WHICH incoming
+                //     rolls crossed the trigger threshold. Phase 2a does NOT add
+                //     the Edge-2 union that would keep such a mon's incoming and
+                //     outgoing hits in one component, so — per §4.4 "over-couple
+                //     when unsure" — bail the whole cell whenever ANY acting mon
+                //     carries such a trigger (blunt superset; a false bail only
+                //     costs perf). Phase 2b promotes this to a real coupling
+                //     edge. Without this bail a Berserk-defender-attacks cell
+                //     would engage the tensor while Edge 2 is missing.
                 let trig_ability = matches!(
                     mon.effective_ability_id(),
                     data::ability_id::BERSERK
@@ -3654,42 +3418,23 @@ impl Battle {
                         | data::ability_id::SEEDSOWER
                         | data::ability_id::SANDSPIT
                         | data::ability_id::COTTONDOWN
+                        | data::ability_id::EMERGENCYEXIT
+                        | data::ability_id::WIMPOUT
                 );
                 let trig_item = matches!(
                     mon.effective_item_id(),
                     data::item_id::WEAKNESSPOLICY | data::item_id::CELLBATTERY
                 );
                 if trig_ability || trig_item {
-                    hubs |= 1 << actor_abs;
-                }
-                // (f) ACTION-REMOVAL triggers — Emergency Exit / Wimp Out force
-                //     a mid-turn SWITCH on crossing ½ HP, REMOVING the mon's
-                //     later action and changing WHICH vertices exist (structural
-                //     residual, like a redirect). The fixed-vertex coupling graph
-                //     can't represent a vanished action, so a hub is NOT enough:
-                //     whole-cell bail (`None`), deny-by-default. (Design §8: the
-                //     ability is not fully implemented in the engine today, so
-                //     this is belt-and-braces — if a force-switch handler lands,
-                //     this bail already keeps the tensor sound.)
-                if matches!(
-                    mon.effective_ability_id(),
-                    data::ability_id::EMERGENCYEXIT | data::ability_id::WIMPOUT
-                ) {
-                    return None;
+                    return false;
                 }
             }
         }
 
         // Walk the order tracking max cumulative incoming damage per active
         // slot from prior MOVE actions. If any attacker's own action is
-        // preceded by enough max-incoming to reach 0 HP, whether its own hit
-        // lands is roll-dependent — Edge 3 (faint-before-acting). In Phase 2b
-        // that is a coupling EDGE, not a bail: mark the possibly-fainting slot a
-        // hub so the solver unions its incoming and outgoing hits into one
-        // component (the intervening faint self-completes in the real step()).
-        // MAX-incoming over-estimate → we only ever ADD hubs = the safe
-        // direction (§4.4). Chained faints compose transitively (every
-        // faintable-before-acting slot is a hub).
+        // preceded by enough max-incoming to reach 0 HP, the hit set is
+        // roll-dependent → bail.
         let mut max_incoming = [0u32; 4]; // abs-slot indexed
         for act in order_a.as_slice() {
             let (actor_slot, move_slot, target) = match act.choice {
@@ -3699,21 +3444,18 @@ impl Battle {
                     (actor_slot, move_slot, target)
                 }
                 // Any non-move action (mid-turn Switch) changes the field for
-                // everything downstream — STRUCTURAL residual → whole-cell bail.
-                _ => return None,
+                // everything downstream — bail.
+                _ => return false,
             };
             let attacker_abs = ResidualIndex::abs_slot(act.side, actor_slot) as usize;
             // Before this attacker acts, could it already be fainted?
             if attacker_abs < 4 {
                 if let Some(mon) = self.side(act.side).active_mon(actor_slot as usize) {
                     if (max_incoming[attacker_abs] as u16) >= mon.current_hp {
-                        // Possible pre-action faint → Edge 3. Hub this slot
-                        // (couples its incoming ↔ outgoing hits) and keep
-                        // walking; do NOT bail.
-                        hubs |= 1 << attacker_abs;
+                        return false; // possible pre-action faint → coupled
                     }
                 } else {
-                    return None;
+                    return false;
                 }
             }
             // Accumulate this hit's MAX damage onto EACH defender it resolves
@@ -3726,11 +3468,11 @@ impl Battle {
             // moves resolve to exactly their declared target, preserving the
             // pre-Phase-2a behavior bit-for-bit.)
             let Some(attacker) = self.side(act.side).active_mon(actor_slot as usize).cloned() else {
-                return None;
+                return false;
             };
             let mid = attacker.moves[(move_slot as usize).min(3)];
             if (mid as usize) >= data::MOVES.len() {
-                return None; // Struggle / empty slot — unknown, bail.
+                return false; // Struggle / empty slot — unknown, bail.
             }
             // Fixed-damage / OHKO / Counter moves bypass the formula, so
             // `damage_range` does NOT bound them; an under-count could wrongly
@@ -3749,7 +3491,7 @@ impl Battle {
                     | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD
             );
             if is_fixed_or_ohko {
-                return None;
+                return false;
             }
             let m = &data::MOVES[mid as usize];
             // Only foe/ally-damaging target codes contribute an incoming-damage
@@ -3769,7 +3511,7 @@ impl Battle {
                     continue;
                 }
                 let Some(defender) = self.side(tside).active_mon(tslot as usize) else {
-                    return None;
+                    return false;
                 };
                 let (_lo, hi) = crate::damage::damage_range(&attacker, defender, mid);
                 // Crit upper bound: gen-9 crit is ×1.5 on the damage step; the
@@ -3786,7 +3528,7 @@ impl Battle {
                 max_incoming[tbit] = max_incoming[tbit].saturating_add(max_hit);
             }
         }
-        Some(hubs)
+        true
     }
 
     /// True iff two `ActionOrder`s schedule the same (side, actor_slot)
@@ -5740,25 +5482,6 @@ impl Battle {
                 // `data/items.ts:shellbell`, `sim/battle-actions.ts` drain.
                 let attacker_heal_roll_coupled = m.drain_num > 0
                     || attacker_item_id == data::item_id::SHELLBELL;
-                // Phase 2b state-drop fix (coupling-graph plan §4.1 Edge 2 /
-                // §4.3). If EITHER this hit's defender OR its attacker belongs to
-                // a TRIGGER-DEFENDER hub component, the hp_bucket segmentation of
-                // THIS site is computed against a single (pre-trigger) HP
-                // snapshot, but a roll-dependent boost / heal / faint elsewhere
-                // in the component can shift this site's post-hit HP across a
-                // bucket line. Independent review (2026-07-12) confirmed a
-                // one-line "don't segment the INCOMING site" veto is
-                // INSUFFICIENT — the OUTGOING victim site (on a possibly-separate
-                // third mon) is also segmented and compounds the drop. Veto BOTH
-                // by checking the defender bit AND the attacker bit against
-                // `trigger_hub_defenders`, forcing the whole hub component to
-                // enumerate full-16 (the joint tensor's real step() +
-                // canonical_hash dedup then reaches every trigger state).
-                let attacker_abs = ResidualIndex::abs_slot(actor_side, actor_slot);
-                let in_trigger_hub = (bit < 4
-                    && (self.trigger_hub_defenders & (1 << bit)) != 0)
-                    || (attacker_abs < 4
-                        && (self.trigger_hub_defenders & (1 << attacker_abs)) != 0);
                 let eligible = defender_independent
                     && fixed_damage.is_none()
                     && !multihit
@@ -5768,7 +5491,6 @@ impl Battle {
                     && !sub_risk
                     && !life_orb_active
                     && !attacker_heal_roll_coupled
-                    && !in_trigger_hub
                     && !defender_friend_guarded;
                 // GROUND-TRUTH TESTING KNOB (dev/audit): the thread-local
                 // `ko_split_disabled()` suppresses ko_split so the solver
