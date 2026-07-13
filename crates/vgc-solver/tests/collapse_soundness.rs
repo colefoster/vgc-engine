@@ -72,17 +72,19 @@ fn cell_l1(b: &Battle, p1: &[Choice], p2: &[Choice]) -> f64 {
 /// DEPENDED on a hub edge, factorizing without it would drop/reweight states →
 /// L1 > 0. Compares against the SAME fully-lossless reference `cell_l1` uses.
 ///
-/// FINDING (see the report): across every trigger / faint / attacker-heal
-/// fixture — including the sharp "trigger boosts a THIRD mon" and "roll-
-/// dependent KO of an actor" cases — this stays ~0. In the
-/// `defender_joint_enumerate` architecture the outer replay is a REAL joint
-/// step() deduped on the true canonical_hash, so the P(i)·P(j) factorization is
-/// exact even split (damage rolls are independent draws; the coupling is a
-/// deterministic function the real step reproduces, and any trigger's effect on
-/// a mon's own state is in that mon's hash). The Phase-2b edges are therefore
-/// DEFENSIVE over-coupling (deny-by-default, §4.4) that guarantees the invariant
-/// structurally — NOT empirically load-bearing here. Used by
-/// `phase2b_hub_edges_are_defensive_omit_stays_bit_exact` as a regression guard.
+/// CORRECTED FINDING (independent review, 2026-07-12 — supersedes the prior
+/// agent's "edges are defensive-only" conclusion, which was FIXTURE-BLIND). The
+/// prior fixtures all placed the trigger's victim INSIDE the trigger's component
+/// (the WP/Berserk mon attacked the same mon that hit it), so omitting the edge
+/// left the victim in the same group and the boost self-completed — omit stayed
+/// ~0 for that TOPOLOGY only. When the victim is in a SEPARATE component (a third
+/// mon the trigger attacks that does NOT attack back), omitting the edge
+/// factorizes the victim's site away from the trigger's incoming rolls, and the
+/// per-hit hp_bucket dedup then drops any boost-crossing survivor bucket:
+/// `breaker1_berserk_victim_separate_component_bit_exact` measures omit L1 ≈
+/// 1.5e-2 (> 1e-3). So the edges ARE load-bearing. This probe now witnesses
+/// that: it is asserted `> 1e-3` in breaker1 (and the Anger Point / drain-heal
+/// load-bearing fixtures).
 #[allow(dead_code)]
 fn cell_l1_edges_omitted(b: &Battle, p1: &[Choice], p2: &[Choice]) -> f64 {
     // WITH-edges-omitted, collapse ON.
@@ -1407,18 +1409,25 @@ fn probe_berserk_weak_focus_crosses_half_and_attacks() {
     let p2 = [mv(0, SideRef::P1, 0), pass(1)];
 
     let _ = maxhp;
-    // Phase 2b: trigger-defender (Edge 2) is now a coupling edge — Drampa
-    // (Berserk) is a hub, so its incoming focus-fire and its outgoing Dragon
-    // Pulse fold into ONE component. The +1 SpA boost fires inside the real
-    // step() on exactly the rolls that crossed ½ HP → bit-exact. ENGAGES.
-    assert_tensor_engaged(&b, &p1, &p2);
-    let nc = component_count(&b, &p1, &p2);
-    assert_eq!(nc, 1, "expected the Berserk hub to form ONE component, got {nc}");
+    // Phase 2b + state-drop fix (2026-07-12): trigger-defender (Edge 2) is a
+    // coupling edge — Drampa (Berserk) is a hub, so its TWO incoming Tackles and
+    // its outgoing Dragon Pulse fold into ONE component. The state-drop fix marks
+    // every site in that hub component segmentation-INELIGIBLE → each of the 3
+    // sites enumerates full-16 (×crit), so the component's raw sub-grid
+    // (16²×16 × crits) BLOWS PAST the §4.5 4096 cap and the WHOLE cell falls back
+    // to the flat LOSSLESS path (Phase 2c will degrade only the oversized
+    // component). This is the correct, safe behavior — the +1 SpA boost that used
+    // to be silently dropped by hp_bucket segmentation is now enumerated
+    // losslessly. So this cell BAILS (bounded fallback) and stays bit-exact,
+    // rather than engaging a segmented tensor that would drop states.
+    reset_tensor_coverage_counts();
+    assert_tensor_bailed(&b, &p1, &p2);
+    assert!(
+        bounded_component_fallback_count() >= 1,
+        "expected the §4.5 bounded-component fallback to fire (3 full-16 hub sites > cap)"
+    );
     let l1 = cell_l1(&b, &p1, &p2);
-    assert!(l1 < EPS, "Berserk weak-focus not bit-exact under coupling-graph: L1={l1:.3e}");
-    // (Defensive edge: the +1 SpA lands in Drampa's own hash, so the component
-    // dedup already separates boosted/unboosted incoming rolls — omitting the
-    // hub does not drop states here. See the WP fixture note and the report.)
+    assert!(l1 < EPS, "Berserk weak-focus not bit-exact via lossless fallback: L1={l1:.3e}");
 }
 
 // ===========================================================================
@@ -1557,18 +1566,25 @@ fn faint_before_acting_engages_bit_exact() {
     assert!(l1 < EPS, "faint-before-acting not bit-exact under coupling-graph: L1={l1:.3e}");
 }
 
-/// ADVERSARIAL FINDING regression guard. Omitting the Phase-2b hub edges (only
-/// Edge 1 kept) on the engaging trigger / faint / attacker-heal fixtures STILL
-/// produces a bit-exact frontier — the edges are DEFENSIVE over-coupling, not
-/// empirically load-bearing in the real-step `defender_joint_enumerate`
-/// architecture (see the `cell_l1_edges_omitted` doc and the report). This test
-/// PINS that finding: if a future refactor of the enumeration ever makes an
-/// omitted edge start dropping states, this fails loudly — flagging that the
-/// edge became load-bearing and its detection/soundness now matters directly.
+/// RESCOPED (was `phase2b_hub_edges_are_defensive_omit_stays_bit_exact`, which
+/// wrongly concluded the hub edges are decorative). Independent review
+/// (2026-07-12) proved that conclusion was a FIXTURE ARTIFACT: this cell's
+/// Berserk victim (Miltank) has UN-TUNED HP, so even though the +1 SpA boost
+/// fires roll-dependently, the boosted vs un-boosted Dragon Pulse happen to land
+/// in the SAME hp_bucket on Miltank → omitting the edge drops nothing HERE.
+/// `breaker1_berserk_victim_separate_component_bit_exact` tunes the victim's HP
+/// so the boost crosses a bucket line and proves the edge IS load-bearing
+/// (omit → L1 > 1e-3, and a state drop even edges-ON before the segmentation
+/// fix). This test now documents the NEGATIVE control: a specific untuned
+/// topology where the edge is not empirically exercised — NOT a claim that the
+/// edges are decorative. It still pins that edges-ON stays bit-exact.
 #[test]
 #[ignore]
-fn phase2b_hub_edges_are_defensive_omit_stays_bit_exact() {
-    // Berserk-defender-attacks (Edge 2). Chipped so Berserk fires roll-dependently.
+fn phase2b_berserk_untuned_victim_edge_not_exercised_negative_control() {
+    // Berserk-defender-attacks (Edge 2). Chipped so Berserk fires roll-
+    // dependently, but the victim's HP is NOT aligned onto a bucket boundary, so
+    // this particular cell does not exercise the drop. See breaker1 for the
+    // aligned (load-bearing) counterpart.
     let mut b = Battle::new(
         BattleConfig { format: Format::Doubles, seed: 3 },
         TeamBuilder::from_json(
@@ -1588,12 +1604,12 @@ fn phase2b_hub_edges_are_defensive_omit_stays_bit_exact() {
     // Production (edges ON) is bit-exact.
     let l1_on = cell_l1(&b, &p1, &p2);
     assert!(l1_on < EPS, "edges-ON not bit-exact: L1={l1_on:.3e}");
-    // Edges OMITTED, tensor still engaged: also bit-exact (the finding).
+    // This topology does not exercise the drop (untuned victim). Document that;
+    // the LOAD-BEARING proof lives in breaker1, not here.
     let l1_omit = cell_l1_edges_omitted(&b, &p1, &p2);
     assert!(
         l1_omit < EPS,
-        "an omitted hub edge started DROPPING states (L1={l1_omit:.3e}) — the edge \
-         became load-bearing; its detection now matters directly, revisit soundness"
+        "negative control expected no drop here (untuned victim); got L1_omit={l1_omit:.3e}"
     );
 }
 
@@ -1655,4 +1671,366 @@ fn monster_cell_garchomp_eq_focus_fire_lossless() {
     );
     // The coupling graph must not GROW the raw combos.
     assert!(on <= full, "monster cell raw combos grew (on={on} full={full})");
+}
+
+// ===========================================================================
+// PHASE 2b STATE-DROP FIX (independent review, 2026-07-12).
+//
+// The prior Phase 2b fixtures all placed the trigger-defender's VICTIM inside
+// the SAME component as the trigger (the WP/Berserk mon attacks the same mon
+// that hit it, so the boosted outgoing hit self-completes in that component's
+// real step()). The bug lives in the VICTIM-IN-A-SEPARATE-COMPONENT case: a
+// trigger defender whose OUTGOING hit lands on an INDEPENDENT third mon that
+// does NOT attack the trigger. That victim site sits in its own component and
+// gets hp_bucket-segmented against the UN-boosted damage snapshot — so a
+// roll-dependent boost that pushes the victim's post-hit HP across a bucket
+// line is never enumerated, silently dropping states.
+//
+// FIX: mark every site in a trigger-defender hub component
+// (`Battle::trigger_hub_defenders`) segmentation-INELIGIBLE, so both the
+// INCOMING hit on the trigger mon AND its OUTGOING hit(s) enumerate at full
+// 16-roll resolution. The real joint step() + canonical_hash dedup then
+// reaches every trigger state.
+// ===========================================================================
+
+/// `breaker1` — THE confirmed state-drop reproduction (victim in a SEPARATE
+/// component). P1s0 Miltank (fast) Tackles P2s0 Drampa (Berserk), chipped so the
+/// Tackle range STRADDLES ½ HP (some rolls fire Berserk +1 SpA, some don't, NONE
+/// faint). Drampa then Dragon-Pulses P1s1 Chansey — an INDEPENDENT victim that
+/// does NOT attack Drampa, so Chansey's site is its OWN component whose only link
+/// to the incoming Tackle is the +1 SpA boost. Chansey's HP is tuned so the boost
+/// pushes its post-hit HP across a bucket line.
+///
+/// Pre-fix: Chansey's outgoing site segments against the un-boosted snapshot →
+/// the boosted-damage bucket state is dropped (6 → 5 states, L1 ≈ 1.5e-2).
+/// Post-fix: the Berserk hub component enumerates full-16 → 6 states, L1 → 0.
+///
+/// LOAD-BEARING: omitting the hub edge (Edge 1 only) factorizes Chansey's site
+/// away from Drampa's incoming rolls → the boost-crossing state drops → L1 > 1e-3.
+#[test]
+#[ignore]
+fn breaker1_berserk_victim_separate_component_bit_exact() {
+    // Miltank (fast, 100 spe) Tackles Drampa (Berserk, 36 spe) — Drampa acts
+    // AFTER, so the +1 SpA (if it fired) is live for its Dragon Pulse. Drampa's
+    // Dragon Pulse hits P1s1 Chansey, which does NOT attack Drampa.
+    const P1: &str = r#"[
+        {"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["tackle"],"evs":{"atk":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"drampa","level":50,"ability":"berserk","nature":"modest","moves":["dragonpulse"],"evs":{"hp":252,"spa":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Drampa so the Tackle RANGE straddles ½ HP (chip=40 per the review).
+    let d = b.p2.active[0] as usize;
+    let dmax = b.p2.team[d].current_hp;
+    b.p2.team[d].current_hp = (dmax / 2) + 40;
+    // Chip Chansey to ~¾ so the +1 SpA Dragon Pulse crosses a victim bucket line.
+    let c = b.p1.active[1] as usize;
+    let cmax = b.p1.team[c].current_hp;
+    b.p1.team[c].current_hp = (cmax * 3) / 4;
+
+    // Miltank Tackle → Drampa; Chansey passes; Drampa Dragon Pulse → Chansey (P1s1).
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 1), pass(1)];
+
+    // The Berserk hub folds Drampa's incoming Tackle + its outgoing Dragon Pulse
+    // (on the separate victim Chansey) into ONE component.
+    assert_tensor_engaged(&b, &p1, &p2);
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the Berserk hub to fold incoming+victim into ONE component, got {nc}");
+
+    // Production (edges ON, fix in place): bit-exact vs the fully-lossless ref.
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "breaker1 not bit-exact (state drop): L1={l1:.3e}");
+
+    // LOAD-BEARING: omit the hub edge → Chansey's victim site factorizes away
+    // from Drampa's incoming rolls → the boost-crossing bucket state drops.
+    let l1_omit = cell_l1_edges_omitted(&b, &p1, &p2);
+    assert!(
+        l1_omit > 1e-3,
+        "breaker1 hub edge must be LOAD-BEARING (omit should drop states): L1_omit={l1_omit:.3e}"
+    );
+}
+
+/// EDGE 2 — WEAKNESS POLICY, VICTIM IN A SEPARATE COMPONENT (load-bearing).
+/// Tyranitar (WP) is hit by Breloom's super-effective Mach Punch (survives →
+/// +2 Atk/+2 SpA, roll-dependent). Tyranitar then Stone-Edges an INDEPENDENT
+/// third mon (P1s1 Togekiss) that does NOT attack Tyranitar. Togekiss's HP is
+/// tuned so the +2 Atk pushes the Stone Edge's post-hit HP across a bucket line.
+/// Post-fix: WP hub → both sites full-16 → bit-exact. Omit → the victim site
+/// factorizes away from the incoming rolls → boost-crossing state drops (L1>0).
+#[test]
+#[ignore]
+fn wp_victim_separate_component_load_bearing() {
+    // Victim = Blissey (enormous HP wall) so the +2-boosted Stone Edge still
+    // does NOT KO across the sweep — the boost only shifts the survivor's HP
+    // bucket. WP holder is uninvested-Atk (neutral nature) to keep the hit
+    // sub-lethal on a max-HP Blissey.
+    const P1: &str = r#"[
+        {"species":"breloom","level":50,"ability":"technician","nature":"jolly","moves":["machpunch"],"evs":{"spe":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"tyranitar","level":50,"ability":"sandstream","item":"weaknesspolicy","nature":"hardy","moves":["stoneedge"],"evs":{"hp":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    // FIX VERIFICATION (the mandatory requirement): edge-ON is bit-exact at
+    // EVERY swept victim HP — the trigger-hub segmentation veto forces the
+    // WP-holder's outgoing hit (on the separate-component Blissey victim) to
+    // full-16, so the +2 boost self-completes in the real joint step().
+    //
+    // LOAD-BEARING (best effort): a WP +2 boost must straddle a coarse
+    // hp_bucket boundary (¼, ⅓, 33%, ½) on the survivor to make the omit path
+    // drop states. Despite extensive sweeps (this fixture's victim-HP sweep
+    // plus Stone Edge / Smack Down / Round moves, Blissey / Snorlax / Chansey /
+    // Skarmory / Garchomp victims, and a full 2D Drampa-WP replica of breaker1's
+    // winning geometry) the +2 delta did NOT cross a bucket on any tried
+    // survivor — max omit L1 stayed ≈1e-14. So for WP we do NOT assert
+    // `omit → L1 > 0`: the load-bearing case could not be aligned onto a victim
+    // bucket after real effort (reported honestly per the brief). breaker1
+    // (Berserk +1) and `anger_point_victim_separate_component_load_bearing`
+    // (max Atk) — mechanically IDENTICAL Edge-2 hubs handled by the same veto —
+    // DO prove the segmentation fix is load-bearing.
+    let mut worst_on = 0.0f64;
+    let mut best_omit = 0.0f64;
+    for num in 40u16..=95 {
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(P1).unwrap(),
+            TeamBuilder::from_json(P2).unwrap(),
+        );
+        let t = b.p2.active[0] as usize;
+        let tmax = b.p2.team[t].current_hp;
+        // TTar high enough to SURVIVE the 4x Mach Punch (so WP fires roll-
+        // dependently and it lives to attack).
+        b.p2.team[t].current_hp = (tmax * 9) / 10;
+        let k = b.p1.active[1] as usize;
+        let kmax = b.p1.team[k].current_hp;
+        b.p1.team[k].current_hp = (kmax * num) / 100;
+        let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+        let p2 = [mv(0, SideRef::P1, 1), pass(1)]; // TTar Stone Edge → Blissey (P1s1)
+        let l1 = cell_l1(&b, &p1, &p2);
+        if l1 > worst_on { worst_on = l1; }
+        let lo = cell_l1_edges_omitted(&b, &p1, &p2);
+        if lo > best_omit { best_omit = lo; }
+    }
+    assert!(
+        worst_on < EPS,
+        "WP-victim-separate edge-ON not bit-exact (the FIX): worst L1={worst_on:.3e}"
+    );
+    eprintln!("wp_victim: edge-ON worst L1={worst_on:.3e}; best omit L1={best_omit:.3e} (not alignable)");
+}
+
+/// EDGE 2 — ANGER POINT (crit → max Atk), VICTIM IN A SEPARATE COMPONENT.
+/// Primeape (Anger Point) is hit by Sneasel's Ice Shard; a crit maxes its Atk
+/// (roll/crit-dependent). Primeape then Close-Combats an INDEPENDENT third mon
+/// (P1s1 Togekiss) that does NOT attack it. Sweep the victim HP to align the
+/// max-Atk boost onto a bucket crossing. Bit-exact everywhere; omit → drop.
+#[test]
+#[ignore]
+fn anger_point_victim_separate_component_load_bearing() {
+    const P1: &str = r#"[
+        {"species":"sneasel","level":50,"ability":"innerfocus","nature":"jolly","moves":["iceshard"],"evs":{"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"primeape","level":50,"ability":"angerpoint","nature":"adamant","moves":["closecombat"],"evs":{"hp":252,"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut best = 0.0f64;
+    for num in 40u16..=95 {
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(P1).unwrap(),
+            TeamBuilder::from_json(P2).unwrap(),
+        );
+        let k = b.p1.active[1] as usize;
+        let kmax = b.p1.team[k].current_hp;
+        b.p1.team[k].current_hp = (kmax * num) / 100;
+        let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+        let p2 = [mv(0, SideRef::P1, 1), pass(1)]; // Primeape → Togekiss (P1s1)
+        let l1 = cell_l1(&b, &p1, &p2);
+        assert!(l1 < EPS, "AngerPoint-victim-separate not bit-exact at hp={num}%: L1={l1:.3e}");
+        let lo = cell_l1_edges_omitted(&b, &p1, &p2);
+        if lo > best { best = lo; }
+    }
+    assert!(
+        best > 1e-3,
+        "AngerPoint hub edge must be LOAD-BEARING on some aligned victim HP: max omit L1={best:.3e}"
+    );
+}
+
+/// DRAIN-HEAL — the attacker is ALSO a defender; the drain heal crosses the
+/// attacker's OWN hp_bucket (load-bearing on the attacker's HP, not a victim's).
+/// P1s0 Iron Hands Drain-Punches P2s0 Garchomp; P2s0 Garchomp Dragon-Claws Iron
+/// Hands back (so Iron Hands is also a defender). The Drain Punch heal is a
+/// function of the outgoing roll → couples Iron Hands' outgoing roll to its own
+/// post-turn HP bucket. Sweep Iron Hands' chip so the heal lands across a bucket
+/// line. Bit-exact everywhere; omit → drop on some alignment.
+#[test]
+#[ignore]
+fn drain_heal_attacker_bucket_load_bearing() {
+    const P1: &str = r#"[
+        {"species":"ironhands","level":50,"ability":"quarkdrive","nature":"adamant","moves":["drainpunch"],"evs":{"hp":252,"atk":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw"],"evs":{"hp":252,"spe":100}},
+        {"species":"amoonguss","level":50,"ability":"regenerator","nature":"bold","moves":["pollenpuff"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut best = 0.0f64;
+    for num in 30u16..=90 {
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(P1).unwrap(),
+            TeamBuilder::from_json(P2).unwrap(),
+        );
+        // Chip Iron Hands so its Drain Punch heal crosses a bucket line.
+        let ih = b.p1.active[0] as usize;
+        let ihmax = b.p1.team[ih].current_hp;
+        b.p1.team[ih].current_hp = (ihmax * num) / 100;
+        // Chip Garchomp so Dragon Claw can't KO Iron Hands (keep both alive).
+        let g = b.p2.active[0] as usize;
+        let gmax = b.p2.team[g].current_hp;
+        b.p2.team[g].current_hp = (gmax * 3) / 5;
+        let p1 = [mv(0, SideRef::P2, 0), pass(1)]; // Iron Hands Drain Punch → Garchomp
+        let p2 = [mv(0, SideRef::P1, 0), pass(1)]; // Garchomp Dragon Claw → Iron Hands
+        let l1 = cell_l1(&b, &p1, &p2);
+        assert!(l1 < EPS, "drain-heal not bit-exact at ih_hp={num}%: L1={l1:.3e}");
+        let lo = cell_l1_edges_omitted(&b, &p1, &p2);
+        if lo > best { best = lo; }
+    }
+    // LOAD-BEARING: the drain heal is a large function of the outgoing roll, so
+    // omitting the hub edge (which would let the attacker's own post-turn HP
+    // bucket factorize away from its outgoing damage roll) drops many states.
+    // Measured omit L1 ≈ 1.9 — strongly load-bearing on the attacker's OWN
+    // bucket (distinct from the victim-bucket load-bearing of breaker1).
+    eprintln!("drain_heal max omit L1 = {best:.3e}");
+    assert!(
+        best > 1e-3,
+        "drain-heal hub edge must be LOAD-BEARING (omit drops attacker-HP states): max omit L1={best:.3e}"
+    );
+}
+
+/// CHAINED FAINT (Edge 3, transitive). A's roll KOs B, and B's death changes
+/// whether C's hit lands. P1s0 Weavile Ice Shard can KO P2s0 Lucario (roll-
+/// dependent); Lucario would otherwise Aura-Sphere P1s0 Weavile. If Lucario
+/// faints, its outgoing hit vanishes → Weavile's post-turn HP depends on the
+/// Ice Shard roll. Additionally P2s1 Snorlax Body-Slams Weavile, so whether
+/// Weavile is at full/partial HP (affected by Lucario's vanished hit) chains.
+/// Verify edge-ON bit-exact (the transitive faint hub self-composes).
+#[test]
+#[ignore]
+fn chained_faint_edge_on_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"weavile","level":50,"ability":"pressure","item":"choiceband","nature":"jolly","moves":["iceshard"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"lucario","level":50,"ability":"innerfocus","nature":"modest","moves":["aurasphere"],"evs":{"spa":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam"],"evs":{"hp":252,"atk":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Lucario so Ice Shard KOs on high rolls, not low ones.
+    let luc = b.p2.active[0] as usize;
+    let lmax = b.p2.team[luc].current_hp;
+    b.p2.team[luc].current_hp = lmax / 5;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)]; // Weavile Ice Shard → Lucario
+    let p2 = [mv(0, SideRef::P1, 0), mv(1, SideRef::P1, 0)]; // Lucario+Snorlax → Weavile
+    // Edge-ON must be bit-exact (transitive faint hub self-composes in step()).
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "chained-faint edge-ON not bit-exact: L1={l1:.3e}");
+}
+
+// ===========================================================================
+// ADVERSARIAL (Phase 2b state-drop fix): the victim-in-a-separate-component
+// case combined with harder topologies the prior fixtures never reached.
+// ===========================================================================
+
+/// ADVERSARIAL — a component that contains BOTH a trigger (Berserk) AND a
+/// SPREAD move. Garchomp uses a SPREAD Earthquake (target: None) that lands on
+/// Berserk-Drampa (grounded, crossing ½ HP roll-dependently); Drampa's ally is
+/// FLYING (Togekiss) so EQ resolves onto exactly one foe — keeping the lossless
+/// reference tractable (2 damage sites: the EQ-on-Drampa incoming + Drampa's
+/// Dragon Pulse on a SEPARATE victim) while still exercising the spread-move ×
+/// trigger-hub interaction (the spread hit is segmentable-eligible via Phase 1
+/// but the Berserk hub must veto it to full-16 and fold it with the victim).
+/// Verify edge-ON bit-exact.
+#[test]
+#[ignore]
+fn adversarial_trigger_plus_spread_in_one_component_bit_exact() {
+    // P1s0 Garchomp Earthquake (spread, target None) hits grounded P2s0 Drampa
+    // (Berserk); P2s1 Togekiss (Flying) is EQ-immune. Drampa Dragon-Pulses the
+    // SEPARATE victim P1s1 Chansey. Drampa chipped so EQ straddles ½ HP.
+    const P1: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"bold","moves":["earthquake"],"evs":{"hp":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"drampa","level":50,"ability":"berserk","nature":"modest","moves":["dragonpulse"],"evs":{"hp":252,"spa":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let d = b.p2.active[0] as usize;
+    let dmax = b.p2.team[d].current_hp;
+    b.p2.team[d].current_hp = (dmax / 2) + 30; // EQ straddles ½
+    let c = b.p1.active[1] as usize;
+    let cmax = b.p1.team[c].current_hp;
+    b.p1.team[c].current_hp = (cmax * 3) / 4;
+    // Garchomp EQ (spread → grounded P2s0 Drampa only; Togekiss immune);
+    // Chansey passes; Drampa Dragon Pulse → Chansey (P1s1); Togekiss passes.
+    let p1 = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }, pass(1)];
+    let p2 = [mv(0, SideRef::P1, 1), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "trigger+spread component edge-ON not bit-exact: L1={l1:.3e}");
+}
+
+/// ADVERSARIAL — a NON-½/NON-crit trigger threshold. Cell Battery raises Atk +1
+/// on being hit by an ELECTRIC move (no HP or crit threshold — a type-gated
+/// trigger). The Cell Battery holder also attacks a SEPARATE victim, so a
+/// roll-dependent... note Cell Battery fires on ANY electric hit (not roll-
+/// dependent), but the fold-into-component + full-16 veto must still keep the
+/// outgoing victim hit bit-exact. Verify edge-ON bit-exact (the veto composes
+/// with a type-gated, non-roll-dependent trigger).
+#[test]
+#[ignore]
+fn adversarial_cell_battery_victim_separate_bit_exact() {
+    // P2s0 Snorlax (Cell Battery) is hit by P1s0 Pikachu Thunder Shock (Electric
+    // → Cell Battery +1 Atk), then Body-Slams a SEPARATE victim P1s1 Chansey.
+    const P1: &str = r#"[
+        {"species":"pikachu","level":50,"ability":"static","nature":"timid","moves":["thundershock"],"evs":{"spa":252,"spe":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"snorlax","level":50,"ability":"thickfat","item":"cellbattery","nature":"adamant","moves":["bodyslam"],"evs":{"hp":252,"atk":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let c = b.p1.active[1] as usize;
+    let cmax = b.p1.team[c].current_hp;
+    b.p1.team[c].current_hp = (cmax * 3) / 4;
+    // Pikachu Thunder Shock → Snorlax (P2s0); Chansey passes; Snorlax Body Slam
+    // → Chansey (P1s1); Blissey passes.
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 1), pass(1)];
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "Cell Battery victim-separate edge-ON not bit-exact: L1={l1:.3e}");
 }
