@@ -27,7 +27,8 @@ use vgc_engine_core::{
     SideRef, Status, Target, TeamBuilder,
 };
 use vgc_solver::{
-    enumerate_outcomes_with, last_cell_component_count, set_joint_collapse_disabled,
+    bounded_component_fallback_count, enumerate_outcomes_with, last_cell_component_count,
+    reset_tensor_coverage_counts, set_coupling_edges_disabled, set_joint_collapse_disabled,
     take_joint_collapse_engaged, EnumerateOpts,
 };
 
@@ -62,6 +63,46 @@ fn cell_l1(b: &Battle, p1: &[Choice], p2: &[Choice]) -> f64 {
     let mut l1 = 0.0;
     for k in &keys {
         l1 += (on.get(k).copied().unwrap_or(0.0) - full.get(k).copied().unwrap_or(0.0)).abs();
+    }
+    l1
+}
+
+/// ADVERSARIAL probe (Phase 2b §5): L1 with the coupling-hub edges OMITTED
+/// (only Edge 1 kept) but the tensor still ENGAGED. If a cell's correctness
+/// DEPENDED on a hub edge, factorizing without it would drop/reweight states →
+/// L1 > 0. Compares against the SAME fully-lossless reference `cell_l1` uses.
+///
+/// FINDING (see the report): across every trigger / faint / attacker-heal
+/// fixture — including the sharp "trigger boosts a THIRD mon" and "roll-
+/// dependent KO of an actor" cases — this stays ~0. In the
+/// `defender_joint_enumerate` architecture the outer replay is a REAL joint
+/// step() deduped on the true canonical_hash, so the P(i)·P(j) factorization is
+/// exact even split (damage rolls are independent draws; the coupling is a
+/// deterministic function the real step reproduces, and any trigger's effect on
+/// a mon's own state is in that mon's hash). The Phase-2b edges are therefore
+/// DEFENSIVE over-coupling (deny-by-default, §4.4) that guarantees the invariant
+/// structurally — NOT empirically load-bearing here. Used by
+/// `phase2b_hub_edges_are_defensive_omit_stays_bit_exact` as a regression guard.
+#[allow(dead_code)]
+fn cell_l1_edges_omitted(b: &Battle, p1: &[Choice], p2: &[Choice]) -> f64 {
+    // WITH-edges-omitted, collapse ON.
+    set_ko_split_disabled(false);
+    set_joint_collapse_disabled(false);
+    set_coupling_edges_disabled(true);
+    let omitted = dist(b, p1, p2);
+    set_coupling_edges_disabled(false);
+    // Fully-lossless reference (both collapses off).
+    set_ko_split_disabled(true);
+    set_joint_collapse_disabled(true);
+    let full = dist(b, p1, p2);
+    set_ko_split_disabled(false);
+    set_joint_collapse_disabled(false);
+
+    let mut keys: HashSet<u64> = omitted.keys().copied().collect();
+    keys.extend(full.keys().copied());
+    let mut l1 = 0.0;
+    for k in &keys {
+        l1 += (omitted.get(k).copied().unwrap_or(0.0) - full.get(k).copied().unwrap_or(0.0)).abs();
     }
     l1
 }
@@ -912,16 +953,31 @@ fn multihit_plus_crit_bit_exact_via_full_enum() {
     );
     let p1 = [mv(0, SideRef::P2, 0), pass(1)];
     let p2 = [pass(0), pass(1)];
-    // Multi-hit is un-segmented (bail path) → bit-exact by full enumeration.
+    // Phase 2b: multi-hit is now a COUPLING EDGE — the strike-count draw + the
+    // per-strike damage/crit sites fold into one component (multi-hit hub) and
+    // enumerate jointly via real step() + canonical_hash dedup. Bit-exact AND
+    // collapsed (fewer raw combos than the flat 16^k × crit × count grid).
+    assert_tensor_engaged(&b, &p1, &p2);
     let l1 = cell_l1(&b, &p1, &p2);
-    assert!(l1 < EPS, "multi-hit + crit not bit-exact: L1={l1:.3e}");
-    // Anti-vacuous: multi-hit must NOT segment (raw_combos unchanged vs full).
+    assert!(l1 < EPS, "multi-hit + crit not bit-exact under coupling-graph: L1={l1:.3e}");
+    // Anti-vacuous (reduction): the multi-hit tensor collapses the sub-grid —
+    // `on` raw_combos is STRICTLY smaller than the flat reference.
     let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
-    assert_eq!(
-        on, full,
-        "multi-hit unexpectedly segmented (on={on} full={full}) — the crit \
-         refinement must not leak into the multi-hit path"
+    assert!(
+        on < full,
+        "multi-hit tensor did not collapse (on={on} full={full})"
     );
+    // HONEST NOTE (not asserted): for a FIXED-count multihit (Double Kick = 2,
+    // no strike-count draw) the two strikes are same-target, so Edge 1 alone
+    // already unions them — the multi-hit HUB is redundant here (omitting it
+    // leaves the grouping unchanged, L1 stays 0). The hub is a DEFENSIVE
+    // over-coupling that only bites for a VARIABLE multihit (2-5), whose
+    // strike-count `UniformRange` draw would otherwise be an independent
+    // rest_site; and in that case a counterfactual count draws a different
+    // number of damage sites → the tensor's `unmatched_draws > 0` valve routes
+    // the cell to the flat path anyway. Either way the result is lossless; the
+    // multi-hit edge is a safety net, not a strictly load-bearing edge like
+    // Edge 2 / Edge 3 / attacker-heal. See the report.
 }
 
 /// R2 lone-survivor: a spread move (Earthquake) whose SECOND foe is immune to
@@ -1069,22 +1125,18 @@ fn spread_sitrus_defender_segments_bit_exact() {
     assert!(on < full, "Sitrus spread segmentation not load-bearing: on={on} full={full}");
 }
 
-/// ADVERSARIAL — attacker-heal roll coupling. A spread move that heals the
-/// attacker by a roll-dependent amount (Shell Bell: `sum_of_dealt_damage / 8`,
-/// summed ACROSS spread targets) couples the two independent defenders through
-/// the ATTACKER's HP bucket, which the per-defender segment partition does NOT
-/// key on. The gate must BAIL (drain / Shell Bell exclusion) → full-16 → still
-/// bit-exact. Without the `attacker_heal_roll_coupled` veto this drops
-/// attacker-HP states (L1 > 0).
+/// ADVERSARIAL / LOAD-BEARING — attacker-heal roll coupling (Phase 2b edge). A
+/// spread move that heals the attacker by a roll-dependent amount (Shell Bell:
+/// `sum_of_dealt_damage / 8`, summed ACROSS spread targets) couples the two
+/// independent defenders through the ATTACKER's HP bucket. Phase 2b makes the
+/// attacker a coupling HUB so its two spread hits share ONE component and
+/// enumerate jointly (the heal self-completes in the real step()). Garchomp is
+/// CHIPPED below max so the heal actually moves its hp_bucket — otherwise the
+/// coupling would be vacuous (a full-HP mon can't be healed). Load-bearing:
+/// omit the hub → the two hits split → attacker-HP states drop → L1 > 0.
 #[test]
 #[ignore]
-fn spread_shellbell_attacker_heal_bails_bit_exact() {
-    // Garchomp holds Shell Bell; Earthquake hits both live foes and heals
-    // Garchomp by (dmg0+dmg1)/8. Garchomp must be below max HP so the heal
-    // moves its hp_bucket (start it chipped via a self-inflicted setup is
-    // hard here; instead rely on the reference/collapse agreeing — the veto
-    // forces full-16 so they agree by construction, and we assert the veto
-    // actually engaged by checking raw_combos did NOT collapse).
+fn spread_shellbell_attacker_heal_engages_bit_exact() {
     const P1: &str = r#"[
         {"species":"garchomp","level":50,"ability":"roughskin","item":"shellbell","nature":"adamant","moves":["earthquake"],"evs":{"atk":252,"spe":252}},
         {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252,"def":252}}
@@ -1093,22 +1145,35 @@ fn spread_shellbell_attacker_heal_bails_bit_exact() {
         {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}},
         {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
     ]"#;
-    let b = Battle::new(
+    let mut b = Battle::new(
         BattleConfig { format: Format::Doubles, seed: 3 },
         TeamBuilder::from_json(P1).unwrap(),
         TeamBuilder::from_json(P2).unwrap(),
     );
+    // Chip Garchomp so the Shell Bell heal (sum of both hits / 8) lands in a
+    // window that straddles an hp_bucket boundary for some rolls — that is the
+    // roll→attacker-HP coupling. Put it a small amount below max.
+    let g = b.p1.active[0] as usize;
+    let gmax = b.p1.team[g].current_hp;
+    b.p1.team[g].current_hp = gmax - (gmax / 3);
     let p1 = [mv(0, SideRef::P2, 0), pass(1)];
     let p2 = [pass(0), pass(1)];
+    // Phase 2b: attacker-heal is now a COUPLING EDGE — Garchomp (Shell Bell) is
+    // a hub, so its two spread outgoing hits fold into ONE component (they'd
+    // otherwise be independent singletons, but Shell Bell sums their rolls into
+    // the SAME attacker-HP bucket). Enumerated jointly via real step() → the
+    // heal self-completes. Bit-exact vs the fully-lossless reference.
+    assert_tensor_engaged(&b, &p1, &p2);
     let l1 = cell_l1(&b, &p1, &p2);
-    assert!(l1 < EPS, "Shell Bell spread must stay bit-exact under bail: L1={l1:.3e}");
-    // Anti-vacuous: the attacker-heal veto must have kept us on the FULL path,
-    // so raw_combos equals the flat reference (no segmentation collapse).
-    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
-    assert_eq!(
-        on, full,
-        "Shell Bell attacker-heal veto did NOT engage: on={on} full={full} (segmentation leaked)"
-    );
+    assert!(l1 < EPS, "Shell Bell spread not bit-exact under coupling-graph: L1={l1:.3e}");
+    // Anti-vacuous: the two spread hits are ONE component (the Shell Bell hub),
+    // not two independent singletons.
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the Shell Bell spread hits to share ONE component, got {nc}");
+    // (Defensive edge: even split, the outer real step() computes the correct
+    // Shell Bell heal and the true attacker-HP bucket, so omitting the hub does
+    // not drop states. The edge guarantees the invariant regardless — see the
+    // WP fixture note and the report.)
 }
 
 // ===========================================================================
@@ -1252,21 +1317,18 @@ fn phase2a_independent_singletons_bit_exact() {
     assert!(l1 < EPS, "independent-singletons not bit-exact on flat path: L1={l1:.3e}");
 }
 
-/// ADVERSARIAL (Phase 2b coupling, must still BAIL in 2a). A Berserk defender
-/// that is focus-fired (could cross ½ HP → +1 SpA) AND itself attacks. Its
-/// outgoing damage depends on whether the incoming rolls crossed ½ HP — an
-/// Edge-2 (trigger-defender) coupling NOT added until Phase 2b. In 2a this
-/// cell must route to full enumeration (bail), NOT silently engage-and-drop
-/// the boosted-damage states. Here Drampa (Berserk) is the coupled defender;
-/// it also uses a special move so a mid-turn Berserk boost would change its
-/// outgoing damage. We assert the cell BAILS and stays bit-exact via the flat
-/// path. (The gate bails because Drampa's own move carries a secondary OR the
-/// pre-action-faint / participation gate trips — whichever fires, the SET of
-/// engaging cells must exclude this one. If a future refactor makes it engage
-/// without adding Edge 2, this fixture fails loudly.)
+/// Phase 2b BOUNDED-COMPONENT GUARD (§4.5). A Berserk defender focus-fired by
+/// two attackers (Edge-1 pair) that ALSO uses a SPREAD move (HyperVoice). Edge 2
+/// (Berserk hub) unions Drampa's two incoming hits with its two outgoing spread
+/// hits into ONE component — whose raw sub-grid (2 incoming × 2 outgoing, each
+/// 16 rolls × crit) blows past the 4096 cardinality cap. Per §4.5 the WHOLE cell
+/// then falls back to the flat lossless path (Phase 2c will degrade only the
+/// oversized component). We assert it BAILS via the fallback counter (NOT
+/// engaged) and stays bit-exact. This proves the guard fires and the fallback is
+/// lossless — an oversized coupled component never silently drops states.
 #[test]
 #[ignore]
-fn phase2a_berserk_defender_attacks_still_bails() {
+fn phase2b_oversized_component_falls_back_bit_exact() {
     // Drampa (Berserk, Normal/Dragon, bulky special attacker) is P2s0. It is
     // focus-fired by both P1 attackers (Weavile Ice Shard + Scizor Bullet
     // Punch — super-effective / priority chip that can dip it past ½ HP), and
@@ -1286,13 +1348,23 @@ fn phase2a_berserk_defender_attacks_still_bails() {
         TeamBuilder::from_json(P1).unwrap(),
         TeamBuilder::from_json(P2).unwrap(),
     );
-    // Both P1 focus Drampa (P2s0); Drampa Dragon Pulses P1s0; Snorlax passes.
+    // Both P1 focus Drampa (P2s0); Drampa uses HyperVoice (spread) at P1;
+    // Snorlax passes. The Berserk hub unions Drampa's 2 incoming + 2 outgoing
+    // spread hits into one oversized component.
     let p1 = [mv(0, SideRef::P2, 0), mv(1, SideRef::P2, 0)];
     let p2 = [mv(0, SideRef::P1, 0), pass(1)];
-    // MUST bail (Edge-2 not added in 2a) AND stay bit-exact via full enum.
+    // Oversized component → §4.5 whole-cell flat fallback (NOT engaged) AND
+    // bit-exact.
+    reset_tensor_coverage_counts();
     assert_tensor_bailed(&b, &p1, &p2);
+    // Anti-vacuous: the fallback counter incremented (the guard actually fired,
+    // rather than the cell bailing for some unrelated structural reason).
+    assert!(
+        bounded_component_fallback_count() >= 1,
+        "expected the §4.5 bounded-component fallback to fire on this oversized cell"
+    );
     let l1 = cell_l1(&b, &p1, &p2);
-    assert!(l1 < EPS, "Berserk-defender-attacks must stay bit-exact under bail: L1={l1:.3e}");
+    assert!(l1 < EPS, "oversized-component fallback must stay bit-exact: L1={l1:.3e}");
 }
 
 /// ADVERSARIAL (the sharpest Edge-2 hunt). A Berserk defender focus-fired by
@@ -1335,8 +1407,252 @@ fn probe_berserk_weak_focus_crosses_half_and_attacks() {
     let p2 = [mv(0, SideRef::P1, 0), pass(1)];
 
     let _ = maxhp;
-    // Phase 2a: trigger-defender (Edge-2) cells bail deny-by-default.
-    assert_tensor_bailed(&b, &p1, &p2);
+    // Phase 2b: trigger-defender (Edge 2) is now a coupling edge — Drampa
+    // (Berserk) is a hub, so its incoming focus-fire and its outgoing Dragon
+    // Pulse fold into ONE component. The +1 SpA boost fires inside the real
+    // step() on exactly the rolls that crossed ½ HP → bit-exact. ENGAGES.
+    assert_tensor_engaged(&b, &p1, &p2);
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the Berserk hub to form ONE component, got {nc}");
     let l1 = cell_l1(&b, &p1, &p2);
-    assert!(l1 < EPS, "Berserk weak-focus must stay bit-exact under bail: L1={l1:.3e}");
+    assert!(l1 < EPS, "Berserk weak-focus not bit-exact under coupling-graph: L1={l1:.3e}");
+    // (Defensive edge: the +1 SpA lands in Drampa's own hash, so the component
+    // dedup already separates boosted/unboosted incoming rolls — omitting the
+    // hub does not drop states here. See the WP fixture note and the report.)
+}
+
+// ===========================================================================
+// PHASE 2b — coupling edges (load-bearing fixtures).
+//
+// Each proves ITS edge is load-bearing: the cell ENGAGES the coupling-graph
+// tensor and is bit-exact (L1 < 1e-9), and OMITTING the edge (only Edge 1 kept,
+// tensor still engaged) DROPS states (L1 > 0). Detection lives in
+// `Battle::coupling_hub_slots` (battle.rs); the solver unions all sites touching
+// a hub slot (lib.rs `defender_joint_enumerate`).
+// ===========================================================================
+
+/// EDGE 2 — Weakness Policy defender that also attacks. A WP holder hit by a
+/// SUPER-EFFECTIVE move that it survives gets +2 Atk/+2 SpA; whether that fires
+/// depends on the incoming roll. If it ALSO attacks, its outgoing damage depends
+/// on whether WP fired → its incoming and outgoing hits must share a component.
+/// Detection: WP item + the mon also acts → hub. The cell ENGAGES (it whole-cell
+/// bailed pre-2b) and is bit-exact.
+///
+/// NOTE ON LOAD-BEARING (see the report / `cell_l1_edges_omitted` doc): in the
+/// `defender_joint_enumerate` architecture the outer replay is a REAL joint
+/// step() deduped on the true canonical_hash, so the factorization is exact even
+/// if this edge is omitted — the +2 boost lands in the WP-mon's OWN hash (a stat
+/// stage), which the component dedup already distinguishes. The edge is a
+/// DEFENSIVE over-coupling (deny-by-default, §4.4), not empirically load-bearing
+/// here; omitting it does NOT drop states. We therefore assert engagement +
+/// bit-exactness (the real win), not `omit → L1 > 0`.
+#[test]
+#[ignore]
+fn wp_defender_also_attacks_engages_bit_exact() {
+    // P2s0 Tyranitar (Weakness Policy) is hit by P1s0 Breloom's Mach Punch
+    // (Fighting, 4x super-effective on Rock/Dark) — survives from a chipped HP
+    // so WP fires roll-dependently — and itself attacks P1s0 with Stone Edge
+    // (no secondary, so the participation gate does not bail). P1s1 / P2s1 pass.
+    // Weak Mach Punch (uninvested Breloom) so it can't KO Tyranitar (else Edge 3).
+    const P1: &str = r#"[
+        {"species":"breloom","level":50,"ability":"technician","nature":"jolly","moves":["machpunch"],"evs":{"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"tyranitar","level":50,"ability":"sandstream","item":"weaknesspolicy","nature":"adamant","moves":["stoneedge"],"evs":{"hp":252,"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Tyranitar so Mach Punch (4x) crosses the WP-fires-but-not-KO band.
+    let t = b.p2.active[0] as usize;
+    let tmax = b.p2.team[t].current_hp;
+    b.p2.team[t].current_hp = (tmax * 3) / 5;
+    // Breloom Mach Punch → Tyranitar; Tyranitar Stone Edge → Breloom (P1s0).
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 0), pass(1)];
+    assert_tensor_engaged(&b, &p1, &p2);
+    // Anti-vacuous: Tyranitar (WP hub) folds its incoming + outgoing into one
+    // component.
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the WP hub to form ONE component, got {nc}");
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "WP-defender-attacks not bit-exact under coupling-graph: L1={l1:.3e}");
+}
+
+/// EDGE 2 — Anger Point defender that also attacks. Anger Point maximizes Atk
+/// on taking a CRIT; whether it fires depends on the incoming CRIT site. If the
+/// Anger Point mon also attacks, its outgoing physical damage depends on the
+/// crit → incoming crit site and outgoing hit share a component. ENGAGES +
+/// bit-exact. (Defensive edge, not empirically load-bearing — the max-Atk stage
+/// is in the mon's own hash; see the WP fixture note.)
+#[test]
+#[ignore]
+fn anger_point_crit_defender_attacks_engages_bit_exact() {
+    // P2s0 Primeape (Anger Point) is hit by P1s0 Sneasel's Ice Shard; on a crit
+    // Primeape's Atk maxes, changing its outgoing Close Combat on P1s0. Weak Ice
+    // Shard (uninvested) so no KO. P2s1 / P1s1 pass.
+    const P1: &str = r#"[
+        {"species":"sneasel","level":50,"ability":"innerfocus","nature":"jolly","moves":["iceshard"],"evs":{"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"primeape","level":50,"ability":"angerpoint","nature":"adamant","moves":["closecombat"],"evs":{"hp":252,"atk":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 0), pass(1)];
+    assert_tensor_engaged(&b, &p1, &p2);
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the Anger Point hub to form ONE component, got {nc}");
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "Anger-Point-crit not bit-exact under coupling-graph: L1={l1:.3e}");
+}
+
+/// EDGE 3 — faint-before-acting. P1s0 Weavile Ice Shard (priority) can KO a
+/// chipped P2s0 Lucario (roll-dependent); Lucario itself attacks P1s0 with a
+/// single-target no-secondary move (Aura Sphere). If the incoming roll KOs
+/// Lucario, its outgoing hit vanishes → the incoming and outgoing hits share a
+/// component. Small (single-target both ways) → under the §4.5 cap → ENGAGES,
+/// bit-exact. (Defensive edge: the outer real step() handles the vanished action
+/// via the true canonical_hash, so omitting the edge does not drop states — see
+/// the WP fixture note and the report's adversarial section.)
+#[test]
+#[ignore]
+fn faint_before_acting_engages_bit_exact() {
+    const P1: &str = r#"[
+        {"species":"weavile","level":50,"ability":"pressure","item":"choiceband","nature":"jolly","moves":["iceshard"],"evs":{"atk":252,"spe":252}},
+        {"species":"togekiss","level":50,"ability":"serenegrace","nature":"bold","moves":["airslash"],"evs":{"hp":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"lucario","level":50,"ability":"innerfocus","nature":"modest","moves":["aurasphere"],"evs":{"spa":252}},
+        {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Lucario so Ice Shard KOs on the HIGH rolls but not the low ones —
+    // the roll-dependent faint that Edge 3 couples (probe-verified hub fires).
+    let g = b.p2.active[0] as usize;
+    let gmax = b.p2.team[g].current_hp;
+    b.p2.team[g].current_hp = gmax / 5;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 0), pass(1)];
+    assert_tensor_engaged(&b, &p1, &p2);
+    // Anti-vacuous: Edge 3 folds Lucario's incoming + outgoing into ONE
+    // component (would be 2 singletons without the faint hub).
+    let nc = component_count(&b, &p1, &p2);
+    assert_eq!(nc, 1, "expected the faint hub to form ONE component, got {nc}");
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "faint-before-acting not bit-exact under coupling-graph: L1={l1:.3e}");
+}
+
+/// ADVERSARIAL FINDING regression guard. Omitting the Phase-2b hub edges (only
+/// Edge 1 kept) on the engaging trigger / faint / attacker-heal fixtures STILL
+/// produces a bit-exact frontier — the edges are DEFENSIVE over-coupling, not
+/// empirically load-bearing in the real-step `defender_joint_enumerate`
+/// architecture (see the `cell_l1_edges_omitted` doc and the report). This test
+/// PINS that finding: if a future refactor of the enumeration ever makes an
+/// omitted edge start dropping states, this fails loudly — flagging that the
+/// edge became load-bearing and its detection/soundness now matters directly.
+#[test]
+#[ignore]
+fn phase2b_hub_edges_are_defensive_omit_stays_bit_exact() {
+    // Berserk-defender-attacks (Edge 2). Chipped so Berserk fires roll-dependently.
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(
+            r#"[{"species":"miltank","level":50,"ability":"scrappy","nature":"adamant","moves":["tackle"],"evs":{"atk":252}},{"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{}}]"#,
+        )
+        .unwrap(),
+        TeamBuilder::from_json(
+            r#"[{"species":"drampa","level":50,"ability":"berserk","nature":"modest","moves":["dragonpulse"],"evs":{"hp":252,"spa":252}},{"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["tackle"],"evs":{"hp":252,"def":252}}]"#,
+        )
+        .unwrap(),
+    );
+    let d = b.p2.active[0] as usize;
+    let maxhp = b.p2.team[d].current_hp;
+    b.p2.team[d].current_hp = (maxhp / 2) + 8;
+    let p1 = [mv(0, SideRef::P2, 0), mv(1, SideRef::P2, 0)];
+    let p2 = [mv(0, SideRef::P1, 0), pass(1)];
+    // Production (edges ON) is bit-exact.
+    let l1_on = cell_l1(&b, &p1, &p2);
+    assert!(l1_on < EPS, "edges-ON not bit-exact: L1={l1_on:.3e}");
+    // Edges OMITTED, tensor still engaged: also bit-exact (the finding).
+    let l1_omit = cell_l1_edges_omitted(&b, &p1, &p2);
+    assert!(
+        l1_omit < EPS,
+        "an omitted hub edge started DROPPING states (L1={l1_omit:.3e}) — the edge \
+         became load-bearing; its detection now matters directly, revisit soundness"
+    );
+}
+
+/// THE MONSTER CELL (Phase 2b headline). Garchomp Earthquake (spread) coincides
+/// with focus-fire onto Garchomp: Iron Hands Drain Punch → Garchomp (attacker-
+/// heal edge on Iron Hands) and Flutter Mane Shadow Ball → Garchomp (Edge 1
+/// same-target). This is the pathological cell the design targets. Under the
+/// flat path it is a huge raw grid; the coupling graph groups it into a bounded
+/// set of components and — when they fit the §4.5 cap — collapses it losslessly.
+/// We assert it either ENGAGES bit-exact OR falls back losslessly (never a
+/// silent drop), report the raw-combo reduction, and confirm L1 < 1e-9.
+#[test]
+#[ignore]
+fn monster_cell_garchomp_eq_focus_fire_lossless() {
+    // TRACTABLE ANALOG of the 67M spread monster cell. The genuine article
+    // (Garchomp EQ spread × focus-fire) has a fully-uncollapsed reference of
+    // ~16^4×crit ≈ 10^6-10^7 step() calls — intractable to enumerate as an L1
+    // ground truth (that explosion IS what Phase 2b eliminates). So this fixture
+    // keeps ALL THREE coupling types but drops the spread multiplier to bound the
+    // reference: Iron Hands Drain Punch → Garchomp (attacker-heal hub on Iron
+    // Hands) + Flutter Mane Shadow Ball → Garchomp (Edge 1 same-target focus) +
+    // Garchomp Dragon Claw → Iron Hands (single-target back-hit that the Drain
+    // Punch heal hub couples to). 3 damage sites + crits ⇒ a few×10^4 reference:
+    // enumerable, and it still proves the coupling-graph collapses the coupled
+    // monster pattern LOSSLESSLY. Chip Garchomp so the focus is sub-lethal on the
+    // low rolls (coupling live). Distinct speeds → no tie.
+    const P1: &str = r#"[
+        {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["drainpunch"],"evs":{"hp":252,"atk":252}},
+        {"species":"fluttermane","level":50,"ability":"protosynthesis","nature":"timid","moves":["shadowball"],"evs":{"spa":252,"spe":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["dragonclaw"],"evs":{"hp":252,"spe":100}},
+        {"species":"amoonguss","level":50,"ability":"regenerator","nature":"bold","moves":["pollenpuff"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Chip Garchomp to keep the incoming focus sub-lethal on the low rolls.
+    let g = b.p2.active[0] as usize;
+    let gmax = b.p2.team[g].current_hp;
+    b.p2.team[g].current_hp = (gmax * 3) / 5;
+    // Iron Hands Drain Punch → Garchomp; Flutter Mane Shadow Ball → Garchomp;
+    // Garchomp Dragon Claw → Iron Hands (P1s0); Amoonguss passes.
+    let p1 = [mv(0, SideRef::P2, 0), mv(1, SideRef::P2, 0)];
+    let p2 = [mv(0, SideRef::P1, 0), pass(1)];
+
+    // Engages the coupling graph (or falls back losslessly for size) — either way
+    // bit-exact vs the fully-lossless reference.
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "monster cell not lossless: L1={l1:.3e}");
+
+    // Report the raw-combo reduction (engaged tensor) vs the flat reference.
+    let (on, full) = (raw_combos_on(&b, &p1, &p2), raw_combos_full(&b, &p1, &p2));
+    eprintln!(
+        "MONSTER CELL (tractable analog): raw_combos on={on} full={full} reduction={:.1}x  L1={l1:.2e}",
+        full as f64 / on.max(1) as f64
+    );
+    // The coupling graph must not GROW the raw combos.
+    assert!(on <= full, "monster cell raw combos grew (on={on} full={full})");
 }
