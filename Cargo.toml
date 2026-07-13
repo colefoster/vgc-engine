@@ -34,6 +34,7 @@ repository = "https://github.com/colefoster/vgc-engine"
 
 [workspace.dependencies]
 vgc-engine-core = { path = "crates/vgc-engine-core" }
+vgc-solver = { path = "crates/vgc-solver" }
 vgc-engine-data = { path = "crates/vgc-engine-data" }
 vgc-engine-replay = { path = "crates/vgc-engine-replay" }
 vgc-engine-golden = { path = "crates/vgc-engine-golden" }
