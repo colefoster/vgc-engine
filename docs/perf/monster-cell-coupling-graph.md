@@ -1,7 +1,58 @@
 # Taming Monster Cells: the Coupling-Graph Joint Tensor
 
-**Status:** design approved 2026-07-12. Phase 1 in progress.
-**Goal:** make deep, *lossless* endgame solving feasible by collapsing the pathological "monster cells" that dominate doubles solve time — without the policy-flip risk of the lossy 3-bucket fallback.
+> **⛔ SUPERSEDED / REVERTED (2026-07-13).** Phase 2a (#111) + Phase 2b (#112) — the
+> union-find coupling graph (Edge 1/2/3, hub slots, bounded-component fallback) — were
+> **reverted** as a net regression. See [§0 Postmortem](#0-postmortem--why-this-was-reverted)
+> below. **Phase 1 (#105, spread-segment in the flat path) and the crit-conditional
+> segment fix (#110) are KEPT** — they are independent, audited wins. The rest of this
+> document is retained as-is for the historical design record; do not read §3–§8 as
+> current behavior.
+
+---
+
+## 0. Postmortem — why this was reverted
+
+**Verdict: the monster cell is irreducible, and the coupling graph bought no speedup while
+adding per-cell bookkeeping overhead on *every* cell in *every* solve.**
+
+The design's premise (§1) was that the lossless `defender_joint_enumerate` machinery only
+needed *widening* to cover spread, and that widening would collapse the 87 monster cells that
+dominate wide-2v2 solve time. In practice, end-to-end measurement after Phase 2b showed:
+
+- **No net speedup** on any real solve. The coupling-graph components on a genuine monster
+  cell (spread × focus-fire, ≥4 damaging hits) do not factor — the hits are all mutually
+  coupled (co-target summation + faint-before-acting + the spread targets that also attack),
+  so the "connected component" is the *whole cell*. Enumerating one giant component via real
+  `step()` is exactly as expensive as the flat path it replaced. The cell is **irreducible**.
+- **A 5–125% *regression*** across the board from the graph's per-cell bookkeeping (union-find
+  build, trigger-hub scan, coupling-edge walks) — paid on every cell, including cells with
+  **no spread and no coupling at all** (e.g. no-spread endgames regressed **+125% at depth-2**).
+  Measured: endgame 2v1 depth-2 lossy went **~5.2 ms (pre-initiative) → ~11.7 ms (post-2b)**.
+
+Because a correctly-grouped coupling graph is **correctness-neutral over the flat path** (both
+enumerate real `step()` calls and dedup by the real `canonical_hash`), and the flat path is
+always fully lossless, the graph could only ever *win on speed* — and it did not. So it is
+pure overhead. Reverting restores the simpler pre-2a joint collapse that **bails on any spread**
+(the `compute_coupled_targets == 0b1111` whole-cell bail), handing spread cells to the flat
+enumeration path — where Phase 1's spread-segment collapse still cuts each independent spread
+hit 16 → ~3. "Double spread only" bails: a defender hit by ≥2 spread moves (mutually coupled)
+is irreducible and enumerates fully.
+
+**What was removed:** the union-find grouping, `coupling_hub_slots` / `compute_trigger_hub_defenders`
+/ the `trigger_hub_defenders` field, Edge 2/3 detection, the bounded-per-component fallback,
+and all the 2a/2b-specific `#[serde(skip)]` fields and soundness fixtures (`breaker1_*`,
+coupling-edge load-bearing tests, Absorb Bulb / Snowball guards, hub tests).
+
+**What was kept:** Phase 1 (#105) — spread hits still get `DamageSegments` and enumerate ~3 not
+16 *in the flat path*; the crit-conditional common-refinement segment partition (#110); and the
+pre-2a mutual-focus joint tensor (#96, target-bucketing on ≥2-attacker coupled defenders, which
+bails on spread).
+
+**Lesson (memory `project_branch_collapse_plan`, `feedback_collapse_soundness_review`):** the
+lever on the floor case is **depth reduction or lossy**, not more clever width-collapse. A
+collapse that is correctness-neutral over the flat path can only pay for itself in wall-clock;
+measure the *end-to-end solve* before merging, not per-cell raw-combo counts (which can shrink
+while total time grows from bookkeeping).
 
 ---
 
@@ -85,16 +136,6 @@ One fixture per coupling type, **each proving its edge is load-bearing** — a s
 | clean spread + focus, no triggers | singletons + one Edge-1 pair | pure restructure; must ENGAGE and stay bit-exact |
 
 Keep the existing structural-bail fixtures (Instruct, redirect, secondary-inflictable) asserting `assert_tensor_bailed` + `L1 < EPS`. Per `feedback_collapse_soundness_review`: do not trust "all green" — run an independent adversarial review whose sole job is hunting a missed edge (a mon that both takes and deals a hit with a trigger not in the superset; a chained faint A→B→C).
-
-### 5.1 State-drop fix — hp_bucket segmentation inside a trigger component (2026-07-12)
-
-The first Phase-2b cut (PR #112) added the coupling EDGES so trigger components ENGAGE the tensor, but left a **silent state drop**: sites inside a trigger-defender hub component were still hp_bucket-**segmented** against a single (pre-trigger) HP snapshot. A roll-dependent boost that pushes a coupled site's post-hit HP across a bucket line was then never enumerated. The prior audit missed it because **every fixture placed the trigger's victim INSIDE the trigger's component** (the WP/Berserk mon attacked the same mon that hit it, so the boosted outgoing hit self-completed in that group's real `step()`). An independent review built the **victim-in-a-SEPARATE-component** case — `breaker1`: Miltank Tackles Berserk-Drampa (Tackle range straddles ½ HP), Drampa then Dragon-Pulses an independent Chansey (tuned to a bucket line). Pre-fix: 6 → 5 states, L1 ≈ 1.5e-2, `ncomp=1, bounded_fallback=0` (a genuine single-component drop, not a size fallback).
-
-**Fix.** A trigger-defender hub component enumerates its damage sites at **full 16-roll resolution (no hp_bucket segmentation)** — BOTH the incoming hit(s) on the trigger mon AND its outgoing hit(s), including on an independent third-mon victim (a "don't segment the incoming site" veto alone is insufficient — the outgoing victim site compounds the drop). Implemented as a new step-scoped `Battle::trigger_hub_defenders` mask (`compute_trigger_hub_defenders`, mirrors `coupling_hub_slots`' Edge-2 / attacker-heal / Edge-3 hubs) consulted in the damage-segment eligibility gate (`battle.rs`): a hit is segmentation-ineligible when EITHER its defender or its attacker slot is a trigger hub. The §4.5 bounded-component cap (4096) already protects a full-16 trigger component that would blow up (lossless fallback). Composes with Phase-1 spread segmentation (a spread hit on a NON-trigger defender still segments), the crit-conditional refinement, and the bounded fallback; only sites in a trigger/heal/faint hub component lose segmentation (over-veto is perf-only, never a drop).
-
-**Consequence — multi-site trigger components now bounded-fallback.** Forcing a trigger component to full-16 makes its raw sub-grid `16^(sites) × crits`. A trigger defender **focus-fired by ≥2 attackers** plus its own outgoing hit (3+ full-16 sites) blows past the §4.5 4096 cap, so the whole cell falls back to the flat **lossless** path instead of engaging a (previously state-dropping) segmented tensor — the correct safe behavior (`probe_berserk_weak_focus_crosses_half_and_attacks` now asserts bounded-fallback + bit-exact, was "engages"). Single-victim trigger cells (1 incoming + 1 outgoing = 256 < cap) still engage. Phase 2c's per-component lossy degrade will recover the engaged win for the oversized ones without the drop.
-
-**Corrected load-bearing conclusion (Finding A).** The prior agent shipped `phase2b_hub_edges_are_defensive_omit_stays_bit_exact` asserting the edges are decorative — a **fixture artifact** of the victim-in-same-component topology. Corrected: `breaker1` and `anger_point_victim_separate_component_load_bearing` assert `omit → L1 > 1e-3` (the edge IS load-bearing); `drain_heal_attacker_bucket_load_bearing` omit L1 ≈ 1.9 (strongly load-bearing on the attacker's own bucket). The mislabeled test is **rescoped** to `phase2b_berserk_untuned_victim_edge_not_exercised_negative_control` (an honest negative control: an untuned victim where the boost happens not to cross a bucket). Weakness Policy (+2) could NOT be aligned onto a coarse victim bucket after extensive sweeps (Stone Edge / Smack Down / Round; Blissey / Snorlax / Chansey / Skarmory / Garchomp victims; a full 2D Drampa-WP replica of breaker1's geometry) — reported honestly; its FIX (full-16 edge-ON) IS verified bit-exact across the sweep, and WP is the same Edge-2 hub the veto covers identically to Berserk/Anger-Point. Adversarial cases added: trigger+spread in one component, Cell Battery (type-gated non-½/non-crit trigger) victim-separate, chained faint A→B→C — all edge-ON bit-exact.
 
 ## 6. Phasing (tracer-bullet)
 
