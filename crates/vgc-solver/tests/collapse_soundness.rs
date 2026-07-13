@@ -2034,3 +2034,116 @@ fn adversarial_cell_battery_victim_separate_bit_exact() {
     let l1 = cell_l1(&b, &p1, &p2);
     assert!(l1 < EPS, "Cell Battery victim-separate edge-ON not bit-exact: L1={l1:.3e}");
 }
+
+// ===========================================================================
+// MERGE-GATE SUPERSET-COMPLETENESS PROBES (independent review, 2026-07-12).
+//
+// The Edge-2 trigger-item superset in `coupling_hub_slots` /
+// `compute_trigger_hub_defenders` lists only WEAKNESS POLICY | CELL BATTERY.
+// The engine ALSO implements two other on-being-hit OUTGOING-damage stat items
+// that are NOT in that list: ABSORB BULB (+1 SpA on a Water hit) and SNOWBALL
+// (+1 Atk on an Ice hit). This asymmetry is only sound if those items can never
+// change the holder's OUTGOING damage in a ROLL-DEPENDENT way that some OTHER
+// hub edge doesn't already cover.
+//
+// Why absence is sound — TWO regimes, both lossless:
+//   (1) TYPE-gated, NON-KO: on a type-matched hit that never KOs, the boost
+//       fires on EVERY roll → a CONSTANT +1 → the outgoing damage is
+//       roll-INDEPENDENT of the incoming roll. The tensor ENGAGES and folds the
+//       boosted outgoing hit into the real step()/canonical_hash — bit-exact
+//       with NO hub needed. (This is what these two fixtures witness: the item
+//       is un-listed yet the enumerated outgoing damage is exactly the boosted
+//       value on every branch.)
+//   (2) SURVIVE/KO straddle: only here is the boost roll-dependent (survive →
+//       boosted Swift lands; KO → no Swift). But a KO'd holder's outgoing draw
+//       is never consumed → the joint replay sees `unmatched_draws > 0` and the
+//       WHOLE cell falls back to the FLAT lossless path (lib.rs ~818, the §4.3
+//       safety valve). So the tensor never segments a roll-dependent booster
+//       outgoing hit — it either sees a constant boost (regime 1) or bails to
+//       flat (regime 2). Neither drops a state → the items' absence is not a
+//       hole. (Verified by an HP sweep during review: hp≥40 engages @ hub=0,
+//       constant boost, L1=0; hp≤15 → unmatched_draws → flat, L1=0.)
+// ===========================================================================
+
+/// ABSORB BULB (+1 SpA on Water, NOT in the Edge-2 item list). Milotic (Absorb
+/// Bulb) survives a Water Gun on EVERY roll (regime 1: the +1 SpA is a constant
+/// boost), then Swift-hits a SEPARATE-component victim (Chansey) that does NOT
+/// attack it. The tensor ENGAGES and must reproduce the boosted outgoing damage
+/// bit-exactly even though Absorb Bulb is un-listed — proving no state drop.
+#[test]
+#[ignore]
+fn merge_gate_absorb_bulb_victim_separate_bit_exact() {
+    // Clean (no-secondary) moves so the ONLY reason to (not) engage is the
+    // Absorb-Bulb/Edge-3 question — a secondary would trigger the unrelated
+    // chance-gated bail and make the probe vacuous. Water Gun (incoming, no
+    // secondary) straddles Milotic; Milotic answers with Swift (Normal, special,
+    // never-miss, NO secondary) onto the separate victim.
+    const P1: &str = r#"[
+        {"species":"blastoise","level":50,"ability":"torrent","nature":"modest","moves":["watergun"],"evs":{"spa":252,"spe":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"milotic","level":50,"ability":"marvelscale","item":"absorbbulb","nature":"modest","moves":["swift"],"evs":{"spa":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    // Milotic at 40 HP survives Water Gun (12–15) on EVERY roll → +1 SpA is a
+    // CONSTANT boost (regime 1). The tensor engages; the boosted Swift on the
+    // separate victim must enumerate bit-exactly despite Absorb Bulb being
+    // absent from the Edge-2 list.
+    let mid = b.p2.active[0] as usize;
+    b.p2.team[mid].current_hp = 40;
+    // Chip the victim so the +1 SpA Ice Beam crosses a bucket line on survival.
+    let c = b.p1.active[1] as usize;
+    let cmax = b.p1.team[c].current_hp;
+    b.p1.team[c].current_hp = (cmax * 3) / 4;
+    // Blastoise Water Gun → Milotic (P2s0); Chansey passes; Milotic Ice Beam →
+    // Chansey (P1s1); Blissey passes.
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 1), pass(1)];
+    // Non-vacuous: the solve must ENGAGE the tensor (the boosted outgoing Swift
+    // is enumerated through the real step(), not skipped) — else bit-exact is
+    // trivial. (Matches the sibling Cell-Battery victim-separate fixture.)
+    assert_tensor_engaged(&b, &p1, &p2);
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "Absorb Bulb victim-separate not bit-exact (superset hole): L1={l1:.3e}");
+}
+
+/// SNOWBALL (+1 Atk on Ice, NOT in the Edge-2 item list) — regime-1 witness.
+/// Abomasnow (Snowball) survives Ice Shard (42–49) on EVERY roll at 60 HP →
+/// +1 Atk is a CONSTANT boost; it then Tackles a SEPARATE-component victim. The
+/// tensor engages; the boosted Tackle must enumerate bit-exactly despite
+/// Snowball being un-listed.
+#[test]
+#[ignore]
+fn merge_gate_snowball_victim_separate_bit_exact() {
+    // Ice Shard (incoming, no secondary) straddles Abomasnow; Abomasnow answers
+    // with Tackle (Normal, physical, NO secondary) onto the separate victim.
+    const P1: &str = r#"[
+        {"species":"weavile","level":50,"ability":"pressure","nature":"jolly","moves":["iceshard"],"evs":{"atk":252,"spe":252}},
+        {"species":"chansey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    const P2: &str = r#"[
+        {"species":"abomasnow","level":50,"ability":"snowwarning","item":"snowball","nature":"adamant","moves":["tackle"],"evs":{"atk":252}},
+        {"species":"blissey","level":50,"ability":"naturalcure","nature":"bold","moves":["tackle"],"evs":{"hp":252,"def":252}}
+    ]"#;
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 3 },
+        TeamBuilder::from_json(P1).unwrap(),
+        TeamBuilder::from_json(P2).unwrap(),
+    );
+    let a = b.p2.active[0] as usize;
+    b.p2.team[a].current_hp = 60; // survives Ice Shard (42–49) on every roll
+    let c = b.p1.active[1] as usize;
+    let cmax = b.p1.team[c].current_hp;
+    b.p1.team[c].current_hp = (cmax * 3) / 4;
+    let p1 = [mv(0, SideRef::P2, 0), pass(1)];
+    let p2 = [mv(0, SideRef::P1, 1), pass(1)];
+    assert_tensor_engaged(&b, &p1, &p2);
+    let l1 = cell_l1(&b, &p1, &p2);
+    assert!(l1 < EPS, "Snowball victim-separate not bit-exact (superset hole): L1={l1:.3e}");
+}
