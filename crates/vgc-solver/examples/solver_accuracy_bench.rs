@@ -794,17 +794,17 @@ fn probe_t5() -> (Vec<Choice>, Vec<Choice>) {
     )
 }
 
-// ── T6: multi-hit move → Phase-2b coupling-graph tensor ──
+// ── T6: multi-hit move → per-site segment (ko_split) path, NO coupling ──
 //    ONE attacker (Snorlax) uses Double Kick (fixed 2 strikes) on P2s0; the
-//    ally Miltank holds ONLY Protect (non-damaging support). Phase 2b makes the
-//    multi-hit move a COUPLING EDGE: the attacker + its target are hubs, so the
-//    two strike damage sites (and, for a variable multihit, the strike-count
-//    draw) fold into ONE component and enumerate jointly via real step() +
-//    canonical_hash dedup — lossless. (Pre-2b this bailed to the per-site
-//    segment path; 2b routes it through the tensor instead, still bit-exact.)
-//    The defender is tuned so Double Kick leaves a MULTI-BUCKET survivor (probe
-//    cell has ≥3 distinct outcomes) so the collapse actually partitions rolls
-//    rather than trivially KOing. 2v1 board (P2s1 fainted) for tractability.
+//    ally Miltank holds ONLY Protect (non-damaging support), so it can NEVER
+//    stack a second hit onto a foe → no defender is ever mutually focused
+//    (coupled_seen stays 0 across the whole solve). Double Kick's two strikes
+//    are recorded as two damage sites on one attacker → the per-site segment
+//    (ko_split) collapse handles them; the whole-cell value must still be
+//    lossless-exact. The defender is tuned so Double Kick leaves a MULTI-
+//    BUCKET survivor (probe cell has 3 distinct outcomes) — i.e. the segment
+//    collapse actually partitions rolls rather than trivially KOing.
+//    2v1 board (P2s1 fainted) for tractability.
 const T6_ATTACKERS: &str = r#"[
     {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["doublekick"],"evs":{"hp":252,"atk":252}},
     {"species":"miltank","level":50,"ability":"thickfat","nature":"adamant","moves":["protect"],"evs":{"hp":252,"atk":252}}
@@ -932,7 +932,7 @@ fn scenarios() -> Vec<Scenario> {
         Scenario { name: "T3 bail speed-tie",  kind: "(T3) tie bail",      fmt: Format::Doubles, depth: 1, build: sc_t3_bail_speed_tie,   collapse_path: "tensor bail: speed tie",  engage: Engage::Bail,       probe: Some(probe_t3) },
         Scenario { name: "T4 bail secondary",  kind: "(T4) 2ndary bail",   fmt: Format::Doubles, depth: 1, build: sc_t4_bail_secondary,   collapse_path: "tensor bail: secondary",  engage: Engage::Bail,       probe: Some(probe_t4) },
         Scenario { name: "T5 spread couple",   kind: "(T5) spread bail",   fmt: Format::Doubles, depth: 1, build: sc_t5_spread,           collapse_path: "spread global-couple",    engage: Engage::Bail,       probe: Some(probe_t5) },
-        Scenario { name: "T6 multi-hit",       kind: "(T6) multihit tensor",fmt: Format::Doubles, depth: 1, build: sc_t6_multihit,         collapse_path: "multi-hit coupling-graph", engage: Engage::Tensor,    probe: Some(probe_t6) },
+        Scenario { name: "T6 multi-hit",       kind: "(T6) multihit seg",  fmt: Format::Doubles, depth: 1, build: sc_t6_multihit,         collapse_path: "multi-hit segments",      engage: Engage::NoCoupling, probe: Some(probe_t6) },
         Scenario { name: "T7 redirect couple", kind: "(T7) redirect bail", fmt: Format::Doubles, depth: 1, build: sc_t7_redirect,         collapse_path: "redirect global-couple",  engage: Engage::Bail,       probe: Some(probe_t7) },
         Scenario { name: "T8 sitrus defender", kind: "(T8) sitrus engage", fmt: Format::Doubles, depth: 1, build: sc_t8_sitrus_engage,    collapse_path: "mutual-focus + Sitrus",   engage: Engage::Tensor,     probe: Some(probe_t8) },
         Scenario { name: "T9 crit-heavy",      kind: "(T9) crit engage",   fmt: Format::Doubles, depth: 1, build: sc_t9_crit_engage,      collapse_path: "mutual-focus + crit",     engage: Engage::Tensor,     probe: Some(probe_t9) },
