@@ -224,6 +224,49 @@ fn observe_side<'py>(
     Ok(d)
 }
 
+/// Build the full observation dict for a battle. Shared by
+/// `PyBattle::observe` and the batched leaf bridge in `solve_endgame`, so
+/// the Python value function sees exactly the same schema whether it's
+/// inspecting a live battle or scoring a search-frontier leaf.
+fn build_observation<'py>(
+    py: Python<'py>,
+    b: &core::Battle,
+) -> PyResult<Bound<'py, PyDict>> {
+    let root = PyDict::new(py);
+    root.set_item("turn", b.turn())?;
+    root.set_item(
+        "format",
+        match b.format() {
+            core::Format::Singles => "singles",
+            core::Format::Doubles => "doubles",
+        },
+    )?;
+
+    let weather = PyDict::new(py);
+    weather.set_item("kind", weather_slug(b.weather))?;
+    weather.set_item("turns", b.weather_turns)?;
+    root.set_item("weather", weather)?;
+
+    let terrain = PyDict::new(py);
+    terrain.set_item("kind", terrain_slug(b.terrain))?;
+    terrain.set_item("turns", b.terrain_turns)?;
+    root.set_item("terrain", terrain)?;
+
+    let field = PyDict::new(py);
+    field.set_item("trick_room", b.trick_room_turns)?;
+    field.set_item("gravity", b.gravity_turns)?;
+    field.set_item("magic_room", b.magic_room_turns)?;
+    field.set_item("wonder_room", b.wonder_room_turns)?;
+    root.set_item("field", field)?;
+
+    let sides = PyList::empty(py);
+    sides.append(observe_side(py, b, core::SideRef::P1)?)?;
+    sides.append(observe_side(py, b, core::SideRef::P2)?)?;
+    root.set_item("sides", sides)?;
+
+    Ok(root)
+}
+
 fn map_team_err(e: core::TeamLoadError) -> PyErr {
     PyValueError::new_err(format!("{e}"))
 }
@@ -569,40 +612,7 @@ impl PyBattle {
     /// }
     /// ```
     fn observe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let b = &self.inner;
-        let root = PyDict::new(py);
-        root.set_item("turn", b.turn())?;
-        root.set_item(
-            "format",
-            match b.format() {
-                core::Format::Singles => "singles",
-                core::Format::Doubles => "doubles",
-            },
-        )?;
-
-        let weather = PyDict::new(py);
-        weather.set_item("kind", weather_slug(b.weather))?;
-        weather.set_item("turns", b.weather_turns)?;
-        root.set_item("weather", weather)?;
-
-        let terrain = PyDict::new(py);
-        terrain.set_item("kind", terrain_slug(b.terrain))?;
-        terrain.set_item("turns", b.terrain_turns)?;
-        root.set_item("terrain", terrain)?;
-
-        let field = PyDict::new(py);
-        field.set_item("trick_room", b.trick_room_turns)?;
-        field.set_item("gravity", b.gravity_turns)?;
-        field.set_item("magic_room", b.magic_room_turns)?;
-        field.set_item("wonder_room", b.wonder_room_turns)?;
-        root.set_item("field", field)?;
-
-        let sides = PyList::empty(py);
-        sides.append(observe_side(py, b, core::SideRef::P1)?)?;
-        sides.append(observe_side(py, b, core::SideRef::P2)?)?;
-        root.set_item("sides", sides)?;
-
-        Ok(root)
+        build_observation(py, &self.inner)
     }
 
     fn __repr__(&self) -> String {
@@ -774,11 +784,179 @@ fn parse_terrain(s: &str) -> PyResult<core::Terrain> {
     }
 }
 
+/// Serialize a core `Choice` into the same 5-tuple wire shape
+/// `legal_choices` emits: `(kind, actor_slot, arg, target_side,
+/// target_slot)`. Inverse of `choice_from_tuple`, so `solve_endgame`'s
+/// returned policies round-trip straight back into `step_move`.
+fn choice_to_tuple(c: &core::Choice) -> LegalChoice {
+    let target_tuple = |target: Option<core::Target>| -> (i8, i8) {
+        target.map_or((-1, -1), |t| {
+            (if t.side == core::SideRef::P1 { 0 } else { 1 }, t.slot as i8)
+        })
+    };
+    match *c {
+        core::Choice::Move { actor_slot, move_slot, target } => {
+            let (ts, tl) = target_tuple(target);
+            ("move".to_string(), actor_slot, move_slot, ts, tl)
+        }
+        core::Choice::Terastallize { actor_slot, move_slot, target } => {
+            let (ts, tl) = target_tuple(target);
+            ("tera".to_string(), actor_slot, move_slot, ts, tl)
+        }
+        core::Choice::MegaEvolve { actor_slot, move_slot, target } => {
+            let (ts, tl) = target_tuple(target);
+            ("mega".to_string(), actor_slot, move_slot, ts, tl)
+        }
+        core::Choice::Switch { actor_slot, team_index } => {
+            ("switch".to_string(), actor_slot, team_index, -1, -1)
+        }
+        core::Choice::Pass { actor_slot } => ("pass".to_string(), actor_slot, 0, -1, -1),
+    }
+}
+
+/// Build the `[(choice_tuple, prob), ...]` Python list for one side's
+/// mixed strategy.
+fn policy_to_py<'py>(
+    py: Python<'py>,
+    policy: &[(core::Choice, f64)],
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for (choice, prob) in policy {
+        let entry = PyList::empty(py);
+        // (kind, actor_slot, arg, target_side, target_slot) tuple + prob.
+        let ct = choice_to_tuple(choice);
+        entry.append(ct)?;
+        entry.append(*prob)?;
+        out.append(entry)?;
+    }
+    Ok(out)
+}
+
+/// Solve one turn's Nash equilibrium with a **batched** Python leaf
+/// evaluator.
+///
+/// Runs the double-oracle single-ply solver (`vgc_solver::solve_turn`)
+/// over the current battle state. The value function is supplied as a
+/// Python callable — the engine stays fully opaque to whatever scores the
+/// leaves. Each time the solver expands an outcome frontier it calls
+/// `leaf` ONCE with a `list[dict]` of observations (the same schema as
+/// `Battle.observe()`), one per frontier state, and expects back a
+/// `list[float]` of the same length (row-player payoff per state, by the
+/// `+1 = P1 win` / `-1 = P2 win` convention).
+///
+/// The GIL is held for the duration of the solve (this function runs on
+/// the calling Python thread and the callback re-acquires it), and the
+/// callback fires once per frontier — batched — never once per leaf.
+///
+/// Returns a dict:
+/// ```text
+/// {
+///   "value": float,                        # Nash value, P1's perspective
+///   "row_policy": [ [choice_tuple, prob], ... ],   # P1 mixed strategy
+///   "col_policy": [ [choice_tuple, prob], ... ],   # P2 mixed strategy
+///   "iterations": int,
+///   "row_support_size": int,
+///   "col_support_size": int
+/// }
+/// ```
+/// where `choice_tuple` is the same `(kind, actor_slot, arg,
+/// target_side, target_slot)` shape `legal_choices` returns. Returns
+/// `None` if either side has no legal choices (terminal state).
+///
+///   import vgc_engine
+///   b = vgc_engine.Battle.from_teams(p1, p2, format="doubles")
+///   sol = vgc_engine.solve_endgame(b, lambda obs: [0.0] * len(obs))
+///   sol["value"], sol["row_policy"]
+#[pyfunction]
+#[pyo3(signature = (battle, leaf, record_seed = 0))]
+fn solve_endgame<'py>(
+    py: Python<'py>,
+    battle: &PyBattle,
+    leaf: PyObject,
+    record_seed: u64,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    // Any error raised by the Python callback (or observation build) is
+    // stashed here and re-raised after the solve returns, since the
+    // `BatchLeafEval` signature is infallible (`-> Vec<f64>`). `Rc<RefCell>`
+    // because `BatchLeafEval` is `Box<dyn FnMut + 'static>` and can't hold
+    // a stack borrow. The closure never outlives this function (solve_turn
+    // is synchronous), so single-threaded `Rc` is sound.
+    let callback_err: std::rc::Rc<std::cell::RefCell<Option<PyErr>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let value = {
+        let err_slot = std::rc::Rc::clone(&callback_err);
+        let leaf = leaf.clone_ref(py);
+
+        let batch_leaf: vgc_solver::BatchLeafEval =
+            Box::new(move |states: &[&core::Battle]| {
+                // If a prior batch already failed, short-circuit to zeros;
+                // the stored error is re-raised after the solve unwinds.
+                if err_slot.borrow().is_some() {
+                    return vec![0.0; states.len()];
+                }
+                Python::with_gil(|py| match eval_batch_py(py, &leaf, states) {
+                    Ok(scores) => scores,
+                    Err(e) => {
+                        *err_slot.borrow_mut() = Some(e);
+                        vec![0.0; states.len()]
+                    }
+                })
+            });
+
+        vgc_solver::solve_turn(&battle.inner, batch_leaf, record_seed)
+    };
+
+    if let Some(e) = callback_err.borrow_mut().take() {
+        return Err(e);
+    }
+
+    let sol = match value {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    let d = PyDict::new(py);
+    d.set_item("value", sol.value)?;
+    d.set_item("row_policy", policy_to_py(py, &sol.row_policy)?)?;
+    d.set_item("col_policy", policy_to_py(py, &sol.col_policy)?)?;
+    d.set_item("iterations", sol.iterations)?;
+    d.set_item("row_support_size", sol.row_support_size)?;
+    d.set_item("col_support_size", sol.col_support_size)?;
+    Ok(Some(d))
+}
+
+/// Bridge one batched leaf call into Python: build a `list[dict]` of
+/// observations, invoke the callable, coerce the returned `list[float]`
+/// back to a `Vec<f64>`. Errors (wrong length, non-float, exception in
+/// the callback) surface as `PyErr` for the caller to re-raise.
+fn eval_batch_py(
+    py: Python<'_>,
+    leaf: &PyObject,
+    states: &[&core::Battle],
+) -> PyResult<Vec<f64>> {
+    let obs = PyList::empty(py);
+    for b in states {
+        obs.append(build_observation(py, b)?)?;
+    }
+    let result = leaf.call1(py, (obs,))?;
+    let scores: Vec<f64> = result.extract(py)?;
+    if scores.len() != states.len() {
+        return Err(PyValueError::new_err(format!(
+            "leaf returned {} scores for {} states",
+            scores.len(),
+            states.len()
+        )));
+    }
+    Ok(scores)
+}
+
 #[pymodule]
 fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBattle>()?;
     m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
     m.add_function(wrap_pyfunction!(calc, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

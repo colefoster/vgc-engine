@@ -175,7 +175,8 @@ pub mod instrumentation;
 pub use double_oracle::{double_oracle as solve_double_oracle, DoubleOracleSolution, MatrixGame};
 pub use factoring::{classify_factorability, Factorability};
 pub use endgame::{
-    hp_ratio_leaf, solve_turn, BattleMatrixGame, LeafEval, TurnSolution,
+    batch_from_scalar, hp_ratio_leaf, solve_turn, BatchLeafEval, BattleMatrixGame, LeafEval,
+    TurnSolution,
 };
 pub use nash::{solve_zero_sum, NashSolution};
 pub use recursive::{
