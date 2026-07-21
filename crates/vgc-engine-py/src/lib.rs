@@ -926,6 +926,88 @@ fn solve_endgame<'py>(
     Ok(Some(d))
 }
 
+/// Stable lowercase slug for a solved node's provenance. Mirrors
+/// `vgc_solver::Provenance` (the recursive solver's exactness tag) so the
+/// Python caller can decide whether to trust the value as an EXACT
+/// endgame result (`"terminal"` / `"exact"`) or a budget-capped estimate
+/// (`"depth_limit"` / `"node_limit"`).
+fn provenance_slug(p: vgc_solver::Provenance) -> &'static str {
+    match p {
+        vgc_solver::Provenance::Terminal => "terminal",
+        vgc_solver::Provenance::Exact => "exact",
+        vgc_solver::Provenance::Estimated(vgc_solver::EstReason::DepthLimit) => "depth_limit",
+        vgc_solver::Provenance::Estimated(vgc_solver::EstReason::NodeLimit) => "node_limit",
+    }
+}
+
+/// **Exact recursive endgame solve** — the T2 value oracle.
+///
+/// Runs `vgc_solver::endgame_solve`, the multi-turn recursive
+/// matrix-game solver, from the current `battle` state down to terminal
+/// nodes using the crate's Rust-native winner-aware leaf
+/// (`hp_ratio_leaf`: `±1` on a decided game, HP-fraction difference at a
+/// budget-capped frontier). No Python callback is involved, so this runs
+/// entirely in Rust and is safe to call in a hot loop.
+///
+/// The returned `value` is the Nash value **from P1's perspective, in
+/// `[-1, 1]`** (`+1` = certain P1 win, `-1` = certain P2 win, `0` = even
+/// / draw). The caller converts to an own-side `[0, 1]` win probability.
+///
+/// `provenance` reports whether the solve reached terminal exactly:
+///   - `"terminal"` — the input state was already decided.
+///   - `"exact"`    — every reachable leaf was a real terminal node; the
+///                    value is a true minimax win probability. **Trust as T2.**
+///   - `"depth_limit"` / `"node_limit"` — at least one branch bottomed
+///     out on the `max_depth` / `node_budget` budget and was leaf-estimated
+///     via `hp_ratio_leaf`. **NOT an exact value** — the position was too
+///     large to solve within budget.
+///
+/// Returns a dict:
+/// ```text
+/// {
+///   "value": float,          # Nash value, P1 perspective, [-1, 1]
+///   "provenance": str,       # terminal | exact | depth_limit | node_limit
+///   "depth_remaining": int,  # plies of budget left at the root solve
+///   "row_policy": [ [choice_tuple, prob], ... ],   # P1 slot-0 mixed strategy
+///   "col_policy": [ [choice_tuple, prob], ... ],   # P2 slot-0 mixed strategy
+/// }
+/// ```
+/// `choice_tuple` is the same `(kind, actor_slot, arg, target_side,
+/// target_slot)` shape `legal_choices` returns. For doubles the
+/// `row_policy` / `col_policy` are the (lossy) slot-0 projection of the
+/// full joint policy.
+///
+///   import vgc_engine
+///   b = vgc_engine.Battle.from_teams(p1, p2, format="doubles")
+///   sol = vgc_engine.solve_endgame_exact(b, max_depth=32)
+///   sol["value"], sol["provenance"]
+#[pyfunction]
+#[pyo3(signature = (battle, max_depth = 16, node_budget = 1_000_000, exact_hp = false))]
+fn solve_endgame_exact<'py>(
+    py: Python<'py>,
+    battle: &PyBattle,
+    max_depth: u32,
+    node_budget: u64,
+    exact_hp: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let cfg = vgc_solver::SolverConfig {
+        max_depth,
+        node_budget,
+        exact_hp,
+        ..vgc_solver::SolverConfig::default()
+    };
+
+    let node = vgc_solver::endgame_solve(&battle.inner, &cfg, vgc_solver::hp_ratio_leaf);
+
+    let d = PyDict::new(py);
+    d.set_item("value", node.value)?;
+    d.set_item("provenance", provenance_slug(node.provenance))?;
+    d.set_item("depth_remaining", node.depth_remaining)?;
+    d.set_item("row_policy", policy_to_py(py, &node.row_policy)?)?;
+    d.set_item("col_policy", policy_to_py(py, &node.col_policy)?)?;
+    Ok(d)
+}
+
 /// Bridge one batched leaf call into Python: build a `list[dict]` of
 /// observations, invoke the callable, coerce the returned `list[float]`
 /// back to a `Vec<f64>`. Errors (wrong length, non-float, exception in
@@ -957,6 +1039,7 @@ fn vgc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_and_verify, m)?)?;
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_endgame, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_endgame_exact, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
