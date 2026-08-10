@@ -1,6 +1,6 @@
 # REFERENCES — sources of truth
 
-When implementing a mechanic, **consult all three tiers in order**. Disagreements are normal; document them in `docs/known_divergences.md` (TBD) and pick the source that matches our goal (PS-compatibility, since mimikyu is trained on PS replays).
+When implementing a mechanic, **consult all three tiers in order**. Disagreements are normal; document them in `docs/known_divergences.md` and pick the source that matches our goal (PS-compatibility, since mimikyu is trained on PS replays).
 
 ## Tier 1 — Pokémon Showdown (`smogon/pokemon-showdown`)
 
