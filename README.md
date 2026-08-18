@@ -18,7 +18,9 @@ Pokémon Showdown is the correctness oracle but is JS, event-driven, allocation-
 
 ## Status
 
-Pre-alpha. Project scaffolded 2026-06-15. No mechanics implemented. See `docs/PLAN.md`.
+Pre-alpha, under active development. Gen 9 doubles is the current target; mechanics land
+one per PR, conformance-tested against Pokémon Showdown. Earlier generations are Phase 5+
+and have not been started. See `docs/PLAN.md` for the phase gates and current position.
 
 ## Where to look next
 
