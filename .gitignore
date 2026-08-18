@@ -9,3 +9,8 @@ Cargo.lock.bak
 /data/corpus_cache/
 /.cache/
 /.claude/
+
+# Local secrets
+.env
+.env.*
+!.env.example
