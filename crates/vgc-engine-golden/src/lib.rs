@@ -64,6 +64,8 @@ use vgc_engine_data as data;
 
 #[derive(Debug, Deserialize)]
 pub struct GoldenInput {
+    #[serde(default)]
+    pub decision_phases: bool,
     /// Synthetic per-move data overlay shared with the reference driver.
     #[serde(default)]
     pub pp_overrides: std::collections::HashMap<String, u8>,
@@ -97,6 +99,10 @@ pub struct GoldenSide {
 
 #[derive(Debug, Deserialize)]
 pub struct GoldenTurn {
+    #[serde(default)]
+    pub p1_followups: Vec<String>,
+    #[serde(default)]
+    pub p2_followups: Vec<String>,
     #[serde(default)]
     pub p1: serde_json::Value,
     #[serde(default)]
@@ -304,6 +310,7 @@ pub fn run_golden_in_memory(
 
     let cfg = BattleConfig { format, seed: fallback_seed };
     let mut battle = Battle::with_rng(cfg, rng, p1_team, p2_team);
+    battle.decision_phases = input.decision_phases;
 
     let mut report = GoldenReport {
         name: input.name.clone().unwrap_or_else(|| "<unnamed>".into()),
@@ -318,9 +325,11 @@ pub fn run_golden_in_memory(
         if ended {
             break;
         }
-        let p1c = parse_turn_actions(&turn.p1, SideRef::P1, active_count)?;
-        let p2c = parse_turn_actions(&turn.p2, SideRef::P2, active_count)?;
+        let mut p1c = parse_turn_actions(&turn.p1, SideRef::P1, active_count)?;
+        let mut p2c = parse_turn_actions(&turn.p2, SideRef::P2, active_count)?;
 
+        for (slot, action) in turn.p1_followups.iter().enumerate() { p1c.push(parse_one_action(action, SideRef::P1, slot as u8, active_count)?); }
+        for (slot, action) in turn.p2_followups.iter().enumerate() { p2c.push(parse_one_action(action, SideRef::P2, slot as u8, active_count)?); }
         let r = battle.step(&p1c, &p2c);
         ended = matches!(r, StepResult::Ended { .. });
         report.turns_run += 1;
@@ -1126,6 +1135,7 @@ pub(crate) fn derive_turns_from_events(
             (p1_slot_a, p2_slot_a)
         };
         out.push(GoldenTurn {
+            p1_followups: Vec::new(), p2_followups: Vec::new(),
             p1: serde_json::Value::String(p1_str),
             p2: serde_json::Value::String(p2_str),
         });

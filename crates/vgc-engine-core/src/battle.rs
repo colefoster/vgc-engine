@@ -314,6 +314,9 @@ pub struct WishEffect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
+    /// Opt-in tournament decision phases; legacy turn callers retain their contract.
+    #[serde(default)]
+    pub decision_phases: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -559,6 +562,7 @@ impl Battle {
         let p2 = Side::new(p2_team, config.format);
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
+            decision_phases: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -645,6 +649,15 @@ impl Battle {
     /// internal `ended` field shape one-to-one.
     pub fn winner(&self) -> Option<Option<SideRef>> {
         self.ended
+    }
+
+    pub fn needs_replacements(&self) -> bool {
+        if self.is_terminal() { return false; }
+        [SideRef::P1, SideRef::P2].into_iter().any(|side| {
+            let s = self.side(side);
+            (0..self.format().active_count()).any(|slot|
+                s.active_mon(slot).is_some_and(|m| !m.is_alive()) && s.switch_candidates(slot).next().is_some())
+        })
     }
 
     /// True when at least one side has no active mons left. Used by the
@@ -1378,6 +1391,10 @@ impl Battle {
         // Commander: a Tatsugiri inside its Dondozo's mouth cannot act. PS
         // auto-passes the slot (`side.ts` `getChoiceIndex` skips slots whose
         // `volatiles['commanding']` is set) — it can't move or switch.
+        if self.decision_phases && self.needs_replacements() && active.is_alive() {
+            out.push(Choice::Pass { actor_slot });
+            return;
+        }
         if active.commanding {
             out.push(Choice::Pass { actor_slot });
             return;
@@ -1386,7 +1403,8 @@ impl Battle {
             for team_index in s.switch_candidates(slot) {
                 out.push(Choice::Switch { actor_slot, team_index });
             }
-            if out.is_empty() {
+            let dead = (0..self.format().active_count()).filter(|&slot| s.active_mon(slot).is_some_and(|m| !m.is_alive())).count();
+            if out.is_empty() || (self.decision_phases && out.len() < dead) {
                 out.push(Choice::Pass { actor_slot });
             }
             return;
@@ -1637,6 +1655,19 @@ impl Battle {
             StepPhase::Start { p1, p2 } => {
                 if let Some(w) = self.ended {
                     cursor.phase = StepPhase::Done(StepResult::Ended { winner: w });
+                } else if self.decision_phases && self.needs_replacements() {
+                    self.apply_pre_turn_switches(p1, p2);
+                    self.sync_weather_terrain_cache();
+                    self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
+                        (true, true) => Some(None),
+                        (true, false) => Some(Some(SideRef::P2)),
+                        (false, true) => Some(Some(SideRef::P1)),
+                        (false, false) => None,
+                    };
+                    cursor.phase = StepPhase::Done(match self.ended {
+                        Some(winner) => StepResult::Ended { winner },
+                        None => StepResult::Continue,
+                    });
                 } else {
                     let (order, pending_kind) = self.turn_prologue(p1, p2);
                     cursor.phase = StepPhase::ActionLoop {
@@ -1655,6 +1686,7 @@ impl Battle {
                         };
                         return StepProgress::ChanceYield { pending, key, space };
                     }
+                    if self.decision_phases { self.apply_self_switches(p1, p2); }
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
                         p1, p2, order, idx, pending_kind,
@@ -1676,6 +1708,7 @@ impl Battle {
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                if self.decision_phases { self.apply_self_switches(p1, p2); }
                 idx += 1;
                 cursor.phase = StepPhase::ActionLoop {
                     p1, p2, order, idx, pending_kind,
