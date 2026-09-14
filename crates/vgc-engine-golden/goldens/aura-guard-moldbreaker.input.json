@@ -1,0 +1,22 @@
+{
+  "name": "aura-guard-moldbreaker",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Snorlax\nLevel: 50\nAbility: Mold Breaker\n- Tackle"
+  },
+  "p2": {
+    "team": "Lucario-Mega-Z\nLevel: 50\nAbility: Aura Guard\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}
