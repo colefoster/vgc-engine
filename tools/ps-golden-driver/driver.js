@@ -559,6 +559,14 @@ async function runJob(job) {
     sides.omniscient.write('>player p2 ' + JSON.stringify({
       name: 'P2', team: Teams.pack(team2),
     }));
+    if (job.pp_overrides) {
+      for (const side of stream.battle.sides) for (const mon of side.pokemon) {
+        for (const slot of mon.moveSlots) if (job.pp_overrides[slot.id] !== undefined) {
+          slot.pp = slot.maxpp = job.pp_overrides[slot.id];
+        }
+      }
+    }
+
 
     // Wait for both sides to exhaust their action lists or stop receiving
     // requests; hard timeout in case PS hangs waiting on input.

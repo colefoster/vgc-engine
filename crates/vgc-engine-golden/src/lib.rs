@@ -64,6 +64,9 @@ use vgc_engine_data as data;
 
 #[derive(Debug, Deserialize)]
 pub struct GoldenInput {
+    /// Synthetic per-move data overlay shared with the reference driver.
+    #[serde(default)]
+    pub pp_overrides: std::collections::HashMap<String, u8>,
     pub name: Option<String>,
     #[serde(default = "default_format")]
     pub format: String,
@@ -260,10 +263,15 @@ pub fn run_golden_in_memory(
     ps: &PsOutput,
 ) -> Result<GoldenReport, GoldenError> {
     let format = parse_format(&input.format)?;
-    let p1_team = TeamBuilder::from_showdown_text(&input.p1.team)
+    let mut p1_team = TeamBuilder::from_showdown_text(&input.p1.team)
         .map_err(|e| GoldenError::TeamParse(format!("p1: {e:?}")))?;
-    let p2_team = TeamBuilder::from_showdown_text(&input.p2.team)
+    let mut p2_team = TeamBuilder::from_showdown_text(&input.p2.team)
         .map_err(|e| GoldenError::TeamParse(format!("p2: {e:?}")))?;
+
+    TeamBuilder::apply_pp_overlay(&mut p1_team, &input.pp_overrides)
+        .map_err(|e| GoldenError::TeamParse(format!("p1 overlay: {e}")))?;
+    TeamBuilder::apply_pp_overlay(&mut p2_team, &input.pp_overrides)
+        .map_err(|e| GoldenError::TeamParse(format!("p2 overlay: {e}")))?;
 
     let active_count = format.active_count();
 

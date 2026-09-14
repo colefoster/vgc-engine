@@ -196,12 +196,13 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 41)?;
+        let mut s = ser.serialize_struct("Pokemon", 42)?;
         s.serialize_field("species_id", &p.species_id)?;
         s.serialize_field("level", &p.level)?;
         s.serialize_field("gender", &(p.gender as u8))?;
         s.serialize_field("moves", &p.moves)?;
         s.serialize_field("pp", &p.pp)?;
+        s.serialize_field("max_pp_override", &p.max_pp_override)?;
         s.serialize_field("ability_id", &p.ability_id)?;
         s.serialize_field("ability_override", &p.ability_override)?;
         s.serialize_field("item_id", &p.item_id)?;
