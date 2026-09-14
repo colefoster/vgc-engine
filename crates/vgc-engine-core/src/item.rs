@@ -609,7 +609,7 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         if move_id == u16::MAX {
             return;
         }
-        let max_pp = crate::team::boosted_max_pp(move_id);
+        let max_pp = m.max_pp(i);
         let added: u8 = if ripen { 20 } else { 10 };
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
         m.consume_item();

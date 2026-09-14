@@ -561,6 +561,9 @@ pub struct Pokemon {
     pub gender: data::Gender,
     pub moves: [u16; 4],
     pub pp: [u8; 4],
+    /// Per-battle data overlay; zero uses the mainline default for old snapshots.
+    #[serde(default)]
+    pub max_pp_override: [u8; 4],
     pub ability_id: u16,
     /// Effective-ability override (PS `Pokemon.ability` reassignment via
     /// `setAbility`). `u16::MAX` = no override → `effective_ability_slug`
@@ -884,6 +887,11 @@ pub struct Pokemon {
 }
 
 impl Pokemon {
+    pub fn max_pp(&self, slot: usize) -> u8 {
+        if self.max_pp_override[slot] != 0 { self.max_pp_override[slot] }
+        else { crate::team::boosted_max_pp(self.moves[slot]) }
+    }
+
     /// Construct a `Pokemon` from its identity fields, with every
     /// volatile/runtime field initialised to its inert battle-start
     /// default. This is the **single source of truth** for those defaults:
@@ -920,6 +928,7 @@ impl Pokemon {
             gender,
             moves,
             pp,
+            max_pp_override: [0; 4],
             ability_id,
             item_id,
             can_mega_evolve,

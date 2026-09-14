@@ -1,0 +1,62 @@
+{
+  "ok": true,
+  "name": "pp-overlay-leppa-cap",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Magikarp",
+      "hp": 95,
+      "max": 95
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Slowpoke",
+      "hp": 165,
+      "max": 165
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    }
+  ],
+  "rng": [],
+  "errors": [],
+  "log": "|t:|1789397103\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Magikarp, L50, M|\n|poke|p2|Slowpoke, L50, F|\n|teampreview|\n|t:|1789397103\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Magikarp|Magikarp, L50, M|95/95\n|switch|p2a: Slowpoke|Slowpoke, L50, F|165/165\n|turn|1|\n|t:|1789397103\n|move|p1a: Magikarp|Splash|p1a: Magikarp\n|-nothing\n|move|p2a: Slowpoke|Splash|p2a: Slowpoke\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1789397103\n|move|p1a: Magikarp|Splash|p1a: Magikarp\n|-nothing\n|-enditem|p1a: Magikarp|Leppa Berry|[eat]\n|-activate|p1a: Magikarp|item: Leppa Berry|Splash|[consumed]\n|move|p2a: Slowpoke|Splash|p2a: Slowpoke\n|-nothing\n|\n|upkeep\n|turn|3"
+}
