@@ -374,13 +374,20 @@ pub fn enumerate_outcomes(
 /// Same as [`enumerate_outcomes`] but with caller-supplied [`EnumerateOpts`]
 /// to opt in to lossy collapses (e.g. PR-C's 3-bucket UniformDamage). The
 /// default-opts case is bit-for-bit identical to [`enumerate_outcomes`].
-pub fn enumerate_outcomes_with(
+pub fn enumerate_outcomes_with(base: &Battle, p1: &[Choice], p2: &[Choice], seed: u64, opts: EnumerateOpts) -> OutcomeFrontier {
+    enumerate_outcomes_bounded(base, p1, p2, seed, opts, None).expect("unbounded enumeration")
+}
+
+/// Refuse an oversized tensor before enumerating it, including newly discovered sites.
+/// Err is an explicit unsearched frontier, never a sampled probability estimate.
+pub fn enumerate_outcomes_bounded(
     base: &Battle,
     p1_choices: &[Choice],
     p2_choices: &[Choice],
     record_seed: u64,
     opts: EnumerateOpts,
-) -> OutcomeFrontier {
+    max_combinations: Option<u64>,
+) -> Result<OutcomeFrontier, u64> {
     // 1. Initial record pass to seed the per-site list.
     let mut rec = base.clone();
     rec.set_rng(Rng::recording(record_seed));
@@ -426,12 +433,12 @@ pub fn enumerate_outcomes_with(
     // Return one outcome (the recorded path itself) with prob 1.
     if per_site.is_empty() {
         let h = rec.canonical_hash();
-        return OutcomeFrontier {
+        return Ok(OutcomeFrontier {
             outcomes: vec![Outcome { hash: h, battle: rec, prob: 1.0 }],
             raw_combos: 1,
             unmatched_total: 0,
             lazy_iterations: 0,
-        };
+        });
     }
 
     // Sound mutual-focus tensor: when ≥1 defender is hit by ≥2 attackers AND
@@ -442,7 +449,7 @@ pub fn enumerate_outcomes_with(
     // canonical_hash) and much smaller than the flat 16×16 cross-product.
     // Returns `None` (→ flat path below) on: no coupled defenders, gate says
     // unsafe, or a runtime hazard inside a sub-grid (counter-factual site).
-    if !joint_collapse_disabled() {
+    if max_combinations.is_none() && !joint_collapse_disabled() {
         if let Some(frontier) = defender_joint_enumerate(
             base,
             p1_choices,
@@ -451,7 +458,7 @@ pub fn enumerate_outcomes_with(
             &per_site,
         ) {
             JOINT_COLLAPSE_ENGAGED.with(|d| d.set(true));
-            return frontier;
+            return Ok(frontier);
         }
     }
 
@@ -460,6 +467,8 @@ pub fn enumerate_outcomes_with(
     //    per_site for the next pass.
     let mut lazy_iterations = 0u32;
     loop {
+        let combinations = per_site.iter().fold(1u64, |n, site| n.saturating_mul(site.1.len() as u64));
+        if max_combinations.is_some_and(|limit| combinations > limit) { return Err(combinations); }
         let pass = enumerate_pass(base, p1_choices, p2_choices, record_seed, &per_site);
 
         // Did any combo's replay discover counter-factual sites?
@@ -470,12 +479,12 @@ pub fn enumerate_outcomes_with(
             // pass; unmatched_total in the result surfaces the leak).
             let mut outcomes: Vec<Outcome> = pass.dedup.into_values().collect();
             outcomes.sort_by_key(|o| o.hash);
-            return OutcomeFrontier {
+            return Ok(OutcomeFrontier {
                 outcomes,
                 raw_combos: pass.raw_combos,
                 unmatched_total: pass.unmatched_total,
                 lazy_iterations,
-            };
+            });
         }
 
         per_site.extend(new_sites);

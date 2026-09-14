@@ -177,6 +177,9 @@ pub struct SolverConfig {
     ///
     /// Default `false` — preserves the fast bucketed behavior exactly.
     pub exact_hp: bool,
+    /// Optional deterministic action pruning for bounded interactive experiments.
+    pub max_actions: Option<usize>,
+    pub max_chance_combinations: Option<u64>,
 }
 
 impl Default for SolverConfig {
@@ -192,6 +195,8 @@ impl Default for SolverConfig {
             // 0 % Nash delta. See docs/perf/pr-l2-threshold-tuning-2026-06-30.md.
             auto_lossy_damage_threshold: Some(1_000),
             exact_hp: false,
+            max_actions: None,
+            max_chance_combinations: None,
         }
     }
 }
@@ -299,6 +304,7 @@ pub struct SolverStats {
     /// invocations. Sanity counter so the hit-rate ratio's denominator
     /// can be sanity-checked against the work done.
     pub nodes_visited: u64,
+    pub chance_cutoffs: u64,
 }
 
 /// Borrowed bag of mutable state threaded through the recursion. Kept
@@ -337,7 +343,7 @@ fn leaf_node(value: f64, provenance: Provenance, depth_remaining: u32) -> Solved
 /// `legal_choices(side, slot)` stamps it — so the returned joint arrays are
 /// directly usable as the per-slot `Choice` array for
 /// `enumerate_outcomes_with`.
-fn joint_actions(battle: &Battle, side: SideRef) -> Vec<Vec<Choice>> {
+pub fn joint_actions(battle: &Battle, side: SideRef) -> Vec<Vec<Choice>> {
     let active = battle.format().active_count();
     // Per-slot legal choices.
     let per_slot: Vec<Vec<Choice>> =
@@ -358,12 +364,39 @@ fn joint_actions(battle: &Battle, side: SideRef) -> Vec<Vec<Choice>> {
         acc = next;
     }
 
+    if battle.decision_phases && !battle.needs_replacements() {
+        for slot in 0..active {
+            let Some(mon) = battle.side(side).active_mon(slot) else { continue };
+            let benches: Vec<u8> = battle.side(side).switch_candidates(slot).collect();
+            if benches.is_empty() { continue; }
+            acc = acc.into_iter().flat_map(|joint| {
+                let pivot = joint.iter().any(|c| match *c {
+                    Choice::Move { actor_slot, move_slot, .. } | Choice::MegaEvolve { actor_slot, move_slot, .. }
+                    if actor_slot as usize == slot && (move_slot as usize) < 4 => {
+                        let id = mon.moves[move_slot as usize];
+                        id != u16::MAX && matches!(vgc_engine_core::data::MOVES[id as usize].slug,
+                            "uturn" | "voltswitch" | "flipturn" | "partingshot" | "teleport" | "chillyreception" | "batonpass")
+                    }, _ => false,
+                });
+                if pivot { benches.iter().map(|&team_index| { let mut j=joint.clone(); j.push(Choice::Switch { actor_slot:slot as u8, team_index }); j }).collect() }
+                else { vec![joint] }
+            }).collect();
+        }
+    }
+
     // Drop the illegal double-switch-to-same-bench-index combo. Only
     // possible for active_count >= 2; scan every pair of switch slots and
     // reject if any two target the same team_index. (For doubles this is the
     // single pair (slot0, slot1); the general loop keeps it correct if
     // active_count ever grows.)
     acc.retain(|joint| {
+        if joint.iter().filter(|c| matches!(c, Choice::MegaEvolve { .. })).count() > 1 { return false; }
+        if joint.iter().filter(|c| matches!(c, Choice::Terastallize { .. })).count() > 1 { return false; }
+        if battle.decision_phases && battle.needs_replacements() {
+            let dead = (0..active).filter(|&slot| battle.side(side).active_mon(slot).is_some_and(|m| !m.is_alive())).count();
+            let available = (0..active).map(|slot| battle.side(side).switch_candidates(slot).count()).max().unwrap_or(0);
+            if joint.iter().filter(|c| matches!(c, Choice::Switch {..})).count() < dead.min(available) { return false; }
+        }
         for a in 0..joint.len() {
             if let Choice::Switch { team_index: ta, .. } = joint[a] {
                 for b in (a + 1)..joint.len() {
@@ -379,6 +412,25 @@ fn joint_actions(battle: &Battle, side: SideRef) -> Vec<Vec<Choice>> {
     });
 
     acc
+}
+
+fn bounded_actions(battle: &Battle, side: SideRef, cfg: &SolverConfig) -> Vec<Vec<Choice>> {
+    let actions = joint_actions(battle, side);
+    let Some(limit) = cfg.max_actions else { return actions; };
+    if actions.len() <= limit { return actions; }
+    let passes: Vec<Choice> = (0..battle.format().active_count()).map(|i| Choice::Pass {actor_slot:i as u8}).collect();
+    let mut ranked: Vec<_> = actions.into_iter().enumerate().map(|(i, action)| {
+        let mut copy = battle.clone();
+        copy.set_rng(vgc_engine_core::Rng::new(cfg.record_seed));
+        if side == SideRef::P1 { copy.step(&action, &passes); } else { copy.step(&passes, &action); }
+        let score = crate::hp_ratio_leaf(&copy) * if side == SideRef::P1 {1.0} else {-1.0};
+        (score, i, action)
+    }).collect();
+    ranked.sort_by(|a,b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut out: Vec<_> = ranked.iter().take(limit.saturating_sub(1)).map(|x|x.2.clone()).collect();
+    let rest = &ranked[limit.saturating_sub(1)..];
+    out.push(rest[(cfg.record_seed as usize) % rest.len()].2.clone());
+    out
 }
 
 fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> SolvedNode {
@@ -431,8 +483,8 @@ fn solve(battle: &Battle, depth_remaining: u32, state: &mut SolverState) -> Solv
     // Joint action lists = Cartesian product over active slots. For singles
     // this is exactly the slot-0 legal choices (each wrapped length-1), so
     // behavior is bit-identical to the pre-doubles solver.
-    let row_choices = joint_actions(battle, SideRef::P1);
-    let col_choices = joint_actions(battle, SideRef::P2);
+    let row_choices = bounded_actions(battle, SideRef::P1, state.cfg);
+    let col_choices = bounded_actions(battle, SideRef::P2, state.cfg);
     if row_choices.is_empty() || col_choices.is_empty() {
         // Should be caught by is_terminal; defensive fallback.
         return leaf_node((state.leaf)(battle), Provenance::Terminal, depth_remaining);
@@ -553,7 +605,16 @@ impl<'a, 'b> MatrixGame for RecursiveGame<'a, 'b> {
         // active_count on each side (1 for singles, 2 for doubles).
         let row_joint: &[Choice] = &self.row_choices[i];
         let col_joint: &[Choice] = &self.col_choices[j];
-        let frontier = if self.state.cfg.use_action_independence_factoring {
+        let frontier = if let Some(limit) = self.state.cfg.max_chance_combinations {
+            match crate::enumerate_outcomes_bounded(self.battle, row_joint, col_joint, self.state.cfg.record_seed, opts, Some(limit)) {
+                Ok(frontier) => frontier,
+                Err(_) => {
+                    self.state.stats.chance_cutoffs += 1;
+                    self.any_estimated_child = true;
+                    return (self.state.leaf)(self.battle);
+                }
+            }
+        } else if self.state.cfg.use_action_independence_factoring {
             enumerate_outcomes_factored(
                 self.battle,
                 row_joint,
@@ -636,6 +697,8 @@ mod tests {
             use_action_independence_factoring: false,
             auto_lossy_damage_threshold: None,
             exact_hp: false,
+            max_actions: None,
+            max_chance_combinations: None,
         };
         let sol = endgame_solve(&b, &cfg, hp_ratio_leaf);
         assert!(matches!(
@@ -685,6 +748,8 @@ mod tests {
             use_action_independence_factoring: false,
             auto_lossy_damage_threshold: None,
             exact_hp: false,
+            max_actions: None,
+            max_chance_combinations: None,
         };
         let cfg_on = SolverConfig {
             use_action_independence_factoring: true,
@@ -781,6 +846,8 @@ mod tests {
             use_action_independence_factoring: false,
             auto_lossy_damage_threshold: Some(1_000),
             exact_hp: false,
+            max_actions: None,
+            max_chance_combinations: None,
         };
 
         // ── Reference: hand-build the root matrix. ──
@@ -878,6 +945,8 @@ mod tests {
             use_action_independence_factoring: false,
             auto_lossy_damage_threshold: Some(1_000),
             exact_hp: false,
+            max_actions: None,
+            max_chance_combinations: None,
         };
         let s1 = endgame_solve(&b, &cfg, hp_ratio_leaf);
         let s2 = endgame_solve(&b, &cfg, hp_ratio_leaf);
@@ -1021,6 +1090,8 @@ mod tests {
             use_action_independence_factoring: false,
             auto_lossy_damage_threshold: None,
             exact_hp: true,
+            max_actions: None,
+            max_chance_combinations: None,
         };
         let exact = endgame_solve(&b, &cfg_exact, hp_ratio_leaf);
         assert!(
