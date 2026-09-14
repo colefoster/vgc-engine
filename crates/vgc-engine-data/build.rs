@@ -79,6 +79,10 @@ struct MegaFix {
 ///
 /// Source: serebii.net/pokedex-champions/<species>/ (per-forme ability + stats).
 const MEGA_FORME_FIXES: &[MegaFix] = &[
+    MegaFix { forme: "absolmegaz", ability: "sharpness", atk: 0 },
+    MegaFix { forme: "garchompmegaz", ability: "levitate", atk: 0 },
+    MegaFix { forme: "lucariomegaz", ability: "auraguard", atk: 0 },
+    MegaFix { forme: "golisopodmega", ability: "toughclaws", atk: 0 },
     MegaFix { forme: "raichumegax", ability: "electricsurge", atk: 0 },
     MegaFix { forme: "raichumegay", ability: "noguard", atk: 0 },
     MegaFix { forme: "clefablemega", ability: "magicbounce", atk: 0 },
@@ -138,6 +142,7 @@ const EXTRA_ABILITIES: &[ExtraAbility] = &[
     ExtraAbility { slug: "eelevate", name: "Eelevate" },
     ExtraAbility { slug: "firemane", name: "Fire Mane" },
     ExtraAbility { slug: "spicyspray", name: "Spicy Spray" },
+    ExtraAbility { slug: "auraguard", name: "Aura Guard" },
 ];
 
 /// SCREAMING_SNAKE_CASE-ish Rust identifier for a dex slug, used as the

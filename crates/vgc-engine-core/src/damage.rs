@@ -2344,6 +2344,11 @@ pub(crate) fn calculate_damage_with_bp(
         dmg_mod = chain_modify(dmg_mod, 3, 4); // 3072/4096
     }
 
+    // PS data/abilities.ts:310: Aura Guard halves contact damage; Mold Breaker bypasses.
+    if def_ab == data::ability_id::AURAGUARD && m.makes_contact && !attacker_breaks_mold {
+        dmg_mod = chain_modify(dmg_mod, 1, 2);
+    }
+
     // Ice Scales — ×0.5 incoming Special. PS `:icescales`
     // onSourceModifyDamage; NOT breakable. Frosmoth.
     if def_ab == data::ability_id::ICESCALES && !physical {
