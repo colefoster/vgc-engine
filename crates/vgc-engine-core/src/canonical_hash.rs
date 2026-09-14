@@ -386,6 +386,7 @@ struct CanonicalSideView<'a> {
 /// transient per-step field by construction (they aren't even named here).
 #[derive(Serialize)]
 struct CanonicalBattleView<'a> {
+    decision_phases: bool,
     config: &'a BattleConfig,
     p1: CanonicalSideView<'a>,
     p2: CanonicalSideView<'a>,
@@ -462,6 +463,7 @@ impl Battle {
     /// buffer.
     pub fn canonical_hash(&self) -> u64 {
         let view = CanonicalBattleView {
+            decision_phases: self.decision_phases,
             config: &self.config,
             p1: canonical_side(&self.p1),
             p2: canonical_side(&self.p2),

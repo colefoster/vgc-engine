@@ -1,0 +1,26 @@
+{
+  "name": "pivot-before-slower-attack",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "decision_phases": true,
+  "p1": {
+    "team": "Crobat\nLevel: 50\nAbility: Inner Focus\n- U-turn\n\nCorviknight\nLevel: 50\nAbility: Pressure\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax\nLevel: 50\nAbility: Immunity\n- Tackle"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p1_followups": [
+        "switch 2"
+      ],
+      "p2": "move 1"
+    }
+  ]
+}

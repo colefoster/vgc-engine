@@ -496,8 +496,8 @@ async function runJob(job) {
   const randomPlay = !!job.random_play;
   const maxTurns = job.max_turns || 30;
 
-  const p1Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p1));
-  const p2Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p2));
+  const p1Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p1), ...(t.p1_followups || [])]);
+  const p2Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p2), ...(t.p2_followups || [])]);
 
   // Side-distinct PRNG seeds: derived from seed[0] so the run is
   // reproducible from a single integer (matches team-gen.js convention).
