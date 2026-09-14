@@ -955,6 +955,8 @@ fn prod_config(depth: u32) -> SolverConfig {
         use_action_independence_factoring: false,
         auto_lossy_damage_threshold: None,
         exact_hp: false,
+        max_actions: None,
+        max_chance_combinations: None,
     }
 }
 

@@ -124,7 +124,7 @@ fn observe_active_mon<'py>(
         let md = PyDict::new(py);
         md.set_item("id", core::data::MOVES[mid as usize].slug)?;
         md.set_item("pp", m.pp[i])?;
-        md.set_item("max_pp", core::boosted_max_pp(mid))?;
+        md.set_item("max_pp", m.max_pp(i))?;
         moves_list.append(md)?;
     }
     d.set_item("moves", moves_list)?;
@@ -322,23 +322,40 @@ pub struct PyBattle {
 impl PyBattle {
     /// Build a battle from two JSON team specs.
     #[staticmethod]
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0))]
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false))]
     fn from_teams(
         p1_team_json: &str,
         p2_team_json: &str,
         format: &str,
         seed: u64,
+        move_pp_json: Option<&str>,
+        tera_allowed: bool,
+        decision_phases: bool,
     ) -> PyResult<Self> {
         let fmt = match format {
             "singles" => core::Format::Singles,
             "doubles" => core::Format::Doubles,
             other => return Err(PyValueError::new_err(format!("unknown format: {other}"))),
         };
-        let p1 = core::TeamBuilder::from_json(p1_team_json).map_err(map_team_err)?;
-        let p2 = core::TeamBuilder::from_json(p2_team_json).map_err(map_team_err)?;
+        let mut p1 = core::TeamBuilder::from_json(p1_team_json).map_err(map_team_err)?;
+        let mut p2 = core::TeamBuilder::from_json(p2_team_json).map_err(map_team_err)?;
+        if let Some(json) = move_pp_json {
+            let pp: std::collections::HashMap<String, u8> = serde_json::from_str(json)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            core::TeamBuilder::apply_pp_overlay(&mut p1, &pp).map_err(map_team_err)?;
+            core::TeamBuilder::apply_pp_overlay(&mut p2, &pp).map_err(map_team_err)?;
+        }
         let cfg = core::BattleConfig { format: fmt, seed };
-        Ok(Self { inner: core::Battle::new(cfg, p1, p2) })
+        let mut inner = core::Battle::new(cfg, p1, p2);
+        inner.decision_phases = decision_phases;
+        if !tera_allowed {
+            inner.p1.conditions.tera_used = true;
+            inner.p2.conditions.tera_used = true;
+        }
+        Ok(Self { inner })
     }
+
+    fn needs_replacements(&self) -> bool { self.inner.needs_replacements() }
 
     #[getter]
     fn turn(&self) -> u32 {
@@ -832,6 +849,15 @@ fn policy_to_py<'py>(
     Ok(out)
 }
 
+fn joint_policy_to_py<'py>(py: Python<'py>, policy: &[(Vec<core::Choice>, f64)]) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for (joint, probability) in policy {
+        let choices: Vec<LegalChoice> = joint.iter().map(choice_to_tuple).collect();
+        out.append((choices, *probability))?;
+    }
+    Ok(out)
+}
+
 /// Solve one turn's Nash equilibrium with a **batched** Python leaf
 /// evaluator.
 ///
@@ -982,27 +1008,40 @@ fn provenance_slug(p: vgc_solver::Provenance) -> &'static str {
 ///   sol = vgc_engine.solve_endgame_exact(b, max_depth=32)
 ///   sol["value"], sol["provenance"]
 #[pyfunction]
-#[pyo3(signature = (battle, max_depth = 16, node_budget = 1_000_000, exact_hp = false))]
+#[pyo3(signature = (battle, max_depth = 16, node_budget = 1_000_000, exact_hp = false, max_actions = None, max_chance_combinations = None))]
 fn solve_endgame_exact<'py>(
     py: Python<'py>,
     battle: &PyBattle,
     max_depth: u32,
     node_budget: u64,
     exact_hp: bool,
+    max_actions: Option<usize>,
+    max_chance_combinations: Option<u64>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    if max_actions.is_some_and(|n| n < 2) { return Err(PyValueError::new_err("max_actions must be at least two")); }
     let cfg = vgc_solver::SolverConfig {
         max_depth,
         node_budget,
         exact_hp,
+        max_actions,
+        max_chance_combinations,
         ..vgc_solver::SolverConfig::default()
     };
 
-    let node = vgc_solver::endgame_solve(&battle.inner, &cfg, vgc_solver::hp_ratio_leaf);
+    let mut stats = vgc_solver::SolverStats::default();
+    let node = vgc_solver::endgame_solve_with_tt_stats(&battle.inner, &cfg, vgc_solver::hp_ratio_leaf,
+        &mut std::collections::HashMap::new(), &mut stats);
 
     let d = PyDict::new(py);
     d.set_item("value", node.value)?;
-    d.set_item("provenance", provenance_slug(node.provenance))?;
+    d.set_item("provenance", if stats.chance_cutoffs > 0 { "chance_limit" } else if max_actions.is_some() { "action_limit" } else { provenance_slug(node.provenance) })?;
     d.set_item("depth_remaining", node.depth_remaining)?;
+    d.set_item("nodes_visited", stats.nodes_visited)?;
+    d.set_item("action_limit", max_actions)?;
+    d.set_item("chance_cutoffs", stats.chance_cutoffs)?;
+    d.set_item("exact_hp", exact_hp)?;
+    d.set_item("row_joint_policy", joint_policy_to_py(py, &node.row_joint_policy)?)?;
+    d.set_item("col_joint_policy", joint_policy_to_py(py, &node.col_joint_policy)?)?;
     d.set_item("row_policy", policy_to_py(py, &node.row_policy)?)?;
     d.set_item("col_policy", policy_to_py(py, &node.col_policy)?)?;
     Ok(d)
