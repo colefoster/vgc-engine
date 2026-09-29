@@ -4304,6 +4304,31 @@ impl Battle {
             }
         }
 
+        // Expanding Force — PS data/moves.ts:4958 `onModifyMove`: a grounded
+        // user in Psychic Terrain turns it into `allAdjacentFoes`. PS
+        // `useMoveInner` (sim/battle-actions.ts:432) then re-picks the
+        // target with `getRandomTarget` → `Side.randomFoe` (one `sample`).
+        let ef_spread;
+        let m = if move_id == data::move_id::EXPANDINGFORCE
+            && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+            && attacker.is_grounded()
+        {
+            ef_spread = data::MoveDef { target: 6, ..*m };
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() && self.format().active_count() >= 2 {
+                let foe = actor_side.opposing();
+                let n = (0..self.format().active_count())
+                    .filter(|&s| self.side(foe).active_mon(s).is_some_and(|p| p.is_alive()))
+                    .count();
+                if n > 0 {
+                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                }
+            }
+            &ef_spread
+        } else {
+            m
+        };
+
         // 5. Enumerate targets (spread or single).
         let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
         if targets.is_empty() {
