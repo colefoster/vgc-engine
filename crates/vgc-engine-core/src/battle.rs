@@ -597,6 +597,10 @@ impl Battle {
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
         // ordering matches turn-order but at battle start it's by side
         // and slot; refinement deferred).
+        #[cfg(feature = "ps-rng")]
+        if b.rng.is_ps() {
+            b.ps_start_draws();
+        }
         let n = b.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
@@ -1687,6 +1691,10 @@ impl Battle {
                         return StepProgress::ChanceYield { pending, key, space };
                     }
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() {
+                        self.ps_after_move_action(&order, idx);
+                    }
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
                         p1, p2, order, idx, pending_kind,
@@ -1771,11 +1779,323 @@ impl Battle {
     /// (0 / 1 / 1b / 2 / Custap / queue setup). Returns the resolved
     /// action order and the flat `pending_kind` view consumed inside
     /// the loop.
+    /// `ps-rng` only: PS `Pokemon.speed` as `speedSort` sees it
+    /// (`getActionSpeed`: boosted/modified Speed, `10000 - spe` under Trick
+    /// Room, truncated to 13 bits). Higher sorts first.
+    #[cfg(feature = "ps-rng")]
+    fn ps_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
+        let m = self.side(side).active_mon(slot)?;
+        let tw = self.side(side).conditions.tailwind_turns > 0;
+        let mut spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+        if self.trick_room_turns > 0 {
+            spe = 10000 - spe;
+        }
+        Some(spe & 0x1FFF)
+    }
+
+    /// `ps-rng` only: draw PS's Fisher-Yates shuffles for a list already
+    /// sorted by `key` (descending) — one `random(i, end)` per position of
+    /// each run of equal keys but its last (sim/battle.ts speedSort +
+    /// sim/prng.ts shuffle). Returns the permutation applied (`perm[k]` =
+    /// original index now at `k`).
+    #[cfg(feature = "ps-rng")]
+    fn ps_shuffle_ties(&mut self, keys: &[i64], op: &'static str) -> [u8; 8] {
+        let n = keys.len().min(8);
+        let mut perm = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && keys[end] == keys[st] {
+                end += 1;
+            }
+            if end - st >= 2 {
+                for i in st..end - 1 {
+                    let j = self.rng.ps_random_range(op, i as u32, end as u32) as usize;
+                    perm.swap(i, j);
+                }
+            }
+            st = end;
+        }
+        perm
+    }
+
+    /// `ps-rng` only: `Battle.eachEvent` / `runSwitch` speed-sort over the
+    /// living (or all, for runSwitch) active Pokemon — draws only when two
+    /// of them tie on Speed. PS runs `eachEvent('Update')` after every
+    /// action (sim/battle.ts runAction, gen >= 5).
+    #[cfg(feature = "ps-rng")]
+    fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let alive = self.side(side).active_mon(slot).is_some_and(|m| m.is_alive());
+                if !(alive || include_fainted && self.side(side).active_mon(slot).is_some()) {
+                    continue;
+                }
+                if let Some(k) = self.ps_speed(side, slot) {
+                    keys[n] = k;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], op);
+    }
+
+    /// `ps-rng` only: battle start. PS switches the four leads in (p1 then
+    /// p2, slot order); each `switchIn` queues a `runSwitch` via
+    /// `insertChoice`, which draws `random(first, last + 1)` when the new
+    /// action ties an already-queued one on Speed (sim/battle-queue.ts
+    /// insertChoice). The batched `runSwitch` then speed-sorts every active
+    /// Pokemon, and the action ends with `eachEvent('Update')`.
+    #[cfg(feature = "ps-rng")]
+    fn ps_start_draws(&mut self) {
+        let n_active = self.format().active_count();
+        let mut queue = [0i64; 4];
+        let mut len = 0usize;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(spe) = self.ps_speed(side, slot) else { continue };
+                // comparePriority(new, cur) <= 0  <=>  new.speed >= cur.speed
+                let first = (0..len).find(|&i| spe >= queue[i]);
+                let idx = match first {
+                    None => len,
+                    Some(f) => {
+                        let last = (f..len).find(|&i| spe > queue[i]).unwrap_or(len);
+                        if f == last {
+                            f
+                        } else {
+                            self.rng.ps_random_range("insert_choice", f as u32, last as u32 + 1) as usize
+                        }
+                    }
+                };
+                for i in (idx..len).rev() {
+                    queue[i + 1] = queue[i];
+                }
+                queue[idx] = spe;
+                len += 1;
+            }
+        }
+        self.ps_active_ties(true, "shuffle");
+        self.ps_active_ties(false, "shuffle");
+    }
+
+    /// `ps-rng` only: the draws PS makes while resolving submitted choices,
+    /// before anything executes. `BattleQueue.resolveAction`
+    /// (sim/battle-queue.ts, a5df8274) gives every move action without a
+    /// chosen target a `getRandomTarget` — for any target type except
+    /// self/adjacentAllyOrSelf/allySide/allyTeam/all that is a
+    /// `sample()` over the adjacent allies (adjacentAlly) or the living foes
+    /// (`Side.randomFoe`), one `random(n)` even when `n == 1`. The pick only
+    /// seeds `originalTarget`; spread moves ignore it, so it is a pure
+    /// stream advance. Sides commit p1 then p2, slots in order.
+    #[cfg(feature = "ps-rng")]
+    fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let n_active = self.format().active_count();
+            for c in choices {
+                let (actor_slot, move_slot, target) = match *c {
+                    Choice::Move { actor_slot, move_slot, target }
+                    | Choice::Terastallize { actor_slot, move_slot, target }
+                    | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
+                    _ => continue,
+                };
+                if target.is_some() || actor_slot as usize >= n_active {
+                    continue;
+                }
+                let Some(mon) = self.side(side).active_mon(actor_slot as usize) else { continue };
+                if !mon.is_alive() {
+                    continue;
+                }
+                let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                    data::move_id::STRUGGLE
+                } else {
+                    match mon.moves.get(move_slot as usize) {
+                        Some(&id) if id != u16::MAX => id,
+                        _ => continue,
+                    }
+                };
+                // Champions gives non-Ghost Curse a self target (no draw).
+                let (types, nt) = mon.effective_types();
+                let ghost = types[..nt as usize].contains(&13); // Ghost type index
+                if move_id == data::move_id::CURSE && !ghost {
+                    continue;
+                }
+                let n = match data::MOVES[move_id as usize].target {
+                    1 | 3 | 8 | 9 | 12 => 0,
+                    2 => (0..n_active)
+                        .filter(|&s| s != actor_slot as usize)
+                        .filter(|&s| self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
+                        .count(),
+                    _ => {
+                        let foe = side.opposing();
+                        (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
+                    }
+                };
+                if n > 0 {
+                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                }
+                // resolveAction then calls getActionSpeed -> getTarget, whose
+                // location (the random pick) never validates for a spread
+                // or field move, so it draws again.
+                self.ps_get_target_draw(side, actor_slot, move_id, None);
+            }
+        }
+        // commitChoices -> queue.sort(): ties among switch actions (order
+        // 103, the leaving mon's Speed) are shuffled here; move ties are
+        // re-drawn at the re-sort right before the first move (below).
+        let mut keys = [0i64; 4];
+        let mut k = 0;
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            for c in choices {
+                if let Choice::Switch { actor_slot, .. } = *c {
+                    if k < 4 {
+                        if let Some(sp) = self.ps_speed(side, actor_slot as usize) {
+                            keys[k] = sp;
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
+        keys[..k].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..k], "shuffle");
+        // beforeTurn action: eachEvent('BeforeTurn') + the post-action
+        // eachEvent('Update').
+        self.ps_active_ties(false, "shuffle");
+        self.ps_active_ties(false, "shuffle");
+    }
+
+    /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
+    /// when the next queued action is a move — `getActionSpeed` (and so
+    /// `getTarget`) for every queued move, then `queue.sort()`, whose move
+    /// ties the caller shuffles.
+    #[cfg(feature = "ps-rng")]
+    fn ps_resort_get_targets(&mut self, actions: &[ScheduledAction]) {
+        for a in actions {
+            let (actor_slot, move_slot, target) = match a.choice {
+                Choice::Move { actor_slot, move_slot, target }
+                | Choice::Terastallize { actor_slot, move_slot, target }
+                | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
+                _ => continue,
+            };
+            let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else { continue };
+            if !mon.is_alive() {
+                continue;
+            }
+            let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                data::move_id::STRUGGLE
+            } else {
+                match mon.moves.get(move_slot as usize) {
+                    Some(&id) if id != u16::MAX => id,
+                    _ => continue,
+                }
+            };
+            self.ps_get_target_draw(a.side, actor_slot, move_id, target);
+        }
+    }
+
+    /// `ps-rng` only: PS `runMove` calls `Battle.getTarget` before any
+    /// `BeforeMove` check (sim/battle.ts getTarget, a5df8274). It re-draws
+    /// `getRandomTarget` for every move whose chosen location is not a
+    /// living valid target — i.e. all spread / field / random moves (their
+    /// `targetLoc` came from resolveAction and never validates) and single
+    /// target moves whose target fainted. Self-side targets return the user
+    /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
+    /// Stalwart / Propeller Tail keep an active original target.
+    #[cfg(feature = "ps-rng")]
+    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) {
+        let n_active = self.format().active_count();
+        let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return };
+        let ability = user.effective_ability_id();
+        let tcode = data::MOVES[move_id as usize].target;
+        if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
+            return;
+        }
+        let tracks = move_id == data::move_id::SNIPESHOT
+            || ability == data::ability_id::STALWART
+            || ability == data::ability_id::PROPELLERTAIL;
+        if let Some(t) = target {
+            if tracks && alive_at(self, t) {
+                return;
+            }
+            if matches!(tcode, 0 | 2 | 4 | 10) {
+                if alive_at(self, t) || t.side == side {
+                    return; // living target, or a fainted ally (no retarget)
+                }
+            }
+        }
+        let n = if tcode == 2 {
+            (0..n_active)
+                .filter(|&s| s != slot as usize && self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
+                .count()
+        } else {
+            let foe = side.opposing();
+            (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
+        };
+        if n > 0 {
+            let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+        }
+    }
+
+    /// `ps-rng` only: what PS does between a move action and the next one —
+    /// `eachEvent('Update')` speed ties, then (if another move is queued)
+    /// the dynamic re-sort: `getTarget` per queued move and a tie shuffle
+    /// among the remaining moves that still share priority and Speed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_move_action(&mut self, order: &ActionOrder, idx: usize) {
+        self.ps_active_ties(false, "shuffle");
+        let rest = &order[idx + 1..];
+        let next_is_move = rest.iter().any(|a| {
+            matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                && self.side(a.side).active_mon(a.actor_slot as usize).is_some_and(|m| m.is_alive())
+        });
+        if !next_is_move {
+            return;
+        }
+        let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
+        let mut k = 0;
+        for a in rest.iter().take(4) {
+            acts[k] = *a;
+            k += 1;
+        }
+        self.ps_resort_get_targets(&acts[..k]);
+        // Tie groups among the remaining moves: equal base priority and
+        // equal Speed (the engine's order already sorted them together).
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for a in &acts[..k] {
+            let (slot, move_slot) = match a.choice {
+                Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
+                _ => continue,
+            };
+            let Some(mon) = self.side(a.side).active_mon(slot as usize) else { continue };
+            if !mon.is_alive() {
+                continue;
+            }
+            let pri = mon.moves.get(move_slot as usize).map(|&id| if id == u16::MAX { 0 } else { data::MOVES[id as usize].priority as i64 }).unwrap_or(0);
+            let spe = self.ps_speed(a.side, slot as usize).unwrap_or(0);
+            keys[n] = pri * 100_000 + spe;
+            n += 1;
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
     fn turn_prologue(
         &mut self,
         p1_choices: &[Choice],
         p2_choices: &[Choice],
     ) -> (ActionOrder, [[u8; 2]; 2]) {
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_resolve_action_draws(p1_choices, p2_choices);
+        }
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
@@ -1833,6 +2153,25 @@ impl Battle {
         // Temporarily move rng out to split-borrow with `self`. `Rng`
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
         // placeholder for the duration of the call.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
+            let mut k = 0;
+            for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+                let mut moved = [false; 2];
+                for c in choices {
+                    if matches!(c, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && k < 4
+                        && !moved[(c.actor_slot() as usize).min(1)]
+                    {
+                        moved[(c.actor_slot() as usize).min(1)] = true;
+                        acts[k] = ScheduledAction { side, actor_slot: c.actor_slot(), choice: *c };
+                        k += 1;
+                    }
+                }
+            }
+            self.ps_resort_get_targets(&acts[..k]);
+        }
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         let order = action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
@@ -2026,6 +2365,11 @@ impl Battle {
         //    decrement so a mon takes its last sand damage on the turn
         //    sand expires (PS behavior).
         self.resolve_end_of_turn();
+        // PS: the residual action ends with eachEvent('Update').
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
+        }
 
         // 4. Per-mon end-of-turn flags + side-condition timers.
         for s in [SideRef::P1, SideRef::P2] {
@@ -2211,6 +2555,11 @@ impl Battle {
         for c in choices {
             if let Choice::MegaEvolve { actor_slot, .. } = *c {
                 self.try_mega_evolve(side, actor_slot);
+                // PS: the megaEvo action ends with eachEvent('Update').
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
             }
         }
     }
@@ -2325,11 +2674,23 @@ impl Battle {
             // voluntary switcher BEFORE it leaves, at 2× BP.
             self.try_pursuit_interception(side, actor_slot, opp_choices);
             if self.do_switch(side, actor_slot, team_index) {
+                // PS: the switch action ends with eachEvent('Update'); the
+                // queued runSwitch then speed-sorts all actives.
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                    self.ps_active_ties(true, "shuffle");
+                }
                 // Switch-in `onStart` fires immediately as this mon enters
                 // (PS order: hazards — already in do_switch — then ability
                 // then item onStart). Forme changes remain a per-species TBD.
                 crate::ability::on_switch_in(self, side, actor_slot);
                 crate::item::on_switch_in(self, side, actor_slot);
+                // ...and the runSwitch action's own eachEvent('Update').
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
             }
         }
     }
@@ -3515,6 +3876,11 @@ impl Battle {
             }
         };
         let m = &data::MOVES[move_id as usize];
+
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+        }
 
         // Pre-move volatile/status checks (flinch, disable, throat chop, heal
         // block, taunt, truant, sleep, freeze, paralysis, confusion, attract).
@@ -8793,6 +9159,13 @@ impl Battle {
         // correct for all of them).
         if let Some(drops) = self_stat_drops(m.slug) {
             if any_damage_dealt > 0 {
+                // PS `selfDrops` rolls `random(100)` for a `self.boosts`
+                // move even though the drop is unconditional
+                // (sim/battle-actions.ts selfDrops, a5df8274).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    let _ = self.rng.percent_1_100();
+                }
                 self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
                 // White Herb consumes itself to restore negative stages.
                 crate::item::try_consume_white_herb(self, actor_side, actor_slot);

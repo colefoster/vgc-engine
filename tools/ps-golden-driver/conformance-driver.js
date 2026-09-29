@@ -656,7 +656,12 @@ function parseArgs(argv) {
   return out;
 }
 
-module.exports = { runJob };
+module.exports = {
+  runJob,
+  // Shared with tools/accuracy/ps-battle.js (full-battle + raw-trace driver).
+  patchRng, captureSite, classifyDraw, snapshotState, snapshotField, snapshotSides,
+  makeRandomPicker, mulberry32,
+};
 
 if (require.main === module) (async () => {
   try {

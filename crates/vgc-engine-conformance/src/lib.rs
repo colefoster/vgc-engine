@@ -16,6 +16,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
+pub mod accuracy;
+
 use serde::Deserialize;
 use vgc_engine_core::data;
 use vgc_engine_core::rng::{Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
@@ -85,6 +87,9 @@ pub struct MonState {
     /// Ability slug; absent → not compared (always present in real captures).
     #[serde(default)]
     pub ability: Option<String>,
+    /// PS species id (forme-specific). Only the accuracy harness captures it.
+    #[serde(default)]
+    pub species: Option<String>,
 }
 
 /// Stat-stage boosts in PS key order; `accuracy`/`evasion` included for
@@ -260,7 +265,7 @@ pub fn parse_slot_ref(s: &str) -> Option<SlotRef> {
     Some(side + slot)
 }
 
-fn decode_slot_ref(s: &str) -> Option<(SideRef, usize)> {
+pub(crate) fn decode_slot_ref(s: &str) -> Option<(SideRef, usize)> {
     let r = parse_slot_ref(s)?;
     let side = if r < 2 { SideRef::P1 } else { SideRef::P2 };
     Some((side, (r % 2) as usize))
@@ -331,10 +336,18 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
 pub fn build_table(
     battle: &PsBattle,
 ) -> (HashMap<RngKey, VecDeque<RngEvent>>, Vec<String>) {
+    build_table_from(battle.turns.iter().flat_map(|t| t.draws.iter()))
+}
+
+/// [`build_table`] over any draw sequence (the accuracy harness's turns carry
+/// the same draw records in a different envelope).
+pub(crate) fn build_table_from<'a>(
+    draws: impl Iterator<Item = &'a DrawRecord>,
+) -> (HashMap<RngKey, VecDeque<RngEvent>>, Vec<String>) {
     let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
     let mut unresolved: Vec<String> = Vec::new();
-    for turn in &battle.turns {
-        for d in &turn.draws {
+    {
+        for d in draws {
             let Some(decision) = decision_of(&d.decision) else {
                 continue;
             };
@@ -517,7 +530,7 @@ fn opt_token(t: Option<&str>) -> String {
 /// or `None` if everything captured matches. Fields the record omits
 /// (`boosts`/`ability` absent, or `field`/`sides` absent) are skipped — a
 /// NOT_MODELLED-style allowance so partial captures don't false-positive.
-fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String> {
+pub(crate) fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String> {
     let div = |slot: &str, field: &'static str, engine: String, ps: String| Divergence {
         turn: turn.turn,
         slot: slot.to_string(),
@@ -648,7 +661,7 @@ fn sp_to_ev(sp: u8) -> u8 {
 /// Build an engine team from PS-export text. For Champions formats the parsed
 /// `evs` are Stat Points and are converted to EVs (see [`sp_to_ev`]) before the
 /// stats are computed.
-fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
+pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
     let mut members = parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
     if champions {
         for m in &mut members {

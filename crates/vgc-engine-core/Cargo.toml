@@ -28,3 +28,8 @@ serde_json = { workspace = true }
 # copy-on-write `Battle` so per-outcome cloning is O(1) instead of
 # O(state size). The public API stays stable across the migration.
 chance = []
+# Showdown-compatible RNG mode (docs/accuracy/ps-rng.md). Adds `Rng::Ps` —
+# PS's exact PRNG (Sodium/ChaCha20 + Gen5 LCG seeds) with a per-draw trace —
+# and compiles in the PS draw-order alignment at gated call sites. Off by
+# default: without it those blocks don't exist and behaviour is unchanged.
+ps-rng = []

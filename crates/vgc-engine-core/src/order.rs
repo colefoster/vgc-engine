@@ -495,6 +495,16 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
             // Fisher-Yates, left-to-right; `k-1` draws (rightmost gets none).
             for i in start..end - 1 {
                 let span = (end - i) as u64; // ≥ 2
+                // PS `shuffle` draws `random(i, end)` — a scaled draw, not
+                // a modulus — so the PS stream needs its exact index.
+                #[cfg(feature = "ps-rng")]
+                if rng.is_ps() {
+                    let j = rng.ps_random_range("shuffle", i as u32, end as u32) as usize;
+                    if j != i {
+                        entries.swap(i, j);
+                    }
+                    continue;
+                }
                 let v = rng.tiebreak_shuffle();
                 let j = i + (v % span) as usize;
                 if j != i {
