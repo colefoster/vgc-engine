@@ -166,3 +166,10 @@ fn drum_beating_lowers_speed() {
 fn champions_shadow_claw_is_slicing() {
     assert_matches_ps("study-1f62339620-shadow-claw-slicing");
 }
+
+/// Study battle 11f8f58c63 (real Reg M-C log): the battle ends at the last
+/// faint; no end-of-turn residual runs on the winner.
+#[test]
+fn battle_ends_at_the_last_faint() {
+    assert_matches_ps("study-11f8f58c63-win-ends-turn");
+}

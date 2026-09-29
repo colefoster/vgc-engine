@@ -1714,7 +1714,10 @@ impl Battle {
                 StepProgress::Continue
             }
             StepPhase::ActionLoop { p1, p2, mut order, mut idx, mut pending_kind } => {
-                if idx < order.len() {
+                // PS checks for a winner after every action (sim/battle.ts
+                // faintMessages -> checkWin): once a side is out, nothing
+                // else runs.
+                if idx < order.len() && !(self.p1.is_defeated() || self.p2.is_defeated()) {
                     // PS runs the post-action Update / re-sort only for a move
                     // action that actually executes (runAction returns early
                     // for a fainted or inactive user, and switches ran in the
@@ -2428,9 +2431,13 @@ impl Battle {
         //    status damage / Speed Boost / etc.). Runs BEFORE timer
         //    decrement so a mon takes its last sand damage on the turn
         //    sand expires (PS behavior).
-        self.resolve_end_of_turn();
-        // PS: the residual action ends with eachEvent('Update').
-        self.update_hp_berries();
+        // No residuals once a side is out: PS ended the battle at the faint
+        // (sim/battle.ts faintMessages -> checkWin).
+        if !(self.p1.is_defeated() || self.p2.is_defeated()) {
+            self.resolve_end_of_turn();
+            // PS: the residual action ends with eachEvent('Update').
+            self.update_hp_berries();
+        }
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_active_ties(false, "shuffle");
@@ -37719,6 +37726,25 @@ mod tests {
         };
         assert_eq!(run(crate::terrain::Terrain::None), (false, crate::terrain::Terrain::None), "fails with no terrain");
         assert_eq!(run(crate::terrain::Terrain::Psychic), (true, crate::terrain::Terrain::None), "hits and clears the terrain");
+    }
+
+    #[test]
+    fn battle_ends_before_residuals_once_a_side_is_out() {
+        // PS checks for a winner after every action (sim/battle.ts
+        // faintMessages -> checkWin) and ends the battle then: no end-of-turn
+        // residuals run. The engine poisoned the winner's last mon to death
+        // and called a tie.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"jolly","moves":["earthquake"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pichu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].status = Status::Poison;
+        b.p1.team[0].current_hp = 5;
+        b.sync_status_dot_bit(SideRef::P1, 0);
+        let r = b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                       &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }]);
+        assert!(b.p2.team[0].fainted);
+        assert_eq!(b.p1.team[0].current_hp, 5, "no poison residual after the win");
+        assert!(matches!(r, StepResult::Ended { winner: Some(SideRef::P1) }), "{r:?}");
     }
 
     #[test]
