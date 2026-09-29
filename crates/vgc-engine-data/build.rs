@@ -465,6 +465,15 @@ fn champions_move_override(slug: &str) -> (Option<u16>, Option<u8>, Option<&'sta
         "psyshieldbash" => bp(90),
         "spiritshackle" => bp(90),
         "tropkick" => bp(85),
+        "slash" => bp(80),
+        "snipeshot" => bp(85),
+        "meteorassault" => bp(170),
+        "bloodmoon" => bp(130),
+        "tripledive" => bp(35),
+        "revelationdance" => bp(100),
+        "dragonhammer" => bp(100),
+        "hyperdrill" => bp(120),
+        "astralbarrage" => bp(110),
         // Accuracy rebalances (255 = `accuracy: true`, can't miss):
         "crabhammer" => acc(95),
         "syrupbomb" => acc(90),
@@ -474,8 +483,27 @@ fn champions_move_override(slug: &str) -> (Option<u16>, Option<u8>, Option<&'sta
         "geargrind" => (Some(60), Some(90), None),
         // Type change:
         "growth" => (None, None, Some("Grass")),
+        "snaptrap" => (None, None, Some("Steel")),
         _ => (None, None, None),
     }
+}
+
+/// Champions flag rebalances (PS `data/mods/champions/moves.ts`), applied to
+/// the emitted row's tail: adds the `slicing` / `punch` / `sound` flag the
+/// mod gives these moves. (The mod's PP changes are not ported: team PP is
+/// built from `MOVES` without a format.)
+fn champions_tail(slug: &str, tail: &str) -> String {
+    let mut t = tail.to_string();
+    let flag = match slug {
+        "crushclaw" | "direclaw" | "dragonclaw" | "shadowclaw" | "metalclaw" => Some("is_slicing"),
+        "doubleshock" => Some("is_punch"),
+        "dragoncheer" | "howl" => Some("is_sound"),
+        _ => None,
+    };
+    if let Some(f) = flag {
+        t = t.replace(&format!("{f}: false"), &format!("{f}: true"));
+    }
+    t
 }
 
 fn keep_gen9<'a, T>(
@@ -766,7 +794,8 @@ fn main() {
             m.crit_ratio.map(|r| r.saturating_sub(1).min(2) as u8).unwrap_or(0),
         );
         writeln!(f, "{head}type_: {std_ty}, category: {cat}, base_power: {std_bp}, accuracy: {std_acc}, {tail}").unwrap();
-        champions_rows.push(format!("{head}type_: {ty}, category: {cat}, base_power: {eff_bp}, accuracy: {eff_acc}, {tail}"));
+        let ch_tail = champions_tail(slug, &tail);
+        champions_rows.push(format!("{head}type_: {ty}, category: {cat}, base_power: {eff_bp}, accuracy: {eff_acc}, {ch_tail}"));
     }
     writeln!(f, "];").unwrap();
     writeln!(f).unwrap();

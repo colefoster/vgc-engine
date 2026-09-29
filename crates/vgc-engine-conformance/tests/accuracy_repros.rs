@@ -159,3 +159,10 @@ fn steel_roller_needs_and_clears_terrain() {
 fn drum_beating_lowers_speed() {
     assert_matches_ps("study-3d3fc88bdf-drum-beating");
 }
+
+/// Study battle 1f62339620 (real Reg M-C log): Champions makes Shadow Claw a
+/// slicing move, so Sharpness boosts it (data/mods/champions/moves.ts).
+#[test]
+fn champions_shadow_claw_is_slicing() {
+    assert_matches_ps("study-1f62339620-shadow-claw-slicing");
+}
