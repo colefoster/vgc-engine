@@ -386,6 +386,12 @@ pub struct Battle {
     /// Pursuit user does not act twice. PS analog: `this.queue.cancelMove`
     /// in the `pursuit` condition. Reset at the top of every `step`.
     pub(crate) pursuit_consumed: [[bool; 2]; 2],
+    /// Per-(side, slot) latch: the slot's occupant was replaced mid-turn
+    /// (pivot, Eject Button, drag), so its queued move belongs to a mon that
+    /// left. PS `runAction` skips an action whose pokemon is no longer
+    /// active. Reset at the top of every `step`.
+    #[serde(default)]
+    pub(crate) replaced_mid_turn: [[bool; 2]; 2],
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -580,6 +586,7 @@ impl Battle {
             pending_queue_reorder: None,
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
+            replaced_mid_turn: [[false; 2]; 2],
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -2158,6 +2165,7 @@ impl Battle {
         //    queue; the runner emits them after the `|move|` event in
         //    that turn.
         self.pursuit_consumed = [[false; 2]; 2];
+        self.replaced_mid_turn = [[false; 2]; 2];
         // Pursuit switch-interception: a voluntary start-of-turn switch is
         // intercepted by an opposing Pursuit BEFORE the switcher leaves
         // (PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`). Both
@@ -2316,6 +2324,9 @@ impl Battle {
         // Skip a Pursuit whose action was already consumed during
         // switch interception this turn (PS `this.queue.cancelMove`).
         if self.pursuit_consumed[action.side as usize][(action.actor_slot as usize).min(1)] {
+            return;
+        }
+        if self.replaced_mid_turn[action.side as usize][(action.actor_slot as usize).min(1)] {
             return;
         }
         // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
@@ -3398,22 +3409,30 @@ impl Battle {
                 if !pending {
                     continue;
                 }
+                let forced = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_is_forced());
                 // Clear the flag regardless — even if no replacement is
                 // available, the move doesn't re-fire next turn.
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     m.set_pending_self_switch(false);
                 }
                 // Find the first unconsumed deferred switch matching this
-                // slot and pop it. If none is queued, the switch silently
-                // fails.
+                // slot and pop it. If none is queued, a self-switch silently
+                // fails; a forced one (Eject Button) takes the first bench mon.
                 let Some(pos) = (0..n_deferred)
                     .find(|&i| !consumed[i] && deferred[i].0 == slot)
                 else {
+                    if forced {
+                        self.force_switch_auto(side, slot);
+                    }
                     continue;
                 };
                 consumed[pos] = true;
                 let team_index = deferred[pos].1;
                 if self.do_switch(side, slot, team_index) && n_switched < switched_slots.len() {
+                    self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
                     switched_slots[n_switched] = slot;
                     n_switched += 1;
                 }
@@ -10009,6 +10028,7 @@ impl Battle {
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
+        self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
         true
@@ -10053,6 +10073,7 @@ impl Battle {
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
+        self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
         true
@@ -37452,6 +37473,53 @@ mod tests {
         // Item consumed on the OUTGOING Snorlax (still on team at its slot).
         assert_eq!(b.p2.team[snorlax_team_idx as usize].item_id, u16::MAX,
                    "Eject Button consumed");
+    }
+
+    #[test]
+    fn eject_button_replacement_is_the_players_choice_in_decision_phases() {
+        // PS data/items.ts ejectbutton sets `target.switchFlag`, and the
+        // player picks the replacement in a mid-turn switch request
+        // (sim/battle.ts runAction: switchFlag -> makeRequest('switch')),
+        // like U-turn. With decision phases the caller supplies that pick
+        // as a deferred Switch; the engine must not auto-pick the first
+        // bench mon.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pikachu","level":50,"nature":"jolly","moves":["quickattack"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","nature":"careful","moves":["rest"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.active[0], 2, "the player's pick (Eevee), not the first bench mon");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Eject Button consumed");
+    }
+
+    #[test]
+    fn ejected_holder_forfeits_its_queued_move() {
+        // A slower Eject Button holder is switched out before it acts; the
+        // replacement does not inherit its move (PS runAction skips an
+        // action whose pokemon is no longer active).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"nature":"jolly","moves":["quickattack"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","moves":["tackle"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.active[0], 2);
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "nobody tackled Pikachu");
     }
 
     #[test]

@@ -99,3 +99,11 @@ fn weather_ends_before_chip_on_its_last_turn() {
 fn status_move_aimed_at_ally_hits_the_ally() {
     assert_matches_ps("study-75999c4aaa-charm-on-ally");
 }
+
+/// Study battle 8760be9ed8 (real Reg M-C log): an Eject Button holder is
+/// replaced by the player's pick (PS `switchFlag` -> switch request), not the
+/// first bench mon, and its own queued move is forfeited.
+#[test]
+fn eject_button_replacement_is_the_players_pick() {
+    assert_matches_ps("study-8760be9ed8-eject-button-pick");
+}
