@@ -41,3 +41,9 @@ fn recoil_uses_damage_actually_dealt_on_ko() {
 fn terrain_boost_checks_attacker_grounding() {
     assert_matches_ps("terrain-boost-gated-on-defender");
 }
+
+/// Grounded Indeedee's Expanding Force in Psychic Terrain hits both foes.
+#[test]
+fn expanding_force_spreads_in_psychic_terrain() {
+    assert_matches_ps("expanding-force-no-spread");
+}
