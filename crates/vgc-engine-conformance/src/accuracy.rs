@@ -551,7 +551,9 @@ fn repaired_table(
                 })
                 .map(|(k, _)| *k)
                 .collect();
-            cands.sort_by_key(|k| (k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id));
+            // Total order (turn, actor last) so HashMap iteration order can't pick
+            // between equally good candidates: keeps runs reproducible.
+            cands.sort_by_key(|k| (k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
             for k in cands {
                 let n = remaining[&k];
                 let q = table.get(&k).expect("leftover key in table");
