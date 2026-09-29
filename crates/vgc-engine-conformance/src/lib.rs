@@ -704,6 +704,7 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     };
     let rng = Rng::oracle_keyed(table, 0xC0FFEE);
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
+    b.champions = champions;
 
     let mut matched_turns = 0u32;
     let mut divergence = None;

@@ -317,6 +317,11 @@ pub struct Battle {
     /// Opt-in tournament decision phases; legacy turn callers retain their contract.
     #[serde(default)]
     pub decision_phases: bool,
+    /// Pokémon Champions battle rules (PS `data/mods/champions`) where they
+    /// differ from gen 9 at runtime: full paralysis is 1/8, not 1/4. Off by
+    /// default so standard gen 9 formats keep their rules.
+    #[serde(default)]
+    pub champions: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -563,6 +568,7 @@ impl Battle {
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
+            champions: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -9131,7 +9137,10 @@ impl Battle {
         };
         if matches!(attacker.status, Status::Paralysis) {
             self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if self.rng.range(4) == 0 {
+            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
+            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
+            let denom = if self.champions { 8 } else { 4 };
+            if self.rng.range(denom) == 0 {
                 return PreMoveOutcome::Abort;
             }
         }
@@ -27724,6 +27733,41 @@ mod tests {
             rate >= 15 && rate <= 45,
             "Static paralysis rate {rate}% (expected ≈30% over 200 trials)"
         );
+    }
+
+    #[test]
+    fn champions_paralysis_full_skip_is_one_in_eight() {
+        // PS data/mods/champions/conditions.ts:5 par `onBeforeMove`:
+        // `randomChance(1, 8)` (12.5%) instead of gen 9's 1/4.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 2000u32;
+        let mut skips = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.champions = true;
+            b.p1.team[0].status = Status::Paralysis;
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp == hp_before {
+                skips += 1;
+            }
+        }
+        let rate = skips as f64 / trials as f64;
+        assert!((0.10..=0.15).contains(&rate), "Champions full-paralysis rate {rate} (expected 0.125)");
     }
 
     #[test]
