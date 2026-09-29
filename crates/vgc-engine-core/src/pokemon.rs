@@ -1261,6 +1261,26 @@ impl Pokemon {
         self.volatiles.has(VolatileKind::PendingSelfSwitch)
     }
 
+    /// Mark a pending switch forced by an item or ability (Eject Button):
+    /// like a self-switch, the player picks the replacement, but when the
+    /// caller queued no pick the first bench mon comes in (payload 1).
+    #[inline]
+    pub fn set_pending_forced_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 1,
+        });
+    }
+
+    /// True when the pending switch was forced (see
+    /// [`Pokemon::set_pending_forced_switch`]).
+    #[inline]
+    pub fn pending_switch_is_forced(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 1)
+    }
+
     /// Set or clear the PendingSelfSwitch marker.
     #[inline]
     pub fn set_pending_self_switch(&mut self, on: bool) {

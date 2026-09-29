@@ -1242,8 +1242,16 @@ pub(crate) fn try_consume_eject_button(
         return false;
     }
     // Consume the item, then force-switch.
+    let phases = battle.decision_phases;
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
+        // PS sets `target.switchFlag`: the player picks the replacement
+        // after the move (sim/battle.ts runAction -> makeRequest('switch')).
+        // With decision phases the caller's queued pick is honoured.
+        if phases {
+            t.set_pending_forced_switch();
+            return true;
+        }
     }
     battle.force_switch_auto(target_side, target_slot)
 }
