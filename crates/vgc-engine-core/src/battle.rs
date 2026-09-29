@@ -2346,9 +2346,25 @@ impl Battle {
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
         self.resolve_move_with_pending(action, pending_kind, will_act);
+        self.update_hp_berries();
         self.multi_targeted_defenders = 0;
         self.spread_segmentable_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
+    }
+
+    /// PS `eachEvent('Update')` after every action (sim/battle.ts:2861), for
+    /// the HP-threshold berries: a holder that dropped to its threshold
+    /// from recoil, Life Orb, Rocky Helmet or residual damage eats it then
+    /// (items.ts sitrusberry et al. `onUpdate`).
+    fn update_hp_berries(&mut self) {
+        let n = self.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::on_after_damage(self, side, slot, &mut rng);
+                self.rng = rng;
+            }
+        }
     }
 
     /// Phase-3 epilogue: everything that runs AFTER the action queue
@@ -2374,6 +2390,7 @@ impl Battle {
         //    sand expires (PS behavior).
         self.resolve_end_of_turn();
         // PS: the residual action ends with eachEvent('Update').
+        self.update_hp_berries();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_active_ties(false, "shuffle");
@@ -28947,6 +28964,33 @@ mod tests {
         let snor_max = b.p2.team[1].stats.hp;
         assert_eq!(b.p2.team[1].current_hp, snor_max,
                    "Sucker Punch must fail vs a switching target");
+    }
+
+    #[test]
+    fn sitrus_berry_eaten_after_recoil_drops_holder_to_half() {
+        // PS runs eachEvent('Update') after every action (sim/battle.ts:2861),
+        // so a Sitrus Berry holder whose own recoil takes it to <= 1/2 HP
+        // eats the berry that same action (items.ts sitrusberry onUpdate).
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","item":"sitrusberry","nature":"jolly","moves":["flareblitz","closecombat","uturn","stoneedge"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max / 2 + 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dealt = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+        let recoil = ((dealt as u32 * 33 + 50) / 100) as u16;
+        assert!(recoil > 1, "recoil takes Infernape to half or below");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus Berry eaten");
+        assert_eq!(b.p1.team[0].current_hp, max / 2 + 1 - recoil + max / 4);
     }
 
     #[test]
