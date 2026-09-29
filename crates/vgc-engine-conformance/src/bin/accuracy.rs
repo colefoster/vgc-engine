@@ -191,21 +191,9 @@ fn main() -> ExitCode {
                 println!("{}: {}", p.display(), serde_json::to_string(&rep).unwrap());
                 let ps: Vec<&accuracy::RawDraw> =
                     acc.start_raw.iter().chain(acc.turns.iter().flat_map(|t| t.raw.iter())).collect();
-                let stop = rep
-                    .first_draw_div
-                    .as_ref()
-                    .map(|_| {
-                        // index into the global sequence of the first mismatch
-                        ps.iter()
-                            .zip(eng.iter())
-                            .position(|(a, b)| {
-                                !(a.a as u32 == b.a && (a.b as u32 == b.b || b.op == "crit" || b.op == "chance"))
-                            })
-                            .unwrap_or(ps.len().min(eng.len()))
-                    })
-                    .unwrap_or(ps.len().max(eng.len()));
-                let lo = stop.saturating_sub(6);
-                for i in lo..(stop + 4).min(ps.len().max(eng.len())) {
+                let stop = rep.first_draw_div.as_ref().map(|d| d.global_index).unwrap_or(ps.len().max(eng.len()));
+                let lo = stop.saturating_sub(std::env::var("TRACE_BEFORE").ok().and_then(|v| v.parse().ok()).unwrap_or(6));
+                for i in lo..(stop + std::env::var("TRACE_AFTER").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(4)).min(ps.len().max(eng.len())) {
                     let mark = if i == stop { ">>" } else { "  " };
                     println!(
                         "{mark} #{i:<4} PS  {}",

@@ -1,0 +1,20 @@
+{
+ "id": "accuracy-and-flinch-spread",
+ "format": "gen9championsvgc2026regmc",
+ "note": "Rock Slide (90% acc, 30% flinch) into both foes; Incineroar then Knock Offs the protecting wall",
+ "p1team": "Garchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Rock Slide\n- Protect\n- Earthquake\n- Dragon Claw\n\nAmoonguss\nAbility: Regenerator\nLevel: 50\nEVs: 32 HP / 2 Def / 32 SpD\nCalm Nature\n- Protect\n- Spore\n- Rage Powder\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "p2team": "Incineroar\nAbility: Blaze\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Knock Off\n- Protect\n- Flare Blitz\n- Fake Out\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Iron Head\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "turns": [
+  {
+   "turn": 1,
+   "choices": {
+    "p1": [
+     "move 1, move 1"
+    ],
+    "p2": [
+     "move 1 2, move 1 2"
+    ]
+   }
+  }
+ ]
+}

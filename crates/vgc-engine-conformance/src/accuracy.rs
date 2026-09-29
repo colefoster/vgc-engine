@@ -292,6 +292,8 @@ impl From<Divergence> for DivOut {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DrawDiv {
+    /// Position in the whole-battle draw sequence.
+    pub global_index: usize,
     pub turn: u32,
     /// Index of the draw within its turn.
     pub index: usize,
@@ -419,6 +421,38 @@ fn add_queue_tiebreaks(table: &mut HashMap<RngKey, VecDeque<RngEvent>>, acc: &Ac
     }
 }
 
+/// Sentinel move id for PS `randomChance` gates recorded as a bool under
+/// `range` (stall roll, full paralysis, Poison Touch, ...). The contract
+/// stores them as `Range(1)` pass / `Range(0)` fail, which only
+/// `Rng::chance_keyed` reads that way — the engine's `range(n) == 0` gates
+/// read `Range(0)` as a pass. So they are parked under this sentinel (no
+/// engine draw asks for it) and handed out by the repair pass, converted to
+/// whatever the engine draw needs.
+const BOOL_GATE: u16 = u16::MAX - 1;
+
+fn park_bool_gates(table: &mut Table, acc: &AccBattle) {
+    for d in acc.turns.iter().flat_map(|t| t.base.draws.iter()) {
+        if d.decision != "range" || !d.value.is_boolean() {
+            continue;
+        }
+        let actor = d.actor.as_deref().and_then(crate::parse_slot_ref).unwrap_or(NO_SLOT);
+        let target = d.target.as_deref().and_then(crate::parse_slot_ref).unwrap_or(NO_SLOT);
+        let Some(mv) = d.move_slug.as_deref().and_then(|m| data::MOVES.iter().position(|x| x.slug == m)) else { continue };
+        let key = RngKey { turn: d.turn, actor, target, move_id: mv as u16, decision: RngDecision::Range };
+        let pass = d.value.as_bool().unwrap_or(false);
+        if let Some(q) = table.get_mut(&key) {
+            // Remove the first matching bool encoding from the direct key.
+            if let Some(pos) = q.iter().position(|e| *e == RngEvent::Range(pass as u32)) {
+                q.remove(pos);
+            }
+        }
+        table
+            .entry(RngKey { move_id: BOOL_GATE, ..key })
+            .or_default()
+            .push_back(RngEvent::Crit(pass));
+    }
+}
+
 /// Convert a PS-recorded outcome to what an engine draw of `space` expects.
 fn convert(ev: RngEvent, space: &DrawSpace) -> Option<RngEvent> {
     match (space, ev) {
@@ -430,10 +464,10 @@ fn convert(ev: RngEvent, space: &DrawSpace) -> Option<RngEvent> {
             Some(RngEvent::PercentRoll(if v == 1 { 1 } else { 100 }))
         }
         (DrawSpace::UniformRange(n), RngEvent::Range(v)) if v < *n => Some(RngEvent::Range(v)),
-        // PS `randomChance(1, n)` gates (Protect's stall roll, full
-        // paralysis) reach the keyed log labelled `crit` (signature
-        // fallback); the engine draws them as `range(n) == 0`.
+        // A parked bool gate (see BOOL_GATE): the engine's `range(n)` gates
+        // pass on 0; its percent gates pass on a low roll.
         (DrawSpace::UniformRange(n), RngEvent::Crit(b)) if *n > 1 => Some(RngEvent::Range(if b { 0 } else { n - 1 })),
+        (DrawSpace::UniformPercent { .. }, RngEvent::Crit(b)) => Some(RngEvent::PercentRoll(if b { 1 } else { 100 })),
         (DrawSpace::Tiebreak { .. }, RngEvent::Tiebreak(v)) => Some(RngEvent::Tiebreak(v)),
         _ => None,
     }
@@ -485,6 +519,7 @@ fn repaired_table(
 ) -> (Table, u32, Battle, Result<(u32, u32, Option<Divergence>, bool), String>, Vec<RecordedDraw>) {
     let (mut table, _unresolved) = build_table_from(acc.turns.iter().flat_map(|t| t.base.draws.iter()));
     add_queue_tiebreaks(&mut table, acc);
+    park_bool_gates(&mut table, acc);
     let mut repaired = 0u32;
     let (mut b, mut res, mut misses) = keyed_run(acc, &table);
     for _round in 0..40 {
@@ -509,7 +544,7 @@ fn repaired_table(
                     // Same move use; speed ties by turn (the engine draws them
                     // at turn start under the previous turn's stale context).
                     **n > 0
-                        && ((k.turn == mk.turn && k.actor == mk.actor && k.move_id == mk.move_id)
+                        && ((k.turn == mk.turn && k.actor == mk.actor && (k.move_id == mk.move_id || k.move_id == BOOL_GATE))
                             || (mk.decision == RngDecision::Tiebreak
                                 && k.decision == RngDecision::Tiebreak
                                 && (k.turn == mk.turn || k.turn == mk.turn + 1)))
@@ -763,6 +798,7 @@ pub fn first_draw_divergence(
         };
         if !same {
             return Some(DrawDiv {
+                global_index: i,
                 turn,
                 index: i - start,
                 ps: p.map(|d| describe_ps(d)),

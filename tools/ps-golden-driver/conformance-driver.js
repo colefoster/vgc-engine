@@ -121,7 +121,10 @@ function classifyDraw(isChance, sig, site) {
   if (/speedSort/.test(s)) return 'tiebreak';
 
   // ---- signature fallbacks (site frame ambiguous / not in the table) ----
-  if (isChance && sig.num === 1 && [24, 16, 8, 4, 3, 2, 1].includes(sig.denom)) return 'crit';
+  // Gen 9 crits only roll inside getDamage (matched above). Any other
+  // randomChance(1, n) — Protect's stall roll, full paralysis, freeze thaw,
+  // confusion — is a bool gate, not a crit.
+  if (isChance && sig.num === 1 && [24, 16, 8, 4, 3, 2, 1].includes(sig.denom)) return 'range';
   if (isChance && sig.denom === 100) return 'secondary'; // ability/item proc (Static, Flame Body...)
   if (!isChance && sig.m === 16) return 'damage';
   if (!isChance && sig.m === 100) return 'secondary';

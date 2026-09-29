@@ -1304,8 +1304,10 @@ impl Rng {
             }
             // PS `random(16)` returns 0..=15 — bit-exact.
             Rng::PsGen5(rng) => rng.random_n(16) as u8,
+            // PS `randomizer`: `100 - random(16)` percent, so PS r = 0 is the
+            // max roll; the engine bucket is `85 + b` (b = 0 is the min).
             #[cfg(feature = "ps-rng")]
-            Rng::Ps(p) => p.random_n("damage", 16) as u8,
+            Rng::Ps(p) => 15 - p.random_n("damage", 16) as u8,
             Rng::OracleKeyed(k) => match k.take(RngDecision::Damage) {
                 Some(RngEvent::DamageRoll(v)) => {
                     debug_assert!(v < 16);

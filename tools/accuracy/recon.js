@@ -326,7 +326,9 @@ function fillMon(m, U, usedItems, key) {
     evs = { hp: 2, spa: 32, spe: 32 }; nature = trickRoom ? 'Quiet' : (bs.spe >= 80 ? 'Timid' : 'Modest');
     if (trickRoom) evs = { hp: 32, spa: 32, spd: 2 };
   }
-  const ivs = trickRoom ? { spe: 0 } : null;
+  // Champions has no IVs (the mod's stat formula fixes them at 31), so a
+  // Trick Room set just skips Speed SP and takes a -Spe nature.
+  const ivs = null;
   if (!trickRoom && evs.spe !== undefined) {
     // Spend 0-32 Speed SP, the rest in bulk (66 SP total, 32 max per stat).
     const r = variety(key + ':spe');

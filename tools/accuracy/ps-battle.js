@@ -380,7 +380,9 @@ async function runBattle(job, maxTurns) {
       const turn = b.turn;
       let phase = 'main';
       if (req.forceSwitch) phase = b.queue.list.some((a) => a.choice === 'residual') ? 'mid' : 'rep';
-      const cmd = pickers[sideId](req, turn, phase);
+      // A job may script exact commands: script[turn][side] (main phase).
+      const scripted = phase === 'main' && job.script && job.script[turn] && job.script[turn][sideId];
+      const cmd = scripted || pickers[sideId](req, turn, phase);
       lastReq = req;
       lastPhase = phase;
       choiceLog.push({ side: sideId, turn, phase, cmd, eng: toEngineCmd(cmd, req, names[sideId]) });
