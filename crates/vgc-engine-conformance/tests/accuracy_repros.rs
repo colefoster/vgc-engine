@@ -54,3 +54,11 @@ fn expanding_force_spreads_in_psychic_terrain() {
 fn fake_out_works_after_a_mid_turn_switch_in() {
     assert_matches_ps("fake-out-after-pivot-switch-in");
 }
+
+/// Study battle 0d752208ee (real Reg M-C log): Incineroar's Flare Blitz
+/// recoil takes it below half and it eats its Sitrus Berry that action
+/// (PS turn 3: 69 -> 119 -> 131 after Grassy Terrain).
+#[test]
+fn sitrus_berry_eaten_after_recoil() {
+    assert_matches_ps("study-0d752208ee-sitrus-after-recoil");
+}
