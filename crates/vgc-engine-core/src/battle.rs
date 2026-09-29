@@ -5260,11 +5260,7 @@ impl Battle {
                         weather: self.effective_weather_for_pair(
                             actor_side, actor_slot, tside, tslot,
                         ),
-                        terrain: if defender.is_grounded() {
-                            self.terrain
-                        } else {
-                            crate::terrain::Terrain::None
-                        },
+                        terrain: self.terrain,
                         ..DamageContext::default()
                     };
                     let move_type = crate::damage::move_type_in_ctx(
@@ -5560,15 +5556,9 @@ impl Battle {
             let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
-            // Terrain mult only when defender is grounded — Flying types,
-            // Levitate ability, and Air Balloon defenders see plain
-            // damage. PS data/conditions.ts:electricterrain onBasePower
-            // only fires for grounded targets.
-            let active_terrain = if defender.is_grounded() {
-                self.terrain
-            } else {
-                crate::terrain::Terrain::None
-            };
+            // Raw field terrain; `damage.rs` checks attacker / defender
+            // grounding per terrain rule.
+            let active_terrain = self.terrain;
             // Aura abilities — scan every alive active for fairyaura /
             // darkaura / aurabreak. PS `onAnyBasePower` fires from
             // each holder; here we precompute presence (PS de-dupes via
@@ -10375,15 +10365,7 @@ impl Battle {
         let attacker_total_fainted_allies = self.side(src_side).total_fainted();
         let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
         let def_conds = self.side(tside).conditions;
-        let def_grounded = self
-            .side(tside)
-            .active_mon(tslot as usize)
-            .is_some_and(|d| d.is_grounded());
-        let active_terrain = if def_grounded {
-            self.terrain
-        } else {
-            crate::terrain::Terrain::None
-        };
+        let active_terrain = self.terrain;
         // This residual hit isn't part of the recorded move-phase RNG stream
         // the golden harness feeds, so don't consume from the oracle hint
         // queue. OraclePartial / Splitmix draw deterministically; strict
@@ -22406,22 +22388,21 @@ mod tests {
     }
 
     #[test]
-    fn electric_terrain_does_not_boost_flying_defender() {
-        // Pelipper is Water/Flying — ungrounded → no terrain boost.
+    fn electric_terrain_boosts_grounded_attacker_into_flying_defender() {
+        // PS data/moves.ts:electricterrain onBasePower gates the ×1.3 on
+        // `attacker.isGrounded()`; the defender's grounding is irrelevant.
+        // Corviknight is Steel/Flying (airborne) and still takes the boost.
         let p1_json = r#"[
             {"species":"pikachu","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"]}
         ]"#;
         let p2_json = r#"[
-            {"species":"pelipper","level":50,"ability":"drizzle","nature":"calm","moves":["hurricane","weatherball","tailwind","airslash"]}
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"calm","moves":["roost","bravebird","tailwind","protect"]}
         ]"#;
         let p1a = TeamBuilder::from_json(p1_json).unwrap();
         let p2a = TeamBuilder::from_json(p2_json).unwrap();
         let p1b = TeamBuilder::from_json(p1_json).unwrap();
         let p2b = TeamBuilder::from_json(p2_json).unwrap();
         let mut no_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1a, p2a);
-        // Pelipper sets Rain on switch-in — that's neutral for the test
-        // (electric damage doesn't care about rain).
-        let _ = no_terrain.weather;
         let start = no_terrain.p2.team[0].current_hp;
         no_terrain.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -22438,9 +22419,38 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         let dmg_with = start_b - with_terrain.p2.team[0].current_hp;
-        // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
-        let diff = (dmg_with as i32 - dmg_no as i32).abs();
-        assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+        let pct = dmg_with as i32 * 100 / dmg_no as i32;
+        assert!((125..=135).contains(&pct), "grounded Pikachu's Thunderbolt boosted into Corviknight: {pct}%");
+    }
+
+    #[test]
+    fn electric_terrain_does_not_boost_airborne_attacker() {
+        // Kilowattrel (Electric/Flying) is not grounded, so PS
+        // electricterrain onBasePower skips the ×1.3 even into a grounded
+        // Blissey.
+        let p1_json = r#"[
+            {"species":"kilowattrel","level":50,"ability":"competitive","nature":"modest","moves":["thunderbolt","hurricane","protect","roost"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let run = |terrain: bool| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            if terrain {
+                b.set_terrain(crate::terrain::Terrain::Electric);
+                b.terrain_turns = 5;
+            }
+            let start = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            start - b.p2.team[0].current_hp
+        };
+        let (no, with) = (run(false), run(true));
+        assert!((with as i32 - no as i32).abs() <= 1, "airborne attacker not boosted: {with} vs {no}");
     }
 
     #[test]
