@@ -1682,6 +1682,14 @@ impl Battle {
             }
             StepPhase::ActionLoop { p1, p2, mut order, mut idx, mut pending_kind } => {
                 if idx < order.len() {
+                    // PS runs the post-action Update / re-sort only for a move
+                    // action that actually executes (runAction returns early
+                    // for a fainted or inactive user, and switches ran in the
+                    // prologue).
+                    #[cfg(feature = "ps-rng")]
+                    let ps_ran = self.rng.is_ps()
+                        && matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && self.side(order[idx].side).active_mon(order[idx].actor_slot as usize).is_some_and(|m| m.is_alive());
                     self.process_one_action(&mut order, idx, &mut pending_kind);
                     if let Some(pending) = self.pending_yield.take() {
                         let (key, space) = pending.draw_descriptor();
@@ -1692,7 +1700,7 @@ impl Battle {
                     }
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
                     #[cfg(feature = "ps-rng")]
-                    if self.rng.is_ps() {
+                    if ps_ran {
                         self.ps_after_move_action(&order, idx);
                     }
                     idx += 1;

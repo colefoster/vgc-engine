@@ -1,0 +1,20 @@
+{
+ "id": "secondary-burn-10",
+ "format": "gen9championsvgc2026regmc",
+ "note": "Flamethrower (10% burn) into Kingambit, whose Kowtow Cleave then hits the protecting wall",
+ "p1team": "Charizard\nAbility: Blaze\nLevel: 50\nEVs: 2 HP / 32 SpA / 32 Spe\nTimid Nature\n- Flamethrower\n- Protect\n- Heat Wave\n- Air Slash\n\nAmoonguss\nAbility: Regenerator\nLevel: 50\nEVs: 32 HP / 2 Def / 32 SpD\nCalm Nature\n- Protect\n- Spore\n- Rage Powder\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "p2team": "Kingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 2 Atk / 32 SpD\nCareful Nature\n- Kowtow Cleave\n- Protect\n- Sucker Punch\n- Iron Head\n\nAmoonguss\nAbility: Regenerator\nLevel: 50\nEVs: 32 HP / 2 Def / 32 SpD\nCalm Nature\n- Protect\n- Spore\n- Rage Powder\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "turns": [
+  {
+   "turn": 1,
+   "choices": {
+    "p1": [
+     "move 1 1, move 1"
+    ],
+    "p2": [
+     "move 1 2, move 1"
+    ]
+   }
+  }
+ ]
+}
