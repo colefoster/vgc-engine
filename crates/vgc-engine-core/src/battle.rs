@@ -11608,9 +11608,14 @@ impl Battle {
             // only when no usable opposing target was passed (singles, or a
             // self/field move that ignores `opp_target` anyway). Found by the
             // breadth corpus (out_d51772b14a: a Glare aimed at p2b hit p2a).
+            //
+            // A `normal` (0) or `any` (10) move may also be aimed at the
+            // adjacent ally (PS sim/battle.ts validTargetLoc): Charm / Skill
+            // Swap / Simple Beam / Swagger on a partner resolve there.
             _ => match target {
                 Some(Target { side: tgt_side, slot: tgt_slot })
-                    if tgt_side == opp_side
+                    if (tgt_side == opp_side
+                        || (tgt_side == actor_side && tgt_slot != actor_slot && matches!(m.target, 0 | 10)))
                         && self
                             .side(tgt_side)
                             .active_mon(tgt_slot as usize)
@@ -14137,16 +14142,7 @@ impl Battle {
                         // Single target: the explicitly chosen foe if valid,
                         // else the resolved `opp_target` (honors a bounce's
                         // forced_target and the first-foe fallback).
-                        let chosen = match target {
-                            Some(t)
-                                if forced_target.is_none()
-                                    && t.side == opp_side
-                                    && self.side(t.side).active_mon(t.slot as usize).is_some_and(|mm| mm.is_alive()) =>
-                            {
-                                Some((t.side, t.slot))
-                            }
-                            _ => opp_target,
-                        };
+                        let chosen = opp_target;
                         if let Some(x) = chosen {
                             tgts[0] = x;
                             ntgt = 1;
@@ -14181,7 +14177,10 @@ impl Battle {
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
                             crate::item::try_consume_white_herb(self, ts, tslot);
                             let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
-                            crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                            // Defiant / Competitive ignore an ally's drop.
+                            if ts != actor_side {
+                                crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                            }
                         }
                     }
                     return;
@@ -18149,6 +18148,40 @@ mod tests {
         assert_eq!(acc("clangoroussoul"), 255, "accuracy: true (can't miss)");
         assert_eq!(data::move_by_slug("growth").unwrap().type_,
                    data::move_by_slug("energyball").unwrap().type_, "Growth is now Grass-type");
+    }
+
+    #[test]
+    fn status_move_aimed_at_an_ally_hits_the_ally() {
+        // A `normal`-target status move can be aimed at the adjacent ally
+        // (PS sim/battle.ts validTargetLoc; Charm on a Contrary / Defiant
+        // partner is a VGC staple). The engine sent it to the first foe.
+        // Defiant does not trigger from an ally's drop (abilities.ts
+        // defiant: `if (!source || target.isAlly(source)) return`).
+        let p1 = r#"[
+            {"species":"whimsicott","level":50,"ability":"infiltrator","nature":"timid","moves":["charm","tailwind","moonblast","protect"]},
+            {"species":"kingambit","level":50,"ability":"defiant","nature":"adamant","moves":["protect","suckerpunch","kowtowcleave","ironhead"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["protect","bodyslam","rest","crunch"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["protect","dragonclaw","earthquake","rockslide"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 5 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 1, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert_eq!(b.p1.active_mon(1).unwrap().boosts[0], -2, "Charm lands on the ally, no Defiant");
+        assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], 0, "foe untouched");
     }
 
     #[test]
