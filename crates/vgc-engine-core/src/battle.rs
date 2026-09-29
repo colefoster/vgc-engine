@@ -4518,6 +4518,11 @@ impl Battle {
         if move_id == data::move_id::POLTERGEIST && self.poltergeist_target_has_no_item(&targets) {
             return;
         }
+        // Steel Roller — PS data/moves.ts steelroller `onTry() { return
+        // !this.field.isTerrain(''); }`: fails (after PP) with no terrain.
+        if move_id == data::move_id::STEELROLLER && self.terrain == crate::terrain::Terrain::None {
+            return;
+        }
 
         // Variable-BP moves carry `basePower: 0` in PS and compute the
         // real BP in damage.rs via per-slug branches. They must NOT bail
@@ -9332,6 +9337,13 @@ impl Battle {
         // Combat into a Protected target leave the user's stats unchanged
         // (every move in `self_stat_drops` is damaging, so this gate is
         // correct for all of them).
+        // Steel Roller clears the terrain once it hits (PS data/moves.ts
+        // steelroller onHit / onAfterSubDamage `this.field.clearTerrain()`).
+        if move_id == data::move_id::STEELROLLER && any_damage_dealt > 0 {
+            self.terrain = crate::terrain::Terrain::None;
+            self.terrain_turns = 0;
+            self.sync_weather_terrain_cache();
+        }
         if let Some(drops) = self_stat_drops(m.slug, self.champions) {
             if any_damage_dealt > 0 {
                 // PS `selfDrops` rolls `random(100)` for a `self.boosts`
@@ -37664,6 +37676,24 @@ mod tests {
         };
         assert_eq!(run(false), 0, "Jolteon leaves first: Incineroar intimidates Snorlax");
         assert_eq!(run(true), -1, "Trick Room: Snorlax leaves first, Machamp is intimidated");
+    }
+
+    #[test]
+    fn steel_roller_needs_terrain_and_clears_it() {
+        // PS data/moves.ts steelroller: onTry `!this.field.isTerrain('')`
+        // (fails with no terrain), onHit / onAfterSubDamage clearTerrain.
+        let run = |terrain: crate::terrain::Terrain| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"metagross","level":50,"nature":"jolly","moves":["steelroller"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["amnesia"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            b.set_terrain(terrain);
+            b.terrain_turns = 5;
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                   &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+            (b.p2.team[0].current_hp < b.p2.team[0].stats.hp, b.terrain)
+        };
+        assert_eq!(run(crate::terrain::Terrain::None), (false, crate::terrain::Terrain::None), "fails with no terrain");
+        assert_eq!(run(crate::terrain::Terrain::Psychic), (true, crate::terrain::Terrain::None), "hits and clears the terrain");
     }
 
     #[test]
