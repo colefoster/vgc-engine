@@ -1,0 +1,29 @@
+{
+  "name": "pp-overlay-leppa-cap",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "pp_overrides": {
+    "splash": 2
+  },
+  "p1": {
+    "team": "Magikarp @ Leppa Berry\nLevel: 50\nAbility: Swift Swim\n- Splash"
+  },
+  "p2": {
+    "team": "Slowpoke\nLevel: 50\nAbility: Oblivious\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    },
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}

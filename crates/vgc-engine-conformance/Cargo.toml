@@ -12,6 +12,15 @@ vgc-engine-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+# Enables the `accuracy psrng` mode (engine on PS's own PRNG). See
+# docs/accuracy/ps-rng.md.
+ps-rng = ["vgc-engine-core/ps-rng"]
+
 [[bin]]
 name = "conformance"
 path = "src/main.rs"
+
+[[bin]]
+name = "accuracy"
+path = "src/bin/accuracy.rs"

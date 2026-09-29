@@ -43,6 +43,35 @@ secondary differently across move kinds. The driver maps PS call-site → decisi
 | Secondary  | `secondaries` / `moveHit`                  | `percent_1_100` (set Secondary)| `PercentRoll(1..=100)` |
 | Range      | misc `random(n)` (duration/multihit)       | `range(n)`                    | `Range(0..n)`        |
 | Tiebreak   | `speedSort` `random()` (no args)           | `next_u64`                    | `Tiebreak(u64)`      |
+| Ability    | a `data/abilities` handler's own `random` / `randomChance` (Static, Flame Body, Poison Point / Touch, Effect Spore, Cute Charm, Cursed Body, Toxic Chain, Shed Skin, Healer, Quick Draw) | `ability_chance` / `ability_random` | `Range(v)`; a bool is `Range(0)` pass / `Range(u32::MAX)` fail |
+
+### Ability rolls are keyed by their holder
+
+An ability's own roll is keyed by **who holds the ability**, not by the move
+being resolved:
+
+```
+RngKey { turn, actor: holder slot, target: NO_SLOT, move_id: engine ability id, decision: Ability }
+```
+
+- **Why.** Several procs can fire on one hit: the attacker's Poison Touch and
+  the target's Flame Body on the same Fake Out. Keyed by the active move they
+  shared one key, and the pairing depended on evaluation order; with Close
+  Combat, the engine's proc consumed PS's self-drop roll.
+- **Driver.** A draw whose direct caller is a `data/abilities` (or
+  `data/mods/<mod>/abilities`) handler, while `battle.effect` is an ability,
+  is emitted as
+  `{turn, actor: <holder slot>, target: null, move: null, ability: "<id>", decision: "ability", value}`.
+  The holder is `battle.effectState.target` (PS `sim/pokemon.ts`
+  `abilityState = initEffectState({id, target: this})`). `value` is the bool
+  for `randomChance`, the integer for `random(n)` (Effect Spore).
+- **Runner.** `decision: "ability"` maps `ability` to the engine ability id
+  (unresolved slugs are dropped and reported) and stores a bool as
+  `Range(0)` / `Range(u32::MAX)`, an integer as `Range(v)`.
+- **Engine.** `Rng::ability_chance(turn, holder, ability, num, den)` returns
+  `v < num` for the popped `v`; `Rng::ability_random` returns `v`. Both leave
+  the move context untouched. On other RNG variants they draw PS's shape:
+  `random(den)`.
 
 ### Two representation flips the RUNNER must apply (not the engine, not the driver)
 

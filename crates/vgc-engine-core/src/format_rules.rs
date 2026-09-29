@@ -44,6 +44,8 @@ use vgc_engine_data as data;
 pub struct FormatRules {
     /// Stable id used by [`rules_for`] (e.g. `"regmb"`).
     pub id: &'static str,
+    /// Pinned form/item/move availability overlay; validation is off the hot path.
+    pub availability_json: Option<&'static str>,
     /// Human-readable format name (used in messages).
     pub name: &'static str,
     /// Inclusive team-size bounds. Reg M-B is bring-6-pick-4 → 4..=6.
@@ -176,6 +178,7 @@ pub const REG_M_B_LEGAL_SPECIES: &[u16] = &[
 /// gamespot.com Champions stat-change coverage.
 pub const REG_M_B: FormatRules = FormatRules {
     id: "regmb",
+    availability_json: None,
     name: "Pokémon Champions Reg M-B (Doubles)",
     min_team_size: 4,
     max_team_size: 6,
@@ -202,12 +205,32 @@ pub const REG_M_B: FormatRules = FormatRules {
     check_move_legality: true,
 };
 
+/// Current M-C roster is a pinned data overlay, not a national-number approximation.
+pub const REG_M_C: FormatRules = FormatRules {
+    id: "regmc",
+    name: "Pokémon Champions Reg M-C (Doubles)",
+    availability_json: Some(include_str!("../../../data/mods/regmc.json")),
+    min_team_size: 6,
+    legal_species: None,
+    check_move_legality: false,
+    ..REG_M_B
+};
+
 /// Look up a ruleset by format id. Accepts the common Reg M / Reg B aliases.
 pub fn rules_for(id: &str) -> Option<&'static FormatRules> {
     match id.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
+        "regmc" | "gen9championsvgc2026regmc" => Some(&REG_M_C),
         "regmb" | "regm" | "regb" | "regbm" | "champions" => Some(&REG_M_B),
         _ => None,
     }
+}
+
+/// True for Pokémon Champions formats: any PS `gen9champions*` id, plus the
+/// Champions regulations this crate registers (Reg M-B, Reg M-C and their
+/// aliases). These battles run under PS's `champions` mod rules and data.
+pub fn is_champions_format(id: &str) -> bool {
+    let norm = id.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    norm.contains("champions") || rules_for(&norm).is_some_and(|r| r.id == REG_M_B.id || r.id == REG_M_C.id)
 }
 
 /// Which rule a [`Violation`] broke. Stable enough to assert on in tests.
@@ -369,6 +392,24 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
         for (s, &ev) in ev_array(m).iter().enumerate() {
             if ev > rules.ev_per_stat_limit {
                 push(&mut v, Rule::EvPerStat, format!("{} EVs in {} exceeds the per-stat limit of {}", ev, STAT_NAMES[s], rules.ev_per_stat_limit));
+            }
+        }
+
+        if let Some(json) = rules.availability_json {
+            let availability: serde_json::Value = serde_json::from_str(json).expect("checked-in format overlay");
+            let allowed = |field: &str, value: &str| availability[field].as_array().unwrap().iter().any(|x| x.as_str() == Some(value));
+            if !allowed("species", &slugify(&m.species)) {
+                push(&mut v, Rule::BannedSpecies, format!("{} is unavailable in {}", m.species, rules.name));
+            }
+            if let Some(item) = m.item.as_deref().filter(|x| !x.is_empty()) {
+                if !allowed("items", &slugify(item)) { push(&mut v, Rule::UnknownItem, format!("{} is unavailable in {}", item, rules.name)); }
+            }
+            for mv in &m.moves {
+                let learnset = &availability["learnsets"][slugify(&m.species)];
+                if !learnset.as_array().is_some_and(|xs| xs.iter().any(|x| x.as_str() == Some(&slugify(mv)))) {
+                    push(&mut v, Rule::MoveLegality, format!("cannot learn {} in {}", mv, rules.name));
+                }
+                if !allowed("moves", &slugify(mv)) { push(&mut v, Rule::MoveLegality, format!("{} is unavailable in {}", mv, rules.name)); }
             }
         }
 
@@ -765,6 +806,16 @@ mod tests {
     }
 
     #[test]
+    fn champions_formats_are_recognised_by_id() {
+        for id in ["gen9championsvgc2026regmc", "gen9championsvgc2026regmb", "gen9championsbss", "regmc", "Reg M-B"] {
+            assert!(is_champions_format(id), "{id}");
+        }
+        for id in ["gen9vgc2025regh", "gen9doublescustomgame", "gen9customgame", "gen9ou", "doubles"] {
+            assert!(!is_champions_format(id), "{id}");
+        }
+    }
+
+    #[test]
     fn species_not_in_champions_is_flagged() {
         // Bulbasaur (#1) is in the National Dex but NOT on the Champions roster.
         let mut team = legal_team();
@@ -924,5 +975,25 @@ Level: 50
 ";
         let team = verify_showdown_text(paste, &REG_M_B).expect("legal paste");
         assert_eq!(team.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod regmc_tests {
+    use super::*;
+    fn violations(species: &str, rules: &FormatRules) -> Vec<Violation> {
+        let text = format!("{}\nAbility: Pressure\n- Protect", species);
+        let team = crate::parse_showdown_export(&text).unwrap();
+        verify_team(&team, rules).unwrap_err()
+    }
+    #[test]
+    fn mc_additions_and_form_restrictions_are_distinct_from_mb() {
+        assert!(rules_for("regmc").is_some());
+        assert!(!violations("Rillaboom", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
+        assert!(violations("Rillaboom", &REG_M_B).iter().any(|v| v.rule == Rule::BannedSpecies));
+        assert!(!violations("Qwilfish", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
+        assert!(violations("Qwilfish-Hisui", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
+        assert!(!violations("Floette-Eternal", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
+        assert!(violations("Floette", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
     }
 }

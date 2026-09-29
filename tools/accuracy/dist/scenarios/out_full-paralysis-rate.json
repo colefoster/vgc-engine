@@ -1,0 +1,20 @@
+{
+ "id": "full-paralysis-rate",
+ "format": "gen9championsvgc2026regmc",
+ "note": "Nuzzle paralyses the slower Kingambit; its Iron Head then faces the full-paralysis check",
+ "p1team": "Raichu\nAbility: Lightning Rod\nLevel: 50\nEVs: 2 HP / 32 Atk / 32 Spe\nJolly Nature\n- Nuzzle\n- Protect\n- Fake Out\n- Thunderbolt\n\nAmoonguss\nAbility: Regenerator\nLevel: 50\nEVs: 32 HP / 2 Def / 32 SpD\nCalm Nature\n- Protect\n- Spore\n- Rage Powder\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "p2team": "Kingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Iron Head\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n\nAmoonguss\nAbility: Regenerator\nLevel: 50\nEVs: 32 HP / 2 Def / 32 SpD\nCalm Nature\n- Protect\n- Spore\n- Rage Powder\n- Pollen Puff\n\nKingambit\nAbility: Defiant\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Kowtow Cleave\n- Sucker Punch\n- Iron Head\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect\n- Earthquake\n- Dragon Claw\n- Rock Slide",
+ "turns": [
+  {
+   "turn": 1,
+   "choices": {
+    "p1": [
+     "move 1 1, move 1"
+    ],
+    "p2": [
+     "move 1 1, move 1"
+    ]
+   }
+  }
+ ]
+}

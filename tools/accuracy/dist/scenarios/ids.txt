@@ -1,0 +1,8 @@
+damage-roll-and-crit
+accuracy-and-flinch-spread
+accuracy-70-hurricane
+full-paralysis-rate
+secondary-burn-10
+multihit-bullet-seed
+speed-tie-mirror
+confusion-self-hit

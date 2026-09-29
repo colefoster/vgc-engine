@@ -422,7 +422,10 @@ fn schedule_move(
             // outcome. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Quick_Draw_(Ability)>.
             let frac = if m.ability_id == data::ability_id::QUICKDRAW && category != 2 {
-                if rng.percent_1_100_t(30) <= 30 { -1i8 } else { frac }
+                // PS `randomChance(3, 10)`, keyed by the holder
+                // (RngDecision::Ability, docs/conformance-key-contract.md).
+                let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+                if rng.ability_chance(battle.turn() + 1, holder, data::ability_id::QUICKDRAW, 3, 10) { -1i8 } else { frac }
             } else {
                 frac
             };
@@ -495,6 +498,16 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
             // Fisher-Yates, left-to-right; `k-1` draws (rightmost gets none).
             for i in start..end - 1 {
                 let span = (end - i) as u64; // ≥ 2
+                // PS `shuffle` draws `random(i, end)` — a scaled draw, not
+                // a modulus — so the PS stream needs its exact index.
+                #[cfg(feature = "ps-rng")]
+                if rng.is_ps() {
+                    let j = rng.ps_random_range("shuffle", i as u32, end as u32) as usize;
+                    if j != i {
+                        entries.swap(i, j);
+                    }
+                    continue;
+                }
                 let v = rng.tiebreak_shuffle();
                 let j = i + (v % span) as usize;
                 if j != i {

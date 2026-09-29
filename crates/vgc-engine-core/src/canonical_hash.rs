@@ -196,12 +196,13 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 41)?;
+        let mut s = ser.serialize_struct("Pokemon", 42)?;
         s.serialize_field("species_id", &p.species_id)?;
         s.serialize_field("level", &p.level)?;
         s.serialize_field("gender", &(p.gender as u8))?;
         s.serialize_field("moves", &p.moves)?;
         s.serialize_field("pp", &p.pp)?;
+        s.serialize_field("max_pp_override", &p.max_pp_override)?;
         s.serialize_field("ability_id", &p.ability_id)?;
         s.serialize_field("ability_override", &p.ability_override)?;
         s.serialize_field("item_id", &p.item_id)?;
@@ -233,6 +234,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("boosts", &p.boosts)?;
         s.serialize_field("fainted", &p.fainted)?;
         s.serialize_field("turns_active", &p.turns_active)?;
+        s.serialize_field("move_actions", &p.move_actions)?;
         // PR-J — last_attacker / last_attacker_category /
         // last_damage_taken / last_phys_* / last_spec_* OMITTED:
         // wiped at top of every `step()` by `Battle::start_turn`
@@ -385,6 +387,7 @@ struct CanonicalSideView<'a> {
 /// transient per-step field by construction (they aren't even named here).
 #[derive(Serialize)]
 struct CanonicalBattleView<'a> {
+    decision_phases: bool,
     config: &'a BattleConfig,
     p1: CanonicalSideView<'a>,
     p2: CanonicalSideView<'a>,
@@ -461,6 +464,7 @@ impl Battle {
     /// buffer.
     pub fn canonical_hash(&self) -> u64 {
         let view = CanonicalBattleView {
+            decision_phases: self.decision_phases,
             config: &self.config,
             p1: canonical_side(&self.p1),
             p2: canonical_side(&self.p2),

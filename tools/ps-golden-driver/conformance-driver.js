@@ -121,7 +121,10 @@ function classifyDraw(isChance, sig, site) {
   if (/speedSort/.test(s)) return 'tiebreak';
 
   // ---- signature fallbacks (site frame ambiguous / not in the table) ----
-  if (isChance && sig.num === 1 && [24, 16, 8, 4, 3, 2, 1].includes(sig.denom)) return 'crit';
+  // Gen 9 crits only roll inside getDamage (matched above). Any other
+  // randomChance(1, n) — Protect's stall roll, full paralysis, freeze thaw,
+  // confusion — is a bool gate, not a crit.
+  if (isChance && sig.num === 1 && [24, 16, 8, 4, 3, 2, 1].includes(sig.denom)) return 'range';
   if (isChance && sig.denom === 100) return 'secondary'; // ability/item proc (Static, Flame Body...)
   if (!isChance && sig.m === 16) return 'damage';
   if (!isChance && sig.m === 100) return 'secondary';
@@ -159,12 +162,28 @@ function patchRng(draws) {
     return ev;
   };
 
+  // An ability handler's own roll (Static, Flame Body, Poison Touch, Effect
+  // Spore, Cursed Body, Shed Skin, Healer, Quick Draw, ...): the draw is made
+  // directly from a data/abilities handler, while `battle.effect` is that
+  // ability and `battle.effectState` its holder's abilityState
+  // (sim/pokemon.ts `abilityState = initEffectState({id, target: this})`).
+  // Keyed by holder + ability, not the active move, so two procs on one hit
+  // (attacker's Poison Touch, target's Flame Body) can't be confused.
+  // docs/conformance-key-contract.md, decision `ability`.
+  const abilityEnvelope = function (battle, site, value) {
+    if (!/\(data\/(?:mods\/[a-z0-9]+\/)?abilities\./.test(site || '')) return null;
+    const eff = battle.effect;
+    const holder = battle.effectState && battle.effectState.target;
+    if (!eff || eff.effectType !== 'Ability' || !holder) return null;
+    return { turn: battle.turn, actor: slotRef(holder), target: null, move: null, ability: eff.id, decision: 'ability', value };
+  };
+
   Battle.prototype.random = function (m, n) {
     const v = origRandom.call(this, m, n);
     const site = captureSite();
     const decision = classifyDraw(false, { m, n }, site);
     // value: damage 0..15 raw; secondary raw 0..99; range raw int; tiebreak raw.
-    draws.push(envelope(this, decision, v, false));
+    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, false));
     return v;
   };
 
@@ -173,7 +192,7 @@ function patchRng(draws) {
     const site = captureSite();
     const decision = classifyDraw(true, { num: numerator, denom: denominator }, site);
     // randomChance only exposes the BOOL (crit + accuracy + ability procs).
-    draws.push(envelope(this, decision, v, true));
+    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, true));
     return v;
   };
 
@@ -656,7 +675,12 @@ function parseArgs(argv) {
   return out;
 }
 
-module.exports = { runJob };
+module.exports = {
+  runJob,
+  // Shared with tools/accuracy/ps-battle.js (full-battle + raw-trace driver).
+  patchRng, captureSite, classifyDraw, snapshotState, snapshotField, snapshotSides,
+  makeRandomPicker, mulberry32,
+};
 
 if (require.main === module) (async () => {
   try {

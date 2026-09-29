@@ -847,6 +847,7 @@ dependencies = [
  "pyo3",
  "serde_json",
  "vgc-engine-core",
+ "vgc-solver",
 ]
 
 [[package]]

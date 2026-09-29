@@ -303,11 +303,19 @@ fn main() {
     let t0 = Instant::now();
     for b in 0..args.battles {
         let seed = args.seed.wrapping_add((b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut battle = Battle::new(
-            BattleConfig { format: args.format, seed },
-            team_a.clone(),
-            team_b.clone(),
-        );
+        let cfg = BattleConfig { format: args.format, seed };
+        // `PS_RNG=1` (with `--features vgc-engine-core/ps-rng`) runs every
+        // battle on Showdown's PRNG instead of SplitMix, for the ps-rng perf
+        // comparison in docs/accuracy/ps-rng.md.
+        #[cfg(feature = "ps-rng")]
+        let mut battle = if std::env::var("PS_RNG").is_ok() {
+            let s = format!("sodium,{:032x}", seed as u128);
+            Battle::with_rng(cfg, Rng::ps(&s).unwrap(), team_a.clone(), team_b.clone())
+        } else {
+            Battle::new(cfg, team_a.clone(), team_b.clone())
+        };
+        #[cfg(not(feature = "ps-rng"))]
+        let mut battle = Battle::new(cfg, team_a.clone(), team_b.clone());
         let mut picker = Rng::new(seed ^ 0xA5A5_A5A5_5A5A_5A5A);
 
         let mut turn = 0u32;
