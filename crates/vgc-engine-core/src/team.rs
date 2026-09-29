@@ -265,6 +265,24 @@ pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
 pub struct TeamBuilder;
 
 impl TeamBuilder {
+    /// Apply a move-PP data overlay before Battle::new (never in step()).
+    pub fn apply_pp_overlay(team: &mut [Pokemon], pp: &std::collections::HashMap<String, u8>) -> Result<(), TeamLoadError> {
+        for (slug, value) in pp {
+            lookup_move(slug)?;
+            if *value == 0 { return Err(TeamLoadError::Parse("PP maximum must be positive".into())); }
+        }
+        for mon in team {
+            for slot in 0..4 {
+                if mon.moves[slot] == u16::MAX { continue; }
+                if let Some(max) = pp.get(data::MOVES[mon.moves[slot] as usize].slug) {
+                    mon.max_pp_override[slot] = *max;
+                    mon.pp[slot] = *max;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_json(s: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
         let specs: Vec<TeamMember> =
             serde_json::from_str(s).map_err(|e| TeamLoadError::Parse(e.to_string()))?;
@@ -406,5 +424,23 @@ mod gender_tests {
         let battle = Battle::new(cfg, p1, p2);
         assert_eq!(battle.p1.team[0].gender, data::Gender::Male);
         assert_eq!(battle.p2.team[0].gender, data::Gender::Male);
+    }
+}
+
+#[cfg(test)]
+mod pp_overlay_tests {
+    use super::*;
+    #[test]
+    fn overlay_survives_clone_and_leppa_respects_its_maximum() {
+        let mut team = TeamBuilder::from_json(r#"[{"species":"rillaboom","item":"leppaberry","moves":["protect"]}]"#).unwrap();
+        TeamBuilder::apply_pp_overlay(&mut team, &std::collections::HashMap::from([("protect".into(), 8)])).unwrap();
+        assert_eq!(team[0].pp[0], 8);
+        let foe = team.clone();
+        let mut b = crate::Battle::new(crate::BattleConfig::default(), team, foe);
+        b.p1.team[0].pp[0] = 0;
+        crate::item::on_pp_depleted(&mut b, crate::SideRef::P1, 0);
+        assert_eq!(b.p1.team[0].pp[0], 8);
+        assert_eq!(b.p1.team[0].item_id, u16::MAX);
+        assert_eq!(b.clone().p1.team[0].max_pp(0), 8);
     }
 }

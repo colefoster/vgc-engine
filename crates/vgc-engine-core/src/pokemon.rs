@@ -561,6 +561,9 @@ pub struct Pokemon {
     pub gender: data::Gender,
     pub moves: [u16; 4],
     pub pp: [u8; 4],
+    /// Per-battle data overlay; zero uses the mainline default for old snapshots.
+    #[serde(default)]
+    pub max_pp_override: [u8; 4],
     pub ability_id: u16,
     /// Effective-ability override (PS `Pokemon.ability` reassignment via
     /// `setAbility`). `u16::MAX` = no override → `effective_ability_slug`
@@ -640,6 +643,11 @@ pub struct Pokemon {
     /// it switched in / was sent out at battle start). Used by Fake Out,
     /// First Impression, Mat Block, etc. Incremented at end of step.
     pub turns_active: u8,
+    /// PS `activeMoveActions`: move actions started since this mon last
+    /// switched in, counted when the action begins (so a flinched or fully
+    /// paralysed action counts). Fake Out and Mat Block need it to be 1.
+    #[serde(default)]
+    pub move_actions: u8,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -884,6 +892,11 @@ pub struct Pokemon {
 }
 
 impl Pokemon {
+    pub fn max_pp(&self, slot: usize) -> u8 {
+        if self.max_pp_override[slot] != 0 { self.max_pp_override[slot] }
+        else { crate::team::boosted_max_pp(self.moves[slot]) }
+    }
+
     /// Construct a `Pokemon` from its identity fields, with every
     /// volatile/runtime field initialised to its inert battle-start
     /// default. This is the **single source of truth** for those defaults:
@@ -920,6 +933,7 @@ impl Pokemon {
             gender,
             moves,
             pp,
+            max_pp_override: [0; 4],
             ability_id,
             item_id,
             can_mega_evolve,
@@ -938,6 +952,7 @@ impl Pokemon {
             boosts: [0; 7],
             fainted: false,
             turns_active: 0,
+            move_actions: 0,
             last_used_move_slot: 255,
             last_used_move_target: 255,
             boosted_stat: 255,
@@ -1244,6 +1259,26 @@ impl Pokemon {
     #[inline]
     pub fn pending_self_switch(&self) -> bool {
         self.volatiles.has(VolatileKind::PendingSelfSwitch)
+    }
+
+    /// Mark a pending switch forced by an item or ability (Eject Button):
+    /// like a self-switch, the player picks the replacement, but when the
+    /// caller queued no pick the first bench mon comes in (payload 1).
+    #[inline]
+    pub fn set_pending_forced_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 1,
+        });
+    }
+
+    /// True when the pending switch was forced (see
+    /// [`Pokemon::set_pending_forced_switch`]).
+    #[inline]
+    pub fn pending_switch_is_forced(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 1)
     }
 
     /// Set or clear the PendingSelfSwitch marker.

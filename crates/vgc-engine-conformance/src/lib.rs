@@ -16,6 +16,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
+pub mod accuracy;
+
 use serde::Deserialize;
 use vgc_engine_core::data;
 use vgc_engine_core::rng::{Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
@@ -85,6 +87,9 @@ pub struct MonState {
     /// Ability slug; absent → not compared (always present in real captures).
     #[serde(default)]
     pub ability: Option<String>,
+    /// PS species id (forme-specific). Only the accuracy harness captures it.
+    #[serde(default)]
+    pub species: Option<String>,
 }
 
 /// Stat-stage boosts in PS key order; `accuracy`/`evasion` included for
@@ -187,6 +192,10 @@ pub struct DrawRecord {
     pub target: Option<String>,
     #[serde(rename = "move", default)]
     pub move_slug: Option<String>,
+    /// For `decision: "ability"`: the ability whose handler rolled
+    /// (`actor` is then its holder). See docs/conformance-key-contract.md.
+    #[serde(default)]
+    pub ability: Option<String>,
     pub decision: String,
     pub value: serde_json::Value,
     /// True when accuracy/secondary `value` is a pass/fail bool rather than
@@ -260,7 +269,7 @@ pub fn parse_slot_ref(s: &str) -> Option<SlotRef> {
     Some(side + slot)
 }
 
-fn decode_slot_ref(s: &str) -> Option<(SideRef, usize)> {
+pub(crate) fn decode_slot_ref(s: &str) -> Option<(SideRef, usize)> {
     let r = parse_slot_ref(s)?;
     let side = if r < 2 { SideRef::P1 } else { SideRef::P2 };
     Some((side, (r % 2) as usize))
@@ -274,6 +283,7 @@ fn decision_of(s: &str) -> Option<RngDecision> {
         "secondary" => RngDecision::Secondary,
         "range" => RngDecision::Range,
         "tiebreak" => RngDecision::Tiebreak,
+        "ability" => RngDecision::Ability,
         _ => return None,
     })
 }
@@ -321,6 +331,13 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
             }
         }
         "tiebreak" => Some(RngEvent::Tiebreak(d.value.as_u64()?)),
+        // Ability roll: a `randomChance` bool is stored as Range(0) pass /
+        // Range(u32::MAX) fail, which `Rng::ability_chance`'s `v < num`
+        // reads correctly for any `num`; a `random(n)` keeps its value.
+        "ability" => match d.value.as_bool() {
+            Some(pass) => Some(RngEvent::Range(if pass { 0 } else { u32::MAX })),
+            None => Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?)),
+        },
         _ => None,
     }
 }
@@ -331,10 +348,18 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
 pub fn build_table(
     battle: &PsBattle,
 ) -> (HashMap<RngKey, VecDeque<RngEvent>>, Vec<String>) {
+    build_table_from(battle.turns.iter().flat_map(|t| t.draws.iter()))
+}
+
+/// [`build_table`] over any draw sequence (the accuracy harness's turns carry
+/// the same draw records in a different envelope).
+pub(crate) fn build_table_from<'a>(
+    draws: impl Iterator<Item = &'a DrawRecord>,
+) -> (HashMap<RngKey, VecDeque<RngEvent>>, Vec<String>) {
     let mut table: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
     let mut unresolved: Vec<String> = Vec::new();
-    for turn in &battle.turns {
-        for d in &turn.draws {
+    {
+        for d in draws {
             let Some(decision) = decision_of(&d.decision) else {
                 continue;
             };
@@ -351,7 +376,19 @@ pub fn build_table(
                 .as_deref()
                 .and_then(parse_slot_ref)
                 .unwrap_or(NO_SLOT);
-            let move_id = match d.move_slug.as_deref() {
+            let move_id = if decision == RngDecision::Ability {
+                // Ability rolls key on the ability id (holder in `actor`).
+                match d.ability.as_deref().and_then(ability_id_of) {
+                    Some(id) => id,
+                    None => {
+                        let slug = d.ability.clone().unwrap_or_default();
+                        if !unresolved.iter().any(|u| *u == slug) {
+                            unresolved.push(slug);
+                        }
+                        continue;
+                    }
+                }
+            } else { match d.move_slug.as_deref() {
                 Some(slug) => match move_id_of(slug) {
                     Some(id) => id,
                     None => {
@@ -362,7 +399,9 @@ pub fn build_table(
                     }
                 },
                 None => 0,
-            };
+            } };
+            // Ability rolls carry no target (NO_SLOT) by contract.
+            let target = if decision == RngDecision::Ability { NO_SLOT } else { target };
             let key = RngKey {
                 turn: d.turn,
                 actor,
@@ -374,6 +413,14 @@ pub fn build_table(
         }
     }
     (table, unresolved)
+}
+
+/// Map a PS ability slug to the engine's numeric ability id.
+fn ability_id_of(slug: &str) -> Option<u16> {
+    data::ABILITIES
+        .iter()
+        .position(|a| a.slug == slug)
+        .and_then(|i| u16::try_from(i).ok())
 }
 
 /// Map a PS move slug to the engine's numeric move id (its index into
@@ -449,6 +496,16 @@ fn parse_side_choices(
 // Engine-state -> normalized token mappers (must mirror the driver's tokens)
 // ---------------------------------------------------------------------------
 
+pub(crate) fn status_token_pub(s: Status) -> Option<&'static str> {
+    status_token(s)
+}
+pub(crate) fn weather_token_pub(w: Weather) -> Option<&'static str> {
+    weather_token(w)
+}
+pub(crate) fn terrain_token_pub(t: Terrain) -> Option<&'static str> {
+    terrain_token(t)
+}
+
 fn status_token(s: Status) -> Option<&'static str> {
     match s {
         Status::None => None,
@@ -517,7 +574,7 @@ fn opt_token(t: Option<&str>) -> String {
 /// or `None` if everything captured matches. Fields the record omits
 /// (`boosts`/`ability` absent, or `field`/`sides` absent) are skipped — a
 /// NOT_MODELLED-style allowance so partial captures don't false-positive.
-fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String> {
+pub(crate) fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergence>, String> {
     let div = |slot: &str, field: &'static str, engine: String, ps: String| Divergence {
         turn: turn.turn,
         slot: slot.to_string(),
@@ -648,7 +705,7 @@ fn sp_to_ev(sp: u8) -> u8 {
 /// Build an engine team from PS-export text. For Champions formats the parsed
 /// `evs` are Stat Points and are converted to EVs (see [`sp_to_ev`]) before the
 /// stats are computed.
-fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
+pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
     let mut members = parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
     if champions {
         for m in &mut members {
@@ -670,7 +727,7 @@ fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String
 /// diff per-turn state. Stops reporting at the first divergence (downstream
 /// cascades are noise — see the design doc's first-divergence isolation).
 pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
-    let champions = battle.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&battle.format);
     let p1 = build_engine_team(&battle.p1team, champions).map_err(|e| format!("p1 team: {e}"))?;
     let p2 = build_engine_team(&battle.p2team, champions).map_err(|e| format!("p2 team: {e}"))?;
     let (table, unresolved) = build_table(battle);
@@ -681,6 +738,7 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     };
     let rng = Rng::oracle_keyed(table, 0xC0FFEE);
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
+    b.set_format_id(&battle.format);
 
     let mut matched_turns = 0u32;
     let mut divergence = None;
@@ -752,10 +810,32 @@ mod tests {
             actor: Some("p1a".into()),
             target: Some("p2a".into()),
             move_slug: Some("crunch".into()),
+            ability: None,
             decision: decision.into(),
             value,
             raw_is_bool,
         }
+    }
+
+    #[test]
+    fn ability_rolls_are_keyed_by_holder_and_ability() {
+        // Contract: decision "ability" keys (turn, holder, NO_SLOT, ability id).
+        let mut d = draw("ability", serde_json::json!(true), true);
+        d.actor = Some("p2a".into());
+        d.ability = Some("flamebody".into());
+        let (table, unresolved) = build_table_from([&d].into_iter());
+        assert!(unresolved.is_empty());
+        let key = RngKey {
+            turn: 1,
+            actor: 2,
+            target: NO_SLOT,
+            move_id: data::ABILITIES.iter().position(|a| a.slug == "flamebody").unwrap() as u16,
+            decision: RngDecision::Ability,
+        };
+        assert_eq!(table.get(&key).map(|q| q[0]), Some(RngEvent::Range(0)));
+        d.value = serde_json::json!(false);
+        let (table, _) = build_table_from([&d].into_iter());
+        assert_eq!(table.get(&key).map(|q| q[0]), Some(RngEvent::Range(u32::MAX)));
     }
 
     #[test]
@@ -882,6 +962,7 @@ mod tests {
             actor: Some("p1a".into()),
             target: Some("p2a".into()),
             move_slug: Some("crunch".into()),
+            ability: None,
             decision: decision.into(),
             value,
             raw_is_bool: false,

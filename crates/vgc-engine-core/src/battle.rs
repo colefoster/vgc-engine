@@ -314,6 +314,14 @@ pub struct WishEffect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Battle {
+    /// Opt-in tournament decision phases; legacy turn callers retain their contract.
+    #[serde(default)]
+    pub decision_phases: bool,
+    /// Pokémon Champions battle rules (PS `data/mods/champions`) where they
+    /// differ from gen 9 at runtime: full paralysis is 1/8, not 1/4. Off by
+    /// default so standard gen 9 formats keep their rules.
+    #[serde(default)]
+    pub champions: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -378,6 +386,17 @@ pub struct Battle {
     /// Pursuit user does not act twice. PS analog: `this.queue.cancelMove`
     /// in the `pursuit` condition. Reset at the top of every `step`.
     pub(crate) pursuit_consumed: [[bool; 2]; 2],
+    /// Per-(side, slot) latch: the slot's occupant was replaced mid-turn
+    /// (pivot, Eject Button, drag), so its queued move belongs to a mon that
+    /// left. PS `runAction` skips an action whose pokemon is no longer
+    /// active. Reset at the top of every `step`.
+    #[serde(default)]
+    pub(crate) replaced_mid_turn: [[bool; 2]; 2],
+    /// Emergency Exit bookkeeping for the move action in progress: each
+    /// active slot's (team index, HP) before it, and whether the action is a
+    /// damaging move. See [`Battle::trigger_emergency_exits`].
+    #[serde(default)]
+    pub(crate) hp_before_action: Option<([[(u8, u16); 2]; 2], bool)>,
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -559,6 +578,8 @@ impl Battle {
         let p2 = Side::new(p2_team, config.format);
         let mut b = Self {
             config, p1, p2, rng, turn: 0, ended: None,
+            decision_phases: false,
+            champions: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -570,6 +591,8 @@ impl Battle {
             pending_queue_reorder: None,
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
+            replaced_mid_turn: [[false; 2]; 2],
+            hp_before_action: None,
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -593,6 +616,10 @@ impl Battle {
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
         // ordering matches turn-order but at battle start it's by side
         // and slot; refinement deferred).
+        #[cfg(feature = "ps-rng")]
+        if b.rng.is_ps() {
+            b.ps_start_draws();
+        }
         let n = b.format().active_count() as u8;
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
@@ -647,6 +674,15 @@ impl Battle {
         self.ended
     }
 
+    pub fn needs_replacements(&self) -> bool {
+        if self.is_terminal() { return false; }
+        [SideRef::P1, SideRef::P2].into_iter().any(|side| {
+            let s = self.side(side);
+            (0..self.format().active_count()).any(|slot|
+                s.active_mon(slot).is_some_and(|m| !m.is_alive()) && s.switch_candidates(slot).next().is_some())
+        })
+    }
+
     /// True when at least one side has no active mons left. Used by the
     /// endgame solver to short-circuit recursion at terminal states.
     pub fn is_terminal(&self) -> bool {
@@ -676,6 +712,20 @@ impl Battle {
 
     pub fn format(&self) -> Format {
         self.config.format
+    }
+
+    /// Move data under this battle's rules: the Champions rebalances when
+    /// [`Battle::champions`] is set, standard gen 9 otherwise.
+    #[inline]
+    pub fn moves(&self) -> &'static [data::MoveDef] {
+        data::move_table(self.champions)
+    }
+
+    /// Set the rules from a PS format id (`gen9championsvgc2026regmc`,
+    /// `gen9vgc2025regh`, ...): Champions formats get Champions rules, every
+    /// other format standard gen 9. See [`crate::format_rules::is_champions_format`].
+    pub fn set_format_id(&mut self, id: &str) {
+        self.champions = crate::format_rules::is_champions_format(id);
     }
 
     /// Effective weather as seen by damage formula and weather residuals.
@@ -1378,6 +1428,10 @@ impl Battle {
         // Commander: a Tatsugiri inside its Dondozo's mouth cannot act. PS
         // auto-passes the slot (`side.ts` `getChoiceIndex` skips slots whose
         // `volatiles['commanding']` is set) — it can't move or switch.
+        if self.decision_phases && self.needs_replacements() && active.is_alive() {
+            out.push(Choice::Pass { actor_slot });
+            return;
+        }
         if active.commanding {
             out.push(Choice::Pass { actor_slot });
             return;
@@ -1386,7 +1440,8 @@ impl Battle {
             for team_index in s.switch_candidates(slot) {
                 out.push(Choice::Switch { actor_slot, team_index });
             }
-            if out.is_empty() {
+            let dead = (0..self.format().active_count()).filter(|&slot| s.active_mon(slot).is_some_and(|m| !m.is_alive())).count();
+            if out.is_empty() || (self.decision_phases && out.len() < dead) {
                 out.push(Choice::Pass { actor_slot });
             }
             return;
@@ -1461,7 +1516,7 @@ impl Battle {
                     continue;
                 }
             }
-            let m = &data::MOVES[move_id as usize];
+            let m = &self.moves()[move_id as usize];
             if move_locks != 0 {
                 // Move-flag-based locks (need `m`).
                 // Throat Chop lockout: every sound-flagged move is disabled
@@ -1637,6 +1692,19 @@ impl Battle {
             StepPhase::Start { p1, p2 } => {
                 if let Some(w) = self.ended {
                     cursor.phase = StepPhase::Done(StepResult::Ended { winner: w });
+                } else if self.decision_phases && self.needs_replacements() {
+                    self.apply_replacement_switches(p1, p2);
+                    self.sync_weather_terrain_cache();
+                    self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
+                        (true, true) => Some(None),
+                        (true, false) => Some(Some(SideRef::P2)),
+                        (false, true) => Some(Some(SideRef::P1)),
+                        (false, false) => None,
+                    };
+                    cursor.phase = StepPhase::Done(match self.ended {
+                        Some(winner) => StepResult::Ended { winner },
+                        None => StepResult::Continue,
+                    });
                 } else {
                     let (order, pending_kind) = self.turn_prologue(p1, p2);
                     cursor.phase = StepPhase::ActionLoop {
@@ -1646,7 +1714,18 @@ impl Battle {
                 StepProgress::Continue
             }
             StepPhase::ActionLoop { p1, p2, mut order, mut idx, mut pending_kind } => {
-                if idx < order.len() {
+                // PS checks for a winner after every action (sim/battle.ts
+                // faintMessages -> checkWin): once a side is out, nothing
+                // else runs.
+                if idx < order.len() && !(self.p1.is_defeated() || self.p2.is_defeated()) {
+                    // PS runs the post-action Update / re-sort only for a move
+                    // action that actually executes (runAction returns early
+                    // for a fainted or inactive user, and switches ran in the
+                    // prologue).
+                    #[cfg(feature = "ps-rng")]
+                    let ps_ran = self.rng.is_ps()
+                        && matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && self.side(order[idx].side).active_mon(order[idx].actor_slot as usize).is_some_and(|m| m.is_alive());
                     self.process_one_action(&mut order, idx, &mut pending_kind);
                     if let Some(pending) = self.pending_yield.take() {
                         let (key, space) = pending.draw_descriptor();
@@ -1654,6 +1733,12 @@ impl Battle {
                             p1, p2, order, idx, pending_kind, pending, resolved: None,
                         };
                         return StepProgress::ChanceYield { pending, key, space };
+                    }
+                    self.trigger_emergency_exits();
+                    if self.decision_phases { self.apply_self_switches(p1, p2); }
+                    #[cfg(feature = "ps-rng")]
+                    if ps_ran {
+                        self.ps_after_move_action(&order, idx);
                     }
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
@@ -1676,6 +1761,8 @@ impl Battle {
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                self.trigger_emergency_exits();
+                if self.decision_phases { self.apply_self_switches(p1, p2); }
                 idx += 1;
                 cursor.phase = StepPhase::ActionLoop {
                     p1, p2, order, idx, pending_kind,
@@ -1738,11 +1825,323 @@ impl Battle {
     /// (0 / 1 / 1b / 2 / Custap / queue setup). Returns the resolved
     /// action order and the flat `pending_kind` view consumed inside
     /// the loop.
+    /// `ps-rng` only: PS `Pokemon.speed` as `speedSort` sees it
+    /// (`getActionSpeed`: boosted/modified Speed, `10000 - spe` under Trick
+    /// Room, truncated to 13 bits). Higher sorts first.
+    #[cfg(feature = "ps-rng")]
+    fn ps_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
+        let m = self.side(side).active_mon(slot)?;
+        let tw = self.side(side).conditions.tailwind_turns > 0;
+        let mut spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+        if self.trick_room_turns > 0 {
+            spe = 10000 - spe;
+        }
+        Some(spe & 0x1FFF)
+    }
+
+    /// `ps-rng` only: draw PS's Fisher-Yates shuffles for a list already
+    /// sorted by `key` (descending) — one `random(i, end)` per position of
+    /// each run of equal keys but its last (sim/battle.ts speedSort +
+    /// sim/prng.ts shuffle). Returns the permutation applied (`perm[k]` =
+    /// original index now at `k`).
+    #[cfg(feature = "ps-rng")]
+    fn ps_shuffle_ties(&mut self, keys: &[i64], op: &'static str) -> [u8; 8] {
+        let n = keys.len().min(8);
+        let mut perm = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && keys[end] == keys[st] {
+                end += 1;
+            }
+            if end - st >= 2 {
+                for i in st..end - 1 {
+                    let j = self.rng.ps_random_range(op, i as u32, end as u32) as usize;
+                    perm.swap(i, j);
+                }
+            }
+            st = end;
+        }
+        perm
+    }
+
+    /// `ps-rng` only: `Battle.eachEvent` / `runSwitch` speed-sort over the
+    /// living (or all, for runSwitch) active Pokemon — draws only when two
+    /// of them tie on Speed. PS runs `eachEvent('Update')` after every
+    /// action (sim/battle.ts runAction, gen >= 5).
+    #[cfg(feature = "ps-rng")]
+    fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let alive = self.side(side).active_mon(slot).is_some_and(|m| m.is_alive());
+                if !(alive || include_fainted && self.side(side).active_mon(slot).is_some()) {
+                    continue;
+                }
+                if let Some(k) = self.ps_speed(side, slot) {
+                    keys[n] = k;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], op);
+    }
+
+    /// `ps-rng` only: battle start. PS switches the four leads in (p1 then
+    /// p2, slot order); each `switchIn` queues a `runSwitch` via
+    /// `insertChoice`, which draws `random(first, last + 1)` when the new
+    /// action ties an already-queued one on Speed (sim/battle-queue.ts
+    /// insertChoice). The batched `runSwitch` then speed-sorts every active
+    /// Pokemon, and the action ends with `eachEvent('Update')`.
+    #[cfg(feature = "ps-rng")]
+    fn ps_start_draws(&mut self) {
+        let n_active = self.format().active_count();
+        let mut queue = [0i64; 4];
+        let mut len = 0usize;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(spe) = self.ps_speed(side, slot) else { continue };
+                // comparePriority(new, cur) <= 0  <=>  new.speed >= cur.speed
+                let first = (0..len).find(|&i| spe >= queue[i]);
+                let idx = match first {
+                    None => len,
+                    Some(f) => {
+                        let last = (f..len).find(|&i| spe > queue[i]).unwrap_or(len);
+                        if f == last {
+                            f
+                        } else {
+                            self.rng.ps_random_range("insert_choice", f as u32, last as u32 + 1) as usize
+                        }
+                    }
+                };
+                for i in (idx..len).rev() {
+                    queue[i + 1] = queue[i];
+                }
+                queue[idx] = spe;
+                len += 1;
+            }
+        }
+        self.ps_active_ties(true, "shuffle");
+        self.ps_active_ties(false, "shuffle");
+    }
+
+    /// `ps-rng` only: the draws PS makes while resolving submitted choices,
+    /// before anything executes. `BattleQueue.resolveAction`
+    /// (sim/battle-queue.ts, a5df8274) gives every move action without a
+    /// chosen target a `getRandomTarget` — for any target type except
+    /// self/adjacentAllyOrSelf/allySide/allyTeam/all that is a
+    /// `sample()` over the adjacent allies (adjacentAlly) or the living foes
+    /// (`Side.randomFoe`), one `random(n)` even when `n == 1`. The pick only
+    /// seeds `originalTarget`; spread moves ignore it, so it is a pure
+    /// stream advance. Sides commit p1 then p2, slots in order.
+    #[cfg(feature = "ps-rng")]
+    fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let n_active = self.format().active_count();
+            for c in choices {
+                let (actor_slot, move_slot, target) = match *c {
+                    Choice::Move { actor_slot, move_slot, target }
+                    | Choice::Terastallize { actor_slot, move_slot, target }
+                    | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
+                    _ => continue,
+                };
+                if target.is_some() || actor_slot as usize >= n_active {
+                    continue;
+                }
+                let Some(mon) = self.side(side).active_mon(actor_slot as usize) else { continue };
+                if !mon.is_alive() {
+                    continue;
+                }
+                let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                    data::move_id::STRUGGLE
+                } else {
+                    match mon.moves.get(move_slot as usize) {
+                        Some(&id) if id != u16::MAX => id,
+                        _ => continue,
+                    }
+                };
+                // Champions gives non-Ghost Curse a self target (no draw).
+                let (types, nt) = mon.effective_types();
+                let ghost = types[..nt as usize].contains(&13); // Ghost type index
+                if move_id == data::move_id::CURSE && !ghost {
+                    continue;
+                }
+                let n = match self.moves()[move_id as usize].target {
+                    1 | 3 | 8 | 9 | 12 => 0,
+                    2 => (0..n_active)
+                        .filter(|&s| s != actor_slot as usize)
+                        .filter(|&s| self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
+                        .count(),
+                    _ => {
+                        let foe = side.opposing();
+                        (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
+                    }
+                };
+                if n > 0 {
+                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                }
+                // resolveAction then calls getActionSpeed -> getTarget, whose
+                // location (the random pick) never validates for a spread
+                // or field move, so it draws again.
+                self.ps_get_target_draw(side, actor_slot, move_id, None);
+            }
+        }
+        // commitChoices -> queue.sort(): ties among switch actions (order
+        // 103, the leaving mon's Speed) are shuffled here; move ties are
+        // re-drawn at the re-sort right before the first move (below).
+        let mut keys = [0i64; 4];
+        let mut k = 0;
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            for c in choices {
+                if let Choice::Switch { actor_slot, .. } = *c {
+                    if k < 4 {
+                        if let Some(sp) = self.ps_speed(side, actor_slot as usize) {
+                            keys[k] = sp;
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
+        keys[..k].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..k], "shuffle");
+        // beforeTurn action: eachEvent('BeforeTurn') + the post-action
+        // eachEvent('Update').
+        self.ps_active_ties(false, "shuffle");
+        self.ps_active_ties(false, "shuffle");
+    }
+
+    /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
+    /// when the next queued action is a move — `getActionSpeed` (and so
+    /// `getTarget`) for every queued move, then `queue.sort()`, whose move
+    /// ties the caller shuffles.
+    #[cfg(feature = "ps-rng")]
+    fn ps_resort_get_targets(&mut self, actions: &[ScheduledAction]) {
+        for a in actions {
+            let (actor_slot, move_slot, target) = match a.choice {
+                Choice::Move { actor_slot, move_slot, target }
+                | Choice::Terastallize { actor_slot, move_slot, target }
+                | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
+                _ => continue,
+            };
+            let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else { continue };
+            if !mon.is_alive() {
+                continue;
+            }
+            let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                data::move_id::STRUGGLE
+            } else {
+                match mon.moves.get(move_slot as usize) {
+                    Some(&id) if id != u16::MAX => id,
+                    _ => continue,
+                }
+            };
+            self.ps_get_target_draw(a.side, actor_slot, move_id, target);
+        }
+    }
+
+    /// `ps-rng` only: PS `runMove` calls `Battle.getTarget` before any
+    /// `BeforeMove` check (sim/battle.ts getTarget, a5df8274). It re-draws
+    /// `getRandomTarget` for every move whose chosen location is not a
+    /// living valid target — i.e. all spread / field / random moves (their
+    /// `targetLoc` came from resolveAction and never validates) and single
+    /// target moves whose target fainted. Self-side targets return the user
+    /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
+    /// Stalwart / Propeller Tail keep an active original target.
+    #[cfg(feature = "ps-rng")]
+    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) {
+        let n_active = self.format().active_count();
+        let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return };
+        let ability = user.effective_ability_id();
+        let tcode = self.moves()[move_id as usize].target;
+        if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
+            return;
+        }
+        let tracks = move_id == data::move_id::SNIPESHOT
+            || ability == data::ability_id::STALWART
+            || ability == data::ability_id::PROPELLERTAIL;
+        if let Some(t) = target {
+            if tracks && alive_at(self, t) {
+                return;
+            }
+            if matches!(tcode, 0 | 2 | 4 | 10) {
+                if alive_at(self, t) || t.side == side {
+                    return; // living target, or a fainted ally (no retarget)
+                }
+            }
+        }
+        let n = if tcode == 2 {
+            (0..n_active)
+                .filter(|&s| s != slot as usize && self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
+                .count()
+        } else {
+            let foe = side.opposing();
+            (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
+        };
+        if n > 0 {
+            let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+        }
+    }
+
+    /// `ps-rng` only: what PS does between a move action and the next one —
+    /// `eachEvent('Update')` speed ties, then (if another move is queued)
+    /// the dynamic re-sort: `getTarget` per queued move and a tie shuffle
+    /// among the remaining moves that still share priority and Speed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_move_action(&mut self, order: &ActionOrder, idx: usize) {
+        self.ps_active_ties(false, "shuffle");
+        let rest = &order[idx + 1..];
+        let next_is_move = rest.iter().any(|a| {
+            matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                && self.side(a.side).active_mon(a.actor_slot as usize).is_some_and(|m| m.is_alive())
+        });
+        if !next_is_move {
+            return;
+        }
+        let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
+        let mut k = 0;
+        for a in rest.iter().take(4) {
+            acts[k] = *a;
+            k += 1;
+        }
+        self.ps_resort_get_targets(&acts[..k]);
+        // Tie groups among the remaining moves: equal base priority and
+        // equal Speed (the engine's order already sorted them together).
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for a in &acts[..k] {
+            let (slot, move_slot) = match a.choice {
+                Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
+                _ => continue,
+            };
+            let Some(mon) = self.side(a.side).active_mon(slot as usize) else { continue };
+            if !mon.is_alive() {
+                continue;
+            }
+            let pri = mon.moves.get(move_slot as usize).map(|&id| if id == u16::MAX { 0 } else { self.moves()[id as usize].priority as i64 }).unwrap_or(0);
+            let spe = self.ps_speed(a.side, slot as usize).unwrap_or(0);
+            keys[n] = pri * 100_000 + spe;
+            n += 1;
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
     fn turn_prologue(
         &mut self,
         p1_choices: &[Choice],
         p2_choices: &[Choice],
     ) -> (ActionOrder, [[u8; 2]; 2]) {
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_resolve_action_draws(p1_choices, p2_choices);
+        }
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
@@ -1777,6 +2176,7 @@ impl Battle {
         //    queue; the runner emits them after the `|move|` event in
         //    that turn.
         self.pursuit_consumed = [[false; 2]; 2];
+        self.replaced_mid_turn = [[false; 2]; 2];
         // Pursuit switch-interception: a voluntary start-of-turn switch is
         // intercepted by an opposing Pursuit BEFORE the switcher leaves
         // (PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`). Both
@@ -1800,6 +2200,25 @@ impl Battle {
         // Temporarily move rng out to split-borrow with `self`. `Rng`
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
         // placeholder for the duration of the call.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
+            let mut k = 0;
+            for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+                let mut moved = [false; 2];
+                for c in choices {
+                    if matches!(c, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && k < 4
+                        && !moved[(c.actor_slot() as usize).min(1)]
+                    {
+                        moved[(c.actor_slot() as usize).min(1)] = true;
+                        acts[k] = ScheduledAction { side, actor_slot: c.actor_slot(), choice: *c };
+                        k += 1;
+                    }
+                }
+            }
+            self.ps_resort_get_targets(&acts[..k]);
+        }
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         let order = action_order(self, p1_choices, p2_choices, &mut rng);
         self.rng = rng;
@@ -1859,7 +2278,7 @@ impl Battle {
                                 .unwrap_or(u16::MAX)
                         };
                         if mid != u16::MAX {
-                            let cat = data::MOVES[mid as usize].category;
+                            let cat = self.moves()[mid as usize].category;
                             queue.entries[s][slot] = ActionQueueEntry {
                                 kind: if cat == 2 { ActionKind::StatusMove } else { ActionKind::DamagingMove },
                                 move_id: mid,
@@ -1918,6 +2337,10 @@ impl Battle {
         if self.pursuit_consumed[action.side as usize][(action.actor_slot as usize).min(1)] {
             return;
         }
+        if self.replaced_mid_turn[action.side as usize][(action.actor_slot as usize).min(1)] {
+            return;
+        }
+        self.snapshot_hp_before_action(action.side, action.actor_slot, action.choice);
         // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
         // iff any action ordered AFTER the current one this turn is a
         // move/switch/instaswitch/shift. PS shifts the current action
@@ -1966,9 +2389,25 @@ impl Battle {
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
         self.resolve_move_with_pending(action, pending_kind, will_act);
+        self.update_hp_berries();
         self.multi_targeted_defenders = 0;
         self.spread_segmentable_defenders = 0;
         self.finalize_move_resolution(order, idx, pending_kind);
+    }
+
+    /// PS `eachEvent('Update')` after every action (sim/battle.ts:2861), for
+    /// the HP-threshold berries: a holder that dropped to its threshold
+    /// from recoil, Life Orb, Rocky Helmet or residual damage eats it then
+    /// (items.ts sitrusberry et al. `onUpdate`).
+    fn update_hp_berries(&mut self) {
+        let n = self.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::on_after_damage(self, side, slot, &mut rng);
+                self.rng = rng;
+            }
+        }
     }
 
     /// Phase-3 epilogue: everything that runs AFTER the action queue
@@ -1992,7 +2431,17 @@ impl Battle {
         //    status damage / Speed Boost / etc.). Runs BEFORE timer
         //    decrement so a mon takes its last sand damage on the turn
         //    sand expires (PS behavior).
-        self.resolve_end_of_turn();
+        // No residuals once a side is out: PS ended the battle at the faint
+        // (sim/battle.ts faintMessages -> checkWin).
+        if !(self.p1.is_defeated() || self.p2.is_defeated()) {
+            self.resolve_end_of_turn();
+            // PS: the residual action ends with eachEvent('Update').
+            self.update_hp_berries();
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
+        }
 
         // 4. Per-mon end-of-turn flags + side-condition timers.
         for s in [SideRef::P1, SideRef::P2] {
@@ -2068,23 +2517,12 @@ impl Battle {
             // turn so the next turn's first Round is back to 60 BP.
             side.conditions.round_used_this_turn = false;
         }
-        // 5. Weather + Trick Room timers (battle-wide).
+        // 5. Weather + Trick Room timers (battle-wide). The weather's last
+        //    turn already ended it in `eot_weather_chip`.
         if self.weather_turns > 0 {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
-                self.weather = crate::weather::Weather::None;
-                // PR-LC1: weather field changed — refresh cache.
-                self.sync_weather_terrain_cache();
-                // Weather just expired — refresh paradox boosters on
-                // both sides so Protosynthesis users drop their volatile.
-                let n = self.format().active_count() as u8;
-                for s in [SideRef::P1, SideRef::P2] {
-                    for slot in 0..n {
-                        crate::ability::refresh_paradox_booster(self, s, slot);
-                    }
-                }
-                // Weather gone — Forecast Castforms revert to base forme.
-                self.refresh_forecast_formes();
+                self.end_weather();
             }
         }
         if self.trick_room_turns > 0 {
@@ -2178,6 +2616,11 @@ impl Battle {
         for c in choices {
             if let Choice::MegaEvolve { actor_slot, .. } = *c {
                 self.try_mega_evolve(side, actor_slot);
+                // PS: the megaEvo action ends with eachEvent('Update').
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
             }
         }
     }
@@ -2264,6 +2707,11 @@ impl Battle {
                         if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
                             continue; // self-switch follow-up; handled post-move
                         }
+                        // A later Switch for this slot is a mid-turn pick
+                        // (Eject Button on the mon switching in now).
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
+                        }
                         let tw = self.side(side).conditions.tailwind_turns > 0;
                         let spd = self
                             .side(side)
@@ -2279,10 +2727,16 @@ impl Battle {
                 }
             }
         }
-        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4).
+        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4);
+        // slowest first under Trick Room (PS sim/pokemon.ts getActionSpeed
+        // `speed = 10000 - speed` applies to switch actions too).
         // PS breaks Speed ties at random, which we do not model; the unstable
         // sort leaves ties in an unspecified order.
-        acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        if self.trick_room_turns > 0 {
+            acts[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        } else {
+            acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        }
         for &(_, side, actor_slot, team_index) in &acts[..n] {
             let opp_choices = match side {
                 SideRef::P1 => p2_choices,
@@ -2292,12 +2746,78 @@ impl Battle {
             // voluntary switcher BEFORE it leaves, at 2× BP.
             self.try_pursuit_interception(side, actor_slot, opp_choices);
             if self.do_switch(side, actor_slot, team_index) {
+                // PS: the switch action ends with eachEvent('Update'); the
+                // queued runSwitch then speed-sorts all actives.
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                    self.ps_active_ties(true, "shuffle");
+                }
                 // Switch-in `onStart` fires immediately as this mon enters
                 // (PS order: hazards — already in do_switch — then ability
                 // then item onStart). Forme changes remain a per-species TBD.
                 crate::ability::on_switch_in(self, side, actor_slot);
                 crate::item::on_switch_in(self, side, actor_slot);
+                // ...and the runSwitch action's own eachEvent('Update').
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
             }
+        }
+    }
+
+    /// Faint replacements. PS commits them as `instaswitch` actions (order
+    /// 3), which all run before the `runSwitch` each one queues (order
+    /// 101); `runSwitch` then batches every pending switch-in and fires
+    /// their SwitchIn handlers in Speed order (sim/battle-actions.ts:175-184).
+    /// So every replacement is on the field before any of their abilities
+    /// or items activate.
+    fn apply_replacement_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
+        let mut n = 0usize;
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            for c in choices {
+                if let Choice::Switch { actor_slot, team_index } = *c {
+                    if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
+                        entered[n] = (0, side, actor_slot);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        if n == 0 {
+            return;
+        }
+        // The last instaswitch's eachEvent('Update'), then runSwitch's
+        // speedSort(allActive).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
+            self.ps_active_ties(true, "shuffle");
+        }
+        for e in &mut entered[..n] {
+            let tw = self.side(e.1).conditions.tailwind_turns > 0;
+            e.0 = self
+                .side(e.1)
+                .active_mon(e.2 as usize)
+                .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                .unwrap_or(0);
+        }
+        entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        // Handlers sort by priority before Speed: abilities (0) all run
+        // before the item handlers (seeds / Booster Energy / Room Service
+        // carry `onSwitchInPriority` -1 or -2, data/items.ts).
+        for &(_, side, slot) in &entered[..n] {
+            crate::ability::on_switch_in(self, side, slot);
+        }
+        for &(_, side, slot) in &entered[..n] {
+            crate::item::on_switch_in(self, side, slot);
+        }
+        // runSwitch's own eachEvent('Update').
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
         }
     }
 
@@ -2438,6 +2958,7 @@ impl Battle {
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
+            incoming.move_actions = 0;
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
@@ -2900,6 +3421,11 @@ impl Battle {
                             deferred[n_deferred] = (actor_slot, team_index);
                             n_deferred += 1;
                         }
+                        // Same predicate as apply_pre_turn_switches: a
+                        // Switch after a turn-start Switch is a mid-turn pick.
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
+                        }
                     }
                     Choice::Pass { .. } => {}
                 }
@@ -2915,22 +3441,30 @@ impl Battle {
                 if !pending {
                     continue;
                 }
+                let forced = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_is_forced());
                 // Clear the flag regardless — even if no replacement is
                 // available, the move doesn't re-fire next turn.
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
                     m.set_pending_self_switch(false);
                 }
                 // Find the first unconsumed deferred switch matching this
-                // slot and pop it. If none is queued, the switch silently
-                // fails.
+                // slot and pop it. If none is queued, a self-switch silently
+                // fails; a forced one (Eject Button) takes the first bench mon.
                 let Some(pos) = (0..n_deferred)
                     .find(|&i| !consumed[i] && deferred[i].0 == slot)
                 else {
+                    if forced {
+                        self.force_switch_auto(side, slot);
+                    }
                     continue;
                 };
                 consumed[pos] = true;
                 let team_index = deferred[pos].1;
                 if self.do_switch(side, slot, team_index) && n_switched < switched_slots.len() {
+                    self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
                     switched_slots[n_switched] = slot;
                     n_switched += 1;
                 }
@@ -3045,7 +3579,7 @@ impl Battle {
                             // BLUNT global disable — a spread hit on one
                             // defender couples with a SINGLE-target hit on a
                             // DIFFERENT defender that would otherwise collapse.
-                            if matches!(data::MOVES[mid as usize].target, 5 | 6 | 11) {
+                            if matches!(self.moves()[mid as usize].target, 5 | 6 | 11) {
                                 any_global_couple = true; // spread
                             }
                         }
@@ -3204,7 +3738,7 @@ impl Battle {
             if (mid as usize) >= data::MOVES.len() {
                 continue;
             }
-            let m = &data::MOVES[mid as usize];
+            let m = &self.moves()[mid as usize];
             // Only foe-damaging target codes contribute a damage site that
             // segments. Status / self / ally / field targets never do.
             if !matches!(m.target, 0 | 4 | 10 | 13 | 14 | 5 | 6) {
@@ -3325,7 +3859,7 @@ impl Battle {
                 //     (a stat-drop secondary is harmless, but surgically
                 //     distinguishing is how completeness holes creep in).
                 let mid = mon.moves[(move_slot as usize).min(3)];
-                if (mid as usize) < data::MOVES.len() && data::MOVES[mid as usize].has_secondary {
+                if (mid as usize) < data::MOVES.len() && self.moves()[mid as usize].has_secondary {
                     return false;
                 }
             }
@@ -3398,7 +3932,7 @@ impl Battle {
             // non-crit roll × 3/2 equals the top crit roll. Round up.
             let mut max_hit = ((hi as u32) * 3 + 1) / 2;
             // Multi-hit moves deliver up to `multihit_max` strikes; scale.
-            let mh = data::MOVES[mid as usize].multihit_max;
+            let mh = self.moves()[mid as usize].multihit_max;
             if mh > 1 {
                 max_hit = max_hit.saturating_mul(mh as u32);
             }
@@ -3460,6 +3994,13 @@ impl Battle {
             }
         }
 
+        // PS `runMove` (sim/battle-actions.ts:217) counts the action before
+        // any beforeMove check can stop it.
+        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            if a.is_alive() {
+                a.move_actions = a.move_actions.saturating_add(1);
+            }
+        }
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc. `mut` because Stance Change (below) can
         // forme-swap the actor mid-resolution and must refresh the snapshot
@@ -3481,7 +4022,12 @@ impl Battle {
                 _ => return,
             }
         };
-        let m = &data::MOVES[move_id as usize];
+        let m = &self.moves()[move_id as usize];
+
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+        }
 
         // Pre-move volatile/status checks (flinch, disable, throat chop, heal
         // block, taunt, truant, sleep, freeze, paralysis, confusion, attract).
@@ -3549,7 +4095,7 @@ impl Battle {
         // Local mutable copy so per-slug onModifyMove hooks (Shell Side
         // Arm category swap) can patch fields without back-flowing into
         // the global `MOVES` table.
-        let mut m_owned: data::MoveDef = data::MOVES[move_id as usize];
+        let mut m_owned: data::MoveDef = self.moves()[move_id as usize];
         // Shell Side Arm — PS data/moves.ts:shellsidearm.
         //   onModifyMove(move, pokemon, target) {
         //     if (!target) return;
@@ -3625,6 +4171,14 @@ impl Battle {
             ChargeOutcome::Continue { skip_pp_deduct } => skip_pp_deduct,
             ChargeOutcome::Abort => return,
         };
+        // Electro Shot / Meteor Beam boost SpA in onTryMove, before a Rain /
+        // Power Herb skip (PS data/moves.ts:4644); the hit reads the boosted
+        // stat, so refresh the snapshot taken before the boost.
+        if matches!(move_id, data::move_id::ELECTROSHOT | data::move_id::METEORBEAM) {
+            if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+                attacker.boosts = a.boosts;
+            }
+        }
 
         // 3. PP cost — ticked even on miss / immunity (PS behavior). Also
         //    locks Choice / Gorilla Tactics into this slot, sets
@@ -3897,6 +4451,31 @@ impl Battle {
             }
         }
 
+        // Expanding Force — PS data/moves.ts:4958 `onModifyMove`: a grounded
+        // user in Psychic Terrain turns it into `allAdjacentFoes`. PS
+        // `useMoveInner` (sim/battle-actions.ts:432) then re-picks the
+        // target with `getRandomTarget` → `Side.randomFoe` (one `sample`).
+        let ef_spread;
+        let m = if move_id == data::move_id::EXPANDINGFORCE
+            && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+            && attacker.is_grounded()
+        {
+            ef_spread = data::MoveDef { target: 6, ..*m };
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() && self.format().active_count() >= 2 {
+                let foe = actor_side.opposing();
+                let n = (0..self.format().active_count())
+                    .filter(|&s| self.side(foe).active_mon(s).is_some_and(|p| p.is_alive()))
+                    .count();
+                if n > 0 {
+                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                }
+            }
+            &ef_spread
+        } else {
+            m
+        };
+
         // 5. Enumerate targets (spread or single).
         let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
         if targets.is_empty() {
@@ -3944,6 +4523,11 @@ impl Battle {
         // unchanged. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Poltergeist_(move)>.
         if move_id == data::move_id::POLTERGEIST && self.poltergeist_target_has_no_item(&targets) {
+            return;
+        }
+        // Steel Roller — PS data/moves.ts steelroller `onTry() { return
+        // !this.field.isTerrain(''); }`: fails (after PP) with no terrain.
+        if move_id == data::move_id::STEELROLLER && self.terrain == crate::terrain::Terrain::None {
             return;
         }
 
@@ -4574,11 +5158,15 @@ impl Battle {
                 let pierces = damaging
                     && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
                     && crate::damage::move_makes_contact(
-                        &data::MOVES[move_id as usize],
+                        &self.moves()[move_id as usize],
                         &attacker,
                     );
                 if pierces {
-                    piercing_drill_quarter = true;
+                    // Standard gen 9 Unseen Fist strips the protect flag
+                    // (PS data/abilities.ts unseenfist onModifyMove): full
+                    // damage. Champions reworks it to Piercing Drill's 1/4.
+                    piercing_drill_quarter = self.champions
+                        || attacker_ability_id == data::ability_id::PIERCINGDRILL;
                 } else {
                     // Fully blocked. If the protector used a Spiky Shield
                     // family move and this move makes contact, punish the
@@ -4587,7 +5175,7 @@ impl Battle {
                     // no-op.
                     let variant = defender.protect_variant();
                     if variant != 0
-                        && crate::damage::move_makes_contact(&data::MOVES[move_id as usize], &attacker)
+                        && crate::damage::move_makes_contact(&self.moves()[move_id as usize], &attacker)
                     {
                         self.apply_protect_punish(
                             variant, actor_side, actor_slot, tside, tslot,
@@ -4853,11 +5441,8 @@ impl Battle {
                         weather: self.effective_weather_for_pair(
                             actor_side, actor_slot, tside, tslot,
                         ),
-                        terrain: if defender.is_grounded() {
-                            self.terrain
-                        } else {
-                            crate::terrain::Terrain::None
-                        },
+                        terrain: self.terrain,
+                        champions: self.champions,
                         ..DamageContext::default()
                     };
                     let move_type = crate::damage::move_type_in_ctx(
@@ -5153,15 +5738,9 @@ impl Battle {
             let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
             let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
-            // Terrain mult only when defender is grounded — Flying types,
-            // Levitate ability, and Air Balloon defenders see plain
-            // damage. PS data/conditions.ts:electricterrain onBasePower
-            // only fires for grounded targets.
-            let active_terrain = if defender.is_grounded() {
-                self.terrain
-            } else {
-                crate::terrain::Terrain::None
-            };
+            // Raw field terrain; `damage.rs` checks attacker / defender
+            // grounding per terrain rule.
+            let active_terrain = self.terrain;
             // Aura abilities — scan every alive active for fairyaura /
             // darkaura / aurabreak. PS `onAnyBasePower` fires from
             // each holder; here we precompute presence (PS de-dupes via
@@ -5273,6 +5852,9 @@ impl Battle {
                 // Analytic ×1.3: the attacker moves last iff no later action
                 // this turn is a move by a live mon (PS queue.willMove scan).
                 attacker_moves_last: !will_act,
+                champions: self.champions,
+                defender_resist_berry: fixed_damage.is_none()
+                    && crate::item::type_resist_berry_fires(self, tside, tslot, m.type_, defender.species()),
             };
             // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
             //   if (this.randomChance(3, 10)) return this.chainModify(2);
@@ -5286,7 +5868,7 @@ impl Battle {
                 && fixed_damage.is_none()
                 && self.rng.chance_keyed(3, 10)
             {
-                Some((data::MOVES[move_id as usize].base_power as u32) * 2)
+                Some((self.moves()[move_id as usize].base_power as u32) * 2)
             } else {
                 None
             };
@@ -5299,7 +5881,7 @@ impl Battle {
             // Multi-target spread, multi-hit, fixed-damage, and Beat Up are
             // all out of scope (documented in PR-D acceptance).
             let ko_split_hp = {
-                let m = &data::MOVES[move_id as usize];
+                let m = &self.moves()[move_id as usize];
                 let defender_full_hp = defender.stats.hp;
                 let sturdy_risk = defender.effective_ability_id() == data::ability_id::STURDY
                     && defender.current_hp == defender_full_hp
@@ -5413,10 +5995,8 @@ impl Battle {
             };
             let mut pipeline =
                 DamagePipeline::new(dmg, fixed_dmg_snapshot.is_some(), post_inputs);
-            pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
-            if let Some(ref ctx) = beat_up_ctx_opt {
-                pipeline.apply_friend_guard(ctx);
-            }
+            // Life Orb / Expert Belt / Friend Guard are chained inside the
+            // damage calc's ModifyDamage modifier (damage.rs).
             dmg = pipeline.current;
             // Multi-hit hit-count roll — Double Hit, Population Bomb,
             // Bullet Seed, Rock Blast, Triple Axel, Tail Slap, Icicle
@@ -5531,9 +6111,9 @@ impl Battle {
                 let halved = crate::item::try_consume_type_resist_berry(
                     self, tside, tslot, m.type_, defender.species(),
                 );
-                if halved {
-                    dmg = (dmg / 2).max(1);
-                }
+                // The ×0.5 is already in the damage calc's ModifyDamage chain
+                // (`defender_resist_berry`); here the berry is only eaten.
+                let _ = halved;
             }
 
             // Restore the fixed-damage value: every multiplier above was
@@ -6489,6 +7069,7 @@ impl Battle {
         // one-shot mark are all owned by
         // `Battle::apply_damage_step`. See
         // `docs/damage-pipeline-design.md` PR-B.
+        let mut hp_lost: u16 = 0;
         if !hit_sub {
             let res = self.apply_damage_step(DamageApplication {
                 effective_dmg,
@@ -6499,6 +7080,7 @@ impl Battle {
                 move_category: m.category,
                 move_type: m.type_,
             });
+            hp_lost = res.damage_dealt;
             ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(res.damage_dealt);
             // Record the real-hit foe slot for Dragon Tail / Circle
             // Throw phazing (a Substitute absorb never reaches this
@@ -6580,7 +7162,7 @@ impl Battle {
         // common case (single-target drain into a live mon) is
         // exact. Liquid Ooze flip not modelled (rare ability).
         // Big Root +30% boost also deferred.
-        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, effective_dmg);
+        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, hp_lost);
 
         // PS stops a multi-hit move the moment the target faints
         // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -6644,7 +7226,7 @@ impl Battle {
             // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
             // Skin / Iron Barbs: contact-only, attacker not Magic-
             // Guarded. PS `data/items.ts:rockyhelmet`.
-            if crate::damage::move_makes_contact(&data::MOVES[move_id as usize], attacker) {
+            if crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker) {
                 crate::item::on_attacker_contact_hit(
                     self, tside, tslot, actor_side, actor_slot,
                 );
@@ -6796,6 +7378,10 @@ impl Battle {
             .side_mut(app.target_side)
             .active_mon_mut(app.target_slot as usize)
         {
+            // PS `Pokemon.damage` (sim/pokemon.ts:1595) returns the HP
+            // actually lost, so recoil / drain / Shell Bell on a KO are
+            // computed from the target's remaining HP, not the overkill.
+            result.damage_dealt = app.effective_dmg.min(t.current_hp);
             t.current_hp = t.current_hp.saturating_sub(app.effective_dmg);
             // Mark this target as "damaged this turn" so
             // Avalanche / Revenge / Counter (when wired) see
@@ -6825,7 +7411,6 @@ impl Battle {
             }
         }
         result.fainted = self.check_target_fainted(app.target_side, app.target_slot);
-        result.damage_dealt = app.effective_dmg;
         result.is_real_hit = app.effective_dmg > 0 && cross_side;
 
         // Stellar once-per-type bookkeeping. PS
@@ -7787,7 +8372,6 @@ impl Battle {
                     attacker, defender, ctx, inv.beat_up_base_atks[0],
                 );
                 pipeline.current = raw;
-                pipeline.apply_attacker_item(true);
                 pipeline.current
             } else {
                 let hc = if inv.crit_immune {
@@ -7799,6 +8383,8 @@ impl Battle {
                 };
                 let mut inp = inv.inputs;
                 inp.crit = hc;
+                // A resist berry is eaten on the first hit at most.
+                inp.defender_resist_berry = false;
                 let member_bp = 5 + (inv.beat_up_base_atks[hit_idx as usize] as u32 / 10);
                 // Beat Up multi-hit: per-member damage depends on ally HP and
                 // count varies; KO partition is too entangled. Pass `None`.
@@ -7806,7 +8392,6 @@ impl Battle {
                     attacker, defender, inv.move_id, None, inp, Some(member_bp), None,
                 );
                 pipeline.current = raw;
-                pipeline.apply_attacker_item(true);
                 pipeline.current
             }
         } else {
@@ -7824,6 +8409,7 @@ impl Battle {
                 };
                 let mut inp = inv.inputs;
                 inp.crit = hc;
+                inp.defender_resist_berry = false;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
                 } else {
@@ -7835,11 +8421,8 @@ impl Battle {
                 let (rd, rctx) = self.roll_initial_damage(
                     attacker, defender, inv.move_id, inv.fixed_dmg_snapshot, inp, bp_ov, None,
                 );
+                let _ = rctx;
                 pipeline.current = rd;
-                pipeline.apply_attacker_item(inv.fixed_dmg_snapshot.is_none());
-                if let Some(ref c) = rctx {
-                    pipeline.apply_friend_guard(c);
-                }
                 pipeline.current
             }
         }
@@ -8340,10 +8923,10 @@ impl Battle {
             return MoveIdentityOutcome::Abort;
         }
 
-        // 2. Fake Out: fails unless attacker has been on the field 0 turns
-        //    (i.e. this is its first action since switch-in). PS marks
-        //    this with the 'fakeout' move's onTry checking activeTurns.
-        if move_id == data::move_id::FAKEOUT && attacker.turns_active != 0 {
+        // 2. Fake Out: fails unless this is the attacker's first move
+        //    action since switching in. PS data/moves.ts:5097 fakeout
+        //    `onTry`: `if (source.activeMoveActions > 1) return false`.
+        if move_id == data::move_id::FAKEOUT && attacker.move_actions > 1 {
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -8671,7 +9254,10 @@ impl Battle {
         };
         if matches!(attacker.status, Status::Paralysis) {
             self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if self.rng.range(4) == 0 {
+            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
+            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
+            let denom = if self.champions { 8 } else { 4 };
+            if self.rng.range(denom) == 0 {
                 return PreMoveOutcome::Abort;
             }
         }
@@ -8758,8 +9344,22 @@ impl Battle {
         // Combat into a Protected target leave the user's stats unchanged
         // (every move in `self_stat_drops` is damaging, so this gate is
         // correct for all of them).
-        if let Some(drops) = self_stat_drops(m.slug) {
+        // Steel Roller clears the terrain once it hits (PS data/moves.ts
+        // steelroller onHit / onAfterSubDamage `this.field.clearTerrain()`).
+        if move_id == data::move_id::STEELROLLER && any_damage_dealt > 0 {
+            self.terrain = crate::terrain::Terrain::None;
+            self.terrain_turns = 0;
+            self.sync_weather_terrain_cache();
+        }
+        if let Some(drops) = self_stat_drops(m.slug, self.champions) {
             if any_damage_dealt > 0 {
+                // PS `selfDrops` rolls `random(100)` for a `self.boosts`
+                // move even though the drop is unconditional
+                // (sim/battle-actions.ts selfDrops, a5df8274).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    let _ = self.rng.percent_1_100();
+                }
                 self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
                 // White Herb consumes itself to restore negative stages.
                 crate::item::try_consume_white_herb(self, actor_side, actor_slot);
@@ -9455,6 +10055,71 @@ impl Battle {
         None
     }
 
+    /// Record every active slot's HP before a move action (Emergency Exit).
+    fn snapshot_hp_before_action(&mut self, side: SideRef, slot: u8, choice: Choice) {
+        let damaging = match choice {
+            Choice::Move { move_slot, .. }
+            | Choice::Terastallize { move_slot, .. }
+            | Choice::MegaEvolve { move_slot, .. } => self
+                .side(side)
+                .active_mon(slot as usize)
+                .and_then(|m| m.moves.get(move_slot as usize).copied())
+                .filter(|&id| id != u16::MAX)
+                .is_some_and(|id| self.moves()[id as usize].category != 2),
+            _ => false,
+        };
+        let mut snap = [[(u8::MAX, 0u16); 2]; 2];
+        for (si, s) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for sl in 0..self.format().active_count() {
+                if let Some(m) = self.side(s).active_mon(sl) {
+                    snap[si][sl] = (self.side(s).active[sl], m.current_hp);
+                }
+            }
+        }
+        self.hp_before_action = Some((snap, damaging));
+    }
+
+    /// Emergency Exit — PS data/abilities.ts emergencyexit `onEmergencyExit`
+    /// (Champions: data/mods/champions/abilities.ts, which no longer clears
+    /// other actives' switchFlag). A damaging move action that leaves the
+    /// holder alive at or below half HP, from above half before it, sets
+    /// `switchFlag` unless it can't switch or is already switching. PS fires
+    /// it from the move's hit loop for targets, and after recoil / Life Orb /
+    /// contact damage for the user (sim/battle-actions.ts and
+    /// data/mods/champions/scripts.ts:583); the whole-action HP check covers
+    /// each. The player picks the replacement, like Eject Button.
+    fn trigger_emergency_exits(&mut self) {
+        let Some((snap, damaging)) = self.hp_before_action.take() else { return };
+        if !damaging {
+            return;
+        }
+        for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for slot in 0..self.format().active_count() {
+                let (team_idx, before) = snap[si][slot];
+                let fires = self.side(side).active[slot] == team_idx
+                    && self.side(side).active_mon(slot).is_some_and(|m| {
+                        let half = m.stats.hp / 2;
+                        m.is_alive()
+                            && m.effective_ability_id() == data::ability_id::EMERGENCYEXIT
+                            && before > half
+                            && m.current_hp <= half
+                            && !m.pending_self_switch()
+                    })
+                    && self.first_bench_index(side).is_some();
+                if !fires {
+                    continue;
+                }
+                if self.decision_phases {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        m.set_pending_forced_switch();
+                    }
+                } else {
+                    self.force_switch_auto(side, slot as u8);
+                }
+            }
+        }
+    }
+
     /// Reactive force-switch: yank `slot` on `side` off the field and pull
     /// in the first eligible bench Pokemon as a deterministic replacement.
     /// Returns true if a swap actually fired. Runs the standard
@@ -9470,6 +10135,7 @@ impl Battle {
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
+        self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
         true
@@ -9514,6 +10180,7 @@ impl Battle {
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
+        self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
         true
@@ -9832,8 +10499,12 @@ impl Battle {
         // versus current PS: the engine's onBeforeMove decrements
         // FIRST and wakes on 0, so 2→3→4 starting values correspond to
         // 1/2/3 effective asleep turns — matching PS exactly.
+        // Champions draws `this.sample([2, 3, 3])` instead
+        // (data/mods/champions/conditions.ts slp onStart): the same
+        // `random(3)`, mapped 0/1/2 -> 2/3/3.
         let sleep_turns = if matches!(status, Status::Sleep) {
-            (self.rng.range(3) as u8) + 2
+            let r = self.rng.range(3) as u8;
+            if self.champions { [2, 3, 3][r as usize] } else { r + 2 }
         } else {
             0
         };
@@ -9956,15 +10627,7 @@ impl Battle {
         let attacker_total_fainted_allies = self.side(src_side).total_fainted();
         let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
         let def_conds = self.side(tside).conditions;
-        let def_grounded = self
-            .side(tside)
-            .active_mon(tslot as usize)
-            .is_some_and(|d| d.is_grounded());
-        let active_terrain = if def_grounded {
-            self.terrain
-        } else {
-            crate::terrain::Terrain::None
-        };
+        let active_terrain = self.terrain;
         // This residual hit isn't part of the recorded move-phase RNG stream
         // the golden harness feeds, so don't consume from the oracle hint
         // queue. OraclePartial / Splitmix draw deterministically; strict
@@ -10025,6 +10688,8 @@ impl Battle {
                     // The delayed hit has no live attacker in the turn queue;
                     // Analytic does not apply.
                     attacker_moves_last: false,
+                    champions: self.champions,
+                    defender_resist_berry: false,
                 },
             )
         };
@@ -10179,6 +10844,14 @@ impl Battle {
     /// remain at the top of the body. No RNG draws are added or
     /// removed; behavior is byte-identical.
     fn eot_weather_chip(&mut self) {
+        // PS fieldEvent('Residual') (sim/battle.ts:515-521) decrements the
+        // weather's duration at its own handler (onFieldResidualOrder 1) and
+        // on reaching 0 ends it and skips the handler: no chip on the last
+        // turn, and the rest of the residuals already see clear weather.
+        if self.weather_turns == 1 {
+            self.weather_turns = 0;
+            self.end_weather();
+        }
         // 1. Weather damage (sand) — PS residualOrder 1.
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities: Magic Guard blocks the damage (PS
@@ -10319,6 +10992,22 @@ impl Battle {
                 }
             }
         }
+    }
+
+    fn end_weather(&mut self) {
+        self.weather = crate::weather::Weather::None;
+        // PR-LC1: weather field changed — refresh cache.
+        self.sync_weather_terrain_cache();
+        // Weather just expired — refresh paradox boosters on
+        // both sides so Protosynthesis users drop their volatile.
+        let n = self.format().active_count() as u8;
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                crate::ability::refresh_paradox_booster(self, s, slot);
+            }
+        }
+        // Weather gone — Forecast Castforms revert to base forme.
+        self.refresh_forecast_formes();
     }
 
     /// EOT sub-phase `grassy_terrain_heal`. Extracted from
@@ -10731,7 +11420,14 @@ impl Battle {
                         let (types, num) = m.effective_types();
                         let water_or_steel =
                             (0..num as usize).any(|i| matches!(types[i], 2 | 16));
-                        let denom = if water_or_steel { 8 } else { 16 };
+                        // Standard gen 9 (data/moves.ts saltcure) is twice
+                        // the Champions chip: 1/4 Water/Steel, else 1/8.
+                        let denom = match (water_or_steel, self.champions) {
+                            (true, true) => 8,
+                            (false, true) => 16,
+                            (true, false) => 4,
+                            (false, false) => 8,
+                        };
                         ((m.stats.hp / denom).max(1), crate::ability::has_magic_guard(m))
                     }
                     _ => (0, false),
@@ -11073,9 +11769,14 @@ impl Battle {
             // only when no usable opposing target was passed (singles, or a
             // self/field move that ignores `opp_target` anyway). Found by the
             // breadth corpus (out_d51772b14a: a Glare aimed at p2b hit p2a).
+            //
+            // A `normal` (0) or `any` (10) move may also be aimed at the
+            // adjacent ally (PS sim/battle.ts validTargetLoc): Charm / Skill
+            // Swap / Simple Beam / Swagger on a partner resolve there.
             _ => match target {
                 Some(Target { side: tgt_side, slot: tgt_slot })
-                    if tgt_side == opp_side
+                    if (tgt_side == opp_side
+                        || (tgt_side == actor_side && tgt_slot != actor_slot && matches!(m.target, 0 | 10)))
                         && self
                             .side(tgt_side)
                             .active_mon(tgt_slot as usize)
@@ -11086,6 +11787,17 @@ impl Battle {
                 _ => self.resolve_status_target(opp_side),
             },
         };
+        // Keyed-oracle attribution for this status move's own draws
+        // (accuracy, sleep length, ...): without it they carry whatever move
+        // context the last damaging move left behind. No-op for every
+        // non-keyed Rng variant.
+        {
+            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+            let ctx_actor = sref(actor_side) + actor_slot;
+            let ctx_target = opp_target.map(|(s, sl)| sref(s) + sl).unwrap_or(crate::rng::NO_SLOT);
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            self.rng.set_decision(RngDecision::Accuracy);
+        }
         // Protect / Detect (and the single-target shields) block a targeted
         // status move exactly as they block a damaging one. PS resolves this in
         // the move's hit step via the target's Protect `condition.onTryHit`,
@@ -11374,9 +12086,7 @@ impl Battle {
             data::move_id::MATBLOCK => {
                 // PS data/moves.ts:matblock. `onTry` fails when
                 // `source.activeMoveActions > 1` ("Mat Block only works on
-                // your first turn out") — equivalent to Fake Out's
-                // `turns_active == 0` gate (turns_active is 0 on the mon's
-                // first action after switch-in, incremented end of turn).
+                // your first turn out"), same counter as Fake Out.
                 // Unlike Wide / Quick Guard, Mat Block has NO `onHitSide`
                 // and does NOT call StallMove, so it neither rolls nor bumps
                 // the Protect stall counter — it just sets the side flag.
@@ -11385,7 +12095,7 @@ impl Battle {
                 let first_turn_out = self
                     .side(actor_side)
                     .active_mon(actor_slot as usize)
-                    .map(|a| a.turns_active == 0)
+                    .map(|a| a.move_actions <= 1)
                     .unwrap_or(false);
                 if !first_turn_out {
                     return;
@@ -12395,7 +13105,7 @@ impl Battle {
                         if mid == u16::MAX {
                             continue;
                         }
-                        let slug = data::MOVES[mid as usize].slug;
+                        let slug = self.moves()[mid as usize].slug;
                         if sleep_talk_excluded(slug) {
                             continue;
                         }
@@ -13470,7 +14180,7 @@ impl Battle {
                 if last_slot == 255 || last_move_id == u16::MAX {
                     return;
                 }
-                let last_slug = data::MOVES[last_move_id as usize].slug;
+                let last_slug = self.moves()[last_move_id as usize].slug;
                 if move_fails_instruct(last_slug) || pp_left == 0 {
                     return;
                 }
@@ -13593,16 +14303,7 @@ impl Battle {
                         // Single target: the explicitly chosen foe if valid,
                         // else the resolved `opp_target` (honors a bounce's
                         // forced_target and the first-foe fallback).
-                        let chosen = match target {
-                            Some(t)
-                                if forced_target.is_none()
-                                    && t.side == opp_side
-                                    && self.side(t.side).active_mon(t.slot as usize).is_some_and(|mm| mm.is_alive()) =>
-                            {
-                                Some((t.side, t.slot))
-                            }
-                            _ => opp_target,
-                        };
+                        let chosen = opp_target;
                         if let Some(x) = chosen {
                             tgts[0] = x;
                             ntgt = 1;
@@ -13637,7 +14338,10 @@ impl Battle {
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
                             crate::item::try_consume_white_herb(self, ts, tslot);
                             let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
-                            crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                            // Defiant / Competitive ignore an ally's drop.
+                            if ts != actor_side {
+                                crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                            }
                         }
                     }
                     return;
@@ -13861,8 +14565,8 @@ pub(crate) struct DamageApplication {
 /// (`any_damage_dealt`, `drag_target`, faint-stops-loop).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ApplyResult {
-    /// Bytes actually subtracted from the defender's HP — equals
-    /// `app.effective_dmg` after the saturating sub. Returned so
+    /// HP actually subtracted from the defender — `app.effective_dmg`
+    /// capped at the defender's HP before the hit. Returned so
     /// the caller can update `any_damage_dealt` without re-reading
     /// the locals.
     pub damage_dealt: u16,
@@ -14370,20 +15074,19 @@ fn move_fails_instruct(slug: &str) -> bool {
     )
 }
 
-fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
+fn self_stat_drops(slug: &str, champions: bool) -> Option<&'static [(u8, i8)]> {
     Some(match slug {
+        // Make It Rain: standard gen 9 is -1 SpA (PS data/moves.ts makeitrain
+        // `self.boosts.spa: -1`); Champions -2 (data/mods/champions/moves.ts).
+        "makeitrain" if !champions => &[(2, -1)],
         // Close-combat family: -1 def, -1 spd. Headlong Rush (Great Tusk's
         // signature, PS data/moves.ts: `self.boosts {def:-1, spd:-1}`, BP 120,
         // no Champions override) shares this drop, as does Armor Cannon
         // (Armarouge's signature, PS data/moves.ts armorcannon
         // `self: { boosts: { def: -1, spd: -1 } }`) — was missing.
         "closecombat" | "headlongrush" | "armorcannon" | "drainingkiss_unused" => &[(1, -1), (3, -1)],
-        // -2 spa specials. NOTE: Make It Rain is -1 in STANDARD gen9 (PS
-        // `data/moves.ts` makeitrain `self.boosts.spa: -1`) but Pokémon
-        // Champions — our TARGET format — rebalances it to -2, grouped here
-        // with the Draco-Meteor family. The PS-conformance harness drives
-        // standard gen9 and will flag this as a divergence; it's an expected
-        // Champions delta, NOT an engine bug. See docs (champions deltas).
+        // -2 spa specials, plus Champions' Make It Rain (standard gen 9 is
+        // handled above).
         "dracometeor" | "overheat" | "leafstorm" | "psychoboost"
         | "fleurcannon" | "makeitrain" => &[(2, -2)],
         // -1 atk -1 def.
@@ -14406,8 +15109,12 @@ fn self_stat_drops(slug: &str) -> Option<&'static [(u8, i8)]> {
 /// Per-slug status-secondary table: (status, chance_percent).
 /// Subset of PS data/moves.ts. Subsequent PRs grow this; sleep/freeze
 /// secondaries also deferred (need volatile duration handling).
-fn status_secondary(slug: &str) -> Option<(Status, u8)> {
+fn status_secondary(slug: &str, champions: bool) -> Option<(Status, u8)> {
     Some(match slug {
+        // Freeze-Dry: 10% freeze in standard gen 9 (PS data/moves.ts
+        // freezedry); Champions removes it (data/mods/champions/moves.ts
+        // `secondary: undefined`).
+        "freezedry" if !champions => (Status::Freeze, 10),
         // Burn 10% (mostly Fire-type physical / mixed):
         "flamethrower" | "fireblast" | "firepunch" | "ember" | "flareblitz"
         | "blueflare" | "heatwave" | "blazekick" | "firefang" | "searingshot" => (Status::Burn, 10),
@@ -14423,9 +15130,8 @@ fn status_secondary(slug: &str) -> Option<(Status, u8)> {
         // wired, so these just needed the table entry. (Ice Fang also carries
         // a 10% flinch — its flinch arm is in `flinch_chance` below.)
         //
-        // EXCLUDED for Champions: Freeze-Dry (mod sets `secondary: undefined`
-        // — no freeze in this format) and Powder Snow (mod `isNonstandard:
-        // "Past"`). See data/mods/champions/moves.ts.
+        // Freeze-Dry is above (standard gen 9 only). Powder Snow is
+        // `isNonstandard: "Past"` in Champions and not modelled.
         "icefang" | "icebeam" | "icepunch" | "blizzard" => (Status::Freeze, 10),
         // Paralysis 30%:
         // (Thunderous Kick is NOT a paralysis move — PS
@@ -14489,19 +15195,17 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
 ///
 /// All values cross-checked against PS data/moves.ts. Moves with other
 /// secondaries (burn, paralysis, stat drops) land in their respective PRs.
-fn flinch_chance(slug: &str) -> Option<u8> {
+fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
     Some(match slug {
         "fakeout" => 100,
-        // Iron Head is 30% flinch in standard gen 9, but Pokémon Champions —
-        // our TARGET format — rebalances it to 20% (PS data/mods/champions/
-        // moves.ts: ironhead `secondary.chance: 20`). Grouped with the other
-        // 20% flinchers below. (Found via the conformance harness, out_23: a
-        // roll of 20 flinches at 30% but NOT at Champions' 20%, so the engine
-        // wrongly froze the foe's attacker.)
+        // Iron Head is 30% flinch in standard gen 9 (PS data/moves.ts
+        // ironhead), 20% in Champions (data/mods/champions/moves.ts ironhead
+        // `secondary.chance: 20`; conformance out_23).
+        "ironhead" => if champions { 20 } else { 30 },
         "rockslide" | "airslash" | "zenheadbutt"
         | "headbutt" | "bite" | "stomp" | "needleam"
         | "extrasensory" | "astonish" | "hyperfang" => 30,
-        "ironhead" | "darkpulse" | "twister" | "dragonrush" | "snore"
+        "darkpulse" | "twister" | "dragonrush" | "snore"
         | "waterfall" => 20,
         // Fire Blast (PS data/moves.ts:5330) only has a 10% burn
         // secondary — no flinch. Low Kick (PS data/moves.ts:10444) has
@@ -14522,11 +15226,13 @@ fn flinch_chance(slug: &str) -> Option<u8> {
 /// `Pokemon::boosts`: 0 atk, 1 def, 2 spa, 3 spd, 4 spe, 5 acc, 6 eva.
 /// Substitute / Sheer Force gating happens at the caller — this is
 /// just the table.
-fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
+fn stat_drop_secondary(slug: &str, champions: bool) -> Option<(u8, i8, u8)> {
     Some(match slug {
         // Guaranteed -1 Spe (used as soft speed control in VGC):
+        // Drum Beating: PS data/moves.ts drumbeating `secondary: { chance:
+        // 100, boosts: { spe: -1 } }` (was missing).
         "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate"
-        | "rocktomb" => (4, -1, 100),
+        | "rocktomb" | "drumbeating" => (4, -1, 100),
         // 100% -1 SpA — Mystical Fire, Snarl (spread), plus Spirit Break
         // (Grimmsnarl, single-target) and Struggle Bug (spread). PS
         // data/moves.ts each `secondary: { chance: 100, boosts: { spa: -1 } }`.
@@ -14556,10 +15262,10 @@ fn stat_drop_secondary(slug: &str) -> Option<(u8, i8, u8)> {
         // BP 90). The accuracy-drop secondary was unimplemented (conformance
         // out_996efbf242).
         "nightdaze" => (5, -1, 40),
-        // Moonblast SpA-drop: Champions rebalances the chance from gen 9's
-        // 30% to 10% (PS data/mods/champions/moves.ts: moonblast
-        // `secondary.chance: 10`). Our target format.
-        "moonblast" => (2, -1, 10),
+        // Moonblast SpA drop: 30% in standard gen 9 (PS data/moves.ts
+        // moonblast), 10% in Champions (data/mods/champions/moves.ts
+        // moonblast `secondary.chance: 10`).
+        "moonblast" => (2, -1, if champions { 10 } else { 30 }),
         // 100% -1 Def — Thunderous Kick (PS data/moves.ts:19549
         // `secondary: { chance: 100, boosts: { def: -1 } }`; no status) and
         // Grav Apple (Dipplin/Flapple, PS data/moves.ts:gravapple
@@ -14767,14 +15473,14 @@ fn apply_secondary_effect(
     // Luxray Ice Fang on Salazzle recorded [89, 6]; pre-swap engine
     // popped 89 for flinch (no flinch) then 6 for status (≤10 = freeze
     // applied, diverged from PS=none).
-    if let Some((status, chance)) = status_secondary(move_slug) {
+    if let Some((status, chance)) = status_secondary(move_slug, battle.champions) {
         if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
             // the target's side vetoes it.
             battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
         }
     }
-    if let Some(chance) = flinch_chance(move_slug) {
+    if let Some(chance) = flinch_chance(move_slug, battle.champions) {
         let chance = sg(chance);
         // PS rolls the flinch chance unconditionally; the flinch is then
         // vetoed by Inner Focus's onTryAddVolatile. We keep the draw so
@@ -14867,7 +15573,7 @@ fn apply_secondary_effect(
             }
         }
     }
-    if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug) {
+    if let Some((idx, delta, chance)) = stat_drop_secondary(move_slug, battle.champions) {
         if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Clear Body / White Smoke / Full Metal Body / Clear Amulet
             // veto any opposing stat drop. Per-stat blockers (Hyper
@@ -14927,9 +15633,10 @@ fn apply_secondary_effect(
         }
     }
     if move_slug == "direclaw" {
-        // Champions rebalances Dire Claw's status chance from gen 9's 50% to
-        // 30% (PS data/mods/champions/moves.ts: direclaw `secondary.chance: 30`).
-        if rng.percent_1_100_t(sg(30)) <= sg(30) {
+        // 50% in standard gen 9 (PS data/moves.ts direclaw); Champions 30%
+        // (data/mods/champions/moves.ts: direclaw `secondary.chance: 30`).
+        let chance = sg(if battle.champions { 30 } else { 50 });
+        if rng.percent_1_100_t(chance) <= chance {
             let pick = rng.range(3);
             let status = match pick {
                 0 => Status::Poison,
@@ -15104,7 +15811,7 @@ fn apply_secondary_effect(
             .unwrap_or(2);
         // category: 0 Physical, 1 Special, 2 Status. Skip Status moves and
         // moves that already roll a flinch (PS's dedupe guard).
-        if move_category != 2 && flinch_chance(move_slug).is_none() {
+        if move_category != 2 && flinch_chance(move_slug, battle.champions).is_none() {
             // PS appends King's Rock's flinch at onModifyMovePriority -1, and
             // Serene Grace (-2) runs after, so its doubling DOES apply to the
             // appended 10% flinch. `sg` is a no-op without Serene Grace.
@@ -15364,6 +16071,44 @@ mod tests {
         Target { side, slot }
     }
 
+    #[test]
+    fn simultaneous_replacements_enter_before_either_ability_fires() {
+        // PS: faint replacements are `instaswitch` actions (order 3), which
+        // all run before the queued `runSwitch` (order 101); runSwitch then
+        // batches every pending switch-in and fires their SwitchIn handlers
+        // together (sim/battle-actions.ts:175-184). So a replacement
+        // Incineroar's Intimidate also hits the foe's simultaneous
+        // replacement.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","protect","rockslide"],"evs":{"spe":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"rillaboom","level":50,"ability":"grassysurge","nature":"adamant","moves":["grassyglide","woodhammer","fakeout","protect"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.decision_phases = true;
+        for m in [&mut b.p1.team[0], &mut b.p2.team[0]] {
+            m.current_hp = 0;
+            m.fainted = true;
+        }
+        assert!(b.needs_replacements());
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p2.active_mon(0).unwrap().species().name, "Rillaboom");
+        assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], -1, "replacement Rillaboom intimidated");
+        assert_eq!(b.p2.active_mon(1).unwrap().boosts[0], -1, "Pikachu intimidated");
+    }
+
     // ---- Delayed-effect subsystem: Wish / Future Sight / Doom Desire ----
 
     fn singles(p1_json: &str, p2_json: &str) -> Battle {
@@ -15373,15 +16118,38 @@ mod tests {
     }
 
     #[test]
-    fn make_it_rain_self_drops_spa_by_two_in_champions() {
-        // Pokémon Champions (our TARGET format) rebalances Make It Rain to a
-        // -2 SpA self-drop, matching the Draco-Meteor family. Standard gen9 PS
-        // uses -1; the PS-conformance harness (which drives standard gen9)
-        // therefore flags this as a divergence — an expected Champions delta,
-        // not an engine bug. This test pins the Champions value.
-        assert_eq!(self_stat_drops("makeitrain"), Some(&[(2u8, -2i8)][..]));
-        assert_eq!(self_stat_drops("fleurcannon"), Some(&[(2u8, -2i8)][..]));
-        assert_eq!(self_stat_drops("dracometeor"), Some(&[(2u8, -2i8)][..]));
+    fn make_it_rain_self_drop_follows_the_format() {
+        // Champions: -2 SpA (PS data/mods/champions/moves.ts makeitrain
+        // `self.boosts.spa: -2`); standard gen 9: -1 (data/moves.ts makeitrain).
+        assert_eq!(self_stat_drops("makeitrain", true), Some(&[(2u8, -2i8)][..]));
+        assert_eq!(self_stat_drops("makeitrain", false), Some(&[(2u8, -1i8)][..]));
+        assert_eq!(self_stat_drops("fleurcannon", false), Some(&[(2u8, -2i8)][..]));
+        assert_eq!(self_stat_drops("dracometeor", true), Some(&[(2u8, -2i8)][..]));
+    }
+
+    #[test]
+    fn contact_ability_procs_are_keyed_by_their_holder() {
+        // Keyed contract (docs/conformance-key-contract.md): an ability's
+        // own roll is keyed (turn, holder, ability), not by the active move,
+        // so the attacker's Poison Touch and the target's Flame Body on one
+        // contact hit each read their own outcome. PS: data/abilities.ts
+        // flamebody / poisontouch `randomChance(3, 10)`.
+        use crate::rng::{RngDecision, RngEvent, RngKey, NO_SLOT};
+        use std::collections::{HashMap, VecDeque};
+        let run = |flame_body: bool, poison_touch: bool| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"toxicroak","level":50,"ability":"poisontouch","nature":"jolly","evs":{"spe":252},"moves":["brickbreak"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"talonflame","level":50,"ability":"flamebody","nature":"careful","evs":{"hp":252},"moves":["bulkup"]}]"#).unwrap();
+            let gate = |pass: bool| VecDeque::from([RngEvent::Range(if pass { 0 } else { u32::MAX })]);
+            let mut t: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+            t.insert(RngKey { turn: 1, actor: 2, target: NO_SLOT, move_id: data::ability_id::FLAMEBODY, decision: RngDecision::Ability }, gate(flame_body));
+            t.insert(RngKey { turn: 1, actor: 0, target: NO_SLOT, move_id: data::ability_id::POISONTOUCH, decision: RngDecision::Ability }, gate(poison_touch));
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 }, Rng::oracle_keyed(t, 7), p1, p2);
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P2, slot: 0 }) }],
+                   &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+            (b.p1.team[0].status, b.p2.team[0].status)
+        };
+        assert_eq!(run(true, false), (Status::Burn, Status::None));
+        assert_eq!(run(false, true), (Status::None, Status::Poison));
     }
 
     #[test]
@@ -16794,6 +17562,38 @@ mod tests {
     }
 
     #[test]
+    fn fake_out_works_the_turn_after_a_switch_in() {
+        // PS fakeout `onTry` fails only when `source.activeMoveActions > 1`
+        // (data/moves.ts:5097); the counter resets on switch-in
+        // (sim/battle-actions.ts:138) and counts move actions, not turns.
+        // Iron Hands switches in on turn 1 and has not moved yet, so its
+        // Fake Out on turn 2 lands.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let chomp_hp = b.p2.team[0].current_hp;
+        let hands_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < chomp_hp, "Fake Out hit Garchomp");
+        let rough_skin = (b.p1.team[1].stats.hp / 8).max(1);
+        assert_eq!(b.p1.team[1].current_hp, hands_hp - rough_skin, "Garchomp flinched: only Rough Skin chip");
+    }
+
+    #[test]
     fn inner_focus_blocks_flinch() {
         // Fake Out is a 100%-flinch priority move. A slower Inner Focus
         // target must still get its move off; a control without Inner
@@ -17346,7 +18146,7 @@ mod tests {
         // Armarouge's Armor Cannon self-drops Def/SpD by 1 on hit (PS
         // data/moves.ts armorcannon `self: { boosts: { def: -1, spd: -1 } }`).
         // Was missing from self_stat_drops.
-        assert_eq!(self_stat_drops("armorcannon"), Some(&[(1u8, -1i8), (3u8, -1i8)][..]));
+        assert_eq!(self_stat_drops("armorcannon", true), Some(&[(1u8, -1i8), (3u8, -1i8)][..]));
         let p1_json = r#"[
             {"species":"armarouge","level":50,"ability":"flashfire","item":"","nature":"modest","moves":["armorcannon","flamethrower","protect","ember"],"evs":{"spa":252,"spe":252}}
         ]"#;
@@ -17520,10 +18320,11 @@ mod tests {
 
     #[test]
     fn champions_move_data_overrides_applied() {
-        // Spot-check the Champions move-data rebalances baked into the MOVES
-        // table by build.rs (vs gen-9 values). See docs/champions-data-deltas.md.
-        let bp = |s: &str| data::move_by_slug(s).unwrap().base_power;
-        let acc = |s: &str| data::move_by_slug(s).unwrap().accuracy;
+        // Spot-check the Champions move-data rebalances in MOVES_CHAMPIONS
+        // (vs gen-9 values in MOVES). See docs/champions-data-deltas.md.
+        let row = |s: &str| &data::MOVES_CHAMPIONS[data::MOVES.iter().position(|m| m.slug == s).unwrap()];
+        let bp = |s: &str| row(s).base_power;
+        let acc = |s: &str| row(s).accuracy;
         assert_eq!(bp("psyshieldbash"), 90, "gen9 70 -> Champions 90");
         assert_eq!(bp("beakblast"), 120, "gen9 100 -> 120");
         assert_eq!(bp("tropkick"), 85, "gen9 70 -> 85");
@@ -17533,8 +18334,61 @@ mod tests {
         assert_eq!(acc("crabhammer"), 95, "gen9 90 -> 95");
         assert_eq!(acc("makeitrain"), 95, "gen9 100 -> 95");
         assert_eq!(acc("clangoroussoul"), 255, "accuracy: true (can't miss)");
-        assert_eq!(data::move_by_slug("growth").unwrap().type_,
-                   data::move_by_slug("energyball").unwrap().type_, "Growth is now Grass-type");
+        assert_eq!(row("growth").type_, row("energyball").type_, "Growth is now Grass-type");
+        // Further rebalances in data/mods/champions/moves.ts.
+        assert_eq!(bp("snipeshot"), 85, "gen9 80 -> 85");
+        assert_eq!(bp("meteorassault"), 170, "gen9 150 -> 170");
+        assert_eq!(bp("slash"), 80, "gen9 70 -> 80");
+        assert_eq!(bp("bloodmoon"), 130, "gen9 140 -> 130");
+        assert_eq!(bp("tripledive"), 35, "gen9 30 -> 35");
+        assert_eq!(bp("revelationdance"), 100, "gen9 90 -> 100");
+        assert_eq!(bp("dragonhammer"), 100, "gen9 90 -> 100");
+        assert_eq!(bp("hyperdrill"), 120, "gen9 100 -> 120");
+        assert_eq!(bp("astralbarrage"), 110, "gen9 120 -> 110");
+        assert_eq!(row("snaptrap").type_, row("ironhead").type_, "Snap Trap is Steel");
+        for s in ["crushclaw", "direclaw", "dragonclaw", "shadowclaw", "metalclaw"] {
+            assert!(row(s).is_slicing, "{s} is a slicing move");
+        }
+        assert!(row("doubleshock").is_punch);
+        assert!(row("dragoncheer").is_sound && row("howl").is_sound);
+        // Standard gen 9 keeps its values.
+        let std9 = |s: &str| &data::MOVES[data::MOVES.iter().position(|m| m.slug == s).unwrap()];
+        assert_eq!(std9("snipeshot").base_power, 80);
+        assert!(!std9("shadowclaw").is_slicing);
+    }
+
+    #[test]
+    fn status_move_aimed_at_an_ally_hits_the_ally() {
+        // A `normal`-target status move can be aimed at the adjacent ally
+        // (PS sim/battle.ts validTargetLoc; Charm on a Contrary / Defiant
+        // partner is a VGC staple). The engine sent it to the first foe.
+        // Defiant does not trigger from an ally's drop (abilities.ts
+        // defiant: `if (!source || target.isAlly(source)) return`).
+        let p1 = r#"[
+            {"species":"whimsicott","level":50,"ability":"infiltrator","nature":"timid","moves":["charm","tailwind","moonblast","protect"]},
+            {"species":"kingambit","level":50,"ability":"defiant","nature":"adamant","moves":["protect","suckerpunch","kowtowcleave","ironhead"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["protect","bodyslam","rest","crunch"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["protect","dragonclaw","earthquake","rockslide"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 5 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 1, target: Some(t(SideRef::P2, 0)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        assert_eq!(b.p1.active_mon(1).unwrap().boosts[0], -2, "Charm lands on the ally, no Defiant");
+        assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], 0, "foe untouched");
     }
 
     #[test]
@@ -17607,15 +18461,67 @@ mod tests {
     }
 
     #[test]
-    fn iron_head_flinch_is_20_percent_in_champions() {
-        // Champions rebalances Iron Head's flinch from 30% (gen 9) to 20%
-        // (PS data/mods/champions/moves.ts). A roll of 20 flinches at 30% but
-        // not at 20%, which is exactly what the conformance harness caught in
-        // out_23 (the engine wrongly flinched a foe's attacker). Other 30%
-        // flinchers are unchanged.
-        assert_eq!(super::flinch_chance("ironhead"), Some(20));
-        assert_eq!(super::flinch_chance("rockslide"), Some(30));
-        assert_eq!(super::flinch_chance("airslash"), Some(30));
+    fn secondary_chances_follow_the_format() {
+        // Champions rebalances (PS data/mods/champions/moves.ts) vs standard
+        // gen 9 (data/moves.ts): Iron Head flinch 20 vs 30, Moonblast SpA
+        // drop 10 vs 30. Other secondaries are shared.
+        assert_eq!(super::flinch_chance("ironhead", true), Some(20));
+        assert_eq!(super::flinch_chance("ironhead", false), Some(30));
+        assert_eq!(super::flinch_chance("rockslide", true), Some(30));
+        assert_eq!(super::stat_drop_secondary("moonblast", true), Some((2, -1, 10)));
+        assert_eq!(super::stat_drop_secondary("moonblast", false), Some((2, -1, 30)));
+        // Freeze-Dry: Champions drops the 10% freeze (`secondary: undefined`).
+        assert_eq!(super::status_secondary("freezedry", true), None);
+        assert_eq!(super::status_secondary("freezedry", false), Some((Status::Freeze, 10)));
+    }
+
+    #[test]
+    fn move_data_follows_the_format_id() {
+        // A Champions format reads the rebalanced table; a standard gen 9
+        // doubles format reads gen 9 values (PS data/mods/champions/moves.ts
+        // vs data/moves.ts).
+        let mk = |id: &str| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+            b.set_format_id(id);
+            b
+        };
+        let champ = mk("gen9championsvgc2026regmc");
+        let std9 = mk("gen9vgc2025regh");
+        assert!(champ.champions && !std9.champions);
+        let bp = |b: &Battle, s: &str| b.moves()[data::MOVES.iter().position(|m| m.slug == s).unwrap()].base_power;
+        let acc = |b: &Battle, s: &str| b.moves()[data::MOVES.iter().position(|m| m.slug == s).unwrap()].accuracy;
+        assert_eq!((bp(&champ, "psyshieldbash"), bp(&std9, "psyshieldbash")), (90, 70));
+        assert_eq!((bp(&champ, "tropkick"), bp(&std9, "tropkick")), (85, 70));
+        assert_eq!((bp(&champ, "geargrind"), bp(&std9, "geargrind")), (60, 50));
+        assert_eq!((acc(&champ, "makeitrain"), acc(&std9, "makeitrain")), (95, 100));
+        assert_eq!((acc(&champ, "clangoroussoul"), acc(&std9, "clangoroussoul")), (255, 100));
+    }
+
+    #[test]
+    fn iron_head_flinches_on_a_25_roll_only_outside_champions() {
+        // Battle-level check of the format switch: a keyed secondary roll of
+        // 25 flinches under gen 9's 30% but not under Champions' 20%.
+        use crate::rng::{RngDecision, RngEvent, RngKey};
+        use std::collections::{HashMap, VecDeque};
+        let run = |id: &str| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"metagross","level":50,"nature":"jolly","evs":{"spe":252},"moves":["ironhead"]},{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]},{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let mut t: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+            let mv = data::MOVES.iter().position(|m| m.slug == "ironhead").unwrap() as u16;
+            t.insert(RngKey { turn: 1, actor: 0, target: 2, move_id: mv, decision: RngDecision::Secondary },
+                     VecDeque::from([RngEvent::PercentRoll(25)]));
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 1 }, Rng::oracle_keyed(t, 7), p1, p2);
+            b.set_format_id(id);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P2, slot: 0 }) }, Choice::Pass { actor_slot: 1 }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P1, slot: 1 }) }, Choice::Pass { actor_slot: 1 }],
+            );
+            b.p1.team[1].current_hp < b.p1.team[1].stats.hp
+        };
+        assert!(!run("gen9vgc2025regh"), "30% flinch: Snorlax flinches, Pikachu untouched");
+        assert!(run("gen9championsvgc2026regmc"), "20% flinch: Snorlax moves");
     }
 
     #[test]
@@ -17626,7 +18532,7 @@ mod tests {
         // engine failing to flinch a Trick Room user with Gyarados Waterfall: a
         // draw of 10 (<=20) flinches, but the engine's flinch_chance table omitted
         // waterfall, so the slow -7 Trick Room resolved and toggled the field.
-        assert_eq!(super::flinch_chance("waterfall"), Some(20));
+        assert_eq!(super::flinch_chance("waterfall", true), Some(20));
     }
 
     #[test]
@@ -18857,6 +19763,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.champions = true;
         let snorlax_max = b.p2.team[0].stats.hp;
         // Turn 1: apply Salt Cure; target uses a self-buff (no HP change).
         b.step(
@@ -18893,6 +19800,7 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.champions = true;
         let skarmory_max = b.p2.team[0].stats.hp;
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
@@ -18909,6 +19817,23 @@ mod tests {
             b.p2.team[0].current_hp, hp_after_t1 - expected_chip,
             "Steel-type target should lose 1/8 max HP to Champions Salt Cure"
         );
+    }
+
+    #[test]
+    fn salt_cure_chips_one_eighth_in_standard_gen9() {
+        // Standard gen 9 Salt Cure: 1/8 max HP, 1/4 on Water/Steel (PS
+        // data/moves.ts saltcure condition onResidual); Champions halves it.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garganacl","level":50,"ability":"purifyingsalt","nature":"impish","moves":["saltcure","irondefense"],"evs":{"hp":252,"def":252}}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia"],"evs":{"hp":252,"spd":252}}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        b.set_format_id("gen9ou");
+        let max = b.p2.team[0].stats.hp;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+               &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let hp1 = b.p2.team[0].current_hp;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+               &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        assert_eq!(b.p2.team[0].current_hp, hp1 - max / 8);
     }
 
     #[test]
@@ -20360,6 +21285,29 @@ mod tests {
     }
 
     #[test]
+    fn sand_does_not_chip_on_the_turn_it_ends() {
+        // PS fieldEvent('Residual') (sim/battle.ts:515-521) decrements the
+        // weather's duration at its own handler (sandstorm
+        // onFieldResidualOrder 1) and, on reaching 0, ends it and skips the
+        // handler: no chip on the last turn.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","nature":"adamant","moves":["rockslide","crunch","earthquake","stealthrock"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        b.weather_turns = 1;
+        let pika_hp = b.p2.team[0].current_hp;
+        b.step(&[Choice::Pass { actor_slot: 0 }], &[Choice::Pass { actor_slot: 0 }]);
+        assert_eq!(b.weather, crate::weather::Weather::None, "sand ended");
+        assert_eq!(b.p2.team[0].current_hp, pika_hp, "no chip on the expiry turn");
+    }
+
+    #[test]
     fn sand_damages_non_immune_active() {
         // Tyranitar (Rock/Dark) has Sand Stream → triggers Sand.
         // Garchomp (Dragon/Ground) is Ground-type → immune.
@@ -20559,11 +21507,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -21976,22 +22924,21 @@ mod tests {
     }
 
     #[test]
-    fn electric_terrain_does_not_boost_flying_defender() {
-        // Pelipper is Water/Flying — ungrounded → no terrain boost.
+    fn electric_terrain_boosts_grounded_attacker_into_flying_defender() {
+        // PS data/moves.ts:electricterrain onBasePower gates the ×1.3 on
+        // `attacker.isGrounded()`; the defender's grounding is irrelevant.
+        // Corviknight is Steel/Flying (airborne) and still takes the boost.
         let p1_json = r#"[
             {"species":"pikachu","level":50,"ability":"static","nature":"modest","moves":["thunderbolt","quickattack","grassknot","feint"]}
         ]"#;
         let p2_json = r#"[
-            {"species":"pelipper","level":50,"ability":"drizzle","nature":"calm","moves":["hurricane","weatherball","tailwind","airslash"]}
+            {"species":"corviknight","level":50,"ability":"pressure","nature":"calm","moves":["roost","bravebird","tailwind","protect"]}
         ]"#;
         let p1a = TeamBuilder::from_json(p1_json).unwrap();
         let p2a = TeamBuilder::from_json(p2_json).unwrap();
         let p1b = TeamBuilder::from_json(p1_json).unwrap();
         let p2b = TeamBuilder::from_json(p2_json).unwrap();
         let mut no_terrain = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1a, p2a);
-        // Pelipper sets Rain on switch-in — that's neutral for the test
-        // (electric damage doesn't care about rain).
-        let _ = no_terrain.weather;
         let start = no_terrain.p2.team[0].current_hp;
         no_terrain.step(
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
@@ -22008,9 +22955,38 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         let dmg_with = start_b - with_terrain.p2.team[0].current_hp;
-        // Should be equal (Flying = ungrounded). Allow ±1 HP rounding.
-        let diff = (dmg_with as i32 - dmg_no as i32).abs();
-        assert!(diff <= 1, "Flying Pelipper not boosted by E-Terrain; got {dmg_with} vs {dmg_no}");
+        let pct = dmg_with as i32 * 100 / dmg_no as i32;
+        assert!((125..=135).contains(&pct), "grounded Pikachu's Thunderbolt boosted into Corviknight: {pct}%");
+    }
+
+    #[test]
+    fn electric_terrain_does_not_boost_airborne_attacker() {
+        // Kilowattrel (Electric/Flying) is not grounded, so PS
+        // electricterrain onBasePower skips the ×1.3 even into a grounded
+        // Blissey.
+        let p1_json = r#"[
+            {"species":"kilowattrel","level":50,"ability":"competitive","nature":"modest","moves":["thunderbolt","hurricane","protect","roost"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","nature":"calm","moves":["softboiled","seismictoss","protect","reflect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let run = |terrain: bool| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 11 }, p1, p2);
+            if terrain {
+                b.set_terrain(crate::terrain::Terrain::Electric);
+                b.terrain_turns = 5;
+            }
+            let start = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            start - b.p2.team[0].current_hp
+        };
+        let (no, with) = (run(false), run(true));
+        assert!((with as i32 - no as i32).abs() <= 1, "airborne attacker not boosted: {with} vs {no}");
     }
 
     #[test]
@@ -22345,9 +23321,8 @@ mod tests {
     fn toxic_chain_badly_poisons_on_low_roll_not_high_roll() {
         // PS data/abilities.ts:toxicchain — onSourceDamagingHit: 30% chance
         // (randomChance(3,10)) to badly-poison the target on any damaging
-        // hit. The attacker holds it. We drive the percent roll directly:
-        // a roll <=30 poisons, a roll >30 does not — proving it fires on
-        // some seeds but not all.
+        // hit. The attacker holds it. We drive PS's random(10) directly:
+        // 0..=2 poisons, 3..=9 does not.
         let attacker = r#"[
             {"species":"gliscor","level":50,"ability":"toxicchain","nature":"hardy","item":"","moves":["earthquake","protect","toxic","uturn"]}
         ]"#;
@@ -22359,14 +23334,14 @@ mod tests {
             let p1 = TeamBuilder::from_json(attacker).unwrap();
             let p2 = TeamBuilder::from_json(defender).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(20)], 0);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 0);
             crate::ability::on_damaging_hit(
                 &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
             );
             assert_eq!(
                 b.p2.team[0].status,
                 crate::pokemon::Status::Toxic,
-                "20-roll (<=30) → Toxic Chain badly-poisons the target",
+                "random(10) = 2 (< 3) → Toxic Chain badly-poisons the target",
             );
         }
         // High roll (>30) → no status.
@@ -22374,14 +23349,14 @@ mod tests {
             let p1 = TeamBuilder::from_json(attacker).unwrap();
             let p2 = TeamBuilder::from_json(defender).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(55)], 0);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(5)], 0);
             crate::ability::on_damaging_hit(
                 &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
             );
             assert_eq!(
                 b.p2.team[0].status,
                 crate::pokemon::Status::None,
-                "55-roll (>30) → no poison",
+                "random(10) = 5 → no poison",
             );
         }
     }
@@ -24079,13 +25054,14 @@ mod tests {
         let p2_protect = r#"[
             {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","rest","yawn"],"evs":{"hp":252,"spd":252}}
         ]"#;
-        let run = |ability: &str, p2_move: u8| {
+        let run_fmt = |ability: &str, p2_move: u8, champions: bool| {
             let p1_json = format!(
                 r#"[{{"species":"urshifu","level":50,"ability":"{ability}","nature":"adamant","moves":["closecombat","aquajet","protect","rockslide"],"evs":{{"atk":252,"spe":252,"hp":4}}}}]"#
             );
             let p1 = TeamBuilder::from_json(&p1_json).unwrap();
             let p2 = TeamBuilder::from_json(p2_protect).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 2 }, p1, p2);
+            b.champions = champions;
             let max = b.p2.team[0].stats.hp;
             b.step(
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], // Close Combat
@@ -24093,6 +25069,7 @@ mod tests {
             );
             (max, b.p2.team[0].current_hp)
         };
+        let run = |ability: &str, p2_move: u8| run_fmt(ability, p2_move, true);
         let (max_p, hp_pierced) = run("unseenfist", 0);
         let dmg_pierced = max_p - hp_pierced;
         let (max_c, hp_ctrl) = run("ironfist", 0); // inert here — fully blocked
@@ -24102,6 +25079,10 @@ mod tests {
         assert!(dmg_pierced > 0, "Unseen Fist punches through Protect");
         assert!(dmg_pierced * 3 < dmg_full,
             "Unseen Fist deals ~1/4 damage (pierced {dmg_pierced}, full {dmg_full})");
+        // Standard gen 9 Unseen Fist removes the protect flag from contact
+        // moves (PS data/abilities.ts unseenfist onModifyMove): full damage.
+        let (_, hp_gen9) = run_fmt("unseenfist", 0, false);
+        assert_eq!(max_p - hp_gen9, dmg_full, "gen 9 Unseen Fist hits through Protect at full damage");
     }
 
     #[test]
@@ -24618,11 +25599,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -26542,6 +27523,31 @@ mod tests {
     }
 
     #[test]
+    fn drain_on_ko_heals_half_the_hp_the_target_had_left() {
+        // PS `sim/battle.ts:2137` caps `targetDamage` at the target's
+        // remaining HP (`Pokemon.damage` returns the HP actually lost),
+        // and drain (:2170) heals round(targetDamage / 2) from that capped
+        // value, not the overkill damage roll.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = 1;
+        b.p2.team[0].current_hp = 9;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted, "Drain Punch KOs the 9-HP Snorlax");
+        assert_eq!(b.p1.team[0].current_hp, 1 + 5, "heal = round(9 / 2) = 5");
+    }
+
+    #[test]
     fn drain_does_not_overheal_above_max() {
         // Full-HP user using Drain Punch — heal clamps at max, current_hp
         // should remain at max.
@@ -27171,6 +28177,41 @@ mod tests {
             rate >= 15 && rate <= 45,
             "Static paralysis rate {rate}% (expected ≈30% over 200 trials)"
         );
+    }
+
+    #[test]
+    fn champions_paralysis_full_skip_is_one_in_eight() {
+        // PS data/mods/champions/conditions.ts:5 par `onBeforeMove`:
+        // `randomChance(1, 8)` (12.5%) instead of gen 9's 1/4.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let trials = 2000u32;
+        let mut skips = 0u32;
+        for seed in 0..trials {
+            let mut b = Battle::new(
+                BattleConfig { format: Format::Singles, seed: seed as u64 },
+                p1.clone(),
+                p2.clone(),
+            );
+            b.champions = true;
+            b.p1.team[0].status = Status::Paralysis;
+            let hp_before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            if b.p2.team[0].current_hp == hp_before {
+                skips += 1;
+            }
+        }
+        let rate = skips as f64 / trials as f64;
+        assert!((0.10..=0.15).contains(&rate), "Champions full-paralysis rate {rate} (expected 0.125)");
     }
 
     #[test]
@@ -28116,8 +29157,7 @@ mod tests {
     fn effect_spore_oracle_pinned_each_status_outcome() {
         // PS data/abilities.ts:effectspore — single `random(100)` on
         // contact hit. 0..10 → slp, 11..20 → par, 21..29 → psn, 30+ → none.
-        // Engine maps via percent_1_100 (1..=100): 1..=11 → slp,
-        // 12..=21 → par, 22..=30 → psn.
+        // The engine draws the same `random(100)` (Rng::ability_random).
         let p1_json = r#"[
             {"species":"amoonguss","level":50,"ability":"effectspore","item":"","nature":"calm","moves":["spore","gigadrain","ragepowder","protect"]}
         ]"#;
@@ -28132,7 +29172,7 @@ mod tests {
         let rng = crate::rng::Rng::oracle_partial(
             vec![
                 crate::rng::RngEvent::PercentRoll(100), // Crunch secondary: 100 > 20 → no def drop
-                crate::rng::RngEvent::PercentRoll(5),   // Effect Spore: 5 ≤ 11 → sleep
+                crate::rng::RngEvent::Range(4),         // Effect Spore: random(100) = 4 < 11 → sleep
             ],
             0,
         );
@@ -28148,7 +29188,7 @@ mod tests {
         );
         assert!(
             matches!(b.p2.team[0].status, Status::Sleep),
-            "PercentRoll 5 should sleep the contact attacker"
+            "random(100) = 4 should sleep the contact attacker"
         );
     }
 
@@ -28239,6 +29279,7 @@ mod tests {
         let mut slp = 0u32;
         for seed in 0..trials {
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b.champions = true;
             b.step(
                 &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
                 &[Choice::Pass { actor_slot: 0 }],
@@ -28260,6 +29301,47 @@ mod tests {
         // — uniformity sanity check (~30 expected per status, demand >5).
         assert!(psn > 5 && par > 5 && slp > 5,
                 "Dire Claw distribution too skewed: psn={psn} par={par} slp={slp}");
+    }
+
+    #[test]
+    fn healer_cure_rate_follows_the_format() {
+        // Healer: 30% per statused ally in gen 9 (PS data/abilities.ts
+        // healer `randomChance(3, 10)`), 50% in Champions
+        // (data/mods/champions/abilities.ts `randomChance(1, 2)`).
+        let rate = |id: &str| {
+            let cured = (0..400u64).filter(|&seed| {
+                let p1 = TeamBuilder::from_json(r#"[{"species":"audino","level":50,"ability":"healer","moves":["calmmind"]},{"species":"snorlax","level":50,"moves":["amnesia"]}]"#).unwrap();
+                let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["growl"]},{"species":"pikachu","level":50,"moves":["growl"]}]"#).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+                b.set_format_id(id);
+                b.p1.team[1].status = Status::Paralysis;
+                b.sync_status_dot_bit(SideRef::P1, 1);
+                b.step(&[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+                       &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }]);
+                b.p1.team[1].status == Status::None
+            }).count();
+            cured * 100 / 400
+        };
+        let (g9, ch) = (rate("gen9vgc2025regh"), rate("gen9championsvgc2026regmc"));
+        assert!((22..=38).contains(&g9), "gen 9 Healer {g9}%");
+        assert!((42..=58).contains(&ch), "Champions Healer {ch}%");
+    }
+
+    #[test]
+    fn dire_claw_status_chance_is_half_in_standard_gen9() {
+        // Standard gen 9 Dire Claw: 50% (PS data/moves.ts direclaw
+        // `secondary.chance: 50`); Champions 30%.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"adamant","moves":["direclaw"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"nature":"careful","moves":["bodyslam"],"evs":{"hp":252,"spd":252}}]"#).unwrap();
+        let trials = 300u32;
+        let hits = (0..trials).filter(|&seed| {
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: seed as u64 }, p1.clone(), p2.clone());
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                   &[Choice::Pass { actor_slot: 0 }]);
+            b.p2.team[0].status != Status::None
+        }).count() as u32;
+        let rate = hits * 100 / trials;
+        assert!((40..=60).contains(&rate), "gen 9 Dire Claw rate {rate}% (expected ≈50%)");
     }
 
     #[test]
@@ -28419,6 +29501,33 @@ mod tests {
         let snor_max = b.p2.team[1].stats.hp;
         assert_eq!(b.p2.team[1].current_hp, snor_max,
                    "Sucker Punch must fail vs a switching target");
+    }
+
+    #[test]
+    fn sitrus_berry_eaten_after_recoil_drops_holder_to_half() {
+        // PS runs eachEvent('Update') after every action (sim/battle.ts:2861),
+        // so a Sitrus Berry holder whose own recoil takes it to <= 1/2 HP
+        // eats the berry that same action (items.ts sitrusberry onUpdate).
+        let p1_json = r#"[
+            {"species":"infernape","level":50,"ability":"blaze","item":"sitrusberry","nature":"jolly","moves":["flareblitz","closecombat","uturn","stoneedge"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max / 2 + 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let dealt = b.p2.team[0].stats.hp - b.p2.team[0].current_hp;
+        let recoil = ((dealt as u32 * 33 + 50) / 100) as u16;
+        assert!(recoil > 1, "recoil takes Infernape to half or below");
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus Berry eaten");
+        assert_eq!(b.p1.team[0].current_hp, max / 2 + 1 - recoil + max / 4);
     }
 
     #[test]
@@ -33048,6 +34157,37 @@ mod tests {
     }
 
     #[test]
+    fn electro_shot_in_rain_hits_with_its_own_spa_boost() {
+        // PS electroshot onTryMove (data/moves.ts:4644) boosts SpA before
+        // the Rain skip, and the hit that follows reads the boosted stat.
+        // Compare with the two-turn release (hits at +1 too): same move,
+        // same +1 SpA, so the damage differs only by the roll (0.85-1.0),
+        // not by the 2/3 a missing boost would cost.
+        let p1_json = r#"[
+            {"species":"duraludon","level":50,"ability":"lightmetal","item":"","nature":"modest","moves":["electroshot","flashcannon","protect","thunderbolt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let es = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        let mut rain = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        rain.set_weather(crate::weather::Weather::Rain);
+        let hp0 = rain.p2.team[0].current_hp;
+        rain.step(&es, &pass);
+        let in_rain = hp0 - rain.p2.team[0].current_hp;
+        let mut clear = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        let hp0 = clear.p2.team[0].current_hp;
+        clear.step(&es, &pass);
+        clear.step(&es, &pass);
+        let released = hp0 - clear.p2.team[0].current_hp;
+        let pct = in_rain as u32 * 100 / released as u32;
+        assert!((84..=118).contains(&pct), "Rain Electro Shot {in_rain} vs +1 release {released} ({pct}%)");
+    }
+
+    #[test]
     fn meteor_beam_charges_boosts_spa_then_releases() {
         // PS data/moves.ts:meteorbeam:11740 — turn 1: -prepare, boost
         // {spa:+1}, then charge (no damage). Turn 2: release, hits, no PP
@@ -33626,15 +34766,15 @@ mod tests {
         // outcomes are possible per hit. Verify the per-slug table
         // lookups directly: any future regression that silently drops
         // one arm will surface here without needing a 400-battle sweep.
-        assert_eq!(super::flinch_chance("firefang"), Some(10), "Fire Fang 10% flinch");
-        assert_eq!(super::flinch_chance("icefang"), Some(10), "Ice Fang 10% flinch");
-        assert_eq!(super::flinch_chance("thunderfang"), Some(10), "Thunder Fang 10% flinch");
+        assert_eq!(super::flinch_chance("firefang", true), Some(10), "Fire Fang 10% flinch");
+        assert_eq!(super::flinch_chance("icefang", true), Some(10), "Ice Fang 10% flinch");
+        assert_eq!(super::flinch_chance("thunderfang", true), Some(10), "Thunder Fang 10% flinch");
         assert_eq!(
-            super::status_secondary("firefang"), Some((Status::Burn, 10)),
+            super::status_secondary("firefang", true), Some((Status::Burn, 10)),
             "Fire Fang 10% brn",
         );
         assert_eq!(
-            super::status_secondary("thunderfang"), Some((Status::Paralysis, 10)),
+            super::status_secondary("thunderfang", true), Some((Status::Paralysis, 10)),
             "Thunder Fang 10% par",
         );
         // 10% freeze — Ice Fang plus Ice Beam / Ice Punch / Blizzard. The
@@ -33643,20 +34783,20 @@ mod tests {
         // Powder Snow are EXCLUDED for Champions (mod removes / sidelines
         // them — see status_secondary).
         assert_eq!(
-            super::status_secondary("icefang"), Some((Status::Freeze, 10)),
+            super::status_secondary("icefang", true), Some((Status::Freeze, 10)),
             "Ice Fang 10% frz",
         );
-        assert_eq!(super::status_secondary("icebeam"), Some((Status::Freeze, 10)), "Ice Beam 10% frz");
-        assert_eq!(super::status_secondary("icepunch"), Some((Status::Freeze, 10)), "Ice Punch 10% frz");
-        assert_eq!(super::status_secondary("blizzard"), Some((Status::Freeze, 10)), "Blizzard 10% frz");
-        assert_eq!(super::status_secondary("freezedry"), None, "Freeze-Dry has no Champions secondary");
+        assert_eq!(super::status_secondary("icebeam", true), Some((Status::Freeze, 10)), "Ice Beam 10% frz");
+        assert_eq!(super::status_secondary("icepunch", true), Some((Status::Freeze, 10)), "Ice Punch 10% frz");
+        assert_eq!(super::status_secondary("blizzard", true), Some((Status::Freeze, 10)), "Blizzard 10% frz");
+        assert_eq!(super::status_secondary("freezedry", true), None, "Freeze-Dry has no Champions secondary");
         // Thunder (PS num 87) is `chance: 30` par — NOT 10% like Thunderbolt.
         assert_eq!(
-            super::status_secondary("thunder"), Some((Status::Paralysis, 30)),
+            super::status_secondary("thunder", true), Some((Status::Paralysis, 30)),
             "Thunder 30% par",
         );
         assert_eq!(
-            super::status_secondary("thunderbolt"), Some((Status::Paralysis, 10)),
+            super::status_secondary("thunderbolt", true), Some((Status::Paralysis, 10)),
             "Thunderbolt 10% par",
         );
     }
@@ -33741,7 +34881,7 @@ mod tests {
         // target; it just misses half the time. Assert the table entry, then
         // sweep seeds and confirm: every connecting hit paralyzes, at least one
         // connects, and at least one misses (50% acc).
-        assert_eq!(super::status_secondary("zapcannon"), Some((Status::Paralysis, 100)), "Zap Cannon 100% par");
+        assert_eq!(super::status_secondary("zapcannon", true), Some((Status::Paralysis, 100)), "Zap Cannon 100% par");
         let p1_json = r#"[
             {"species":"magnezone","level":50,"ability":"sturdy","item":"","nature":"modest","moves":["zapcannon","flashcannon","protect","ember"],"evs":{"spa":252,"spe":252}}
         ]"#;
@@ -33778,7 +34918,7 @@ mod tests {
         // table entry, then sweep seeds firing Nuzzle at a non-Electric,
         // non-Ground target (Snorlax) and confirm 100% paralysis.
         assert_eq!(
-            super::status_secondary("nuzzle"), Some((Status::Paralysis, 100)),
+            super::status_secondary("nuzzle", true), Some((Status::Paralysis, 100)),
             "Nuzzle 100% par",
         );
         let p1_json = r#"[
@@ -33813,46 +34953,46 @@ mod tests {
         //   - poisontail (13550) / crosspoison (3187): `chance: 10` psn.
         // Thunderous Kick must NOT appear in the status_secondary table.
         assert_eq!(
-            super::status_secondary("thunderouskick"), None,
+            super::status_secondary("thunderouskick", true), None,
             "Thunderous Kick has no status secondary (not paralysis)",
         );
         assert_eq!(
-            super::stat_drop_secondary("thunderouskick"), Some((1, -1, 100)),
+            super::stat_drop_secondary("thunderouskick", true), Some((1, -1, 100)),
             "Thunderous Kick = 100% Def -1",
         );
         // Conformance-sweep fixes (100-battle batch):
         //   - appleacid: 100% SpD -1   (was missing)
         //   - muddywater: 30% Acc -1   (was wrongly grouped 100% with mudslap)
         //   - nightdaze: 40% Acc -1    (was missing)
-        assert_eq!(super::stat_drop_secondary("appleacid"), Some((3, -1, 100)),
+        assert_eq!(super::stat_drop_secondary("appleacid", true), Some((3, -1, 100)),
             "Apple Acid = 100% SpD -1");
-        assert_eq!(super::stat_drop_secondary("mudslap"), Some((5, -1, 100)),
+        assert_eq!(super::stat_drop_secondary("mudslap", true), Some((5, -1, 100)),
             "Mud-Slap stays 100% Acc -1");
-        assert_eq!(super::stat_drop_secondary("muddywater"), Some((5, -1, 30)),
+        assert_eq!(super::stat_drop_secondary("muddywater", true), Some((5, -1, 30)),
             "Muddy Water = 30% Acc -1 (not 100%)");
-        assert_eq!(super::stat_drop_secondary("nightdaze"), Some((5, -1, 40)),
+        assert_eq!(super::stat_drop_secondary("nightdaze", true), Some((5, -1, 40)),
             "Night Daze = 40% Acc -1");
         assert_eq!(
-            super::status_secondary("smog"), Some((Status::Poison, 40)),
+            super::status_secondary("smog", true), Some((Status::Poison, 40)),
             "Smog 40% psn",
         );
         assert_eq!(
-            super::status_secondary("poisonsting"), Some((Status::Poison, 30)),
+            super::status_secondary("poisonsting", true), Some((Status::Poison, 30)),
             "Poison Sting 30% psn",
         );
         assert_eq!(
-            super::status_secondary("poisontail"), Some((Status::Poison, 10)),
+            super::status_secondary("poisontail", true), Some((Status::Poison, 10)),
             "Poison Tail 10% psn",
         );
         assert_eq!(
-            super::status_secondary("crosspoison"), Some((Status::Poison, 10)),
+            super::status_secondary("crosspoison", true), Some((Status::Poison, 10)),
             "Cross Poison 10% psn",
         );
         // Phantom slugs removed: `force` and `lightningbird` do not exist
         // in PS data/moves.ts, so they must not resolve to any secondary.
-        assert_eq!(super::status_secondary("force"), None, "no phantom `force` arm");
+        assert_eq!(super::status_secondary("force", true), None, "no phantom `force` arm");
         assert_eq!(
-            super::status_secondary("lightningbird"), None,
+            super::status_secondary("lightningbird", true), None,
             "no phantom `lightningbird` arm",
         );
     }
@@ -33899,9 +35039,12 @@ mod tests {
         //                        (target:"allAdjacentFoes" — spread)
         //   pounce:13633         secondary { chance:100, boosts: { spe:-1 } }
         // Boost indices: 0 atk, 4 spe.
-        assert_eq!(super::stat_drop_secondary("lunge"), Some((0, -1, 100)));
-        assert_eq!(super::stat_drop_secondary("breakingswipe"), Some((0, -1, 100)));
-        assert_eq!(super::stat_drop_secondary("pounce"), Some((4, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("lunge", true), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("breakingswipe", true), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("pounce", true), Some((4, -1, 100)));
+        // drumbeating: secondary { chance: 100, boosts: { spe: -1 } }
+        // (PS data/moves.ts drumbeating; Rillaboom's signature).
+        assert_eq!(super::stat_drop_secondary("drumbeating", true), Some((4, -1, 100)));
     }
 
     #[test]
@@ -33909,7 +35052,7 @@ mod tests {
         // PS data/moves.ts:gravapple — `secondary: { chance: 100, boosts:
         // { def: -1 } }` (Champions only bumps BP). 100% acc + 100% secondary
         // ⇒ the target's Def (index 1) drops on every connecting hit.
-        assert_eq!(super::stat_drop_secondary("gravapple"), Some((1, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("gravapple", true), Some((1, -1, 100)));
         let p1_json = r#"[
             {"species":"dipplin","level":50,"ability":"supersweetsyrup","item":"","nature":"modest","moves":["gravapple","gigadrain","protect","ember"],"evs":{"spa":252,"hp":4}}
         ]"#;
@@ -33933,12 +35076,12 @@ mod tests {
         // PS data/moves.ts shadowball `secondary: { chance: 20, boosts:
         // { spd: -1 } }` — NOT 10% like the Flash Cannon / Energy Ball family
         // (no Champions override). It was mis-bucketed at 10%.
-        assert_eq!(super::stat_drop_secondary("shadowball"), Some((3, -1, 20)));
+        assert_eq!(super::stat_drop_secondary("shadowball", true), Some((3, -1, 20)));
         // The genuine 10% SpD movers are unchanged.
-        assert_eq!(super::stat_drop_secondary("flashcannon"), Some((3, -1, 10)));
-        assert_eq!(super::stat_drop_secondary("energyball"), Some((3, -1, 10)));
+        assert_eq!(super::stat_drop_secondary("flashcannon", true), Some((3, -1, 10)));
+        assert_eq!(super::stat_drop_secondary("energyball", true), Some((3, -1, 10)));
         // Play Rough — 10% Atk-1 (PS data/moves.ts playrough).
-        assert_eq!(super::stat_drop_secondary("playrough"), Some((0, -1, 10)));
+        assert_eq!(super::stat_drop_secondary("playrough", true), Some((0, -1, 10)));
     }
 
     #[test]
@@ -33946,8 +35089,8 @@ mod tests {
         // PS data/moves.ts chillingwater / bittermalice both
         // `secondary: { chance: 100, boosts: { atk: -1 } }` (no Champions
         // override). 100% ⇒ the target's Atk (index 0) drops on every hit.
-        assert_eq!(super::stat_drop_secondary("chillingwater"), Some((0, -1, 100)));
-        assert_eq!(super::stat_drop_secondary("bittermalice"), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("chillingwater", true), Some((0, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("bittermalice", true), Some((0, -1, 100)));
         let p1_json = r#"[
             {"species":"slowbro","level":50,"ability":"owntempo","item":"","nature":"modest","moves":["chillingwater","scald","protect","ember"],"evs":{"spa":252,"hp":4}}
         ]"#;
@@ -33971,8 +35114,8 @@ mod tests {
         // PS data/moves.ts: spiritbreak / strugglebug both
         // `secondary: { chance: 100, boosts: { spa: -1 } }` (index 2).
         // Struggle Bug is a spread move; Spirit Break is single-target.
-        assert_eq!(super::stat_drop_secondary("spiritbreak"), Some((2, -1, 100)));
-        assert_eq!(super::stat_drop_secondary("strugglebug"), Some((2, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("spiritbreak", true), Some((2, -1, 100)));
+        assert_eq!(super::stat_drop_secondary("strugglebug", true), Some((2, -1, 100)));
         // Gameplay: Spirit Break always drops the target's SpA by 1.
         let p1_json = r#"[
             {"species":"grimmsnarl","level":50,"ability":"prankster","item":"","nature":"adamant","moves":["spiritbreak","tackle","thunderwave","protect"],"evs":{"atk":252,"hp":4}}
@@ -36467,6 +37610,184 @@ mod tests {
         // Item consumed on the OUTGOING Snorlax (still on team at its slot).
         assert_eq!(b.p2.team[snorlax_team_idx as usize].item_id, u16::MAX,
                    "Eject Button consumed");
+    }
+
+    #[test]
+    fn eject_button_replacement_is_the_players_choice_in_decision_phases() {
+        // PS data/items.ts ejectbutton sets `target.switchFlag`, and the
+        // player picks the replacement in a mid-turn switch request
+        // (sim/battle.ts runAction: switchFlag -> makeRequest('switch')),
+        // like U-turn. With decision phases the caller supplies that pick
+        // as a deferred Switch; the engine must not auto-pick the first
+        // bench mon.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pikachu","level":50,"nature":"jolly","moves":["quickattack"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","nature":"careful","moves":["rest"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.active[0], 2, "the player's pick (Eevee), not the first bench mon");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Eject Button consumed");
+    }
+
+    #[test]
+    fn eject_button_pick_after_a_turn_start_switch_in() {
+        // The holder switched in this turn: its slot's queue is [switch in,
+        // eject pick]. The second Switch is the mid-turn pick (PS asks for it
+        // only once the button fires), not a second turn-start switch.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"nature":"jolly","moves":["thunderbolt"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"moves":["tackle"]},
+            {"species":"blissey","level":50,"item":"ejectbutton","moves":["tackle"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }, Choice::Switch { actor_slot: 0, team_index: 3 }],
+        );
+        assert_eq!(b.p2.team[1].item_id, u16::MAX, "Blissey came in, was hit and ejected");
+        assert_eq!(b.p2.active[0], 3);
+    }
+
+    #[test]
+    fn emergency_exit_switches_out_when_a_hit_crosses_half_hp() {
+        // PS data/abilities.ts emergencyexit onEmergencyExit sets switchFlag
+        // when a move drops the holder from above to at-or-below half
+        // (data/mods/champions/scripts.ts:583 hitStepMoveHitLoop). The
+        // player picks the replacement.
+        use crate::rng::{RngEvent};
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"jolly","evs":{"atk":252},"moves":["dragonclaw"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"golisopod","level":50,"ability":"emergencyexit","nature":"careful","evs":{"hp":252},"moves":["liquidation"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let hit = |_ee_pick: bool| {
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(15)], 3),
+                p1.clone(), p2.clone());
+            b.decision_phases = true;
+            // Start Golisopod just above half so Dragon Claw crosses it.
+            let max = b.p2.team[0].stats.hp;
+            b.p2.team[0].current_hp = max / 2 + 5;
+            let p2c = vec![Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 2 }];
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }], &p2c);
+            b
+        };
+        let b = hit(true);
+        assert!(b.p2.team[0].is_alive());
+        assert_eq!(b.p2.active[0], 2, "Emergency Exit: the player's pick comes in");
+    }
+
+    #[test]
+    fn pre_turn_switches_run_slowest_first_under_trick_room() {
+        // PS sim/pokemon.ts getActionSpeed: `speed = 10000 - speed` under
+        // Trick Room, for switch actions too (the leaving mon's speed). The
+        // slow side's replacement enters first and eats the Intimidate.
+        let run = |trick_room: bool| {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"moves":["tackle"]},
+                {"species":"machamp","level":50,"moves":["tackle"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"jolteon","level":50,"nature":"timid","evs":{"spe":252},"moves":["tackle"]},
+                {"species":"incineroar","level":50,"ability":"intimidate","moves":["tackle"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            if trick_room { b.trick_room_turns = 3; }
+            b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }],
+                   &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
+            b.p1.team[1].boosts[0]
+        };
+        assert_eq!(run(false), 0, "Jolteon leaves first: Incineroar intimidates Snorlax");
+        assert_eq!(run(true), -1, "Trick Room: Snorlax leaves first, Machamp is intimidated");
+    }
+
+    #[test]
+    fn steel_roller_needs_terrain_and_clears_it() {
+        // PS data/moves.ts steelroller: onTry `!this.field.isTerrain('')`
+        // (fails with no terrain), onHit / onAfterSubDamage clearTerrain.
+        let run = |terrain: crate::terrain::Terrain| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"metagross","level":50,"nature":"jolly","moves":["steelroller"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["amnesia"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            b.set_terrain(terrain);
+            b.terrain_turns = 5;
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                   &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+            (b.p2.team[0].current_hp < b.p2.team[0].stats.hp, b.terrain)
+        };
+        assert_eq!(run(crate::terrain::Terrain::None), (false, crate::terrain::Terrain::None), "fails with no terrain");
+        assert_eq!(run(crate::terrain::Terrain::Psychic), (true, crate::terrain::Terrain::None), "hits and clears the terrain");
+    }
+
+    #[test]
+    fn battle_ends_before_residuals_once_a_side_is_out() {
+        // PS checks for a winner after every action (sim/battle.ts
+        // faintMessages -> checkWin) and ends the battle then: no end-of-turn
+        // residuals run. The engine poisoned the winner's last mon to death
+        // and called a tie.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"jolly","moves":["earthquake"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pichu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].status = Status::Poison;
+        b.p1.team[0].current_hp = 5;
+        b.sync_status_dot_bit(SideRef::P1, 0);
+        let r = b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                       &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }]);
+        assert!(b.p2.team[0].fainted);
+        assert_eq!(b.p1.team[0].current_hp, 5, "no poison residual after the win");
+        assert!(matches!(r, StepResult::Ended { winner: Some(SideRef::P1) }), "{r:?}");
+    }
+
+    #[test]
+    fn champions_sleep_lasts_one_or_two_turns() {
+        // Champions: slp onStart `startTime = this.sample([2, 3, 3])`
+        // (data/mods/champions/conditions.ts); gen 9: `this.random(2, 5)`
+        // (data/conditions.ts). The same draw index 2 gives 3 vs 4.
+        let run = |champions: bool| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 1), p1, p2);
+            b.champions = champions;
+            b.try_set_status(SideRef::P2, 0, Status::Sleep);
+            b.p2.team[0].sleep_turns()
+        };
+        assert_eq!(run(false), 4);
+        assert_eq!(run(true), 3);
+    }
+
+    #[test]
+    fn ejected_holder_forfeits_its_queued_move() {
+        // A slower Eject Button holder is switched out before it acts; the
+        // replacement does not inherit its move (PS runAction skips an
+        // action whose pokemon is no longer active).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"nature":"jolly","moves":["quickattack"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","moves":["tackle"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+        );
+        assert_eq!(b.p2.active[0], 2);
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "nobody tackled Pikachu");
     }
 
     #[test]

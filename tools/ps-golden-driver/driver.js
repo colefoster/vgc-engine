@@ -496,8 +496,8 @@ async function runJob(job) {
   const randomPlay = !!job.random_play;
   const maxTurns = job.max_turns || 30;
 
-  const p1Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p1));
-  const p2Actions = randomPlay ? null : (job.turns || []).map((t) => normalizeTurnAction(t.p2));
+  const p1Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p1), ...(t.p1_followups || [])]);
+  const p2Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p2), ...(t.p2_followups || [])]);
 
   // Side-distinct PRNG seeds: derived from seed[0] so the run is
   // reproducible from a single integer (matches team-gen.js convention).
@@ -559,6 +559,14 @@ async function runJob(job) {
     sides.omniscient.write('>player p2 ' + JSON.stringify({
       name: 'P2', team: Teams.pack(team2),
     }));
+    if (job.pp_overrides) {
+      for (const side of stream.battle.sides) for (const mon of side.pokemon) {
+        for (const slot of mon.moveSlots) if (job.pp_overrides[slot.id] !== undefined) {
+          slot.pp = slot.maxpp = job.pp_overrides[slot.id];
+        }
+      }
+    }
+
 
     // Wait for both sides to exhaust their action lists or stop receiving
     // requests; hard timeout in case PS hangs waiting on input.

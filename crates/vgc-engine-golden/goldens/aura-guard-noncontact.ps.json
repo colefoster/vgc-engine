@@ -1,0 +1,72 @@
+{
+  "ok": true,
+  "name": "aura-guard-noncontact",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Lucario-Mega-Z",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Swift",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 127,
+      "max": 145,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1789397157\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Snorlax, L50, M|\n|poke|p2|Lucario-Mega-Z, L50, F|\n|teampreview|\n|t:|1789397157\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Snorlax|Snorlax, L50, M|235/235\n|switch|p2a: Lucario|Lucario-Mega-Z, L50, F|145/145\n|-ability|p1a: Snorlax|Pressure\n|turn|1|\n|t:|1789397157\n|move|p2a: Lucario|Splash|p2a: Lucario\n|-nothing\n|move|p1a: Snorlax|Swift|p2a: Lucario\n|-resisted|p2a: Lucario\n|-damage|p2a: Lucario|127/145\n|\n|upkeep\n|turn|2"
+}

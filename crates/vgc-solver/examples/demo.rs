@@ -16,8 +16,8 @@ use vgc_engine_core::{
     Battle, BattleConfig, Choice, Format, Rng, SideRef, Target, TeamBuilder,
 };
 use vgc_solver::{
-    endgame_solve, enumerate_outcomes, hp_ratio_leaf, solve_double_oracle, solve_zero_sum,
-    BattleMatrixGame, LeafEval, MatrixGame, Provenance, SolverConfig,
+    batch_from_scalar, endgame_solve, enumerate_outcomes, hp_ratio_leaf, solve_double_oracle,
+    solve_zero_sum, BattleMatrixGame, LeafEval, MatrixGame, Provenance, SolverConfig,
 };
 
 const P1: &str = r#"[
@@ -201,10 +201,10 @@ fn main() {
     // ─── §6 — solve_turn on a switch-only sub-game ────────────────────
     h1("§6  PR-7 — solve_turn on a switch-only Battle sub-game");
     let b = fixture();
-    let leaf: LeafEval = Box::new(hp_ratio_leaf);
+    let leaf = batch_from_scalar(Box::new(hp_ratio_leaf));
     let game = BattleMatrixGame::new(&b, leaf, 99);
     drop(game);
-    let leaf2: LeafEval = Box::new(hp_ratio_leaf);
+    let leaf2 = batch_from_scalar(Box::new(hp_ratio_leaf));
     let subgame = BattleMatrixGame::new(&b, leaf2, 99);
     println!("Full action space:");
     println!("  P1 legal_choices count = {}", subgame.row_count());

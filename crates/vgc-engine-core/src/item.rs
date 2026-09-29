@@ -87,6 +87,31 @@ pub fn try_consume_type_resist_berry(
     move_type: u8,
     defender_species: &data::SpeciesDef,
 ) -> bool {
+    if !type_resist_berry_fires(battle, target_side, target_slot, move_type, defender_species) {
+        return false;
+    }
+    let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => m.effective_item_id(),
+        None => return false,
+    };
+    // Consume the berry.
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.consume_item();
+    }
+    maybe_on_item_consumed(battle, target_side, target_slot, item_id);
+    true
+}
+
+/// Whether the defender's type-resist berry fires on this hit (see
+/// [`try_consume_type_resist_berry`]), without eating it. The damage calc
+/// chains its ×0.5 into the ModifyDamage event.
+pub fn type_resist_berry_fires(
+    battle: &Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_type: u8,
+    defender_species: &data::SpeciesDef,
+) -> bool {
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return false,
@@ -139,11 +164,6 @@ pub fn try_consume_type_resist_berry(
             return false;
         }
     }
-    // Consume the berry.
-    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.consume_item();
-    }
-    maybe_on_item_consumed(battle, target_side, target_slot, item_id);
     true
 }
 
@@ -609,7 +629,7 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         if move_id == u16::MAX {
             return;
         }
-        let max_pp = crate::team::boosted_max_pp(move_id);
+        let max_pp = m.max_pp(i);
         let added: u8 = if ripen { 20 } else { 10 };
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
         m.consume_item();
@@ -1242,8 +1262,16 @@ pub(crate) fn try_consume_eject_button(
         return false;
     }
     // Consume the item, then force-switch.
+    let phases = battle.decision_phases;
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
+        // PS sets `target.switchFlag`: the player picks the replacement
+        // after the move (sim/battle.ts runAction -> makeRequest('switch')).
+        // With decision phases the caller's queued pick is honoured.
+        if phases {
+            t.set_pending_forced_switch();
+            return true;
+        }
     }
     battle.force_switch_auto(target_side, target_slot)
 }

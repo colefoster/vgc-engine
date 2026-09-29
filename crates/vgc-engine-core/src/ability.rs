@@ -18,6 +18,23 @@ use vgc_engine_data as data;
 /// damage (including recoil categorised as a Move effect like Brave Bird)
 /// still goes through. PS: `data/abilities.ts:2420-2430`.
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Guard_(Ability)>.
+/// PS `randomChance(num, den)` rolled by `holder`'s ability, keyed by the
+/// holder (docs/conformance-key-contract.md, `RngDecision::Ability`).
+fn proc_chance(
+    battle: &Battle,
+    rng: &mut crate::rng::Rng,
+    holder: (SideRef, u8),
+    ability: u16,
+    num: u32,
+    den: u32,
+) -> bool {
+    rng.ability_chance(battle.turn() + 1, holder_ref(holder), ability, num, den)
+}
+
+fn holder_ref((side, slot): (SideRef, u8)) -> crate::rng::SlotRef {
+    (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot
+}
+
 pub(crate) fn has_magic_guard(mon: &crate::pokemon::Pokemon) -> bool {
     mon.ability_id == data::ability_id::MAGICGUARD
 }
@@ -1003,8 +1020,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             .map(|m| !matches!(m.status, crate::pokemon::Status::None))
             .unwrap_or(false);
         if statused {
-            // Use percent_1_100: 1..=33 → cure.
-            if rng.percent_1_100_t(33) <= 33 {
+            if proc_chance(battle, rng, (side, slot), ability_id, 33, 100) {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.status = crate::pokemon::Status::None;
                 }
@@ -1055,9 +1071,11 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 .map(|m| m.is_alive() && !matches!(m.status, crate::pokemon::Status::None))
                 .unwrap_or(false);
             if !ally_statused { continue; }
-            // Champions buffs Healer from gen 9's 30% to 50% (PS
-            // data/mods/champions/abilities.ts: healer `randomChance(1, 2)`).
-            if rng.percent_1_100_t(50) <= 50 {
+            // Gen 9: 30% (PS data/abilities.ts healer `randomChance(3, 10)`);
+            // Champions buffs it to 50% (data/mods/champions/abilities.ts
+            // healer `randomChance(1, 2)`).
+            let (num, den) = if battle.champions { (1, 2) } else { (3, 10) };
+            if proc_chance(battle, rng, (side, slot), ability_id, num, den) {
                 if let Some(ally) = battle.side_mut(side).active_mon_mut(s as usize) {
                     ally.status = crate::pokemon::Status::None;
                 }
@@ -1614,7 +1632,7 @@ pub fn on_damaging_hit(
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
-            if attacker_alive && rng.percent_1_100_t(30) <= 30 {
+            if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
                 // Safeguard on the attacker's side vetoes it.
@@ -1673,7 +1691,7 @@ pub fn on_damaging_hit(
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive());
-        if attacker_alive && rng.percent_1_100_t(30) <= 30 {
+        if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
             // Gender gate: opposite, non-genderless (M↔F). Source = the
             // Cute Charm holder; target of infatuation = the attacker.
             let holder_gender = battle
@@ -1745,7 +1763,7 @@ pub fn on_damaging_hit(
         let aroma_veil_protects = battle.side_has_aroma_veil(attacker_side, false);
         if attacker_eligible
             && move_id != data::move_id::STRUGGLE
-            && rng.percent_1_100_t(30) <= 30
+            && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10)
             && !aroma_veil_protects
         {
             // The disabled slot is the attacker's move-array index that
@@ -1797,12 +1815,13 @@ pub fn on_damaging_hit(
                 // returns 1..=100. Translate: r in 1..=11 → slp, 12..=21
                 // → par, 22..=30 → psn (matches PS's `< 11`, `< 21`, `< 30`
                 // boundaries plus the +1 offset).
-                let r = rng.percent_1_100();
-                let to_apply = if r <= 11 {
+                let turn = battle.turn() + 1;
+                let r = rng.ability_random(turn, holder_ref((target_side, target_slot)), ability_id, 100);
+                let to_apply = if r < 11 {
                     Some(crate::pokemon::Status::Sleep)
-                } else if r <= 21 {
+                } else if r < 21 {
                     Some(crate::pokemon::Status::Paralysis)
-                } else if r <= 30 {
+                } else if r < 30 {
                     Some(crate::pokemon::Status::Poison)
                 } else {
                     None
@@ -1888,7 +1907,7 @@ pub fn on_damaging_hit(
     if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
         && target_alive
-        && rng.percent_1_100_t(30) <= 30
+        && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10)
     {
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
@@ -1921,7 +1940,7 @@ pub fn on_damaging_hit(
                 m.effective_ability_id() == data::ability_id::SHIELDDUST
                     || m.effective_item_id() == data::item_id::COVERTCLOAK
             });
-        if !blocked && rng.percent_1_100_t(30) <= 30 {
+        if !blocked && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10) {
             battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Toxic);
         }
     }

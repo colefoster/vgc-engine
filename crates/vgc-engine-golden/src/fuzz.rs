@@ -477,6 +477,7 @@ fn run_one(
     }
 
     let mut battle = Battle::new(BattleConfig { format: opts.format, seed }, p1, p2);
+    battle.champions = opts.champions_only;
     let mut picker = Rng::new(mix(seed, 0x33));
 
     let mut p1_buf: Vec<Choice> = Vec::with_capacity(active);

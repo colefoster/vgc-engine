@@ -600,6 +600,9 @@ mod tests {
                 pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0,
                 defender_friend_guarded: false,
                 attacker_moves_last: false,
+                // Replay recon reads Champions ladder logs.
+                champions: true,
+                defender_resist_berry: false,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));

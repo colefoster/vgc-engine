@@ -1,0 +1,110 @@
+{
+  "ok": true,
+  "name": "pivot-before-slower-attack",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Crobat",
+      "hp": 160,
+      "max": 160
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "U-turn",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 198,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Corviknight",
+      "hp": 173,
+      "max": 173
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 161,
+      "max": 173,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1789397573\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Crobat, L50, M|\n|poke|p1|Corviknight, L50, F|\n|poke|p2|Snorlax, L50, F|\n|teampreview|\n|t:|1789397573\n|teamsize|p1|2\n|teamsize|p2|1\n|start\n|switch|p1a: Crobat|Crobat, L50, M|160/160\n|switch|p2a: Snorlax|Snorlax, L50, F|235/235\n|turn|1|\n|t:|1789397573\n|move|p1a: Crobat|U-turn|p2a: Snorlax\n|-damage|p2a: Snorlax|198/235|\n|t:|1789397573\n|switch|p1a: Corviknight|Corviknight, L50, F|173/173|[from] U-turn\n|-ability|p1a: Corviknight|Pressure\n|move|p2a: Snorlax|Tackle|p1a: Corviknight\n|-resisted|p1a: Corviknight\n|-damage|p1a: Corviknight|161/173\n|\n|upkeep\n|turn|2"
+}
