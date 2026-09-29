@@ -87,6 +87,31 @@ pub fn try_consume_type_resist_berry(
     move_type: u8,
     defender_species: &data::SpeciesDef,
 ) -> bool {
+    if !type_resist_berry_fires(battle, target_side, target_slot, move_type, defender_species) {
+        return false;
+    }
+    let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
+        Some(m) => m.effective_item_id(),
+        None => return false,
+    };
+    // Consume the berry.
+    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        t.consume_item();
+    }
+    maybe_on_item_consumed(battle, target_side, target_slot, item_id);
+    true
+}
+
+/// Whether the defender's type-resist berry fires on this hit (see
+/// [`try_consume_type_resist_berry`]), without eating it. The damage calc
+/// chains its ×0.5 into the ModifyDamage event.
+pub fn type_resist_berry_fires(
+    battle: &Battle,
+    target_side: SideRef,
+    target_slot: u8,
+    move_type: u8,
+    defender_species: &data::SpeciesDef,
+) -> bool {
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return false,
@@ -139,11 +164,6 @@ pub fn try_consume_type_resist_berry(
             return false;
         }
     }
-    // Consume the berry.
-    if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
-        t.consume_item();
-    }
-    maybe_on_item_consumed(battle, target_side, target_slot, item_id);
     true
 }
 

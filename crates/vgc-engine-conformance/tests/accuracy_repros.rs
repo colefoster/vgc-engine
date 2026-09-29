@@ -131,3 +131,17 @@ fn emergency_exit_switches_out_below_half() {
 fn pre_turn_switches_are_slowest_first_under_trick_room() {
     assert_matches_ps("study-dc6522e008-trick-room-switch-order");
 }
+
+/// Study battle 9d848b7db0 (real Reg M-C log): Life Orb and a Chople Berry
+/// on one hit are one chained ModifyDamage modifier with a single rounding.
+#[test]
+fn life_orb_and_resist_berry_chain_into_one_rounding() {
+    assert_matches_ps("study-9d848b7db0-lifeorb-chople-chain");
+}
+
+/// Study battle fb56fc4f9c (real Reg M-C log): Life Orb into Aurora Veil,
+/// chained into one rounding.
+#[test]
+fn life_orb_and_aurora_veil_chain_into_one_rounding() {
+    assert_matches_ps("study-fb56fc4f9c-lifeorb-veil-chain");
+}
