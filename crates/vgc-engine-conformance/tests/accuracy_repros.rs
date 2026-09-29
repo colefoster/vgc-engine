@@ -47,3 +47,10 @@ fn terrain_boost_checks_attacker_grounding() {
 fn expanding_force_spreads_in_psychic_terrain() {
     assert_matches_ps("expanding-force-no-spread");
 }
+
+/// Rillaboom enters via Parting Shot mid-turn and Fake Outs the next turn:
+/// its first move action since switching in, so Corviknight flinches.
+#[test]
+fn fake_out_works_after_a_mid_turn_switch_in() {
+    assert_matches_ps("fake-out-after-pivot-switch-in");
+}

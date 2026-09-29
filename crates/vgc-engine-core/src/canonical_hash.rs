@@ -234,6 +234,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("boosts", &p.boosts)?;
         s.serialize_field("fainted", &p.fainted)?;
         s.serialize_field("turns_active", &p.turns_active)?;
+        s.serialize_field("move_actions", &p.move_actions)?;
         // PR-J — last_attacker / last_attacker_category /
         // last_damage_taken / last_phys_* / last_spec_* OMITTED:
         // wiped at top of every `step()` by `Battle::start_turn`
