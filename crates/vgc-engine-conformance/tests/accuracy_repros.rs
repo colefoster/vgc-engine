@@ -92,3 +92,10 @@ fn replacement_seed_checked_after_all_abilities() {
 fn weather_ends_before_chip_on_its_last_turn() {
     assert_matches_ps("study-af4174f41f-sand-ends-no-chip");
 }
+
+/// Study battle 75999c4aaa: Whimsicott Charms its own Staraptor (turn 3);
+/// the engine used to send it to the first foe.
+#[test]
+fn status_move_aimed_at_ally_hits_the_ally() {
+    assert_matches_ps("study-75999c4aaa-charm-on-ally");
+}
