@@ -422,7 +422,10 @@ fn schedule_move(
             // outcome. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Quick_Draw_(Ability)>.
             let frac = if m.ability_id == data::ability_id::QUICKDRAW && category != 2 {
-                if rng.percent_1_100_t(30) <= 30 { -1i8 } else { frac }
+                // PS `randomChance(3, 10)`, keyed by the holder
+                // (RngDecision::Ability, docs/conformance-key-contract.md).
+                let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+                if rng.ability_chance(battle.turn() + 1, holder, data::ability_id::QUICKDRAW, 3, 10) { -1i8 } else { frac }
             } else {
                 frac
             };

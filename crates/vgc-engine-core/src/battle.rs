@@ -15993,6 +15993,31 @@ mod tests {
     }
 
     #[test]
+    fn contact_ability_procs_are_keyed_by_their_holder() {
+        // Keyed contract (docs/conformance-key-contract.md): an ability's
+        // own roll is keyed (turn, holder, ability), not by the active move,
+        // so the attacker's Poison Touch and the target's Flame Body on one
+        // contact hit each read their own outcome. PS: data/abilities.ts
+        // flamebody / poisontouch `randomChance(3, 10)`.
+        use crate::rng::{RngDecision, RngEvent, RngKey, NO_SLOT};
+        use std::collections::{HashMap, VecDeque};
+        let run = |flame_body: bool, poison_touch: bool| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"toxicroak","level":50,"ability":"poisontouch","nature":"jolly","evs":{"spe":252},"moves":["brickbreak"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"talonflame","level":50,"ability":"flamebody","nature":"careful","evs":{"hp":252},"moves":["bulkup"]}]"#).unwrap();
+            let gate = |pass: bool| VecDeque::from([RngEvent::Range(if pass { 0 } else { u32::MAX })]);
+            let mut t: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+            t.insert(RngKey { turn: 1, actor: 2, target: NO_SLOT, move_id: data::ability_id::FLAMEBODY, decision: RngDecision::Ability }, gate(flame_body));
+            t.insert(RngKey { turn: 1, actor: 0, target: NO_SLOT, move_id: data::ability_id::POISONTOUCH, decision: RngDecision::Ability }, gate(poison_touch));
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 }, Rng::oracle_keyed(t, 7), p1, p2);
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P2, slot: 0 }) }],
+                   &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+            (b.p1.team[0].status, b.p2.team[0].status)
+        };
+        assert_eq!(run(true, false), (Status::Burn, Status::None));
+        assert_eq!(run(false, true), (Status::None, Status::Poison));
+    }
+
+    #[test]
     fn oracle_keyed_forces_crit_damage_and_secondary_in_a_real_turn() {
         // End-to-end proof of the keyed-oracle engine half (Phase 0): inject
         // a hand-built outcome table into a real battle and show the engine
@@ -23141,9 +23166,8 @@ mod tests {
     fn toxic_chain_badly_poisons_on_low_roll_not_high_roll() {
         // PS data/abilities.ts:toxicchain — onSourceDamagingHit: 30% chance
         // (randomChance(3,10)) to badly-poison the target on any damaging
-        // hit. The attacker holds it. We drive the percent roll directly:
-        // a roll <=30 poisons, a roll >30 does not — proving it fires on
-        // some seeds but not all.
+        // hit. The attacker holds it. We drive PS's random(10) directly:
+        // 0..=2 poisons, 3..=9 does not.
         let attacker = r#"[
             {"species":"gliscor","level":50,"ability":"toxicchain","nature":"hardy","item":"","moves":["earthquake","protect","toxic","uturn"]}
         ]"#;
@@ -23155,14 +23179,14 @@ mod tests {
             let p1 = TeamBuilder::from_json(attacker).unwrap();
             let p2 = TeamBuilder::from_json(defender).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(20)], 0);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 0);
             crate::ability::on_damaging_hit(
                 &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
             );
             assert_eq!(
                 b.p2.team[0].status,
                 crate::pokemon::Status::Toxic,
-                "20-roll (<=30) → Toxic Chain badly-poisons the target",
+                "random(10) = 2 (< 3) → Toxic Chain badly-poisons the target",
             );
         }
         // High roll (>30) → no status.
@@ -23170,14 +23194,14 @@ mod tests {
             let p1 = TeamBuilder::from_json(attacker).unwrap();
             let p2 = TeamBuilder::from_json(defender).unwrap();
             let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(55)], 0);
+            let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(5)], 0);
             crate::ability::on_damaging_hit(
                 &mut b, SideRef::P2, 0, data::move_id::EARTHQUAKE, SideRef::P1, 0, &mut rng, false,
             );
             assert_eq!(
                 b.p2.team[0].status,
                 crate::pokemon::Status::None,
-                "55-roll (>30) → no poison",
+                "random(10) = 5 → no poison",
             );
         }
     }
@@ -28978,8 +29002,7 @@ mod tests {
     fn effect_spore_oracle_pinned_each_status_outcome() {
         // PS data/abilities.ts:effectspore — single `random(100)` on
         // contact hit. 0..10 → slp, 11..20 → par, 21..29 → psn, 30+ → none.
-        // Engine maps via percent_1_100 (1..=100): 1..=11 → slp,
-        // 12..=21 → par, 22..=30 → psn.
+        // The engine draws the same `random(100)` (Rng::ability_random).
         let p1_json = r#"[
             {"species":"amoonguss","level":50,"ability":"effectspore","item":"","nature":"calm","moves":["spore","gigadrain","ragepowder","protect"]}
         ]"#;
@@ -28994,7 +29017,7 @@ mod tests {
         let rng = crate::rng::Rng::oracle_partial(
             vec![
                 crate::rng::RngEvent::PercentRoll(100), // Crunch secondary: 100 > 20 → no def drop
-                crate::rng::RngEvent::PercentRoll(5),   // Effect Spore: 5 ≤ 11 → sleep
+                crate::rng::RngEvent::Range(4),         // Effect Spore: random(100) = 4 < 11 → sleep
             ],
             0,
         );
@@ -29010,7 +29033,7 @@ mod tests {
         );
         assert!(
             matches!(b.p2.team[0].status, Status::Sleep),
-            "PercentRoll 5 should sleep the contact attacker"
+            "random(100) = 4 should sleep the contact attacker"
         );
     }
 

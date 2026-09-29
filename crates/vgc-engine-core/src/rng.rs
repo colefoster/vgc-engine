@@ -75,6 +75,11 @@ pub enum RngDecision {
     Range,
     /// Speed-tie / ordering tiebreak (`next_u64`).
     Tiebreak,
+    /// An ability's own roll (Static, Flame Body, Poison Touch, Effect
+    /// Spore, Cursed Body, Shed Skin, Healer, ...). Keyed by the ability
+    /// HOLDER: `actor` = holder slot, `target` = `NO_SLOT`, `move_id` = the
+    /// engine ability id — see [`Rng::ability_chance`].
+    Ability,
 }
 
 /// The semantic key under which a randomized outcome is recorded and
@@ -756,6 +761,7 @@ impl Rng {
                 RngDecision::Damage => "damage",
                 RngDecision::Range => "range",
                 RngDecision::Tiebreak => "tiebreak",
+                RngDecision::Ability => "ability",
             }),
             _ => {}
         }
@@ -1054,6 +1060,77 @@ impl Rng {
                     RngEvent::Range(pass as u32),
                 );
                 pass
+            }
+        }
+    }
+
+    /// PS `randomChance(num, den)` rolled by an ability handler (Static,
+    /// Flame Body, Poison Point / Touch, Cute Charm, Cursed Body, Toxic
+    /// Chain, Shed Skin, Healer). Keyed by the holder, not the active move
+    /// (docs/conformance-key-contract.md): two procs on one hit (the
+    /// attacker's Poison Touch and the target's Flame Body) read their own
+    /// recorded outcomes whatever order the engine evaluates them in. The
+    /// move context is left untouched for the draws that follow.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
+    pub fn ability_chance(&mut self, turn: u32, holder: SlotRef, ability: u16, num: u32, den: u32) -> bool {
+        #[cfg(feature = "ps-rng")]
+        if let Rng::Ps(p) = self {
+            return p.random_chance("chance", num, den);
+        }
+        self.ability_draw(turn, holder, ability, den) < num
+    }
+
+    /// PS `random(n)` rolled by an ability handler (Effect Spore's
+    /// `random(100)`). Keyed like [`Rng::ability_chance`].
+    #[cfg_attr(feature = "ps-rng", track_caller)]
+    pub fn ability_random(&mut self, turn: u32, holder: SlotRef, ability: u16, n: u32) -> u32 {
+        #[cfg(feature = "ps-rng")]
+        if let Rng::Ps(p) = self {
+            return p.random_n("range", n);
+        }
+        self.ability_draw(turn, holder, ability, n)
+    }
+
+    /// Shared body: a `random(den)` value. Recorded bool gates come back as
+    /// `Range(0)` (pass) / `Range(u32::MAX)` (fail) and compare correctly
+    /// against any `num`.
+    fn ability_draw(&mut self, turn: u32, holder: SlotRef, ability: u16, den: u32) -> u32 {
+        let den = den.max(1);
+        match self {
+            Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(den),
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_n("range", den),
+            Rng::Oracle(state) => match state.pop() {
+                RngEvent::Range(v) => v,
+                other => panic!("OracleRng: expected Range (ability roll), got {other:?}"),
+            },
+            Rng::OraclePartial { state, fallback } => {
+                match state.pop_if(|e| matches!(e, RngEvent::Range(_))) {
+                    Some(RngEvent::Range(v)) => v,
+                    _ => (Self::splitmix_step(fallback) as u32) % den,
+                }
+            }
+            Rng::OracleKeyed(k) => {
+                let saved = (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move);
+                (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move) = (turn, holder, NO_SLOT, ability);
+                let v = match k.take(RngDecision::Ability) {
+                    Some(RngEvent::Range(v)) => v,
+                    _ => {
+                        let v = (k.fallback() as u32) % den;
+                        k.record_miss(RngDecision::Ability, DrawSpace::UniformRange(den), RngEvent::Range(v));
+                        v
+                    }
+                };
+                (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move) = saved;
+                v
+            }
+            Rng::Recording(r) => {
+                let saved = (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move);
+                (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move) = (turn, holder, NO_SLOT, ability);
+                let v = (r.step() as u32) % den;
+                r.push(RngDecision::Ability, DrawSpace::UniformRange(den), RngEvent::Range(v));
+                (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move) = saved;
+                v
             }
         }
     }
