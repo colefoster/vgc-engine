@@ -18324,6 +18324,26 @@ mod tests {
         assert_eq!(acc("makeitrain"), 95, "gen9 100 -> 95");
         assert_eq!(acc("clangoroussoul"), 255, "accuracy: true (can't miss)");
         assert_eq!(row("growth").type_, row("energyball").type_, "Growth is now Grass-type");
+        // Further rebalances in data/mods/champions/moves.ts.
+        assert_eq!(bp("snipeshot"), 85, "gen9 80 -> 85");
+        assert_eq!(bp("meteorassault"), 170, "gen9 150 -> 170");
+        assert_eq!(bp("slash"), 80, "gen9 70 -> 80");
+        assert_eq!(bp("bloodmoon"), 130, "gen9 140 -> 130");
+        assert_eq!(bp("tripledive"), 35, "gen9 30 -> 35");
+        assert_eq!(bp("revelationdance"), 100, "gen9 90 -> 100");
+        assert_eq!(bp("dragonhammer"), 100, "gen9 90 -> 100");
+        assert_eq!(bp("hyperdrill"), 120, "gen9 100 -> 120");
+        assert_eq!(bp("astralbarrage"), 110, "gen9 120 -> 110");
+        assert_eq!(row("snaptrap").type_, row("ironhead").type_, "Snap Trap is Steel");
+        for s in ["crushclaw", "direclaw", "dragonclaw", "shadowclaw", "metalclaw"] {
+            assert!(row(s).is_slicing, "{s} is a slicing move");
+        }
+        assert!(row("doubleshock").is_punch);
+        assert!(row("dragoncheer").is_sound && row("howl").is_sound);
+        // Standard gen 9 keeps its values.
+        let std9 = |s: &str| &data::MOVES[data::MOVES.iter().position(|m| m.slug == s).unwrap()];
+        assert_eq!(std9("snipeshot").base_power, 80);
+        assert!(!std9("shadowclaw").is_slicing);
     }
 
     #[test]
