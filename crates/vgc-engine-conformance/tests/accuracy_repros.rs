@@ -123,3 +123,11 @@ fn eject_button_pick_after_a_turn_start_switch_in() {
 fn emergency_exit_switches_out_below_half() {
     assert_matches_ps("study-59ccb3d636-emergency-exit");
 }
+
+/// Study battle dc6522e008 (real Reg M-C log): both sides switch under Trick
+/// Room and the slower leaving mon's switch resolves first, so the order of
+/// switch-in Intimidates matches PS.
+#[test]
+fn pre_turn_switches_are_slowest_first_under_trick_room() {
+    assert_matches_ps("study-dc6522e008-trick-room-switch-order");
+}

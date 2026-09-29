@@ -2720,10 +2720,16 @@ impl Battle {
                 }
             }
         }
-        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4).
+        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4);
+        // slowest first under Trick Room (PS sim/pokemon.ts getActionSpeed
+        // `speed = 10000 - speed` applies to switch actions too).
         // PS breaks Speed ties at random, which we do not model; the unstable
         // sort leaves ties in an unspecified order.
-        acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        if self.trick_room_turns > 0 {
+            acts[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        } else {
+            acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        }
         for &(_, side, actor_slot, team_index) in &acts[..n] {
             let opp_choices = match side {
                 SideRef::P1 => p2_choices,
@@ -37635,6 +37641,30 @@ mod tests {
         let b = hit(true);
         assert!(b.p2.team[0].is_alive());
         assert_eq!(b.p2.active[0], 2, "Emergency Exit: the player's pick comes in");
+    }
+
+    #[test]
+    fn pre_turn_switches_run_slowest_first_under_trick_room() {
+        // PS sim/pokemon.ts getActionSpeed: `speed = 10000 - speed` under
+        // Trick Room, for switch actions too (the leaving mon's speed). The
+        // slow side's replacement enters first and eats the Intimidate.
+        let run = |trick_room: bool| {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"moves":["tackle"]},
+                {"species":"machamp","level":50,"moves":["tackle"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"jolteon","level":50,"nature":"timid","evs":{"spe":252},"moves":["tackle"]},
+                {"species":"incineroar","level":50,"ability":"intimidate","moves":["tackle"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            if trick_room { b.trick_room_turns = 3; }
+            b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }],
+                   &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
+            b.p1.team[1].boosts[0]
+        };
+        assert_eq!(run(false), 0, "Jolteon leaves first: Incineroar intimidates Snorlax");
+        assert_eq!(run(true), -1, "Trick Room: Snorlax leaves first, Machamp is intimidated");
     }
 
     #[test]
