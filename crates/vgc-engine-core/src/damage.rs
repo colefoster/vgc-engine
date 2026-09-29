@@ -129,10 +129,10 @@ pub struct DamageContext {
     pub is_spread: bool,
     /// Battle-wide weather state (PS step 3). `Weather::None` is a no-op.
     pub weather: crate::weather::Weather,
-    /// Battle-wide terrain. ×1.3 to the matching type on a grounded
-    /// defender — gen 8+. PS data/conditions.ts:electricterrain et al.
-    /// Caller is responsible for clearing this to `Terrain::None` when
-    /// the defender is NOT grounded.
+    /// Battle-wide terrain, ungated. Each terrain rule checks grounding
+    /// itself: the ×1.3 type boost needs a grounded attacker, the Grassy
+    /// Earthquake and Misty Dragon halvings a grounded defender
+    /// (PS data/moves.ts:electricterrain et al., `onBasePower`).
     pub terrain: crate::terrain::Terrain,
     /// Defender's side has Reflect active. Halves physical damage in
     /// Singles (×0.5) and reduces by 1/3 in Doubles (×2/3), unless the
@@ -1205,28 +1205,28 @@ pub(crate) fn calculate_damage_with_bp(
         }
     }
 
-    // Terrain BP modifier — PS data/conditions.ts:electricterrain et al.
-    // implement this via `onBasePower` (chainModify [5325, 4096]). PS
+    // Terrain BP modifier — PS data/moves.ts:electricterrain (:4533),
+    // grassyterrain (:7699), psychicterrain (:14132) `onBasePower`
+    // (chainModify [5325, 4096]), gated on the ATTACKER being grounded
+    // (Electric / Psychic also exclude a semi-invulnerable attacker). PS
     // applies the chain through `modify()` (sim/battle.ts:2345) which is
-    // pokeRound, not plain truncate. Caller is responsible for passing
-    // Terrain::None when the defender isn't grounded (or, for gen 9
-    // Misty/Psychic terrain that gates on the USER being grounded, see
-    // those terrain arms when shipped).
+    // pokeRound, not plain truncate.
     // Accumulated `onBasePower` modifier (Q12, 4096 = ×1). Every base-power
     // boost below chains into this and is applied ONCE, with pokeRound, at the
     // end of the block — matching PS/Champions (`runEvent` sums the chain, then
     // one `modify`). See `chain_modify` / `apply_modifier`.
     let mut bp_mod: u64 = 4096;
     let (tn, td) = ctx.terrain.damage_mult(move_type);
-    if tn != td {
+    let attacker_gets_terrain = attacker.is_grounded()
+        && (matches!(ctx.terrain, crate::terrain::Terrain::Grassy) || attacker.semi_invuln == 0);
+    if tn != td && attacker_gets_terrain {
         bp_mod = chain_modify(bp_mod, tn as u64, td as u64);
     }
     // Grassy Terrain weakens Earthquake/Bulldoze/Magnitude to ×0.5 against a
     // grounded target — PS data/moves.ts:grassyterrain `onBasePower`
-    // (`chainModify(0.5)`). The caller already gates `ctx.terrain` on the
-    // defender being grounded, so reaching Grassy here means grounded; PS
-    // additionally exempts semi-invulnerable (Dig/Fly) targets.
+    // (`chainModify(0.5)`), for a grounded, not semi-invulnerable target.
     if matches!(ctx.terrain, crate::terrain::Terrain::Grassy)
+        && defender.is_grounded()
         && defender.semi_invuln == 0
         && matches!(
             move_id,
@@ -1236,11 +1236,10 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 2048, 4096);
     }
     // Misty Terrain halves Dragon-type damage against a grounded target — PS
-    // data/moves.ts:mistyterrain `onBasePower` (`chainModify(0.5)`). As with
-    // Grassy, the caller already gates `ctx.terrain` on the defender being
-    // grounded; PS additionally exempts semi-invulnerable targets. Dragon =
-    // type code 14.
+    // data/moves.ts:mistyterrain `onBasePower` (`chainModify(0.5)`), for a
+    // grounded, not semi-invulnerable target. Dragon = type code 14.
     if matches!(ctx.terrain, crate::terrain::Terrain::Misty)
+        && defender.is_grounded()
         && defender.semi_invuln == 0
         && move_type == 14
     {
