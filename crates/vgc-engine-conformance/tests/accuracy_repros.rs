@@ -69,3 +69,19 @@ fn sitrus_berry_eaten_after_recoil() {
 fn electro_shot_in_rain_uses_its_spa_boost() {
     assert_matches_ps("study-220a63b680-electro-shot-rain");
 }
+
+/// Study battle 576126830e: both sides replace a fainted mon at the end of
+/// turn 1; both replacements are in before Intimidate fires, so the foe's
+/// replacement is intimidated too.
+#[test]
+fn simultaneous_replacements_enter_before_abilities() {
+    assert_matches_ps("study-576126830e-replacement-intimidate");
+}
+
+/// Study battle d2fe06dc11: Rillaboom's Grassy Surge replaces Psychic
+/// Terrain before the other replacement's Psychic Seed is checked (seeds run
+/// at SwitchIn priority -1, after every ability).
+#[test]
+fn replacement_seed_checked_after_all_abilities() {
+    assert_matches_ps("study-d2fe06dc11-replacement-seed-after-surge");
+}

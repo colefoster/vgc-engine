@@ -1666,7 +1666,7 @@ impl Battle {
                 if let Some(w) = self.ended {
                     cursor.phase = StepPhase::Done(StepResult::Ended { winner: w });
                 } else if self.decision_phases && self.needs_replacements() {
-                    self.apply_pre_turn_switches(p1, p2);
+                    self.apply_replacement_switches(p1, p2);
                     self.sync_weather_terrain_cache();
                     self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
                         (true, true) => Some(None),
@@ -2723,6 +2723,60 @@ impl Battle {
                     self.ps_active_ties(false, "shuffle");
                 }
             }
+        }
+    }
+
+    /// Faint replacements. PS commits them as `instaswitch` actions (order
+    /// 3), which all run before the `runSwitch` each one queues (order
+    /// 101); `runSwitch` then batches every pending switch-in and fires
+    /// their SwitchIn handlers in Speed order (sim/battle-actions.ts:175-184).
+    /// So every replacement is on the field before any of their abilities
+    /// or items activate.
+    fn apply_replacement_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
+        let mut n = 0usize;
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            for c in choices {
+                if let Choice::Switch { actor_slot, team_index } = *c {
+                    if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
+                        entered[n] = (0, side, actor_slot);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        if n == 0 {
+            return;
+        }
+        // The last instaswitch's eachEvent('Update'), then runSwitch's
+        // speedSort(allActive).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
+            self.ps_active_ties(true, "shuffle");
+        }
+        for e in &mut entered[..n] {
+            let tw = self.side(e.1).conditions.tailwind_turns > 0;
+            e.0 = self
+                .side(e.1)
+                .active_mon(e.2 as usize)
+                .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                .unwrap_or(0);
+        }
+        entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        // Handlers sort by priority before Speed: abilities (0) all run
+        // before the item handlers (seeds / Booster Energy / Room Service
+        // carry `onSwitchInPriority` -1 or -2, data/items.ts).
+        for &(_, side, slot) in &entered[..n] {
+            crate::ability::on_switch_in(self, side, slot);
+        }
+        for &(_, side, slot) in &entered[..n] {
+            crate::item::on_switch_in(self, side, slot);
+        }
+        // runSwitch's own eachEvent('Update').
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_active_ties(false, "shuffle");
         }
     }
 
@@ -15839,6 +15893,44 @@ mod tests {
 
     fn t(side: SideRef, slot: u8) -> Target {
         Target { side, slot }
+    }
+
+    #[test]
+    fn simultaneous_replacements_enter_before_either_ability_fires() {
+        // PS: faint replacements are `instaswitch` actions (order 3), which
+        // all run before the queued `runSwitch` (order 101); runSwitch then
+        // batches every pending switch-in and fires their SwitchIn handlers
+        // together (sim/battle-actions.ts:175-184). So a replacement
+        // Incineroar's Intimidate also hits the foe's simultaneous
+        // replacement.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake","dragonclaw","protect","rockslide"],"evs":{"spe":252}},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane","weatherball","tailwind","airslash"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"rillaboom","level":50,"ability":"grassysurge","nature":"adamant","moves":["grassyglide","woodhammer","fakeout","protect"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.decision_phases = true;
+        for m in [&mut b.p1.team[0], &mut b.p2.team[0]] {
+            m.current_hp = 0;
+            m.fainted = true;
+        }
+        assert!(b.needs_replacements());
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert_eq!(b.p2.active_mon(0).unwrap().species().name, "Rillaboom");
+        assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], -1, "replacement Rillaboom intimidated");
+        assert_eq!(b.p2.active_mon(1).unwrap().boosts[0], -1, "Pikachu intimidated");
     }
 
     // ---- Delayed-effect subsystem: Wish / Future Sight / Doom Desire ----
