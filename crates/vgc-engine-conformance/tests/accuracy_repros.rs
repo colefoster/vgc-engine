@@ -145,3 +145,10 @@ fn life_orb_and_resist_berry_chain_into_one_rounding() {
 fn life_orb_and_aurora_veil_chain_into_one_rounding() {
     assert_matches_ps("study-fb56fc4f9c-lifeorb-veil-chain");
 }
+
+/// Study battle 8fba727aef (real Reg M-C log): Steel Roller needs a terrain
+/// to work and clears it when it hits.
+#[test]
+fn steel_roller_needs_and_clears_terrain() {
+    assert_matches_ps("study-8fba727aef-steel-roller");
+}
