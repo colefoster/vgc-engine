@@ -166,6 +166,10 @@ battle by battle).
 | F2 second Switch per slot = mid-turn pick | 695 = 53.5% (50.8–56.2) | 7785/8388 = 92.8% (92.2–93.3) | 90 / 461 / 51 |
 | F3 Emergency Exit | 711 = 54.8% (52.1–57.5) | 7900/8487 = 93.1% (92.5–93.6) | 91 / 465 / 30 |
 | F4 Trick Room switch order | 717 = 55.2% (52.5–57.9) | 7965/8546 = 93.2% (92.6–93.7) | 92 / 458 / 30 |
+| F5 ModifyDamage chain (Life Orb, Expert Belt, Friend Guard, resist berries) | 735 = 56.6% (53.9–59.3) | 8100/8663 = 93.5% (93.0–94.0) | 93 / 441 / 28 |
+| F6+F7 Steel Roller, Drum Beating | 766 = 59.0% (56.3–61.7) | 8307/8839 = 94.0% (93.5–94.5) | 94 / 409 / 28 |
+| F8 Champions move data (BP, type, flags) | 774 = 59.6% (56.9–62.3) | 8359/8883 = 94.1% (93.6–94.6) | 95 / 401 / 28 |
+| F9+F10 battle ends at last faint, Champions sleep | **786 = 60.6% (57.9–63.2)** | **8392/8904 = 94.2% (93.7–94.7)** | 93 / 391 / 28 |
 
 ## Fixes (round 2)
 
@@ -175,6 +179,32 @@ battle by battle).
 | F2 | A mon that switched in and was ejected the same turn: both switches ran at turn start (harness also dropped the pick) | same | unit `eject_button_pick_after_a_turn_start_switch_in`; golden `study-270f1619dc` | `1e6256d` | 22 |
 | F3 | Emergency Exit unimplemented | `data/mods/champions/abilities.ts` emergencyexit; `data/mods/champions/scripts.ts:583`; `sim/battle-actions.ts:542,1132,1395` | unit `emergency_exit_switches_out_when_a_hit_crosses_half_hp`; golden `study-59ccb3d636` | `f0badf0` | 21 |
 | F4 | Pre-turn switches fastest-first even under Trick Room | `sim/pokemon.ts:641` getActionSpeed | unit `pre_turn_switches_run_slowest_first_under_trick_room`; golden `study-dc6522e008` | `33e8683` | 9 |
+| F5 | Life Orb, Expert Belt, Friend Guard and resist berries rounded one at a time after the ModifyDamage chain | `sim/battle.ts` runEvent → `modify` (one rounding); `data/items.ts` lifeorb / expertbelt; `data/abilities.ts` friendguard | goldens `study-9d848b7db0`, `study-fb56fc4f9c` | `b82a44c` | 20 |
+| F6 | Steel Roller unimplemented (no terrain check, never cleared terrain) | `data/moves.ts` steelroller onTry / onHit / onAfterSubDamage | unit `steel_roller_needs_terrain_and_clears_it`; golden `study-8fba727aef` | `739f439` | 34 |
+| F7 | Drum Beating's Spe −1 missing | `data/moves.ts` drumbeating secondary | table assertion; golden `study-3d3fc88bdf` | `9753483` | 5 |
+| F8 | Remaining Champions move deltas (9 BP, Snap Trap type, slicing / punch / sound flags) | `data/mods/champions/moves.ts` | `champions_move_data_overrides_applied`; golden `study-1f62339620` | `b30410b` | 14 |
+| F9 | Actions and residuals continued after a side was out | `sim/battle.ts` faintMessages → checkWin | unit `battle_ends_before_residuals_once_a_side_is_out`; golden `study-11f8f58c63` | `f9eb8ba` | 6 |
+| F10 | Champions sleep length (`sample([2, 3, 3])`); harness recovers the unrecorded sample | `data/mods/champions/conditions.ts:22` | unit `champions_sleep_lasts_one_or_two_turns`; golden `study-a6a15861c8` | `443d9d6` | 6 |
+
+No battle diverged earlier after any fix. The one earlier-diverging battle
+in a trial of F10 was a harness pairing error: a condition sample was paired
+to a Protect stall roll. The fix was to rank condition samples last in the
+repair pass.
+
+## What leads now (512 diverged battles)
+
+- **RNG plumbing (93).** Draws PS never supplied, mostly speed ties and
+  `sample()` draws outside `Battle.random`.
+- **Decision model (28).** Red Card is still a first-bench auto-pick. PS
+  drags in a random bench mon with `sample()`, which the keyed envelopes
+  don't carry. Revival Blessing (6) is also unmodelled.
+- **Mechanics (391).** The offender table is now a long tail:
+  - `switch` (65): mostly an earlier HP difference deciding a KO;
+  - Grassy Terrain (57) and Life Orb (33): co-occurring, not causes;
+  - Close Combat (25), Knock Off (15), Rocky Helmet (15);
+  - Baton Pass (11 of 13 uses);
+  - Rage Fist, Burn Up's type loss (unimplemented), Leech Life;
+  - team PP from the Champions table (not ported).
 
 Notes:
 - **Eject Button fallback.** A caller that queues no pick still gets the
