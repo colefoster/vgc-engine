@@ -4057,6 +4057,14 @@ impl Battle {
             ChargeOutcome::Continue { skip_pp_deduct } => skip_pp_deduct,
             ChargeOutcome::Abort => return,
         };
+        // Electro Shot / Meteor Beam boost SpA in onTryMove, before a Rain /
+        // Power Herb skip (PS data/moves.ts:4644); the hit reads the boosted
+        // stat, so refresh the snapshot taken before the boost.
+        if matches!(move_id, data::move_id::ELECTROSHOT | data::move_id::METEORBEAM) {
+            if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+                attacker.boosts = a.boosts;
+            }
+        }
 
         // 3. PP cost — ticked even on miss / immunity (PS behavior). Also
         //    locks Choice / Gorilla Tactics into this slot, sets
@@ -33617,6 +33625,37 @@ mod tests {
         assert!(b.p2.team[0].current_hp < snorlax_hp, "Electro Shot hits turn 1 in Rain");
         assert_eq!(b.p1.team[0].charging_turns, 0, "no charge state in Rain");
         assert_eq!(b.p1.team[0].boosts[2], 1, "+1 SpA still applies when charge is skipped");
+    }
+
+    #[test]
+    fn electro_shot_in_rain_hits_with_its_own_spa_boost() {
+        // PS electroshot onTryMove (data/moves.ts:4644) boosts SpA before
+        // the Rain skip, and the hit that follows reads the boosted stat.
+        // Compare with the two-turn release (hits at +1 too): same move,
+        // same +1 SpA, so the damage differs only by the roll (0.85-1.0),
+        // not by the 2/3 a missing boost would cost.
+        let p1_json = r#"[
+            {"species":"duraludon","level":50,"ability":"lightmetal","item":"","nature":"modest","moves":["electroshot","flashcannon","protect","thunderbolt"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","protect"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let es = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        let mut rain = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        rain.set_weather(crate::weather::Weather::Rain);
+        let hp0 = rain.p2.team[0].current_hp;
+        rain.step(&es, &pass);
+        let in_rain = hp0 - rain.p2.team[0].current_hp;
+        let mut clear = Battle::new(BattleConfig { format: Format::Singles, seed: 1 },
+            TeamBuilder::from_json(p1_json).unwrap(), TeamBuilder::from_json(p2_json).unwrap());
+        let hp0 = clear.p2.team[0].current_hp;
+        clear.step(&es, &pass);
+        clear.step(&es, &pass);
+        let released = hp0 - clear.p2.team[0].current_hp;
+        let pct = in_rain as u32 * 100 / released as u32;
+        assert!((84..=118).contains(&pct), "Rain Electro Shot {in_rain} vs +1 release {released} ({pct}%)");
     }
 
     #[test]

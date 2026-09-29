@@ -62,3 +62,10 @@ fn fake_out_works_after_a_mid_turn_switch_in() {
 fn sitrus_berry_eaten_after_recoil() {
     assert_matches_ps("study-0d752208ee-sitrus-after-recoil");
 }
+
+/// Study battle 220a63b680: Archaludon's Electro Shot in Rain fires on
+/// turn 1 and hits with the +1 SpA it just gained (PS 88, engine was 134).
+#[test]
+fn electro_shot_in_rain_uses_its_spa_boost() {
+    assert_matches_ps("study-220a63b680-electro-shot-rain");
+}
