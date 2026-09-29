@@ -643,6 +643,11 @@ pub struct Pokemon {
     /// it switched in / was sent out at battle start). Used by Fake Out,
     /// First Impression, Mat Block, etc. Incremented at end of step.
     pub turns_active: u8,
+    /// PS `activeMoveActions`: move actions started since this mon last
+    /// switched in, counted when the action begins (so a flinched or fully
+    /// paralysed action counts). Fake Out and Mat Block need it to be 1.
+    #[serde(default)]
+    pub move_actions: u8,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -947,6 +952,7 @@ impl Pokemon {
             boosts: [0; 7],
             fainted: false,
             turns_active: 0,
+            move_actions: 0,
             last_used_move_slot: 255,
             last_used_move_target: 255,
             boosted_stat: 255,

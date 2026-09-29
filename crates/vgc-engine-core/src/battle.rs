@@ -2840,6 +2840,7 @@ impl Battle {
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
+            incoming.move_actions = 0;
             incoming.set_flinched(false);
             incoming.set_helping_handed(false);
             incoming.set_redirecting(false, false);
@@ -3862,6 +3863,13 @@ impl Battle {
             }
         }
 
+        // PS `runMove` (sim/battle-actions.ts:217) counts the action before
+        // any beforeMove check can stop it.
+        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            if a.is_alive() {
+                a.move_actions = a.move_actions.saturating_add(1);
+            }
+        }
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc. `mut` because Stance Change (below) can
         // forme-swap the actor mid-resolution and must refresh the snapshot
@@ -8767,10 +8775,10 @@ impl Battle {
             return MoveIdentityOutcome::Abort;
         }
 
-        // 2. Fake Out: fails unless attacker has been on the field 0 turns
-        //    (i.e. this is its first action since switch-in). PS marks
-        //    this with the 'fakeout' move's onTry checking activeTurns.
-        if move_id == data::move_id::FAKEOUT && attacker.turns_active != 0 {
+        // 2. Fake Out: fails unless this is the attacker's first move
+        //    action since switching in. PS data/moves.ts:5097 fakeout
+        //    `onTry`: `if (source.activeMoveActions > 1) return false`.
+        if move_id == data::move_id::FAKEOUT && attacker.move_actions > 1 {
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -11811,9 +11819,7 @@ impl Battle {
             data::move_id::MATBLOCK => {
                 // PS data/moves.ts:matblock. `onTry` fails when
                 // `source.activeMoveActions > 1` ("Mat Block only works on
-                // your first turn out") — equivalent to Fake Out's
-                // `turns_active == 0` gate (turns_active is 0 on the mon's
-                // first action after switch-in, incremented end of turn).
+                // your first turn out"), same counter as Fake Out.
                 // Unlike Wide / Quick Guard, Mat Block has NO `onHitSide`
                 // and does NOT call StallMove, so it neither rolls nor bumps
                 // the Protect stall counter — it just sets the side flag.
@@ -11822,7 +11828,7 @@ impl Battle {
                 let first_turn_out = self
                     .side(actor_side)
                     .active_mon(actor_slot as usize)
-                    .map(|a| a.turns_active == 0)
+                    .map(|a| a.move_actions <= 1)
                     .unwrap_or(false);
                 if !first_turn_out {
                     return;
@@ -17228,6 +17234,38 @@ mod tests {
         assert!(b.p2.team[0].current_hp >= chomp_hp, "Fake Out failed → Garchomp didn't lose HP");
         // Garchomp's Dragon Claw should have hit Iron Hands.
         assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn fake_out_works_the_turn_after_a_switch_in() {
+        // PS fakeout `onTry` fails only when `source.activeMoveActions > 1`
+        // (data/moves.ts:5097); the counter resets on switch-in
+        // (sim/battle-actions.ts:138) and counts move actions, not turns.
+        // Iron Hands switches in on turn 1 and has not moved yet, so its
+        // Fake Out on turn 2 lands.
+        let p1_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"assaultvest","nature":"adamant","moves":["fakeout","drainpunch","thunderpunch","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","item":"leftovers","nature":"jolly","moves":["protect","dragonclaw","aerialace","ironhead"],"evs":{"atk":252,"spe":252,"hp":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let chomp_hp = b.p2.team[0].current_hp;
+        let hands_hp = b.p1.team[1].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].current_hp < chomp_hp, "Fake Out hit Garchomp");
+        let rough_skin = (b.p1.team[1].stats.hp / 8).max(1);
+        assert_eq!(b.p1.team[1].current_hp, hands_hp - rough_skin, "Garchomp flinched: only Rough Skin chip");
     }
 
     #[test]
