@@ -392,6 +392,11 @@ pub struct Battle {
     /// active. Reset at the top of every `step`.
     #[serde(default)]
     pub(crate) replaced_mid_turn: [[bool; 2]; 2],
+    /// Emergency Exit bookkeeping for the move action in progress: each
+    /// active slot's (team index, HP) before it, and whether the action is a
+    /// damaging move. See [`Battle::trigger_emergency_exits`].
+    #[serde(default)]
+    pub(crate) hp_before_action: Option<([[(u8, u16); 2]; 2], bool)>,
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -587,6 +592,7 @@ impl Battle {
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
+            hp_before_action: None,
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -1725,6 +1731,7 @@ impl Battle {
                         };
                         return StepProgress::ChanceYield { pending, key, space };
                     }
+                    self.trigger_emergency_exits();
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
                     #[cfg(feature = "ps-rng")]
                     if ps_ran {
@@ -1751,6 +1758,7 @@ impl Battle {
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                self.trigger_emergency_exits();
                 if self.decision_phases { self.apply_self_switches(p1, p2); }
                 idx += 1;
                 cursor.phase = StepPhase::ActionLoop {
@@ -2329,6 +2337,7 @@ impl Battle {
         if self.replaced_mid_turn[action.side as usize][(action.actor_slot as usize).min(1)] {
             return;
         }
+        self.snapshot_hp_before_action(action.side, action.actor_slot, action.choice);
         // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
         // iff any action ordered AFTER the current one this turn is a
         // move/switch/instaswitch/shift. PS shifts the current action
@@ -10021,6 +10030,71 @@ impl Battle {
             }
         }
         None
+    }
+
+    /// Record every active slot's HP before a move action (Emergency Exit).
+    fn snapshot_hp_before_action(&mut self, side: SideRef, slot: u8, choice: Choice) {
+        let damaging = match choice {
+            Choice::Move { move_slot, .. }
+            | Choice::Terastallize { move_slot, .. }
+            | Choice::MegaEvolve { move_slot, .. } => self
+                .side(side)
+                .active_mon(slot as usize)
+                .and_then(|m| m.moves.get(move_slot as usize).copied())
+                .filter(|&id| id != u16::MAX)
+                .is_some_and(|id| self.moves()[id as usize].category != 2),
+            _ => false,
+        };
+        let mut snap = [[(u8::MAX, 0u16); 2]; 2];
+        for (si, s) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for sl in 0..self.format().active_count() {
+                if let Some(m) = self.side(s).active_mon(sl) {
+                    snap[si][sl] = (self.side(s).active[sl], m.current_hp);
+                }
+            }
+        }
+        self.hp_before_action = Some((snap, damaging));
+    }
+
+    /// Emergency Exit — PS data/abilities.ts emergencyexit `onEmergencyExit`
+    /// (Champions: data/mods/champions/abilities.ts, which no longer clears
+    /// other actives' switchFlag). A damaging move action that leaves the
+    /// holder alive at or below half HP, from above half before it, sets
+    /// `switchFlag` unless it can't switch or is already switching. PS fires
+    /// it from the move's hit loop for targets, and after recoil / Life Orb /
+    /// contact damage for the user (sim/battle-actions.ts and
+    /// data/mods/champions/scripts.ts:583); the whole-action HP check covers
+    /// each. The player picks the replacement, like Eject Button.
+    fn trigger_emergency_exits(&mut self) {
+        let Some((snap, damaging)) = self.hp_before_action.take() else { return };
+        if !damaging {
+            return;
+        }
+        for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for slot in 0..self.format().active_count() {
+                let (team_idx, before) = snap[si][slot];
+                let fires = self.side(side).active[slot] == team_idx
+                    && self.side(side).active_mon(slot).is_some_and(|m| {
+                        let half = m.stats.hp / 2;
+                        m.is_alive()
+                            && m.effective_ability_id() == data::ability_id::EMERGENCYEXIT
+                            && before > half
+                            && m.current_hp <= half
+                            && !m.pending_self_switch()
+                    })
+                    && self.first_bench_index(side).is_some();
+                if !fires {
+                    continue;
+                }
+                if self.decision_phases {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        m.set_pending_forced_switch();
+                    }
+                } else {
+                    self.force_switch_auto(side, slot as u8);
+                }
+            }
+        }
     }
 
     /// Reactive force-switch: yank `slot` on `side` off the field and pull
@@ -37531,6 +37605,36 @@ mod tests {
         );
         assert_eq!(b.p2.team[1].item_id, u16::MAX, "Blissey came in, was hit and ejected");
         assert_eq!(b.p2.active[0], 3);
+    }
+
+    #[test]
+    fn emergency_exit_switches_out_when_a_hit_crosses_half_hp() {
+        // PS data/abilities.ts emergencyexit onEmergencyExit sets switchFlag
+        // when a move drops the holder from above to at-or-below half
+        // (data/mods/champions/scripts.ts:583 hitStepMoveHitLoop). The
+        // player picks the replacement.
+        use crate::rng::{RngEvent};
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"jolly","evs":{"atk":252},"moves":["dragonclaw"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"golisopod","level":50,"ability":"emergencyexit","nature":"careful","evs":{"hp":252},"moves":["liquidation"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let hit = |_ee_pick: bool| {
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(15)], 3),
+                p1.clone(), p2.clone());
+            b.decision_phases = true;
+            // Start Golisopod just above half so Dragon Claw crosses it.
+            let max = b.p2.team[0].stats.hp;
+            b.p2.team[0].current_hp = max / 2 + 5;
+            let p2c = vec![Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 2 }];
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }], &p2c);
+            b
+        };
+        let b = hit(true);
+        assert!(b.p2.team[0].is_alive());
+        assert_eq!(b.p2.active[0], 2, "Emergency Exit: the player's pick comes in");
     }
 
     #[test]

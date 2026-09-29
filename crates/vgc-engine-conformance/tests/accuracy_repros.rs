@@ -115,3 +115,11 @@ fn eject_button_replacement_is_the_players_pick() {
 fn eject_button_pick_after_a_turn_start_switch_in() {
     assert_matches_ps("study-270f1619dc-eject-after-switch-in");
 }
+
+/// Study battle 59ccb3d636 (real Reg M-C log): a hit drops Golisopod from
+/// above half to below it and Emergency Exit switches it out to the
+/// player's pick.
+#[test]
+fn emergency_exit_switches_out_below_half() {
+    assert_matches_ps("study-59ccb3d636-emergency-exit");
+}
