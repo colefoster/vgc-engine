@@ -15218,8 +15218,10 @@ fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
 fn stat_drop_secondary(slug: &str, champions: bool) -> Option<(u8, i8, u8)> {
     Some(match slug {
         // Guaranteed -1 Spe (used as soft speed control in VGC):
+        // Drum Beating: PS data/moves.ts drumbeating `secondary: { chance:
+        // 100, boosts: { spe: -1 } }` (was missing).
         "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate"
-        | "rocktomb" => (4, -1, 100),
+        | "rocktomb" | "drumbeating" => (4, -1, 100),
         // 100% -1 SpA — Mystical Fire, Snarl (spread), plus Spirit Break
         // (Grimmsnarl, single-target) and Struggle Bug (spread). PS
         // data/moves.ts each `secondary: { chance: 100, boosts: { spa: -1 } }`.
@@ -35009,6 +35011,9 @@ mod tests {
         assert_eq!(super::stat_drop_secondary("lunge", true), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("breakingswipe", true), Some((0, -1, 100)));
         assert_eq!(super::stat_drop_secondary("pounce", true), Some((4, -1, 100)));
+        // drumbeating: secondary { chance: 100, boosts: { spe: -1 } }
+        // (PS data/moves.ts drumbeating; Rillaboom's signature).
+        assert_eq!(super::stat_drop_secondary("drumbeating", true), Some((4, -1, 100)));
     }
 
     #[test]

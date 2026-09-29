@@ -152,3 +152,10 @@ fn life_orb_and_aurora_veil_chain_into_one_rounding() {
 fn steel_roller_needs_and_clears_terrain() {
     assert_matches_ps("study-8fba727aef-steel-roller");
 }
+
+/// Study battle 3d3fc88bdf (real Reg M-C log): Drum Beating lowers the
+/// target's Speed.
+#[test]
+fn drum_beating_lowers_speed() {
+    assert_matches_ps("study-3d3fc88bdf-drum-beating");
+}
