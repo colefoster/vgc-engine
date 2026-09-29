@@ -310,7 +310,7 @@ fn drive(
     rng: Rng,
     mut before_step: impl FnMut(&mut Battle, u32),
 ) -> (Battle, Result<(u32, u32, Option<Divergence>, bool), String>) {
-    let champions = acc.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
     let p1 = build_engine_team(&acc.p1team, champions);
     let p2 = build_engine_team(&acc.p2team, champions);
     let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
@@ -323,7 +323,7 @@ fn drive(
     };
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
     b.decision_phases = true;
-    b.champions = champions;
+    b.set_format_id(&acc.format);
     let mut matched = 0u32;
     let mut compared = 0u32;
     let mut ended = false;
@@ -918,7 +918,7 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
     use std::fmt::Write;
     let (table, repaired, ..) = repaired_table(acc);
     let rng = Rng::oracle_keyed(table, 0xC0FFEE);
-    let champions = acc.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
     let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
     let mut out = String::new();
     let (p1, p2) = match (build_engine_team(&acc.p1team, champions), build_engine_team(&acc.p2team, champions)) {
@@ -927,7 +927,7 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
     };
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
     b.decision_phases = true;
-    b.champions = champions;
+    b.set_format_id(&acc.format);
     for t in &acc.turns {
         let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1);
         let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2);
@@ -1010,7 +1010,7 @@ pub fn outcome_tokens(b: &Battle) -> Vec<String> {
 /// Run turn 1 of `acc` `k` times under independent engine seeds and count
 /// each slot's outcome token. Returns `[slot] -> token -> count`.
 pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<String, u32>>, String> {
-    let champions = acc.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
     let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
     let p1 = build_engine_team(&acc.p1team, champions)?;
     let p2 = build_engine_team(&acc.p2team, champions)?;
@@ -1022,7 +1022,7 @@ pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<S
         let seed = seed0 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut b = Battle::with_rng(BattleConfig { format, seed }, Rng::new(seed), p1.clone(), p2.clone());
         b.decision_phases = true;
-        b.champions = champions;
+        b.set_format_id(&acc.format);
         b.step(&p1c, &p2c);
         for (j, tok) in outcome_tokens(&b).into_iter().enumerate() {
             *hist[j].entry(tok).or_default() += 1;
@@ -1036,13 +1036,13 @@ pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<S
 /// slot's max HP — for the real-log comparison (experiment 1b).
 pub fn turn1_state(acc: &AccBattle) -> Result<Vec<(String, u16)>, String> {
     let (table, ..) = repaired_table(acc);
-    let champions = acc.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
     let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
     let p1 = build_engine_team(&acc.p1team, champions)?;
     let p2 = build_engine_team(&acc.p2team, champions)?;
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, Rng::oracle_keyed(table, 0xC0FFEE), p1, p2);
     b.decision_phases = true;
-    b.champions = champions;
+    b.set_format_id(&acc.format);
     let t = acc.turns.first().ok_or("no turns")?;
     let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
     let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;

@@ -698,6 +698,10 @@ fn main() {
     writeln!(f, "    pub crit_stage_delta: u8,").unwrap();
     writeln!(f, "}}").unwrap();
     writeln!(f).unwrap();
+    // Two parallel tables with identical indices: `MOVES` carries standard
+    // gen 9 values, `MOVES_CHAMPIONS` the Champions rebalances. A battle picks
+    // one by its `champions` rule (see `move_table`).
+    let mut champions_rows: Vec<String> = Vec::new();
     writeln!(f, "pub const MOVES: &[MoveDef] = &[").unwrap();
     let mut move_consts: Vec<(String, usize)> = Vec::new();
     // slug → emitted table index, for resolving learnset move ids below.
@@ -710,21 +714,23 @@ fn main() {
         let (champ_bp, champ_acc, champ_type) = champions_move_override(slug);
         let eff_type: &str = champ_type.unwrap_or(m.type_.as_str());
         let Some(ty) = type_index(eff_type) else { continue; };
-        let eff_bp = champ_bp.unwrap_or(m.base_power.min(u16::MAX as u32) as u16);
-        let eff_acc = champ_acc.unwrap_or(accuracy_code(&m.accuracy));
+        let std_ty = type_index(m.type_.as_str()).unwrap_or(ty);
+        let std_bp = m.base_power.min(u16::MAX as u32) as u16;
+        let std_acc = accuracy_code(&m.accuracy);
+        let eff_bp = champ_bp.unwrap_or(std_bp);
+        let eff_acc = champ_acc.unwrap_or(std_acc);
         let move_idx = move_consts.len();
         move_slug_to_idx.insert((*slug).clone(), move_idx);
         move_consts.push((const_ident(slug), move_idx));
-        writeln!(
-            f,
-            "    MoveDef {{ num: {}, name: {}, slug: {}, type_: {}, category: {}, base_power: {}, accuracy: {}, pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_sound: {}, is_heal: {}, is_reflectable: {}, blocked_by_protect: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
+        let head = format!(
+            "    MoveDef {{ num: {}, name: {}, slug: {}, ",
             m.num.max(0) as u16,
             rust_str_lit(&m.name),
             rust_str_lit(slug),
-            ty,
-            category_code(&m.category),
-            eff_bp,
-            eff_acc,
+        );
+        let cat = category_code(&m.category);
+        let tail = format!(
+            "pp: {}, priority: {}, target: {}, has_secondary: {}, has_sheer_force_boost: {}, makes_contact: {}, is_punch: {}, is_bite: {}, is_slicing: {}, is_pulse: {}, is_bullet: {}, is_dance: {}, is_wind: {}, is_powder: {}, is_sound: {}, is_heal: {}, is_reflectable: {}, blocked_by_protect: {}, cannot_use_twice: {}, self_max_hp_recoil_num: {}, self_max_hp_recoil_den: {}, drain_num: {}, drain_den: {}, recoil_num: {}, recoil_den: {}, multihit_min: {}, multihit_max: {}, crit_stage_delta: {} }},",
             m.pp.min(u8::MAX as u32) as u8,
             m.priority.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
             target_code(&m.target),
@@ -758,9 +764,22 @@ fn main() {
             multihit_min(&m.multihit),
             multihit_max(&m.multihit),
             m.crit_ratio.map(|r| r.saturating_sub(1).min(2) as u8).unwrap_or(0),
-        ).unwrap();
+        );
+        writeln!(f, "{head}type_: {std_ty}, category: {cat}, base_power: {std_bp}, accuracy: {std_acc}, {tail}").unwrap();
+        champions_rows.push(format!("{head}type_: {ty}, category: {cat}, base_power: {eff_bp}, accuracy: {eff_acc}, {tail}"));
     }
     writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "/// `MOVES` with the Pokémon Champions rebalances applied (PS `data/mods/champions/moves.ts`).").unwrap();
+    writeln!(f, "pub const MOVES_CHAMPIONS: &[MoveDef] = &[").unwrap();
+    for r in &champions_rows {
+        writeln!(f, "{r}").unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+    writeln!(f, "/// The move table for a battle: Champions values when `champions`, else standard gen 9.").unwrap();
+    writeln!(f, "#[inline]").unwrap();
+    writeln!(f, "pub fn move_table(champions: bool) -> &'static [MoveDef] {{ if champions {{ MOVES_CHAMPIONS }} else {{ MOVES }} }}").unwrap();
     writeln!(f).unwrap();
     emit_id_module(&mut f, "move_id", &move_consts);
 

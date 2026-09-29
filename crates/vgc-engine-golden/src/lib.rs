@@ -311,6 +311,7 @@ pub fn run_golden_in_memory(
     let cfg = BattleConfig { format, seed: fallback_seed };
     let mut battle = Battle::with_rng(cfg, rng, p1_team, p2_team);
     battle.decision_phases = input.decision_phases;
+    battle.set_format_id(&input.format);
 
     let mut report = GoldenReport {
         name: input.name.clone().unwrap_or_else(|| "<unnamed>".into()),

@@ -181,6 +181,8 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         // move-last boost never applies here — neutral default, matching
         // every other field in this literal.
         attacker_moves_last: false,
+        // Replay recon reads Champions ladder logs.
+        champions: true,
     };
     let lo = calculate_damage(a, d, mid, ctx(DamageContext::MIN_ROLL));
     let hi = calculate_damage(a, d, mid, ctx(DamageContext::MAX_ROLL));

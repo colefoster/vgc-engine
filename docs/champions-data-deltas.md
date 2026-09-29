@@ -1,5 +1,14 @@
 # Pokémon Champions data deltas — the real porting target
 
+> **STATUS (2026-09-29): every delta below is behind the Champions switch.**
+> `Battle::champions` is derived from the format id
+> (`format_rules::is_champions_format`: any `gen9champions*` id, plus Reg M-B /
+> Reg M-C and their aliases; `Battle::set_format_id`). Champions battles read
+> `data::MOVES_CHAMPIONS` and the Champions secondary chances, Salt Cure,
+> Healer, Unseen Fist and paralysis; every other format reads `data::MOVES`
+> (standard gen 9) and the gen 9 values. pyo3 `from_teams(format=...)` takes a
+> PS id; bare `"doubles"`/`"singles"` stay Champions, and `champions=` overrides.
+
 > **STATUS (2026-06-24): move audit COMPLETE.** All 22 move-data deltas below
 > (16 base-power + 5 accuracy + Growth→Grass) are ported via a new
 > `champions_move_override` table in `vgc-engine-data/build.rs`; Moonblast

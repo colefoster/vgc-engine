@@ -328,9 +328,14 @@ impl PyBattle {
     /// docs/accuracy/ps-rng.md). It overrides `seed`; without the feature it
     /// raises ValueError.
     ///
-    /// `champions=True` applies Pokémon Champions battle rules that differ
-    /// from gen 9 at runtime (full paralysis 1/8).
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = false))]
+    /// `format` is `"doubles"`, `"singles"` or a PS format id. Champions
+    /// rules and move data (PS `data/mods/champions`: paralysis 1/8, Iron
+    /// Head 20% flinch, the base-power rebalances, ...) follow the format:
+    /// any `gen9champions*` id (or `regmb` / `regmc`) is Champions, any other
+    /// PS id (`gen9vgc2025regh`, `gen9doublescustomgame`) is standard gen 9.
+    /// The bare `"doubles"` / `"singles"` keep the engine's target format,
+    /// Champions. `champions=True/False` overrides the format either way.
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
@@ -341,11 +346,17 @@ impl PyBattle {
         tera_allowed: bool,
         decision_phases: bool,
         ps_seed: Option<&str>,
-        champions: bool,
+        champions: Option<bool>,
     ) -> PyResult<Self> {
-        let fmt = match format {
-            "singles" => core::Format::Singles,
-            "doubles" => core::Format::Doubles,
+        let id = format.to_ascii_lowercase();
+        let (fmt, format_champions) = match id.as_str() {
+            "singles" => (core::Format::Singles, true),
+            "doubles" => (core::Format::Doubles, true),
+            other if other.starts_with("gen") || core::format_rules::rules_for(other).is_some() => {
+                let doubles = other.contains("doubles") || other.contains("vgc") || core::format_rules::rules_for(other).is_some();
+                let fmt = if doubles { core::Format::Doubles } else { core::Format::Singles };
+                (fmt, core::format_rules::is_champions_format(other))
+            }
             other => return Err(PyValueError::new_err(format!("unknown format: {other}"))),
         };
         let mut p1 = core::TeamBuilder::from_json(p1_team_json).map_err(map_team_err)?;
@@ -372,7 +383,7 @@ impl PyBattle {
             }
         };
         inner.decision_phases = decision_phases;
-        inner.champions = champions;
+        inner.champions = champions.unwrap_or(format_champions);
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
@@ -385,6 +396,12 @@ impl PyBattle {
     #[getter]
     fn turn(&self) -> u32 {
         self.inner.turn()
+    }
+
+    /// True when the battle runs Pokémon Champions rules and move data.
+    #[getter]
+    fn champions(&self) -> bool {
+        self.inner.champions
     }
 
     #[getter]
