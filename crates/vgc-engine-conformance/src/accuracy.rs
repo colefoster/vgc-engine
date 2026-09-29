@@ -421,6 +421,25 @@ fn add_queue_tiebreaks(table: &mut HashMap<RngKey, VecDeque<RngEvent>>, acc: &Ac
     }
 }
 
+/// Sentinel move id for PS `this.sample(...)` draws made from a condition's
+/// `onStart` (Champions sleep: data/mods/champions/conditions.ts slp
+/// `startTime = this.sample([2, 3, 3])`). `sample` goes through the PRNG,
+/// not `Battle.random`, so the keyed envelopes miss it; it is recovered from
+/// the raw trace and handed to the engine's `range(n)` draw of the same turn
+/// by the repair pass.
+const CONDITION_SAMPLE: u16 = u16::MAX - 2;
+
+fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
+    for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
+        let from_condition = d.op == "random"
+            && d.site.first().is_some_and(|s| s.contains(".onStart@data/mods/champions/conditions.js"));
+        if from_condition {
+            let key = RngKey { turn: d.turn, actor: NO_SLOT, target: NO_SLOT, move_id: CONDITION_SAMPLE, decision: RngDecision::Range };
+            table.entry(key).or_default().push_back(RngEvent::Range(d.result.max(0.0) as u32));
+        }
+    }
+}
+
 /// Sentinel move id for PS `randomChance` gates recorded as a bool under
 /// `range` (stall roll, full paralysis, Poison Touch, ...). The contract
 /// stores them as `Range(1)` pass / `Range(0)` fail, which only
@@ -519,6 +538,7 @@ fn repaired_table(
 ) -> (Table, u32, Battle, Result<(u32, u32, Option<Divergence>, bool), String>, Vec<RecordedDraw>) {
     let (mut table, _unresolved) = build_table_from(acc.turns.iter().flat_map(|t| t.base.draws.iter()));
     add_queue_tiebreaks(&mut table, acc);
+    add_condition_samples(&mut table, acc);
     park_bool_gates(&mut table, acc);
     let mut repaired = 0u32;
     let (mut b, mut res, mut misses) = keyed_run(acc, &table);
@@ -545,6 +565,7 @@ fn repaired_table(
                     // at turn start under the previous turn's stale context).
                     **n > 0
                         && ((k.turn == mk.turn && k.actor == mk.actor && (k.move_id == mk.move_id || k.move_id == BOOL_GATE))
+                            || (k.move_id == CONDITION_SAMPLE && k.turn == mk.turn && mk.decision == RngDecision::Range)
                             || (mk.decision == RngDecision::Tiebreak
                                 && k.decision == RngDecision::Tiebreak
                                 && (k.turn == mk.turn || k.turn == mk.turn + 1)))
@@ -553,7 +574,9 @@ fn repaired_table(
                 .collect();
             // Total order (turn, actor last) so HashMap iteration order can't pick
             // between equally good candidates: keeps runs reproducible.
-            cands.sort_by_key(|k| (k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
+            // Condition samples are the last resort: they carry no actor or
+            // move, so any same-move-use candidate is a better match.
+            cands.sort_by_key(|k| (k.move_id == CONDITION_SAMPLE, k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
             for k in cands {
                 let n = remaining[&k];
                 let q = table.get(&k).expect("leftover key in table");

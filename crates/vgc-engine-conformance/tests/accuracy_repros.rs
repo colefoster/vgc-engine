@@ -173,3 +173,10 @@ fn champions_shadow_claw_is_slicing() {
 fn battle_ends_at_the_last_faint() {
     assert_matches_ps("study-11f8f58c63-win-ends-turn");
 }
+
+/// Study battle a6a15861c8 (real Reg M-C log): Champions sleep lasts
+/// `sample([2, 3, 3])` turns (data/mods/champions/conditions.ts).
+#[test]
+fn champions_sleep_duration() {
+    assert_matches_ps("study-a6a15861c8-champions-sleep");
+}

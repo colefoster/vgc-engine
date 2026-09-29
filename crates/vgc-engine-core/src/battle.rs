@@ -10499,8 +10499,12 @@ impl Battle {
         // versus current PS: the engine's onBeforeMove decrements
         // FIRST and wakes on 0, so 2→3→4 starting values correspond to
         // 1/2/3 effective asleep turns — matching PS exactly.
+        // Champions draws `this.sample([2, 3, 3])` instead
+        // (data/mods/champions/conditions.ts slp onStart): the same
+        // `random(3)`, mapped 0/1/2 -> 2/3/3.
         let sleep_turns = if matches!(status, Status::Sleep) {
-            (self.rng.range(3) as u8) + 2
+            let r = self.rng.range(3) as u8;
+            if self.champions { [2, 3, 3][r as usize] } else { r + 2 }
         } else {
             0
         };
@@ -37745,6 +37749,24 @@ mod tests {
         assert!(b.p2.team[0].fainted);
         assert_eq!(b.p1.team[0].current_hp, 5, "no poison residual after the win");
         assert!(matches!(r, StepResult::Ended { winner: Some(SideRef::P1) }), "{r:?}");
+    }
+
+    #[test]
+    fn champions_sleep_lasts_one_or_two_turns() {
+        // Champions: slp onStart `startTime = this.sample([2, 3, 3])`
+        // (data/mods/champions/conditions.ts); gen 9: `this.random(2, 5)`
+        // (data/conditions.ts). The same draw index 2 gives 3 vs 4.
+        let run = |champions: bool| {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![crate::rng::RngEvent::Range(2)], 1), p1, p2);
+            b.champions = champions;
+            b.try_set_status(SideRef::P2, 0, Status::Sleep);
+            b.p2.team[0].sleep_turns()
+        };
+        assert_eq!(run(false), 4);
+        assert_eq!(run(true), 3);
     }
 
     #[test]
