@@ -693,7 +693,7 @@ pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokem
 /// diff per-turn state. Stops reporting at the first divergence (downstream
 /// cascades are noise — see the design doc's first-divergence isolation).
 pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
-    let champions = battle.format.contains("champions");
+    let champions = vgc_engine_core::format_rules::is_champions_format(&battle.format);
     let p1 = build_engine_team(&battle.p1team, champions).map_err(|e| format!("p1 team: {e}"))?;
     let p2 = build_engine_team(&battle.p2team, champions).map_err(|e| format!("p2 team: {e}"))?;
     let (table, unresolved) = build_table(battle);
@@ -704,7 +704,7 @@ pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     };
     let rng = Rng::oracle_keyed(table, 0xC0FFEE);
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
-    b.champions = champions;
+    b.set_format_id(&battle.format);
 
     let mut matched_turns = 0u32;
     let mut divergence = None;

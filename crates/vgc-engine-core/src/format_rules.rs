@@ -225,6 +225,14 @@ pub fn rules_for(id: &str) -> Option<&'static FormatRules> {
     }
 }
 
+/// True for Pokémon Champions formats: any PS `gen9champions*` id, plus the
+/// Champions regulations this crate registers (Reg M-B, Reg M-C and their
+/// aliases). These battles run under PS's `champions` mod rules and data.
+pub fn is_champions_format(id: &str) -> bool {
+    let norm = id.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    norm.contains("champions") || rules_for(&norm).is_some_and(|r| r.id == REG_M_B.id || r.id == REG_M_C.id)
+}
+
 /// Which rule a [`Violation`] broke. Stable enough to assert on in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
@@ -795,6 +803,16 @@ mod tests {
         team[0].item = Some("Leftovers".into());
         team[0].moves = vec!["Salt Cure".into(), "Recover".into(), "Protect".into()];
         assert!(!rules_of(&team).contains(&Rule::BannedSpecies), "Garganacl should be in-format");
+    }
+
+    #[test]
+    fn champions_formats_are_recognised_by_id() {
+        for id in ["gen9championsvgc2026regmc", "gen9championsvgc2026regmb", "gen9championsbss", "regmc", "Reg M-B"] {
+            assert!(is_champions_format(id), "{id}");
+        }
+        for id in ["gen9vgc2025regh", "gen9doublescustomgame", "gen9customgame", "gen9ou", "doubles"] {
+            assert!(!is_champions_format(id), "{id}");
+        }
     }
 
     #[test]
