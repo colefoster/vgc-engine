@@ -146,6 +146,17 @@ fn main() -> ExitCode {
     }
     let files = collect(&rest);
     match mode.as_str() {
+        "dist" => {
+            // accuracy dist <battle.json...> --k N : engine turn-1 outcome histograms (JSON lines)
+            let k: u32 = std::env::var("DIST_K").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+            for p in &files {
+                match load(p).and_then(|acc| accuracy::distribution(&acc, k, 0x5EED_0000).map(|h| (acc.id.clone(), h))) {
+                    Ok((id, h)) => println!("{}", serde_json::json!({"id": id, "k": k, "side": "engine", "hist": h})),
+                    Err(e) => eprintln!("{}: {e}", p.display()),
+                }
+            }
+            ExitCode::SUCCESS
+        }
         "dump" => {
             for p in &files {
                 match load(p) {
