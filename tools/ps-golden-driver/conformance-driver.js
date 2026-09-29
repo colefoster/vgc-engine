@@ -162,12 +162,28 @@ function patchRng(draws) {
     return ev;
   };
 
+  // An ability handler's own roll (Static, Flame Body, Poison Touch, Effect
+  // Spore, Cursed Body, Shed Skin, Healer, Quick Draw, ...): the draw is made
+  // directly from a data/abilities handler, while `battle.effect` is that
+  // ability and `battle.effectState` its holder's abilityState
+  // (sim/pokemon.ts `abilityState = initEffectState({id, target: this})`).
+  // Keyed by holder + ability, not the active move, so two procs on one hit
+  // (attacker's Poison Touch, target's Flame Body) can't be confused.
+  // docs/conformance-key-contract.md, decision `ability`.
+  const abilityEnvelope = function (battle, site, value) {
+    if (!/\(data\/(?:mods\/[a-z0-9]+\/)?abilities\./.test(site || '')) return null;
+    const eff = battle.effect;
+    const holder = battle.effectState && battle.effectState.target;
+    if (!eff || eff.effectType !== 'Ability' || !holder) return null;
+    return { turn: battle.turn, actor: slotRef(holder), target: null, move: null, ability: eff.id, decision: 'ability', value };
+  };
+
   Battle.prototype.random = function (m, n) {
     const v = origRandom.call(this, m, n);
     const site = captureSite();
     const decision = classifyDraw(false, { m, n }, site);
     // value: damage 0..15 raw; secondary raw 0..99; range raw int; tiebreak raw.
-    draws.push(envelope(this, decision, v, false));
+    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, false));
     return v;
   };
 
@@ -176,7 +192,7 @@ function patchRng(draws) {
     const site = captureSite();
     const decision = classifyDraw(true, { num: numerator, denom: denominator }, site);
     // randomChance only exposes the BOOL (crit + accuracy + ability procs).
-    draws.push(envelope(this, decision, v, true));
+    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, true));
     return v;
   };
 
