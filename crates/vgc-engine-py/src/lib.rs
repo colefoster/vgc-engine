@@ -327,7 +327,10 @@ impl PyBattle {
     /// Pokémon Showdown's own PRNG with PS draw order (`ps-rng` feature; see
     /// docs/accuracy/ps-rng.md). It overrides `seed`; without the feature it
     /// raises ValueError.
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None))]
+    ///
+    /// `champions=True` applies Pokémon Champions battle rules that differ
+    /// from gen 9 at runtime (full paralysis 1/8).
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = false))]
     #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
@@ -338,6 +341,7 @@ impl PyBattle {
         tera_allowed: bool,
         decision_phases: bool,
         ps_seed: Option<&str>,
+        champions: bool,
     ) -> PyResult<Self> {
         let fmt = match format {
             "singles" => core::Format::Singles,
@@ -368,6 +372,7 @@ impl PyBattle {
             }
         };
         inner.decision_phases = decision_phases;
+        inner.champions = champions;
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
