@@ -2691,6 +2691,11 @@ impl Battle {
                         if (actor_slot as usize) < 2 && moved_slot[actor_slot as usize] {
                             continue; // self-switch follow-up; handled post-move
                         }
+                        // A later Switch for this slot is a mid-turn pick
+                        // (Eject Button on the mon switching in now).
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
+                        }
                         let tw = self.side(side).conditions.tailwind_turns > 0;
                         let spd = self
                             .side(side)
@@ -3393,6 +3398,11 @@ impl Battle {
                         {
                             deferred[n_deferred] = (actor_slot, team_index);
                             n_deferred += 1;
+                        }
+                        // Same predicate as apply_pre_turn_switches: a
+                        // Switch after a turn-start Switch is a mid-turn pick.
+                        if (actor_slot as usize) < 2 {
+                            moved_slot[actor_slot as usize] = true;
                         }
                     }
                     Choice::Pass { .. } => {}
@@ -37499,6 +37509,28 @@ mod tests {
         );
         assert_eq!(b.p2.active[0], 2, "the player's pick (Eevee), not the first bench mon");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Eject Button consumed");
+    }
+
+    #[test]
+    fn eject_button_pick_after_a_turn_start_switch_in() {
+        // The holder switched in this turn: its slot's queue is [switch in,
+        // eject pick]. The second Switch is the mid-turn pick (PS asks for it
+        // only once the button fires), not a second turn-start switch.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"nature":"jolly","moves":["thunderbolt"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"moves":["tackle"]},
+            {"species":"blissey","level":50,"item":"ejectbutton","moves":["tackle"]},
+            {"species":"pichu","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }, Choice::Switch { actor_slot: 0, team_index: 3 }],
+        );
+        assert_eq!(b.p2.team[1].item_id, u16::MAX, "Blissey came in, was hit and ejected");
+        assert_eq!(b.p2.active[0], 3);
     }
 
     #[test]

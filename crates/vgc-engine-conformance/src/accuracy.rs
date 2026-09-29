@@ -174,13 +174,12 @@ fn turn_choices(main: &[String], mid: &[String], side: SideRef) -> Result<Vec<Ch
     for l in main {
         out.extend(parse_line(l, side)?);
     }
-    // Only a slot that chose a move can pivot; a mid-turn switch for any
-    // other slot (Eject Button / Emergency Exit on a mon that switched in)
-    // would be read by the engine as a start-of-turn switch. The engine
-    // resolves those item/ability switches itself.
+    // A mid-turn switch follows its slot's move (pivot) or turn-start switch
+    // (Eject Button on the mon that just came in); the engine reads either
+    // as that slot's mid-turn pick. A slot that passed has no mon to leave.
     let moved: Vec<u8> = out
         .iter()
-        .filter(|c| matches!(c, Choice::Move { .. } | Choice::MegaEvolve { .. } | Choice::Terastallize { .. }))
+        .filter(|c| !matches!(c, Choice::Pass { .. }))
         .map(|c| c.actor_slot())
         .collect();
     for l in mid {
