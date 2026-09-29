@@ -107,3 +107,11 @@ fn status_move_aimed_at_ally_hits_the_ally() {
 fn eject_button_replacement_is_the_players_pick() {
     assert_matches_ps("study-8760be9ed8-eject-button-pick");
 }
+
+/// Study battle 270f1619dc (real Reg M-C log): a mon that switched in this
+/// turn is hit and ejected by its Eject Button; the second Switch for its
+/// slot is the mid-turn pick, not a second turn-start switch.
+#[test]
+fn eject_button_pick_after_a_turn_start_switch_in() {
+    assert_matches_ps("study-270f1619dc-eject-after-switch-in");
+}
