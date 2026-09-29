@@ -6896,6 +6896,7 @@ impl Battle {
         // one-shot mark are all owned by
         // `Battle::apply_damage_step`. See
         // `docs/damage-pipeline-design.md` PR-B.
+        let mut hp_lost: u16 = 0;
         if !hit_sub {
             let res = self.apply_damage_step(DamageApplication {
                 effective_dmg,
@@ -6906,6 +6907,7 @@ impl Battle {
                 move_category: m.category,
                 move_type: m.type_,
             });
+            hp_lost = res.damage_dealt;
             ctx.any_damage_dealt = ctx.any_damage_dealt.saturating_add(res.damage_dealt);
             // Record the real-hit foe slot for Dragon Tail / Circle
             // Throw phazing (a Substitute absorb never reaches this
@@ -6987,7 +6989,7 @@ impl Battle {
         // common case (single-target drain into a live mon) is
         // exact. Liquid Ooze flip not modelled (rare ability).
         // Big Root +30% boost also deferred.
-        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, effective_dmg);
+        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, hp_lost);
 
         // PS stops a multi-hit move the moment the target faints
         // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -7203,6 +7205,10 @@ impl Battle {
             .side_mut(app.target_side)
             .active_mon_mut(app.target_slot as usize)
         {
+            // PS `Pokemon.damage` (sim/pokemon.ts:1595) returns the HP
+            // actually lost, so recoil / drain / Shell Bell on a KO are
+            // computed from the target's remaining HP, not the overkill.
+            result.damage_dealt = app.effective_dmg.min(t.current_hp);
             t.current_hp = t.current_hp.saturating_sub(app.effective_dmg);
             // Mark this target as "damaged this turn" so
             // Avalanche / Revenge / Counter (when wired) see
@@ -7232,7 +7238,6 @@ impl Battle {
             }
         }
         result.fainted = self.check_target_fainted(app.target_side, app.target_slot);
-        result.damage_dealt = app.effective_dmg;
         result.is_real_hit = app.effective_dmg > 0 && cross_side;
 
         // Stellar once-per-type bookkeeping. PS
@@ -14286,8 +14291,8 @@ pub(crate) struct DamageApplication {
 /// (`any_damage_dealt`, `drag_target`, faint-stops-loop).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ApplyResult {
-    /// Bytes actually subtracted from the defender's HP — equals
-    /// `app.effective_dmg` after the saturating sub. Returned so
+    /// HP actually subtracted from the defender — `app.effective_dmg`
+    /// capped at the defender's HP before the hit. Returned so
     /// the caller can update `any_damage_dealt` without re-reading
     /// the locals.
     pub damage_dealt: u16,
@@ -26964,6 +26969,31 @@ mod tests {
             "Drain Punch heal off: dealt={} healed={} expected≈{} diff={}",
             dmg_dealt, healed, expected, diff
         );
+    }
+
+    #[test]
+    fn drain_on_ko_heals_half_the_hp_the_target_had_left() {
+        // PS `sim/battle.ts:2137` caps `targetDamage` at the target's
+        // remaining HP (`Pokemon.damage` returns the HP actually lost),
+        // and drain (:2170) heals round(targetDamage / 2) from that capped
+        // value, not the overkill damage roll.
+        let p1_json = r#"[
+            {"species":"ironhands","level":50,"ability":"quarkdrive","item":"","nature":"adamant","moves":["drainpunch","thunderpunch","fakeout","wildcharge"],"evs":{"atk":252,"hp":252,"def":4}}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"],"evs":{"hp":252,"spd":252,"def":4}}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = 1;
+        b.p2.team[0].current_hp = 9;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].fainted, "Drain Punch KOs the 9-HP Snorlax");
+        assert_eq!(b.p1.team[0].current_hp, 1 + 5, "heal = round(9 / 2) = 5");
     }
 
     #[test]
