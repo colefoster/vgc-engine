@@ -28,4 +28,6 @@ and have not been started. See `docs/PLAN.md` for the phase gates and current po
 - `docs/DESIGN.md` — language choice, data layout, bindings, RNG, instrumentation
 - `docs/REFERENCES.md` — canonical sources of truth (pkmn/engine, PS, Bulbapedia, etc.) and how to use each
 - `docs/AGENTS.md` — rules for agents (human or LLM) contributing to this repo
+- `docs/accuracy/2026-09-accuracy-proof.md` — measured accuracy vs Showdown (forced-RNG conformance on real Reg M-C games, bug taxonomy)
+- `docs/accuracy/ps-rng.md` — the opt-in `ps-rng` feature: Showdown's exact PRNG and draw order, for seeded differential testing
 - `CLAUDE.md` — auto-loaded context for Claude Code sessions

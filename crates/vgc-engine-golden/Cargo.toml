@@ -12,3 +12,7 @@ vgc-engine-core = { workspace = true, features = ["chance"] }
 vgc-engine-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+# Forward the engine's Showdown-compatible RNG (perf_bench PS_RNG=1).
+ps-rng = ["vgc-engine-core/ps-rng"]

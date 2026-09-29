@@ -322,7 +322,13 @@ pub struct PyBattle {
 impl PyBattle {
     /// Build a battle from two JSON team specs.
     #[staticmethod]
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false))]
+    ///
+    /// `ps_seed` (e.g. `"sodium,<hex>"` or `"1,2,3,4"`) runs the battle on
+    /// Pokémon Showdown's own PRNG with PS draw order (`ps-rng` feature; see
+    /// docs/accuracy/ps-rng.md). It overrides `seed`; without the feature it
+    /// raises ValueError.
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None))]
+    #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
         p2_team_json: &str,
@@ -331,6 +337,7 @@ impl PyBattle {
         move_pp_json: Option<&str>,
         tera_allowed: bool,
         decision_phases: bool,
+        ps_seed: Option<&str>,
     ) -> PyResult<Self> {
         let fmt = match format {
             "singles" => core::Format::Singles,
@@ -346,7 +353,20 @@ impl PyBattle {
             core::TeamBuilder::apply_pp_overlay(&mut p2, &pp).map_err(map_team_err)?;
         }
         let cfg = core::BattleConfig { format: fmt, seed };
-        let mut inner = core::Battle::new(cfg, p1, p2);
+        let mut inner = match ps_seed {
+            None => core::Battle::new(cfg, p1, p2),
+            #[cfg(feature = "ps-rng")]
+            Some(s) => {
+                let rng = core::Rng::ps(s).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                core::Battle::with_rng(cfg, rng, p1, p2)
+            }
+            #[cfg(not(feature = "ps-rng"))]
+            Some(_) => {
+                return Err(PyValueError::new_err(
+                    "ps_seed needs vgc-engine built with the ps-rng feature",
+                ))
+            }
+        };
         inner.decision_phases = decision_phases;
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
@@ -365,6 +385,21 @@ impl PyBattle {
     #[getter]
     fn seed(&self) -> u64 {
         self.inner.seed()
+    }
+
+    /// Current Showdown PRNG state as a PS seed string (`None` unless the
+    /// battle was built with `ps_seed`). Feeding it back as `ps_seed`
+    /// resumes the same stream.
+    #[getter]
+    fn ps_seed(&mut self) -> Option<String> {
+        #[cfg(feature = "ps-rng")]
+        {
+            self.inner.rng_mut().ps_mut().map(|p| p.seed_string())
+        }
+        #[cfg(not(feature = "ps-rng"))]
+        {
+            None
+        }
     }
 
     #[getter]

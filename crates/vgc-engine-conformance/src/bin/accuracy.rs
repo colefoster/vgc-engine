@@ -157,6 +157,16 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        "turn1" => {
+            // engine end-of-turn-1 state under keyed replay (JSON lines)
+            for p in &files {
+                match load(p).and_then(|acc| accuracy::turn1_state(&acc).map(|t| (acc.id.clone(), t))) {
+                    Ok((id, t)) => println!("{}", serde_json::json!({"id": id, "slots": t})),
+                    Err(e) => eprintln!("{}: {e}", p.display()),
+                }
+            }
+            ExitCode::SUCCESS
+        }
         "dump" => {
             for p in &files {
                 match load(p) {

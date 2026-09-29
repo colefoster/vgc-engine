@@ -17,3 +17,7 @@ vgc-solver = { workspace = true }
 pyo3 = { workspace = true }
 bincode = "1"
 serde_json = { workspace = true }
+
+[features]
+# Showdown-compatible RNG (docs/accuracy/ps-rng.md): enables `ps_seed`.
+ps-rng = ["vgc-engine-core/ps-rng"]

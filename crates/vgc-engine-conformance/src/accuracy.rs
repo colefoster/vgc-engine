@@ -1025,3 +1025,27 @@ pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<S
     }
     Ok(hist)
 }
+
+/// Engine state after turn 1 (and its replacements) under the repaired keyed
+/// oracle, as outcome tokens (`species:hp:status:boosts` per slot) plus each
+/// slot's max HP — for the real-log comparison (experiment 1b).
+pub fn turn1_state(acc: &AccBattle) -> Result<Vec<(String, u16)>, String> {
+    let (table, ..) = repaired_table(acc);
+    let champions = acc.format.contains("champions");
+    let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
+    let p1 = build_engine_team(&acc.p1team, champions)?;
+    let p2 = build_engine_team(&acc.p2team, champions)?;
+    let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, Rng::oracle_keyed(table, 0xC0FFEE), p1, p2);
+    b.decision_phases = true;
+    let t = acc.turns.first().ok_or("no turns")?;
+    let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
+    let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;
+    b.step(&p1c, &p2c);
+    let toks = outcome_tokens(&b);
+    let mut out = Vec::new();
+    for (i, (side, slot)) in [(SideRef::P1, 0usize), (SideRef::P1, 1), (SideRef::P2, 0), (SideRef::P2, 1)].into_iter().enumerate() {
+        let max = b.side(side).active_mon(slot).map(|m| m.stats.hp).unwrap_or(0);
+        out.push((toks[i].clone(), max));
+    }
+    Ok(out)
+}
