@@ -364,6 +364,9 @@ exactly where they aren't.
 
 ## 9. Engine issues found (for follow-up, not fixed here)
 
+The top ten are now fixed; see [`fix-log.md`](fix-log.md) (clean battles
+16.5% -> 48.3%, per-turn 78.7% -> 91.5%).
+
 Mechanics (all verified against PS source; file references from triage):
 
 - **Damage and effects**
