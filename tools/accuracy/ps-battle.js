@@ -261,10 +261,52 @@ function toEngineCmd(cmd, req, names) {
   }).join(', ');
 }
 
+function installForcing(job, on) {
+  if (!on || !job.force || !job.force[1]) return () => {};
+  const uses = job.force[1];
+  const origRandom = Battle.prototype.random;
+  const origChance = Battle.prototype.randomChance;
+  const find = (battle) => {
+    if (battle.turn !== 1 || !battle.activeMove || !battle.activePokemon) return null;
+    const actor = battle.activePokemon.getSlot();
+    return uses.find((u) => u.actor === actor && u.move === battle.activeMove.id) || null;
+  };
+  const siteOf = () => (new Error().stack || '').split('\n').slice(2, 6).join(' ');
+  Battle.prototype.randomChance = function (num, den) {
+    const v = origChance.call(this, num, den);
+    const u = find(this);
+    if (!u) return v;
+    const tgt = this.activeTarget && this.activeTarget.getSlot ? this.activeTarget.getSlot() : null;
+    const site = siteOf();
+    if (/getDamage/.test(site)) return u.crits.includes(tgt);
+    if (/hitStepAccuracy|hitStepMoveHitLoop/.test(site) && den === 100) return !u.misses.includes(tgt);
+    return v;
+  };
+  Battle.prototype.random = function (m, n) {
+    const v = origRandom.call(this, m, n);
+    const u = find(this);
+    if (!u || m !== 100 || n !== undefined) return v;
+    if (!/secondaries/.test(siteOf())) return v;
+    const tgt = this.activeTarget && this.activeTarget.getSlot ? this.activeTarget.getSlot() : null;
+    return u.effects.includes(tgt) ? 0 : 99;
+  };
+  return () => {
+    Battle.prototype.random = origRandom;
+    Battle.prototype.randomChance = origChance;
+  };
+}
+
 // --- one battle -------------------------------------------------------------
 
 function parseSeed(seed) {
   if (Array.isArray(seed)) return seed;
+  // SEED_SALT: rerun the same jobs under a different (still deterministic)
+  // sodium seed, e.g. to measure PS-vs-PS agreement from RNG alone.
+  const salt = process.env.SEED_SALT;
+  if (salt && seed.startsWith('sodium,')) {
+    const h = require('crypto').createHash('sha256').update(seed + ':' + salt).digest('hex');
+    return 'sodium,' + h.slice(0, 32);
+  }
   return seed; // PS accepts 'sodium,<hex>' / 'gen5,<hex>' / 'a,b,c,d' strings
 }
 
@@ -281,6 +323,11 @@ async function runBattle(job, maxTurns) {
 
   // Original team order by base species (Species Clause makes it unique).
   const names = { p1: team1.map((s) => baseKey(s.species)), p2: team2.map((s) => baseKey(s.species)) };
+  // FORCE_LOG=1: on turn 1, make PS's crit / accuracy / secondary outcomes
+  // match what the real log showed (job.force from recon.js). Installed
+  // below the keyed recorder so the recorded outcome is the forced one; the
+  // underlying PRNG call still happens (same stream consumption).
+  const restoreForce = installForcing(job, process.env.FORCE_LOG === '1');
   const keyed = [];
   const restoreKeyed = conf.patchRng(keyed);
   // `Battle.sample` goes straight to the PRNG, bypassing the keyed patch on
@@ -406,6 +453,7 @@ async function runBattle(job, maxTurns) {
     await Promise.race([drainOmni, new Promise((res) => setTimeout(res, 1000))]);
   } finally {
     restoreKeyed();
+    restoreForce();
     Battle.prototype.sample = origSample;
     RAW = null;
     CUR = null;

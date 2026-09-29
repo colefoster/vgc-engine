@@ -71,6 +71,11 @@ function parseLog(log) {
   const sides = { p1: { preview: [], mons: {}, nick: {}, order: [] }, p2: { preview: [], mons: {}, nick: {}, order: [] } };
   const active = { p1: [null, null], p2: [null, null] }; // base species at slot
   const intents = {}; // turn -> side -> {main:[slot0,slot1], mid:[], rep:[]}
+  // Visible random outcomes per turn, for forcing PS onto the real game:
+  // force[turn] = [{actor, move, crits: [target], misses: [target],
+  //                 effects: [target]}] in move order.
+  const force = {};
+  let lastUse = null;
   const flags = new Set();
   let turn = 0;
   let upkeep = false;
@@ -186,6 +191,10 @@ function parseLog(log) {
         if (from && !/lockedmove/i.test(from)) break; // called / copied move
         const m = mon(id.side, sp);
         if (mv.id !== 'struggle' && !m.moves.includes(mv.id)) m.moves.push(mv.id);
+        if (!from && turn > 0 && id.slot !== null) {
+          lastUse = { actor: `${id.side}${'ab'[id.slot]}`, move: mv.id, crits: [], misses: [], effects: [] };
+          (force[turn] = force[turn] || []).push(lastUse);
+        }
         if (from || turn === 0 || id.slot === null) break;
         movedThisTurn[id.side][id.slot] = true;
         const it = slotIntent(id.side);
@@ -211,8 +220,32 @@ function parseLog(log) {
         }
         break;
       }
+      case '-crit':
+        if (lastUse) lastUse.crits.push(parts[1].slice(0, 3));
+        break;
+      case '-miss':
+        if (lastUse && parts[2]) lastUse.misses.push(parts[2].slice(0, 3));
+        break;
+      case '-status':
+      case '-unboost':
+      case '-start':
+        // a secondary effect of the current move (no [from] tag)
+        if (lastUse && !tag('from') && parts[1]) lastUse.effects.push(parts[1].slice(0, 3));
+        break;
+      case 'upkeep':
+        lastUse = null;
+        break;
       default:
         break;
+    }
+    if (cmd === 'cant' && parts[2] === 'flinch' && force[turn]) {
+      // the flinch came from an earlier move this turn; mark the most recent
+      // use that hit this slot
+      const who = parts[1].slice(0, 3);
+      for (let i = force[turn].length - 1; i >= 0; i--) {
+        const u = force[turn][i];
+        if (u.actor !== who) { u.effects.push(who); break; }
+      }
     }
     // item / ability reveals carried on any line
     const fromTag = tag('from');
@@ -250,7 +283,7 @@ function parseLog(log) {
       if (id) addAbility(id, parts[2].slice(9));
     }
   }
-  return { sides, intents, flags, turns };
+  return { sides, intents, flags, turns, force };
 }
 
 // --- usage fill ------------------------------------------------------------
@@ -362,7 +395,7 @@ function exportSet(set) {
 }
 
 function buildJob(file, parsed, U) {
-  const job = { id: null, format: FORMAT, intents: parsed.intents, meta: { replay: path.basename(file), turns: parsed.turns, flags: [...parsed.flags] } };
+  const job = { id: null, format: FORMAT, intents: parsed.intents, force: { 1: parsed.force[1] || [] }, meta: { replay: path.basename(file), turns: parsed.turns, flags: [...parsed.flags] } };
   for (const side of ['p1', 'p2']) {
     const S = parsed.sides[side];
     // brought 4 in on-field order (leads first), padded from the preview
