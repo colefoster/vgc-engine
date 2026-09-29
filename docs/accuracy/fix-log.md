@@ -120,3 +120,45 @@ CIs, n = 1,298.
    them by `(turn, ability holder, ability)` in both the PS driver and the
    engine, instead of by the active move. That is a keyed-contract change
    (`docs/conformance-key-contract.md`).
+
+---
+
+# Round 2 (2026-09-29)
+
+Same 1,298-battle sample. From decision 2 on, the PS battles are
+regenerated with the new driver (`b5`: same jobs and seeds; `b4` and `b5`
+differ only in ability-roll envelopes and trace line numbers, checked
+battle by battle).
+
+## Owner decisions
+
+1. **Champions rules come from the format** (`70dfa8d`).
+   `format_rules::is_champions_format` (any `gen9champions*` id, plus Reg
+   M-B / Reg M-C and aliases) sets `Battle::champions` via
+   `Battle::set_format_id`. Every Champions-only delta reads it:
+   - move data: `MOVES` (gen 9) vs `MOVES_CHAMPIONS`;
+   - Iron Head, Moonblast, Make It Rain, Dire Claw, Freeze-Dry;
+   - Salt Cure, Healer, Unseen Fist, paralysis.
+
+   pyo3 `from_teams(format=...)` takes PS ids. Bare `"doubles"` /
+   `"singles"` stay Champions, and `champions=` overrides the format.
+   - **Caller impact.** Every `from_teams` caller in mimikyu and
+     metagame-lab passes bare `"doubles"` / `"singles"` or omits `format`,
+     and none passes `champions=`. All of them simulate Champions.
+   - With the bare-game-type default they keep Champions move data, and now
+     also get 1/8 paralysis, which is correct for Champions (it was 1/4).
+   - `vgc_engine.calc` (no format) now uses gen 9 move data.
+2. **Ability rolls keyed by holder** (`229c3e2`). See
+   `docs/conformance-key-contract.md`, decision `ability`.
+   - 47 battles improved; Poison Touch left the offender list.
+   - One battle was exposed: `277a7cd2e1`. The engine applies a poison
+     residual after the last foe fainted, and PS ended the battle first.
+     Before this change, the misdrawn Poison Touch roll hid it.
+
+## Agreement trajectory (round 2)
+
+| after | fully clean | per-turn | first divergences: RNG plumbing / mechanics / decision model |
+|---|---|---|---|
+| round 1 end | 627 = 48.3% (45.6–51.0) | 7269/7940 = 91.5% (90.9–92.1) | 96 / 483 / 91 |
+| D1 format-derived Champions rules | 627 = 48.3% (45.6–51.0) | 91.5% (90.9–92.1) | 96 / 483 / 91 |
+| D2 ability rolls keyed by holder (b5) | 664 = 51.2% (48.4–53.9) | 7504/8138 = 92.2% (91.6–92.8) | 95 / 447 / 91 |
