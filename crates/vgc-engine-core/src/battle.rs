@@ -11492,6 +11492,17 @@ impl Battle {
                 _ => self.resolve_status_target(opp_side),
             },
         };
+        // Keyed-oracle attribution for this status move's own draws
+        // (accuracy, sleep length, ...): without it they carry whatever move
+        // context the last damaging move left behind. No-op for every
+        // non-keyed Rng variant.
+        {
+            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+            let ctx_actor = sref(actor_side) + actor_slot;
+            let ctx_target = opp_target.map(|(s, sl)| sref(s) + sl).unwrap_or(crate::rng::NO_SLOT);
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            self.rng.set_decision(RngDecision::Accuracy);
+        }
         // Protect / Detect (and the single-target shields) block a targeted
         // status move exactly as they block a damaging one. PS resolves this in
         // the move's hit step via the target's Protect `condition.onTryHit`,

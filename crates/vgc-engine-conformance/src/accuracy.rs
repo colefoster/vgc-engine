@@ -174,8 +174,21 @@ fn turn_choices(main: &[String], mid: &[String], side: SideRef) -> Result<Vec<Ch
     for l in main {
         out.extend(parse_line(l, side)?);
     }
+    // Only a slot that chose a move can pivot; a mid-turn switch for any
+    // other slot (Eject Button / Emergency Exit on a mon that switched in)
+    // would be read by the engine as a start-of-turn switch. The engine
+    // resolves those item/ability switches itself.
+    let moved: Vec<u8> = out
+        .iter()
+        .filter(|c| matches!(c, Choice::Move { .. } | Choice::MegaEvolve { .. } | Choice::Terastallize { .. }))
+        .map(|c| c.actor_slot())
+        .collect();
     for l in mid {
-        out.extend(parse_line(l, side)?.into_iter().filter(|c| matches!(c, Choice::Switch { .. })));
+        out.extend(
+            parse_line(l, side)?
+                .into_iter()
+                .filter(|c| matches!(c, Choice::Switch { .. }) && moved.contains(&c.actor_slot())),
+        );
     }
     Ok(out)
 }
@@ -325,8 +338,12 @@ fn drive(
             let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
             let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;
             let mut r = b.step(&p1c, &p2c);
+            // Only when the engine itself is waiting for replacements: if its
+            // state already diverged (nobody fainted), stepping PS's
+            // replacement choices would run a whole extra turn.
             if !matches!(r, StepResult::Ended { .. })
                 && (!t.replace.p1.is_empty() || !t.replace.p2.is_empty())
+                && b.needs_replacements()
             {
                 let rp1 = turn_choices(&t.replace.p1, &[], SideRef::P1)?;
                 let rp2 = turn_choices(&t.replace.p2, &[], SideRef::P2)?;
@@ -413,6 +430,10 @@ fn convert(ev: RngEvent, space: &DrawSpace) -> Option<RngEvent> {
             Some(RngEvent::PercentRoll(if v == 1 { 1 } else { 100 }))
         }
         (DrawSpace::UniformRange(n), RngEvent::Range(v)) if v < *n => Some(RngEvent::Range(v)),
+        // PS `randomChance(1, n)` gates (Protect's stall roll, full
+        // paralysis) reach the keyed log labelled `crit` (signature
+        // fallback); the engine draws them as `range(n) == 0`.
+        (DrawSpace::UniformRange(n), RngEvent::Crit(b)) if *n > 1 => Some(RngEvent::Range(if b { 0 } else { n - 1 })),
         (DrawSpace::Tiebreak { .. }, RngEvent::Tiebreak(v)) => Some(RngEvent::Tiebreak(v)),
         _ => None,
     }
@@ -485,10 +506,13 @@ fn repaired_table(
             let mut cands: Vec<RngKey> = remaining
                 .iter()
                 .filter(|(k, n)| {
+                    // Same move use; speed ties by turn (the engine draws them
+                    // at turn start under the previous turn's stale context).
                     **n > 0
-                        && k.turn == mk.turn
-                        && ((k.actor == mk.actor && k.move_id == mk.move_id)
-                            || (mk.decision == RngDecision::Tiebreak && k.decision == RngDecision::Tiebreak))
+                        && ((k.turn == mk.turn && k.actor == mk.actor && k.move_id == mk.move_id)
+                            || (mk.decision == RngDecision::Tiebreak
+                                && k.decision == RngDecision::Tiebreak
+                                && (k.turn == mk.turn || k.turn == mk.turn + 1)))
                 })
                 .map(|(k, _)| *k)
                 .collect();
@@ -874,7 +898,7 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
         let _ = writeln!(out, "== turn {}  p1 {:?} mid {:?} rep {:?} | p2 {:?} mid {:?} rep {:?}", t.base.turn,
             t.base.choices.p1, t.midturn.p1, t.replace.p1, t.base.choices.p2, t.midturn.p2, t.replace.p2);
         let mut r = b.step(&p1c, &p2c);
-        if !matches!(r, StepResult::Ended { .. }) && (!t.replace.p1.is_empty() || !t.replace.p2.is_empty()) {
+        if !matches!(r, StepResult::Ended { .. }) && (!t.replace.p1.is_empty() || !t.replace.p2.is_empty()) && b.needs_replacements() {
             let rp1 = turn_choices(&t.replace.p1, &[], SideRef::P1).unwrap_or_default();
             let rp2 = turn_choices(&t.replace.p2, &[], SideRef::P2).unwrap_or_default();
             r = b.step(&rp1, &rp2);
@@ -912,4 +936,56 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Distribution mode (experiment 4): one turn from a fixed state, many seeds
+// ---------------------------------------------------------------------------
+
+/// Outcome of turn 1 as a comparable token per active slot plus the field:
+/// `species:hp:status:boosts` (boosts as 7 signed ints), before any
+/// end-of-turn replacement. PS's `ps-dist.js` emits the same tokens.
+pub fn outcome_tokens(b: &Battle) -> Vec<String> {
+    let mut out = Vec::with_capacity(5);
+    for (side, slot) in [(SideRef::P1, 0usize), (SideRef::P1, 1), (SideRef::P2, 0), (SideRef::P2, 1)] {
+        let tok = match b.side(side).active_mon(slot) {
+            None => "none".to_string(),
+            Some(m) => {
+                let st = crate::status_token_pub(m.status).unwrap_or("none");
+                let bo: Vec<String> = m.boosts.iter().map(|x| x.to_string()).collect();
+                format!("{}:{}:{}:{}", data::SPECIES[m.species_id as usize].slug, m.current_hp, st, bo.join(","))
+            }
+        };
+        out.push(tok);
+    }
+    out.push(format!(
+        "w={}|t={}|tr={}",
+        crate::weather_token_pub(b.weather).unwrap_or("none"),
+        crate::terrain_token_pub(b.terrain).unwrap_or("none"),
+        b.trick_room_turns > 0
+    ));
+    out
+}
+
+/// Run turn 1 of `acc` `k` times under independent engine seeds and count
+/// each slot's outcome token. Returns `[slot] -> token -> count`.
+pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<String, u32>>, String> {
+    let champions = acc.format.contains("champions");
+    let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
+    let p1 = build_engine_team(&acc.p1team, champions)?;
+    let p2 = build_engine_team(&acc.p2team, champions)?;
+    let t = acc.turns.first().ok_or("no turns")?;
+    let p1c = turn_choices(&t.base.choices.p1, &[], SideRef::P1)?;
+    let p2c = turn_choices(&t.base.choices.p2, &[], SideRef::P2)?;
+    let mut hist: Vec<HashMap<String, u32>> = vec![HashMap::new(); 5];
+    for i in 0..k {
+        let seed = seed0 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut b = Battle::with_rng(BattleConfig { format, seed }, Rng::new(seed), p1.clone(), p2.clone());
+        b.decision_phases = true;
+        b.step(&p1c, &p2c);
+        for (j, tok) in outcome_tokens(&b).into_iter().enumerate() {
+            *hist[j].entry(tok).or_default() += 1;
+        }
+    }
+    Ok(hist)
 }

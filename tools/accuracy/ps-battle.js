@@ -37,6 +37,7 @@ const conf = require(path.join(__dirname, '..', 'ps-golden-driver', 'conformance
 const ps = require(PS_PATH);
 const { BattleStream, Teams, getPlayerStreams, Dex } = ps;
 const { PRNG, SodiumRNG, Gen5RNG } = require(PS_PATH + '/prng');
+const { Battle } = require(PS_PATH + '/battle');
 
 Error.stackTraceLimit = 25;
 
@@ -282,6 +283,16 @@ async function runBattle(job, maxTurns) {
   const names = { p1: team1.map((s) => baseKey(s.species)), p2: team2.map((s) => baseKey(s.species)) };
   const keyed = [];
   const restoreKeyed = conf.patchRng(keyed);
+  // `Battle.sample` goes straight to the PRNG, bypassing the keyed patch on
+  // Battle.random, so status picks (Dire Claw), Champions sleep length and
+  // random targets would never be keyed. Route it through Battle.random —
+  // the same single random(n) call — so the draw is recorded (as `range`,
+  // value = index).
+  const origSample = Battle.prototype.sample;
+  Battle.prototype.sample = function (items) {
+    if (!items.length) return origSample.call(this, items);
+    return items[this.random(items.length)];
+  };
   const raw = [];
 
   const stream = new BattleStream();
@@ -393,6 +404,7 @@ async function runBattle(job, maxTurns) {
     await Promise.race([drainOmni, new Promise((res) => setTimeout(res, 1000))]);
   } finally {
     restoreKeyed();
+    Battle.prototype.sample = origSample;
     RAW = null;
     CUR = null;
   }

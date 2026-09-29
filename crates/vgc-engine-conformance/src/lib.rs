@@ -462,6 +462,16 @@ fn parse_side_choices(
 // Engine-state -> normalized token mappers (must mirror the driver's tokens)
 // ---------------------------------------------------------------------------
 
+pub(crate) fn status_token_pub(s: Status) -> Option<&'static str> {
+    status_token(s)
+}
+pub(crate) fn weather_token_pub(w: Weather) -> Option<&'static str> {
+    weather_token(w)
+}
+pub(crate) fn terrain_token_pub(t: Terrain) -> Option<&'static str> {
+    terrain_token(t)
+}
+
 fn status_token(s: Status) -> Option<&'static str> {
     match s {
         Status::None => None,
