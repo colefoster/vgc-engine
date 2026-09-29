@@ -28,6 +28,8 @@ pub mod damage_api;
 pub mod item;
 pub mod order;
 pub mod rng;
+#[cfg(feature = "ps-rng")]
+pub mod ps_rng;
 mod secondary;
 pub mod step_machine;
 pub mod terrain;

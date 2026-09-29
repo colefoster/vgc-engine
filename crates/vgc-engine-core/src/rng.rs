@@ -506,6 +506,11 @@ pub enum Rng {
     /// every site — the corpus harness can ditch the oracle queue and
     /// score against the engine's own deterministic playthrough.
     PsGen5(PsGen5Rng),
+    /// Showdown-compatible PRNG (`ps-rng` feature): PS's exact `PRNG`
+    /// (Sodium/ChaCha20 or Gen5 LCG seeds) with PS draw semantics at every
+    /// site, plus an optional per-draw trace. See `crate::ps_rng`.
+    #[cfg(feature = "ps-rng")]
+    Ps(crate::ps_rng::PsRng),
     /// Keyed outcome oracle (conformance harness). Each draw is resolved
     /// by a *semantic* key (turn + actor + move + target + decision)
     /// rather than by queue position, so the injection is independent of
@@ -551,6 +556,59 @@ impl Rng {
     /// bit-identical PRNG sequences at every draw site.
     pub fn ps_gen5(seed: [u16; 4]) -> Self {
         Self::PsGen5(PsGen5Rng::new(seed))
+    }
+
+    /// Showdown-compatible RNG from any seed string PS accepts
+    /// (`sodium,<hex>`, `gen5,<hex>`, `a,b,c,d`). `ps-rng` feature only.
+    #[cfg(feature = "ps-rng")]
+    pub fn ps(seed: &str) -> Result<Self, crate::ps_rng::SeedError> {
+        crate::ps_rng::PsRng::from_seed_str(seed).map(Self::Ps)
+    }
+
+    /// True for the Showdown-compatible variant. Always false without the
+    /// `ps-rng` feature, so gated call sites compile away.
+    #[inline(always)]
+    pub fn is_ps(&self) -> bool {
+        #[cfg(feature = "ps-rng")]
+        {
+            matches!(self, Rng::Ps(_))
+        }
+        #[cfg(not(feature = "ps-rng"))]
+        {
+            false
+        }
+    }
+
+    /// Borrow the Showdown PRNG state (trace control, seed string).
+    #[cfg(feature = "ps-rng")]
+    pub fn ps_mut(&mut self) -> Option<&mut crate::ps_rng::PsRng> {
+        match self {
+            Rng::Ps(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// PS `random(m, n)` on the Showdown PRNG — used by gated sites whose
+    /// PS draw has no generic `Rng` equivalent (Fisher-Yates `shuffle`,
+    /// `sample`). Panics on any other variant (callers gate on `is_ps`).
+    #[cfg(feature = "ps-rng")]
+    #[track_caller]
+    pub fn ps_random_range(&mut self, op: &'static str, m: u32, n: u32) -> u32 {
+        match self {
+            Rng::Ps(p) => p.random_range(op, m, n),
+            _ => unreachable!("ps_random_range on a non-PS Rng"),
+        }
+    }
+
+    /// PS `randomChance(num, den)` on the Showdown PRNG, drawing even when
+    /// `den == 1` (PS's `random(1)` still advances the stream).
+    #[cfg(feature = "ps-rng")]
+    #[track_caller]
+    pub fn ps_random_chance(&mut self, op: &'static str, num: u32, den: u32) -> bool {
+        match self {
+            Rng::Ps(p) => p.random_chance(op, num, den),
+            _ => unreachable!("ps_random_chance on a non-PS Rng"),
+        }
     }
 
     /// Keyed-oracle constructor for the conformance harness. `table`
@@ -674,6 +732,11 @@ impl Rng {
                 r.ctx_move = move_id;
                 r.ctx_target = target;
             }
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => {
+                let _ = turn;
+                p.set_context(actor, move_id, target);
+            }
             _ => {}
         }
     }
@@ -685,7 +748,32 @@ impl Rng {
         match self {
             Rng::OracleKeyed(k) => k.ctx_decision = decision,
             Rng::Recording(r) => r.ctx_decision = decision,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.set_decision_label(match decision {
+                RngDecision::Accuracy => "accuracy",
+                RngDecision::Secondary => "secondary",
+                RngDecision::Crit => "crit",
+                RngDecision::Damage => "damage",
+                RngDecision::Range => "range",
+                RngDecision::Tiebreak => "tiebreak",
+            }),
             _ => {}
+        }
+    }
+
+    /// Keys of recorded outcomes an `OracleKeyed` replay never consumed (PS
+    /// drew there, the engine didn't), with how many were left. Harness
+    /// instrumentation; `None` for other variants.
+    pub fn keyed_leftovers(&self) -> Option<Vec<(RngKey, usize)>> {
+        match self {
+            Rng::OracleKeyed(k) => Some(
+                k.table
+                    .iter()
+                    .filter(|(_, q)| !q.is_empty())
+                    .map(|(key, q)| (*key, q.len()))
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 
@@ -711,6 +799,8 @@ impl Rng {
         match self {
             // OracleKeyed is positionless — use `unmatched_draws` instead.
             Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => None,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(_) => None,
             Rng::Oracle(state) | Rng::OraclePartial { state, .. } => {
                 Some((state.pos, state.events.len()))
             }
@@ -728,6 +818,7 @@ impl Rng {
         z ^ (z >> 31)
     }
 
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn next_u64(&mut self) -> u64 {
         match self {
             Rng::Splitmix(state) => {
@@ -753,6 +844,8 @@ impl Rng {
             // PS is 32-bit; widen to u64 for next_u64 callers (mostly
             // tiebreak / coin_flip / range fallbacks).
             Rng::PsGen5(rng) => rng.next() as u64,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_raw("next_u64") as u64,
             Rng::OracleKeyed(k) => match k.take(RngDecision::Tiebreak) {
                 Some(RngEvent::Tiebreak(v)) => v,
                 // Uncounted: the speed-tie nonce is engine-internal (drawn
@@ -778,6 +871,7 @@ impl Rng {
     }
 
     /// True/false uniformly.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn coin_flip(&mut self) -> bool {
         (self.next_u64() & 1) == 1
     }
@@ -794,6 +888,7 @@ impl Rng {
     /// — unlike the old per-action nonce (`next_u64`), this site *only* fires
     /// at a real tie, so the flag needs no post-hoc patch pass. The returned
     /// value is reduced by the caller to a Fisher-Yates swap index.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn tiebreak_shuffle(&mut self) -> u64 {
         match self {
             Rng::Recording(r) => {
@@ -833,6 +928,7 @@ impl Rng {
     /// mirror that and skip popping; Splitmix still steps to keep
     /// stand-alone (non-oracle) battles deterministic w.r.t. existing
     /// tests that assume every site advances the PRNG.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn range(&mut self, n: u32) -> u32 {
         if n == 0 {
             return 0;
@@ -847,6 +943,12 @@ impl Rng {
                 }
                 Rng::PsGen5(_) => {
                     // Mirror Oracle: PS elides the draw at denom=1.
+                }
+                #[cfg(feature = "ps-rng")]
+                Rng::Ps(_) => {
+                    // Engine `range(1)` sites are ones PS guards with
+                    // `if (n > 1)`; PS sites that really call `random(1)`
+                    // use `ps_random_chance` explicitly.
                 }
                 Rng::Recording(_) => {
                     // Mirror Oracle: a 1-outcome space has no branch worth
@@ -883,6 +985,8 @@ impl Rng {
             }
             // Bit-exact PS `random(n)` semantics from PR-209's port.
             Rng::PsGen5(rng) => rng.random_n(n),
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_n("range", n),
             Rng::OracleKeyed(k) => match k.take(RngDecision::Range) {
                 Some(RngEvent::Range(v)) if v < n => v,
                 _ => {
@@ -911,12 +1015,15 @@ impl Rng {
     /// (see `event_for_draw`). Splitmix / PsGen5 draw the real `den`-gate so
     /// live play and the solver get the correct probability; OracleKeyed honors
     /// PS's recorded outcome and falls back to the gate on a table miss.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn chance_keyed(&mut self, num: u32, den: u32) -> bool {
         if den == 0 {
             return false;
         }
         match self {
             Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(den) < num,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_chance("chance", num, den),
             Rng::Oracle(state) => match state.pop() {
                 RngEvent::Range(v) => v != 0,
                 other => panic!("OracleRng: expected Range (bool gate), got {other:?}"),
@@ -976,9 +1083,12 @@ impl Rng {
     ///   seed-pinned unit test keeps its exact downstream stream. Gender
     ///   gates no implemented mechanic yet, so a deterministic default is
     ///   harmless; revisit when Attract / Cute Charm land.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn gender_roll(&mut self) -> u8 {
         match self {
             Rng::PsGen5(rng) => rng.random_n(2) as u8,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_n("gender", 2) as u8,
             Rng::Splitmix(_)
             | Rng::Oracle(_)
             | Rng::OraclePartial { .. }
@@ -1055,6 +1165,7 @@ impl Rng {
     /// damage. The Rng picks the closest bucket; if the observation is
     /// outside the engine's plausible window, falls back to a Splitmix
     /// draw rather than forcing an out-of-range bucket.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn damage_roll_hint(&mut self, dmg_min: u16, dmg_max: u16) -> u8 {
         self.damage_roll_hint_inner(dmg_min, dmg_max, None, None)
     }
@@ -1062,6 +1173,7 @@ impl Rng {
     /// Same as [`Rng::damage_roll_hint`], but records the engine-derived
     /// KO partition for the call site. See [`Rng::damage_roll_t`] /
     /// [`DrawSpace::UniformDamage`].
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn damage_roll_hint_t(&mut self, dmg_min: u16, dmg_max: u16, ko_split: u8) -> u8 {
         debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
         self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split), None)
@@ -1072,6 +1184,7 @@ impl Rng {
     /// the call site — the enumerator uses it for a bit-exact frontier
     /// collapse (supersedes lossy `ko_split` survivor pinning). `ko_split`
     /// is still passed for diagnostic metadata.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn damage_roll_hint_seg(
         &mut self,
         dmg_min: u16,
@@ -1083,6 +1196,7 @@ impl Rng {
         self.damage_roll_hint_inner(dmg_min, dmg_max, Some(ko_split), Some(segments))
     }
 
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     fn damage_roll_hint_inner(
         &mut self,
         dmg_min: u16,
@@ -1094,6 +1208,8 @@ impl Rng {
             // OracleKeyed stores the exact engine-convention bucket, so
             // there's nothing to back-solve — defer to `damage_roll`.
             Rng::Splitmix(_) | Rng::PsGen5(_) | Rng::OracleKeyed(_) | Rng::Recording(_) => self.damage_roll_inner_seg(ko_split, segments),
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(_) => self.damage_roll_inner_seg(ko_split, segments),
             Rng::Oracle(state) => {
                 if let Some(RngEvent::DamageHint(target)) = state.peek() {
                     state.pos += 1;
@@ -1131,6 +1247,7 @@ impl Rng {
     /// that can derive the KO partition cheaply should use
     /// [`Rng::damage_roll_t`] instead so a downstream outcome-frontier
     /// collapse can use the exact 2-bucket form (PR-D).
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn damage_roll(&mut self) -> u8 {
         self.damage_roll_inner(None)
     }
@@ -1147,11 +1264,13 @@ impl Rng {
     /// lives only in the `Recording` / `OracleKeyed` miss-log so the
     /// enumeration layer can collapse the 16-outcome uniform into a
     /// 2-bucket (KO / no-KO) frontier.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn damage_roll_t(&mut self, ko_split: u8) -> u8 {
         debug_assert!(ko_split <= 16, "ko_split must be in 0..=16, got {ko_split}");
         self.damage_roll_inner(Some(ko_split))
     }
 
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     fn damage_roll_inner(&mut self, ko_split: Option<u8>) -> u8 {
         self.damage_roll_inner_seg(ko_split, None)
     }
@@ -1159,6 +1278,7 @@ impl Rng {
     /// Core damage-roll draw. `ko_split` / `segments` are recorded on the
     /// `UniformDamage` DrawSpace so the enumerator can partition the 16
     /// rolls; `segments` (when present) is authoritative and bit-exact.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     fn damage_roll_inner_seg(
         &mut self,
         ko_split: Option<u8>,
@@ -1184,6 +1304,8 @@ impl Rng {
             }
             // PS `random(16)` returns 0..=15 — bit-exact.
             Rng::PsGen5(rng) => rng.random_n(16) as u8,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_n("damage", 16) as u8,
             Rng::OracleKeyed(k) => match k.take(RngDecision::Damage) {
                 Some(RngEvent::DamageRoll(v)) => {
                     debug_assert!(v < 16);
@@ -1218,6 +1340,7 @@ impl Rng {
     /// 100-outcome uniform." Call sites that know the comparison
     /// threshold should use [`Rng::percent_1_100_t`] instead so a future
     /// outcome-frontier collapse can use the 2-bucket form.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn percent_1_100(&mut self) -> u8 {
         self.percent_1_100_inner(None)
     }
@@ -1232,10 +1355,12 @@ impl Rng {
     /// form; the threshold lives only in the `Recording` / `OracleKeyed`
     /// miss-log so the enumeration layer can collapse the 100-outcome
     /// uniform into a 2-bucket (hit/miss) frontier.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn percent_1_100_t(&mut self, threshold: u8) -> u8 {
         self.percent_1_100_inner(Some(threshold))
     }
 
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     fn percent_1_100_inner(&mut self, threshold: Option<u8>) -> u8 {
         match self {
             Rng::Splitmix(_) => ((self.next_u64() % 100) as u8) + 1,
@@ -1261,6 +1386,8 @@ impl Rng {
             // `random(100) < N` — adding 1 to the PS draw makes both
             // sides land on the same hit threshold).
             Rng::PsGen5(rng) => (rng.random_n(100) as u8) + 1,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => (p.random_n("percent", 100) as u8) + 1,
             // Decision (Accuracy vs Secondary) comes from the context the
             // battle set via `set_decision` — both are `percent_1_100` here
             // but distinct sites on the PS side.
@@ -1297,8 +1424,16 @@ impl Rng {
     /// Hit / Laser Focus → +2 or guaranteed), and move flag
     /// (high-crit-ratio +1). Oracle just replays its recorded outcome
     /// (the source sim already applied the stage).
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn crit_with_stage(&mut self, stage: u8) -> bool {
         match self {
+            // PS `critMult = [0, 24, 8, 2, 1]` indexed by critRatio (= stage
+            // + 1); ratio ≥ 4 is `randomChance(1, 1)`, which still draws.
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => {
+                let den = match stage { 0 => 24, 1 => 8, 2 => 2, _ => 1 };
+                p.random_chance("crit", 1, den)
+            }
             Rng::Splitmix(_) | Rng::PsGen5(_) => match stage {
                 0 => self.range(24) == 0,
                 1 => self.range(8) == 0,
@@ -1363,9 +1498,12 @@ impl Rng {
 
     /// Stage-0 crit. Kept as a thin shim around `crit_with_stage(0)`
     /// for existing call sites; new code should prefer the staged form.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
     pub fn crit(&mut self) -> bool {
         match self {
             Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(24) == 0,
+            #[cfg(feature = "ps-rng")]
+            Rng::Ps(p) => p.random_chance("crit", 1, 24),
             Rng::Oracle(state) => match state.pop() {
                 RngEvent::Crit(v) => v,
                 other => panic!("OracleRng: expected Crit, got {other:?}"),
