@@ -2476,23 +2476,12 @@ impl Battle {
             // turn so the next turn's first Round is back to 60 BP.
             side.conditions.round_used_this_turn = false;
         }
-        // 5. Weather + Trick Room timers (battle-wide).
+        // 5. Weather + Trick Room timers (battle-wide). The weather's last
+        //    turn already ended it in `eot_weather_chip`.
         if self.weather_turns > 0 {
             self.weather_turns -= 1;
             if self.weather_turns == 0 {
-                self.weather = crate::weather::Weather::None;
-                // PR-LC1: weather field changed — refresh cache.
-                self.sync_weather_terrain_cache();
-                // Weather just expired — refresh paradox boosters on
-                // both sides so Protosynthesis users drop their volatile.
-                let n = self.format().active_count() as u8;
-                for s in [SideRef::P1, SideRef::P2] {
-                    for slot in 0..n {
-                        crate::ability::refresh_paradox_booster(self, s, slot);
-                    }
-                }
-                // Weather gone — Forecast Castforms revert to base forme.
-                self.refresh_forecast_formes();
+                self.end_weather();
             }
         }
         if self.trick_room_turns > 0 {
@@ -10701,6 +10690,14 @@ impl Battle {
     /// remain at the top of the body. No RNG draws are added or
     /// removed; behavior is byte-identical.
     fn eot_weather_chip(&mut self) {
+        // PS fieldEvent('Residual') (sim/battle.ts:515-521) decrements the
+        // weather's duration at its own handler (onFieldResidualOrder 1) and
+        // on reaching 0 ends it and skips the handler: no chip on the last
+        // turn, and the rest of the residuals already see clear weather.
+        if self.weather_turns == 1 {
+            self.weather_turns = 0;
+            self.end_weather();
+        }
         // 1. Weather damage (sand) — PS residualOrder 1.
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities: Magic Guard blocks the damage (PS
@@ -10841,6 +10838,22 @@ impl Battle {
                 }
             }
         }
+    }
+
+    fn end_weather(&mut self) {
+        self.weather = crate::weather::Weather::None;
+        // PR-LC1: weather field changed — refresh cache.
+        self.sync_weather_terrain_cache();
+        // Weather just expired — refresh paradox boosters on
+        // both sides so Protosynthesis users drop their volatile.
+        let n = self.format().active_count() as u8;
+        for s in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                crate::ability::refresh_paradox_booster(self, s, slot);
+            }
+        }
+        // Weather gone — Forecast Castforms revert to base forme.
+        self.refresh_forecast_formes();
     }
 
     /// EOT sub-phase `grassy_terrain_heal`. Extracted from
@@ -20958,6 +20971,29 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p1.team[0].current_hp, max, "Leftovers caps at max HP");
+    }
+
+    #[test]
+    fn sand_does_not_chip_on_the_turn_it_ends() {
+        // PS fieldEvent('Residual') (sim/battle.ts:515-521) decrements the
+        // weather's duration at its own handler (sandstorm
+        // onFieldResidualOrder 1) and, on reaching 0, ends it and skips the
+        // handler: no chip on the last turn.
+        let p1_json = r#"[
+            {"species":"tyranitar","level":50,"ability":"sandstream","nature":"adamant","moves":["rockslide","crunch","earthquake","stealthrock"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(b.weather, crate::weather::Weather::Sand);
+        b.weather_turns = 1;
+        let pika_hp = b.p2.team[0].current_hp;
+        b.step(&[Choice::Pass { actor_slot: 0 }], &[Choice::Pass { actor_slot: 0 }]);
+        assert_eq!(b.weather, crate::weather::Weather::None, "sand ended");
+        assert_eq!(b.p2.team[0].current_hp, pika_hp, "no chip on the expiry turn");
     }
 
     #[test]

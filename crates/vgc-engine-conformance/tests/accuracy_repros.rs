@@ -85,3 +85,10 @@ fn simultaneous_replacements_enter_before_abilities() {
 fn replacement_seed_checked_after_all_abilities() {
     assert_matches_ps("study-d2fe06dc11-replacement-seed-after-surge");
 }
+
+/// Study battle af4174f41f: Tyranitar's Sandstorm runs out at the end of
+/// turn 5; PS ends it before chipping, so Sneasler stays at 166.
+#[test]
+fn weather_ends_before_chip_on_its_last_turn() {
+    assert_matches_ps("study-af4174f41f-sand-ends-no-chip");
+}
