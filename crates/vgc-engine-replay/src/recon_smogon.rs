@@ -602,6 +602,7 @@ mod tests {
                 attacker_moves_last: false,
                 // Replay recon reads Champions ladder logs.
                 champions: true,
+                defender_resist_berry: false,
             };
             let lo = calculate_damage(&atk, &def, mid, ctx(DamageContext::MIN_ROLL));
             let hi = calculate_damage(&atk, &def, mid, ctx(DamageContext::MAX_ROLL));

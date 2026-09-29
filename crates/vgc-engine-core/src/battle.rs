@@ -5841,6 +5841,8 @@ impl Battle {
                 // this turn is a move by a live mon (PS queue.willMove scan).
                 attacker_moves_last: !will_act,
                 champions: self.champions,
+                defender_resist_berry: fixed_damage.is_none()
+                    && crate::item::type_resist_berry_fires(self, tside, tslot, m.type_, defender.species()),
             };
             // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
             //   if (this.randomChance(3, 10)) return this.chainModify(2);
@@ -5981,10 +5983,8 @@ impl Battle {
             };
             let mut pipeline =
                 DamagePipeline::new(dmg, fixed_dmg_snapshot.is_some(), post_inputs);
-            pipeline.apply_attacker_item(fixed_dmg_snapshot.is_none());
-            if let Some(ref ctx) = beat_up_ctx_opt {
-                pipeline.apply_friend_guard(ctx);
-            }
+            // Life Orb / Expert Belt / Friend Guard are chained inside the
+            // damage calc's ModifyDamage modifier (damage.rs).
             dmg = pipeline.current;
             // Multi-hit hit-count roll — Double Hit, Population Bomb,
             // Bullet Seed, Rock Blast, Triple Axel, Tail Slap, Icicle
@@ -6099,9 +6099,9 @@ impl Battle {
                 let halved = crate::item::try_consume_type_resist_berry(
                     self, tside, tslot, m.type_, defender.species(),
                 );
-                if halved {
-                    dmg = (dmg / 2).max(1);
-                }
+                // The ×0.5 is already in the damage calc's ModifyDamage chain
+                // (`defender_resist_berry`); here the berry is only eaten.
+                let _ = halved;
             }
 
             // Restore the fixed-damage value: every multiplier above was
@@ -8360,7 +8360,6 @@ impl Battle {
                     attacker, defender, ctx, inv.beat_up_base_atks[0],
                 );
                 pipeline.current = raw;
-                pipeline.apply_attacker_item(true);
                 pipeline.current
             } else {
                 let hc = if inv.crit_immune {
@@ -8372,6 +8371,8 @@ impl Battle {
                 };
                 let mut inp = inv.inputs;
                 inp.crit = hc;
+                // A resist berry is eaten on the first hit at most.
+                inp.defender_resist_berry = false;
                 let member_bp = 5 + (inv.beat_up_base_atks[hit_idx as usize] as u32 / 10);
                 // Beat Up multi-hit: per-member damage depends on ally HP and
                 // count varies; KO partition is too entangled. Pass `None`.
@@ -8379,7 +8380,6 @@ impl Battle {
                     attacker, defender, inv.move_id, None, inp, Some(member_bp), None,
                 );
                 pipeline.current = raw;
-                pipeline.apply_attacker_item(true);
                 pipeline.current
             }
         } else {
@@ -8397,6 +8397,7 @@ impl Battle {
                 };
                 let mut inp = inv.inputs;
                 inp.crit = hc;
+                inp.defender_resist_berry = false;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
                 } else {
@@ -8408,11 +8409,8 @@ impl Battle {
                 let (rd, rctx) = self.roll_initial_damage(
                     attacker, defender, inv.move_id, inv.fixed_dmg_snapshot, inp, bp_ov, None,
                 );
+                let _ = rctx;
                 pipeline.current = rd;
-                pipeline.apply_attacker_item(inv.fixed_dmg_snapshot.is_none());
-                if let Some(ref c) = rctx {
-                    pipeline.apply_friend_guard(c);
-                }
                 pipeline.current
             }
         }
@@ -10668,6 +10666,7 @@ impl Battle {
                     // Analytic does not apply.
                     attacker_moves_last: false,
                     champions: self.champions,
+                    defender_resist_berry: false,
                 },
             )
         };
@@ -21463,11 +21462,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -25555,11 +25554,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
