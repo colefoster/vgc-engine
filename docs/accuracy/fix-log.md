@@ -162,3 +162,26 @@ battle by battle).
 | round 1 end | 627 = 48.3% (45.6–51.0) | 7269/7940 = 91.5% (90.9–92.1) | 96 / 483 / 91 |
 | D1 format-derived Champions rules | 627 = 48.3% (45.6–51.0) | 91.5% (90.9–92.1) | 96 / 483 / 91 |
 | D2 ability rolls keyed by holder (b5) | 664 = 51.2% (48.4–53.9) | 7504/8138 = 92.2% (91.6–92.8) | 95 / 447 / 91 |
+| F1 Eject Button: player's pick, after the move | 680 = 52.4% (49.7–55.1) | 7663/8281 = 92.5% (92.0–93.1) | 90 / 454 / 73 |
+| F2 second Switch per slot = mid-turn pick | 695 = 53.5% (50.8–56.2) | 7785/8388 = 92.8% (92.2–93.3) | 90 / 461 / 51 |
+| F3 Emergency Exit | 711 = 54.8% (52.1–57.5) | 7900/8487 = 93.1% (92.5–93.6) | 91 / 465 / 30 |
+| F4 Trick Room switch order | 717 = 55.2% (52.5–57.9) | 7965/8546 = 93.2% (92.6–93.7) | 92 / 458 / 30 |
+
+## Fixes (round 2)
+
+| # | bug | PS reference | tests added | commit | battles moved |
+|---|---|---|---|---|---|
+| F1 | Eject Button force-switched to the first bench mon mid-move; the replaced mon kept its queued move | `data/items.ts` ejectbutton (`switchFlag`); `sim/battle.ts` runAction switch request | unit `eject_button_replacement_is_the_players_choice_in_decision_phases`, `ejected_holder_forfeits_its_queued_move`; golden `study-8760be9ed8` | `b55c913` | 23 |
+| F2 | A mon that switched in and was ejected the same turn: both switches ran at turn start (harness also dropped the pick) | same | unit `eject_button_pick_after_a_turn_start_switch_in`; golden `study-270f1619dc` | `1e6256d` | 22 |
+| F3 | Emergency Exit unimplemented | `data/mods/champions/abilities.ts` emergencyexit; `data/mods/champions/scripts.ts:583`; `sim/battle-actions.ts:542,1132,1395` | unit `emergency_exit_switches_out_when_a_hit_crosses_half_hp`; golden `study-59ccb3d636` | `f0badf0` | 21 |
+| F4 | Pre-turn switches fastest-first even under Trick Room | `sim/pokemon.ts:641` getActionSpeed | unit `pre_turn_switches_run_slowest_first_under_trick_room`; golden `study-dc6522e008` | `33e8683` | 9 |
+
+Notes:
+- **Eject Button fallback.** A caller that queues no pick still gets the
+  first bench mon.
+- **"Cascaded species mismatches after a switch".** This is not one bug.
+  - Under Trick Room it was F4.
+  - Otherwise it is mostly an earlier HP difference that decides whether a
+    KO (and so a replacement) happens. The species check runs before the HP
+    check, so these show up as species mismatches.
+
