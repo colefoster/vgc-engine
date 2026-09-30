@@ -269,9 +269,10 @@ pub fn run_golden_in_memory(
     ps: &PsOutput,
 ) -> Result<GoldenReport, GoldenError> {
     let format = parse_format(&input.format)?;
-    let mut p1_team = TeamBuilder::from_showdown_text(&input.p1.team)
+    let champions = vgc_engine_core::format_rules::is_champions_format(&input.format);
+    let mut p1_team = TeamBuilder::from_showdown_text_in(&input.p1.team, champions)
         .map_err(|e| GoldenError::TeamParse(format!("p1: {e:?}")))?;
-    let mut p2_team = TeamBuilder::from_showdown_text(&input.p2.team)
+    let mut p2_team = TeamBuilder::from_showdown_text_in(&input.p2.team, champions)
         .map_err(|e| GoldenError::TeamParse(format!("p2: {e:?}")))?;
 
     TeamBuilder::apply_pp_overlay(&mut p1_team, &input.pp_overrides)

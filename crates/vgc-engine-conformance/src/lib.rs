@@ -22,7 +22,7 @@ use serde::Deserialize;
 use vgc_engine_core::data;
 use vgc_engine_core::rng::{Rng, RngDecision, RngEvent, RngKey, SlotRef, NO_SLOT};
 use vgc_engine_core::{
-    build_member, parse_showdown_export, Battle, BattleConfig, Choice, Format, Pokemon, SideRef,
+    build_member_in, parse_showdown_export, Battle, BattleConfig, Choice, Format, Pokemon, SideRef,
     Status, StepResult, Target, Terrain, Weather,
 };
 
@@ -719,7 +719,7 @@ pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokem
     }
     members
         .iter()
-        .map(|m| build_member(m).map_err(|e| format!("{e:?}")))
+        .map(|m| build_member_in(m, champions).map_err(|e| format!("{e:?}")))
         .collect()
 }
 

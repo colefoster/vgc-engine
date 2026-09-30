@@ -178,7 +178,38 @@ pub fn boosted_max_pp(move_id: u16) -> u8 {
     ((mv.pp as u16 * 8) / 5) as u8
 }
 
-/// Build a single Pokémon from a team-member spec.
+/// Max PP in a Champions battle. PS `data/mods/champions/scripts.ts`
+/// `calculatePP`: `(pp / 5 + 1) * 4` on the Champions base PP (already capped
+/// at 20 by the mod's `init`), or the base PP for `noPPBoosts` moves.
+pub fn champions_max_pp(move_id: u16) -> u8 {
+    if move_id == u16::MAX {
+        return 0;
+    }
+    let mv = &data::MOVES_CHAMPIONS[move_id as usize];
+    if matches!(mv.slug, "revivalblessing" | "sketch" | "struggle") {
+        return mv.pp;
+    }
+    (mv.pp / 5 + 1) * 4
+}
+
+/// Build a single Pokémon for a format: `champions` (the format's Champions
+/// rule, `format_rules::champions_for_format_arg`) sets the Champions PP;
+/// otherwise this is [`build_member`].
+pub fn build_member_in(m: &TeamMember, champions: bool) -> Result<Pokemon, TeamLoadError> {
+    let mut mon = build_member(m)?;
+    if champions {
+        for slot in 0..4 {
+            if mon.moves[slot] != u16::MAX {
+                let max = champions_max_pp(mon.moves[slot]);
+                mon.max_pp_override[slot] = max;
+                mon.pp[slot] = max;
+            }
+        }
+    }
+    Ok(mon)
+}
+
+/// Build a single Pokémon from a team-member spec, with standard gen 9 PP.
 pub fn build_member(m: &TeamMember) -> Result<Pokemon, TeamLoadError> {
     let species_id = lookup_species(&m.species)?;
     let species = &data::SPECIES[species_id as usize];
@@ -284,26 +315,37 @@ impl TeamBuilder {
     }
 
     pub fn from_json(s: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
+        Self::from_json_in(s, false)
+    }
+
+    /// [`from_json`](Self::from_json) for a format: `champions` builds with
+    /// Champions PP (see [`build_member_in`]).
+    pub fn from_json_in(s: &str, champions: bool) -> Result<Vec<Pokemon>, TeamLoadError> {
         let specs: Vec<TeamMember> =
             serde_json::from_str(s).map_err(|e| TeamLoadError::Parse(e.to_string()))?;
-        Self::finalize(specs)
+        Self::finalize(specs, champions)
     }
 
     /// Parse a Showdown export blob (`Mon @ Item` / `Ability:` / `EVs:` /
     /// `<Nature> Nature` / `- Move` ...) — the same format Pokepaste hands out.
     pub fn from_showdown_text(s: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
-        let specs = crate::team_export::parse_showdown_export(s)?;
-        Self::finalize(specs)
+        Self::from_showdown_text_in(s, false)
     }
 
-    fn finalize(specs: Vec<TeamMember>) -> Result<Vec<Pokemon>, TeamLoadError> {
+    /// [`from_showdown_text`](Self::from_showdown_text) for a format.
+    pub fn from_showdown_text_in(s: &str, champions: bool) -> Result<Vec<Pokemon>, TeamLoadError> {
+        let specs = crate::team_export::parse_showdown_export(s)?;
+        Self::finalize(specs, champions)
+    }
+
+    fn finalize(specs: Vec<TeamMember>, champions: bool) -> Result<Vec<Pokemon>, TeamLoadError> {
         if specs.is_empty() {
             return Err(TeamLoadError::Empty);
         }
         if specs.len() > 6 {
             return Err(TeamLoadError::TooMany(specs.len()));
         }
-        specs.iter().map(build_member).collect()
+        specs.iter().map(|m| build_member_in(m, champions)).collect()
     }
 }
 
@@ -355,6 +397,30 @@ mod gender_tests {
         assert_eq!(mon.pp[0], 16, "Earthquake PP-maxed to 16");
         assert_eq!(mon.pp[1], 8, "Close Combat PP-maxed to 8");
         assert_eq!(mon.pp[2], 16, "Protect PP-maxed to 16");
+    }
+
+    #[test]
+    fn champions_team_pp_follows_the_champions_table() {
+        // PS data/mods/champions/scripts.ts: init() caps base PP at 20, the mod
+        // sets Protect's base PP to 5 (moves.ts protect), and calculatePP is
+        // `(pp / 5 + 1) * 4`, or the base PP for noPPBoosts moves.
+        let mut m = member("Garchomp", None);
+        m.moves = vec!["earthquake".into(), "closecombat".into(), "protect".into(), "scratch".into()];
+        let mon = build_member_in(&m, true).unwrap();
+        assert_eq!(mon.pp, [12, 8, 8, 20], "EQ 10→12, CC 5→8, Protect 5→8, Scratch 35→20→20");
+        assert_eq!((0..4).map(|i| mon.max_pp(i)).collect::<Vec<_>>(), vec![12, 8, 8, 20]);
+        let mut rb = member("Pawmot", None);
+        rb.moves = vec!["revivalblessing".into()];
+        assert_eq!(build_member_in(&rb, true).unwrap().pp[0], 1, "noPPBoosts keeps base PP");
+    }
+
+    #[test]
+    fn standard_team_pp_keeps_three_pp_ups() {
+        let mut m = member("Garchomp", None);
+        m.moves = vec!["earthquake".into(), "protect".into(), "scratch".into()];
+        let mon = build_member_in(&m, false).unwrap();
+        assert_eq!(&mon.pp[..3], &[16, 16, 56]);
+        assert_eq!(mon.max_pp(1), 16);
     }
 
     #[test]
