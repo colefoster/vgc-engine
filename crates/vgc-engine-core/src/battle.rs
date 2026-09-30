@@ -14897,6 +14897,33 @@ self.trigger_emergency_exits();
                 }
                 self.sync_status_dot_bit(ts, tslot);
             }
+            data::move_id::MAGICPOWDER => {
+                // PS data/moves.ts:10738 magicpowder. A powder move: Grass
+                // types (hitStepTryImmunity, sim/battle-actions.ts:669),
+                // Overcoat and Safety Goggles (onTryHit) fail it before the
+                // accuracy roll. onHit fails when the target is already pure
+                // Psychic or setType refuses (Terastallized,
+                // sim/pokemon.ts:2119); else the target becomes pure Psychic.
+                // A Substitute stops it after the roll.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Magic_Powder_(move)>
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.target_is_powder_immune(ts, tslot) {
+                    self.ps_status_failed();
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    let (types, n) = t.effective_types();
+                    t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !(n == 1 && types[0] == 10)
+                });
+                if !ok {
+                    self.ps_status_failed();
+                    return;
+                }
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    t.set_type_override(10, None);
+                }
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced
