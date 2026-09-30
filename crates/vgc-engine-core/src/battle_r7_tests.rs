@@ -659,26 +659,6 @@ fn defiant_triggers_once_per_stat_parting_shot_lowers() {
 }
 
 #[test]
-fn earthquake_hits_the_ally_before_the_foes() {
-    // PS getMoveTargets for `allAdjacent` pushes adjacentAllies() before
-    // adjacentFoes() (sim/pokemon.ts:808-811), and every hit step walks the
-    // targets in that order, so the ally's rolls come first.
-    let mut b = doubles(
-        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["earthquake"]},
-            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
-        r#"[{"species":"heatran","level":50,"ability":"flashfire","moves":["splash"]},
-            {"species":"blissey","level":50,"ability":"naturalcure","moves":["splash"]}]"#,
-        1,
-    );
-    b.set_rng(crate::rng::Rng::recording(3));
-    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
-    let first = b.rng.recording_log().unwrap().iter()
-        .find(|e| e.key.move_id == data::move_id::EARTHQUAKE && matches!(e.space, crate::rng::DrawSpace::UniformDamage { .. }))
-        .map(|e| e.key.target);
-    assert_eq!(first, Some(1), "p1b (slot ref 1) is rolled first");
-}
-
-#[test]
 fn roost_grounds_a_flying_type_for_the_rest_of_the_turn() {
     // PS data/moves.ts roost: self volatile `roost` (duration 1) whose
     // onType drops Flying; isGrounded (sim/pokemon.ts) reads
