@@ -574,6 +574,16 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // only adjacent ally is the partner slot. Capped at the ally's max
     // HP (PS `heal()` clamps). No effect if the ally is fainted.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Hospitality_(Ability)>.
+    // Curious Medicine — PS data/abilities.ts:772 onStart: every adjacent
+    // ally's stat stages are cleared.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Curious_Medicine_(Ability)>.
+    if ability_id == data::ability_id::CURIOUSMEDICINE && battle.format().active_count() > 1 {
+        if let Some(ally) = battle.side_mut(side).active_mon_mut((slot ^ 1) as usize) {
+            if ally.is_alive() {
+                ally.boosts = [0; 7];
+            }
+        }
+    }
     if ability_id == data::ability_id::HOSPITALITY && battle.format().active_count() > 1 {
         let partner_slot = if slot == 0 { 1 } else { 0 };
         if let Some(ally) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
