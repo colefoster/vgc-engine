@@ -640,9 +640,9 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     //     // Pick a random *adjacent* foe whose ability is not in
     //     // the un-traceable list and copy it.
     //   }
-    // PS draws uniformly from valid targets in randomly-shuffled order.
-    // Coverage cut: deterministic — pick the first alive opposing slot
-    // with a non-empty, non-Trace ability. The PS un-traceable list
+    // PS samples uniformly from the valid adjacent foes (`onUpdate`:
+    // `this.sample(possibleTargets)`); valid = alive with a non-empty,
+    // non-Trace ability. The PS un-traceable list
     // (As One, Comatose, Disguise, Flower Gift, Forecast, Hunger
     // Switch, Ice Face, Illusion, Imposter, Multitype, Neutralizing
     // Gas, Power Construct, Power of Alchemy, Receiver, RKS System,
@@ -660,7 +660,8 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
         if !user_shielded {
             let opp = side.opposing();
             let n = battle.format().active_count() as u8;
-            let mut found: Option<u16> = None;
+            let mut cands = [u16::MAX; 2];
+            let mut n_cands = 0usize;
             for s in 0..n {
                 let candidate = match battle.side(opp).active_mon(s as usize) {
                     Some(m) if m.is_alive() => m.ability_id,
@@ -674,9 +675,27 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
                     .active_mon(s as usize)
                     .is_some_and(has_ability_shield);
                 if target_shielded { continue; }
-                found = Some(candidate);
-                break;
+                if n_cands < cands.len() {
+                    cands[n_cands] = candidate;
+                    n_cands += 1;
+                }
             }
+            // `this.sample(possibleTargets)`: one draw even for a lone
+            // candidate (PS sample -> random(n)).
+            let found = match n_cands {
+                0 => None,
+                _ => {
+                    #[cfg(feature = "ps-rng")]
+                    let pick = if battle.rng_mut().is_ps() {
+                        battle.rng_mut().ps_random_range("sample", 0, n_cands as u32) as usize
+                    } else {
+                        battle.rng_mut().range(n_cands as u32) as usize
+                    };
+                    #[cfg(not(feature = "ps-rng"))]
+                    let pick = battle.rng_mut().range(n_cands as u32) as usize;
+                    Some(cands[pick.min(n_cands - 1)])
+                }
+            };
             if let Some(new_id) = found {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.ability_id = new_id;

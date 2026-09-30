@@ -717,9 +717,11 @@ fn ps_args(d: &RawDraw) -> (u64, u64) {
     norm_args(d.a as u64, d.b as u64)
 }
 
-/// `random(0, n)` and `random(n)` are the same call.
+/// `random(m, n)` is `m + random(n - m)` on the same PRNG draw
+/// (sim/prng.ts random), so compare by span: `random(0, n)`, `random(n)`
+/// and the engine's `range(n - m)` + offset are the same call.
 fn norm_args(a: u64, b: u64) -> (u64, u64) {
-    if a == 0 && b > 0 { (b, 0) } else { (a, b) }
+    if b > a { (b - a, 0) } else { (a, b) }
 }
 
 #[cfg(feature = "ps-rng")]

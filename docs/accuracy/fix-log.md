@@ -630,3 +630,103 @@ Remaining top first divergent PS draws (935 battles still diverge):
 | `resolveAction` → `getRandomTarget` | 59 |
 | commitChoices `queue.sort` ties | 54 |
 | Residual handler sort (handlers not modelled) | 46 |
+
+---
+
+# Round 6 (2026-09-30, branch `ps-rng-6`)
+
+Same 1,298 / 1,300-battle sample and PS battles as round 5 (the work
+directory was intact; the round-5 end reproduced exactly: forced-RNG 933
+clean, 9422/9787 turns; seeded 488 clean, 5895/6705).
+
+Result: seeded differential (`ps-rng`) fully clean **488 → 804 (37.5% →
+61.8%)**, turns **5895/6705 → 8572/9066**. Forced-RNG fully clean
+**71.9% → 75.5%** (933 → 980), per-turn **96.3% → 96.8%** (9422/9787 →
+9691/10009); 56 battles improved, none regressed.
+
+## Owner-approved: PS's cached speed under `ps-rng`
+
+`5e78624`. PS speed-sorts on `Pokemon.speed`, which only `updateSpeed()`
+refreshes: every active at `commitChoices` (mid-turn switch requests
+included), before each gen-8+ re-sort and at the residual, and a switch-in's
+own at `insertChoice`; `setSpecies` resets it to the raw Speed stat
+(switch-out, faint, Mega Evolution) and a drag never refreshes it. The
+engine keeps that cache per team member under `ps-rng` only and every tie
+sort reads it. Default builds are unchanged.
+
+## Mechanics fixes (all builds)
+
+| commit | bug | PS reference | tests | default RNG stream |
+|---|---|---|---|---|
+| `7656392` | no gen-8+ dynamic re-sort: the order was fixed at turn start, so a mid-turn Tailwind / Trick Room / Icy Wind / paralysis never changed who moved next | `sim/battle.ts:2917-2924`, `:2641-2660`; `sim/battle-queue.ts:249, :290` | `tailwind_mid_turn_reorders_the_remaining_moves` | changes (action order; ties keep their order, no new draws) |
+| `a254438` | Mega Evolutions ran p1 first, not by Speed | `sim/battle-queue.ts:184`; `sim/battle.ts:404` | `faster_mega_evolves_first` | changes when both sides Mega Evolve |
+| `d407d9c` | a fainted mon's queued move sorted on its boosted Speed (faintMessages clears boosts and volatiles) | `sim/battle.ts:2563` | `a_fainted_mons_speed_drops_its_boosts` | no (the action is skipped either way) |
+| `151898c` | Glaive Rush's drawback unimplemented (double damage taken, moves against the user can't miss, until its next move) | `data/moves.ts` glaiverush | `glaive_rush_doubles_the_damage_its_user_takes`, `glaive_rush_ends_when_its_user_moves_again`, `moves_against_a_glaive_rush_user_cannot_miss` | changes (no accuracy roll against a Glaive Rush user) |
+| `de8a6dd` | Trace always copied the first foe; PS samples among valid adjacent foes | `data/abilities.ts` trace `onUpdate` | `trace_copies_a_random_adjacent_foe` | changes (one draw per Trace) |
+
+Cost: the per-action re-sort adds about 4% to default `perf_bench`
+ns/step (interleaved runs on a loaded machine, median 1,700 → 1,772); no
+step allocations.
+
+## Part 2: `ps-rng` draw order
+
+| iteration | commit | seeded clean | turns matched | forced-RNG clean |
+|---|---|---|---|---|
+| start (round 5 end) | `773aa10` | 488 (37.5%) | 5895/6705 | 933 |
+| cached `Pokemon.speed` | `5e78624` | 488 | 5893/6703 | 933 |
+| team preview's `queue.sort` ties | `2e0538b` | 497 | 6070/6871 | 933 |
+| status moves' hit-loop Updates | `2b78d42` | 509 | 6218/7007 | 933 |
+| dynamic re-sort (mechanics) | `7656392` | 541 | 6474/7231 | 972 |
+| no target draws in singles | `7a7b965` | 541 | 6474/7231 | 972 |
+| commitChoices' `queue.sort` ties for every action | `2eb92ea` | 583 | 6841/7556 | 972 |
+| PS's own `speedSort` for the turn's order | `58a236a` | 588 | 6920/7630 | 972 |
+| switchIn's BeforeSwitchOut Update | `fe44631` | 634 | 7417/8081 | 972 |
+| Mega Evolution in Speed order (mechanics) | `a254438` | 636 | 7454/8116 | 972 |
+| weather upkeep's two sorts | `508ea83` | 653 | 7615/8260 | 972 |
+| a status move into Protect skips the hit loop | `5a05ec4` | 655 | 7624/8267 | 972 |
+| fainted mon's cleared Speed (mechanics) | `d407d9c` | 656 | 7628/8270 | 972 |
+| per-hit Update still sorts a KO'd target | `0f53589` | 725 | 8005/8578 | 972 |
+| no draws after the battle ends | `6105675` | 725 | 8005/8578 | 972 |
+| first re-sort's getTargets in queue order | `d62c1f5` | 725 | 8005/8578 | 972 |
+| mid-turn switch's Update and runSwitch sorts | `2cb9bbd` | 756 | 8256/8798 | 972 |
+| Dire Claw / Tri Attack sample on a KO'd target | `7a8d248` | 775 | 8372/8895 | 972 |
+| walk compares `random(m, n)` by span (tool) | `04f2125` | 775 | 8372/8895 | 972 |
+| Glaive Rush (mechanics) | `151898c` | 785 | 8419/8932 | 980 |
+| Trace's random pick (mechanics) | `de8a6dd` | 795 | 8513/9016 | 980 |
+| a forced-out mon's cancelled move leaves the re-sort | `0519d45` | **804 (61.8%)** | **8572/9066** | **980** |
+
+Every commit passed `cargo test --workspace --exclude vgc-engine-py`
+with `ps-rng` off and on; the pyo3 tests pass (24).
+
+Nothing was reverted. Earlier first draw divergences, all explained in the
+commit messages:
+- `5e78624` moved `827d3db65c` earlier (a Mega Floette under Trick Room;
+  it is clean again after the following commits).
+- `2eb92ea` moved 11 earlier that were aligned by chance: the missing
+  BeforeSwitchOut Update and PS's tie-group order, fixed by `fe44631` and
+  `58a236a`.
+- `fe44631` moved 2 (p1-first Mega Evolution, fixed by `a254438`); `508ea83`
+  moved 2 (status moves into Protect, fixed by `5a05ec4`); `0f53589` moved 2
+  (draws after a battle-ending KO, fixed by `6105675`).
+- Against round 5, only `1d4387d59e` diverges earlier in draws (the engine
+  ends that battle a turn early, a state divergence), and only `b48d9ab083`
+  diverges earlier in state: its draws already misalign on turn 1, and
+  Trace's now-random pick lands on a different draw. No forced-RNG battle
+  diverges earlier.
+
+Remaining first divergent PS draws (362 battles; 192 more diverge in state
+with every draw aligned to that point): `hitStepAccuracy` 99, runAction
+`Update` 33, `getTarget` re-picks 32, `secondaries` 30, the ModifyDamage
+handler sort 28, Residual handler sort 27, resolveAction `getRandomTarget`
+27, crit 20. See [`ps-rng.md`](ps-rng.md) for why each is hard.
+
+## Decisions for the owner
+
+1. **Unimplemented moves.** Octolock (14 uses in the sample), Simple
+   Beam (6), Entrainment (5), Worry Seed (1) and Magic Powder (1) have no
+   handler: they do nothing and roll no accuracy. They are the largest
+   known cause left in the `hitStepAccuracy` group. Each is its own
+   mechanic; not done here.
+2. **Quick Claw / Quick Draw draw position.** PS rolls them in
+   `resolveAction`, before commitChoices' sort; the engine rolls them at
+   queue build. Moving the draw changes the default stream too.
