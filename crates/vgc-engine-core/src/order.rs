@@ -183,7 +183,12 @@ impl<'a> IntoIterator for &'a ActionOrder {
 /// keyed speed abilities (Swift Swim / Chlorophyll / Sand Rush / Slush
 /// Rush). Trick Room is handled by the comparator at the call site.
 pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
-    let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
+    // A fainted mon keeps its queued action (gen 5+) but faintMessages ran
+    // clearVolatile on it (sim/battle.ts:2563): no boosts or volatiles
+    // (Protosynthesis / Quark Drive, Unburden, Slow Start) in the Speed
+    // the gen-8+ re-sort reads for it.
+    let cleared = !mon.is_alive();
+    let boosted = apply_boost(mon.stats.spe as u32, if cleared { 0 } else { mon.boosts[4] });
     // Quick Feet — PS `data/abilities.ts:quickfeet`:
     //   onModifySpe(spe, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -220,7 +225,7 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     };
     // Paradox booster on Spe (index 4): ×1.5 to speed. PS chainModify(1.5)
     // for protosynthesisspe / quarkdrivespe volatile flavors.
-    let after_paradox = if mon.boosted_stat == 4 {
+    let after_paradox = if !cleared && mon.boosted_stat == 4 {
         after_item * 3 / 2
     } else {
         after_item
@@ -233,7 +238,8 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     // suspends the boost (the latch persists until switch-out). Hawlucha /
     // Sceptile / Hitmonlee signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unburden_(Ability)>.
-    let after_unburden = if mon.ability_id == data::ability_id::UNBURDEN
+    let after_unburden = if !cleared
+        && mon.ability_id == data::ability_id::UNBURDEN
         && mon.unburden_active
         && mon.item_id == u16::MAX
     {
@@ -256,7 +262,8 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     let after_weather = if weather_double { after_unburden * 2 } else { after_unburden };
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
-    let after_slowstart = if mon.ability_id == data::ability_id::SLOWSTART
+    let after_slowstart = if !cleared
+        && mon.ability_id == data::ability_id::SLOWSTART
         && mon.slow_start_active_turns > 0
     {
         after_weather / 2
@@ -483,6 +490,12 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
     if n < 2 {
         return; // can't tie with yourself
     }
+    // PS mode sorts the turn's queue itself, with PS's own speedSort
+    // (`Battle::ps_order_turn`).
+    #[cfg(feature = "ps-rng")]
+    if rng.is_ps() {
+        return;
+    }
     // Key that defines a genuine tie: everything the games compare EXCEPT
     // the deterministic queue-index tail. (prio, frac_pri, speed_key).
     let key = |e: &MoveEntry| (e.0, e.1, e.2);
@@ -519,6 +532,172 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
     }
 }
 
+fn move_slot_of(choice: Choice) -> Option<u8> {
+    match choice {
+        Choice::Move { move_slot, .. }
+        | Choice::Terastallize { move_slot, .. }
+        | Choice::MegaEvolve { move_slot, .. } => Some(move_slot),
+        _ => None,
+    }
+}
+
+/// The state-derived part of a queued move's priority, as PS's
+/// getActionSpeed recomputes it (sim/battle.ts:2641-2647): the move's
+/// priority, Prankster on a status move, Grassy Glide on grounded users in
+/// Grassy Terrain. Mirrors [`schedule_move`] without its Quick Claw roll.
+pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8) -> i32 {
+    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return 0 };
+    let mid = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+        data::move_id::STRUGGLE
+    } else {
+        m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
+    };
+    let (base, category) = if mid == u16::MAX {
+        (0i32, 2u8)
+    } else {
+        let mv = &data::MOVES[mid as usize];
+        (mv.priority as i32, mv.category)
+    };
+    let mut pri = base;
+    if category == 2 && m.ability_id == data::ability_id::PRANKSTER {
+        pri += 1;
+    }
+    if mid == data::move_id::GRASSYGLIDE
+        && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
+        && m.is_grounded()
+    {
+        pri += 1;
+    }
+    pri
+}
+
+fn record_turn_keys(battle: &Battle, moves: &[MoveEntry], keys: &mut TurnKeys) {
+    for e in moves {
+        let a = e.4;
+        let Some(move_slot) = move_slot_of(a.choice) else { continue };
+        let (s, k) = (a.side as usize, (a.actor_slot as usize).min(1));
+        keys.qc_bump[s][k] = (-e.0 - state_priority(battle, a.side, a.actor_slot, move_slot)) as i8;
+        keys.frac[s][k] = e.1;
+    }
+}
+
+/// Gen-8+ dynamic re-sort (PS sim/battle.ts:2917-2924): after an action,
+/// when the next queued action is a move, PS refreshes every queued move's
+/// priority and Speed and re-sorts the queue by (order, priority, Speed)
+/// (sim/battle.ts:404 comparePriority). Re-sorts `order[after + 1..]` in
+/// place; ties keep their current relative order. Returns the sorted tail's
+/// tie keys (for PS's tie shuffle) and their count, or 0 when the tail is
+/// empty or holds a non-move action.
+pub(crate) fn resort_remaining(
+    battle: &Battle,
+    order: &mut ActionOrder,
+    after: usize,
+    keys: &TurnKeys,
+    #[allow(unused_variables)] ps: Option<&mut Rng>,
+) -> usize {
+    resort_from(battle, order, after + 1, keys, ps)
+}
+
+/// [`resort_remaining`] from index `start`. With a PS rng it sorts with
+/// PS's own speedSort, shuffling tie groups as PS does.
+pub(crate) fn resort_from(
+    battle: &Battle,
+    order: &mut ActionOrder,
+    start: usize,
+    keys: &TurnKeys,
+    #[allow(unused_variables)] ps: Option<&mut Rng>,
+) -> usize {
+    let mut out = [(0i8, 0i32, 0i8, 0i64); ACTION_INLINE_CAP];
+    let s = order.as_mut_slice();
+    if start >= s.len() || s.len() - start > ACTION_INLINE_CAP {
+        return 0;
+    }
+    let n = s.len() - start;
+    let trick_room = battle.trick_room_turns > 0;
+    for (k, a) in s[start..].iter().enumerate() {
+        let Some(move_slot) = move_slot_of(a.choice) else { return 0 };
+        let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
+        // A mon forced out mid-turn had its action cancelled
+        // (sim/battle-actions.ts:107 queue.cancelAction): sort it last,
+        // tied with nothing.
+        if battle.replaced_mid_turn[si][sl] {
+            out[k] = (i8::MAX, k as i32, 0, 0);
+            continue;
+        }
+        let pri = state_priority(battle, a.side, a.actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
+        let speed = battle
+            .side(a.side)
+            .active_mon(a.actor_slot as usize)
+            .map(|m| effective_speed(m, battle.side(a.side).conditions.tailwind_turns > 0, battle.weather) as i64)
+            .unwrap_or(0);
+        let speed_key = if trick_room { speed } else { -speed };
+        out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
+    }
+    #[cfg(feature = "ps-rng")]
+    if let Some(rng) = ps {
+        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.ps_random_range("shuffle", a, b));
+        return n;
+    }
+    // Stable insertion sort (n <= 8, heap-free): ties keep queue order.
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && out[j] < out[j - 1] {
+            out.swap(j, j - 1);
+            s.swap(start + j, start + j - 1);
+            j -= 1;
+        }
+    }
+    n
+}
+
+/// PS `Battle.speedSort` (sim/battle.ts:429-461): a selection sort that
+/// swaps each run of best-and-tied items into place, then Fisher-Yates
+/// shuffles the run with `random(i, end)` (sim/prng.ts shuffle). `keys`
+/// ascending = earlier. The swaps can reorder later tie groups before
+/// their own shuffle, so a stable sort would not reproduce PS's order.
+#[cfg(feature = "ps-rng")]
+pub(crate) fn ps_speed_sort<K: Ord + Copy, T: Copy>(keys: &mut [K], items: &mut [T], mut draw: impl FnMut(u32, u32) -> u32) {
+    let n = keys.len().min(items.len());
+    let mut sorted = 0;
+    while sorted + 1 < n {
+        let mut next = [0usize; 16];
+        let mut len = 1;
+        next[0] = sorted;
+        for i in sorted + 1..n {
+            match keys[next[0]].cmp(&keys[i]) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    next[0] = i;
+                    len = 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if len < next.len() {
+                        next[len] = i;
+                        len += 1;
+                    }
+                }
+            }
+        }
+        for (t, &index) in next[..len].iter().enumerate() {
+            if index != sorted + t {
+                keys.swap(sorted + t, index);
+                items.swap(sorted + t, index);
+            }
+        }
+        if len > 1 {
+            let end = sorted + len;
+            for i in sorted..end - 1 {
+                let j = draw(i as u32, end as u32) as usize;
+                if j != i {
+                    keys.swap(i, j);
+                    items.swap(i, j);
+                }
+            }
+        }
+        sorted += len;
+    }
+}
+
 /// Resolve one turn's action order.
 ///
 /// `p1` and `p2` are the per-active-slot choices for each side. `Pass`
@@ -528,6 +707,32 @@ pub fn action_order(
     p1: &[Choice],
     p2: &[Choice],
     rng: &mut Rng,
+) -> ActionOrder {
+    let mut keys = TurnKeys::default();
+    action_order_keyed(battle, p1, p2, rng, &mut keys)
+}
+
+/// Per-slot sort keys fixed when the turn's queue is built, for the gen-8+
+/// re-sort ([`resort_remaining`]): the priority bump a Quick Claw roll gave
+/// and the fractional priority (Custap Berry, Quick Draw, Lagging Tail ...).
+/// PS decides `fractionalPriority` once, in resolveAction
+/// (sim/battle-queue.ts:249); the re-sort only refreshes priority
+/// (ModifyPriority) and Speed. `bias` is PS's action order for After You
+/// (3, first) and Quash (201, last).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnKeys {
+    pub qc_bump: [[i8; 2]; 2],
+    pub frac: [[i8; 2]; 2],
+    pub bias: [[i8; 2]; 2],
+}
+
+/// [`action_order`] that also records each queued move's [`TurnKeys`].
+pub(crate) fn action_order_keyed(
+    battle: &Battle,
+    p1: &[Choice],
+    p2: &[Choice],
+    rng: &mut Rng,
+    keys: &mut TurnKeys,
 ) -> ActionOrder {
     // Heap-spill path for pathologically large offline turns: the replay
     // scorer can cram a whole PS turn's worth of mid-turn replacement
@@ -564,6 +769,7 @@ pub fn action_order(
         // RNG-free), THEN shuffle genuine ties in place.
         moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
         shuffle_tie_groups(&mut moves, rng);
+        record_turn_keys(battle, &moves, keys);
         let mut v = switches;
         v.extend(moves.into_iter().map(|t| t.4));
         return ActionOrder::Heap(v);
@@ -606,6 +812,7 @@ pub fn action_order(
     // THEN break genuine ties with a PS-faithful Fisher-Yates shuffle that
     // draws RNG only when ≥2 actions share the full sort key.
     shuffle_tie_groups(&mut moves[..n_move], rng);
+    record_turn_keys(battle, &moves[..n_move], keys);
     let mut out = ActionOrder::new();
     for s in &switches[..n_switch] {
         out.push(*s);
@@ -642,6 +849,21 @@ mod tests {
 
     fn t(side: SideRef, slot: u8) -> Target {
         Target { side, slot }
+    }
+
+    #[test]
+    fn a_fainted_mons_speed_drops_its_boosts() {
+        // faintMessages clears the fainted mon's volatiles and boosts
+        // (sim/battle.ts:2563) before the re-sort reads its queued action's
+        // Speed (sim/battle.ts:2917-2924).
+        let mut b = make_battle();
+        let m = &mut b.p1.team[0];
+        m.boosts[4] = -1;
+        let dropped = effective_speed(m, false, crate::weather::Weather::None);
+        m.current_hp = 0;
+        m.fainted = true;
+        assert_eq!(effective_speed(m, false, crate::weather::Weather::None), m.stats.spe);
+        assert!(dropped < m.stats.spe);
     }
 
     #[test]

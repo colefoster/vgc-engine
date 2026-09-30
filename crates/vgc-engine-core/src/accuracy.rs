@@ -83,8 +83,11 @@ pub(crate) fn effective_accuracy(
         data::move_id::PURSUIT if battle.pursuit_intercepting => 255,
         _ => m.accuracy,
     };
-    // No Guard: collapse to sure-hit (no draw).
-    let base_acc = if no_guard_pair { 255 } else { base_acc };
+    // No Guard: collapse to sure-hit (no draw). A Glaive Rush user's
+    // volatile does the same for moves aimed at it (onAccuracy returns
+    // true, data/moves.ts glaiverush).
+    let glaive_rush = defender.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush);
+    let base_acc = if no_guard_pair || glaive_rush { 255 } else { base_acc };
 
     // Protect-family pre-roll suppression. Mirrors the conditions checked a
     // few lines below in the caller (Wide / Quick / Mat Guard + single-
