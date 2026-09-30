@@ -365,3 +365,26 @@ fn thermal_exchange_raises_attack_on_a_fire_hit_and_blocks_burn() {
     b.step(&[mv(0, 1, None)], &[mv(0, 1, Some(t(SideRef::P1, 0)))]);
     assert!(!matches!(b.p1.team[0].status, Status::Burn));
 }
+
+#[test]
+fn rage_fist_gains_fifty_power_per_hit_taken() {
+    // PS data/moves.ts:14583 ragefist basePowerCallback:
+    // min(350, 50 + 50 * timesAttacked); timesAttacked counts each hit
+    // (data/mods/champions/scripts.ts:566), reset on switch
+    // (scripts.ts:169).
+    let run = |foe_move: u8| {
+        let mut b = singles(
+            r#"[{"species":"annihilape","level":50,"ability":"defiant","moves":["ragefist","splash"],"evs":{"hp":252}}]"#,
+            r#"[{"species":"slowbro","level":50,"ability":"owntempo","moves":["watergun","splash"],"evs":{"hp":252,"def":252}}]"#,
+            5,
+        );
+        for _ in 0..2 {
+            b.step(&[mv(0, 1, None)], &[mv(0, foe_move, Some(t(SideRef::P1, 0)))]);
+        }
+        let hp = b.p2.team[0].current_hp;
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
+        (hp - b.p2.team[0].current_hp) as u32
+    };
+    let (fresh, after_two) = (run(1), run(0));
+    assert!(after_two * 2 > fresh * 3, "150 BP ({after_two}, or a KO) vs 50 BP ({fresh})");
+}

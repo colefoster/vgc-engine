@@ -927,6 +927,10 @@ pub(crate) fn calculate_damage_with_bp(
             _ => m.type_,
         };
         (ty, m.base_power as u32)
+    } else if move_id == data::move_id::RAGEFIST {
+        // PS data/moves.ts:14583 ragefist basePowerCallback:
+        // `Math.min(350, 50 + 50 * pokemon.timesAttacked)`.
+        (m.type_, (50 + 50 * attacker.times_attacked as u32).min(350))
     } else if move_id == data::move_id::LASTRESPECTS {
         // Last Respects — PS data/moves.ts:lastrespects
         // `basePowerCallback: 50 + 50 * pokemon.side.totalFainted`,

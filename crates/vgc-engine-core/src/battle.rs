@@ -3872,6 +3872,7 @@ self.trigger_emergency_exits();
             let status_counter = if matches!(incoming.status, Status::Sleep | Status::Freeze) { incoming.sleep_turns() } else { 0 };
             incoming.volatiles.clear();
             incoming.set_sleep_turns(status_counter);
+            incoming.times_attacked = 0;
             // PR-LC3: the blanket `volatiles.clear()` above wiped any
             // remaining lock-volatile (Disable / Throat Chop / Heal Block /
             // Taunt — Choice/Encore were already cleared via their setters
@@ -8142,6 +8143,13 @@ self.trigger_emergency_exits();
             dmg /= 4;
         }
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
+        // PS counts every hit whose damage is a number, a Substitute's
+        // HIT_SUBSTITUTE (0) included (data/mods/champions/scripts.ts:564-567).
+        if (ctx.tside, ctx.tslot) != (ctx.actor_side, ctx.actor_slot) {
+            if let Some(d) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                d.times_attacked = d.times_attacked.saturating_add(1);
+            }
+        }
         // Rebind `m` after the &mut ctx borrow above ends, so the
         // remaining post-damage code (Disguise / apply / Knock Off /
         // defrost / secondary gate) can read move-def fields.

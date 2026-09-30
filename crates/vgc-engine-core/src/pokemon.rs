@@ -818,6 +818,11 @@ pub struct Pokemon {
     /// on switch-in with `effectState.loafing = false`; we initialise
     /// to false (uses move on turn 1) and flip in the before-move arm.
     pub truant_loafing: bool,
+    /// PS `timesAttacked`: hits taken from moves since switching in (Rage
+    /// Fist's power). Champions resets it in clearVolatile
+    /// (data/mods/champions/scripts.ts:169), i.e. on every switch.
+    #[serde(default)]
+    pub times_attacked: u8,
     /// Runtime battle-type override (Protean / Libero / Color Change /
     /// Reflect Type / Conversion). `[255, 255]` = no override (use the
     /// species' innate types). Otherwise `type_override[0]` is the
@@ -986,6 +991,7 @@ impl Pokemon {
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
+            times_attacked: 0,
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,

@@ -278,6 +278,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("item_suppressed", &p.item_suppressed)?;
         s.serialize_field("slow_start_active_turns", &p.slow_start_active_turns)?;
         s.serialize_field("truant_loafing", &p.truant_loafing)?;
+        s.serialize_field("times_attacked", &p.times_attacked)?;
         s.serialize_field("type_override", &p.type_override)?;
         s.serialize_field("protean_used", &p.protean_used)?;
         s.serialize_field("disguise_busted", &p.disguise_busted)?;
