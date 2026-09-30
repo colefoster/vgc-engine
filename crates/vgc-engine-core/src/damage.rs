@@ -1462,19 +1462,6 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
-    // Fire Mane (Pokémon Champions, Mega Pyroar) — a flat same-type power
-    // boost (NOT an -ate conversion): the holder's Fire-type moves (type
-    // code 1) gain ×1.5 power. Same shape as the existing type-boost
-    // abilities; ×1.5 = 6144/4096 in chainModify space. Verified at
-    // serebii.net/pokemonchampions/newabilities.shtml ("Boosts the power of
-    // the Pokémon's Fire-type moves by 50%.").
-    if move_type == 1
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::FIREMANE
-    {
-        bp_mod = chain_modify(bp_mod, 6144, 4096);
-    }
-
     // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
     // `chainModify([5325, 4096])` (×1.3) on Rock/Ground/Steel moves while
     // Sand is up. Move-type codes: Ground=8, Rock=12, Steel=16. Damage
@@ -2098,6 +2085,14 @@ pub(crate) fn calculate_damage_with_bp(
     // Flapple-line signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hustle_(Ability)>.
     if physical && attacker.effective_ability_id() == data::ability_id::HUSTLE {
+        a = (a * 6144 / 4096).max(1);
+    }
+
+    // Fire Mane (Pokémon Champions, Mega Pyroar) — PS `data/abilities.ts:
+    // firemane` `onModifyAtk` / `onModifySpA`: `if (move.type === 'Fire')
+    // return this.chainModify(1.5)`. An attack-stat modifier, not a
+    // base-power one (the two round differently). Not breakable.
+    if move_type == 1 && attacker.effective_ability_id() == data::ability_id::FIREMANE {
         a = (a * 6144 / 4096).max(1);
     }
 
