@@ -5432,6 +5432,35 @@ self.trigger_emergency_exits();
         // but can request the Doubles spread multiplier via `force_is_spread`
         // — honor that override when present.
         let is_spread = self.force_is_spread.unwrap_or(targets.len() > 1);
+        // Dragon Darts' `smartTarget` (data/moves.ts:4118): getSmartTargets
+        // (sim/pokemon.ts:757) adds the chosen foe's living ally unless that
+        // ally is the user. PS runs every hit step across both targets
+        // before the hit loop (so each rolls accuracy first), then lands hit
+        // 1 on the first and hit 2 on the second; a target any step drops
+        // turns smartTarget off and the other takes both hits
+        // (sim/battle-actions.ts:607; data/mods/champions/scripts.ts:467).
+        // The target list is walked twice: a probe pass that stops after
+        // accuracy, then the hits for the targets that passed. The pre-hit
+        // checks a Dragon Darts target can fail (Protect, semi-invulnerable,
+        // Fairy immunity, Wonder Guard) are side-effect free for this
+        // non-contact move, so re-running them in the second pass is safe.
+        // `darts_phase[i]`: 0 normal, 1 probe, 2 hits.
+        let mut darts_phase = [0u8; 4];
+        let mut darts_pass = [false; 2];
+        if move_id == data::move_id::DRAGONDARTS && targets.len() == 1 && self.format().active_count() > 1 {
+            let (ts, tsl) = targets[0];
+            let other = (ts, tsl ^ 1);
+            let valid = (other.0, other.1) != (actor_side, actor_slot)
+                && self.side(other.0).active_mon(other.1 as usize).is_some_and(|d| d.is_alive());
+            if valid {
+                let mut buf = TargetBuf::new();
+                for t in [targets[0], other, targets[0], other] {
+                    buf.push(t);
+                }
+                targets = buf;
+                darts_phase = [1, 1, 2, 2];
+            }
+        }
 
         // Poltergeist — PS `data/moves.ts:poltergeist` (num 809). The move
         // "attacks using the target's item"; mechanically the only effect is
@@ -5741,7 +5770,10 @@ self.trigger_emergency_exits();
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
-        for &(tside, tslot) in targets.iter() {
+        for (ti, &(tside, tslot)) in targets.iter().enumerate() {
+            if darts_phase[ti] == 2 && !darts_pass[ti - 2] {
+                continue;
+            }
             let defender = match self.side(tside).active_mon(tslot as usize).cloned() {
                 Some(d) if d.is_alive() => d,
                 _ => continue,
@@ -6455,23 +6487,29 @@ self.trigger_emergency_exits();
             // the single `percent_1_100` draw, Micle-latch clear, and
             // Blunder Policy consumption on miss. Behavior is byte-
             // identical to the prior inline computation.
-            match self.roll_accuracy(
-                &attacker,
-                &defender,
-                m,
-                move_id,
-                actor_side,
-                actor_slot,
-                tside,
-                tslot,
-                attacker_ability_id,
-                attacker_item_id,
-                no_guard_pair || flash_fire_sure_hit,
-                damaging,
-                pending_kind,
-            ) {
-                AccuracyOutcome::Hit => {}
-                AccuracyOutcome::Miss => continue,
+            if darts_phase[ti] != 2 {
+                match self.roll_accuracy(
+                    &attacker,
+                    &defender,
+                    m,
+                    move_id,
+                    actor_side,
+                    actor_slot,
+                    tside,
+                    tslot,
+                    attacker_ability_id,
+                    attacker_item_id,
+                    no_guard_pair || flash_fire_sure_hit,
+                    damaging,
+                    pending_kind,
+                ) {
+                    AccuracyOutcome::Hit => {}
+                    AccuracyOutcome::Miss => continue,
+                }
+            }
+            if darts_phase[ti] == 1 {
+                darts_pass[ti] = true;
+                continue;
             }
 
             // Fixed-damage value (computed once the attacker / defender
@@ -7031,6 +7069,9 @@ self.trigger_emergency_exits();
                     hits -= self.rng.range(7);
                 }
                 hits = hits.clamp(1, 10);
+            }
+            if darts_phase[ti] == 2 && darts_pass == [true, true] {
+                hits = 1;
             }
             // Beat Up — hit count = number of ELIGIBLE party members on the
             // user's side, and each hit's BP keys off that member's SPECIES
