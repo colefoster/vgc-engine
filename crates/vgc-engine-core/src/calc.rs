@@ -543,6 +543,13 @@ impl QuickMon {
 /// to this.
 fn species_primary_ability(species_slug: &str) -> Option<String> {
     let sp = data::species_by_slug(species_slug)?;
+    // A mega forme gets the ability Mega Evolution grants in the battle sim
+    // (`Battle::try_mega_evolve` reads `MegaStone::mega_ability_id`); the
+    // dex dump's slot 0 is the base species' ability for Champions megas.
+    let species_id = data::SPECIES.iter().position(|s| s.slug == sp.slug)?;
+    if let Some(row) = data::MEGA_STONES.iter().find(|r| r.mega_species_id as usize == species_id) {
+        return Some(data::ABILITIES[row.mega_ability_id as usize].slug.to_string());
+    }
     let id = sp.legal_abilities[0];
     if id == u16::MAX {
         return None;
@@ -1293,6 +1300,23 @@ mod tests {
         // Opt-in keeps the old battle-start replay available.
         let on = calc(&atk, &intim, "earthquake", Field { switch_in_effects: true, ..Field::none() }).unwrap();
         assert!(on.max < b.max, "switch_in_effects: true should apply Intimidate");
+    }
+
+    #[test]
+    fn mega_forme_defaults_to_its_mega_ability() {
+        // The dex dump gives Champions megas their base species' ability;
+        // the battle sim's Mega Evolution uses MEGA_STONES.mega_ability_id
+        // (build.rs MEGA_FORME_FIXES). PS data/mods/champions/pokedex.ts:
+        // Golisopod-Mega's ability 0 is Tough Claws, not Emergency Exit.
+        let default = QuickMon::parse("Golisopod-Mega / Adamant / 252 Atk").unwrap();
+        let claws = QuickMon::parse("Golisopod-Mega / Tough Claws / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        assert_eq!(
+            calc(&default, &def, "firstimpression", Field::none()).unwrap().rolls,
+            calc(&claws, &def, "firstimpression", Field::none()).unwrap().rolls,
+        );
+        let mon = default.to_pokemon("firstimpression").unwrap();
+        assert_eq!(data::ABILITIES[mon.ability_id as usize].slug, "toughclaws");
     }
 
     #[test]
