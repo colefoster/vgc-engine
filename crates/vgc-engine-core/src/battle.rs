@@ -2079,9 +2079,42 @@ self.trigger_emergency_exits();
     /// for a protect-family move or Endure whose stall check failed (PS
     /// fails those in onPrepareHit, before the hit steps).
     #[cfg(feature = "ps-rng")]
-    fn ps_status_move_landed(&self, side: SideRef, slot: u8, m: &data::MoveDef) -> bool {
+    fn ps_status_move_landed(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
         if self.ps_status_missed {
             return false;
+        }
+        // A foe's Protect removes it from the targets in hitStepTryHit
+        // (hitStepTryHitEvent, sim/battle-actions.ts:643); with none left the
+        // loop never runs.
+        let protected = |t: Target| {
+            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
+        };
+        let foe = side.opposing();
+        match m.target {
+            0 | 4 | 10 | 13 => {
+                if let Some(t) = target.filter(|t| t.side == foe) {
+                    if protected(t) {
+                        return false;
+                    }
+                }
+            }
+            5 | 6 => {
+                let mut any = false;
+                let mut all_protected = true;
+                for s in 0..self.format().active_count() {
+                    for (ts, include) in [(foe, true), (side, m.target == 5 && s != slot as usize)] {
+                        let t = Target { side: ts, slot: s as u8 };
+                        if include && self.side(ts).active_mon(s).is_some_and(|d| d.is_alive()) {
+                            any = true;
+                            all_protected &= protected(t);
+                        }
+                    }
+                }
+                if any && all_protected {
+                    return false;
+                }
+            }
+            _ => {}
         }
         let Some(user) = self.side(side).active_mon(slot as usize) else { return false };
         match m.slug {
@@ -7489,7 +7522,7 @@ self.trigger_emergency_exits();
         }
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
         #[cfg(feature = "ps-rng")]
-        if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m) {
+        if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m, target) {
             self.ps_loop_hits = 1;
             if self.ps_inline_hit_updates {
                 self.ps_active_ties(false, "shuffle");
@@ -18209,6 +18242,32 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 10, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_a_status_move_into_protect_skips_the_hit_loop() {
+        // Protect drops its user from Yawn's targets in hitStepTryHitEvent,
+        // so Yawn never reaches the hit loop's Updates. Tied Snorlax: Protect
+        // draws its two, Yawn only its runAction Update: with BeforeTurn,
+        // the Updates and the residual sorts, PS draws 8.
+        let mut rng = Rng::ps("sodium,0000000000000000000000000000000e").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["protect"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["yawn"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 8, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
