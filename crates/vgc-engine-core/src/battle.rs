@@ -2285,7 +2285,7 @@ self.trigger_emergency_exits();
                     | Choice::MegaEvolve { actor_slot, move_slot, target } => (actor_slot, move_slot, target),
                     _ => continue,
                 };
-                if target.is_some() || actor_slot as usize >= n_active {
+                if actor_slot as usize >= n_active {
                     continue;
                 }
                 let Some(mon) = self.side(side).active_mon(actor_slot as usize) else { continue };
@@ -2304,6 +2304,12 @@ self.trigger_emergency_exits();
                 let (types, nt) = mon.effective_types();
                 let ghost = types[..nt as usize].contains(&13); // Ghost type index
                 if move_id == data::move_id::CURSE && !ghost {
+                    continue;
+                }
+                if target.is_some() {
+                    // A chosen target: only getActionSpeed -> getTarget,
+                    // which redraws when that target already fainted.
+                    self.ps_get_target_draw(side, actor_slot, move_id, target);
                     continue;
                 }
                 let n = match self.moves()[move_id as usize].target {
@@ -17679,6 +17685,35 @@ mod tests {
             );
             assert_eq!(b.p2.team[0].status, Status::None, "seed {seed}");
         }
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_resolve_action_redraws_a_fainted_chosen_target() {
+        // PS resolveAction runs getActionSpeed -> getTarget for every move
+        // action (sim/battle-queue.ts:275); a chosen target that already
+        // fainted fails validation and draws getRandomTarget. Draws: that
+        // one, the re-sort before the first move, and runMove's getTarget.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"jolteon","level":50,"nature":"timid","moves":["tackle"]},
+            {"species":"snorlax","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"blissey","level":50,"moves":["calmmind"]},
+            {"species":"chansey","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000007").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.p2.team[0].current_hp = 0;
+        b.p2.team[0].fainted = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
+        assert_eq!(picks, 3, "{trace:#?}");
     }
 
     #[test]
