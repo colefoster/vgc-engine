@@ -1541,6 +1541,17 @@ pub fn on_damaging_hit(
             battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
         }
     }
+    // Seed Sower — PS data/abilities.ts:4119 seedsower onDamagingHit:
+    // this.field.setTerrain('grassyterrain'), set by the holder (Terrain
+    // Extender), a KO hit included.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Seed_Sower_(Ability)>.
+    if battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| m.effective_ability_id() == data::ability_id::SEEDSOWER)
+    {
+        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot);
+    }
     // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
     // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
     // the move's type after type changes (Weather Ball in sun).

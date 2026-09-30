@@ -13332,7 +13332,7 @@ self.trigger_emergency_exits();
     /// under Electric Terrain) and fire the terrain-seed `onTerrainChange`
     /// hook on every active. Shared by the four terrain-setting moves and
     /// the surge abilities.
-    fn set_field_terrain(
+    pub(crate) fn set_field_terrain(
         &mut self,
         terrain: crate::terrain::Terrain,
         setter_side: SideRef,

@@ -587,3 +587,16 @@ fn ice_spinner_clears_the_terrain() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(matches!(b.terrain, crate::terrain::Terrain::None));
 }
+
+#[test]
+fn seed_sower_sets_grassy_terrain_when_hit() {
+    // PS data/abilities.ts:4119 seedsower onDamagingHit:
+    // this.field.setTerrain('grassyterrain').
+    let mut b = singles(
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"]}]"#,
+        r#"[{"species":"arboliva","level":50,"ability":"seedsower","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(matches!(b.terrain, crate::terrain::Terrain::Grassy));
+}
