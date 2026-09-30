@@ -183,7 +183,12 @@ impl<'a> IntoIterator for &'a ActionOrder {
 /// keyed speed abilities (Swift Swim / Chlorophyll / Sand Rush / Slush
 /// Rush). Trick Room is handled by the comparator at the call site.
 pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
-    let boosted = apply_boost(mon.stats.spe as u32, mon.boosts[4]);
+    // A fainted mon keeps its queued action (gen 5+) but faintMessages ran
+    // clearVolatile on it (sim/battle.ts:2563): no boosts or volatiles
+    // (Protosynthesis / Quark Drive, Unburden, Slow Start) in the Speed
+    // the gen-8+ re-sort reads for it.
+    let cleared = !mon.is_alive();
+    let boosted = apply_boost(mon.stats.spe as u32, if cleared { 0 } else { mon.boosts[4] });
     // Quick Feet — PS `data/abilities.ts:quickfeet`:
     //   onModifySpe(spe, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
@@ -220,7 +225,7 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     };
     // Paradox booster on Spe (index 4): ×1.5 to speed. PS chainModify(1.5)
     // for protosynthesisspe / quarkdrivespe volatile flavors.
-    let after_paradox = if mon.boosted_stat == 4 {
+    let after_paradox = if !cleared && mon.boosted_stat == 4 {
         after_item * 3 / 2
     } else {
         after_item
@@ -233,7 +238,8 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     // suspends the boost (the latch persists until switch-out). Hawlucha /
     // Sceptile / Hitmonlee signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unburden_(Ability)>.
-    let after_unburden = if mon.ability_id == data::ability_id::UNBURDEN
+    let after_unburden = if !cleared
+        && mon.ability_id == data::ability_id::UNBURDEN
         && mon.unburden_active
         && mon.item_id == u16::MAX
     {
@@ -256,7 +262,8 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
     let after_weather = if weather_double { after_unburden * 2 } else { after_unburden };
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
-    let after_slowstart = if mon.ability_id == data::ability_id::SLOWSTART
+    let after_slowstart = if !cleared
+        && mon.ability_id == data::ability_id::SLOWSTART
         && mon.slow_start_active_turns > 0
     {
         after_weather / 2
@@ -835,6 +842,21 @@ mod tests {
 
     fn t(side: SideRef, slot: u8) -> Target {
         Target { side, slot }
+    }
+
+    #[test]
+    fn a_fainted_mons_speed_drops_its_boosts() {
+        // faintMessages clears the fainted mon's volatiles and boosts
+        // (sim/battle.ts:2563) before the re-sort reads its queued action's
+        // Speed (sim/battle.ts:2917-2924).
+        let mut b = make_battle();
+        let m = &mut b.p1.team[0];
+        m.boosts[4] = -1;
+        let dropped = effective_speed(m, false, crate::weather::Weather::None);
+        m.current_hp = 0;
+        m.fainted = true;
+        assert_eq!(effective_speed(m, false, crate::weather::Weather::None), m.stats.spe);
+        assert!(dropped < m.stats.spe);
     }
 
     #[test]
