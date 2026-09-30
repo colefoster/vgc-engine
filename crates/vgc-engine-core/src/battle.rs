@@ -4940,6 +4940,12 @@ self.trigger_emergency_exits();
         // a single `must_recharge: bool` field. Skip the entire move, clear
         // the flag, no PP deduct.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
+        // Glaive Rush's drawback ends at the user's next move attempt, first
+        // of all BeforeMove handlers (onBeforeMovePriority 100, data/moves.ts
+        // glaiverush).
+        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+            a.volatiles.remove(crate::pokemon::VolatileKind::GlaiveRush);
+        }
         if attacker.must_recharge {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
@@ -7925,6 +7931,20 @@ self.trigger_emergency_exits();
         ctx: &PerTargetContext,
         hit_sub: bool,
     ) {
+        // Glaive Rush's `self: { volatileStatus: 'glaiverush' }` lands with
+        // any hit, a Substitute's included (selfDrops skips only missed
+        // targets). PS data/moves.ts glaiverush.
+        if ctx.move_id == data::move_id::GLAIVERUSH {
+            if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
+                if a.is_alive() {
+                    let _ = a.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::GlaiveRush,
+                        turns_remaining: 0,
+                        payload: 0,
+                    });
+                }
+            }
+        }
         if hit_sub {
             return;
         }
@@ -19225,6 +19245,62 @@ mod tests {
         assert_eq!(b.p2.team[0].species().slug, "floettemega");
         assert!(b.p2.team[0].last_damage_taken > 0);
         assert_eq!(b.p2.team[0].item_id, data::item_id::FLOETTITE, "stone not knocked off");
+    }
+
+    fn glaive_rush_battle(p1_move: &str, p2_move: &str, seed: u64) -> Battle {
+        let p1 = TeamBuilder::from_json(&format!(r#"[
+            {{"species":"baxcalibur","level":50,"nature":"jolly","moves":["{p1_move}","dragonclaw"],"evs":{{"spe":252}}}}
+        ]"#)).unwrap();
+        let p2 = TeamBuilder::from_json(&format!(r#"[
+            {{"species":"blissey","level":50,"nature":"bold","moves":["{p2_move}"],"evs":{{"hp":252,"def":252}}}}
+        ]"#)).unwrap();
+        Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2)
+    }
+
+    #[test]
+    fn glaive_rush_doubles_the_damage_its_user_takes() {
+        // PS data/moves.ts glaiverush: the user gains the 'glaiverush'
+        // volatile, whose onSourceModifyDamage doubles damage it takes
+        // until its next move's onBeforeMove removes it.
+        let taken = |mv: &str| {
+            let mut b = glaive_rush_battle(mv, "tackle", 7);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            b.p1.team[0].stats.hp - b.p1.team[0].current_hp
+        };
+        let (gr, dc) = (taken("glaiverush"), taken("dragonclaw"));
+        assert!(dc > 0);
+        assert!(gr + 1 >= 2 * dc && gr <= 2 * dc + 1, "Glaive Rush {gr}, Dragon Claw {dc}");
+    }
+
+    #[test]
+    fn glaive_rush_ends_when_its_user_moves_again() {
+        let mut b = glaive_rush_battle("glaiverush", "tackle", 7);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::GlaiveRush));
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(!b.p1.team[0].volatiles.has(crate::pokemon::VolatileKind::GlaiveRush));
+    }
+
+    #[test]
+    fn moves_against_a_glaive_rush_user_cannot_miss() {
+        // The volatile's onAccuracy returns true for moves targeting it.
+        for seed in 0..30 {
+            let mut b = glaive_rush_battle("glaiverush", "focusblast", seed);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+            );
+            assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp, "seed {seed}: Focus Blast missed");
+        }
     }
 
     #[test]
