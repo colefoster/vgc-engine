@@ -447,3 +447,19 @@ fn phantom_force_strikes_through_protect() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(b.p2.team[0].current_hp < hp, "the second-turn strike lands through Protect");
 }
+
+#[test]
+fn psychic_fangs_shatters_the_targets_screens() {
+    // PS data/moves.ts psychicfangs onTryHit: the target side loses Reflect,
+    // Light Screen and Aurora Veil before the hit.
+    let mut b = singles(
+        r#"[{"species":"bruxish","level":50,"ability":"strongjaw","moves":["psychicfangs","splash"]}]"#,
+        r#"[{"species":"grimmsnarl","level":50,"ability":"prankster","moves":["reflect","lightscreen"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
+    assert!(b.p2.conditions.reflect_turns > 0);
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
+    assert_eq!(b.p2.conditions.reflect_turns, 0);
+    assert_eq!(b.p2.conditions.light_screen_turns, 0);
+}
