@@ -233,6 +233,19 @@ pub fn is_champions_format(id: &str) -> bool {
     norm.contains("champions") || rules_for(&norm).is_some_and(|r| r.id == REG_M_B.id || r.id == REG_M_C.id)
 }
 
+/// Whether a format argument selects Champions rules and data, or `None` for
+/// an unrecognised id. The bare game types `"doubles"` / `"singles"` (and an
+/// empty id) are the engine's target format, Champions; a PS id (`gen9...`)
+/// or a registered regulation follows [`is_champions_format`].
+pub fn champions_for_format_arg(id: &str) -> Option<bool> {
+    let norm = id.to_ascii_lowercase();
+    match norm.as_str() {
+        "" | "doubles" | "singles" => Some(true),
+        other if other.starts_with("gen") || rules_for(other).is_some() => Some(is_champions_format(other)),
+        _ => None,
+    }
+}
+
 /// Which rule a [`Violation`] broke. Stable enough to assert on in tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {

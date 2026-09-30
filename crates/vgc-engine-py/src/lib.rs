@@ -779,7 +779,10 @@ fn damage_result_dict<'py>(
 /// `"Garchomp @ Life Orb / Jolly / 252 Atk"`) or a bare species/alias
 /// (`"chomp"`). `move_` is a move name or alias (`"eq"`). Optional field:
 /// `weather` (`sun`|`rain`|`sand`|`snow`), `terrain`
-/// (`electric`|`grassy`|`psychic`|`misty`), `spread` (Doubles ×0.75).
+/// (`electric`|`grassy`|`psychic`|`misty`), `spread` (Doubles ×0.75),
+/// `format` (as in `Battle.from_teams`: omitted, `"doubles"` / `"singles"`
+/// or a `gen9champions*` id use Champions move data; another PS id such as
+/// `"gen9vgc2025regh"` uses standard gen 9 data).
 ///
 /// Returns a dict:
 /// ```text
@@ -796,7 +799,8 @@ fn damage_result_dict<'py>(
 ///   r = vgc_engine.calc("chomp", "lando", "eq")
 ///   r["min"], r["max"], r["multi_hit"]["label"]
 #[pyfunction]
-#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false))]
+#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false, format = None))]
+#[allow(clippy::too_many_arguments)]
 fn calc<'py>(
     py: Python<'py>,
     attacker: &str,
@@ -805,6 +809,7 @@ fn calc<'py>(
     weather: Option<&str>,
     terrain: Option<&str>,
     spread: bool,
+    format: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let atk = core::calc::QuickMon::parse(attacker)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -819,6 +824,9 @@ fn calc<'py>(
         field.terrain = parse_terrain(t)?;
     }
     field.spread = spread;
+    if let Some(id) = format {
+        field = field.format(id).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    }
 
     let r = core::calc::calc(&atk, &def, move_, field)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
