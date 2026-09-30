@@ -172,3 +172,31 @@ fn worry_seed_is_immune_on_insomnia_before_its_accuracy_roll() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(accuracy_rolls(&b, data::move_id::WORRYSEED), 0);
 }
+
+#[test]
+fn magic_powder_makes_the_target_pure_psychic() {
+    // PS data/moves.ts:magicpowder onHit: target.setType('Psychic').
+    let mut b = singles(
+        r#"[{"species":"vivillon","level":50,"ability":"compoundeyes","moves":["magicpowder"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["swordsdance"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    let (types, n) = b.p2.team[0].effective_types();
+    assert_eq!((n, types[0]), (1, 10), "pure Psychic");
+}
+
+#[test]
+fn magic_powder_is_a_powder_move_grass_types_ignore() {
+    // hitStepTryImmunity (sim/battle-actions.ts:669): powder moves fail on
+    // Grass types before the accuracy roll.
+    let mut b = singles(
+        r#"[{"species":"vivillon","level":50,"ability":"compoundeyes","moves":["magicpowder"]}]"#,
+        r#"[{"species":"venusaur","level":50,"ability":"chlorophyll","moves":["growth"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::MAGICPOWDER), 0);
+    assert_eq!(b.p2.team[0].effective_types().1, 2);
+}
