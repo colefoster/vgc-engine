@@ -674,3 +674,22 @@ fn roost_grounds_a_flying_type_for_the_rest_of_the_turn() {
     let max = b.p1.team[0].stats.hp;
     assert_eq!(b.p1.team[0].current_hp, 40 + max / 2 + max / 16);
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_earthquake_rolls_for_the_ally_first() {
+    // PS getMoveTargets for `allAdjacent` puts adjacentAllies() before
+    // adjacentFoes() (sim/pokemon.ts:808-811) and each hit step walks that
+    // list, so the ally's damage roll is the first one.
+    let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["earthquake"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#).unwrap();
+    let p2 = TeamBuilder::from_json(r#"[{"species":"heatran","level":50,"ability":"flashfire","moves":["splash"]},
+        {"species":"blissey","level":50,"ability":"naturalcure","moves":["splash"]}]"#).unwrap();
+    let mut rng = Rng::ps("sodium,0000000000000000000000000000000a").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    let first = trace.iter().find(|d| d.op == "damage").map(|d| d.target);
+    assert_eq!(first, Some(1), "p1b's roll first");
+}
