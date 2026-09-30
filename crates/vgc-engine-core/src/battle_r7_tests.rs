@@ -410,3 +410,40 @@ fn storm_throw_always_crits_without_a_crit_roll() {
     assert_eq!(draws, 0);
     assert_eq!(run(6).0, plain, "a crit ignores +6 Def");
 }
+
+#[test]
+fn feint_hits_through_protect_and_lifts_it_for_the_partner() {
+    // PS feint: no `protect` flag, so Protect's onTryHit lets it through;
+    // breaksProtect removes the target's protect volatile in
+    // hitStepBreakProtect (sim/battle-actions.ts:755), so a later move this
+    // turn connects.
+    let mut b = doubles(
+        r#"[{"species":"weavile","level":50,"ability":"pressure","moves":["feint"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["protect"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    let full = b.p2.team[0].stats.hp;
+    b.step(
+        &[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 0)))],
+        &[mv(0, 0, None), mv(1, 0, None)],
+    );
+    let lost = full - b.p2.team[0].current_hp;
+    assert!(lost > 0, "Feint and Body Slam both land");
+    assert!(!b.p2.team[0].is_protected_this_turn());
+}
+
+#[test]
+fn phantom_force_strikes_through_protect() {
+    // PS phantomforce: breaksProtect and no `protect` flag.
+    let mut b = singles(
+        r#"[{"species":"dragapult","level":50,"ability":"clearbody","moves":["phantomforce"],"evs":{"spe":252}}]"#,
+        r#"[{"species":"gengar","level":50,"ability":"cursedbody","moves":["protect","calmmind"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
+    let hp = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(b.p2.team[0].current_hp < hp, "the second-turn strike lands through Protect");
+}
