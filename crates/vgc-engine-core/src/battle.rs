@@ -1449,6 +1449,64 @@ impl Battle {
         out
     }
 
+    /// The mid-turn picks PS would request after `choice` runs, as the
+    /// `Choice::Switch` a caller appends after it for that slot (the deferred
+    /// pick `step` consumes under [`Battle::decision_phases`]). Empty when the
+    /// move asks for none.
+    ///
+    /// - Self-switch moves (U-turn, Volt Switch, Flip Turn, Parting Shot,
+    ///   Teleport, Chilly Reception, Baton Pass): the living bench.
+    /// - Revival Blessing: every fainted party member, active slot or bench
+    ///   (PS sim/side.ts:958-977); none when nothing has fainted, since the
+    ///   move then fails (data/moves.ts:15121).
+    ///
+    /// Reactive switches (Eject Button, Eject Pack, Emergency Exit) can't be
+    /// known before the turn; their pick is any living bench mon.
+    pub fn mid_turn_picks(&self, side: SideRef, choice: Choice) -> Vec<Choice> {
+        let mut out = Vec::new();
+        self.mid_turn_picks_into(side, choice, &mut out);
+        out
+    }
+
+    /// Allocation-free form of [`Battle::mid_turn_picks`] (`out` is cleared first).
+    pub fn mid_turn_picks_into(&self, side: SideRef, choice: Choice, out: &mut Vec<Choice>) {
+        out.clear();
+        let (Choice::Move { actor_slot, move_slot, .. }
+        | Choice::Terastallize { actor_slot, move_slot, .. }
+        | Choice::MegaEvolve { actor_slot, move_slot, .. }) = choice
+        else {
+            return;
+        };
+        let s = self.side(side);
+        let Some(move_id) = s
+            .active_mon(actor_slot as usize)
+            .and_then(|m| m.moves.get(move_slot as usize).copied())
+            .filter(|&id| id != u16::MAX)
+        else {
+            return;
+        };
+        match move_id {
+            data::move_id::REVIVALBLESSING => out.extend(
+                s.team
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.fainted)
+                    .map(|(i, _)| Choice::Switch { actor_slot, team_index: i as u8 }),
+            ),
+            data::move_id::UTURN
+            | data::move_id::VOLTSWITCH
+            | data::move_id::FLIPTURN
+            | data::move_id::PARTINGSHOT
+            | data::move_id::TELEPORT
+            | data::move_id::CHILLYRECEPTION
+            | data::move_id::BATONPASS => out.extend(
+                s.switch_candidates(actor_slot as usize)
+                    .map(|team_index| Choice::Switch { actor_slot, team_index }),
+            ),
+            _ => {}
+        }
+    }
+
     /// Legal choices for one active slot, written into `out` (cleared first) —
     /// the allocation-free form. `out` is reused across calls by the caller so
     /// the hot loop performs no per-slot heap traffic; if `out` has capacity
@@ -38608,6 +38666,33 @@ mod tests {
         assert_eq!(b.p1.team[1].boosts[0], 2, "the +2 Attack was passed");
         assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "Body Slam hit the incoming mon, not Ninetales");
         assert!(b.p1.team[1].substitute_hp() < 30, "the passed Substitute took Body Slam");
+    }
+
+    #[test]
+    fn revival_blessing_offers_each_fainted_party_member_as_its_pick() {
+        // PS sim/side.ts:958-977: under the `revivalblessing` slot condition
+        // the switch request accepts any fainted party member (active slot
+        // or bench) and nothing else; a U-turn's request offers the living
+        // bench.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pawmot","level":50,"moves":["revivalblessing","uturn","tackle"]},
+            {"species":"snorlax","level":50,"moves":["bodyslam"]},
+            {"species":"eevee","level":50,"moves":["tackle"]},
+            {"species":"pichu","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"chansey","level":50,"moves":["softboiled"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        let mv = |move_slot| Choice::Move { actor_slot: 0, move_slot, target: None };
+        assert!(b.mid_turn_picks(SideRef::P1, mv(0)).is_empty(), "nothing fainted: Revival Blessing fails, no pick");
+        for i in [1, 3] {
+            b.p1.team[i].current_hp = 0;
+            b.p1.team[i].fainted = true;
+        }
+        let sw = |team_index| Choice::Switch { actor_slot: 0, team_index };
+        assert_eq!(b.mid_turn_picks(SideRef::P1, mv(0)), vec![sw(1), sw(3)]);
+        assert_eq!(b.mid_turn_picks(SideRef::P1, mv(1)), vec![sw(2)], "U-turn: the living bench");
+        assert!(b.mid_turn_picks(SideRef::P1, mv(2)).is_empty(), "Tackle asks for no pick");
     }
 
     #[test]

@@ -58,3 +58,25 @@ def test_chance_budget_reports_unsearched_cells_and_is_repeatable():
     assert a['chance_cutoffs'] > 0
     assert a['provenance'] == 'chance_limit'
     assert b.turn == 0
+
+
+def test_revival_blessing_pick_is_a_fainted_party_member():
+    # PS sim/side.ts:965-977: Revival Blessing's request picks a fainted mon.
+    team = json.dumps([
+        {'species': 'pawmot', 'moves': ['revivalblessing']},
+        {'species': 'snorlax', 'moves': ['bodyslam']},
+        {'species': 'eevee', 'moves': ['tackle']},
+    ])
+    foe = json.dumps([{'species': 'chansey', 'moves': ['softboiled']}])
+    b = vgc_engine.Battle.from_teams(team, foe, format='singles', tera_allowed=False, decision_phases=True)
+    state = json.loads(b.to_json())
+    for p in state['p1']['team'][1:]:
+        p['current_hp'] = 0
+        p['fainted'] = True
+    b = vgc_engine.Battle.from_json(json.dumps(state))
+    move = b.legal_choices(0, 0)[0]
+    picks = b.mid_turn_picks(0, move)
+    assert picks == [('switch', 0, 1, -1, -1), ('switch', 0, 2, -1, -1)]
+    b.step_move([move, picks[1]], b.legal_choices(1, 0)[:1])
+    assert json.loads(b.to_json())['p1']['team'][2]['fainted'] is False
+    assert json.loads(b.to_json())['p1']['team'][1]['fainted'] is True
