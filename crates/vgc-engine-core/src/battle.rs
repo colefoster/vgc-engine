@@ -11973,6 +11973,23 @@ self.trigger_emergency_exits();
             self.weather_turns = 0;
             self.end_weather();
         }
+        // A lasting weather's onFieldResidual runs eachEvent('Weather') —
+        // for sand and snow only while not suppressed (isWeather) — which
+        // ends with eachEvent('Update') in gen 7+ (data/conditions.ts
+        // raindance / sunnyday / sandstorm / snowscape onFieldResidual;
+        // sim/battle.ts eachEvent): two speed sorts.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let upkeep = match self.weather {
+                crate::weather::Weather::None => false,
+                crate::weather::Weather::Rain | crate::weather::Weather::Sun => true,
+                w => self.cached_weather == w,
+            };
+            if upkeep {
+                self.ps_active_ties(false, "shuffle");
+                self.ps_active_ties(false, "shuffle");
+            }
+        }
         // 1. Weather damage (sand) — PS residualOrder 1.
         // Sand: 1/16 max HP per turn to every active mon not type-immune.
         // Ability / item immunities: Magic Guard blocks the damage (PS
@@ -18239,6 +18256,33 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 10, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_weather_upkeep_speed_sorts_twice() {
+        // Rain's onFieldResidual runs eachEvent('Weather'), which ends with
+        // eachEvent('Update') in gen 7+ (data/conditions.ts raindance;
+        // sim/battle.ts eachEvent). Tied Pelipper under Drizzle rain, both
+        // Protect (the second fails, moving last): PS draws 12 shuffles.
+        let mut rng = Rng::ps("sodium,0000000000000000000000000000000d").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"pelipper","level":50,"ability":"drizzle","moves":["protect"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"pelipper","level":50,"ability":"keeneye","moves":["protect"]}]"#).unwrap(),
+        );
+        assert_eq!(b.weather, crate::weather::Weather::Rain);
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 12, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
