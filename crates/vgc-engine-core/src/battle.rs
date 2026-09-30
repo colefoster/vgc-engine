@@ -6635,6 +6635,15 @@ self.trigger_emergency_exits();
                 );
             let crit = if fixed_damage.is_some() || crit_immune {
                 false
+            } else if matches!(
+                move_id,
+                data::move_id::STORMTHROW | data::move_id::FROSTBREATH | data::move_id::FLOWERTRICK
+                    | data::move_id::WICKEDBLOW | data::move_id::SURGINGSTRIKES
+            ) {
+                // `willCrit: true` (data/moves.ts): getDamage sets the crit
+                // without a roll (sim/battle-actions.ts:1638); CriticalHit
+                // (Shell Armor / Battle Armor) can still veto it.
+                true
             } else if let Some(v) = self.force_crit {
                 // `damage_only` synthesis path — bypass the RNG draw so
                 // the caller's `is_crit` flag deterministically selects
@@ -9538,6 +9547,8 @@ self.trigger_emergency_exits();
             } else {
                 let hc = if inv.fixed_dmg_snapshot.is_some() || inv.crit_immune {
                     false
+                } else if inv.move_id == data::move_id::SURGINGSTRIKES {
+                    true // willCrit, as on the first hit
                 } else if let Some(v) = self.force_crit {
                     v
                 } else {
@@ -20527,18 +20538,19 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        // First move: Wicked Blow (slot 1).
+        // First move: Aqua Jet (slot 2). (Wicked Blow always crits and can
+        // KO the Snorlax, ending the battle.)
         b.step(
-            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P2, 0)) }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p1.team[0].locked_move_slot(), 1);
-        // legal_choices now only includes slot 1.
+        assert_eq!(b.p1.team[0].locked_move_slot(), 2);
+        // legal_choices now only includes slot 2.
         let lc = b.legal_choices(SideRef::P1, 0);
         let moves_only: Vec<_> = lc.iter().filter(|c| matches!(c, Choice::Move { .. })).collect();
         for c in &moves_only {
             if let Choice::Move { move_slot, .. } = **c {
-                assert_eq!(move_slot, 1, "Choice Band locks Urshifu into Wicked Blow");
+                assert_eq!(move_slot, 2, "Choice Band locks Urshifu into Aqua Jet");
             }
         }
         assert!(!moves_only.is_empty(), "should still have the locked move available");
