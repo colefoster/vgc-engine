@@ -9277,12 +9277,36 @@ impl Battle {
         //       user and lets the move proceed regardless of the roll.
         //     - otherwise 20% chance to thaw and proceed; 80% to stay
         //       frozen and skip the move (no PP).
+        //     Champions (data/mods/champions/conditions.ts frz): `time`
+        //     starts at 3 and drops each attempt; the mon thaws at 0 with no
+        //     draw, otherwise on `randomChance(1, 4)`. The counter shares
+        //     the status-counter volatile with Sleep (see `set_sleep_turns`);
+        //     a freeze set without one counts as fresh.
+        //     PS keys the thaw roll to this mon's move use.
         if matches!(attacker.status, Status::Freeze) {
             let thaws_self = move_is_defrost(m.slug);
-            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
+            let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+            let ctx_target = match target {
+                Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+                None => crate::rng::NO_SLOT,
+            };
+            let lucky_thaw = !thaws_self && if self.champions {
+                let left = match attacker.sleep_turns() { 0 => 3, t => t } - 1;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_sleep_turns(left);
+                }
+                left == 0 || {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.range(4) == 0
+                }
+            } else {
+                self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                self.rng.range(5) == 0
+            };
             if thaws_self || lucky_thaw {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.status = Status::None;
+                    a.set_sleep_turns(0);
                 }
             } else {
                 return PreMoveOutcome::Abort;
@@ -10580,6 +10604,11 @@ impl Battle {
             }
             if matches!(status, Status::Sleep) {
                 m.set_sleep_turns(sleep_turns);
+            }
+            // Champions freeze counter (data/mods/champions/conditions.ts
+            // frz onStart: `time = 3`).
+            if matches!(status, Status::Freeze) {
+                m.set_sleep_turns(3);
             }
         }
         // PR-EOT3: status_dot bit reflects the newly-applied status.
@@ -24610,6 +24639,41 @@ mod tests {
         }
         assert!(first_damage_turn.is_some(), "should thaw + connect within 25 turns");
         assert!(matches!(b.p1.team[0].status, Status::None), "thawed");
+    }
+
+    #[test]
+    fn champions_freeze_thaws_by_the_third_move_attempt() {
+        // PS data/mods/champions/conditions.ts frz: `time` starts at 3 and
+        // drops each onBeforeMove; the mon thaws when it reaches 0, or on
+        // `randomChance(1, 4)` before that. Standard gen 9 is 1/5 with no
+        // cap (data/conditions.ts frz).
+        let run = |champions: bool, seed: u64| -> Option<u32> {
+            let p1 = TeamBuilder::from_json(
+                r#"[{"species":"pikachu","level":50,"ability":"static","item":"","nature":"modest","moves":["thunderbolt"]}]"#,
+            ).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["protect"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.champions = champions;
+            b.p1.team[0].status = Status::Freeze;
+            for turn in 1..=3u32 {
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                    &[Choice::Pass { actor_slot: 0 }],
+                );
+                if b.p1.team[0].status == Status::None {
+                    return Some(turn);
+                }
+            }
+            None
+        };
+        let champ: Vec<_> = (0..200u64).map(|s| run(true, s)).collect();
+        assert!(champ.iter().all(|t| t.is_some()), "Champions freeze outlasted 3 attempts");
+        assert!(champ.iter().any(|t| *t == Some(3)), "some Champions freeze lasts to the cap");
+        let firsts = champ.iter().filter(|t| **t == Some(1)).count();
+        assert!((30..=75).contains(&firsts), "first-attempt thaw rate ~1/4: {firsts}/200");
+        assert!((0..200u64).any(|s| run(false, s).is_none()), "gen 9 freeze has no cap");
     }
 
     #[test]
