@@ -483,6 +483,12 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
     if n < 2 {
         return; // can't tie with yourself
     }
+    // PS mode sorts the turn's queue itself, with PS's own speedSort
+    // (`Battle::ps_order_turn`).
+    #[cfg(feature = "ps-rng")]
+    if rng.is_ps() {
+        return;
+    }
     // Key that defines a genuine tie: everything the games compare EXCEPT
     // the deterministic queue-index tail. (prio, frac_pri, speed_key).
     let key = |e: &MoveEntry| (e.0, e.1, e.2);
@@ -580,17 +586,29 @@ pub(crate) fn resort_remaining(
     order: &mut ActionOrder,
     after: usize,
     keys: &TurnKeys,
-) -> ([(i8, i32, i8, i64); ACTION_INLINE_CAP], usize) {
+    #[allow(unused_variables)] ps: Option<&mut Rng>,
+) -> usize {
+    resort_from(battle, order, after + 1, keys, ps)
+}
+
+/// [`resort_remaining`] from index `start`. With a PS rng it sorts with
+/// PS's own speedSort, shuffling tie groups as PS does.
+pub(crate) fn resort_from(
+    battle: &Battle,
+    order: &mut ActionOrder,
+    start: usize,
+    keys: &TurnKeys,
+    #[allow(unused_variables)] ps: Option<&mut Rng>,
+) -> usize {
     let mut out = [(0i8, 0i32, 0i8, 0i64); ACTION_INLINE_CAP];
     let s = order.as_mut_slice();
-    let start = after + 1;
     if start >= s.len() || s.len() - start > ACTION_INLINE_CAP {
-        return (out, 0);
+        return 0;
     }
     let n = s.len() - start;
     let trick_room = battle.trick_room_turns > 0;
     for (k, a) in s[start..].iter().enumerate() {
-        let Some(move_slot) = move_slot_of(a.choice) else { return (out, 0) };
+        let Some(move_slot) = move_slot_of(a.choice) else { return 0 };
         let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
         let pri = state_priority(battle, a.side, a.actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
         let speed = battle
@@ -601,6 +619,11 @@ pub(crate) fn resort_remaining(
         let speed_key = if trick_room { speed } else { -speed };
         out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
     }
+    #[cfg(feature = "ps-rng")]
+    if let Some(rng) = ps {
+        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.ps_random_range("shuffle", a, b));
+        return n;
+    }
     // Stable insertion sort (n <= 8, heap-free): ties keep queue order.
     for i in 1..n {
         let mut j = i;
@@ -610,7 +633,55 @@ pub(crate) fn resort_remaining(
             j -= 1;
         }
     }
-    (out, n)
+    n
+}
+
+/// PS `Battle.speedSort` (sim/battle.ts:429-461): a selection sort that
+/// swaps each run of best-and-tied items into place, then Fisher-Yates
+/// shuffles the run with `random(i, end)` (sim/prng.ts shuffle). `keys`
+/// ascending = earlier. The swaps can reorder later tie groups before
+/// their own shuffle, so a stable sort would not reproduce PS's order.
+#[cfg(feature = "ps-rng")]
+pub(crate) fn ps_speed_sort<K: Ord + Copy, T: Copy>(keys: &mut [K], items: &mut [T], mut draw: impl FnMut(u32, u32) -> u32) {
+    let n = keys.len().min(items.len());
+    let mut sorted = 0;
+    while sorted + 1 < n {
+        let mut next = [0usize; 16];
+        let mut len = 1;
+        next[0] = sorted;
+        for i in sorted + 1..n {
+            match keys[next[0]].cmp(&keys[i]) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Greater => {
+                    next[0] = i;
+                    len = 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if len < next.len() {
+                        next[len] = i;
+                        len += 1;
+                    }
+                }
+            }
+        }
+        for (t, &index) in next[..len].iter().enumerate() {
+            if index != sorted + t {
+                keys.swap(sorted + t, index);
+                items.swap(sorted + t, index);
+            }
+        }
+        if len > 1 {
+            let end = sorted + len;
+            for i in sorted..end - 1 {
+                let j = draw(i as u32, end as u32) as usize;
+                if j != i {
+                    keys.swap(i, j);
+                    items.swap(i, j);
+                }
+            }
+        }
+        sorted += len;
+    }
 }
 
 /// Resolve one turn's action order.
