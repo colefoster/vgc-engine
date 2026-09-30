@@ -1240,6 +1240,18 @@ impl Pokemon {
         self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
     }
 
+    /// True when the held item can't be taken (Knock Off, Thief, Symbiosis,
+    /// Trick ...): a Mega Stone this mon Mega Evolves with, or has Mega
+    /// Evolved with. PS data/items.ts mega stones `onTakeItem`: blocked when
+    /// the holder's species is a key or a value of `item.megaStone`.
+    pub fn holds_own_mega_stone(&self) -> bool {
+        self.item_id != u16::MAX
+            && data::MEGA_STONES.iter().any(|m| {
+                m.item_id == self.item_id
+                    && (m.base_species_id == self.species_id || m.mega_species_id == self.species_id)
+            })
+    }
+
     /// PR-LC3: recompute the `move_locks` bitset from the 6 volatile-
     /// backed lock families. Called from every setter / clearer / ticker
     /// on this `Pokemon` that touches one of those families, and from the
