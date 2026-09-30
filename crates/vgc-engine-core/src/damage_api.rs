@@ -191,11 +191,9 @@ fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> (u16, u16) {
         // engine resolves the sole foe automatically.
         target: Some(Target { side: SideRef::P2, slot: 0 }),
     }];
-    let p2_choices = [Choice::Move {
-        actor_slot: 0,
-        move_slot: 0,
-        target: None,
-    }];
+    // The defender takes no action: PS getDamage runs none, and a faster
+    // defender's Splash would trigger Protean / Libero before the hit.
+    let p2_choices = [Choice::Pass { actor_slot: 0 }];
 
     let mut cursor = StepCursor::start(&p1_choices, &p2_choices);
     loop {
