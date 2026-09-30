@@ -392,39 +392,6 @@ impl DamagePipeline {
         self.current = ctx.apply_friend_guard(self.current);
     }
 
-    /// Thick Fat (Snorlax / Mamoswine / Goodra-H): defender ability
-    /// halves Fire / Ice incoming damage. Breakable.
-    /// PS `data/abilities.ts:thickfat` `onSourceModifyAtk` /
-    /// `onSourceModifySpA` chainModify(0.5) on Fire (type 1) / Ice (type 5).
-    /// Halving the offensive stat is mathematically equivalent to halving
-    /// final damage; we just do the latter.
-    #[inline]
-    pub fn apply_thick_fat(&mut self) {
-        if self.fixed || self.current == 0 {
-            return;
-        }
-        let inp = &self.inputs;
-        if inp.defender_ability_id == crate::data::ability_id::THICKFAT
-            && !inp.attacker_breaks_mold
-            && (inp.move_type == 1 || inp.move_type == 5)
-        {
-            self.current /= 2;
-        }
-    }
-
-    /// Water Bubble (defender side): halves Fire-type incoming damage.
-    /// NOT on PS's breakable list — Mold Breaker does NOT bypass.
-    /// PS `data/abilities.ts:waterbubble` chainModify(0.5) on Fire.
-    #[inline]
-    pub fn apply_water_bubble(&mut self) {
-        if self.fixed || self.current == 0 {
-            return;
-        }
-        let inp = &self.inputs;
-        if inp.defender_ability_id == crate::data::ability_id::WATERBUBBLE && inp.move_type == 1 {
-            self.current /= 2;
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2094,6 +2061,20 @@ pub(crate) fn calculate_damage_with_bp(
     // base-power one (the two round differently). Not breakable.
     if move_type == 1 && attacker.effective_ability_id() == data::ability_id::FIREMANE {
         a = (a * 6144 / 4096).max(1);
+    }
+
+    // Thick Fat / Water Bubble (defender) — PS `data/abilities.ts:thickfat`
+    // (Fire / Ice) and `waterbubble` (Fire) `onSourceModifyAtk` /
+    // `onSourceModifySpA` chainModify(0.5): the attacker's stat is halved,
+    // not the final damage (the rounding differs). Both `breakable: 1`.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>,
+    // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+    let def_ab = defender.effective_ability_id();
+    if !attacker_breaks_mold
+        && ((def_ab == data::ability_id::THICKFAT && (move_type == 1 || move_type == 5))
+            || (def_ab == data::ability_id::WATERBUBBLE && move_type == 1))
+    {
+        a = (a / 2).max(1);
     }
 
     // Huge Power / Pure Power — PS `data/abilities.ts:hugepower` / `purepower`:
