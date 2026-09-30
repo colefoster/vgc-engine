@@ -2386,6 +2386,99 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: the speed sort of `runEvent('ModifyDamage')`, which
+    /// PS's modifyDamage runs right after the damage roll
+    /// (data/mods/champions/scripts.ts:299). findEventHandlers(attacker,
+    /// 'ModifyDamage', defender) (sim/battle.ts:1035) collects, whether or
+    /// not they apply: the attacker's onModifyDamage (Neuroforce, Sniper,
+    /// Tinted Lens; Life Orb, Expert Belt), every active's
+    /// onAnyModifyDamage (Friend Guard), the defender's onSourceModifyDamage
+    /// (Filter, Fluffy, Ice Scales, Multiscale, Prism Armor, Punk Rock,
+    /// Ripen, Shadow Shield, Solid Rock; the resist berries; the Glaive
+    /// Rush volatile) and every side's Reflect / Light Screen / Aurora Veil
+    /// (onAnyModifyDamage). None has an order; Ripen has priority -1; the
+    /// subOrder is the effect type's (volatile 2, side condition 4, Ability
+    /// 7, Item 8) and the speed its holder's (none for a side condition).
+    /// Ties shuffle (resolvePriority :950, comparePriority :404).
+    #[cfg(feature = "ps-rng")]
+    fn ps_modify_damage_ties(&mut self, atk_side: SideRef, atk_slot: u8, def_side: SideRef, def_slot: u8) {
+        if !self.rng.is_ps() {
+            return;
+        }
+        use data::ability_id as A;
+        use data::item_id as I;
+        // (priority, speed, subOrder)
+        let mut h = [(0i64, 0i64, 0i64); 24];
+        let mut n = 0usize;
+        let mut push = |h: &mut [(i64, i64, i64); 24], k: (i64, i64, i64)| {
+            if n < h.len() {
+                h[n] = k;
+                n += 1;
+            }
+        };
+        let n_active = self.format().active_count();
+        if let Some(a) = self.side(atk_side).active_mon(atk_slot as usize) {
+            let spe = self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0);
+            if matches!(current_ability(a), A::NEUROFORCE | A::SNIPER | A::TINTEDLENS) {
+                push(&mut h, (0, spe, 7));
+            }
+            if matches!(a.item_id, I::LIFEORB | I::EXPERTBELT) {
+                push(&mut h, (0, spe, 8));
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.current_hp > 0) else { continue };
+                if current_ability(m) == A::FRIENDGUARD {
+                    push(&mut h, (0, self.ps_speed(side, slot).unwrap_or(0), 7));
+                }
+            }
+        }
+        if let Some(d) = self.side(def_side).active_mon(def_slot as usize) {
+            let spe = self.ps_speed(def_side, def_slot as usize).unwrap_or(0);
+            match current_ability(d) {
+                A::FILTER | A::FLUFFY | A::ICESCALES | A::MULTISCALE | A::PRISMARMOR | A::PUNKROCK
+                | A::SHADOWSHIELD | A::SOLIDROCK => push(&mut h, (0, spe, 7)),
+                A::RIPEN => push(&mut h, (-1, spe, 7)),
+                _ => {}
+            }
+            if matches!(
+                d.item_id,
+                I::BABIRIBERRY | I::CHARTIBERRY | I::CHILANBERRY | I::CHOPLEBERRY | I::COBABERRY
+                    | I::COLBURBERRY | I::HABANBERRY | I::KASIBBERRY | I::KEBIABERRY | I::OCCABERRY
+                    | I::PASSHOBERRY | I::PAYAPABERRY | I::RINDOBERRY | I::ROSELIBERRY | I::SHUCABERRY
+                    | I::TANGABERRY | I::WACANBERRY | I::YACHEBERRY
+            ) {
+                push(&mut h, (0, spe, 8));
+            }
+            if d.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush) {
+                push(&mut h, (0, spe, 2));
+            }
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            let c = self.side(side).conditions;
+            for on in [c.reflect_turns > 0, c.light_screen_turns > 0, c.aurora_veil_turns > 0] {
+                if on {
+                    push(&mut h, (0, 0, 4));
+                }
+            }
+        }
+        let list = &mut h[..n];
+        // comparePriority: priority desc, speed desc, subOrder asc.
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
     /// `ps-rng` only: resolve a spread move (allAdjacent / allAdjacentFoes)
     /// with its draws in PS's order. PS runs each hit step across every
     /// target before the next (sim/battle-actions.ts trySpreadMoveHit:
@@ -7046,6 +7139,10 @@ self.trigger_emergency_exits();
             };
             let (mut dmg, beat_up_ctx_opt) =
                 self.roll_initial_damage(&attacker, &defender, move_id, fixed_damage, inputs, fickle_override, ko_split_hp);
+            #[cfg(feature = "ps-rng")]
+            if fixed_damage.is_none() {
+                self.ps_modify_damage_ties(actor_side, actor_slot, tside, tslot);
+            }
             // Fixed-damage moves bypass EVERY damage multiplier below
             // (Life Orb / Expert Belt / Friend Guard / multihit / Thick
             // Fat / Water Bubble / Knock Off / type-resist berries) — PS
@@ -8155,6 +8252,10 @@ self.trigger_emergency_exits();
             &ctx.per_hit_inv,
             &mut ctx.pipeline,
         );
+        #[cfg(feature = "ps-rng")]
+        if hit_idx >= 1 && ctx.per_hit_inv.fixed_dmg_snapshot.is_none() {
+            self.ps_modify_damage_ties(ctx.actor_side, ctx.actor_slot as u8, ctx.tside, ctx.tslot);
+        }
 
         // Substitute interception. If the defender has a sub up, the
         // sub absorbs the hit (capped at remaining sub HP) and the

@@ -619,3 +619,24 @@ fn curious_medicine_clears_the_allys_stat_changes_on_entry() {
     // Curse ran again after the switch: only this turn's +1/+1/-1 remain.
     assert_eq!((b.p1.team[0].boosts[1], b.p1.team[0].boosts[4]), (1, -1));
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_modify_damage_shuffles_tied_screen_handlers() {
+    // PS getDamage -> modifyDamage runs runEvent('ModifyDamage') after the
+    // damage roll; its handler list holds every side's Reflect / Light Screen
+    // / Aurora Veil `onAnyModifyDamage` (subOrder 4, no speed), so two screens
+    // tie and speedSort shuffles them: one random(0, 2).
+    let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["ironhead","splash"]}]"#).unwrap();
+    let p2 = TeamBuilder::from_json(r#"[{"species":"grimmsnarl","level":50,"ability":"prankster","moves":["reflect","lightscreen"],"evs":{"hp":252}}]"#).unwrap();
+    let mut rng = Rng::ps("sodium,0000000000000000000000000000000a").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
+    b.step(&[mv(0, 1, None)], &[mv(0, 1, None)]);
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    let i = trace.iter().position(|d| d.op == "damage").unwrap_or_else(|| panic!("{:?}", trace.iter().map(|d| (d.op, d.a, d.b, d.move_id)).collect::<Vec<_>>()));
+    assert_eq!((trace[i + 1].op, trace[i + 1].a, trace[i + 1].b), ("shuffle", 0, 2), "{trace:#?}");
+}
