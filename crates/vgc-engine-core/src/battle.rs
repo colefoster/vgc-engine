@@ -2870,6 +2870,13 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            // getActionSpeed walks queue.list, which commitChoices sorted
+            // (sim/battle.ts:2921-2923).
+            let (cm, cn) = self.ps_commit_moves;
+            let rank = |a: &ScheduledAction| {
+                cm[..cn as usize].iter().position(|&(s, sl)| s == a.side as u8 && sl == a.actor_slot).unwrap_or(4)
+            };
+            acts[..k].sort_by_key(rank);
             self.ps_update_speed_all();
             self.ps_resort_get_targets(&acts[..k]);
         }
@@ -18347,6 +18354,39 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 8, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_the_first_re_sort_draws_targets_in_queue_order() {
+        // The re-sort before the first move runs getActionSpeed ->
+        // getTarget over queue.list, which commitChoices already sorted by
+        // Speed (sim/battle.ts:2921-2923), not in choice order. With one
+        // foe left, slow Snorlax's Rock Slide re-picks from 1 foe and fast
+        // Jolteon's from 2: Jolteon's pick comes first.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"moves":["rockslide"]},
+            {"species":"snorlax","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"jolteon","level":50,"moves":["rockslide"]},
+            {"species":"chansey","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000011").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.p2.team[1].current_hp = 0;
+        b.p2.team[1].fainted = true;
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Pass { actor_slot: 1 }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks: Vec<u32> = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).map(|d| d.b).collect();
+        // resolveAction (p1a, then p2a), then the re-sort (Jolteon first).
+        assert_eq!(&picks[..6], &[1, 1, 2, 2, 2, 1], "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
