@@ -21,7 +21,8 @@
 //!      runs, so the `randomChance` roll never fires. Predicate matches the
 //!      BP-boost predicate in `damage.rs` exactly.
 //!   2. **Target faint** — `alive_post == false`: the target died to the hit,
-//!      so no defender-targeted secondary lands (PS's `target.hp > 0` guard).
+//!      so no defender-targeted secondary lands; the user's own `self`
+//!      boost still does (`SelfOnly`).
 //!   3. **Substitute absorption** — `hit_sub == true`: the hit was absorbed
 //!      by a Substitute (sound + Infiltrator already cleared the flag
 //!      upstream), so opposing secondaries don't land. PS
@@ -56,6 +57,9 @@ use vgc_engine_data as data;
 pub(crate) enum SecondaryProcDecision {
     Skip,
     Run,
+    /// The target was knocked out: only the user's own (`self`) secondary
+    /// still rolls and lands.
+    SelfOnly,
 }
 
 /// Deterministic gate on the move's secondary-effect block. See module
@@ -77,13 +81,17 @@ pub(crate) fn should_run_secondary_block(
     alive_post: bool,
     hit_sub: bool,
 ) -> SecondaryProcDecision {
-    if !alive_post || hit_sub {
-        return SecondaryProcDecision::Skip;
-    }
     let sheer_force_strip = damage::attacker_has_sheer_force(attacker)
         && damage::move_is_sheer_force_boosted(move_def);
-    if sheer_force_strip {
+    if sheer_force_strip || hit_sub {
         return SecondaryProcDecision::Skip;
+    }
+    // A KO'd target stays in PS's `targets` (hp 0; `fainted` is set later,
+    // in faintMessages), so `secondaries` still rolls for it and a `self`
+    // boost lands (data/mods/champions/scripts.ts:385-388,
+    // sim/battle-actions.ts:1336-1351). Effects on the target fail.
+    if !alive_post {
+        return SecondaryProcDecision::SelfOnly;
     }
     SecondaryProcDecision::Run
 }

@@ -7374,15 +7374,18 @@ self.trigger_emergency_exits();
         // (Sheer Force ablation + target faint + sub absorption);
         // per-secondary vetoes / draws live inside
         // `apply_secondary_effect`.
-        if crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub)
-            == crate::secondary::SecondaryProcDecision::Run
-        {
+        let decision = crate::secondary::should_run_secondary_block(self, &ctx.attacker, m, alive_post, hit_sub);
+        if decision != crate::secondary::SecondaryProcDecision::Skip {
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             // The keyed context set at the loop top travelled in with the
             // mem::replace; tag the decision so percent draws here key as
             // Secondary (not the Accuracy set before the accuracy roll).
             rng.set_decision(RngDecision::Secondary);
-            apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+            if decision == crate::secondary::SecondaryProcDecision::Run {
+                apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+            } else {
+                apply_self_boost_secondary(self, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+            }
             self.rng = rng;
         }
 
@@ -15817,6 +15820,31 @@ fn self_boost_secondary(slug: &str) -> Option<(&'static [(u8, i8)], u8)> {
     })
 }
 
+/// The user's own `self` boost secondary (one `random(100)` per PS
+/// secondary, even at 100%), Serene Grace doubling its chance.
+fn apply_self_boost_secondary(
+    battle: &mut Battle,
+    attacker_side: SideRef,
+    attacker_slot: u8,
+    move_slug: &str,
+    rng: &mut Rng,
+) {
+    let Some((boosts, chance)) = self_boost_secondary(move_slug) else { return };
+    let serene_grace = battle
+        .side(attacker_side)
+        .active_mon(attacker_slot as usize)
+        .is_some_and(|a| a.is_alive() && a.effective_ability_id() == data::ability_id::SERENEGRACE);
+    let chance = if serene_grace { (chance as u16 * 2).min(100) as u8 } else { chance };
+    if rng.percent_1_100_t(chance) <= chance {
+        // Source == target (self): no Mirror Armor reflect, positive
+        // boosts only. Clamps to +6 via the standard helper.
+        battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
+        // Mirror Herb — a foe copies the user's stat raise. PS
+        // `data/items.ts:mirrorherb.onFoeAfterBoost`.
+        crate::item::try_consume_mirror_herb_on_foe_boost(battle, attacker_side, attacker_slot, boosts);
+    }
+}
+
 /// Apply a move's secondary effect to the target. Covers flinch,
 /// status (burn/para/poison), and stat-drop secondaries. PS rolls each
 /// independently and per-target.
@@ -15867,18 +15895,7 @@ fn apply_secondary_effect(
     // so this fires once per resolution. (Scale Shot's def-1/spe+1 is a
     // top-level `selfBoost`, applied once after the multihits — handled at the
     // move-resolution site, not here.)
-    if let Some((boosts, chance)) = self_boost_secondary(move_slug) {
-        if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
-            // Source == target (self): no Mirror Armor reflect, positive
-            // boosts only. Clamps to +6 via the standard helper.
-            battle.apply_boosts(attacker_side, attacker_slot, boosts, attacker_side, attacker_slot);
-            // Mirror Herb — a foe copies the user's stat raise. PS
-            // `data/items.ts:mirrorherb.onFoeAfterBoost`.
-            crate::item::try_consume_mirror_herb_on_foe_boost(
-                battle, attacker_side, attacker_slot, boosts,
-            );
-        }
-    }
+    apply_self_boost_secondary(battle, attacker_side, attacker_slot, move_slug, rng);
     // Covert Cloak — PS `data/items.ts:covertcloak`:
     //   onModifySecondaries(secondaries, target, source, move) {
     //     return secondaries.filter(s => !!s.self);
@@ -17009,6 +17026,27 @@ mod tests {
             boosted > 0 && boosted < n,
             "Charge Beam (70% secondary) self-boost must be chance-gated, got {boosted}/{n}"
         );
+    }
+
+    #[test]
+    fn self_boost_secondary_lands_when_the_hit_knocks_the_target_out() {
+        // PS data/mods/champions/scripts.ts:385-388: a KO'd target is still
+        // in `targets` (hp 0; `fainted` is set only in faintMessages), so
+        // `secondaries` (sim/battle-actions.ts:1336) rolls and applies the
+        // `self` boost (Fiery Dance, Power-Up Punch, Flame Charge ...).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"hitmonchan","level":50,"moves":["poweruppunch"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"eevee","level":50,"moves":["tackle"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(!b.p2.team[0].is_alive());
+        assert_eq!(b.p1.team[0].boosts[0], 1, "Power-Up Punch's +1 Atk on the KO");
     }
 
     #[test]
