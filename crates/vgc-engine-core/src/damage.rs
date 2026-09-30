@@ -457,7 +457,8 @@ pub fn confusion_self_hit_damage_for_bucket(
     let def = apply_boost(def_base, def_boost).max(1);
     let lvl_factor = 2 * level / 5 + 2;
     let base = (lvl_factor * 40 * atk / def / 50) + 2;
-    (base * (100 - bucket as u32) / 100).max(1) as u16
+    // Engine bucket b is the (85 + b)% roll (PS `100 - random(16)`).
+    (base * (85 + bucket as u32) / 100).max(1) as u16
 }
 
 /// Pokémon Champions / mainline gen-9 damage rounding — a faithful port of
@@ -862,7 +863,7 @@ pub(crate) fn calculate_damage_with_bp(
         data::move_id::HEATCRASH | data::move_id::HEAVYSLAM
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
             | data::move_id::GYROBALL | data::move_id::ELECTROBALL
-            | data::move_id::FLING
+            | data::move_id::FLING | data::move_id::HARDPRESS
     ) {
         return 0;
     }
@@ -925,6 +926,16 @@ pub(crate) fn calculate_damage_with_bp(
             _ => m.type_,
         };
         (ty, m.base_power as u32)
+    } else if move_id == data::move_id::HARDPRESS {
+        // PS data/moves.ts hardpress basePowerCallback:
+        // floor(floor((100 * (100 * floor(hp * 4096 / maxhp)) + 2047) / 4096) / 100) || 1.
+        let (hp, max) = (defender.current_hp as u64, defender.stats.hp.max(1) as u64);
+        let bp = ((100 * (100 * (hp * 4096 / max)) + 2047) / 4096) / 100;
+        (m.type_, bp.max(1) as u32)
+    } else if move_id == data::move_id::RAGEFIST {
+        // PS data/moves.ts:14583 ragefist basePowerCallback:
+        // `Math.min(350, 50 + 50 * pokemon.timesAttacked)`.
+        (m.type_, (50 + 50 * attacker.times_attacked as u32).min(350))
     } else if move_id == data::move_id::LASTRESPECTS {
         // Last Respects — PS data/moves.ts:lastrespects
         // `basePowerCallback: 50 + 50 * pokemon.side.totalFainted`,
@@ -1264,6 +1275,17 @@ pub(crate) fn calculate_damage_with_bp(
     // end of the block — matching PS/Champions (`runEvent` sums the chain, then
     // one `modify`). See `chain_modify` / `apply_modifier`.
     let mut bp_mod: u64 = 4096;
+    // Solar Beam / Solar Blade — PS data/moves.ts solarbeam (:17249) /
+    // solarblade onBasePower: chainModify(0.5) when the user's weather is
+    // rain, sand or snow.
+    if matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
+        && matches!(
+            ctx.weather,
+            crate::weather::Weather::Rain | crate::weather::Weather::Sand | crate::weather::Weather::Snow
+        )
+    {
+        bp_mod = chain_modify(bp_mod, 2048, 4096);
+    }
     let (tn, td) = ctx.terrain.damage_mult(move_type);
     let attacker_gets_terrain = attacker.is_grounded()
         && (matches!(ctx.terrain, crate::terrain::Terrain::Grassy) || attacker.semi_invuln == 0);
@@ -2248,9 +2270,16 @@ pub(crate) fn calculate_damage_with_bp(
     //   1.5 → 2.0, and 2.0 (Tera ×2) → 2.25.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Terastal_Phenomenon>
     // <https://bulbapedia.bulbagarden.net/wiki/Adaptability_(Ability)>.
+    // `getTypes(false, true)` is the pre-Tera `types` array (sim/pokemon.ts
+    // getTypes), which setType replaced for a Protean / Soak / Burn Up user,
+    // so the species' types only count when nothing retyped the attacker.
     let species = attacker.species();
-    let base_has_move_type = (0..species.num_types as usize)
-        .any(|i| species.types[i] == move_type);
+    let base_has_move_type = if attacker.type_override[0] != 255 {
+        attacker.type_override[0] == move_type
+            || (attacker.type_override[1] != 255 && attacker.type_override[1] == move_type)
+    } else {
+        (0..species.num_types as usize).any(|i| species.types[i] == move_type)
+    };
     let (eff_atk_types, eff_atk_num) = attacker.effective_types();
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);

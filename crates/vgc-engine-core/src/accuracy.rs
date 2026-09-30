@@ -92,7 +92,9 @@ pub(crate) fn effective_accuracy(
     // Protect-family pre-roll suppression. Mirrors the conditions checked a
     // few lines below in the caller (Wide / Quick / Mat Guard + single-
     // target Protect, with the Piercing Drill / Unseen Fist exemption).
-    let protect_blocked = (battle.side(tside).conditions.wide_guard_this_turn
+    // A move without the `protect` flag (Feint, Phantom Force) passes all of
+    // them.
+    let protect_blocked = m.blocked_by_protect && ((battle.side(tside).conditions.wide_guard_this_turn
         && matches!(m.target, 5 | 6 | 11))
         || (battle.side(tside).conditions.quick_guard_this_turn && m.priority > 0)
         || (battle.side(tside).conditions.mat_block_this_turn
@@ -105,7 +107,7 @@ pub(crate) fn effective_accuracy(
                     attacker_ability_id,
                     data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST
                 )
-                && crate::damage::move_makes_contact(m, attacker)));
+                && crate::damage::move_makes_contact(m, attacker))));
 
     if base_acc == 255 || protect_blocked {
         return AccuracyComputation { threshold: None, consumed_micle: false };

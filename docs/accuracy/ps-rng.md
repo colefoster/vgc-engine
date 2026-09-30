@@ -69,7 +69,7 @@ compute them from its own state (`battle.rs`, all `#[cfg(feature =
 |---|---|
 | `Pokemon.speed`, the cached Speed every speed sort reads: refreshed by `updateSpeed()` at `commitChoices` (every choice commit, mid-turn switch requests included), before each gen-8+ re-sort, at the residual, and for a switch-in at `insertChoice`; reset to the raw Speed stat by `setSpecies` (switch-out, faint, Mega Evolution) | `ps_speed_cache`, `ps_speed`, `ps_update_speed(_all)`, `ps_reset_speed` |
 | team preview's `commitChoices` → `queue.sort()`: team slot `i` of each side ties when their Speeds match | `ps_start_draws` |
-| `BattleQueue.resolveAction`: `getRandomTarget` for every untargeted move, then `getActionSpeed`→`getTarget` (no draw in singles) | `ps_resolve_action_draws` |
+| `BattleQueue.resolveAction`: the FractionalPriority rolls (Quick Draw, then Quick Claw), `getRandomTarget` for every untargeted move, then `getActionSpeed`→`getTarget` (no draw in singles) | `ps_resolve_action_draws`, `roll_quick_fractional` (the rolls happen here in every build) |
 | `commitChoices` → `queue.sort()` over every action (switch 103, Mega 104, Tera 106, move 200 by priority, fractional priority, cached Speed), with PS's own selection-sort `speedSort`; the moves' resulting order seeds the first re-sort, the Mega order drives `apply_megas` | same, `order::ps_speed_sort` |
 | `beforeTurn`: `eachEvent('BeforeTurn')` and the post-action `eachEvent('Update')` speed ties | same |
 | every pre-turn switch: `switchIn`'s BeforeSwitchOut `Update`, the switch action's `Update`, `runSwitch`'s `speedSort(allActive)` and its own `Update` | `apply_pre_turn_switches` hooks |
@@ -83,7 +83,8 @@ compute them from its own state (`battle.rs`, all `#[cfg(feature =
 | residual action `Update` ties | `turn_epilogue` |
 | `fieldEvent('Residual')` handler sort: ties among field, side and per-active handlers (order, priority, speed, subOrder) | `ps_residual_ties` |
 | weather upkeep: `eachEvent('Weather')` and its gen-7+ `Update` (rain and sun always; sand and snow unless suppressed) | `eot_weather_chip` |
-| spread moves (and single-target self-drop moves, Expanding Force in Psychic Terrain): PS's hit steps across all targets (accuracy, then crit and damage, selfDrops, secondaries, DamagingHit procs) | `ps_spread_window` + the `PsRng` reorder window |
+| spread moves (and single-target self-drop moves, Expanding Force in Psychic Terrain): PS's hit steps across all targets (accuracy, then crit and damage, selfDrops, secondaries, DamagingHit procs), each step walking getMoveTargets' order (ally before foes) | `ps_spread_window` + the `PsRng` reorder window (tags = step × 8 + target rank) |
+| `runEvent('ModifyDamage')` after each damage roll: speed sort of the attacker's, every active's `onAny`, the defender's `onSource` and every side's screen handlers (priority, Speed, subOrder) | `ps_modify_damage_ties` |
 | `secondaries` rolls for a target the hit KO'd or a Substitute (`null`); a KO'd target's Dire Claw `sample(3)` / Tri Attack `random(3)` | `ps_target_secondary_rolls` |
 | gen-8+ re-sort covers fainted users' queued moves; resolveAction's getTarget for chosen targets | `ps_after_move_action`, `ps_resolve_action_draws` |
 | Expanding Force's two `useMoveInner` re-picks | Expanding Force arm |
@@ -102,27 +103,30 @@ pick. See [`fix-log.md`](fix-log.md), round 6.
 
 ## What is not emulated, and why
 
-After round 6 the seeded differential has 804 of 1,300 battles fully
-clean (61.8%) and 8572/9066 turns matched (round 5: 488, 5895/6705).
-192 more battles diverge in state with every draw aligned up to that
-point (mechanics, not draw order). The first divergent PS draw in the
-remaining 362 (`accuracy psrng`, stricter walk: same turn, same span):
+After round 7 the seeded differential has 974 of 1,300 battles fully
+clean (74.9%) and 9801/10125 turns matched (round 6: 804, 8572/9066). Round
+7 added the ModifyDamage handler sort and PS's target order inside the
+spread-hit window, and moved the Quick Draw / Quick Claw rolls to
+resolveAction in every build (owner-approved; commitChoices' sort now uses
+their +0.1). The rest of the gain came from mechanics fixes (see
+[`fix-log.md`](fix-log.md), round 7). Where the first divergence is a PS
+draw (319 battles):
 
 | first divergent PS draw | battles | why the engine can't (yet) match it |
 |---|---|---|
-| `hitStepAccuracy` | 99 | an accuracy roll the engine doesn't make, mostly because the move itself is missing or different: Octolock, Simple Beam, Entrainment, Worry Seed and Magic Powder are unimplemented (no roll, no effect); Dragon Darts rolls once per target in PS; Sucker Punch / Protect-family fail differently; Quick Claw's roll is drawn at queue build, not in `resolveAction` |
-| runAction `eachEvent('Update')` ties | 33 | mostly downstream of a missed draw in the same action (a status move the engine resolves differently) |
-| `getTarget` → `getRandomTarget` | 32 | re-picks for queued moves whose PS target validity differs (smart-target and ally-target edge cases) |
-| `secondaries` | 30 | secondaries PS rolls or skips differently (Shield Dust / Covert Cloak on spread moves, Sheer Force, multi-hit secondaries) |
-| `ModifyDamage` handler sort (`runEvent`) | 28 | PS speed-sorts the ModifyDamage handlers (screens, Friend Guard, items, abilities); ties need the full handler list with PS's order/subOrder/effectOrder, not modelled |
-| Residual handler sort | 27 | handlers not in `ps_residual_ties`' list |
-| resolveAction `getRandomTarget` | 27 | nested `resolveAction` for `beforeTurnMove` / `priorityChargeMove` actions (Focus Punch, Pursuit …) and targets the engine counts differently |
-| crit | 20 | multi-hit and Dragon Darts hit steps |
-| others | ~66 | long tail |
+| `hitStepAccuracy` | 87 | mostly where the engine draws a getTarget re-pick first: target-validity edge cases (smart / ally targets, fainted targets) |
+| `eachEvent` ties (runAction `Update`, weather) | 40 | downstream of a missed draw in the same action |
+| `getTarget` → `getRandomTarget` | 37 | re-picks for queued moves whose PS target validity differs |
+| Residual handler sort | 26 | handlers not in `ps_residual_ties`' list |
+| `secondaries` | 22 | secondaries PS rolls or skips differently (Sheer Force, multi-hit) |
+| resolveAction `getRandomTarget` | 22 | nested `resolveAction` for `beforeTurnMove` / `priorityChargeMove` actions |
+| crit | 21 | multi-hit and spread-hit steps the window doesn't reorder |
+| commitChoices `queue.sort` ties | 14 | ModifyPriority / fractional keys the engine doesn't model |
+| StallMove (`onStallMove`) | 12 | Protect-family success rolls |
 
-The engine's Quick Claw / Quick Draw rolls stay where the engine draws
-them (queue build), and commitChoices' sort treats their fractional
-priority as 0; matching PS would move a draw across `resolveAction`.
+74 more battles diverge in state with every draw aligned to that point.
+The walk compares draw kinds and spans, not values, so a draw the engine
+gives to the wrong target shows up there too.
 
 The trace tools show exactly where a given battle breaks:
 

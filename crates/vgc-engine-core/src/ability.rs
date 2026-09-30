@@ -440,12 +440,10 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             continue;
         }
         // Intimidate's Atk drop — source is the Intimidate user.
+        let before = battle.side(opp).active_mon(s as usize).map_or([0; 7], |t| t.boosts);
         battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
-        crate::item::try_consume_white_herb(battle, opp, s);
-        // Eject Pack — PS `data/items.ts:ejectpack.onAfterEachBoost` fires on
-        // any stat drop regardless of source.
-        let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
-        react_to_opposing_stat_drop(battle, opp, s);
+        // Defiant / Competitive, Eject Pack, then White Herb.
+        battle.after_foe_drop(opp, s, before, true);
         // Rattled — PS `data/abilities.ts:rattled` onAfterBoost grants +1 Spe
         // on an Intimidate target (stacks with the drop).
         if target_ability == data::ability_id::RATTLED {
@@ -463,6 +461,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Reading `effective_ability_id()` below makes the dispatch honor the
     // flag for free.
     recompute_neutralizing_gas(battle);
+    on_start(battle, side, slot);
+}
+
+/// The ability's `onStart`, which PS also runs when a move hands a mon a
+/// new ability (`Pokemon.setAbility`, sim/pokemon.ts:1943).
+pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     let ability_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) => m.effective_ability_id(),
         None => return,
@@ -568,6 +572,16 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // only adjacent ally is the partner slot. Capped at the ally's max
     // HP (PS `heal()` clamps). No effect if the ally is fainted.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Hospitality_(Ability)>.
+    // Curious Medicine — PS data/abilities.ts:772 onStart: every adjacent
+    // ally's stat stages are cleared.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Curious_Medicine_(Ability)>.
+    if ability_id == data::ability_id::CURIOUSMEDICINE && battle.format().active_count() > 1 {
+        if let Some(ally) = battle.side_mut(side).active_mon_mut((slot ^ 1) as usize) {
+            if ally.is_alive() {
+                ally.boosts = [0; 7];
+            }
+        }
+    }
     if ability_id == data::ability_id::HOSPITALITY && battle.format().active_count() > 1 {
         let partner_slot = if slot == 0 { 1 } else { 0 };
         if let Some(ally) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
@@ -1514,6 +1528,58 @@ pub fn on_damaging_hit(
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 15 {
             // Justified self-boost (+1 Atk) on incoming Dark move.
+            battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
+        }
+    }
+    // Gooey / Tangling Hair — PS data/abilities.ts:1642 gooey (tanglinghair is
+    // the same handler) onDamagingHit: on contact,
+    // `this.boost({spe: -1}, source, target, null, true)`, a foe-sourced drop
+    // on the attacker. Fires on a KO hit too.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gooey_(Ability)>.
+    if battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| matches!(m.effective_ability_id(), data::ability_id::GOOEY | data::ability_id::TANGLINGHAIR))
+    {
+        let contact = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a));
+        if contact {
+            battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
+        }
+    }
+    // Seed Sower — PS data/abilities.ts:4119 seedsower onDamagingHit:
+    // this.field.setTerrain('grassyterrain'), set by the holder (Terrain
+    // Extender), a KO hit included.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Seed_Sower_(Ability)>.
+    if battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| m.effective_ability_id() == data::ability_id::SEEDSOWER)
+    {
+        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot);
+    }
+    // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
+    // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
+    // the move's type after type changes (Weather Ball in sun).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thermal_Exchange_(Ability)>.
+    if target_alive
+        && battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|m| m.effective_ability_id() == data::ability_id::THERMALEXCHANGE)
+    {
+        let move_type = match battle.side(attacker_side).active_mon(attacker_slot as usize) {
+            Some(a) => crate::damage::move_type_in_ctx(a, move_id, &crate::damage::DamageContext {
+                weather: battle.effective_weather_for_pair(attacker_side, attacker_slot, target_side, target_slot),
+                terrain: battle.terrain,
+                champions: battle.champions,
+                ..crate::damage::DamageContext::default()
+            }),
+            None => data::MOVES[move_id as usize].type_,
+        };
+        if move_type == 1 {
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }

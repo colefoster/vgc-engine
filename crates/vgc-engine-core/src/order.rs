@@ -287,6 +287,26 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
 /// (`sim/battle.ts:404`) has the analogous `subOrder`/`effectOrder` tail.
 type MoveEntry = (i32, i8, i64, u16, ScheduledAction);
 
+/// PS's `FractionalPriority` rolls for one move action: Quick Draw, then
+/// Quick Claw unless Quick Draw fired. Returns whether either fired (+0.1).
+pub(crate) fn quick_fractional_roll(battle: &Battle, side: SideRef, actor_slot: u8, move_id: u16, rng: &mut Rng) -> bool {
+    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return false };
+    let status = move_id == u16::MAX || data::MOVES[move_id as usize].category == 2;
+    if m.effective_ability_id() == data::ability_id::QUICKDRAW && !status {
+        // Keyed by the holder (RngDecision::Ability, docs/conformance-key-contract.md).
+        let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+        if rng.ability_chance(battle.turn() + 1, holder, data::ability_id::QUICKDRAW, 3, 10) {
+            return true;
+        }
+    }
+    if m.item_id == data::item_id::QUICKCLAW
+        && !(status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
+    {
+        return rng.range(5) == 0;
+    }
+    false
+}
+
 /// Compute the [`MoveEntry`] sort key for one queued move/terastallize.
 ///
 /// Draws NO speed-tie RNG (that now happens once per genuine tie group in
@@ -341,23 +361,9 @@ fn schedule_move(
             } else {
                 base_pri
             };
-            // Quick Claw: PS data/items.ts:4984 onFractionalPriority —
-            // when the holder has a priority-≤0 move queued,
-            // `randomChance(1, 5)` (20%) bumps priority by +0.1. We
-            // approximate with a +1 integer bump; the draw fires every
-            // turn the move qualifies regardless of outcome, so PsGen5
-            // oracle stays aligned with PS's recorded `Chance(1, 5)`
-            // events.
-            //
-            // PS also gates Mycelium Might + Status moves out of the
-            // bonus, but the draw still happens — we skip the gate for
-            // simplicity since Mycelium Might + Quick Claw is vanishingly
-            // rare in the corpus.
-            let pri_after_item = if m.item_id == data::item_id::QUICKCLAW && pri_after_ability <= 0 {
-                if rng.range(5) == 0 { pri_after_ability + 1 } else { pri_after_ability }
-            } else {
-                pri_after_ability
-            };
+            // Quick Claw and Quick Draw are fractional priority (+0.1): see
+            // `quick` below.
+            let pri_after_item = pri_after_ability;
             // Grassy Glide — PS data/moves.ts:grassyglide
             //   onModifyPriority(priority, source, target, move) {
             //     if (this.field.isTerrain('grassyterrain') && source.isGrounded()) {
@@ -414,28 +420,23 @@ fn schedule_move(
             } else {
                 0i8
             };
-            // Quick Draw — PS `data/abilities.ts:3725`:
-            //   onFractionalPriorityPriority: -1,
-            //   onFractionalPriority(priority, pokemon, target, move) {
-            //     if (move.category !== "Status" && this.randomChance(3, 10))
-            //       return 0.1;
-            //   }
-            // 30% chance the holder acts first within its priority bracket,
-            // independent of Speed, on a non-Status move. We model the +0.1
-            // bump as the "first in bracket" sub-bucket (frac = -1), the same
-            // mechanism Custap Berry uses. One `percent_1_100()` draw per
-            // eligible turn (Quick Draw holder + non-Status move), consumed
-            // unconditionally so the RNG stream stays aligned regardless of
-            // outcome. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Quick_Draw_(Ability)>.
-            let frac = if m.ability_id == data::ability_id::QUICKDRAW && category != 2 {
-                // PS `randomChance(3, 10)`, keyed by the holder
-                // (RngDecision::Ability, docs/conformance-key-contract.md).
-                let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
-                if rng.ability_chance(battle.turn() + 1, holder, data::ability_id::QUICKDRAW, 3, 10) { -1i8 } else { frac }
-            } else {
-                frac
+            // Quick Draw, then Quick Claw: PS's FractionalPriority handlers
+            // (onFractionalPriorityPriority -1 and -2, so Quick Draw runs
+            // first). Each returns 0.1, which we model as the "first in
+            // bracket" sub-bucket as for Custap Berry.
+            //   Quick Draw (data/abilities.ts:3735): a non-Status move,
+            //   `randomChance(3, 10)`.
+            //   Quick Claw (data/items.ts:4989): no roll for a Mycelium
+            //   Might holder's Status move; otherwise `priority <= 0 &&
+            //   randomChance(1, 5)`, where `priority` is the event's relay
+            //   (0, or Quick Draw's 0.1), not the move's priority
+            //   (sim/battle-queue.ts:249).
+            // Inside a step the rolls were made as the choices committed.
+            let quick = match battle.quick_frac {
+                Some(q) => q[side as usize][(actor_slot as usize).min(1)],
+                None => quick_fractional_roll(battle, side, actor_slot, mid, rng),
             };
+            let frac = if quick { -1i8 } else { frac };
             // Mycelium Might — PS `data/abilities.ts:myceliummight`. A Status
             // move used by a Mycelium Might holder always moves LAST within
             // its priority bracket (`-0.1` fractional priority → our `+1`
