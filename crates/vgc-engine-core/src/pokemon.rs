@@ -423,6 +423,10 @@ pub enum VolatileKind {
     /// `turns_remaining: 0` (indefinite); cleared on switch-out
     /// (`volatiles.clear()`). Payload unused.
     NoRetreat,
+    /// Octolock (PS `data/moves.ts:octolock` condition): traps the holder
+    /// while its source is active and lowers Def / SpD at each residual.
+    /// Payload: `side << 16 | slot << 8 | team index` of the source.
+    Octolock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -814,6 +818,11 @@ pub struct Pokemon {
     /// on switch-in with `effectState.loafing = false`; we initialise
     /// to false (uses move on turn 1) and flip in the before-move arm.
     pub truant_loafing: bool,
+    /// PS `timesAttacked`: hits taken from moves since switching in (Rage
+    /// Fist's power). Champions resets it in clearVolatile
+    /// (data/mods/champions/scripts.ts:169), i.e. on every switch.
+    #[serde(default)]
+    pub times_attacked: u8,
     /// Runtime battle-type override (Protean / Libero / Color Change /
     /// Reflect Type / Conversion). `[255, 255]` = no override (use the
     /// species' innate types). Otherwise `type_override[0]` is the
@@ -982,6 +991,7 @@ impl Pokemon {
             volatiles: VolatileSet::default(),
             slow_start_active_turns: 0,
             truant_loafing: false,
+            times_attacked: 0,
             type_override: [255, 255],
             protean_used: false,
             disguise_busted: false,
@@ -1068,15 +1078,27 @@ impl Pokemon {
         } else if self.type_override[0] == TYPELESS {
             // Burn Up on a pure Fire mon: PS '???', no type at all.
             ([0, 0], 0)
-        } else if self.type_override[0] != 255 {
-            // Runtime type override (Protean / Color Change / ...).
-            if self.type_override[1] == 255 {
-                ([self.type_override[0], 0], 1)
-            } else {
-                (self.type_override, 2)
-            }
         } else {
-            (s.types, s.num_types)
+            let (types, n) = if self.type_override[0] != 255 {
+                // Runtime type override (Protean / Color Change / ...).
+                if self.type_override[1] == 255 {
+                    ([self.type_override[0], 0], 1)
+                } else {
+                    (self.type_override, 2)
+                }
+            } else {
+                (s.types, s.num_types)
+            };
+            // Roost's volatile drops Flying for the turn (PS data/moves.ts
+            // roost condition onType); with nothing left, getTypes returns
+            // Normal (sim/pokemon.ts getTypes, gen 5+).
+            if self.volatiles.has(VolatileKind::Roost) && types[..n as usize].contains(&9) {
+                return match (n, types) {
+                    (2, [9, other]) | (2, [other, 9]) => ([other, 0], 1),
+                    _ => ([0, 0], 1),
+                };
+            }
+            (types, n)
         }
     }
 
@@ -1094,10 +1116,15 @@ impl Pokemon {
     /// every Fire type becomes '???'. A Fire/X mon is left X; a pure Fire
     /// mon is left typeless ([`TYPELESS`]).
     pub fn lose_fire_type(&mut self) {
+        self.lose_type(1);
+    }
+
+    /// Burn Up / Double Shock's self effect: every `ty` type becomes '???'.
+    pub fn lose_type(&mut self, ty: u8) {
         let (types, n) = self.effective_types();
         match (n, types) {
-            (2, [1, other]) | (2, [other, 1]) => self.set_type_override(other, None),
-            (1, [1, _]) => self.type_override = [TYPELESS, 255],
+            (2, [a, other]) | (2, [other, a]) if a == ty => self.set_type_override(other, None),
+            (1, [a, _]) if a == ty => self.type_override = [TYPELESS, 255],
             _ => {}
         }
     }
@@ -2169,8 +2196,10 @@ impl Pokemon {
         // unaffected. So a Flying-type Ring Target holder grounds out, while
         // a Levitate / Air Balloon Ring Target holder stays airborne.
         let negate_type_immunity = self.effective_item_id() == data::item_id::RINGTARGET;
-        let s = self.species();
-        let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
+        // PS isGrounded reads hasType('Flying'): the current types (Tera,
+        // Soak, Roost), not the species'.
+        let (types, n) = self.effective_types();
+        let flying = types[..n as usize].contains(&9);
         if flying && !negate_type_immunity {
             return false;
         }

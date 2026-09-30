@@ -471,12 +471,13 @@ mod tests {
                 .unwrap();
             assert!(new_hp < orig_hp, "branch HP {new_hp} must drop from {orig_hp}");
         }
-        // Bucket 0 (100%) deals the most damage; bucket 15 (85%) the
-        // least. So branch 0's HP <= branch 15's HP, monotonically.
+        // Bucket b is the (85 + b)% roll, as for every damage roll: bucket 0
+        // deals the least damage, bucket 15 the most. So HP is
+        // non-increasing across the buckets.
         for w in frontier.windows(2) {
             let hp_a = w[0].0.side(SideRef::P1).active_mon(0).unwrap().current_hp;
             let hp_b = w[1].0.side(SideRef::P1).active_mon(0).unwrap().current_hp;
-            assert!(hp_a <= hp_b, "bucket {} HP {} > next bucket HP {}", 0, hp_a, hp_b);
+            assert!(hp_a >= hp_b, "bucket HP {} < next bucket HP {}", hp_a, hp_b);
         }
     }
 
