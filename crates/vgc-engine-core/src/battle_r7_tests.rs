@@ -247,3 +247,47 @@ fn octolock_ends_when_its_user_leaves() {
     assert_eq!(b.p2.team[0].boosts[1], -1, "no drop once the user left");
     assert!(!b.is_trapped(SideRef::P2, 0));
 }
+
+const DARTS_P1: &str = r#"[{"species":"dragapult","level":50,"ability":"clearbody","nature":"jolly","moves":["dragondarts"],"evs":{"spe":252}},
+    {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#;
+
+#[test]
+fn dragon_darts_hits_each_foe_once_with_an_accuracy_roll_apiece() {
+    // PS dragondarts `smartTarget` (data/moves.ts:4118): getSmartTargets
+    // (sim/pokemon.ts:757) targets the chosen foe and its ally; each target
+    // rolls accuracy in hitStepAccuracy, then hit 1 lands on the first and
+    // hit 2 on the second (data/mods/champions/scripts.ts:467).
+    let mut b = doubles(
+        DARTS_P1,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["swordsdance"]},
+            {"species":"dragonite","level":50,"ability":"innerfocus","moves":["dragondance"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::DRAGONDARTS), 2);
+    let hit = |m: &Pokemon| m.current_hp < m.stats.hp;
+    assert!(hit(&b.p2.team[0]) && hit(&b.p2.team[1]), "one dart each");
+}
+
+#[test]
+fn dragon_darts_sends_both_hits_at_the_ally_of_an_immune_target() {
+    // A Fairy target fails hitStepTypeImmunity; `smartTarget` turns off
+    // (sim/battle-actions.ts:607) and the other foe takes both hits.
+    let run = |p2: &str| {
+        let mut b = doubles(DARTS_P1, p2, 1);
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+        (b.p2.team[0].stats.hp - b.p2.team[0].current_hp, b.p2.team[1].stats.hp - b.p2.team[1].current_hp)
+    };
+    let (fairy, other) = run(
+        r#"[{"species":"clefable","level":50,"ability":"magicguard","moves":["calmmind"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+    );
+    let (_, single) = run(
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["swordsdance"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+    );
+    assert_eq!(fairy, 0);
+    assert!(single > 0);
+    assert!(other > single * 3 / 2, "two darts ({other}) vs one ({single})");
+}
