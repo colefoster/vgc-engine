@@ -7683,17 +7683,30 @@ self.trigger_emergency_exits();
         if prankster_boosted && opposing_targeting {
             let opp = actor_side.opposing();
             let n = self.format().active_count() as u8;
-            let all_targets_dark = (0..n)
-                .filter_map(|slot| self.side(opp).active_mon(slot as usize))
-                .filter(|t| t.is_alive())
-                .all(|t| {
-                    let s = t.species();
-                    (0..s.num_types as usize).any(|i| s.types[i] == 15) // Dark = 15
-                });
-            let any_alive_target = (0..n)
-                .filter_map(|slot| self.side(opp).active_mon(slot as usize))
-                .any(|t| t.is_alive());
-            if any_alive_target && all_targets_dark {
+            let is_dark = |d: &Pokemon| {
+                let (types, nt) = d.effective_types();
+                types[..nt as usize].contains(&15) // Dark = 15
+            };
+            // hitStepTryImmunity (sim/battle-actions.ts:674) is per target:
+            // a single-target move aimed at a living foe fails exactly when
+            // that foe is Dark.
+            let chosen = target
+                .filter(|t| t.side == opp && matches!(m.target, 0 | 4 | 10))
+                .and_then(|t| self.side(opp).active_mon(t.slot as usize).filter(|d| d.is_alive()));
+            let blocked = match chosen {
+                Some(d) => is_dark(d),
+                None => {
+                    let all_targets_dark = (0..n)
+                        .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                        .filter(|t| t.is_alive())
+                        .all(is_dark);
+                    let any_alive_target = (0..n)
+                        .filter_map(|slot| self.side(opp).active_mon(slot as usize))
+                        .any(|t| t.is_alive());
+                    any_alive_target && all_targets_dark
+                }
+            };
+            if blocked {
                 return;
             }
         }
