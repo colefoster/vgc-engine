@@ -8146,7 +8146,20 @@ self.trigger_emergency_exits();
                 #[cfg(feature = "ps-rng")]
                 if rng.is_ps() {
                     for _ in 0..self.ps_target_secondary_rolls(m, ctx.tside, ctx.tslot, hit_sub, &ctx.attacker) {
-                        let _ = rng.percent_1_100();
+                        let roll = rng.percent_1_100();
+                        // A KO'd target still runs the secondary's onHit:
+                        // Dire Claw's sample(3) / Tri Attack's random(3)
+                        // (data/mods/champions/moves.ts direclaw,
+                        // data/moves.ts triattack). A Substitute's `null`
+                        // target runs no effect.
+                        let chance = match m.slug {
+                            "direclaw" => if self.champions { 30 } else { 50 },
+                            "triattack" => 20,
+                            _ => 0,
+                        };
+                        if !hit_sub && roll <= chance {
+                            let _ = rng.ps_random_range("sample", 0, 3);
+                        }
                     }
                 }
             }
@@ -18453,6 +18466,38 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 14, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_dire_claw_samples_its_status_on_a_knocked_out_target() {
+        // PS runs a secondary's onHit on a target the hit knocked out, so
+        // Dire Claw's passed roll still draws sample(['psn','par','slp'])
+        // (data/moves.ts direclaw).
+        let mut samples = 0;
+        let mut passed = 0;
+        for seed in 0..24u32 {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"sneasler","level":50,"moves":["direclaw"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]},{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap();
+            let mut rng = Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+            rng.ps_mut().unwrap().enable_trace();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+            b.p2.team[0].current_hp = 1;
+            let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+            b.rng_mut().ps_mut().unwrap().enable_trace();
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            if !b.p2.team[0].fainted {
+                continue;
+            }
+            let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+            passed += trace.iter().filter(|d| d.decision == "secondary" && d.op == "percent" && d.result < 50).count();
+            samples += trace.iter().filter(|d| d.op == "sample").count();
+        }
+        assert!(passed > 0);
+        assert_eq!(samples, passed);
     }
 
     #[cfg(feature = "ps-rng")]
