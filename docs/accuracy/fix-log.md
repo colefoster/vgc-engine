@@ -477,3 +477,156 @@ with `ps-rng` both off and on.
   - Confusion 44% and Storm Throw 40%;
   - Dragon Darts 36%, Feint 33%, Stockpile 29%;
   - Roost 25% and Rage Fist 18%.
+
+---
+
+# Round 5 (2026-09-30, branch `mechanics-fixes-5`)
+
+Same 1,298-battle sample. The work directory was lost mid-round, so the
+PS battles were regenerated from the same replay sample, jobs and seeds
+(`recon.js` → `ps-battle.js`, PS `a5df8274`); the round-4 end reproduced
+exactly (894 clean, 9142/9546 turns; seeded 15 clean, 1524/2807).
+
+Result: forced-RNG fully clean battles **68.9% → 71.9%**, per-turn
+agreement **95.8% → 96.3%**. Seeded differential (`ps-rng`) fully clean
+**15 → 488 (1.2% → 37.5%)**, turns **1524/2807 → 5895/6705**.
+
+## API change: Revival Blessing's pick (owner-approved)
+
+`931d84d`. PS asks for Revival Blessing's target in a mid-turn switch
+request whose valid answers are the side's fainted Pokémon, active slot
+or bench (`sim/side.ts:958-977`). The engine took the pick as a deferred
+`Switch` after the move but never advertised it, so API-driven callers
+never supplied one and it revived the first fainted mon.
+
+- `Battle::mid_turn_picks(side, choice)` / `mid_turn_picks_into`: the
+  `Switch` picks PS would request after a slot's choice. Revival Blessing:
+  each fainted party member (none when nothing fainted, since the move
+  fails). Self-switch moves: the living bench.
+- `vgc-solver` `joint_actions` expands picks through it (it had a slug list
+  of pivot moves, which also missed Tera pivots).
+- pyo3: `Battle.mid_turn_picks(side, choice_tuple)` → switch tuples.
+- Without a pick, Revival Blessing still revives the first fainted mon
+  (PS's `autoChoose`).
+
+### Caller impact (read-only survey)
+
+- **mimikyu: no change needed.** Nothing passes `decision_phases=True`,
+  so there are no replacement phases or `[move, switch]` slot lists.
+  Latent if it ever opts in: `jev_policy.py:1137-1145` filters switches
+  to living team indices (would drop revive picks);
+  `bss_search_rollout_prototype.py:109-122` looks switch targets up in
+  the bench.
+- **metagame-lab** (`decision_phases=True` in `src/rust_worker.py:64`):
+  - `rust_worker.py:41-49` `command()` joins every tuple of a joint with
+    `", "`, so `[move 0, switch 2]` renders as two slots' commands. The
+    trailing switch is the same slot's mid-turn pick (for Revival
+    Blessing, a revive).
+  - `public/app.js:47-52` `actionLabel` splits on `,` by slot, so it
+    mislabels the pick as slot 1, and says "Switch to" for a revive.
+  - `snapshot()`'s `phase: 'switch' if needs_replacements()` is only a
+    label; it stays correct for round 4's Emergency Exit change (a living
+    mon forced out), where living slots get `pass`.
+  - `step_move(*joints)` and `check-engine.py`'s joint checks need no
+    change.
+
+## Fixes (round 5)
+
+| # | bug | PS reference | tests added | commit | battles moved |
+|---|---|---|---|---|---|
+| F1 | Self-boost secondaries (Fiery Dance, Power-Up Punch, Flame Charge ...) lost when the hit KOs the target | `data/mods/champions/scripts.ts:385-388`; `sim/battle-actions.ts:1336-1351` | unit `self_boost_secondary_lands_when_the_hit_knocks_the_target_out` | `44f2097` | 6 |
+| F2 | Resist berries used the move's data type and the species' types (Pixilate Hyper Voice vs Roseli; Tera) | `data/items.ts` roseliberry et al.; `data/abilities.ts` pixilate | units `resist_berry_checks_the_moves_type_after_pixilate`, `resist_berry_checks_effectiveness_against_the_tera_type` | `027772c` | 4 |
+| F3 | A hit's pinch berry was eaten before Knock Off took it | `data/mods/champions/scripts.ts:407-416, :538`; `data/moves.ts:9975` | unit `knock_off_removes_a_sitrus_berry_before_it_can_be_eaten` | `8974684` | 3 |
+| F4 | Symbiosis handed over Floette-Eternal's Floettite (so it never Mega Evolved); a Mega-Evolved holder's stone could be knocked off | `data/items.ts:2189-2197`; `data/abilities.ts:4837-4851` | units `symbiosis_cannot_hand_over_the_holders_own_mega_stone`, `knock_off_cannot_remove_a_mega_evolved_holders_stone` | `e7fb7ab` | 15 |
+| F5 | Darkest Lariat / Sacred Sword / Chip Away / Nihil Light applied Def and evasion boosts | `data/moves.ts` (`ignoreDefensive`, `ignoreEvasion`); `sim/battle-actions.ts:719, :1691` | units `darkest_lariat_ignores_the_targets_defense_boosts`, `darkest_lariat_ignores_the_targets_evasion` | `6ce1265` | 4 |
+| F6 | The sleep (and Champions freeze) counter was wiped on switch-out, so a mon woke on its first attempt back | `data/conditions.ts:47-81`; `data/mods/champions/conditions.ts` | unit `sleep_counter_survives_switching_out` | `83e7d7a` | 8 (1 regressed, fixed by F7) |
+| F7 | Sleep from a secondary (Dire Claw, Relic Song ...) or Effect Spore drew its duration from the placeholder RNG | `data/conditions.ts:59`; `data/mods/champions/moves.ts` direclaw | unit `sleep_from_a_secondary_draws_its_duration_from_the_battle_rng` | `d2f60b2` | 2 |
+| F8 | Secondaries ran after the DamagingHit reactions and Knock Off (Poison Touch beat Nuzzle's paralysis) | `data/mods/champions/scripts.ts:385-416` | unit `move_secondary_lands_before_the_attackers_poison_touch` | `0746bba` | 7 (1 regressed, see below) |
+| F9 | Self-boost secondaries skipped through a Substitute | `data/mods/champions/scripts.ts:350-353` | unit `self_boost_secondary_lands_through_a_substitute` | `ec53afc` | 0 |
+| F10 | Poison Touch hit Shield Dust / Covert Cloak holders and skipped its roll on a KO | `data/abilities.ts` poisontouch | unit `covert_cloak_blocks_poison_touch` | `6923fcf` | 1 |
+| F11 | Throat Chop, Salt Cure and Psychic Noise skipped their 100% secondary roll | `sim/battle-actions.ts:1343` | ps-rng unit `ps_rng_a_certain_secondary_still_rolls` | `169ea5b` | 0 (draw only) |
+
+The Encore battles triaged in round 4 were F1 and F2; each fix covers
+the whole class (every `self` secondary; every type-changing effect via
+`move_type_in_ctx` and every type change on the defender via
+`effectiveness_for_move_type`).
+
+## Agreement trajectory (round 5, forced-RNG)
+
+Wilson 95% CIs, n = 1,298.
+
+| after | fully clean | per-turn |
+|---|---|---|
+| round 4 end | 894 = 68.9% (66.3–71.3) | 9142/9546 = 95.8% (95.3–96.2) |
+| F1 self-boost on KO | 899 = 69.3% (66.7–71.7) | 9166/9565 = 95.8% (95.4–96.2) |
+| F2 resist berries | 901 = 69.4% (66.9–71.9) | 9193/9590 = 95.9% (95.4–96.2) |
+| F3 Knock Off vs berry | 903 = 69.6% (67.0–72.0) | 9214/9609 = 95.9% (95.5–96.3) |
+| F4 own Mega Stone | 914 = 70.4% (67.9–72.8) | 9310/9694 = 96.0% (95.6–96.4) |
+| F5 ignoreDefensive | 918 = 70.7% (68.2–73.1) | 9329/9709 = 96.1% (95.7–96.5) |
+| F6 sleep counter | 925 = 71.3% (68.7–73.7) | 9362/9735 = 96.2% (95.8–96.5) |
+| F7 secondary sleep duration | 926 = 71.3% (68.8–73.7) | 9371/9743 = 96.2% (95.8–96.5) |
+| F8 secondaries before reactions | 932 = 71.8% (69.3–74.2) | 9416/9782 = 96.3% (95.9–96.6) |
+| F9 (and the ps-rng commits) | 932 | 9416/9782 |
+| F10 Poison Touch | **933 = 71.9% (69.4–74.3)** | **9422/9787 = 96.3% (95.9–96.6)** |
+| F11 100% secondary rolls | 933 | 9422/9787 |
+
+**Earlier divergences.**
+- F6 moved `b0eee8e256` earlier: its Dire Claw sleep had the wrong
+  duration (F7), which the wiped counter hid. F7 fixed it.
+- F8 moved `fb2bf66e3b` from clean to turn 4. Its first replay pass now
+  matches PS on that turn (Dire Claw's paralysis fails on an Electric
+  type, then Poison Touch poisons). The keyed runner's repair pass then
+  re-pairs the turn's Range draws while fixing a later miss, and lands on
+  a sleep. This is a harness repair artifact, not an engine regression.
+
+`cargo test --workspace --exclude vgc-engine-py` passed with `ps-rng` off
+and on at the measured commits; the pyo3 tests pass.
+
+## Part 2: `ps-rng` draw order
+
+The first-divergence walk was tightened first (`b643b3c`): draws must be
+on the same turn, and the engine's getTarget draws count as
+`random_target`. The old walk matched a PS residual shuffle with an
+engine target draw a turn later and reported divergences late.
+
+First divergent PS draw at the start (stricter walk, 1,300 battles): the
+Residual handler sort 447, `secondaries` 235, spread accuracy order 211,
+runAction `Update` ties 100.
+
+| iteration | commit | seeded clean | turns matched |
+|---|---|---|---|
+| start (round 4 end) | — | 15 (1.2%) | 1524/2807 |
+| Residual handler-sort ties | `b61d007` | 43 | 2201/3456 |
+| F8 secondaries before reactions | `0746bba` | 44 | 2301/3555 |
+| spread moves in PS hit-step order | `f76886d` | 73 | 3072/4297 |
+| target secondaries rolled on KO / Substitute | `3b791df` | 203 | 4157/5252 |
+| re-sort covers fainted users' moves | `0609ea4` | 244 | 4443/5497 |
+| selfDrops before secondaries and procs | `1530424` | 254 | 4542/5586 |
+| Expanding Force: two re-picks, spread order | `7113140` | 304 | 4971/5965 |
+| F10 Poison Touch | `6923fcf` | 348 | 5303/6253 |
+| resolveAction getTarget for chosen targets | `d92092e` | 461 | 5662/6499 |
+| weather / terrain change sorts | `394dfe9` | 464 | 5693/6527 |
+| hit-loop `Update` sorts | `8949494` | 465 | 5719/6552 |
+| F11 100% secondary rolls | `169ea5b` | **488 (37.5%)** | **5895/6705** |
+
+Tried and reverted: shuffling tied move actions in commitChoices'
+`queue.sort`. PS does draw there, but the engine's keys (base priority,
+live Speed) differ from PS's (ModifyPriority, cached `speed`): 36
+battles moved later, 5 earlier, 3 fewer clean.
+
+Earlier first draw divergences: `f76886d` moved `1e765a1ca2` (the engine
+rolls accuracy on a target PS skips, which the old order masked);
+`394dfe9` moved 3 (PS sorts on cached `speed`, e.g. without Choice Scarf
+at battle start). Every other iteration moved none earlier.
+
+Remaining top first divergent PS draws (935 battles still diverge):
+
+| PS site | battles |
+|---|---|
+| `hitStepAccuracy` (an accuracy roll the engine doesn't make there) | 163 |
+| runAction `eachEvent('Update')` ties | 144 |
+| `getTarget` → `getRandomTarget` | 113 |
+| hit-loop `Update` ties (status moves' hit loops, cached-speed ties) | 78 |
+| `resolveAction` → `getRandomTarget` | 59 |
+| commitChoices `queue.sort` ties | 54 |
+| Residual handler sort (handlers not modelled) | 46 |

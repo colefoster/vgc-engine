@@ -698,6 +698,17 @@ pub fn effectiveness_for_move_type(
     }
 }
 
+/// Moves with PS `ignoreDefensive` and `ignoreEvasion` (the same four):
+/// the target's Def / SpD and evasion stages are ignored
+/// (data/moves.ts chipaway, darkestlariat, nihillight, sacredsword;
+/// sim/battle-actions.ts:1691 getDamage, :719 hitStepAccuracy).
+pub fn ignores_defensive_boosts(move_id: u16) -> bool {
+    matches!(
+        move_id,
+        data::move_id::DARKESTLARIAT | data::move_id::SACREDSWORD | data::move_id::CHIPAWAY | data::move_id::NIHILLIGHT
+    )
+}
+
 /// Resolve `move_id`'s effective TYPE against the live context — the
 /// type half of `calculate_damage`'s base-power/type derivation. Covers
 /// the moves whose type is not their static `MoveDef.type_`: Tera Blast /
@@ -1824,7 +1835,7 @@ pub(crate) fn calculate_damage_with_bp(
     // items (Z-crystals, plates, Ogerpon masks) are out of scope for Reg M-B.
     if move_id == data::move_id::KNOCKOFF
         && defender.item_id != u16::MAX
-        && data::mega_stone_for(defender.item_id, defender.species_id).is_none()
+        && !defender.holds_own_mega_stone()
     {
         bp_mod = chain_modify(bp_mod, 3, 2);
     }
@@ -1979,7 +1990,7 @@ pub(crate) fn calculate_damage_with_bp(
     if defender_unaware && !attacker_breaks_mold {
         atk_policy = BoostIgnore::All;
     }
-    if attacker_unaware && !defender_breaks_mold {
+    if (attacker_unaware && !defender_breaks_mold) || ignores_defensive_boosts(move_id) {
         def_policy = BoostIgnore::All;
     }
     let eff_atk_stage = atk_policy.project(atk_stage);

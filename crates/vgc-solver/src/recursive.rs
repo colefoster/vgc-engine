@@ -365,21 +365,18 @@ pub fn joint_actions(battle: &Battle, side: SideRef) -> Vec<Vec<Choice>> {
     }
 
     if battle.decision_phases && !battle.needs_replacements() {
+        // Mid-turn picks (pivot bench, Revival Blessing's fainted mon):
+        // one joint per pick, the Switch after the slot's move.
+        let mut picks = Vec::new();
         for slot in 0..active {
-            let Some(mon) = battle.side(side).active_mon(slot) else { continue };
-            let benches: Vec<u8> = battle.side(side).switch_candidates(slot).collect();
-            if benches.is_empty() { continue; }
             acc = acc.into_iter().flat_map(|joint| {
-                let pivot = joint.iter().any(|c| match *c {
-                    Choice::Move { actor_slot, move_slot, .. } | Choice::MegaEvolve { actor_slot, move_slot, .. }
-                    if actor_slot as usize == slot && (move_slot as usize) < 4 => {
-                        let id = mon.moves[move_slot as usize];
-                        id != u16::MAX && matches!(vgc_engine_core::data::MOVES[id as usize].slug,
-                            "uturn" | "voltswitch" | "flipturn" | "partingshot" | "teleport" | "chillyreception" | "batonpass")
-                    }, _ => false,
-                });
-                if pivot { benches.iter().map(|&team_index| { let mut j=joint.clone(); j.push(Choice::Switch { actor_slot:slot as u8, team_index }); j }).collect() }
-                else { vec![joint] }
+                let chosen = joint.iter().copied().find(|c| c.actor_slot() as usize == slot);
+                match chosen {
+                    Some(c) => battle.mid_turn_picks_into(side, c, &mut picks),
+                    None => picks.clear(),
+                }
+                if picks.is_empty() { vec![joint] }
+                else { picks.iter().map(|&p| { let mut j = joint.clone(); j.push(p); j }).collect() }
             }).collect();
         }
     }
@@ -660,6 +657,28 @@ mod tests {
         let p1 = TeamBuilder::from_json(P1).unwrap();
         let p2 = TeamBuilder::from_json(P2).unwrap();
         Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2)
+    }
+
+    #[test]
+    fn revival_blessing_joint_actions_carry_each_fainted_pick() {
+        // PS sim/side.ts:965-977: Revival Blessing's request picks a fainted
+        // party member. Each pick is its own joint action, as U-turn's are.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pawmot","level":50,"moves":["revivalblessing"]},
+            {"species":"snorlax","level":50,"moves":["bodyslam"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(P2).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.p1.conditions.tera_used = true;
+        for i in [1, 2] {
+            b.p1.team[i].current_hp = 0;
+            b.p1.team[i].fainted = true;
+        }
+        let mv = Choice::Move { actor_slot: 0, move_slot: 0, target: None };
+        let sw = |team_index| Choice::Switch { actor_slot: 0, team_index };
+        assert_eq!(joint_actions(&b, SideRef::P1), vec![vec![mv, sw(1)], vec![mv, sw(2)]]);
     }
 
     #[test]

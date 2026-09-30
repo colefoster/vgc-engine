@@ -620,6 +620,21 @@ impl PyBattle {
             .collect())
     }
 
+    /// The mid-turn picks PS would request after `choice` (a `legal_choices`
+    /// tuple): `switch` tuples to append after it in `step_move` under
+    /// `decision_phases`. Revival Blessing offers each fainted party member;
+    /// U-turn, Volt Switch, Parting Shot, Baton Pass etc. the living bench;
+    /// any other choice nothing.
+    fn mid_turn_picks(&self, side: u8, choice: LegalChoice) -> PyResult<Vec<LegalChoice>> {
+        let s = match side {
+            0 => core::SideRef::P1,
+            1 => core::SideRef::P2,
+            _ => return Err(PyValueError::new_err("side must be 0 or 1")),
+        };
+        let c = choice_from_tuple(&choice)?;
+        Ok(self.inner.mid_turn_picks(s, c).iter().map(choice_to_tuple).collect())
+    }
+
     fn active_species(&self, side: u8, slot: u8) -> PyResult<Option<String>> {
         let s = match side {
             0 => core::SideRef::P1,
