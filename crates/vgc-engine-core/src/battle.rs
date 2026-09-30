@@ -11014,14 +11014,16 @@ self.trigger_emergency_exits();
             self.turn_keys.bias[rside as usize][(rslot as usize).min(1)] = if to_front { -1 } else { 1 };
         }
         // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
-        // binds queued actions and their targets to the Pokémon object,
-        // so they "follow the mon" across the swap; our queue is
-        // slot-keyed, so re-point the still-unprocessed tail: flip the
-        // actor slot of `sw_side`'s remaining actions, flip any target
-        // slot that referenced `sw_side`, and swap `sw_side`'s per-slot
-        // `pending_kind` bytes (read by opposing Sucker Punch / Encore).
-        // Without this the switcher would act twice and its ally never
-        // would. PS `data/moves.ts:allyswitch` (`this.swapPosition`).
+        // binds a queued action to its Pokémon but its target to a
+        // location (`targetLoc`, resolved by getTarget -> getAtLoc at
+        // runMove), so a foe's move aimed at a slot hits whoever Ally
+        // Switch moved there. Our queue is slot-keyed, so re-point the
+        // still-unprocessed tail: flip the actor slot of `sw_side`'s
+        // remaining actions (and the targets they aim at their own side),
+        // and swap `sw_side`'s per-slot `pending_kind` bytes (read by
+        // opposing Sucker Punch / Encore). Without this the switcher would
+        // act twice and its ally never would. PS `data/moves.ts:allyswitch`
+        // (`this.swapPosition`).
         if let Some(sw_side) = self.ally_switch_pending.take() {
             for a in &mut order.as_mut_slice()[idx + 1..] {
                 if a.side == sw_side {
@@ -11035,7 +11037,7 @@ self.trigger_emergency_exits();
                             *actor_slot ^= 1;
                         }
                         if let Some(t) = target {
-                            if t.side == sw_side {
+                            if a.side == sw_side && t.side == sw_side {
                                 t.slot ^= 1;
                             }
                         }
