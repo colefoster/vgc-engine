@@ -7321,13 +7321,6 @@ self.trigger_emergency_exits();
                 ctx.drag_target = Some((ctx.tside, ctx.tslot));
             }
 
-            // Post-damage item hook (Sitrus Berry / Starf Berry etc.).
-            // Starf Berry draws RNG for its random-stat pick, so swap
-            // self.rng out across the borrow (mem::replace idiom).
-            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
-            self.rng = rng;
-
             // Defender thaw on Fire-type hit (PS cartridge rule —
             // any Fire damaging move thaws the target) or on any
             // explicit defrost-flagged move. Done after damage so a
@@ -7364,6 +7357,17 @@ self.trigger_emergency_exits();
         self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
 
         self.apply_move_specific_post_damage(ctx, hit_sub);
+
+        // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
+        // eachEvent('Update'), after the move's AfterHit (Knock Off takes
+        // the berry first): data/mods/champions/scripts.ts:538. Starf Berry
+        // draws RNG for its random-stat pick, so swap self.rng out across
+        // the borrow (mem::replace idiom).
+        if !hit_sub {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
+            self.rng = rng;
+        }
 
         // Secondary if target still alive — and the sub didn't take
         // the hit. PS: Substitute blocks all secondaries that target
@@ -17090,6 +17094,27 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Passho Berry eaten by Water vs Tera Fire");
+    }
+
+    #[test]
+    fn knock_off_removes_a_sitrus_berry_before_it_can_be_eaten() {
+        // PS data/mods/champions/scripts.ts: spreadMoveHit runs the move's
+        // AfterHit (knockoff onAfterHit takeItem, data/moves.ts:9975) before
+        // the hit loop's eachEvent('Update') (:538) where the holder eats a
+        // pinch berry (data/items.ts sitrusberry onUpdate).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"tyranitar","level":50,"moves":["knockoff"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"item":"sitrusberry","moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let half = b.p2.team[0].stats.hp / 2;
+        b.p2.team[0].current_hp = half + 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Sitrus knocked off");
+        let dmg = b.p2.team[0].last_damage_taken;
+        assert!(dmg > 0);
+        assert_eq!(b.p2.team[0].current_hp, half + 1 - dmg, "Sitrus not eaten first");
     }
 
     #[test]
