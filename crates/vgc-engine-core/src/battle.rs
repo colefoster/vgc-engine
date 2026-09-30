@@ -7487,19 +7487,6 @@ self.trigger_emergency_exits();
         // item hooks above so the target's faint state is settled.
         self.apply_destiny_bond_counter_faint(ctx.actor_side, ctx.actor_slot, ctx.tside, ctx.tslot);
 
-        self.apply_move_specific_post_damage(ctx, hit_sub);
-
-        // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
-        // eachEvent('Update'), after the move's AfterHit (Knock Off takes
-        // the berry first): data/mods/champions/scripts.ts:538. Starf Berry
-        // draws RNG for its random-stat pick, so swap self.rng out across
-        // the borrow (mem::replace idiom).
-        if !hit_sub {
-            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
-            self.rng = rng;
-        }
-
         // Secondary if target still alive — and the sub didn't take
         // the hit. PS: Substitute blocks all secondaries that target
         // the user-of-the-sub (flinch, stat drops, status). Sound
@@ -7507,15 +7494,10 @@ self.trigger_emergency_exits();
         // above), so their secondaries fire normally.
         let alive_post = self.side(ctx.tside).active_mon(ctx.tslot as usize)
             .is_some_and(|m| m.is_alive());
-        // Defender ability `onDamagingHit` (PS step before secondary
-        // effects). Runs only when the hit actually reached the
-        // mon — sub-absorbed hits skipped. Dispatches Stamina,
-        // Rough Skin, Iron Barbs; Static / Flame Body etc. land in
-        // their own PRs.
-        self.apply_on_hit_reactions(
-            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
-        );
-        self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
+        // Secondaries run in spreadMoveHit's step 5, before the
+        // DamagingHit event (Rough Skin, Static, Poison Touch, Rocky
+        // Helmet ...) and the move's AfterHit (Knock Off):
+        // data/mods/champions/scripts.ts:385-416.
         // Deterministic gate on the secondary-effect block. See
         // `crate::secondary::should_run_secondary_block` for scope
         // (Sheer Force ablation + target faint + sub absorption);
@@ -7535,6 +7517,27 @@ self.trigger_emergency_exits();
             }
             self.rng = rng;
         }
+
+        self.apply_move_specific_post_damage(ctx, hit_sub);
+
+        // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
+        // eachEvent('Update'), after the move's AfterHit (Knock Off takes
+        // the berry first): data/mods/champions/scripts.ts:538. Starf Berry
+        // draws RNG for its random-stat pick, so swap self.rng out across
+        // the borrow (mem::replace idiom).
+        if !hit_sub {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
+            self.rng = rng;
+        }
+
+        // Defender ability `onDamagingHit` and the reactive items
+        // (Rocky Helmet, Red Card, Eject Button). Runs only when the hit
+        // actually reached the mon — sub-absorbed hits skipped.
+        self.apply_on_hit_reactions(
+            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
+        );
+        self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
 
         // PS stops a multi-hit move the moment the target faints
         // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -17355,6 +17358,24 @@ mod tests {
             }
         }
         assert!(durations.len() > 1, "sleep durations seen: {durations:?}");
+    }
+
+    #[test]
+    fn move_secondary_lands_before_the_attackers_poison_touch() {
+        // PS spreadMoveHit runs the move's secondaries (step 5,
+        // data/mods/champions/scripts.ts:388) before the DamagingHit event
+        // (:409) where Poison Touch rolls, so Nuzzle's 100% paralysis always
+        // lands first and Poison Touch finds the target already statused.
+        for seed in 0..60 {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"sneasler","level":50,"ability":"poisontouch","moves":["nuzzle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].status, Status::Paralysis, "seed {seed}");
+        }
     }
 
     #[test]
