@@ -401,6 +401,12 @@ pub struct Battle {
     /// dragged out once the action ends ([`Battle::run_pending_drags`]).
     #[serde(default)]
     pub(crate) force_switch_flags: [[bool; 2]; 2],
+    /// Per side, a bitmask of the turn's deferred mid-turn switch picks
+    /// already used by [`Battle::apply_self_switches`]. A slot can need two
+    /// in one turn (a pivot's switch-in that then Emergency Exits). Reset
+    /// at the top of every `step`.
+    #[serde(default)]
+    pub(crate) mid_turn_picks_used: [u8; 2],
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -598,6 +604,7 @@ impl Battle {
             replaced_mid_turn: [[false; 2]; 2],
             hp_before_action: None,
             force_switch_flags: [[false; 2]; 2],
+            mid_turn_picks_used: [0; 2],
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -2202,6 +2209,7 @@ self.trigger_emergency_exits();
         //    that turn.
         self.pursuit_consumed = [[false; 2]; 2];
         self.replaced_mid_turn = [[false; 2]; 2];
+        self.mid_turn_picks_used = [0; 2];
         // Pursuit switch-interception: a voluntary start-of-turn switch is
         // intercepted by an opposing Pursuit BEFORE the switcher leaves
         // (PS `data/moves.ts:pursuit` condition `onBeforeSwitchOut`). Both
@@ -3428,7 +3436,8 @@ self.trigger_emergency_exits();
             // rule 4). `consumed` is the fixed-array analogue of the prior
             // `Vec::remove(pos)`: each deferred entry is popped at most once.
             let mut deferred: [(u8, u8); 2] = [(0, 0); 2];
-            let mut consumed: [bool; 2] = [false; 2];
+            let used = self.mid_turn_picks_used[side as usize];
+            let mut consumed: [bool; 2] = [used & 1 != 0, used & 2 != 0];
             let mut n_deferred = 0usize;
             for c in choices {
                 match *c {
@@ -3488,6 +3497,7 @@ self.trigger_emergency_exits();
                     continue;
                 };
                 consumed[pos] = true;
+                self.mid_turn_picks_used[side as usize] |= 1 << pos;
                 let team_index = deferred[pos].1;
                 if self.do_switch(side, slot, team_index) && n_switched < switched_slots.len() {
                     self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
@@ -38196,6 +38206,37 @@ mod tests {
         let b = hit(true);
         assert!(b.p2.team[0].is_alive());
         assert_eq!(b.p2.active[0], 2, "Emergency Exit: the player's pick comes in");
+    }
+
+    #[test]
+    fn emergency_exit_after_a_pivot_switch_in_takes_the_next_pick() {
+        // A mon that came in from U-turn and Emergency Exits the same turn:
+        // PS asks for a second mid-turn switch (sim/battle.ts:2877-2900
+        // switchFlag request), so the slot's second pick must be used, not
+        // the first one again.
+        use crate::rng::RngEvent;
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"nature":"adamant","evs":{"atk":252},"moves":["dragonclaw"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"jolteon","level":50,"nature":"timid","evs":{"spe":252},"moves":["uturn"]},
+            {"species":"golisopod","level":50,"ability":"emergencyexit","nature":"careful","moves":["liquidation"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let hit = [RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(15)];
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+            Rng::oracle_partial([hit, hit].concat(), 3), p1, p2);
+        b.decision_phases = true;
+        let max = b.p2.team[1].stats.hp;
+        b.p2.team[1].current_hp = max / 2 + 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+                Choice::Switch { actor_slot: 0, team_index: 2 },
+            ],
+        );
+        assert!(b.p2.team[1].current_hp <= max / 2, "Dragon Claw hit Golisopod");
+        assert_eq!(b.p2.active[0], 2, "Emergency Exit brings in the second pick");
     }
 
     #[test]
