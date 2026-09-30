@@ -1407,6 +1407,24 @@ impl Battle {
     /// Hot rollout loops should call `legal_choices_into` with a reused buffer
     /// instead (the perf review found this per-call `Vec` was ~30% of the
     /// per-turn rollout cost: 4 allocs + 4 frees per turn in doubles).
+    /// The choice a mon actually makes this turn. A mon mid-way through a
+    /// two-turn move is locked into it: PS `sim/side.ts:675-688` chooseMove
+    /// replaces the submitted move and target with the locked move at its
+    /// stored `targetLoc` (the charge turn's target).
+    pub(crate) fn locked_move_choice(&self, side: SideRef, c: Choice) -> Choice {
+        let (Choice::Move { actor_slot, .. } | Choice::Terastallize { actor_slot, .. } | Choice::MegaEvolve { actor_slot, .. }) = c else {
+            return c;
+        };
+        match self.side(side).active_mon(actor_slot as usize) {
+            Some(m) if m.charging_turns > 0 && m.charging_move_slot != 255 => Choice::Move {
+                actor_slot,
+                move_slot: m.charging_move_slot,
+                target: dec_target(m.last_used_move_target),
+            },
+            _ => c,
+        }
+    }
+
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let mut out = Vec::with_capacity(8);
         self.legal_choices_into(side, actor_slot, &mut out);
@@ -3967,7 +3985,7 @@ impl Battle {
         pending_kind: &[[u8; 2]; 2],
         will_act: bool,
     ) {
-        let (actor_slot, move_slot, mut target, tera) = match action.choice {
+        let (actor_slot, move_slot, target, tera) = match action.choice {
             Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
             Choice::Terastallize { actor_slot, move_slot, target } => (actor_slot, move_slot, target, true),
             // Mega Evolution already transformed the actor in `apply_megas`
@@ -4001,6 +4019,8 @@ impl Battle {
                 a.move_actions = a.move_actions.saturating_add(1);
             }
         }
+        let (move_slot, target) = self.encore_override(actor_side, actor_slot, move_slot, target);
+        let mut target = target;
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc. `mut` because Stance Change (below) can
         // forme-swap the actor mid-resolution and must refresh the snapshot
@@ -4797,6 +4817,21 @@ impl Battle {
         // moves only, so the last writer is the move's one target.
         let mut drag_target: Option<(SideRef, u8)> = None;
 
+        // Flash Fire — PS data/abilities.ts flashfire `onTryHit` sets
+        // `move.accuracy = true` on the active move when it absorbs, and
+        // TryHit runs for every target before any accuracy roll
+        // (sim/battle-actions.ts:556-577): the move's other targets draw
+        // no accuracy roll and cannot miss.
+        let flash_fire_sure_hit = m.type_ == 1
+            && !attacker_breaks_mold
+            && targets.iter().any(|&(ts, tsl)| {
+                (ts, tsl) != (actor_side, actor_slot)
+                    && self
+                        .side(ts)
+                        .active_mon(tsl as usize)
+                        .is_some_and(|d| d.is_alive() && d.ability_id == data::ability_id::FLASHFIRE)
+            });
+
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
         for &(tside, tslot) in targets.iter() {
@@ -5074,31 +5109,6 @@ impl Battle {
                 if move_id == data::move_id::ENDEAVOR && attacker.current_hp >= defender.current_hp {
                     continue;
                 }
-            }
-
-            // Accuracy. PS sim/battle-actions.ts:707 — extracted into
-            // `Battle::roll_accuracy`, which wraps the pure
-            // `crate::accuracy::effective_accuracy` helper (Phase A) with
-            // the single `percent_1_100` draw, Micle-latch clear, and
-            // Blunder Policy consumption on miss. Behavior is byte-
-            // identical to the prior inline computation.
-            match self.roll_accuracy(
-                &attacker,
-                &defender,
-                m,
-                move_id,
-                actor_side,
-                actor_slot,
-                tside,
-                tslot,
-                attacker_ability_id,
-                attacker_item_id,
-                no_guard_pair,
-                damaging,
-                pending_kind,
-            ) {
-                AccuracyOutcome::Hit => {}
-                AccuracyOutcome::Miss => continue,
             }
 
             // Wide Guard — blocks spread moves directed at this side
@@ -5500,6 +5510,61 @@ impl Battle {
             // alongside this PR, below).
             if m.type_ == 8 && !defender_grounded && move_id != data::move_id::THOUSANDARROWS {
                 continue;
+            }
+
+            // Type immunity — PS hitStepTypeImmunity (sim/battle-actions.ts:
+            // 654) drops a type-immune target before accuracy, so it draws no
+            // roll and takes no secondary effect (Electroweb's Spe -1 on a
+            // Ground-type). Status moves ignore type immunity
+            // (`ignoreImmunity = category === 'Status'`); Ground moves are
+            // gated on grounding above (PS runImmunity uses isGrounded).
+            if damaging && !is_fixed_damage {
+                let eff_ctx = DamageContext {
+                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                };
+                let move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &eff_ctx);
+                // 8 = Ground (grounding gate above); >= 18 = Stellar.
+                if move_type != 8
+                    && move_type < 18
+                    && crate::damage::effectiveness_for_move_type(move_id, move_type, &defender).is_immune()
+                {
+                    continue;
+                }
+            }
+
+            // Accuracy. It runs after the TryHit checks above (Protect and
+            // its kin, absorbing / immunity abilities, Wonder Guard) and the
+            // Ground immunity, as PS orders its hit steps: TryHit, type
+            // immunity, TryImmunity, then accuracy
+            // (sim/battle-actions.ts:556-577). A move a TryHit check stops
+            // draws no accuracy roll.
+            //
+            // PS sim/battle-actions.ts:707 — extracted into
+            // `Battle::roll_accuracy`, which wraps the pure
+            // `crate::accuracy::effective_accuracy` helper (Phase A) with
+            // the single `percent_1_100` draw, Micle-latch clear, and
+            // Blunder Policy consumption on miss. Behavior is byte-
+            // identical to the prior inline computation.
+            match self.roll_accuracy(
+                &attacker,
+                &defender,
+                m,
+                move_id,
+                actor_side,
+                actor_slot,
+                tside,
+                tslot,
+                attacker_ability_id,
+                attacker_item_id,
+                no_guard_pair || flash_fire_sure_hit,
+                damaging,
+                pending_kind,
+            ) {
+                AccuracyOutcome::Hit => {}
+                AccuracyOutcome::Miss => continue,
             }
 
             // Fixed-damage value (computed once the attacker / defender
@@ -8548,6 +8613,7 @@ impl Battle {
                             *pp = pp.saturating_sub(1 + extra);
                         }
                         a.last_used_move_slot = move_slot;
+                        a.last_used_move_target = enc_target(target);
                         a.charging_turns = 1;
                         a.charging_move_slot = move_slot;
                     }
@@ -8576,6 +8642,7 @@ impl Battle {
                         *pp = pp.saturating_sub(1 + extra);
                     }
                     a.last_used_move_slot = move_slot;
+                    a.last_used_move_target = enc_target(target);
                     a.charging_turns = 1;
                     a.charging_move_slot = move_slot;
                     a.semi_invuln = semi_code;
@@ -8796,6 +8863,10 @@ impl Battle {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                         *pp = pp.saturating_sub(1 + extra);
                     }
+                    // PS runMove's moveUsed (lastMove) precedes the onTry
+                    // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
                 }
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
@@ -8840,6 +8911,10 @@ impl Battle {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                         *pp = pp.saturating_sub(1 + extra);
                     }
+                    // PS runMove's moveUsed (lastMove) precedes the onTry
+                    // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
                 }
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
@@ -8933,6 +9008,8 @@ impl Battle {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                     *pp = pp.saturating_sub(1 + extra);
                 }
+                mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
             }
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
@@ -9212,12 +9289,36 @@ impl Battle {
         //       user and lets the move proceed regardless of the roll.
         //     - otherwise 20% chance to thaw and proceed; 80% to stay
         //       frozen and skip the move (no PP).
+        //     Champions (data/mods/champions/conditions.ts frz): `time`
+        //     starts at 3 and drops each attempt; the mon thaws at 0 with no
+        //     draw, otherwise on `randomChance(1, 4)`. The counter shares
+        //     the status-counter volatile with Sleep (see `set_sleep_turns`);
+        //     a freeze set without one counts as fresh.
+        //     PS keys the thaw roll to this mon's move use.
         if matches!(attacker.status, Status::Freeze) {
             let thaws_self = move_is_defrost(m.slug);
-            let lucky_thaw = !thaws_self && self.rng.range(5) == 0;
+            let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+            let ctx_target = match target {
+                Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+                None => crate::rng::NO_SLOT,
+            };
+            let lucky_thaw = !thaws_self && if self.champions {
+                let left = match attacker.sleep_turns() { 0 => 3, t => t } - 1;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_sleep_turns(left);
+                }
+                left == 0 || {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.range(4) == 0
+                }
+            } else {
+                self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                self.rng.range(5) == 0
+            };
             if thaws_self || lucky_thaw {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.status = Status::None;
+                    a.set_sleep_turns(0);
                 }
             } else {
                 return PreMoveOutcome::Abort;
@@ -10141,6 +10242,55 @@ impl Battle {
         true
     }
 
+    /// Encore's `onOverrideAction` (PS data/moves.ts encore;
+    /// sim/battle-actions.ts:228-234 runMove): an encored mon that queued a
+    /// different move uses the encored one instead, keeping the queued
+    /// move's priority (ordering already ran), at a `getRandomTarget` pick
+    /// (sim/battle.ts:2490): the user for self / ally-side / field moves,
+    /// else a `sample` over the living foes (the only foe in singles).
+    fn encore_override(&mut self, side: SideRef, slot: u8, move_slot: u8, target: Option<Target>) -> (u8, Option<Target>) {
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return (move_slot, target) };
+        let enc = m.encored_move_slot();
+        if !m.is_alive() || m.encore_turns() == 0 || enc == 255 || enc == move_slot
+            || move_slot == crate::choice::STRUGGLE_MOVE_SLOT
+        {
+            return (move_slot, target);
+        }
+        let mid = m.moves[enc as usize];
+        if mid == u16::MAX {
+            return (move_slot, target);
+        }
+        let n_active = self.format().active_count();
+        let tcode = self.moves()[mid as usize].target;
+        if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
+            return (enc, None);
+        }
+        let foe = side.opposing();
+        let mut alive = [0u8; 2];
+        let mut n = 0usize;
+        for s in 0..n_active.min(2) {
+            if self.side(foe).active_mon(s).is_some_and(|p| p.is_alive()) {
+                alive[n] = s as u8;
+                n += 1;
+            }
+        }
+        if n == 0 || n_active == 1 {
+            return (enc, Some(Target { side: foe, slot: 0 }));
+        }
+        let actor_ref = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
+        self.rng.set_move_context(self.turn + 1, actor_ref, mid, crate::rng::NO_SLOT);
+        self.rng.set_decision(RngDecision::Range);
+        #[cfg(feature = "ps-rng")]
+        let pick = if self.rng.is_ps() {
+            self.rng.ps_random_range("random_target", 0, n as u32) as usize
+        } else {
+            self.rng.range(n as u32) as usize
+        };
+        #[cfg(not(feature = "ps-rng"))]
+        let pick = self.rng.range(n as u32) as usize;
+        (enc, Some(Target { side: foe, slot: alive[pick.min(n - 1)] }))
+    }
+
     /// Phazing force-switch: drag `slot` on `side` off the field and pull in
     /// a RANDOM eligible bench Pokemon. Used by Whirlwind / Roar / Dragon
     /// Tail / Circle Throw (`forceSwitch: true`). Unlike `force_switch_auto`
@@ -10515,6 +10665,11 @@ impl Battle {
             }
             if matches!(status, Status::Sleep) {
                 m.set_sleep_turns(sleep_turns);
+            }
+            // Champions freeze counter (data/mods/champions/conditions.ts
+            // frz onStart: `time = 3`).
+            if matches!(status, Status::Freeze) {
+                m.set_sleep_turns(3);
             }
         }
         // PR-EOT3: status_dot bit reflects the newly-applied status.
@@ -12042,33 +12197,18 @@ impl Battle {
                 }
             }
             data::move_id::WIDEGUARD | data::move_id::QUICKGUARD => {
-                // Both follow the Protect stall-counter family. PS
-                // data/moves.ts: `sideCondition` with `duration: 1`,
-                // gated by `onTry: !!this.queue.willAct()` (i.e. some
-                // actor still has an action queued — almost always
-                // true). We approximate by always allowing the set
-                // and rolling the stall counter the same way Protect
-                // does. The block itself fires at per-target damage
-                // resolution: Wide Guard short-circuits spread
-                // (`allAdjacent` / `allAdjacentFoes`) moves;
-                // Quick Guard short-circuits priority > 0 moves.
-                let stall_counter = {
-                    let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        Some(a) => a,
-                        None => return,
-                    };
-                    actor.mark_used_stall_this_turn();
-                    actor.stall_counter()
-                };
-                let denom: u32 = match stall_counter {
-                    0 => 1,
-                    n => 3u32.saturating_pow(n.min(6) as u32),
-                };
-                let success = self.rng.range(denom) == 0;
-                if !success {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.set_stall(0, true);
-                    }
+                // PS data/moves.ts wideguard / quickguard: `sideCondition`
+                // with `duration: 1`, gated only by `onTry:
+                // !!this.queue.willAct()` (approximated as always true). There
+                // is no StallMove roll, so they never fail to the stall
+                // counter; `onHitSide` adds the `stall` volatile, which
+                // raises the counter a following Protect rolls against. The
+                // block itself fires at per-target resolution: Wide Guard
+                // stops spread (`allAdjacent` / `allAdjacentFoes`) moves,
+                // Quick Guard priority > 0 moves.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.mark_used_stall_this_turn();
+                } else {
                     return;
                 }
                 let is_wide = move_id == data::move_id::WIDEGUARD;
@@ -12623,67 +12763,62 @@ impl Battle {
                 }
             }
             data::move_id::ENCORE => {
-                // Locks the first alive opposing target into its last-
-                // used move for 3 turns. PS data/conditions.ts:encore
-                // duration 3; fails if target has no last move, used an
-                // exception move (Encore, Struggle, Sketch, Transform,
-                // Mimic, Mirror Move, Assist, Copycat, Me First, Nature
-                // Power, Metronome), or already encored.
-                let opp = opp_side;
-                let n = self.format().active_count() as u8;
-                for slot in 0..n {
-                    let (last, ok) = match self.side(opp).active_mon(slot as usize) {
-                        Some(t) if t.is_alive() => {
-                            if t.encore_turns() > 0 {
-                                continue;
-                            }
-                            let last = t.last_used_move_slot;
-                            if last == 255 {
-                                continue;
-                            }
-                            let mid = t.moves.get(last as usize).copied().unwrap_or(u16::MAX);
-                            if mid == u16::MAX {
-                                continue;
-                            }
-                            let exempt = matches!(
-                                mid,
-                                data::move_id::ENCORE | data::move_id::STRUGGLE
+                // Locks the chosen target into its last-used move. PS
+                // data/moves.ts:encore, condition duration 3 (+1 when the
+                // target will not move again this turn, `onStart`); fails if
+                // the target has no last move, used a `failencore` move
+                // (Encore, Struggle, Sketch, Transform, Mimic, Mirror Move,
+                // Assist, Copycat, Me First, Nature Power, Metronome), has no
+                // PP left for it, or is already encored. Accuracy 100: the
+                // roll is drawn like Taunt's.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                let last = match self.side(ts).active_mon(tslot as usize) {
+                    Some(t) if t.is_alive() && t.encore_turns() == 0 && t.last_used_move_slot != 255 => {
+                        let last = t.last_used_move_slot;
+                        let mid = t.moves.get(last as usize).copied().unwrap_or(u16::MAX);
+                        let exempt = matches!(
+                            mid,
+                            u16::MAX
+                                | data::move_id::ENCORE | data::move_id::STRUGGLE
                                 | data::move_id::SKETCH | data::move_id::TRANSFORM
                                 | data::move_id::MIMIC | data::move_id::MIRRORMOVE
                                 | data::move_id::ASSIST | data::move_id::COPYCAT
                                 | data::move_id::MEFIRST | data::move_id::NATUREPOWER
                                 | data::move_id::METRONOME
-                            );
-                            let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
-                            (last, !exempt && !no_pp)
+                        );
+                        let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
+                        if exempt || no_pp {
+                            return;
                         }
-                        _ => continue,
-                    };
-                    if !ok {
-                        continue;
+                        last
                     }
-                    // Aroma Veil — holder/partner immunity to Encore
-                    // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
-                    // a Mold-Breaker Encore user bypasses it. Whimsicott /
-                    // Tornadus etc. PS still consumes the move (no re-target
-                    // to another slot), so we bail out of the handler.
-                    let encore_src_breaks_mold = self
-                        .side(actor_side)
-                        .active_mon(actor_slot as usize)
-                        .is_some_and(|a| matches!(
-                            a.effective_ability_slug(),
-                            "moldbreaker" | "teravolt" | "turboblaze"
-                        ));
-                    if self.side_has_aroma_veil(opp, encore_src_breaks_mold) {
-                        return;
-                    }
-                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                        t.set_encore(3, last);
-                    }
-                    // Mental Herb cures Encore (PS onUpdate).
-                    crate::item::try_consume_mental_herb(self, opp, slot);
+                    _ => return,
+                };
+                // Aroma Veil — holder/partner immunity to Encore
+                // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
+                // a Mold-Breaker Encore user bypasses it.
+                let encore_src_breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.effective_ability_slug(),
+                        "moldbreaker" | "teravolt" | "turboblaze"
+                    ));
+                if self.side_has_aroma_veil(ts, encore_src_breaks_mold) {
                     return;
                 }
+                // `!this.queue.willMove(target)`: its pending byte is no
+                // longer a move (1 / 2).
+                let k = pending_kind[ts as usize][(tslot as usize).min(1)];
+                let dur = if k != 1 && k != 2 { 4 } else { 3 };
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    t.set_encore(dur, last);
+                }
+                // Mental Herb cures Encore (PS onUpdate).
+                crate::item::try_consume_mental_herb(self, ts, tslot);
             }
             data::move_id::TAUNT => {
                 // Taunt — PS data/moves.ts:taunt, volatileStatus 'taunt',
@@ -13062,7 +13197,14 @@ impl Battle {
                 }
             }
             data::move_id::TOXIC => {
-                if !self.rolled_accuracy_passed(m) { return; }
+                // A Poison-type user never misses and draws no accuracy roll:
+                // PS sim/battle-actions.ts:627 (invulnerability) and :731
+                // (`accuracy = true` for gen >= 8 Toxic from a Poison-type).
+                let poison_user = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                    let (types, n) = a.effective_types();
+                    types[..n as usize].contains(&7) // Poison (data TYPE_NAMES order)
+                });
+                if !poison_user && !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot);
                 }
@@ -24456,7 +24598,7 @@ mod tests {
         ]"#;
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
-        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2); // re-tuned when Encore began drawing its accuracy roll: Whimsicott must survive three Earthquakes
         // Turn 1: Whimsicott passes, Garchomp EQs.
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
@@ -24553,6 +24695,41 @@ mod tests {
         }
         assert!(first_damage_turn.is_some(), "should thaw + connect within 25 turns");
         assert!(matches!(b.p1.team[0].status, Status::None), "thawed");
+    }
+
+    #[test]
+    fn champions_freeze_thaws_by_the_third_move_attempt() {
+        // PS data/mods/champions/conditions.ts frz: `time` starts at 3 and
+        // drops each onBeforeMove; the mon thaws when it reaches 0, or on
+        // `randomChance(1, 4)` before that. Standard gen 9 is 1/5 with no
+        // cap (data/conditions.ts frz).
+        let run = |champions: bool, seed: u64| -> Option<u32> {
+            let p1 = TeamBuilder::from_json(
+                r#"[{"species":"pikachu","level":50,"ability":"static","item":"","nature":"modest","moves":["thunderbolt"]}]"#,
+            ).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["protect"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.champions = champions;
+            b.p1.team[0].status = Status::Freeze;
+            for turn in 1..=3u32 {
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                    &[Choice::Pass { actor_slot: 0 }],
+                );
+                if b.p1.team[0].status == Status::None {
+                    return Some(turn);
+                }
+            }
+            None
+        };
+        let champ: Vec<_> = (0..200u64).map(|s| run(true, s)).collect();
+        assert!(champ.iter().all(|t| t.is_some()), "Champions freeze outlasted 3 attempts");
+        assert!(champ.iter().any(|t| *t == Some(3)), "some Champions freeze lasts to the cap");
+        let firsts = champ.iter().filter(|t| **t == Some(1)).count();
+        assert!((30..=75).contains(&firsts), "first-attempt thaw rate ~1/4: {firsts}/200");
+        assert!((0..200u64).any(|s| run(false, s).is_none()), "gen 9 freeze has no cap");
     }
 
     #[test]
@@ -28818,6 +28995,221 @@ mod tests {
         }
         assert!(hits >= 5, "too few hits to validate ({hits})");
         assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn ate_ability_move_is_not_type_immune_by_its_base_type() {
+        // The type-immunity gate uses the post-onModifyType type: Aerilate
+        // Hyper Voice is Flying (PS data/abilities.ts aerilate), so it hits
+        // a Ghost-type.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"salamencemega","level":50,"ability":"aerilate","item":"","nature":"modest","moves":["hypervoice"]}]"#,
+        ).unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["splash"]}]"#,
+        ).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].current_hp < hp, "Aerilate Hyper Voice should hit a Ghost-type");
+    }
+
+    #[test]
+    fn type_immune_target_takes_no_secondary_effect() {
+        // PS sim/battle-actions.ts:562 hitStepTypeImmunity drops a type-immune
+        // target before accuracy, damage and secondaries: Electroweb's Spe -1
+        // never lands on a Ground-type.
+        for seed in 0..60u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"rotomwash","level":50,"ability":"levitate","item":"","nature":"modest","moves":["electroweb"]},
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+            );
+            assert_eq!(b.p2.team[0].boosts[4], 0, "Electroweb lowered the Ground-type's Speed on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn wide_guard_after_protect_always_succeeds() {
+        // PS data/moves.ts wideguard: `onTry` only needs `queue.willAct()`
+        // and there is no StallMove roll, so Wide Guard never fails to the
+        // Protect stall counter (it only feeds it, via `onHitSide`).
+        for seed in 0..60u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["protect","wideguard"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"sylveon","level":50,"ability":"pixilate","item":"","nature":"modest","moves":["hypervoice"]},
+                {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            let foes = [
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ];
+            let splash = Choice::Move { actor_slot: 1, move_slot: 0, target: None };
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, splash], &foes);
+            let hp = (b.p1.team[0].current_hp, b.p1.team[1].current_hp);
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 1, target: None }, splash], &foes);
+            assert_eq!((b.p1.team[0].current_hp, b.p1.team[1].current_hp), hp, "Wide Guard failed on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn flash_fire_absorb_makes_the_move_sure_hit_on_other_targets() {
+        // PS data/abilities.ts flashfire onTryHit sets `move.accuracy = true`
+        // on the active move; TryHit runs for every target before any
+        // accuracy roll (sim/battle-actions.ts:556-577), so a Heat Wave that
+        // Flash Fire absorbs never misses its other target.
+        for seed in 0..120u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"charizard","level":50,"ability":"blaze","item":"","nature":"modest","moves":["heatwave"]},
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"heatran","level":50,"ability":"flashfire","item":"","nature":"calm","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            let hp = b.p2.team[1].current_hp;
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+            );
+            assert!(b.p2.team[1].current_hp < hp, "Heat Wave missed Snorlax on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn absorbing_ability_fires_before_the_accuracy_roll() {
+        // PS sim/battle-actions.ts:556-577: hitStepTryHitEvent (Sap Sipper's
+        // onTryHit) runs before hitStepAccuracy, so a 90%-accurate Grass move
+        // into Sap Sipper is always absorbed (+1 Atk), never missed.
+        for seed in 0..150u64 {
+            let p1 = TeamBuilder::from_json(
+                r#"[{"species":"venusaur","level":50,"ability":"chlorophyll","item":"","nature":"modest","moves":["leafstorm"]}]"#,
+            ).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"farigiraf","level":50,"ability":"sapsipper","item":"","nature":"sassy","moves":["splash"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].boosts[0], 1, "Leaf Storm not absorbed on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_move_that_fails_its_try_check_is_still_the_last_move() {
+        // PS runMove calls `pokemon.moveUsed(move)` (lastMove) before
+        // useMove runs the move's onTry, so a failed Sucker Punch is the
+        // user's last move and Encore locks it in.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"kingambit","level":50,"ability":"defiant","item":"","nature":"adamant","moves":["swordsdance","suckerpunch"]}]"#,
+        ).unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"whimsicott","level":50,"ability":"infiltrator","item":"","nature":"timid","moves":["encore","splash"]}]"#,
+        ).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        // Turn 2: Sucker Punch fails (the foe uses a status move).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        // Turn 3: Encore locks Kingambit into Sucker Punch, not Swords Dance.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].encored_move_slot(), 1);
+    }
+
+    #[test]
+    fn encore_hits_its_chosen_target_and_overrides_that_turns_move() {
+        // PS data/moves.ts encore: the chosen target is encored
+        // (`volatileStatus`), `onOverrideAction` swaps a different queued
+        // move for the encored one (sim/battle-actions.ts:228), and the
+        // duration is 3, +1 if the target has already moved this turn.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","item":"","nature":"timid","moves":["encore","splash"]},
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["curse","splash"]},
+            {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash","irondefense"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+        let splash = Choice::Move { actor_slot: 1, move_slot: 0, target: None };
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }, splash],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        // Turn 2: Encore Blastoise (p2b), which then selects Iron Defense.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) }, splash],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 1, target: None },
+            ],
+        );
+        assert_eq!(b.p2.team[0].encore_turns(), 0, "Snorlax (not the target) is not encored");
+        assert_eq!(b.p2.team[1].encore_turns(), 2, "Blastoise encored for 3 turns, one spent");
+        assert_eq!(b.p2.team[1].boosts[1], 0, "Encore turned this turn's Iron Defense into Splash");
+    }
+
+    #[test]
+    fn toxic_from_a_poison_type_never_misses_and_draws_no_accuracy() {
+        // PS sim/battle-actions.ts:627 (invulnerability) and :731 (accuracy):
+        // gen >= 8 Toxic used by a Poison-type is `accuracy = true` — no roll.
+        let run = |user: &str, seed: u64| {
+            let p1 = TeamBuilder::from_json(&format!(
+                r#"[{{"species":"{user}","level":50,"ability":"clearbody","item":"","nature":"bold","moves":["toxic"]}}]"#
+            )).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].status == Status::Toxic
+        };
+        assert!((0..150u64).all(|seed| run("toxapex", seed)), "Poison-type Toxic missed");
+        assert!((0..150u64).any(|seed| !run("snorlax", seed)), "control: non-Poison Toxic never missed");
     }
 
     #[test]
@@ -33977,6 +34369,47 @@ mod tests {
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
         );
         assert_eq!(b.p2.team[1].current_hp, clef_max, "Magic Guard blocks SR");
+    }
+
+    #[test]
+    fn charged_move_releases_at_its_charge_target_whatever_the_choice() {
+        // PS sim/side.ts:675-688 chooseMove: a mon locked into a two-turn
+        // move (getLockedMove) uses it at the stored `targetLoc`, ignoring
+        // the submitted move slot and target.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"","nature":"modest","moves":["solarbeam","protect","heatwave","roost"]},
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["protect","hurricane","roost","tailwind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash","rest","curse","protect"]},
+            {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash","rest","curse","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let foes = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+        ];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None },
+            ],
+            &foes,
+        );
+        assert_eq!(b.p1.team[0].charging_turns, 1, "Solar Beam charges");
+        let (snorlax, blastoise) = (b.p2.team[0].current_hp, b.p2.team[1].current_hp);
+        // Turn 2: the player submits Protect (slot 1). PS releases Solar Beam
+        // at Blastoise instead.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None },
+            ],
+            &foes,
+        );
+        assert_eq!(b.p1.team[0].charging_turns, 0, "Solar Beam released");
+        assert!(b.p2.team[1].current_hp < blastoise, "Solar Beam hit its charge target");
+        assert_eq!(b.p2.team[0].current_hp, snorlax, "the other foe was not hit");
     }
 
     #[test]

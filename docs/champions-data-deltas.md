@@ -8,6 +8,11 @@
 > Healer, Unseen Fist and paralysis; every other format reads `data::MOVES`
 > (standard gen 9) and the gen 9 values. pyo3 `from_teams(format=...)` takes a
 > PS id; bare `"doubles"`/`"singles"` stay Champions, and `champions=` overrides.
+>
+> **2026-09-30:** team PP follows the format too (`build_member_in`,
+> `TeamBuilder::from_json_in`): Champions base PP (the mod's overrides, else
+> capped at 20) and `(pp / 5 + 1) * 4` max PP. `calc` takes an optional
+> `format` and defaults to Champions.
 
 > **STATUS (2026-06-24): move audit COMPLETE.** All 22 move-data deltas below
 > (16 base-power + 5 accuracy + Growth→Grass) are ported via a new

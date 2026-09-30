@@ -55,6 +55,27 @@ def test_calc_spread_modifier():
     assert spread["max"] < single["max"]
 
 
+def test_calc_format_defaults_to_champions():
+    # Trop Kick is 85 BP in Champions (PS data/mods/champions/moves.ts),
+    # 70 BP in standard gen 9 (data/moves.ts).
+    atk, dfn = "Tsareena / Adamant / 252 Atk", "Garchomp / 252 HP"
+    default = vgc_engine.calc(atk, dfn, "tropkick")
+    champions = vgc_engine.calc(atk, dfn, "tropkick", format="gen9championsvgc2026regmc")
+    doubles = vgc_engine.calc(atk, dfn, "tropkick", format="doubles")
+    standard = vgc_engine.calc(atk, dfn, "tropkick", format="gen9vgc2025regh")
+    assert default["rolls"] == champions["rolls"] == doubles["rolls"]
+    assert standard["max"] < champions["max"]
+    assert abs(champions["max"] - standard["max"] * 85 / 70) <= 2
+
+
+def test_calc_unknown_format_raises():
+    try:
+        vgc_engine.calc("chomp", "lando", "eq", format="notaformat")
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for unknown format")
+
+
 def test_calc_unknown_species_raises():
     try:
         vgc_engine.calc("notamon", "chomp", "eq")

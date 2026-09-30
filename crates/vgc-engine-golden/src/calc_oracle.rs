@@ -190,6 +190,7 @@ pub fn observe_scenario(sc: &Scenario) -> Result<Observation, String> {
         terrain,
         is_crit: false,
         is_spread: false,
+        champions: false,
     };
     let rolls = damage_only(&q);
 
