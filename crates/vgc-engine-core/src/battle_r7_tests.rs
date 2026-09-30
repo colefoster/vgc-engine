@@ -291,3 +291,38 @@ fn dragon_darts_sends_both_hits_at_the_ally_of_an_immune_target() {
     assert!(single > 0);
     assert!(other > single * 3 / 2, "two darts ({other}) vs one ({single})");
 }
+
+const QC_HOLDER: &str = r#"[{"species":"garchomp","level":50,"ability":"roughskin","item":"quickclaw","nature":"jolly","moves":["dragonclaw","quickattack"],"evs":{"spe":252}}]"#;
+const QC_FOE: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["quickattack","bodyslam"]}]"#;
+
+fn first_mover(b: &Battle, p1: Choice, p2: Choice, rng: &mut crate::rng::Rng) -> SideRef {
+    let order = crate::order::action_order(b, &[p1], &[p2], rng);
+    order.iter().find(|a| matches!(a.choice, Choice::Move { .. })).unwrap().side
+}
+
+#[test]
+fn quick_claw_is_fractional_priority_and_cannot_beat_a_priority_move() {
+    // PS data/items.ts:4989 quickclaw onFractionalPriority returns 0.1: the
+    // holder moves first within its priority bracket, never ahead of a +1
+    // move (sim/battle.ts:2647 `priority + fractionalPriority`).
+    let b = singles(QC_HOLDER, QC_FOE, 1);
+    let mut rng = crate::rng::Rng::oracle_partial(vec![crate::rng::RngEvent::Range(0)], 0);
+    let first = first_mover(&b, mv(0, 0, Some(t(SideRef::P2, 0))), mv(0, 0, Some(t(SideRef::P1, 0))), &mut rng);
+    assert_eq!(first, SideRef::P2, "Quick Attack (+1) outranks a Quick Claw Dragon Claw (+0.1)");
+}
+
+#[test]
+fn quick_claw_rolls_for_a_priority_move_too() {
+    // PS runs FractionalPriority with relay 0 (sim/battle-queue.ts:249), so
+    // quickclaw's `priority <= 0` gate never looks at the move's priority.
+    let b = singles(QC_HOLDER, QC_FOE, 1);
+    let mut rng = crate::rng::Rng::recording(3);
+    let _ = first_mover(&b, mv(0, 1, Some(t(SideRef::P2, 0))), mv(0, 1, Some(t(SideRef::P1, 0))), &mut rng);
+    let rolls = rng
+        .recording_log()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e.space, crate::rng::DrawSpace::UniformRange(5)))
+        .count();
+    assert_eq!(rolls, 1);
+}
