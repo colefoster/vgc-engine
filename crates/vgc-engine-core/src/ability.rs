@@ -1829,12 +1829,9 @@ pub fn on_damaging_hit(
                 if let Some(s) = to_apply {
                     // Effect Spore: the holder (defender) is the source, so
                     // Safeguard on the attacker's side vetoes it.
-                    battle.try_set_status_from(
-                        attacker_side,
-                        attacker_slot,
-                        s,
-                        attacker_side.opposing(),
-                    );
+                    battle.with_rng_installed(rng, |b| {
+                        b.try_set_status_from(attacker_side, attacker_slot, s, attacker_side.opposing())
+                    });
                 }
             }
         }
@@ -1891,6 +1888,7 @@ pub fn on_damaging_hit(
 
     // Poison Touch — PS `data/abilities.ts:3325`:
     //   onSourceDamagingHit(damage, target, source, move) {
+    //     if (target.hasAbility('shielddust') || target.hasItem('covertcloak')) return;
     //     if (this.checkMoveMakesContact(move, source, target)) {
     //       if (this.randomChance(3, 10)) target.trySetStatus('psn', source);
     //     }
@@ -1904,10 +1902,17 @@ pub fn on_damaging_hit(
         .active_mon(attacker_slot as usize)
         .map(|a| a.ability_id)
         .unwrap_or(u16::MAX);
+    // PS (a5df8274) returns before the roll when the target has Shield Dust
+    // or Covert Cloak, and rolls even when the hit knocked the target out
+    // (trySetStatus then fails).
+    let poison_touch_blocked = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|t| {
+        t.ability_id == data::ability_id::SHIELDDUST || t.item_id == data::item_id::COVERTCLOAK
+    });
     if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
-        && target_alive
+        && !poison_touch_blocked
         && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10)
+        && target_alive
     {
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
@@ -1967,7 +1972,7 @@ pub fn on_damaging_hit(
             .and_then(|t| {
                 if t.item_id != u16::MAX
                     && t.effective_ability_id() != data::ability_id::STICKYHOLD
-                    && data::mega_stone_for(t.item_id, t.species_id).is_none()
+                    && !t.holds_own_mega_stone()
                 {
                     Some(t.item_id)
                 } else {
@@ -2082,10 +2087,12 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
         if partner_slot == slot {
             continue;
         }
+        // The donor's `takeItem` fails for its own Mega Stone (PS
+        // data/abilities.ts:4841 symbiosis, items.ts mega stone onTakeItem).
         let (has_symbiosis, partner_item) =
             match battle.side(side).active_mon(partner_slot as usize) {
                 Some(p) if p.is_alive() => (
-                    p.effective_ability_id() == data::ability_id::SYMBIOSIS,
+                    p.effective_ability_id() == data::ability_id::SYMBIOSIS && !p.holds_own_mega_stone(),
                     p.item_id,
                 ),
                 _ => (false, u16::MAX),
