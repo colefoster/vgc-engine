@@ -163,7 +163,8 @@ pub struct PsRng {
 /// Capacity of a [`DrawWindow`]: draws past it pass through unmapped.
 pub const WINDOW_CAP: usize = 64;
 
-/// Phase tags for [`PsRng::window_tags`], in PS's spread-hit order
+/// Phase tags for [`PsRng::window_tags`] (`phase * 8 + target rank`), in
+/// PS's spread-hit order
 /// (sim/battle-actions.ts trySpreadMoveHit / spreadMoveHit): draws before
 /// the hit steps, every target's accuracy, every target's crit and damage,
 /// the one `selfDrops` roll, every target's secondaries, then the
@@ -311,12 +312,22 @@ impl PsRng {
             w.n += 1;
             if i < WINDOW_CAP {
                 let prev = if i == 0 { phase::PRE } else { w.tags[i - 1] };
+                // Within a per-target step PS walks getMoveTargets' list:
+                // the user's ally before the foes, foes in slot order
+                // (sim/pokemon.ts:808-811). Slot refs: p1a 0 .. p2b 3.
+                let rank = if self.ctx_target >= 4 || self.ctx_actor >= 4 {
+                    0
+                } else if self.ctx_target / 2 == self.ctx_actor / 2 {
+                    0
+                } else {
+                    1 + self.ctx_target % 2
+                };
                 w.tags[i] = match op {
-                    "crit" | "damage" => phase::DAMAGE,
-                    "selfdrop" => phase::SELF_DROP,
-                    "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY,
-                    "percent" if self.ctx_decision == "secondary" => phase::SECONDARY,
-                    _ if at.file().ends_with("ability.rs") => phase::ABILITY,
+                    "crit" | "damage" => phase::DAMAGE * 8 + rank,
+                    "selfdrop" => phase::SELF_DROP * 8,
+                    "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
+                    "percent" if self.ctx_decision == "secondary" => phase::SECONDARY * 8 + rank,
+                    _ if at.file().ends_with("ability.rs") => phase::ABILITY * 8,
                     _ => prev,
                 };
                 return w.raws[w.map[i] as usize];
