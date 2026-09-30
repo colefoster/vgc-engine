@@ -570,6 +570,11 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_status_missed: bool,
+    /// `ps-rng` only: active slots alive when the current action started
+    /// (bit `side * 2 + slot`); see [`Battle::ps_hit_update`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_action_live: u8,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
@@ -679,6 +684,8 @@ impl Battle {
             ps_speed_cache: [[0; 6]; 2],
             #[cfg(feature = "ps-rng")]
             ps_status_missed: false,
+            #[cfg(feature = "ps-rng")]
+            ps_action_live: 0,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             #[cfg(feature = "ps-rng")]
@@ -2176,6 +2183,36 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], op);
     }
 
+    /// `ps-rng` only: the hit loop's per-hit `eachEvent('Update')`
+    /// (data/mods/champions/scripts.ts:538). A mon the hit knocked out has
+    /// 0 HP but PS marks it `fainted` only in faintMessages after the loop
+    /// (:550), so getAllActive still includes it, on its cached Speed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_hit_update(&mut self) {
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                let s = self.side(side);
+                let Some(m) = s.active_mon(slot) else { continue };
+                let pending = m.current_hp == 0 && self.ps_action_live & (1 << (side as usize * 2 + slot)) != 0;
+                let key = if pending {
+                    self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
+                } else if m.is_alive() {
+                    self.ps_speed(side, slot)
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    keys[n] = k;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
     /// `ps-rng` only: how many `random(100)` rolls PS's `secondaries` makes
     /// for a move's target-affecting secondaries (sim/battle-actions.ts:1336):
     /// one per entry of `move.secondaries` without `self` (two for the fangs
@@ -3023,6 +3060,15 @@ self.trigger_emergency_exits();
         let windowed = {
             self.ps_loop_hits = 0;
             self.ps_inline_hit_updates = false;
+            let mut live = 0u8;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count().min(2) {
+                    if self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
+                        live |= 1 << (side as usize * 2 + slot);
+                    }
+                }
+            }
+            self.ps_action_live = live;
             self.ps_spread_window(action, pending_kind, will_act)
         };
         #[cfg(not(feature = "ps-rng"))]
@@ -3041,7 +3087,7 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
             if windowed {
-                self.ps_active_ties(false, "shuffle");
+                self.ps_hit_update();
             }
             self.ps_active_ties(false, "shuffle");
         }
@@ -7525,7 +7571,7 @@ self.trigger_emergency_exits();
         if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m, target) {
             self.ps_loop_hits = 1;
             if self.ps_inline_hit_updates {
-                self.ps_active_ties(false, "shuffle");
+                self.ps_hit_update();
             }
         }
         // Throat Spray on user — sound-flag status moves only.
@@ -8098,7 +8144,7 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             self.ps_loop_hits = self.ps_loop_hits.max(hit_idx as u8 + 1);
             if self.ps_inline_hit_updates {
-                self.ps_active_ties(false, "shuffle");
+                self.ps_hit_update();
             }
         }
     }
@@ -18265,6 +18311,34 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
         );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 8, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_the_hit_update_still_sorts_the_knocked_out_target() {
+        // A mon knocked out by the hit has 0 HP but is not `fainted` until
+        // faintMessages runs after the hit loop, so the per-hit
+        // eachEvent('Update') still sorts it (sim/battle.ts getAllActive;
+        // data/mods/champions/scripts.ts:538, :550). Tied Exeggcute and
+        // Shedinja: Tackle, then Ember KOs Shedinja: PS draws 8 shuffles.
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000010").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"exeggcute","level":50,"moves":["ember"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"shedinja","level":50,"ability":"wonderguard","moves":["tackle"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p2.team[0].fainted);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 8, "{trace:#?}");
