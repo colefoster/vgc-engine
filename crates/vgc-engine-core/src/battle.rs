@@ -4815,6 +4815,21 @@ impl Battle {
         // moves only, so the last writer is the move's one target.
         let mut drag_target: Option<(SideRef, u8)> = None;
 
+        // Flash Fire — PS data/abilities.ts flashfire `onTryHit` sets
+        // `move.accuracy = true` on the active move when it absorbs, and
+        // TryHit runs for every target before any accuracy roll
+        // (sim/battle-actions.ts:556-577): the move's other targets draw
+        // no accuracy roll and cannot miss.
+        let flash_fire_sure_hit = m.type_ == 1
+            && !attacker_breaks_mold
+            && targets.iter().any(|&(ts, tsl)| {
+                (ts, tsl) != (actor_side, actor_slot)
+                    && self
+                        .side(ts)
+                        .active_mon(tsl as usize)
+                        .is_some_and(|d| d.is_alive() && d.ability_id == data::ability_id::FLASHFIRE)
+            });
+
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
         for &(tside, tslot) in targets.iter() {
@@ -5542,7 +5557,7 @@ impl Battle {
                 tslot,
                 attacker_ability_id,
                 attacker_item_id,
-                no_guard_pair,
+                no_guard_pair || flash_fire_sure_hit,
                 damaging,
                 pending_kind,
             ) {
@@ -28935,6 +28950,37 @@ mod tests {
             let hp = (b.p1.team[0].current_hp, b.p1.team[1].current_hp);
             b.step(&[Choice::Move { actor_slot: 0, move_slot: 1, target: None }, splash], &foes);
             assert_eq!((b.p1.team[0].current_hp, b.p1.team[1].current_hp), hp, "Wide Guard failed on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn flash_fire_absorb_makes_the_move_sure_hit_on_other_targets() {
+        // PS data/abilities.ts flashfire onTryHit sets `move.accuracy = true`
+        // on the active move; TryHit runs for every target before any
+        // accuracy roll (sim/battle-actions.ts:556-577), so a Heat Wave that
+        // Flash Fire absorbs never misses its other target.
+        for seed in 0..120u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"charizard","level":50,"ability":"blaze","item":"","nature":"modest","moves":["heatwave"]},
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"heatran","level":50,"ability":"flashfire","item":"","nature":"calm","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            let hp = b.p2.team[1].current_hp;
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+            );
+            assert!(b.p2.team[1].current_hp < hp, "Heat Wave missed Snorlax on seed {seed}");
         }
     }
 
