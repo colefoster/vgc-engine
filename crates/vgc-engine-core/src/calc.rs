@@ -21,7 +21,8 @@
 
 use crate::pokemon::{nature_by_slug, Status};
 use crate::team::{build_member, slugify, TeamMember};
-use crate::{damage_only, DamageQuery, Pokemon, StatSpread};
+use crate::damage_api::{damage_only_detail, CalcMods};
+use crate::{DamageQuery, Pokemon, StatSpread};
 use crate::{Terrain, Weather};
 
 use vgc_engine_data as data;
@@ -185,6 +186,9 @@ pub struct QuickMon {
     /// Stat-stage boosts, index order Atk/Def/SpA/SpD/Spe/Acc/Eva
     /// (matches `Pokemon::boosts`).
     pub boosts: [i8; 7],
+    /// Current HP as a percentage of max (`None` = full). Feeds pinch
+    /// abilities (Blaze / Torrent / Overgrow / Swarm) and full-HP effects.
+    pub hp_percent: Option<f32>,
 }
 
 /// Error from parsing/resolving a [`QuickMon`] or move.
@@ -344,6 +348,7 @@ impl QuickMon {
             terastallized: false,
             status: Status::None,
             boosts: [0; 7],
+            hp_percent: None,
         })
     }
 
@@ -390,7 +395,7 @@ impl QuickMon {
     ///
     /// ```text
     /// Species [@ Item] [/ Nature] [/ <N> <StatLabel>]... [/ +N Stat|-N Stat]...
-    ///         [/ Lvl n] [/ Tera Type] [/ Ability] [/ status]
+    ///         [/ Lvl n] [/ Tera Type] [/ Ability] [/ status] [/ NN%]
     /// ```
     ///
     /// Segment classification (first match wins): explicit `Lvl`/`Tera`
@@ -445,6 +450,16 @@ impl QuickMon {
             }
             self.tera_type = Some(ty.to_string());
             self.terastallized = true;
+            return Ok(());
+        }
+
+        // Current HP: "30%".
+        if let Some(pct) = seg.strip_suffix('%') {
+            let p: f32 = pct.trim().parse().map_err(|_| CalcError::BadSegment(seg.to_string()))?;
+            if !(0.0..=100.0).contains(&p) {
+                return Err(CalcError::BadSegment(seg.to_string()));
+            }
+            self.hp_percent = Some(p);
             return Ok(());
         }
 
@@ -533,6 +548,11 @@ impl QuickMon {
         mon.status = self.status;
         mon.terastallized = self.terastallized;
         mon.boosts = self.boosts;
+        if let Some(p) = self.hp_percent {
+            // Lowest HP that shows this percentage (PS `ceil`), at least 1.
+            let hp = (mon.stats.hp as f32 * p / 100.0).ceil() as u16;
+            mon.current_hp = hp.clamp(1, mon.stats.hp); // AUDIT-OK: calc scratch mon, not in a Battle
+        }
         Ok(mon)
     }
 }
@@ -542,6 +562,13 @@ impl QuickMon {
 /// to this.
 fn species_primary_ability(species_slug: &str) -> Option<String> {
     let sp = data::species_by_slug(species_slug)?;
+    // A mega forme gets the ability Mega Evolution grants in the battle sim
+    // (`Battle::try_mega_evolve` reads `MegaStone::mega_ability_id`); the
+    // dex dump's slot 0 is the base species' ability for Champions megas.
+    let species_id = data::SPECIES.iter().position(|s| s.slug == sp.slug)?;
+    if let Some(row) = data::MEGA_STONES.iter().find(|r| r.mega_species_id as usize == species_id) {
+        return Some(data::ABILITIES[row.mega_ability_id as usize].slug.to_string());
+    }
     let id = sp.legal_abilities[0];
     if id == u16::MAX {
         return None;
@@ -560,11 +587,61 @@ pub struct Field {
     /// Champions move data and rules (PS `data/mods/champions`). Defaults
     /// on, like the bare `"doubles"` / `"singles"` battle formats.
     pub champions: bool,
+    /// Replay battle-start switch-in effects (Intimidate, seeds, White
+    /// Herb, ...) before the hit. Off by default — see [`CalcMods`].
+    pub switch_in_effects: bool,
+    /// Doubles battle (screens x2732/4096; the ally flags below need it).
+    pub doubles: bool,
+    /// Defender's side screens.
+    pub reflect: bool,
+    pub light_screen: bool,
+    pub aurora_veil: bool,
+    /// Attacker boosted by an ally's Helping Hand.
+    pub helping_hand: bool,
+    /// Defender's ally has Friend Guard.
+    pub friend_guard: bool,
+    /// Attacker's ally has Power Spot / Battery / Steely Spirit.
+    pub power_spot: bool,
+    pub battery: bool,
+    pub steely_spirit: bool,
 }
 
 impl Default for Field {
     fn default() -> Self {
-        Field { weather: Weather::default(), terrain: Terrain::default(), spread: false, champions: true }
+        Field {
+            weather: Weather::default(),
+            terrain: Terrain::default(),
+            spread: false,
+            champions: true,
+            switch_in_effects: false,
+            doubles: false,
+            reflect: false,
+            light_screen: false,
+            aurora_veil: false,
+            helping_hand: false,
+            friend_guard: false,
+            power_spot: false,
+            battery: false,
+            steely_spirit: false,
+        }
+    }
+}
+
+impl Field {
+    /// The opt-in battle effects this field asks `damage_only_with` for.
+    pub fn mods(&self) -> CalcMods {
+        CalcMods {
+            switch_in_effects: self.switch_in_effects,
+            doubles: self.doubles,
+            reflect: self.reflect,
+            light_screen: self.light_screen,
+            aurora_veil: self.aurora_veil,
+            helping_hand: self.helping_hand,
+            friend_guard: self.friend_guard,
+            power_spot: self.power_spot,
+            battery: self.battery,
+            steely_spirit: self.steely_spirit,
+        }
     }
 }
 
@@ -647,6 +724,23 @@ fn ko_word(hits: u8) -> String {
     }
 }
 
+/// A full-HP survival effect that left the defender at 1 HP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurvivalEffect {
+    FocusSash,
+    Sturdy,
+}
+
+impl SurvivalEffect {
+    pub fn slug(&self) -> &'static str {
+        match self {
+            SurvivalEffect::FocusSash => "focus_sash",
+            SurvivalEffect::Sturdy => "sturdy",
+        }
+    }
+}
+
 /// Result of a single-move damage calc: the 16 rolls plus derived range,
 /// percentages, and 1-hit KO estimate.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -668,6 +762,10 @@ pub struct DamageResult {
     /// callers can show either the terse single-hit verdict or the full
     /// NHKO label.
     pub multi_hit: MultiHitKo,
+    /// Set when the defender survives at least one roll only because Focus
+    /// Sash or Sturdy capped it at 1 HP. `rolls` stay uncapped; `ko_chance`
+    /// counts the capped outcome.
+    pub survived_by: Option<SurvivalEffect>,
     /// The crit-row result, when the caller asked for a non-crit calc we
     /// still compute the crit companion so callers can show both. `None`
     /// on a crit calc (no nested crit) or a 0-damage calc.
@@ -1081,7 +1179,19 @@ fn shape_result(
         is_spread: field.spread,
         champions: field.champions,
     };
-    let rolls = damage_only(&q);
+    let detail = damage_only_detail(&q, &field.mods());
+    let rolls = detail.rolls;
+    let survived_by = if detail.capped != detail.rolls {
+        if def.effective_ability_id() == data::ability_id::STURDY {
+            Some(SurvivalEffect::Sturdy)
+        } else if def.item_id == data::item_id::FOCUSSASH {
+            Some(SurvivalEffect::FocusSash)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let min = *rolls.iter().min().unwrap();
     let max = *rolls.iter().max().unwrap();
     let denom = defender_max_hp.max(1) as f32;
@@ -1090,10 +1200,14 @@ fn shape_result(
 
     // 1-hit KO from the rolls vs the defender's CURRENT hp (full by
     // default; `current_hp` respects a pre-damaged defender if set).
-    let ko_chance = ko_from_rolls(&rolls, def.current_hp);
+    let ko_chance = ko_from_rolls(&detail.capped, def.current_hp);
     // Multi-hit KO (2HKO/3HKO/…) via convolution — pure arithmetic on the
     // same rolls, no extra engine calls.
-    let multi_hit = multi_hit_ko(&rolls, def.current_hp);
+    let mut multi_hit = multi_hit_ko(&rolls, def.current_hp);
+    if survived_by.is_some() && multi_hit.hits == 1 {
+        // Sash / Sturdy only save a full-HP defender: the next hit KOs.
+        multi_hit = MultiHitKo { hits: 2, chance: 1.0 };
+    }
 
     DamageResult {
         rolls,
@@ -1104,6 +1218,7 @@ fn shape_result(
         max_pct,
         ko_chance,
         multi_hit,
+        survived_by,
         crit: None,
     }
 }
@@ -1246,6 +1361,282 @@ mod tests {
         let scaled = standard.max as f32 * 85.0 / 70.0;
         assert!((champions.max as f32 - scaled).abs() <= 2.0, "{} vs {scaled}", champions.max);
         assert!(Field::none().format("notaformat").is_err());
+    }
+
+    #[test]
+    fn calc_does_not_run_switch_in_effects_by_default() {
+        // A standalone calc is not a battle start: the defender's Intimidate
+        // must not lower the attacker's Attack, a surge ability must not eat
+        // the defender's seed, and White Herb has nothing to clear. PS's
+        // getDamage (sim/battle-actions.ts) reads the mons as given;
+        // @smogon/calc only applies Intimidate when the caller boosts -1.
+        let atk = QuickMon::parse("Garchomp / Adamant / 252 Atk").unwrap();
+        let plain = QuickMon::parse("Incineroar / Blaze / 252 HP").unwrap();
+        let intim = QuickMon::parse("Incineroar / Intimidate / 252 HP").unwrap();
+        let a = calc(&atk, &plain, "earthquake", Field::none()).unwrap();
+        let b = calc(&atk, &intim, "earthquake", Field::none()).unwrap();
+        assert_eq!(a.rolls, b.rolls, "defender Intimidate leaked into the calc");
+
+        // Rillaboom's Grassy Surge would consume a Grassy Seed (+1 Def).
+        let rilla = QuickMon::parse("Rillaboom / Grassy Surge / Adamant / 252 Atk").unwrap();
+        let seed = QuickMon::parse("Garchomp @ Grassy Seed / 252 HP").unwrap();
+        let noseed = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let f = Field::terrain(Terrain::Grassy);
+        assert_eq!(
+            calc(&rilla, &seed, "woodhammer", f).unwrap().rolls,
+            calc(&rilla, &noseed, "woodhammer", f).unwrap().rolls,
+            "seed consumed by a battle-start terrain"
+        );
+
+        // Opt-in keeps the old battle-start replay available.
+        let on = calc(&atk, &intim, "earthquake", Field { switch_in_effects: true, ..Field::none() }).unwrap();
+        assert!(on.max < b.max, "switch_in_effects: true should apply Intimidate");
+    }
+
+    #[test]
+    fn mega_forme_defaults_to_its_mega_ability() {
+        // The dex dump gives Champions megas their base species' ability;
+        // the battle sim's Mega Evolution uses MEGA_STONES.mega_ability_id
+        // (build.rs MEGA_FORME_FIXES). PS data/mods/champions/pokedex.ts:
+        // Golisopod-Mega's ability 0 is Tough Claws, not Emergency Exit.
+        let default = QuickMon::parse("Golisopod-Mega / Adamant / 252 Atk").unwrap();
+        let claws = QuickMon::parse("Golisopod-Mega / Tough Claws / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        assert_eq!(
+            calc(&default, &def, "firstimpression", Field::none()).unwrap().rolls,
+            calc(&claws, &def, "firstimpression", Field::none()).unwrap().rolls,
+        );
+        let mon = default.to_pokemon("firstimpression").unwrap();
+        assert_eq!(data::ABILITIES[mon.ability_id as usize].slug, "toughclaws");
+    }
+
+    #[test]
+    fn scrappy_and_minds_eye_hit_ghost_types() {
+        // PS data/abilities.ts scrappy / mindseye onModifyMove:
+        //   move.ignoreImmunity['Fighting'] = true; ['Normal'] = true;
+        // so the Ghost type's 0x drops out and only the other type counts.
+        let def = QuickMon::parse("Gengar / 252 HP").unwrap();
+        let kang = QuickMon::parse("Kangaskhan / Scrappy / Adamant / 252 Atk").unwrap();
+        let no_scrappy = QuickMon::parse("Kangaskhan / Early Bird / Adamant / 252 Atk").unwrap();
+        assert_eq!(calc(&no_scrappy, &def, "doubleedge", Field::none()).unwrap().max, 0);
+        let hit = calc(&kang, &def, "doubleedge", Field::none()).unwrap();
+        assert!(hit.min > 0, "Scrappy Double-Edge into Gengar: {:?}", hit.rolls);
+        // Gengar is Ghost/Poison: Fighting is 0.5x from Poison once Ghost's
+        // immunity is ignored, so Scrappy Close Combat is resisted, not neutral.
+        let cc = calc(&kang, &def, "closecombat", Field::none()).unwrap();
+        assert!(cc.min > 0 && cc.max < hit.max, "CC {:?} vs DE {:?}", cc.rolls, hit.rolls);
+
+        let ursa = QuickMon::parse("Ursaluna-Bloodmoon / Mind's Eye / Modest / 252 SpA").unwrap();
+        assert!(calc(&ursa, &def, "hypervoice", Field::none()).unwrap().min > 0);
+    }
+
+    #[test]
+    fn focus_sash_and_sturdy_report_uncapped_damage_and_a_survival_flag() {
+        // PS getDamage (sim/battle-actions.ts) returns the full damage;
+        // Focus Sash (data/items.ts focussash onDamage) and Sturdy
+        // (data/abilities.ts sturdy onDamage) cap it later, at spreadDamage.
+        let atk = QuickMon::parse("Garchomp @ Choice Band / Adamant / 252 Atk").unwrap();
+        let bare = QuickMon::parse("Pikachu").unwrap();
+        let sash = QuickMon::parse("Pikachu @ Focus Sash").unwrap();
+        let plain = calc(&atk, &bare, "earthquake", Field::none()).unwrap();
+        let r = calc(&atk, &sash, "earthquake", Field::none()).unwrap();
+        assert!(plain.min > plain.defender_max_hp, "setup: EQ should OHKO Pikachu");
+        assert_eq!(r.rolls, plain.rolls, "sash-capped rolls reported");
+        assert_eq!(r.survived_by, Some(SurvivalEffect::FocusSash));
+        assert_eq!(r.ko_chance, KoChance::None, "Sash survives the hit");
+        assert_eq!(plain.survived_by, None);
+
+        let ground = QuickMon::parse("Garchomp @ Choice Band / Adamant / 252 Atk").unwrap();
+        let aggron = QuickMon::parse("Aggron / Sturdy").unwrap();
+        let rs = calc(&ground, &aggron, "earthquake", Field::none()).unwrap();
+        assert!(rs.max > rs.defender_max_hp, "uncapped EQ into Aggron: {:?}", rs.rolls);
+        assert_eq!(rs.survived_by, Some(SurvivalEffect::Sturdy));
+    }
+
+    #[test]
+    fn doubles_screens_helping_hand_and_ally_abilities_match_ps() {
+        // Expected rows: PS champions sim getDamage, Doubles, same inputs
+        // (bf-gate/ps_calc.js). Screens are x2732/4096 in Doubles
+        // (data/conditions.ts reflect/lightscreen/auroraveil onAnyModifyDamage),
+        // crits ignore them; Helping Hand x1.5 BP (data/moves.ts helpinghand);
+        // Friend Guard x0.75 (data/abilities.ts friendguard); Power Spot x1.3
+        // (powerspot onAllyBasePower).
+        let atk = QuickMon::parse("Garchomp / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Incineroar / Blaze / 252 HP").unwrap();
+        let d = Field { doubles: true, ..Field::none() };
+        let rolls = |f: Field| calc(&atk, &def, "earthquake", f).unwrap().rolls;
+        let base = [206, 210, 212, 216, 216, 218, 222, 224, 228, 230, 230, 234, 236, 240, 242, 246];
+        let screened = [137, 140, 141, 144, 144, 145, 148, 149, 152, 153, 153, 156, 157, 160, 161, 164];
+        assert_eq!(rolls(d), base);
+        assert_eq!(rolls(Field { reflect: true, ..d }), screened);
+        assert_eq!(rolls(Field { aurora_veil: true, ..d }), screened);
+        assert_eq!(rolls(Field { light_screen: true, ..d }), base, "Light Screen is special-only");
+        assert_eq!(
+            rolls(Field { helping_hand: true, ..d }),
+            [308, 312, 318, 320, 324, 326, 332, 336, 338, 342, 344, 350, 354, 356, 360, 366]
+        );
+        assert_eq!(
+            rolls(Field { friend_guard: true, ..d }),
+            [154, 157, 159, 162, 162, 163, 166, 168, 171, 172, 172, 175, 177, 180, 181, 184]
+        );
+        assert_eq!(
+            rolls(Field { power_spot: true, ..d }),
+            [270, 272, 276, 278, 282, 284, 288, 290, 294, 296, 300, 302, 306, 308, 312, 318]
+        );
+        assert_eq!(
+            rolls(Field { spread: true, reflect: true, helping_hand: true, friend_guard: true, ..d }),
+            [115, 117, 118, 120, 120, 121, 123, 124, 126, 127, 129, 130, 132, 133, 135, 136]
+        );
+        let crit = calc(&atk, &def, "earthquake", Field { reflect: true, ..d }).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [312, 314, 320, 324, 326, 330, 332, 338, 342, 344, 348, 354, 356, 360, 362, 368]);
+        // Singles screens halve.
+        let single = calc(&atk, &def, "earthquake", Field { reflect: true, ..Field::none() }).unwrap();
+        assert_eq!(single.max, 123);
+
+        let gross = QuickMon::parse("Metagross / Adamant / 252 Atk").unwrap();
+        let chomp = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        assert_eq!(
+            calc(&gross, &chomp, "ironhead", Field { steely_spirit: true, ..d }).unwrap().rolls,
+            [121, 123, 124, 126, 127, 129, 130, 132, 133, 135, 136, 138, 139, 141, 142, 144]
+        );
+        let gengar = QuickMon::parse("Gengar / Modest / 252 SpA").unwrap();
+        assert_eq!(
+            calc(&gengar, &chomp, "shadowball", Field { battery: true, ..d }).unwrap().rolls,
+            [112, 114, 115, 117, 118, 120, 120, 121, 123, 124, 126, 127, 129, 130, 132, 133]
+        );
+    }
+
+    #[test]
+    fn attacker_hp_percent_enables_pinch_abilities() {
+        // Blaze x1.5 at <= 1/3 HP (data/abilities.ts blaze onModifyAtk).
+        // PS rows from bf-gate/ps_calc.js with hp_pct 30 (hp = ceil(max*30/100)).
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let full = QuickMon::parse("Incineroar / Blaze / Adamant / 252 Atk").unwrap();
+        let low = QuickMon::parse("Incineroar / Blaze / Adamant / 252 Atk / 30%").unwrap();
+        assert_eq!(low.hp_percent, Some(30.0));
+        assert_eq!(
+            calc(&full, &def, "flareblitz", Field::none()).unwrap().rolls,
+            [54, 54, 55, 56, 57, 57, 58, 59, 59, 60, 60, 61, 62, 63, 63, 64]
+        );
+        assert_eq!(
+            calc(&low, &def, "flareblitz", Field::none()).unwrap().rolls,
+            [80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 90, 92, 93, 93, 95]
+        );
+    }
+
+    #[test]
+    fn defender_does_not_act_before_the_hit() {
+        // PS getDamage runs no defender action. A faster Protean defender
+        // used to Splash first and turn Normal, so Psychic hit a Dark type.
+        let atk = QuickMon::parse("Metagross / Jolly / 252 Atk").unwrap();
+        let def = QuickMon::parse("Greninja @ Choice Scarf / Protean / Timid / 252 Spe").unwrap();
+        assert_eq!(calc(&atk, &def, "psychicfangs", Field::none()).unwrap().max, 0);
+    }
+
+    #[test]
+    fn statused_attacker_always_gets_its_move_off() {
+        // PS getDamage has no onBeforeMove: full paralysis, sleep and
+        // freeze don't turn a calc into 0 damage.
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let healthy = calc(&QuickMon::parse("Incineroar / Adamant / 252 Atk").unwrap(), &def, "closecombat", Field::none()).unwrap();
+        // A real gate hit (bf-gate diff_ps) that was fully paralysed on
+        // every roll; PS row 218..258.
+        let inc = QuickMon::parse("Incineroar @ Sitrus Berry / Intimidate / Adamant / 252 HP / 252 Atk / 12 SpD / par").unwrap();
+        let gho = QuickMon::parse("Gholdengo @ Life Orb / Good as Gold / Timid / 12 HP / 252 SpA / 252 Spe / par / -1 Atk").unwrap();
+        let r = calc(&inc, &gho, "flareblitz", Field::none()).unwrap();
+        assert_eq!((r.min, r.max), (218, 258), "{:?}", r.rolls);
+        // Full paralysis is a 1/8 draw from the synthetic battle's fixed
+        // seed, so sweep enough matchups that some draw would hit it.
+        for sp in ["Garchomp", "Incineroar", "Rillaboom", "Sneasler", "Kingambit", "Milotic",
+                   "Gholdengo", "Farigiraf", "Archaludon", "Dragonite", "Tyranitar", "Whimsicott",
+                   "Pelipper", "Amoonguss", "Talonflame", "Sinistcha", "Primarina", "Hydreigon",
+                   "Aerodactyl", "Metagross", "Clefable", "Gengar", "Volcarona", "Corviknight"] {
+            let def = QuickMon::parse(sp).unwrap();
+            let par = QuickMon::parse("Arcanine / Adamant / 252 Atk / par").unwrap();
+            let ok = QuickMon::parse("Arcanine / Adamant / 252 Atk").unwrap();
+            assert_eq!(
+                calc(&par, &def, "flareblitz", Field::none()).unwrap().rolls,
+                calc(&ok, &def, "flareblitz", Field::none()).unwrap().rolls,
+                "paralysed Arcanine into {sp}"
+            );
+        }
+        for st in ["par", "slp", "frz"] {
+            let atk = QuickMon::parse(&format!("Incineroar / Adamant / 252 Atk / {st}")).unwrap();
+            let r = calc(&atk, &def, "closecombat", Field::none()).unwrap();
+            assert_eq!(r.rolls, healthy.rolls, "{st}");
+        }
+    }
+
+    #[test]
+    fn fire_mane_boosts_the_attack_stat_not_base_power() {
+        // PS data/abilities.ts firemane: onModifyAtk / onModifySpA x1.5 for
+        // Fire moves (a stat modifier, so it rounds differently from BP).
+        // PS champions sim row for this gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Pyroar-Mega / Fire Mane / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Politoed @ Leftovers / Drizzle / Calm / 244 HP / 180 Def / 92 SpD").unwrap();
+        let f = Field { weather: Weather::Rain, terrain: Terrain::Psychic, spread: true, ..Field::none() };
+        assert_eq!(
+            calc(&atk, &def, "heatwave", f).unwrap().rolls,
+            [18, 18, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 21, 21, 22]
+        );
+    }
+
+    #[test]
+    fn thick_fat_and_water_bubble_halve_the_attacking_stat() {
+        // PS data/abilities.ts thickfat / waterbubble: onSourceModifyAtk /
+        // onSourceModifySpA chainModify(0.5) — a stat modifier, which rounds
+        // differently from halving the final damage. PS champions sim rows
+        // for real gate hits (bf-gate/ps_calc.js).
+        let zard = QuickMon::parse("Charizard-Mega-Y / Drought / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let lax = QuickMon::parse("Snorlax @ Leftovers / Thick Fat / Relaxed / 252 HP / 252 Def / 12 SpD").unwrap();
+        assert_eq!(
+            calc(&zard, &lax, "heatwave", Field { spread: true, ..Field::none() }).unwrap().rolls,
+            [33, 33, 33, 33, 34, 34, 34, 34, 36, 36, 36, 36, 37, 37, 37, 39]
+        );
+        let cam = QuickMon::parse("Camerupt-Mega / Sheer Force / Quiet / 252 HP / 252 SpA / 12 SpD").unwrap();
+        let spider = QuickMon::parse("Araquanid @ Sitrus Berry / Water Bubble / Brave / 252 HP / 252 Atk / 12 Def").unwrap();
+        let crit = calc(&cam, &spider, "flamethrower", Field::terrain(Terrain::Grassy)).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [72, 73, 73, 75, 75, 76, 76, 78, 79, 79, 81, 81, 82, 82, 84, 85]);
+    }
+
+    #[test]
+    fn sniper_is_part_of_the_modify_damage_chain() {
+        // PS data/abilities.ts sniper: onModifyDamage chainModify(1.5) on a
+        // crit — applied with the ModifyDamage chain after the random roll,
+        // not next to the crit multiplier. PS champions sim row for a real
+        // gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Inteleon @ Scope Lens / Sniper / Timid / 252 HP / 252 Atk / 252 SpA").unwrap();
+        let def = QuickMon::parse("Metagross-Mega / Adamant / 12 HP / 252 Atk / 252 Spe").unwrap();
+        let crit = calc(&atk, &def, "snipeshot", Field::terrain(Terrain::Grassy)).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [148, 150, 150, 153, 154, 157, 157, 159, 162, 163, 166, 166, 168, 171, 172, 175]);
+    }
+
+    #[test]
+    fn light_ball_doubles_pikachus_attacking_stats() {
+        // PS data/items.ts lightball: onModifyAtk / onModifySpA
+        // chainModify(2) when the holder's base species is Pikachu. PS
+        // champions sim row for a real gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Pikachu @ Light Ball / Lightning Rod / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Salamence-Mega / 252 HP / 252 Atk / 252 SpA / +1 Atk / +1 Spe / par").unwrap();
+        assert_eq!(
+            calc(&atk, &def, "thunderbolt", Field::none()).unwrap().rolls,
+            [94, 96, 97, 99, 99, 100, 102, 103, 103, 105, 106, 108, 108, 109, 111, 112]
+        );
+    }
+
+    #[test]
+    fn mega_sol_attacker_turns_off_the_sand_spd_boost() {
+        // PS sim/pokemon.ts effectiveWeather: while the active Pokemon has
+        // Mega Sol, a Weather/Move-sourced read sees 'sunnyday', so the
+        // sandstorm onModifySpD Rock boost (data/conditions.ts) is off. PS
+        // champions sim row for a real gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Meganium-Mega / Mega Sol / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Tyranitar-Mega / Jolly / 12 HP / 252 Atk / 252 Spe").unwrap();
+        let f = Field { weather: Weather::Sand, spread: true, ..Field::none() };
+        assert_eq!(
+            calc(&atk, &def, "dazzlinggleam", f).unwrap().rolls,
+            [96, 96, 98, 98, 98, 102, 102, 102, 104, 104, 108, 108, 108, 110, 110, 114]
+        );
     }
 
     #[test]

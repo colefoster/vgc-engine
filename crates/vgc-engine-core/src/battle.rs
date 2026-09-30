@@ -496,6 +496,11 @@ pub struct Battle {
     /// `None` in production. `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) captured_move_damage: Option<u32>,
+    /// `damage_only` companion to `captured_move_damage`: the same sum
+    /// taken BEFORE the Sturdy / Endure / Focus Sash / Focus Band clamp, so
+    /// the calc can report the uncapped damage. `None` in production.
+    #[serde(skip)]
+    pub(crate) captured_uncapped_damage: Option<u32>,
     /// `damage_only` accuracy forcing hook. When `Some(true)`, every
     /// accuracy check in `resolve_move_with_pending` skips the RNG
     /// draw and reports a hit; `Some(false)` reports a miss (unused,
@@ -514,9 +519,16 @@ pub struct Battle {
     /// non-spread path (unused, exposed for symmetry). `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) force_is_spread: Option<bool>,
-    /// `damage_only` move-gate bypass. When `true`, action-order-conditional
-    /// move `onTry` gates (Sucker Punch's "target must be attacking") are
-    /// treated as PASSED, so the fast-calc API reports the damage a move
+    /// `damage_only` field / ally modifiers the synthetic Singles battle
+    /// can't express on its own (Doubles screen multiplier, Helping Hand,
+    /// ally Friend Guard / Power Spot / Battery / Steely Spirit). All-off
+    /// (the default) in production. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) calc_mods: crate::damage_api::CalcMods,
+    /// `damage_only` move-gate bypass. When `true`, the pre-move status gates
+    /// (flinch, sleep, freeze, full paralysis, confusion, ...) and
+    /// action-order-conditional move `onTry` gates (Sucker Punch's "target
+    /// must be attacking") are treated as PASSED, so the fast-calc API reports the damage a move
     /// WOULD deal. Matches @smogon/calc, which shows Sucker Punch's damage
     /// regardless of the (synthetic, forced-Splash) defender's action —
     /// otherwise the gate fails and the calc reads a spurious "0 / immune".
@@ -612,9 +624,33 @@ impl Battle {
     /// when an Oracle RNG is supplied.
     pub fn with_rng(
         config: BattleConfig,
+        rng: Rng,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+    ) -> Self {
+        Self::with_rng_start(config, rng, p1_team, p2_team, true)
+    }
+
+    /// `damage_only` constructor: `switch_ins = false` skips the leads'
+    /// battle-start ability / item hooks (Intimidate, surge terrain, seeds,
+    /// White Herb, Trace, ...), so a standalone calc reads the mons exactly
+    /// as given — PS `getDamage` (sim/battle-actions.ts) has no switch-in.
+    pub(crate) fn new_for_calc(
+        config: BattleConfig,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+        switch_ins: bool,
+    ) -> Self {
+        let rng = Rng::new(config.seed);
+        Self::with_rng_start(config, rng, p1_team, p2_team, switch_ins)
+    }
+
+    fn with_rng_start(
+        config: BattleConfig,
         mut rng: Rng,
         mut p1_team: Vec<Pokemon>,
         mut p2_team: Vec<Pokemon>,
+        switch_ins: bool,
     ) -> Self {
         // Resolve unspecified gender exactly as PS does at `>player`
         // (team construction): a flat 50/50 roll per ratio'd individual
@@ -663,8 +699,10 @@ impl Battle {
             force_damage_roll: None,
             force_crit: None,
             captured_move_damage: None,
+            captured_uncapped_damage: None,
             force_accuracy_hit: None,
             force_is_spread: None,
+            calc_mods: crate::damage_api::CalcMods::default(),
             force_move_gate_ok: false,
             residual_index: ResidualIndex::default(),
             // PR-LC1: initialized to None to match the freshly-cleared
@@ -707,8 +745,15 @@ impl Battle {
             b.ps_start_draws();
         }
         let n = b.format().active_count() as u8;
+        if !switch_ins {
+            // Field-wide suppression is state, not a switch-in effect.
+            crate::ability::recompute_neutralizing_gas(&mut b);
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
+                if !switch_ins {
+                    break;
+                }
                 crate::ability::on_switch_in(&mut b, side, slot);
                 // Item on-start hook (White Herb cleanup, ...). Runs
                 // after the ability so Intimidate's atk drop is seen
@@ -2838,6 +2883,12 @@ self.trigger_emergency_exits();
                 // turn it was used, then expires. Cleared at the same
                 // per-turn reset as Protect so it never carries over.
                 m.volatiles.remove(crate::pokemon::VolatileKind::Endure);
+            }
+        }
+        // damage_only: the calc's Helping Hand survives the reset above.
+        if self.calc_mods.helping_hand {
+            if let Some(m) = self.p1.active_mon_mut(0) {
+                m.set_helping_handed(true);
             }
         }
 
@@ -5997,8 +6048,8 @@ self.trigger_emergency_exits();
                 // Night Shade=Ghost fails on Normal. PS `runImmunity`
                 // via the type chart. The general fixed-damage value is
                 // computed at the crit/roll site below.
-                let eff = crate::damage::effectiveness_for_move_type(
-                    move_id, m.type_, &defender,
+                let eff = crate::damage::effectiveness_for_attack(
+                    &attacker, move_id, m.type_, &defender,
                 );
                 if eff.is_immune() {
                     continue;
@@ -6361,8 +6412,8 @@ self.trigger_emergency_exits();
                     let move_type = crate::damage::move_type_in_ctx(
                         &attacker, move_id, &eff_ctx,
                     );
-                    let eff = crate::damage::effectiveness_for_move_type(
-                        move_id, move_type, &defender,
+                    let eff = crate::damage::effectiveness_for_attack(
+                        &attacker, move_id, move_type, &defender,
                     );
                     let super_effective = matches!(
                         eff,
@@ -6432,7 +6483,7 @@ self.trigger_emergency_exits();
                 // 8 = Ground (grounding gate above); >= 18 = Stellar.
                 if move_type != 8
                     && move_type < 18
-                    && crate::damage::effectiveness_for_move_type(move_id, move_type, &defender).is_immune()
+                    && crate::damage::effectiveness_for_attack(&attacker, move_id, move_type, &defender).is_immune()
                 {
                     continue;
                 }
@@ -6639,8 +6690,14 @@ self.trigger_emergency_exits();
             // a Tera-Rock mon also gets the boost; PS reads `hasType`
             // which follows the same convention.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
+            // Mega Sol (Champions): while the attacker has it, PS
+            // `Pokemon.effectiveWeather` (sim/pokemon.ts) reports 'sunnyday'
+            // for Weather-sourced reads, so neither boost below applies.
+            let mega_sol_attacker =
+                attacker.effective_ability_id() == data::ability_id::MEGASOL;
             if matches!(self.effective_weather(), crate::weather::Weather::Sand)
                 && m.category == 1
+                && !mega_sol_attacker
             {
                 let (eff_types, eff_num) = defender.effective_types();
                 let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
@@ -6660,6 +6717,7 @@ self.trigger_emergency_exits();
             // hasType. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
             if matches!(self.effective_weather(), crate::weather::Weather::Snow)
                 && m.category == 0
+                && !mega_sol_attacker
             {
                 let (eff_types, eff_num) = defender.effective_types();
                 let is_ice = (0..eff_num as usize).any(|i| eff_types[i] == 5);
@@ -6705,7 +6763,8 @@ self.trigger_emergency_exits();
             let defender_has_reflect = def_conds.reflect_turns > 0 && !attacker_infiltrates;
             let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
-            let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
+            let is_doubles = matches!(self.config.format, crate::format::Format::Doubles)
+                || self.calc_mods.doubles;
             // Raw field terrain; `damage.rs` checks attacker / defender
             // grounding per terrain rule.
             let active_terrain = self.terrain;
@@ -6752,6 +6811,13 @@ self.trigger_emergency_exits();
                             steely += 1;
                         }
                     }
+                }
+                // damage_only: the calc's attacker (p1) has a virtual ally.
+                let cm = self.calc_mods;
+                if actor_side == SideRef::P1 && cm.doubles {
+                    power_spot |= cm.power_spot;
+                    battery |= cm.battery;
+                    steely += cm.steely_spirit as u8;
                 }
                 (power_spot, battery, steely)
             };
@@ -6801,7 +6867,8 @@ self.trigger_emergency_exits();
                             }
                         }
                     }
-                    guarded
+                    // damage_only: the calc's defender (p2) has a virtual ally.
+                    guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
@@ -6967,7 +7034,7 @@ self.trigger_emergency_exits();
                 defender_ability_id: defender.ability_id,
                 attacker_breaks_mold,
             };
-            let mut pipeline =
+            let pipeline =
                 DamagePipeline::new(dmg, fixed_dmg_snapshot.is_some(), post_inputs);
             // Life Orb / Expert Belt / Friend Guard are chained inside the
             // damage calc's ModifyDamage modifier (damage.rs).
@@ -7047,22 +7114,6 @@ self.trigger_emergency_exits();
             if move_id == data::move_id::BEATUP {
                 hits = self.beat_up_build_atk_table(actor_side, actor_slot, &mut beat_up_base_atks);
             }
-            // Defender post-formula halves: Thick Fat (Fire/Ice, breakable),
-            // Water Bubble (Fire, not breakable). Routed through
-            // `DamagePipeline::apply_thick_fat` / `apply_water_bubble` — both
-            // are byte-identical to the prior inline halves.
-            // PS refs:
-            //   data/abilities.ts:thickfat onSourceModifyAtk/SpA chainModify(0.5)
-            //     on Fire (type 1) or Ice (type 5); breakable.
-            //   data/abilities.ts:waterbubble onSourceModifyAtk/SpA chainModify(0.5)
-            //     on Fire; NOT breakable.
-            // Bulbapedia:
-            //   <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-            pipeline.current = dmg;
-            pipeline.apply_thick_fat();
-            pipeline.apply_water_bubble();
-            dmg = pipeline.current;
             // Knock Off's ×1.5 vs item holders is applied at the base-power
             // stage inside `calculate_damage` (PS data/moves.ts:knockoff
             // onBasePower chainModify(1.5)), not here on final damage — the
@@ -7791,6 +7842,9 @@ self.trigger_emergency_exits();
             // `ctx.attacker_breaks_mold`) lifts it. OHKO-move arm
             // (`onTryHit` for `move.ohko`) is deferred — Horn Drill /
             // Fissure / Guillotine / Sheer Cold not implemented yet.
+            if let Some(acc) = self.captured_uncapped_damage.as_mut() {
+                *acc = acc.saturating_add(dmg as u32);
+            }
             let mut capped = dmg;
             let (def_ability, def_cur, def_max) = match self
                 .side(ctx.tside)
@@ -10158,6 +10212,11 @@ self.trigger_emergency_exits();
         attacker: &Pokemon,
         target: Option<Target>,
     ) -> PreMoveOutcome {
+        // damage_only: a calc always gets its move off. PS getDamage runs no
+        // onBeforeMove, so full paralysis / sleep / freeze can't zero it.
+        if self.force_move_gate_ok {
+            return PreMoveOutcome::Proceed;
+        }
         // 1. Flinch check — flinched mons cannot move at all this turn.
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
