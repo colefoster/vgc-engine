@@ -1247,15 +1247,19 @@ impl Battle {
         // effective_ability_id. Heap-free `[(u8, i8); 7]` buffer (step() is
         // alloc-free). Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Contrary_(Ability)>.
-        let target_contrary = self
+        // Simple (data/abilities.ts:simple onChangeBoost) doubles every
+        // change on the holder in the same slot.
+        let target_ability = self
             .side(target_side)
             .active_mon(target_slot as usize)
-            .is_some_and(|m| m.effective_ability_id() == data::ability_id::CONTRARY);
+            .map(|m| m.effective_ability_id());
+        let target_contrary = target_ability == Some(data::ability_id::CONTRARY);
+        let target_simple = target_ability == Some(data::ability_id::SIMPLE);
         let mut contrary_buf = [(0u8, 0i8); 7];
-        let deltas: &[(u8, i8)] = if target_contrary {
+        let deltas: &[(u8, i8)] = if target_contrary || target_simple {
             let n = deltas.len().min(7);
             for (i, &(idx, delta)) in deltas.iter().take(7).enumerate() {
-                contrary_buf[i] = (idx, -delta);
+                contrary_buf[i] = (idx, if target_simple { delta.saturating_mul(2) } else { -delta });
             }
             &contrary_buf[..n]
         } else {
@@ -42292,3 +42296,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "battle_r7_tests.rs"]
+mod r7_tests;
