@@ -1104,10 +1104,15 @@ impl Pokemon {
     /// every Fire type becomes '???'. A Fire/X mon is left X; a pure Fire
     /// mon is left typeless ([`TYPELESS`]).
     pub fn lose_fire_type(&mut self) {
+        self.lose_type(1);
+    }
+
+    /// Burn Up / Double Shock's self effect: every `ty` type becomes '???'.
+    pub fn lose_type(&mut self, ty: u8) {
         let (types, n) = self.effective_types();
         match (n, types) {
-            (2, [1, other]) | (2, [other, 1]) => self.set_type_override(other, None),
-            (1, [1, _]) => self.type_override = [TYPELESS, 255],
+            (2, [a, other]) | (2, [other, a]) if a == ty => self.set_type_override(other, None),
+            (1, [a, _]) if a == ty => self.type_override = [TYPELESS, 255],
             _ => {}
         }
     }
