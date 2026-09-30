@@ -407,6 +407,10 @@ pub struct Battle {
     /// at the top of every `step`.
     #[serde(default)]
     pub(crate) mid_turn_picks_used: [u8; 2],
+    /// Set by [`Battle::apply_self_switches`] for a Baton Pass switch: the
+    /// next `do_switch` copies the outgoing mon's boosts and volatiles.
+    #[serde(default)]
+    pub(crate) copy_volatiles_next_switch: bool,
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -605,6 +609,7 @@ impl Battle {
             hp_before_action: None,
             force_switch_flags: [[false; 2]; 2],
             mid_turn_picks_used: [0; 2],
+            copy_volatiles_next_switch: false,
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -3001,6 +3006,7 @@ self.trigger_emergency_exits();
         }
         let gravity_active = self.gravity_turns > 0;
         let magic_room_active = self.magic_room_turns > 0;
+        let copy_volatiles = self.copy_volatiles_next_switch;
         let s = self.side_mut(side);
         if (actor_slot as usize) < s.active.len()
             && (team_index as usize) < s.team.len()
@@ -3091,6 +3097,30 @@ self.trigger_emergency_exits();
             // field (not a volatile), so the blanket `volatiles.clear()` above
             // does not touch it — set it explicitly to the current field state.
             incoming.item_suppressed = magic_room_active;
+            if copy_volatiles {
+                // Baton Pass — PS sim/pokemon.ts:1246 copyVolatileFrom:
+                // boosts plus every volatile whose condition lacks
+                // `noCopy` (data/moves.ts: Disable, Torment, Yawn, Imprison,
+                // Nightmare, Stockpile, Salt Cure ... stay behind), before
+                // the switch-in hazards.
+                use crate::pokemon::VolatileKind as V;
+                let out = &s.team[outgoing_idx];
+                let (boosts, crit, suppressed, vols) = (out.boosts, out.crit_stage_volatile, out.ability_suppressed, out.volatiles);
+                let incoming = &mut s.team[team_index as usize];
+                incoming.boosts = boosts;
+                incoming.crit_stage_volatile = crit;
+                incoming.ability_suppressed = suppressed;
+                for v in &vols.items[..vols.len as usize] {
+                    if matches!(v.kind, V::Substitute | V::Confusion | V::Taunt | V::HealBlock | V::Embargo
+                        | V::LeechSeed | V::Curse | V::PerishSong | V::Ingrain | V::AquaRing | V::MagnetRise
+                        | V::Telekinesis | V::GastroAcid | V::FocusEnergy | V::LaserFocus | V::Charge
+                        | V::Tarshot | V::DragonCheer)
+                    {
+                        incoming.volatiles.add(*v);
+                    }
+                }
+                incoming.sync_move_locks();
+            }
         } else {
             return false;
         }
@@ -3508,6 +3538,10 @@ self.trigger_emergency_exits();
                     .side(side)
                     .active_mon(slot as usize)
                     .is_some_and(|m| m.pending_switch_is_forced());
+                let copies = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_copies());
                 // Clear the flag regardless — even if no replacement is
                 // available, the move doesn't re-fire next turn.
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -3527,7 +3561,10 @@ self.trigger_emergency_exits();
                 consumed[pos] = true;
                 self.mid_turn_picks_used[side as usize] |= 1 << pos;
                 let team_index = deferred[pos].1;
-                if self.do_switch(side, slot, team_index) && n_switched < switched_slots.len() {
+                self.copy_volatiles_next_switch = copies;
+                let switched = self.do_switch(side, slot, team_index);
+                self.copy_volatiles_next_switch = false;
+                if switched && n_switched < switched_slots.len() {
                     self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
                     switched_slots[n_switched] = slot;
                     n_switched += 1;
@@ -14003,6 +14040,18 @@ self.trigger_emergency_exits();
                 if dropped_any && self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
+                    }
+                }
+            }
+            data::move_id::BATONPASS => {
+                // Baton Pass — PS data/moves.ts:1092: fails without a mon
+                // to switch to (or while commanded); otherwise a
+                // `copyvolatile` self-switch. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Baton_Pass_(move)>.
+                let commanded = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.commanded);
+                if self.has_eligible_bench(actor_side) && !commanded {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.set_pending_copy_switch();
                     }
                 }
             }
@@ -38395,6 +38444,34 @@ mod tests {
         b.step(&[Choice::Pass { actor_slot: 0 }], &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
         assert_eq!(b.p2.active[0], 1, "Eevee replaced the Emergency Exit holder");
         assert!(!b.needs_replacements());
+    }
+
+    #[test]
+    fn baton_pass_switches_out_mid_turn_and_passes_boosts_and_substitute() {
+        // PS data/moves.ts:1092 batonpass: selfSwitch 'copyvolatile'; the
+        // switch runs right after the move (sim/battle.ts:2877-2915) and
+        // sim/pokemon.ts:1246 copyVolatileFrom hands over the boosts and
+        // every volatile without noCopy (Substitute, Focus Energy ...).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"ninetalesalola","level":50,"nature":"timid","evs":{"spe":252},"moves":["batonpass","substitute","swordsdance"]},
+            {"species":"swampert","level":50,"moves":["waterfall"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["bodyslam"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.p1.team[0].boosts[0] = 2;
+        b.p1.team[0].set_substitute_hp(30);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Switch { actor_slot: 0, team_index: 1 },
+            ],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active[0], 1, "Swampert came in from Baton Pass");
+        assert_eq!(b.p1.team[1].boosts[0], 2, "the +2 Attack was passed");
+        assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "Body Slam hit the incoming mon, not Ninetales");
+        assert!(b.p1.team[1].substitute_hp() < 30, "the passed Substitute took Body Slam");
     }
 
     #[test]
