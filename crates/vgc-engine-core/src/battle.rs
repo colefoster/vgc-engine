@@ -546,6 +546,16 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_field_seen: Option<(crate::weather::Weather, crate::terrain::Terrain)>,
+    /// `ps-rng` only: hits the current move landed (`hitStepMoveHitLoop`
+    /// iterations that reached spreadMoveHit), and whether its per-hit
+    /// `eachEvent('Update')` is drawn inline (single-target) or after the
+    /// spread window.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_loop_hits: u8,
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_inline_hit_updates: bool,
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -637,6 +647,10 @@ impl Battle {
             cached_terrain: crate::terrain::Terrain::None,
             #[cfg(feature = "ps-rng")]
             ps_field_seen: None,
+            #[cfg(feature = "ps-rng")]
+            ps_loop_hits: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_inline_hit_updates: false,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2762,11 +2776,34 @@ self.trigger_emergency_exits();
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
         #[cfg(feature = "ps-rng")]
-        let windowed = self.ps_spread_window(action, pending_kind, will_act);
+        let windowed = {
+            self.ps_loop_hits = 0;
+            self.ps_inline_hit_updates = false;
+            self.ps_spread_window(action, pending_kind, will_act)
+        };
         #[cfg(not(feature = "ps-rng"))]
         let windowed = false;
         if !windowed {
+            #[cfg(feature = "ps-rng")]
+            {
+                self.ps_inline_hit_updates = true;
+            }
             self.resolve_move_with_pending(action, pending_kind, will_act);
+        }
+        // Champions hitStepMoveHitLoop: eachEvent('Update') after each hit
+        // (drawn inline for a single-target move; once for a spread move's
+        // one hit) and once more after the loop (data/mods/champions/
+        // scripts.ts:538, :575).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.ps_loop_hits > 0 {
+            if windowed {
+                self.ps_active_ties(false, "shuffle");
+            }
+            self.ps_active_ties(false, "shuffle");
+        }
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_inline_hit_updates = false;
         }
         self.update_hp_berries();
         self.multi_targeted_defenders = 0;
@@ -7718,6 +7755,13 @@ self.trigger_emergency_exits();
             .unwrap_or(true);
         if target_fainted {
             ctx.target_fainted_this_hit = true;
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_loop_hits = self.ps_loop_hits.max(hit_idx as u8 + 1);
+            if self.ps_inline_hit_updates {
+                self.ps_active_ties(false, "shuffle");
+            }
         }
     }
 
@@ -17770,6 +17814,34 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_each_hit_ends_with_an_update_speed_sort() {
+        // Champions hitStepMoveHitLoop runs eachEvent('Update') after each
+        // hit and once after the loop (data/mods/champions/scripts.ts:538,
+        // :575). Two Snorlax with equal Speed, Quick Attack vs Tackle: the
+        // BeforeTurn and Update sorts, per move the per-hit, post-loop and
+        // runAction Updates, and the residual Update each shuffle the tie:
+        // nine draws, as PS makes for this battle.
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["quickattack"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 9, "{trace:#?}");
     }
 
     #[test]
