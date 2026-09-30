@@ -509,3 +509,38 @@ fn gooey_slows_a_contact_attacker() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(b.p1.team[0].boosts[4], -1);
 }
+
+#[test]
+fn rain_dish_heals_a_sixteenth_in_rain() {
+    // PS data/abilities.ts:3759 raindish onWeather: heal(baseMaxhp / 16) in
+    // rain.
+    let mut b = singles(
+        r#"[{"species":"pelipper","level":50,"ability":"raindish","moves":["raindance"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    let m = &b.p1.team[0];
+    let hp_after_hit_guess = m.current_hp;
+    let mut b2 = singles(
+        r#"[{"species":"pelipper","level":50,"ability":"keeneye","moves":["raindance"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"]}]"#,
+        1,
+    );
+    b2.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(hp_after_hit_guess, b2.p1.team[0].current_hp + m.stats.hp / 16);
+}
+
+#[test]
+fn ice_body_heals_a_sixteenth_in_snow() {
+    // PS data/abilities.ts:1955 icebody onWeather: heal(baseMaxhp / 16) in
+    // snow.
+    let run = |ability: &str| {
+        let p1 = format!(r#"[{{"species":"glalie","level":50,"ability":"{ability}","moves":["snowscape"]}}]"#);
+        let mut b = singles(&p1, r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"]}]"#, 1);
+        b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+        (b.p1.team[0].current_hp, b.p1.team[0].stats.hp)
+    };
+    let ((body, max), (plain, _)) = (run("icebody"), run("innerfocus"));
+    assert_eq!(body, plain + max / 16);
+}

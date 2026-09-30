@@ -12432,6 +12432,23 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // Rain Dish (data/abilities.ts:3759) and Ice Body (:1955) onWeather:
+        // heal(baseMaxhp / 16) in rain / snow, in the same eachEvent('Weather').
+        let heal_ability = match weather {
+            crate::weather::Weather::Rain => data::ability_id::RAINDISH,
+            crate::weather::Weather::Snow => data::ability_id::ICEBODY,
+            _ => return,
+        };
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                    if m.is_alive() && m.effective_ability_id() == heal_ability && m.heal_block_turns() == 0 {
+                        m.current_hp = m.current_hp.saturating_add((m.stats.hp / 16).max(1)).min(m.stats.hp);
+                    }
+                }
+            }
+        }
     }
 
     /// EOT sub-phase `future_sight_delivery`. Extracted from
