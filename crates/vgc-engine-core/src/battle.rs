@@ -556,6 +556,11 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
+    /// `ps-rng` only: PS `Pokemon.speed` per team member, the cached Speed
+    /// every speed sort reads. See [`Battle::ps_update_speed`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_speed_cache: [[i64; 6]; 2],
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -651,6 +656,8 @@ impl Battle {
             ps_loop_hits: 0,
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
+            #[cfg(feature = "ps-rng")]
+            ps_speed_cache: [[0; 6]; 2],
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -658,6 +665,13 @@ impl Battle {
         // and slot; refinement deferred).
         #[cfg(feature = "ps-rng")]
         if b.rng.is_ps() {
+            // The Pokemon constructor's clearVolatile -> setSpecies caches
+            // the raw Speed stat (sim/pokemon.ts:504, :1418).
+            for side in [SideRef::P1, SideRef::P2] {
+                for i in 0..b.side(side).team.len().min(6) {
+                    b.ps_speed_cache[side as usize][i] = b.side(side).team[i].stats.spe as i64;
+                }
+            }
             b.ps_start_draws();
         }
         let n = b.format().active_count() as u8;
@@ -1976,7 +1990,7 @@ self.trigger_emergency_exits();
     /// (`getActionSpeed`: boosted/modified Speed, `10000 - spe` under Trick
     /// Room, truncated to 13 bits). Higher sorts first.
     #[cfg(feature = "ps-rng")]
-    fn ps_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
+    fn ps_live_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
         let m = self.side(side).active_mon(slot)?;
         let tw = self.side(side).conditions.tailwind_turns > 0;
         let mut spe = crate::order::effective_speed(m, tw, self.weather) as i64;
@@ -1984,6 +1998,57 @@ self.trigger_emergency_exits();
             spe = 10000 - spe;
         }
         Some(spe & 0x1FFF)
+    }
+
+    /// `ps-rng` only: PS `Pokemon.speed`, the cached Speed that speed sorts
+    /// and event handlers read (sim/battle.ts:468, :1003). It is refreshed
+    /// only by `updateSpeed()`: every active at commitChoices, before each
+    /// gen-8+ re-sort and at the residual (sim/battle.ts:2999, :2921,
+    /// :2814), and a switch-in's own at `insertChoice` (sim/battle-queue.ts:379).
+    /// `setSpecies` resets it to the raw Speed stat: switch-out, faint and
+    /// forme changes such as Mega Evolution (sim/pokemon.ts:1418, :1559).
+    #[cfg(feature = "ps-rng")]
+    fn ps_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
+        let s = self.side(side);
+        let m = s.active_mon(slot)?;
+        if !m.is_alive() {
+            return Some(m.stats.spe as i64);
+        }
+        let i = *s.active.get(slot)? as usize;
+        Some(self.ps_speed_cache[side as usize].get(i).copied().unwrap_or(m.stats.spe as i64))
+    }
+
+    /// `ps-rng` only: PS `Pokemon.updateSpeed()` for one active slot.
+    #[cfg(feature = "ps-rng")]
+    pub(crate) fn ps_update_speed(&mut self, side: SideRef, slot: usize) {
+        let Some(spe) = self.ps_live_speed(side, slot) else { return };
+        let i = self.side(side).active[slot] as usize;
+        if i < 6 {
+            self.ps_speed_cache[side as usize][i] = spe;
+        }
+    }
+
+    /// `ps-rng` only: PS `Battle.updateSpeed()`, every living active.
+    #[cfg(feature = "ps-rng")]
+    pub(crate) fn ps_update_speed_all(&mut self) {
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
+                    self.ps_update_speed(side, slot);
+                }
+            }
+        }
+    }
+
+    /// `ps-rng` only: `setSpecies` resets the cache to the raw Speed stat.
+    #[cfg(feature = "ps-rng")]
+    pub(crate) fn ps_reset_speed(&mut self, side: SideRef, slot: usize) {
+        let s = self.side(side);
+        let Some(m) = s.active_mon(slot) else { return };
+        let (i, spe) = (s.active[slot] as usize, m.stats.spe as i64);
+        if i < 6 {
+            self.ps_speed_cache[side as usize][i] = spe;
+        }
     }
 
     /// `ps-rng` only: draw PS's Fisher-Yates shuffles for a list already
@@ -2285,6 +2350,7 @@ self.trigger_emergency_exits();
         let mut len = 0usize;
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n_active {
+                self.ps_update_speed(side, slot);
                 let Some(spe) = self.ps_speed(side, slot) else { continue };
                 // comparePriority(new, cur) <= 0  <=>  new.speed >= cur.speed
                 let first = (0..len).find(|&i| spe >= queue[i]);
@@ -2321,6 +2387,8 @@ self.trigger_emergency_exits();
     /// stream advance. Sides commit p1 then p2, slots in order.
     #[cfg(feature = "ps-rng")]
     fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
+        // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
+        self.ps_update_speed_all();
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
             for c in choices {
@@ -2491,6 +2559,7 @@ self.trigger_emergency_exits();
         if !next_is_move {
             return;
         }
+        self.ps_update_speed_all();
         let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
         let mut k = 0;
         for a in rest.iter().take(4) {
@@ -2852,6 +2921,7 @@ self.trigger_emergency_exits();
         if !(self.p1.is_defeated() || self.p2.is_defeated()) {
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
+                self.ps_update_speed_all();
                 self.ps_residual_ties();
             }
             let hp_before = self.active_hp_snapshot();
@@ -3081,6 +3151,12 @@ self.trigger_emergency_exits();
         let mega_ability = stone.mega_ability_id;
         // Forme + recomputed stats (Speed feeds the upcoming `action_order`).
         self.set_forme(side, actor_slot, mega_species, true);
+        // formeChange -> setSpecies caches the forme's raw Speed stat
+        // (sim/pokemon.ts:1418).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_reset_speed(side, slot);
+        }
         // Overwrite the base ability so it survives switching out and back;
         // clear any transient override (e.g. a prior Skill Swap) so the mega
         // ability is the live one.
@@ -3196,6 +3272,12 @@ self.trigger_emergency_exits();
     /// So every replacement is on the field before any of their abilities
     /// or items activate.
     fn apply_replacement_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        // The switch request's commitChoices starts with updateSpeed()
+        // (sim/battle.ts:2999).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_update_speed_all();
+        }
         let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
         let mut n = 0usize;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
@@ -3502,6 +3584,13 @@ self.trigger_emergency_exits();
             }
         } else {
             return false;
+        }
+        // switchIn queues the runSwitch with insertChoice, which caches the
+        // incoming mon's Speed (sim/battle-queue.ts:379); a drag
+        // (force_switch_random) skips it.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_update_speed(side, actor_slot as usize);
         }
         // Apply switch-in hazards. PS runs hazards BEFORE ability triggers
         // (which fire in `apply_switches` / caller after this returns).
@@ -3863,6 +3952,8 @@ self.trigger_emergency_exits();
     /// (e.g. there is no alive bench mon), the user just stays in —
     /// matches PS's "no eligible replacement → switch fails silently".
     fn apply_self_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
+        #[cfg(feature = "ps-rng")]
+        let mut ps_committed = false;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             // Build "deferred" set: Switches that came AFTER a Move for
             // the same slot. Identical predicate as apply_switches above.
@@ -3946,6 +4037,13 @@ self.trigger_emergency_exits();
                 };
                 consumed[pos] = true;
                 self.mid_turn_picks_used[side as usize] |= 1 << pos;
+                // The mid-turn switch request's commitChoices starts with
+                // updateSpeed() (sim/battle.ts:2999).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() && !ps_committed {
+                    ps_committed = true;
+                    self.ps_update_speed_all();
+                }
                 let team_index = deferred[pos].1;
                 if revives {
                     self.revive_party_member(side, Some(team_index));
@@ -10962,6 +11060,13 @@ self.trigger_emergency_exits();
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
+        // dragIn runs runSwitch directly, without insertChoice's
+        // updateSpeed: the mon keeps the raw Speed its last clearVolatile
+        // cached (sim/battle-actions.ts:161-165).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_reset_speed(side, slot as usize);
+        }
         self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
@@ -17842,6 +17947,37 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 9, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_update_sorts_use_the_speed_cached_before_the_move() {
+        // PS speed-sorts on `Pokemon.speed`, cached by updateSpeed() at
+        // commitChoices and before each gen-8+ re-sort (sim/battle.ts:2999,
+        // :2921), not on live Speed. Two tied Snorlax, Icy Wind then Tackle:
+        // Icy Wind's two hit-loop Updates and its runAction Update still see
+        // the tie (the drop isn't cached yet); the re-sort caches it, so
+        // Tackle's Updates and the residual draw nothing. PS draws 7
+        // shuffles on turn 1; the engine leaves out commitChoices'
+        // queue.sort (docs/accuracy/ps-rng.md), so 6.
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["icywind"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].boosts[4], -1);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 6, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
