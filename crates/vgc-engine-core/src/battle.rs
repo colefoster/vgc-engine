@@ -6690,8 +6690,14 @@ self.trigger_emergency_exits();
             // a Tera-Rock mon also gets the boost; PS reads `hasType`
             // which follows the same convention.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sandstorm_(move)>.
+            // Mega Sol (Champions): while the attacker has it, PS
+            // `Pokemon.effectiveWeather` (sim/pokemon.ts) reports 'sunnyday'
+            // for Weather-sourced reads, so neither boost below applies.
+            let mega_sol_attacker =
+                attacker.effective_ability_id() == data::ability_id::MEGASOL;
             if matches!(self.effective_weather(), crate::weather::Weather::Sand)
                 && m.category == 1
+                && !mega_sol_attacker
             {
                 let (eff_types, eff_num) = defender.effective_types();
                 let is_rock = (0..eff_num as usize).any(|i| eff_types[i] == 12);
@@ -6711,6 +6717,7 @@ self.trigger_emergency_exits();
             // hasType. Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Snow_(weather_condition)>.
             if matches!(self.effective_weather(), crate::weather::Weather::Snow)
                 && m.category == 0
+                && !mega_sol_attacker
             {
                 let (eff_types, eff_num) = defender.effective_types();
                 let is_ice = (0..eff_num as usize).any(|i| eff_types[i] == 5);

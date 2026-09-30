@@ -1625,6 +1625,21 @@ mod tests {
     }
 
     #[test]
+    fn mega_sol_attacker_turns_off_the_sand_spd_boost() {
+        // PS sim/pokemon.ts effectiveWeather: while the active Pokemon has
+        // Mega Sol, a Weather/Move-sourced read sees 'sunnyday', so the
+        // sandstorm onModifySpD Rock boost (data/conditions.ts) is off. PS
+        // champions sim row for a real gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Meganium-Mega / Mega Sol / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Tyranitar-Mega / Jolly / 12 HP / 252 Atk / 252 Spe").unwrap();
+        let f = Field { weather: Weather::Sand, spread: true, ..Field::none() };
+        assert_eq!(
+            calc(&atk, &def, "dazzlinggleam", f).unwrap().rolls,
+            [96, 96, 98, 98, 98, 102, 102, 102, 104, 104, 108, 108, 108, 110, 110, 114]
+        );
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
