@@ -3372,6 +3372,12 @@ self.trigger_emergency_exits();
             // Pursuit interception — an opposing Pursuit user hits this
             // voluntary switcher BEFORE it leaves, at 2× BP.
             self.try_pursuit_interception(side, actor_slot, opp_choices);
+            // switchIn: a living mon leaving by choice runs BeforeSwitchOut
+            // and eachEvent('Update') first (sim/battle-actions.ts:80-84).
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| m.is_alive()) {
+                self.ps_active_ties(false, "shuffle");
+            }
             if self.do_switch(side, actor_slot, team_index) {
                 // PS: the switch action ends with eachEvent('Update'); the
                 // queued runSwitch then speed-sorts all actives.
@@ -18151,6 +18157,33 @@ mod tests {
         );
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         assert_eq!(trace.len(), 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_a_switch_runs_the_before_switch_out_update() {
+        // switchIn runs BeforeSwitchOut and eachEvent('Update') before a
+        // living mon leaves by choice (sim/battle-actions.ts:80-84). Tied
+        // Snorlax, a switch to another Snorlax vs Calm Mind: BeforeTurn,
+        // Update, that Update, the switch's Update, runSwitch's sort and
+        // Update, Calm Mind's three, the residual's: PS draws 10 shuffles.
+        let mut rng = Rng::ps("sodium,0000000000000000000000000000000c").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 10, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
