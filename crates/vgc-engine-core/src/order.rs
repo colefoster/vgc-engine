@@ -532,7 +532,7 @@ fn move_slot_of(choice: Choice) -> Option<u8> {
 /// getActionSpeed recomputes it (sim/battle.ts:2641-2647): the move's
 /// priority, Prankster on a status move, Grassy Glide on grounded users in
 /// Grassy Terrain. Mirrors [`schedule_move`] without its Quick Claw roll.
-fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8) -> i32 {
+pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8) -> i32 {
     let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return 0 };
     let mid = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
         data::move_id::STRUGGLE

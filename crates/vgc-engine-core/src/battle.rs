@@ -2486,25 +2486,94 @@ self.trigger_emergency_exits();
                 self.ps_get_target_draw(side, actor_slot, move_id, None);
             }
         }
-        // commitChoices -> queue.sort(): ties among switch actions (order
-        // 103, the leaving mon's Speed) are shuffled here; move ties are
-        // re-drawn at the re-sort right before the first move (below).
-        let mut keys = [0i64; 4];
+        // commitChoices -> queue.sort() (sim/battle.ts:3019): one speedSort
+        // over every queued action by (order, priority, Speed)
+        // (comparePriority, sim/battle.ts:404). Ties: switches (order 103,
+        // the leaving mon's Speed), Mega Evolution (104) and Terastallize
+        // (106) actions (sim/battle-queue.ts:174-197), and moves (200)
+        // sharing priority, fractional
+        // priority and Speed. Speed is the cached value commitChoices just
+        // refreshed, before any switch or Mega Evolution this turn.
+        // Quick Claw / Quick Draw rolls are not modelled here (frac 0).
+        let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
         let mut k = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let mut moved = [false; 2];
             for c in choices {
-                if let Choice::Switch { actor_slot, .. } = *c {
-                    if k < 4 {
-                        if let Some(sp) = self.ps_speed(side, actor_slot as usize) {
-                            keys[k] = sp;
-                            k += 1;
-                        }
+                let slot = c.actor_slot() as usize;
+                if slot >= self.format().active_count() || moved[slot.min(1)] {
+                    continue; // a later choice for a slot is a mid-turn pick
+                }
+                let Some(spe) = self.ps_speed(side, slot) else { continue };
+                if !self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
+                    continue;
+                }
+                let mut push = |key: (i64, i64, i64, i64)| {
+                    if k < keys.len() {
+                        keys[k] = key;
+                        k += 1;
                     }
+                };
+                match *c {
+                    Choice::Switch { .. } => {
+                        moved[slot.min(1)] = true;
+                        push((103, 0, 0, -spe));
+                    }
+                    Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
+                        moved[slot.min(1)] = true;
+                        match *c {
+                            Choice::Terastallize { .. } => push((106, 0, 0, -spe)),
+                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe)),
+                            _ => {}
+                        }
+                        let pri = crate::order::state_priority(self, side, slot as u8, move_slot) as i64;
+                        let m = self.side(side).active_mon(slot).expect("checked above");
+                        let status = m
+                            .moves
+                            .get(move_slot as usize)
+                            .is_some_and(|&id| id != u16::MAX && self.moves()[id as usize].category == 2);
+                        // Fractional priority (data/items.ts custapberry,
+                        // laggingtail, fullincense; data/abilities.ts
+                        // myceliummight), in tenths.
+                        let frac = if m.item_id == data::item_id::CUSTAPBERRY
+                            && m.current_hp * 4 <= m.stats.hp
+                            && crate::item::can_eat_berry(self, side, m.item_id)
+                        {
+                            1
+                        } else if m.item_id == data::item_id::LAGGINGTAIL
+                            || m.item_id == data::item_id::FULLINCENSE
+                            || (status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
+                        {
+                            -1
+                        } else {
+                            0
+                        };
+                        push((200, -pri, -frac, -spe));
+                    }
+                    Choice::Pass { .. } => {}
                 }
             }
         }
-        keys[..k].sort_unstable_by(|a, b| b.cmp(a));
-        let _ = self.ps_shuffle_ties(&keys[..k], "shuffle");
+        keys[..k].sort_unstable();
+        let mut tie = [0i64; 12];
+        let mut g = 0i64;
+        for i in 0..k {
+            if i > 0 && keys[i] != keys[i - 1] {
+                g += 1;
+            }
+            tie[i] = -g;
+        }
+        let mut st = 0;
+        while st < k {
+            let mut end = st + 1;
+            while end < k && tie[end] == tie[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
         // beforeTurn action: eachEvent('BeforeTurn') + the post-action
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
@@ -18110,9 +18179,8 @@ mod tests {
         // :2921), not on live Speed. Two tied Snorlax, Icy Wind then Tackle:
         // Icy Wind's two hit-loop Updates and its runAction Update still see
         // the tie (the drop isn't cached yet); the re-sort caches it, so
-        // Tackle's Updates and the residual draw nothing. PS draws 7
-        // shuffles on turn 1; the engine leaves out commitChoices'
-        // queue.sort (docs/accuracy/ps-rng.md), so 6.
+        // Tackle's Updates and the residual draw nothing. With
+        // commitChoices' queue.sort tie, PS draws 7 shuffles on turn 1.
         let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
         rng.ps_mut().unwrap().enable_trace();
         let mut b = Battle::with_rng(
@@ -18130,7 +18198,7 @@ mod tests {
         assert_eq!(b.p2.team[0].boosts[4], -1);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
-        assert_eq!(shuffles, 6, "{trace:#?}");
+        assert_eq!(shuffles, 7, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
