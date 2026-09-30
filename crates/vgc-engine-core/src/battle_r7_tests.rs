@@ -480,3 +480,17 @@ fn stab_follows_the_current_type_after_protean() {
     let (protean, overgrow) = (run("protean"), run("overgrow"));
     assert!(protean * 4 < overgrow * 3, "Normal-type Protean user: {protean} vs Grass STAB {overgrow}");
 }
+
+#[test]
+fn feint_rolls_accuracy_against_a_protecting_target() {
+    // Protect doesn't stop Feint in hitStepTryHitEvent, so hitStepAccuracy
+    // rolls for it as for any 100%-accurate move.
+    let mut b = singles(
+        r#"[{"species":"weavile","level":50,"ability":"pressure","moves":["feint"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["protect"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::FEINT), 1);
+}
