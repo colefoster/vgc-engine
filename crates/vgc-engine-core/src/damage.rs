@@ -392,39 +392,6 @@ impl DamagePipeline {
         self.current = ctx.apply_friend_guard(self.current);
     }
 
-    /// Thick Fat (Snorlax / Mamoswine / Goodra-H): defender ability
-    /// halves Fire / Ice incoming damage. Breakable.
-    /// PS `data/abilities.ts:thickfat` `onSourceModifyAtk` /
-    /// `onSourceModifySpA` chainModify(0.5) on Fire (type 1) / Ice (type 5).
-    /// Halving the offensive stat is mathematically equivalent to halving
-    /// final damage; we just do the latter.
-    #[inline]
-    pub fn apply_thick_fat(&mut self) {
-        if self.fixed || self.current == 0 {
-            return;
-        }
-        let inp = &self.inputs;
-        if inp.defender_ability_id == crate::data::ability_id::THICKFAT
-            && !inp.attacker_breaks_mold
-            && (inp.move_type == 1 || inp.move_type == 5)
-        {
-            self.current /= 2;
-        }
-    }
-
-    /// Water Bubble (defender side): halves Fire-type incoming damage.
-    /// NOT on PS's breakable list — Mold Breaker does NOT bypass.
-    /// PS `data/abilities.ts:waterbubble` chainModify(0.5) on Fire.
-    #[inline]
-    pub fn apply_water_bubble(&mut self) {
-        if self.fixed || self.current == 0 {
-            return;
-        }
-        let inp = &self.inputs;
-        if inp.defender_ability_id == crate::data::ability_id::WATERBUBBLE && inp.move_type == 1 {
-            self.current /= 2;
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,23 +543,37 @@ pub fn effectiveness_for_move_type(
     move_type: u8,
     defender: &Pokemon,
 ) -> TypeEff {
-    effectiveness_ex(move_id, move_type, defender, false)
+    effectiveness_inner(move_id, move_type, defender, false)
 }
 
-/// [`effectiveness_for_move_type`] for a known attacker: Scrappy and Mind's
-/// Eye (data/abilities.ts scrappy / mindseye onModifyMove) set
-/// `ignoreImmunity` for Fighting and Normal moves, so a Ghost type's
-/// immunity counts as neutral.
-pub fn effectiveness_vs(move_id: u16, move_type: u8, attacker: &Pokemon, defender: &Pokemon) -> TypeEff {
-    let scrappy = matches!(move_type, 0 | 6)
-        && matches!(
-            attacker.effective_ability_id(),
-            data::ability_id::SCRAPPY | data::ability_id::MINDSEYE
-        );
-    effectiveness_ex(move_id, move_type, defender, scrappy)
+/// [`effectiveness_for_move_type`] from `attacker`'s side: Scrappy and
+/// Mind's Eye make Normal- and Fighting-type moves ignore the Ghost type's
+/// immunity (PS data/abilities.ts scrappy / mindseye `onModifyMove`:
+/// `move.ignoreImmunity['Fighting'] = true; ['Normal'] = true`), so the
+/// Ghost slot contributes ×1 and the other type still counts.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scrappy_(Ability)>.
+pub fn effectiveness_for_attack(
+    attacker: &Pokemon,
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+) -> TypeEff {
+    let ab = attacker.effective_ability_id();
+    let ignore_ghost = (move_type == TYPE_NORMAL || move_type == TYPE_FIGHTING)
+        && (ab == data::ability_id::SCRAPPY || ab == data::ability_id::MINDSEYE);
+    effectiveness_inner(move_id, move_type, defender, ignore_ghost)
 }
 
-fn effectiveness_ex(move_id: u16, move_type: u8, defender: &Pokemon, scrappy: bool) -> TypeEff {
+const TYPE_NORMAL: u8 = 0;
+const TYPE_FIGHTING: u8 = 6;
+const TYPE_GHOST: usize = 13;
+
+fn effectiveness_inner(
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+    ignore_ghost: bool,
+) -> TypeEff {
     let (def_eff_types, def_eff_num) = defender.effective_types();
     // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
     // demoted to a neutral (×1) contribution rather than zeroing the hit.
@@ -660,8 +641,7 @@ fn effectiveness_ex(move_id: u16, move_type: u8, defender: &Pokemon, scrappy: bo
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
-                    3 if scrappy && def_type == 13 && atk_type == 6 => {}
-                    3 => immune = !negate_immunity,
+                    3 => immune |= !negate_immunity && !(ignore_ghost && def_type == TYPE_GHOST),
                     other => unreachable!("bad type-chart code {other}"),
                 }
             }
@@ -699,8 +679,7 @@ fn effectiveness_ex(move_id: u16, move_type: u8, defender: &Pokemon, scrappy: bo
                 0 => {}
                 1 => weak += 1,
                 2 => resist += 1,
-                3 if scrappy && def_type == 13 => {}
-                3 => immune = !negate_immunity,
+                3 => immune |= !negate_immunity && !(ignore_ghost && def_type == TYPE_GHOST),
                 other => unreachable!("bad type-chart code {other}"),
             }
         }
@@ -1472,19 +1451,6 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
 
-    // Fire Mane (Pokémon Champions, Mega Pyroar) — a flat same-type power
-    // boost (NOT an -ate conversion): the holder's Fire-type moves (type
-    // code 1) gain ×1.5 power. Same shape as the existing type-boost
-    // abilities; ×1.5 = 6144/4096 in chainModify space. Verified at
-    // serebii.net/pokemonchampions/newabilities.shtml ("Boosts the power of
-    // the Pokémon's Fire-type moves by 50%.").
-    if move_type == 1
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::FIREMANE
-    {
-        bp_mod = chain_modify(bp_mod, 6144, 4096);
-    }
-
     // Sand Force — PS `data/abilities.ts:sandforce` `onBasePower` returns
     // `chainModify([5325, 4096])` (×1.3) on Rock/Ground/Steel moves while
     // Sand is up. Move-type codes: Ground=8, Rock=12, Steel=16. Damage
@@ -2111,6 +2077,28 @@ pub(crate) fn calculate_damage_with_bp(
         a = (a * 6144 / 4096).max(1);
     }
 
+    // Fire Mane (Pokémon Champions, Mega Pyroar) — PS `data/abilities.ts:
+    // firemane` `onModifyAtk` / `onModifySpA`: `if (move.type === 'Fire')
+    // return this.chainModify(1.5)`. An attack-stat modifier, not a
+    // base-power one (the two round differently). Not breakable.
+    if move_type == 1 && attacker.effective_ability_id() == data::ability_id::FIREMANE {
+        a = (a * 6144 / 4096).max(1);
+    }
+
+    // Thick Fat / Water Bubble (defender) — PS `data/abilities.ts:thickfat`
+    // (Fire / Ice) and `waterbubble` (Fire) `onSourceModifyAtk` /
+    // `onSourceModifySpA` chainModify(0.5): the attacker's stat is halved,
+    // not the final damage (the rounding differs). Both `breakable: 1`.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>,
+    // <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
+    let def_ab = defender.effective_ability_id();
+    if !attacker_breaks_mold
+        && ((def_ab == data::ability_id::THICKFAT && (move_type == 1 || move_type == 5))
+            || (def_ab == data::ability_id::WATERBUBBLE && move_type == 1))
+    {
+        a = (a / 2).max(1);
+    }
+
     // Huge Power / Pure Power — PS `data/abilities.ts:hugepower` / `purepower`:
     //   onModifyAtkPriority: 5,
     //   onModifyAtk(atk) { return this.chainModify(2); }
@@ -2127,6 +2115,15 @@ pub(crate) fn calculate_damage_with_bp(
             attacker.effective_ability_id(),
             data::ability_id::HUGEPOWER | data::ability_id::PUREPOWER
         )
+    {
+        a = (a * 2).max(1);
+    }
+
+    // Light Ball — PS `data/items.ts:lightball` onModifyAtk / onModifySpA
+    // chainModify(2) when the holder's base species is Pikachu (any forme).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Light_Ball>.
+    if attacker.effective_item_id() == data::item_id::LIGHTBALL
+        && attacker.species().slug.starts_with("pikachu")
     {
         a = (a * 2).max(1);
     }
@@ -2257,11 +2254,6 @@ pub(crate) fn calculate_damage_with_bp(
     // <https://bulbapedia.bulbagarden.net/wiki/Sniper_(Ability)>.
     if ctx.crit {
         dmg = dmg * 3 / 2;
-        let sniper = attacker.ability_id != u16::MAX
-            && attacker.ability_id == data::ability_id::SNIPER;
-        if sniper {
-            dmg = dmg * 6144 / 4096;
-        }
     }
 
     // Random
@@ -2350,7 +2342,7 @@ pub(crate) fn calculate_damage_with_bp(
     // Press / Stellar / Smack Down). Factored into
     // `effectiveness_for_move_type` so the Wonder Guard immunity gate can
     // share the exact same computation PS's `runEffectiveness` uses.
-    let eff = effectiveness_vs(move_id, move_type, attacker, defender);
+    let eff = effectiveness_for_attack(attacker, move_id, move_type, defender);
     if eff.is_immune() {
         return 0;
     }
@@ -2432,6 +2424,12 @@ pub(crate) fn calculate_damage_with_bp(
         && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
     {
         dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+
+    // Sniper — ×1.5 on a crit. PS `data/abilities.ts:sniper` onModifyDamage
+    // (in this chain, after the random roll — not beside the crit ×1.5).
+    if ctx.crit && attacker.effective_ability_id() == data::ability_id::SNIPER {
+        dmg_mod = chain_modify(dmg_mod, 3, 2);
     }
 
     // Filter / Solid Rock / Prism Armor — ×0.75 (= 3072/4096) on

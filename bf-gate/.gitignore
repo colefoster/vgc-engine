@@ -1,0 +1,7 @@
+# Gate inputs and outputs are large and regenerated; only the scripts are tracked.
+*.json
+*.jsonl
+*.log
+*.txt
+data/
+runner/target/
