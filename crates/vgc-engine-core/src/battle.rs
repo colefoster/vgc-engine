@@ -6035,8 +6035,8 @@ self.trigger_emergency_exits();
                 // Night Shade=Ghost fails on Normal. PS `runImmunity`
                 // via the type chart. The general fixed-damage value is
                 // computed at the crit/roll site below.
-                let eff = crate::damage::effectiveness_for_move_type(
-                    move_id, m.type_, &defender,
+                let eff = crate::damage::effectiveness_for_attack(
+                    &attacker, move_id, m.type_, &defender,
                 );
                 if eff.is_immune() {
                     continue;
@@ -6399,8 +6399,8 @@ self.trigger_emergency_exits();
                     let move_type = crate::damage::move_type_in_ctx(
                         &attacker, move_id, &eff_ctx,
                     );
-                    let eff = crate::damage::effectiveness_for_move_type(
-                        move_id, move_type, &defender,
+                    let eff = crate::damage::effectiveness_for_attack(
+                        &attacker, move_id, move_type, &defender,
                     );
                     let super_effective = matches!(
                         eff,
@@ -6470,7 +6470,7 @@ self.trigger_emergency_exits();
                 // 8 = Ground (grounding gate above); >= 18 = Stellar.
                 if move_type != 8
                     && move_type < 18
-                    && crate::damage::effectiveness_for_move_type(move_id, move_type, &defender).is_immune()
+                    && crate::damage::effectiveness_for_attack(&attacker, move_id, move_type, &defender).is_immune()
                 {
                     continue;
                 }
