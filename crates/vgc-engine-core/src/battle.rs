@@ -14839,6 +14839,35 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                 }
             }
+            data::move_id::ENTRAINMENT => {
+                // PS data/moves.ts:4859 entrainment. onTryHit (before the
+                // accuracy roll) fails against the user itself, a target that
+                // already has the user's ability, a cantsuppress or Truant
+                // target, or when the user's ability is `noentrain`. onHit
+                // runs target.setAbility(source.ability), whose onStart fires
+                // (sim/pokemon.ts:1943). A Substitute stops it after the roll.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Entrainment_(move)>
+                let Some((ts, tslot)) = opp_target else { return };
+                let src = self.side(actor_side).active_mon(actor_slot as usize).map(current_ability).unwrap_or(u16::MAX);
+                let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
+                if (ts == actor_side && tslot == actor_slot)
+                    || cur == src
+                    || ps_cantsuppress(cur)
+                    || cur == data::ability_id::TRUANT
+                    || ps_noentrain(src)
+                {
+                    self.ps_status_failed();
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                let behind_sub = ts != actor_side
+                    && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                if behind_sub || !self.set_ability_by_move(ts, tslot, src) {
+                    self.ps_status_failed();
+                    return;
+                }
+                crate::ability::on_start(self, ts, tslot);
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced
@@ -15818,6 +15847,23 @@ self.trigger_emergency_exits();
 /// suppressed (Gastro Acid, Neutralizing Gas).
 fn current_ability(m: &Pokemon) -> u16 {
     if m.ability_override != u16::MAX { m.ability_override } else { m.ability_id }
+}
+
+/// Abilities with PS's `noentrain` flag (data/abilities.ts at a5df8274,
+/// Champions dex): Entrainment fails when its user has one.
+fn ps_noentrain(a: u16) -> bool {
+    use data::ability_id as A;
+    matches!(
+        a,
+        A::ASONEGLASTRIER | A::ASONESPECTRIER | A::BATTLEBOND | A::COMATOSE | A::COMMANDER
+            | A::DISGUISE | A::EMBODYASPECTCORNERSTONE | A::EMBODYASPECTHEARTHFLAME
+            | A::EMBODYASPECTTEAL | A::EMBODYASPECTWELLSPRING | A::FLOWERGIFT | A::FORECAST
+            | A::HUNGERSWITCH | A::ICEFACE | A::ILLUSION | A::IMPOSTER | A::MULTITYPE
+            | A::NEUTRALIZINGGAS | A::POISONPUPPETEER | A::POWERCONSTRUCT | A::POWEROFALCHEMY
+            | A::PROTOSYNTHESIS | A::QUARKDRIVE | A::RECEIVER | A::RKSSYSTEM | A::SCHOOLING
+            | A::SHIELDSDOWN | A::STANCECHANGE | A::TERAFORMZERO | A::TERASHELL | A::TERASHIFT
+            | A::TRACE | A::WONDERGUARD | A::ZENMODE | A::ZEROTOHERO
+    )
 }
 
 /// Abilities with PS's `cantsuppress` flag (data/abilities.ts at a5df8274,

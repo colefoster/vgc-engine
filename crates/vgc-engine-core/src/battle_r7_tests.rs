@@ -97,3 +97,49 @@ fn simple_beam_rolls_accuracy_and_is_stopped_by_a_substitute() {
     assert_eq!(accuracy_rolls(&b, data::move_id::SIMPLEBEAM), 1);
     assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::THICKFAT);
 }
+
+#[test]
+fn entrainment_gives_the_ally_the_users_ability() {
+    // PS data/moves.ts:entrainment onHit: target.setAbility(source.ability).
+    // The sample's use: Hawlucha passes No Guard to its partner.
+    let mut b = doubles(
+        r#"[{"species":"hawlucha","level":50,"ability":"noguard","moves":["entrainment"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"pikachu","level":50,"ability":"static","moves":["growl"]},
+            {"species":"raichu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[1].effective_ability_id(), data::ability_id::NOGUARD);
+}
+
+#[test]
+fn entrained_intimidate_starts_on_the_target() {
+    // setAbility runs the gained ability's onStart (sim/pokemon.ts:1943).
+    let mut b = doubles(
+        r#"[{"species":"incineroar","level":50,"ability":"intimidate","moves":["entrainment"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"pikachu","level":50,"ability":"static","moves":["charm"]},
+            {"species":"raichu","level":50,"ability":"static","moves":["charm"]}]"#,
+        1,
+    );
+    let before = b.p2.team[0].boosts[0];
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p1.team[1].effective_ability_id(), data::ability_id::INTIMIDATE);
+    assert_eq!(b.p2.team[0].boosts[0], before - 1, "the entrained Intimidate fires on gain");
+}
+
+#[test]
+fn entrainment_fails_on_a_shared_ability_before_its_accuracy_roll() {
+    // PS entrainment onTryHit: target.ability === source.ability fails.
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["entrainment"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"pikachu","level":50,"ability":"static","moves":["growl"]},
+            {"species":"raichu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::ENTRAINMENT), 0);
+}

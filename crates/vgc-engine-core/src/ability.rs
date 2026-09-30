@@ -463,6 +463,12 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // Reading `effective_ability_id()` below makes the dispatch honor the
     // flag for free.
     recompute_neutralizing_gas(battle);
+    on_start(battle, side, slot);
+}
+
+/// The ability's `onStart`, which PS also runs when a move hands a mon a
+/// new ability (`Pokemon.setAbility`, sim/pokemon.ts:1943).
+pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     let ability_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) => m.effective_ability_id(),
         None => return,
