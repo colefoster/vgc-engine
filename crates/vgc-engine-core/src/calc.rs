@@ -1612,6 +1612,19 @@ mod tests {
     }
 
     #[test]
+    fn light_ball_doubles_pikachus_attacking_stats() {
+        // PS data/items.ts lightball: onModifyAtk / onModifySpA
+        // chainModify(2) when the holder's base species is Pikachu. PS
+        // champions sim row for a real gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Pikachu @ Light Ball / Lightning Rod / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Salamence-Mega / 252 HP / 252 Atk / 252 SpA / +1 Atk / +1 Spe / par").unwrap();
+        assert_eq!(
+            calc(&atk, &def, "thunderbolt", Field::none()).unwrap().rolls,
+            [94, 96, 97, 99, 99, 100, 102, 103, 103, 105, 106, 108, 108, 109, 111, 112]
+        );
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
