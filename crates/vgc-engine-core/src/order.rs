@@ -519,6 +519,100 @@ fn shuffle_tie_groups(entries: &mut [MoveEntry], rng: &mut Rng) {
     }
 }
 
+fn move_slot_of(choice: Choice) -> Option<u8> {
+    match choice {
+        Choice::Move { move_slot, .. }
+        | Choice::Terastallize { move_slot, .. }
+        | Choice::MegaEvolve { move_slot, .. } => Some(move_slot),
+        _ => None,
+    }
+}
+
+/// The state-derived part of a queued move's priority, as PS's
+/// getActionSpeed recomputes it (sim/battle.ts:2641-2647): the move's
+/// priority, Prankster on a status move, Grassy Glide on grounded users in
+/// Grassy Terrain. Mirrors [`schedule_move`] without its Quick Claw roll.
+fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8) -> i32 {
+    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return 0 };
+    let mid = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+        data::move_id::STRUGGLE
+    } else {
+        m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
+    };
+    let (base, category) = if mid == u16::MAX {
+        (0i32, 2u8)
+    } else {
+        let mv = &data::MOVES[mid as usize];
+        (mv.priority as i32, mv.category)
+    };
+    let mut pri = base;
+    if category == 2 && m.ability_id == data::ability_id::PRANKSTER {
+        pri += 1;
+    }
+    if mid == data::move_id::GRASSYGLIDE
+        && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
+        && m.is_grounded()
+    {
+        pri += 1;
+    }
+    pri
+}
+
+fn record_turn_keys(battle: &Battle, moves: &[MoveEntry], keys: &mut TurnKeys) {
+    for e in moves {
+        let a = e.4;
+        let Some(move_slot) = move_slot_of(a.choice) else { continue };
+        let (s, k) = (a.side as usize, (a.actor_slot as usize).min(1));
+        keys.qc_bump[s][k] = (-e.0 - state_priority(battle, a.side, a.actor_slot, move_slot)) as i8;
+        keys.frac[s][k] = e.1;
+    }
+}
+
+/// Gen-8+ dynamic re-sort (PS sim/battle.ts:2917-2924): after an action,
+/// when the next queued action is a move, PS refreshes every queued move's
+/// priority and Speed and re-sorts the queue by (order, priority, Speed)
+/// (sim/battle.ts:404 comparePriority). Re-sorts `order[after + 1..]` in
+/// place; ties keep their current relative order. Returns the sorted tail's
+/// tie keys (for PS's tie shuffle) and their count, or 0 when the tail is
+/// empty or holds a non-move action.
+pub(crate) fn resort_remaining(
+    battle: &Battle,
+    order: &mut ActionOrder,
+    after: usize,
+    keys: &TurnKeys,
+) -> ([(i8, i32, i8, i64); ACTION_INLINE_CAP], usize) {
+    let mut out = [(0i8, 0i32, 0i8, 0i64); ACTION_INLINE_CAP];
+    let s = order.as_mut_slice();
+    let start = after + 1;
+    if start >= s.len() || s.len() - start > ACTION_INLINE_CAP {
+        return (out, 0);
+    }
+    let n = s.len() - start;
+    let trick_room = battle.trick_room_turns > 0;
+    for (k, a) in s[start..].iter().enumerate() {
+        let Some(move_slot) = move_slot_of(a.choice) else { return (out, 0) };
+        let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
+        let pri = state_priority(battle, a.side, a.actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
+        let speed = battle
+            .side(a.side)
+            .active_mon(a.actor_slot as usize)
+            .map(|m| effective_speed(m, battle.side(a.side).conditions.tailwind_turns > 0, battle.weather) as i64)
+            .unwrap_or(0);
+        let speed_key = if trick_room { speed } else { -speed };
+        out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
+    }
+    // Stable insertion sort (n <= 8, heap-free): ties keep queue order.
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && out[j] < out[j - 1] {
+            out.swap(j, j - 1);
+            s.swap(start + j, start + j - 1);
+            j -= 1;
+        }
+    }
+    (out, n)
+}
+
 /// Resolve one turn's action order.
 ///
 /// `p1` and `p2` are the per-active-slot choices for each side. `Pass`
@@ -528,6 +622,32 @@ pub fn action_order(
     p1: &[Choice],
     p2: &[Choice],
     rng: &mut Rng,
+) -> ActionOrder {
+    let mut keys = TurnKeys::default();
+    action_order_keyed(battle, p1, p2, rng, &mut keys)
+}
+
+/// Per-slot sort keys fixed when the turn's queue is built, for the gen-8+
+/// re-sort ([`resort_remaining`]): the priority bump a Quick Claw roll gave
+/// and the fractional priority (Custap Berry, Quick Draw, Lagging Tail ...).
+/// PS decides `fractionalPriority` once, in resolveAction
+/// (sim/battle-queue.ts:249); the re-sort only refreshes priority
+/// (ModifyPriority) and Speed. `bias` is PS's action order for After You
+/// (3, first) and Quash (201, last).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnKeys {
+    pub qc_bump: [[i8; 2]; 2],
+    pub frac: [[i8; 2]; 2],
+    pub bias: [[i8; 2]; 2],
+}
+
+/// [`action_order`] that also records each queued move's [`TurnKeys`].
+pub(crate) fn action_order_keyed(
+    battle: &Battle,
+    p1: &[Choice],
+    p2: &[Choice],
+    rng: &mut Rng,
+    keys: &mut TurnKeys,
 ) -> ActionOrder {
     // Heap-spill path for pathologically large offline turns: the replay
     // scorer can cram a whole PS turn's worth of mid-turn replacement
@@ -564,6 +684,7 @@ pub fn action_order(
         // RNG-free), THEN shuffle genuine ties in place.
         moves.sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
         shuffle_tie_groups(&mut moves, rng);
+        record_turn_keys(battle, &moves, keys);
         let mut v = switches;
         v.extend(moves.into_iter().map(|t| t.4));
         return ActionOrder::Heap(v);
@@ -606,6 +727,7 @@ pub fn action_order(
     // THEN break genuine ties with a PS-faithful Fisher-Yates shuffle that
     // draws RNG only when ≥2 actions share the full sort key.
     shuffle_tie_groups(&mut moves[..n_move], rng);
+    record_turn_keys(battle, &moves[..n_move], keys);
     let mut out = ActionOrder::new();
     for s in &switches[..n_switch] {
         out.push(*s);

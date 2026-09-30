@@ -23,7 +23,7 @@ use crate::damage::{
     calculate_damage, type_effectiveness, DamageContext, DamagePipeline, PerHitInvariants, PostFormulaInputs,
 };
 use crate::format::Format;
-use crate::order::{action_order, ActionOrder, ScheduledAction};
+use crate::order::{ActionOrder, ScheduledAction};
 use crate::pokemon::{Pokemon, Status};
 use crate::rng::{Rng, RngDecision};
 use crate::side::{Side, SideRef};
@@ -373,6 +373,11 @@ pub struct Battle {
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
     pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    /// This turn's fixed per-slot sort keys (Quick Claw, fractional
+    /// priority, After You / Quash) for the gen-8+ re-sort. Rebuilt with
+    /// every turn's queue.
+    #[serde(skip)]
+    pub(crate) turn_keys: crate::order::TurnKeys,
     /// Set true for the duration of a single Pursuit switch-interception
     /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
     /// by the damage calc (BP ×2) and the accuracy block (no accuracy
@@ -629,6 +634,7 @@ impl Battle {
             magic_room_turns: 0,
             wonder_room_turns: 0,
             pending_queue_reorder: None,
+            turn_keys: crate::order::TurnKeys::default(),
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
@@ -1887,9 +1893,7 @@ impl Battle {
                     // action that actually executes (runAction returns early
                     // for a fainted or inactive user, and switches ran in the
                     // prologue).
-                    #[cfg(feature = "ps-rng")]
-                    let ps_ran = self.rng.is_ps()
-                        && matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                    let ran = matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
                         && self.side(order[idx].side).active_mon(order[idx].actor_slot as usize).is_some_and(|m| m.is_alive());
                     self.process_one_action(&mut order, idx, &mut pending_kind);
                     if let Some(pending) = self.pending_yield.take() {
@@ -1902,9 +1906,8 @@ impl Battle {
                     self.run_pending_drags();
 self.trigger_emergency_exits();
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
-                    #[cfg(feature = "ps-rng")]
-                    if ps_ran {
-                        self.ps_after_move_action(&order, idx);
+                    if ran {
+                        self.after_move_action(&mut order, idx);
                     }
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
@@ -1930,6 +1933,7 @@ self.trigger_emergency_exits();
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
                 if self.decision_phases { self.apply_self_switches(p1, p2); }
+                self.after_move_action(&mut order, idx);
                 idx += 1;
                 cursor.phase = StepPhase::ActionLoop {
                     p1, p2, order, idx, pending_kind,
@@ -2575,12 +2579,26 @@ self.trigger_emergency_exits();
         }
     }
 
-    /// `ps-rng` only: what PS does between a move action and the next one —
-    /// `eachEvent('Update')` speed ties, then (if another move is queued)
-    /// the dynamic re-sort: `getTarget` per queued move and a tie shuffle
-    /// among the remaining moves that still share priority and Speed.
+    /// What PS does between an executed move action and the next action
+    /// (sim/battle.ts:2861-2924): `eachEvent('Update')`, then, when the next
+    /// queued action is a move, the gen-8+ dynamic re-sort. Under `ps-rng`
+    /// it also draws the Update's speed ties, `updateSpeed()`, each queued
+    /// move's `getTarget` and the re-sort's tie shuffle.
+    fn after_move_action(&mut self, order: &mut ActionOrder, idx: usize) {
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_after_move_action(order, idx);
+            return;
+        }
+        let keys = self.turn_keys;
+        let _ = crate::order::resort_remaining(self, order, idx, &keys);
+    }
+
+    /// `ps-rng` only: [`Battle::after_move_action`] with PS's draws — the
+    /// Update ties, then (if another move is queued) `updateSpeed()`,
+    /// `getTarget` per queued move, and the re-sort's shuffle of tied moves.
     #[cfg(feature = "ps-rng")]
-    fn ps_after_move_action(&mut self, order: &ActionOrder, idx: usize) {
+    fn ps_after_move_action(&mut self, order: &mut ActionOrder, idx: usize) {
         self.ps_active_ties(false, "shuffle");
         let rest = &order[idx + 1..];
         // runAction re-sorts when the next queued action (queue.peek()) is a
@@ -2602,25 +2620,24 @@ self.trigger_emergency_exits();
             k += 1;
         }
         self.ps_resort_get_targets(&acts[..k]);
-        // Tie groups among the remaining moves: equal base priority and
-        // equal Speed (the engine's order already sorted them together).
-        let mut keys = [0i64; 4];
-        let mut n = 0;
-        for a in &acts[..k] {
-            let (slot, move_slot) = match a.choice {
-                Choice::Move { actor_slot, move_slot, .. }
-                | Choice::Terastallize { actor_slot, move_slot, .. }
-                | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
-                _ => continue,
-            };
-            let Some(mon) = self.side(a.side).active_mon(slot as usize) else { continue };
-            let pri = mon.moves.get(move_slot as usize).map(|&id| if id == u16::MAX { 0 } else { self.moves()[id as usize].priority as i64 }).unwrap_or(0);
-            let spe = self.ps_speed(a.side, slot as usize).unwrap_or(0);
-            keys[n] = pri * 100_000 + spe;
-            n += 1;
+        let keys = self.turn_keys;
+        let (sorted, n) = crate::order::resort_remaining(self, order, idx, &keys);
+        // queue.sort()'s speedSort shuffles each run of tied moves.
+        let mut tie = [0i64; 8];
+        let mut g = 0i64;
+        for i in 0..n {
+            if i > 0 && sorted[i] != sorted[i - 1] {
+                g += 1;
+            }
+            tie[i] = -g;
         }
-        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
-        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+        let perm = self.ps_shuffle_ties(&tie[..n], "shuffle");
+        let tail = &mut order.as_mut_slice()[idx + 1..];
+        let mut tmp = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 8];
+        for i in 0..n {
+            tmp[i] = tail[perm[i] as usize];
+        }
+        tail[..n].copy_from_slice(&tmp[..n]);
     }
 
     fn turn_prologue(
@@ -2711,7 +2728,9 @@ self.trigger_emergency_exits();
             self.ps_resort_get_targets(&acts[..k]);
         }
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
-        let order = action_order(self, p1_choices, p2_choices, &mut rng);
+        let mut keys = crate::order::TurnKeys::default();
+        let order = crate::order::action_order_keyed(self, p1_choices, p2_choices, &mut rng, &mut keys);
+        self.turn_keys = keys;
         self.rng = rng;
         // Consume Custap Berry for any holder whose `onFractionalPriority`
         // fired this turn. PS `data/items.ts:custapberry` consumes the
@@ -10446,6 +10465,9 @@ self.trigger_emergency_exits();
         // advancing — a no-op when the target already acted.
         if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
             order.reorder_remaining(idx, rside, rslot, to_front);
+            // PS gives the action order 3 (After You) or 201 (Quash), which
+            // the gen-8+ re-sort keeps (sim/battle-queue.ts:290).
+            self.turn_keys.bias[rside as usize][(rslot as usize).min(1)] = if to_front { -1 } else { 1 };
         }
         // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
         // binds queued actions and their targets to the Pokémon object,
@@ -10483,6 +10505,10 @@ self.trigger_emergency_exits();
             }
             pending_kind[sw_side as usize].swap(0, 1);
             self.pursuit_consumed[sw_side as usize].swap(0, 1);
+            let k = &mut self.turn_keys;
+            k.qc_bump[sw_side as usize].swap(0, 1);
+            k.frac[sw_side as usize].swap(0, 1);
+            k.bias[sw_side as usize].swap(0, 1);
         }
     }
 
@@ -18884,6 +18910,34 @@ mod tests {
         assert!(b.p1.team[0].stats.spe > base_spe + 1, "mega Speed exceeds the foe");
         let post = crate::order::action_order(&b, &p1c, &p2c, &mut rng);
         assert_eq!(post[0].side, SideRef::P1, "mega Manectric outspeeds the foe");
+    }
+
+    #[test]
+    fn tailwind_mid_turn_reorders_the_remaining_moves() {
+        // Gen 8+: after each action PS refreshes the queued moves' Speed and
+        // re-sorts the queue (sim/battle.ts:2917-2924). A Prankster Tailwind
+        // doubles Snorlax's Speed past the foe's before either attacks, so
+        // Snorlax KOs the 1-HP foe first and takes no damage.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","moves":["tailwind"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"blissey","level":50,"ability":"naturalcure","moves":["tackle"]},
+            {"species":"chansey","level":50,"ability":"naturalcure","moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+        let spe = b.p1.team[1].stats.spe;
+        b.p2.team[0].stats.spe = spe + 1;
+        b.p2.team[1].stats.spe = 1;
+        b.p1.team[0].stats.spe = 1;
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 1)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].fainted);
+        assert_eq!(b.p1.team[1].current_hp, b.p1.team[1].stats.hp, "Snorlax moved first under Tailwind");
     }
 
     #[test]
