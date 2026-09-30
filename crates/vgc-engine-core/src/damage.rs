@@ -575,6 +575,37 @@ pub fn effectiveness_for_move_type(
     move_type: u8,
     defender: &Pokemon,
 ) -> TypeEff {
+    effectiveness_inner(move_id, move_type, defender, false)
+}
+
+/// [`effectiveness_for_move_type`] from `attacker`'s side: Scrappy and
+/// Mind's Eye make Normal- and Fighting-type moves ignore the Ghost type's
+/// immunity (PS data/abilities.ts scrappy / mindseye `onModifyMove`:
+/// `move.ignoreImmunity['Fighting'] = true; ['Normal'] = true`), so the
+/// Ghost slot contributes ×1 and the other type still counts.
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scrappy_(Ability)>.
+pub fn effectiveness_for_attack(
+    attacker: &Pokemon,
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+) -> TypeEff {
+    let ab = attacker.effective_ability_id();
+    let ignore_ghost = (move_type == TYPE_NORMAL || move_type == TYPE_FIGHTING)
+        && (ab == data::ability_id::SCRAPPY || ab == data::ability_id::MINDSEYE);
+    effectiveness_inner(move_id, move_type, defender, ignore_ghost)
+}
+
+const TYPE_NORMAL: u8 = 0;
+const TYPE_FIGHTING: u8 = 6;
+const TYPE_GHOST: usize = 13;
+
+fn effectiveness_inner(
+    move_id: u16,
+    move_type: u8,
+    defender: &Pokemon,
+    ignore_ghost: bool,
+) -> TypeEff {
     let (def_eff_types, def_eff_num) = defender.effective_types();
     // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
     // demoted to a neutral (×1) contribution rather than zeroing the hit.
@@ -642,7 +673,7 @@ pub fn effectiveness_for_move_type(
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
-                    3 => immune = !negate_immunity,
+                    3 => immune |= !negate_immunity && !(ignore_ghost && def_type == TYPE_GHOST),
                     other => unreachable!("bad type-chart code {other}"),
                 }
             }
@@ -680,7 +711,7 @@ pub fn effectiveness_for_move_type(
                 0 => {}
                 1 => weak += 1,
                 2 => resist += 1,
-                3 => immune = !negate_immunity,
+                3 => immune |= !negate_immunity && !(ignore_ghost && def_type == TYPE_GHOST),
                 other => unreachable!("bad type-chart code {other}"),
             }
         }
@@ -2302,7 +2333,7 @@ pub(crate) fn calculate_damage_with_bp(
     // Press / Stellar / Smack Down). Factored into
     // `effectiveness_for_move_type` so the Wonder Guard immunity gate can
     // share the exact same computation PS's `runEffectiveness` uses.
-    let eff = effectiveness_for_move_type(move_id, move_type, defender);
+    let eff = effectiveness_for_attack(attacker, move_id, move_type, defender);
     if eff.is_immune() {
         return 0;
     }

@@ -1320,6 +1320,26 @@ mod tests {
     }
 
     #[test]
+    fn scrappy_and_minds_eye_hit_ghost_types() {
+        // PS data/abilities.ts scrappy / mindseye onModifyMove:
+        //   move.ignoreImmunity['Fighting'] = true; ['Normal'] = true;
+        // so the Ghost type's 0x drops out and only the other type counts.
+        let def = QuickMon::parse("Gengar / 252 HP").unwrap();
+        let kang = QuickMon::parse("Kangaskhan / Scrappy / Adamant / 252 Atk").unwrap();
+        let no_scrappy = QuickMon::parse("Kangaskhan / Early Bird / Adamant / 252 Atk").unwrap();
+        assert_eq!(calc(&no_scrappy, &def, "doubleedge", Field::none()).unwrap().max, 0);
+        let hit = calc(&kang, &def, "doubleedge", Field::none()).unwrap();
+        assert!(hit.min > 0, "Scrappy Double-Edge into Gengar: {:?}", hit.rolls);
+        // Gengar is Ghost/Poison: Fighting is 0.5x from Poison once Ghost's
+        // immunity is ignored, so Scrappy Close Combat is resisted, not neutral.
+        let cc = calc(&kang, &def, "closecombat", Field::none()).unwrap();
+        assert!(cc.min > 0 && cc.max < hit.max, "CC {:?} vs DE {:?}", cc.rolls, hit.rolls);
+
+        let ursa = QuickMon::parse("Ursaluna-Bloodmoon / Mind's Eye / Modest / 252 SpA").unwrap();
+        assert!(calc(&ursa, &def, "hypervoice", Field::none()).unwrap().min > 0);
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
