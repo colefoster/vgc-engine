@@ -1568,6 +1568,20 @@ mod tests {
     }
 
     #[test]
+    fn fire_mane_boosts_the_attack_stat_not_base_power() {
+        // PS data/abilities.ts firemane: onModifyAtk / onModifySpA x1.5 for
+        // Fire moves (a stat modifier, so it rounds differently from BP).
+        // PS champions sim row for this gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Pyroar-Mega / Fire Mane / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let def = QuickMon::parse("Politoed @ Leftovers / Drizzle / Calm / 244 HP / 180 Def / 92 SpD").unwrap();
+        let f = Field { weather: Weather::Rain, terrain: Terrain::Psychic, spread: true, ..Field::none() };
+        assert_eq!(
+            calc(&atk, &def, "heatwave", f).unwrap().rolls,
+            [18, 18, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 21, 21, 22]
+        );
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
