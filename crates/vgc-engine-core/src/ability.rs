@@ -1888,6 +1888,7 @@ pub fn on_damaging_hit(
 
     // Poison Touch — PS `data/abilities.ts:3325`:
     //   onSourceDamagingHit(damage, target, source, move) {
+    //     if (target.hasAbility('shielddust') || target.hasItem('covertcloak')) return;
     //     if (this.checkMoveMakesContact(move, source, target)) {
     //       if (this.randomChance(3, 10)) target.trySetStatus('psn', source);
     //     }
@@ -1901,10 +1902,17 @@ pub fn on_damaging_hit(
         .active_mon(attacker_slot as usize)
         .map(|a| a.ability_id)
         .unwrap_or(u16::MAX);
+    // PS (a5df8274) returns before the roll when the target has Shield Dust
+    // or Covert Cloak, and rolls even when the hit knocked the target out
+    // (trySetStatus then fails).
+    let poison_touch_blocked = battle.side(target_side).active_mon(target_slot as usize).is_some_and(|t| {
+        t.ability_id == data::ability_id::SHIELDDUST || t.item_id == data::item_id::COVERTCLOAK
+    });
     if attacker_ability_id == data::ability_id::POISONTOUCH
         && move_makes_contact_from_attacker
-        && target_alive
+        && !poison_touch_blocked
         && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10)
+        && target_alive
     {
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
