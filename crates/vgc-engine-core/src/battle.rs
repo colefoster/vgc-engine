@@ -1992,6 +1992,35 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], op);
     }
 
+    /// `ps-rng` only: how many `random(100)` rolls PS's `secondaries` makes
+    /// for a move's target-affecting secondaries (sim/battle-actions.ts:1336):
+    /// one per entry of `move.secondaries` without `self` (two for the fangs
+    /// and Triple Arrows), none when the target's Covert Cloak / Shield Dust
+    /// filters them (`ModifySecondaries`; not for a Substitute's `null`).
+    #[cfg(feature = "ps-rng")]
+    fn ps_target_secondary_rolls(&self, m: &data::MoveDef, tside: SideRef, tslot: u8, hit_sub: bool, attacker: &Pokemon) -> u32 {
+        if !m.has_secondary
+            || self_boost_secondary(m.slug).is_some()
+            || matches!(m.slug, "esperwing" | "rapidspin" | "mortalspin" | "zippyzap" | "mysticalpower")
+        {
+            return 0;
+        }
+        if !hit_sub {
+            let breaks_mold = matches!(
+                attacker.effective_ability_id(),
+                data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+            );
+            let filtered = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
+                d.item_id == data::item_id::COVERTCLOAK
+                    || (d.ability_id == data::ability_id::SHIELDDUST && !breaks_mold)
+            });
+            if filtered {
+                return 0;
+            }
+        }
+        if matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows") { 2 } else { 1 }
+    }
+
     /// `ps-rng` only: the speed sort of PS's `fieldEvent('Residual')`
     /// handler list (sim/battle.ts:484-507), which shuffles every run of
     /// handlers tied on (order, priority, speed, subOrder)
@@ -7592,6 +7621,14 @@ self.trigger_emergency_exits();
                 apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
             } else {
                 apply_self_boost_secondary(self, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
+                // PS still rolls the target's secondaries (they then fail on
+                // the KO'd target or the Substitute's `null`). Draws only.
+                #[cfg(feature = "ps-rng")]
+                if rng.is_ps() {
+                    for _ in 0..self.ps_target_secondary_rolls(m, ctx.tside, ctx.tslot, hit_sub, &ctx.attacker) {
+                        let _ = rng.percent_1_100();
+                    }
+                }
             }
             self.rng = rng;
         }
@@ -17502,6 +17539,31 @@ mod tests {
         );
         assert!(b.p2.team[0].substitute_hp() < 200, "the Substitute took the hit");
         assert_eq!(b.p1.team[0].boosts[0], 1);
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_rolls_the_secondary_of_a_hit_that_knocks_out() {
+        // PS `secondaries` rolls `random(100)` per secondary for a target the
+        // hit knocked out (it is still in `targets`, hp 0;
+        // sim/battle-actions.ts:1336-1351); Psychic's SpD drop then fails.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"alakazam","level":50,"moves":["psychic"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"machamp","level":50,"moves":["bulkup"]},
+            {"species":"machamp","level":50,"moves":["bulkup"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000003").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(!b.p2.team[0].is_alive());
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let secondaries = trace.iter().filter(|d| d.move_id == data::move_id::PSYCHIC && d.decision == "secondary").count();
+        assert_eq!(secondaries, 1, "{trace:#?}");
     }
 
     #[test]
