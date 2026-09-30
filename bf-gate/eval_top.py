@@ -44,7 +44,8 @@ for n, h in enumerate(todo):
     a, d = h["atk"], h["def"]
     sa, sd = top_spreads(a["species"]), top_spreads(d["species"])
     if not sa or not sd: continue
-    base = {"move": h["move"], "weather": h["weather"], "terrain": h["terrain"], "spread": h["spread"], "crit": h["crit"]}
+    base = {"move": h["move"], "weather": h["weather"], "terrain": h["terrain"], "spread": h["spread"], "crit": h["crit"],
+            **E.field_extras(h), **E.ally_abilities(h, "tight", None)}
     start = len(qs)
     for x in sa:
         for y in sd:
@@ -54,7 +55,7 @@ for n, h in enumerate(todo):
                     for aa in opts(a, "abilities"):
                         for da in opts(d, "abilities"):
                             qs.append(dict(base,
-                                atk=E.mon(a["species"], ai, aa, slug(a["nature"] or x["nature"]), E.parse_sp(x["stat_points"]), a["boosts"], a["status"]),
+                                atk=dict(E.mon(a["species"], ai, aa, slug(a["nature"] or x["nature"]), E.parse_sp(x["stat_points"]), a["boosts"], a["status"]), hp_pct=E.hp_pct(a["hp"])),
                                 **{"def": E.mon(d["species"], di, E.fix_def_ability(da, h["prev"]), slug(d["nature"] or y["nature"]),
                                                 E.parse_sp(y["stat_points"]), d["boosts"], d["status"])}))
     index.append((n, start, len(qs)))

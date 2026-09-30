@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::io::{BufRead, Write};
 use vgc_engine_core::calc::QuickMon;
-use vgc_engine_core::{damage_only, effective_speed, DamageQuery, StatSpread, Status, Terrain, Weather};
+use vgc_engine_core::{damage_only_with, effective_speed, CalcMods, DamageQuery, StatSpread, Status, Terrain, Weather};
 
 #[derive(Deserialize, Clone)]
 struct Mon {
@@ -20,6 +20,9 @@ struct Mon {
     boosts: [i8; 7],
     #[serde(default)]
     status: Option<String>,
+    /// Current HP as a percent of max (absent = full).
+    #[serde(default)]
+    hp_pct: Option<f32>,
 }
 fn neutral() -> String { "serious".into() }
 
@@ -42,6 +45,33 @@ struct Q {
     crit: bool,
     #[serde(default)]
     tailwind: bool,
+    /// Defender's side screens: "reflect" | "lightscreen" | "auroraveil".
+    #[serde(default)]
+    screens: Vec<String>,
+    #[serde(default)]
+    helping_hand: bool,
+    #[serde(default)]
+    atk_ally_ability: Option<String>,
+    #[serde(default)]
+    def_ally_ability: Option<String>,
+}
+
+fn mods(q: &Q) -> CalcMods {
+    let has = |s: &str| q.screens.iter().any(|x| x == s);
+    let slug = |a: &Option<String>| a.as_deref().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+    let (aa, da) = (slug(&q.atk_ally_ability), slug(&q.def_ally_ability));
+    CalcMods {
+        doubles: true, // every gate hit is from a Doubles ladder game
+        reflect: has("reflect"),
+        light_screen: has("lightscreen"),
+        aurora_veil: has("auroraveil"),
+        helping_hand: q.helping_hand,
+        friend_guard: da == "friendguard",
+        power_spot: aa == "powerspot",
+        battery: aa == "battery",
+        steely_spirit: aa == "steelyspirit",
+        ..CalcMods::default()
+    }
 }
 
 fn sp_to_ev(s: u8) -> u8 { if s == 0 { 0 } else { (8 * s as u16 - 4).min(252) as u8 } }
@@ -54,6 +84,7 @@ fn build(m: &Mon) -> Result<QuickMon, String> {
     let e: Vec<u8> = m.sp.iter().map(|&s| sp_to_ev(s)).collect();
     q.evs = StatSpread { hp: e[0], atk: e[1], def: e[2], spa: e[3], spd: e[4], spe: e[5] };
     q.boosts = m.boosts;
+    q.hp_percent = m.hp_pct;
     q.status = match m.status.as_deref() {
         Some("brn") => Status::Burn, Some("par") => Status::Paralysis, Some("psn") => Status::Poison,
         Some("tox") => Status::Toxic, Some("slp") => Status::Sleep, Some("frz") => Status::Freeze,
@@ -84,7 +115,7 @@ fn run(line: &str) -> String {
         let def = d.to_pokemon("splash").map_err(|e| e.to_string())?;
         let hp = def.stats.hp;
         let dq = DamageQuery { attacker: atk, defender: def, move_id, weather: weather(&q.weather), terrain: terrain(&q.terrain), is_crit: q.crit, is_spread: q.spread, champions: true };
-        let rolls = damage_only(&dq);
+        let rolls = damage_only_with(&dq, &mods(&q));
         Ok(format!("{{\"hp\":{},\"rolls\":{:?}}}", hp, rolls))
     })();
     match r { Ok(s) => s, Err(e) => format!("{{\"err\":{:?}}}", e) }
