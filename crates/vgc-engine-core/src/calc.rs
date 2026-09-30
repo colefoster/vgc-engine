@@ -1525,6 +1525,49 @@ mod tests {
     }
 
     #[test]
+    fn defender_does_not_act_before_the_hit() {
+        // PS getDamage runs no defender action. A faster Protean defender
+        // used to Splash first and turn Normal, so Psychic hit a Dark type.
+        let atk = QuickMon::parse("Metagross / Jolly / 252 Atk").unwrap();
+        let def = QuickMon::parse("Greninja @ Choice Scarf / Protean / Timid / 252 Spe").unwrap();
+        assert_eq!(calc(&atk, &def, "psychicfangs", Field::none()).unwrap().max, 0);
+    }
+
+    #[test]
+    fn statused_attacker_always_gets_its_move_off() {
+        // PS getDamage has no onBeforeMove: full paralysis, sleep and
+        // freeze don't turn a calc into 0 damage.
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let healthy = calc(&QuickMon::parse("Incineroar / Adamant / 252 Atk").unwrap(), &def, "closecombat", Field::none()).unwrap();
+        // A real gate hit (bf-gate diff_ps) that was fully paralysed on
+        // every roll; PS row 218..258.
+        let inc = QuickMon::parse("Incineroar @ Sitrus Berry / Intimidate / Adamant / 252 HP / 252 Atk / 12 SpD / par").unwrap();
+        let gho = QuickMon::parse("Gholdengo @ Life Orb / Good as Gold / Timid / 12 HP / 252 SpA / 252 Spe / par / -1 Atk").unwrap();
+        let r = calc(&inc, &gho, "flareblitz", Field::none()).unwrap();
+        assert_eq!((r.min, r.max), (218, 258), "{:?}", r.rolls);
+        // Full paralysis is a 1/8 draw from the synthetic battle's fixed
+        // seed, so sweep enough matchups that some draw would hit it.
+        for sp in ["Garchomp", "Incineroar", "Rillaboom", "Sneasler", "Kingambit", "Milotic",
+                   "Gholdengo", "Farigiraf", "Archaludon", "Dragonite", "Tyranitar", "Whimsicott",
+                   "Pelipper", "Amoonguss", "Talonflame", "Sinistcha", "Primarina", "Hydreigon",
+                   "Aerodactyl", "Metagross", "Clefable", "Gengar", "Volcarona", "Corviknight"] {
+            let def = QuickMon::parse(sp).unwrap();
+            let par = QuickMon::parse("Arcanine / Adamant / 252 Atk / par").unwrap();
+            let ok = QuickMon::parse("Arcanine / Adamant / 252 Atk").unwrap();
+            assert_eq!(
+                calc(&par, &def, "flareblitz", Field::none()).unwrap().rolls,
+                calc(&ok, &def, "flareblitz", Field::none()).unwrap().rolls,
+                "paralysed Arcanine into {sp}"
+            );
+        }
+        for st in ["par", "slp", "frz"] {
+            let atk = QuickMon::parse(&format!("Incineroar / Adamant / 252 Atk / {st}")).unwrap();
+            let r = calc(&atk, &def, "closecombat", Field::none()).unwrap();
+            assert_eq!(r.rolls, healthy.rolls, "{st}");
+        }
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");

@@ -525,9 +525,10 @@ pub struct Battle {
     /// (the default) in production. `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) calc_mods: crate::damage_api::CalcMods,
-    /// `damage_only` move-gate bypass. When `true`, action-order-conditional
-    /// move `onTry` gates (Sucker Punch's "target must be attacking") are
-    /// treated as PASSED, so the fast-calc API reports the damage a move
+    /// `damage_only` move-gate bypass. When `true`, the pre-move status gates
+    /// (flinch, sleep, freeze, full paralysis, confusion, ...) and
+    /// action-order-conditional move `onTry` gates (Sucker Punch's "target
+    /// must be attacking") are treated as PASSED, so the fast-calc API reports the damage a move
     /// WOULD deal. Matches @smogon/calc, which shows Sucker Punch's damage
     /// regardless of the (synthetic, forced-Splash) defender's action —
     /// otherwise the gate fails and the calc reads a spurious "0 / immune".
@@ -10220,6 +10221,11 @@ self.trigger_emergency_exits();
         attacker: &Pokemon,
         target: Option<Target>,
     ) -> PreMoveOutcome {
+        // damage_only: a calc always gets its move off. PS getDamage runs no
+        // onBeforeMove, so full paralysis / sleep / freeze can't zero it.
+        if self.force_move_gate_ok {
+            return PreMoveOutcome::Proceed;
+        }
         // 1. Flinch check — flinched mons cannot move at all this turn.
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
