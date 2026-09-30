@@ -804,7 +804,12 @@ fn damage_result_dict<'py>(
 /// or a `gen9champions*` id use Champions move data; another PS id such as
 /// `"gen9vgc2025regh"` uses standard gen 9 data), `switch_in_effects`
 /// (replay battle-start effects such as the defender's Intimidate; off by
-/// default).
+/// default). Doubles modifiers, all off by default: `doubles` (screens are
+/// x2732/4096 instead of x0.5; needed for the ally flags), `reflect`,
+/// `light_screen`, `aurora_veil` (defender's side), `helping_hand`,
+/// `friend_guard` (defender's ally), `power_spot` / `battery` /
+/// `steely_spirit` (attacker's ally). A mon spec may end in `/ NN%` for its
+/// current HP (pinch abilities).
 ///
 /// Returns a dict:
 /// ```text
@@ -822,7 +827,7 @@ fn damage_result_dict<'py>(
 ///   r = vgc_engine.calc("chomp", "lando", "eq")
 ///   r["min"], r["max"], r["multi_hit"]["label"]
 #[pyfunction]
-#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false, format = None, switch_in_effects = false))]
+#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false, format = None, switch_in_effects = false, doubles = false, reflect = false, light_screen = false, aurora_veil = false, helping_hand = false, friend_guard = false, power_spot = false, battery = false, steely_spirit = false))]
 #[allow(clippy::too_many_arguments)]
 fn calc<'py>(
     py: Python<'py>,
@@ -834,6 +839,15 @@ fn calc<'py>(
     spread: bool,
     format: Option<&str>,
     switch_in_effects: bool,
+    doubles: bool,
+    reflect: bool,
+    light_screen: bool,
+    aurora_veil: bool,
+    helping_hand: bool,
+    friend_guard: bool,
+    power_spot: bool,
+    battery: bool,
+    steely_spirit: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let atk = core::calc::QuickMon::parse(attacker)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -852,6 +866,15 @@ fn calc<'py>(
         field = field.format(id).map_err(|e| PyValueError::new_err(e.to_string()))?;
     }
     field.switch_in_effects = switch_in_effects;
+    field.doubles = doubles;
+    field.reflect = reflect;
+    field.light_screen = light_screen;
+    field.aurora_veil = aurora_veil;
+    field.helping_hand = helping_hand;
+    field.friend_guard = friend_guard;
+    field.power_spot = power_spot;
+    field.battery = battery;
+    field.steely_spirit = steely_spirit;
 
     let r = core::calc::calc(&atk, &def, move_, field)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;

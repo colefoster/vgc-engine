@@ -72,6 +72,22 @@ pub struct CalcMods {
     /// Off by default: PS `getDamage` (sim/battle-actions.ts) and
     /// `@smogon/calc` read the mons as given.
     pub switch_in_effects: bool,
+    /// Doubles battle: screens are x2732/4096 instead of x0.5, and the
+    /// ally-ability flags below apply. PS data/conditions.ts reflect
+    /// (`this.activePerHalf > 1`).
+    pub doubles: bool,
+    /// Defender's side has Reflect / Light Screen / Aurora Veil.
+    pub reflect: bool,
+    pub light_screen: bool,
+    pub aurora_veil: bool,
+    /// An ally used Helping Hand on the attacker (x1.5 BP).
+    pub helping_hand: bool,
+    /// The defender's ally has Friend Guard (x0.75, Doubles only).
+    pub friend_guard: bool,
+    /// The attacker's ally has Power Spot / Battery / Steely Spirit.
+    pub power_spot: bool,
+    pub battery: bool,
+    pub steely_spirit: bool,
 }
 
 /// The 16 damage values (one per roll `0..=15`) this move deals to the
@@ -141,6 +157,10 @@ fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> (u16, u16) {
     let mut battle = Battle::new_for_calc(cfg, vec![atk], vec![def], mods.switch_in_effects);
     battle.calc_mods = *mods;
     battle.champions = q.champions;
+    let conds = &mut battle.p2.conditions;
+    if mods.reflect { conds.reflect_turns = 5; }
+    if mods.light_screen { conds.light_screen_turns = 5; }
+    if mods.aurora_veil { conds.aurora_veil_turns = 5; }
     battle.set_weather(q.weather);
     battle.set_terrain(q.terrain);
     battle.set_force_damage_roll(Some(k));
