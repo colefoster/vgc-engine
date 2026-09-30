@@ -6091,7 +6091,13 @@ self.trigger_emergency_exits();
             // 6 = allAdjacentFoes, 11 = foeSide. Self-side allAdjacent
             // (e.g. Earthquake hitting the user's partner) is also
             // blocked by Wide Guard on the user's side.
-            if self.side(tside).conditions.wide_guard_this_turn
+            // Wide Guard, Quick Guard, Mat Block and Protect all let a move
+            // without the `protect` flag through (their onTryHit returns
+            // early on `!move.flags['protect']`, data/moves.ts): Feint,
+            // Phantom Force.
+            let protect_flag = m.blocked_by_protect;
+            if protect_flag
+                && self.side(tside).conditions.wide_guard_this_turn
                 && matches!(m.target, 5 | 6 | 11)
             {
                 continue;
@@ -6101,7 +6107,8 @@ self.trigger_emergency_exits();
             // never reaches Quick Guard's check when target queues
             // a status move; the common interaction is Fake Out being
             // blocked.
-            if self.side(tside).conditions.quick_guard_this_turn
+            if protect_flag
+                && self.side(tside).conditions.quick_guard_this_turn
                 && m.priority > 0
             {
                 continue;
@@ -6116,7 +6123,8 @@ self.trigger_emergency_exits();
             // = the Protect-blockable target codes) but apply it side-wide
             // and gated to damaging hits. `damaging` is already computed
             // for this resolution.
-            if self.side(tside).conditions.mat_block_this_turn
+            if protect_flag
+                && self.side(tside).conditions.mat_block_this_turn
                 && damaging
                 && is_targeting_move(m.target)
             {
@@ -6136,7 +6144,7 @@ self.trigger_emergency_exits();
             // the verified text covers self-Protect/Detect only). The 1/4
             // reduction is applied to the final damage below.
             let mut piercing_drill_quarter = false;
-            if defender.is_protected_this_turn() && is_targeting_move(m.target) {
+            if protect_flag && defender.is_protected_this_turn() && is_targeting_move(m.target) {
                 let pierces = damaging
                     && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
                     && crate::damage::move_makes_contact(
@@ -6543,6 +6551,9 @@ self.trigger_emergency_exits();
             if darts_phase[ti] == 1 {
                 darts_pass[ti] = true;
                 continue;
+            }
+            if matches!(move_id, data::move_id::FEINT | data::move_id::PHANTOMFORCE) {
+                self.break_protect(tside, tslot);
             }
 
             // Fixed-damage value (computed once the attacker / defender
@@ -10903,6 +10914,32 @@ self.trigger_emergency_exits();
             k.qc_bump[sw_side as usize].swap(0, 1);
             k.frac[sw_side as usize].swap(0, 1);
             k.bias[sw_side as usize].swap(0, 1);
+        }
+    }
+
+    /// PS hitStepBreakProtect (sim/battle-actions.ts:755) for a
+    /// `breaksProtect` move (Feint, Phantom Force): removes the target's
+    /// protect-family volatile and its side's Crafty Shield, Mat Block,
+    /// Quick Guard and Wide Guard; when anything broke, the target's stall
+    /// counter goes too (gen 6+).
+    fn break_protect(&mut self, side: SideRef, slot: u8) {
+        let mut broke = false;
+        let c = &mut self.side_mut(side).conditions;
+        for on in [
+            &mut c.crafty_shield_this_turn,
+            &mut c.mat_block_this_turn,
+            &mut c.quick_guard_this_turn,
+            &mut c.wide_guard_this_turn,
+        ] {
+            broke |= *on;
+            *on = false;
+        }
+        if let Some(d) = self.side_mut(side).active_mon_mut(slot as usize) {
+            broke |= d.is_protected_this_turn();
+            d.set_protected(false);
+            if broke {
+                d.volatiles.remove(crate::pokemon::VolatileKind::Stall);
+            }
         }
     }
 
