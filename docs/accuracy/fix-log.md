@@ -215,3 +215,149 @@ Notes:
     KO (and so a replacement) happens. The species check runs before the HP
     check, so these show up as species mismatches.
 
+
+---
+
+# Round 3 (2026-09-30, branch `mechanics-fixes-3`)
+
+Same 1,298-battle sample and the same PS battles (`b5`). Result: fully
+clean battles **60.6% → 65.9%**, per-turn agreement **94.2% → 95.3%**.
+
+## Owner decisions
+
+1. **`calc` takes an optional format** (`89f34d9`).
+   - Rust: `calc::Field` has a `champions` flag, on by default, and a
+     `Field::format(id)` builder. pyo3: `vgc_engine.calc(..., format=None)`.
+   - The format resolves like `Battle.from_teams`
+     (`format_rules::champions_for_format_arg`):
+     - omitted, `"doubles"`, `"singles"` or a `gen9champions*` id → Champions data;
+     - any other PS id (`gen9vgc2025regh`) → standard gen 9;
+     - anything else raises `ValueError` / `CalcError::UnknownFormat`.
+   - This reverses round 2's side effect: a format-less `calc` is
+     Champions again.
+   - The `@smogon/calc` oracle harness keeps standard gen 9.
+   - **Caller impact: none.** No `vgc_engine.calc` caller exists in
+     mimikyu, metagame-lab or vgc-winrates. mimikyu's damage rows come
+     from a node calc worker, and vgc-winrates' `calc.py` is its own
+     module.
+2. **Champions PP** (`031a72e`).
+   - Team building takes the format's Champions rule:
+     `build_member_in`, `TeamBuilder::from_json_in` / `from_showdown_text_in`.
+   - A Champions team gets PS's Champions PP (`data/mods/champions/scripts.ts`):
+     - base PP from the mod: Protect / Wish / Spiky Shield … 5, Shell Trap /
+       Spin Out 10, everything else capped at 20;
+     - max PP `(pp / 5 + 1) * 4`, or base PP for noPPBoosts moves.
+     - Examples: Protect 8, Earthquake 12, Scratch 20.
+   - Standard formats keep three PP Ups (`pp * 8 / 5`).
+   - Wiring:
+     - pyo3 `from_teams` builds with the effective Champions flag (format,
+       or `champions=`);
+     - the accuracy, conformance and golden runners pass it from the format id;
+     - metagame-lab's explicit `move_pp_json` overlay still wins.
+   - No battle in the sample changed (every first divergence was identical).
+
+## What the 93 "RNG plumbing" battles were
+
+The keyed harness replays every draw PS made; its raw PRNG trace covers
+all of them, including `sample()` and speed-tie shuffles. So none of the
+93 was a draw PS's records don't reveal. Almost all were **engine draws
+PS never makes**: the engine rolled where PS has no roll, and the fallback
+stream decided the outcome. Grouped by the missed draw on the divergence
+turn:
+
+| cause | battles | fix |
+|---|---|---|
+| Poison-type Toxic rolled accuracy | 7 | F1 |
+| charged Solar Beam released as the submitted move (Heat Wave …) | 6+ | F2 |
+| Wide Guard rolled the Protect stall counter | 7 | F5 |
+| accuracy rolled before Sap Sipper / Flash Fire / Protect-family TryHit | 3+ | F3, F6 |
+| freeze-thaw roll keyed to the previous action | several | F7 |
+| whole extra move uses (Accuracy + Crit + Damage) | 26 of the 39 left | none yet: the engine acted where PS didn't (a flinch, fail or target difference earlier in the turn), so these are mechanics |
+| Range draws under a stale context (Protect, Trick Room, Infestation …) | 11 of the 39 left | none yet: keying gaps, not unobservable |
+
+**No "unobservable" class was added.** By the owner's definition (PS's
+logs don't reveal the draw), nothing in the keyed sample qualifies.
+Red Card's pick is observable too:
+- the log names the mon that enters (`|drag|`);
+- the trace holds the `sample` index.
+
+Keying it needs one of these:
+- the engine mirrors PS's `side.pokemon` order, which switches permute (the
+  engine's bench is in roster order);
+- the driver records the team index of the chosen mon.
+
+Either fixes phazing (Whirlwind, Dragon Tail) too. Neither is done yet.
+With 39 RNG-sensitive battles left, the with/without split is small:
+excluding them, 856 / 1,259 = 68.0% of battles are clean.
+
+## Fixes (round 3)
+
+| # | bug | PS reference | tests added | commit | battles moved |
+|---|---|---|---|---|---|
+| F1 | Poison-type Toxic rolled accuracy (90%) | `sim/battle-actions.ts:627,731` | unit `toxic_from_a_poison_type_never_misses_and_draws_no_accuracy` | `8c2167d` | F1+F2: 43 |
+| F2 | A charging mon released its move only if the player re-picked the slot, at the submitted target | `sim/side.ts:675-688` (getLockedMove, targetLoc) | unit `charged_move_releases_at_its_charge_target_whatever_the_choice` | `11d1117` | (with F1) |
+| F3 | Accuracy rolled before the TryHit checks (Protect family, Wide / Quick Guard, absorbing and immunity abilities, Wonder Guard, Levitate) | `sim/battle-actions.ts:556-577` hit-step order | unit `absorbing_ability_fires_before_the_accuracy_roll` | `30cae01` | 6 |
+| F4 | A type-immune target was hit for 0 and still took the secondary (Electroweb's Spe −1 on a Ground-type); the gate uses the −ate type | `sim/battle-actions.ts:654` hitStepTypeImmunity; `data/abilities.ts` aerilate … | units `type_immune_target_takes_no_secondary_effect`, `ate_ability_move_is_not_type_immune_by_its_base_type` | `5c72ba2` | F4–F6: 25 |
+| F5 | Wide Guard / Quick Guard rolled the stall counter | `data/moves.ts` wideguard / quickguard (onTry willAct, onHitSide stall) | unit `wide_guard_after_protect_always_succeeds` | `8637685` | (with F4) |
+| F6 | Flash Fire's absorb didn't make the move sure-hit on its other targets | `data/abilities.ts:1341` flashfire (`move.accuracy = true`) | unit `flash_fire_absorb_makes_the_move_sure_hit_on_other_targets` | `bb069a0` | (with F4) |
+| F7 | Champions freeze: thaw 1/4, guaranteed on the 3rd attempt (was gen 9's uncapped 1/5); thaw roll keyed to the frozen mon's move | `data/mods/champions/conditions.ts` frz | unit `champions_freeze_thaws_by_the_third_move_attempt` | `ecfd530` | 11 |
+| F8 | A move that failed its onTry (Sucker Punch, Fake Out, Damp) wasn't recorded as the last move | `sim/battle-actions.ts` runMove (moveUsed before useMove) | unit `a_move_that_fails_its_try_check_is_still_the_last_move` | `fcb6d73` | F8+F9: 16 |
+| F9 | Encore hit the first foe instead of its target, didn't override that turn's queued move, and ignored the +1 duration | `data/moves.ts:4724` encore; `sim/battle-actions.ts:228` OverrideAction; `sim/battle.ts:2490` getRandomTarget | unit `encore_hits_its_chosen_target_and_overrides_that_turns_move` (and `encore_expires_after_three_turns` re-seeded) | `2427bf8` | (with F8) |
+
+## Agreement trajectory (round 3)
+
+Wilson 95% CIs, n = 1,298.
+
+| after | fully clean | per-turn | first divergences: RNG plumbing / mechanics / decision model |
+|---|---|---|---|
+| round 2 end | 786 = 60.6% (57.9–63.2) | 8392/8904 = 94.2% (93.7–94.7) | 93 / 391 / 28 |
+| D1 calc format + D2 Champions PP | 786 = 60.6% (57.9–63.2) | 8392/8904 = 94.2% (93.7–94.7) | 93 / 391 / 28 |
+| F1+F2 Toxic, charge lock | 814 = 62.7% (60.0–65.3) | 8591/9075 = 94.7% (94.2–95.1) | 72 / 384 / 28 |
+| F3 TryHit before accuracy | 815 = 62.8% (60.1–65.4) | 8608/9091 = 94.7% (94.2–95.1) | 66 / 388 / 28 |
+| F4–F6 type immunity, Wide Guard, Flash Fire | 835 = 64.3% (61.7–66.9) | 8747/9210 = 95.0% (94.5–95.4) | 55 / 378 / 29 |
+| F7 Champions freeze | 843 = 64.9% (62.3–67.5) | 8803/9258 = 95.1% (94.6–95.5) | 43 / 382 / 29 |
+| F8+F9 last move on failure, Encore | **856 = 65.9% (63.3–68.5)** | **8904/9346 = 95.3% (94.8–95.7)** | 39 / 373 / 29 |
+
+Excluding the 39 RNG-sensitive battles: 856/1,259 = 68.0% clean.
+
+**Earlier divergences.** Every battle whose first divergence moved
+earlier during the round was explained:
+- **Latent bugs exposed by a fix.** Each was fixed later in the round:
+  - F2 exposed the Encore override (`6022fed02a`, `8ab40b8058`). Before
+    F2, the engine never released the charged Solar Beam, so the Encore
+    turn matched by accident.
+  - F3 exposed three:
+    - Flash Fire's sure-hit (`f034755a20`);
+    - type immunity (`2f98da05e5`);
+    - Wide Guard's roll (`4b44dba71e`).
+  - Encore's chosen-target fix exposed F8 (`576126830e`).
+- **A first F4 build regressed 60 battles.** `move_type_in_ctx` lacked
+  the −ate abilities, so the gate dropped Aerilate Hyper Voice on Ghosts.
+  The −ate fix was folded into F4 before any measurement was kept.
+- **One battle is still earlier than at round 2's end:** `116b68ea9c`,
+  turn 9 → 7. It is RNG-sensitive: a Range draw under a stale Hyper Beam
+  context, whose fallback value shifted when the engine stopped making
+  extra draws.
+
+`cargo test --workspace --exclude vgc-engine-py` passed at every commit,
+with `ps-rng` both off and on. The pyo3 tests
+(`crates/vgc-engine-py/tests`) pass.
+
+## What leads now (442 diverged battles)
+
+- **Encore-adjacent and pivots.** On the divergence turn:
+  - Emergency Exit 13, Red Card 12, Baton Pass 12 (11 of 13 uses diverge),
+    Revival Blessing 7, Eject Button 5;
+  - Encore 10, down from 23 before F8/F9.
+- **Red Card / phazing pick.** Observable (see above). Needs PS
+  `side.pokemon` order or a driver change.
+- **Mechanics offenders** (`switch` 57, Grassy Terrain 55, Leftovers 29,
+  Life Orb 28) are mostly co-occurring; the analysis in round 2 still holds.
+- **Highest divergence rate per use:**
+  - Baton Pass 85%, Storm Throw 40%, Dragon Darts 36%, Feint 33%;
+  - Stockpile 30%, Roost 25%, Rage Fist 18%;
+  - Knock Off 11% (15 battles).
+- **Not yet ported:** Burn Up's type loss.
+- **26 "RNG plumbing" battles** are really a whole extra move use. The
+  engine acts where PS doesn't, so their causes are mechanics upstream on
+  the same turn.

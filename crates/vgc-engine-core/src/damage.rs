@@ -709,6 +709,37 @@ pub fn move_type_in_ctx(
     move_id: u16,
     ctx: &DamageContext,
 ) -> u8 {
+    let t = base_move_type_in_ctx(attacker, move_id, ctx);
+    // -ate abilities rebind a Normal move (same gate as `calculate_damage`):
+    // PS data/abilities.ts aerilate / pixilate / refrigerate / galvanize,
+    // and Champions' dragonize, `onModifyType`.
+    if t == 0
+        && !matches!(
+            move_id,
+            data::move_id::JUDGMENT | data::move_id::MULTIATTACK
+                | data::move_id::NATURALGIFT | data::move_id::REVELATIONDANCE
+                | data::move_id::TECHNOBLAST | data::move_id::TERRAINPULSE
+                | data::move_id::WEATHERBALL
+        )
+        && !(move_id == data::move_id::TERABLAST && attacker.terastallized)
+    {
+        match attacker.ability_id {
+            data::ability_id::AERILATE => return 9,
+            data::ability_id::PIXILATE => return 17,
+            data::ability_id::REFRIGERATE => return 5,
+            data::ability_id::GALVANIZE => return 3,
+            data::ability_id::DRAGONIZE => return 14,
+            _ => {}
+        }
+    }
+    t
+}
+
+fn base_move_type_in_ctx(
+    attacker: &Pokemon,
+    move_id: u16,
+    ctx: &DamageContext,
+) -> u8 {
     let m = &data::move_table(ctx.champions)[move_id as usize];
     // Liquid Voice — PS data/abilities.ts:liquidvoice `onModifyType`: any
     // sound move becomes Water. Gated on the sound flag (not Normal-type), so

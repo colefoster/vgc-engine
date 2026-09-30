@@ -200,6 +200,8 @@ pub enum CalcError {
     BadSegment(String),
     /// The built engine mon failed to construct (bad EV/IV, etc).
     Build(String),
+    /// The format argument is neither a game type nor a known PS id.
+    UnknownFormat(String),
 }
 
 impl std::fmt::Display for CalcError {
@@ -214,6 +216,7 @@ impl std::fmt::Display for CalcError {
             }
             CalcError::BadSegment(s) => write!(f, "could not parse segment '{s}'"),
             CalcError::Build(s) => write!(f, "failed to build mon: {s}"),
+            CalcError::UnknownFormat(s) => write!(f, "unknown format: {s}"),
         }
     }
 }
@@ -546,16 +549,33 @@ fn species_primary_ability(species_slug: &str) -> Option<String> {
     Some(data::ABILITIES[id as usize].slug.to_string())
 }
 
-/// Field conditions for a calc: weather, terrain, and whether the move is
-/// a Doubles spread hit (×0.75).
-#[derive(Debug, Clone, Copy, Default)]
+/// Field conditions for a calc: weather, terrain, whether the move is a
+/// Doubles spread hit (×0.75), and the format's data (Champions or
+/// standard gen 9).
+#[derive(Debug, Clone, Copy)]
 pub struct Field {
     pub weather: Weather,
     pub terrain: Terrain,
     pub spread: bool,
+    /// Champions move data and rules (PS `data/mods/champions`). Defaults
+    /// on, like the bare `"doubles"` / `"singles"` battle formats.
+    pub champions: bool,
+}
+
+impl Default for Field {
+    fn default() -> Self {
+        Field { weather: Weather::default(), terrain: Terrain::default(), spread: false, champions: true }
+    }
 }
 
 impl Field {
+    /// Use the data of format `id`: `"doubles"` / `"singles"` or a
+    /// `gen9champions*` id give Champions, any other PS id standard gen 9.
+    pub fn format(mut self, id: &str) -> Result<Self, CalcError> {
+        self.champions = crate::format_rules::champions_for_format_arg(id)
+            .ok_or_else(|| CalcError::UnknownFormat(id.to_string()))?;
+        Ok(self)
+    }
     /// No field effects (single-target, clear weather/terrain).
     pub fn none() -> Self {
         Field::default()
@@ -1059,6 +1079,7 @@ fn shape_result(
         terrain: field.terrain,
         is_crit,
         is_spread: field.spread,
+        champions: field.champions,
     };
     let rolls = damage_only(&q);
     let min = *rolls.iter().min().unwrap();
@@ -1208,6 +1229,24 @@ fn ko_from_rolls(rolls: &[u16; 16], remaining_hp: u16) -> KoChance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calc_defaults_to_champions_and_takes_an_explicit_format() {
+        // Trop Kick: 85 BP in Champions (PS data/mods/champions/moves.ts
+        // tropkick), 70 BP in standard gen 9 (data/moves.ts tropkick).
+        let atk = QuickMon::parse("Tsareena / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let default = calc(&atk, &def, "tropkick", Field::none()).unwrap();
+        let champions =
+            calc(&atk, &def, "tropkick", Field::none().format("gen9championsvgc2026regmc").unwrap()).unwrap();
+        let standard = calc(&atk, &def, "tropkick", Field::none().format("gen9vgc2025regh").unwrap()).unwrap();
+        assert_eq!(default.rolls, champions.rolls, "no format = Champions");
+        assert!(standard.max < champions.max);
+        // Damage scales with base power: 85/70 of the standard roll, ±1 rounding.
+        let scaled = standard.max as f32 * 85.0 / 70.0;
+        assert!((champions.max as f32 - scaled).abs() <= 2.0, "{} vs {scaled}", champions.max);
+        assert!(Field::none().format("notaformat").is_err());
+    }
 
     #[test]
     fn alias_resolution() {

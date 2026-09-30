@@ -65,7 +65,7 @@ pub use rng::{
 };
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
-pub use team::{boosted_max_pp, build_member, TeamBuilder, TeamLoadError, TeamMember};
+pub use team::{boosted_max_pp, build_member, build_member_in, champions_max_pp, TeamBuilder, TeamLoadError, TeamMember};
 pub use team_export::parse_showdown_export;
 pub use terrain::Terrain;
 pub use weather::Weather;

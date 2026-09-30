@@ -57,6 +57,9 @@ pub struct DamageQuery {
     /// so the ×0.75 modifier (damage.rs step 2) applies exactly as it
     /// would for a real Doubles spread move.
     pub is_spread: bool,
+    /// Champions move data and rules (`Battle::champions`) instead of
+    /// standard gen 9.
+    pub champions: bool,
 }
 
 /// The 16 damage values (one per roll `0..=15`) this move deals to the
@@ -101,6 +104,7 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
 
     let cfg = BattleConfig { format: Format::Singles, seed: 0xDA_DA_DA };
     let mut battle = Battle::new(cfg, vec![atk], vec![def]);
+    battle.champions = q.champions;
     battle.set_weather(q.weather);
     battle.set_terrain(q.terrain);
     battle.set_force_damage_roll(Some(k));
@@ -211,6 +215,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let rolls = damage_only(&q);
         // Cached calc expectation:
@@ -245,6 +250,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let rolls = damage_only(&q);
         assert!(rolls[0] > 0, "Sucker Punch should deal real damage, got {rolls:?}");
@@ -272,6 +278,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let rolls = damage_only(&q);
         // Cached calc expectation for scenario-wiseglasses-
@@ -304,6 +311,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let sun = damage_only(&q);
         let no_weather = damage_only(&DamageQuery { weather: Weather::None, ..q.clone() });
@@ -340,6 +348,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let single = damage_only(&q_single);
         assert_eq!(
@@ -377,6 +386,7 @@ mod tests {
             terrain: Terrain::None,
             is_crit: false,
             is_spread: false,
+            champions: false,
         };
         let no_crit = damage_only(&q_no);
         let crit = damage_only(&DamageQuery { is_crit: true, ..q_no });

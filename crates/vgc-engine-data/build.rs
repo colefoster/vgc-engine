@@ -490,10 +490,11 @@ fn champions_move_override(slug: &str) -> (Option<u16>, Option<u8>, Option<&'sta
 
 /// Champions flag rebalances (PS `data/mods/champions/moves.ts`), applied to
 /// the emitted row's tail: adds the `slicing` / `punch` / `sound` flag the
-/// mod gives these moves. (The mod's PP changes are not ported: team PP is
-/// built from `MOVES` without a format.)
+/// mod gives these moves, and sets the Champions base PP (`champions_pp`).
 fn champions_tail(slug: &str, tail: &str) -> String {
     let mut t = tail.to_string();
+    let std_pp: u8 = t["pp: ".len()..t.find(',').unwrap()].parse().unwrap();
+    t = format!("pp: {}{}", champions_pp(slug, std_pp), &t[t.find(',').unwrap()..]);
     let flag = match slug {
         "crushclaw" | "direclaw" | "dragonclaw" | "shadowclaw" | "metalclaw" => Some("is_slicing"),
         "doubleshock" => Some("is_punch"),
@@ -504,6 +505,18 @@ fn champions_tail(slug: &str, tail: &str) -> String {
         t = t.replace(&format!("{f}: false"), &format!("{f}: true"));
     }
     t
+}
+
+/// Champions base PP: the mod's per-move overrides
+/// (`data/mods/champions/moves.ts`), otherwise gen 9's PP capped at 20
+/// (`data/mods/champions/scripts.ts` `init`).
+fn champions_pp(slug: &str, std_pp: u8) -> u8 {
+    match slug {
+        "banefulbunker" | "beakblast" | "kingsshield" | "nihillight" | "obstruct" | "protect" | "purify"
+        | "sandstorm" | "snowscape" | "spikyshield" | "strengthsap" | "wish" => 5,
+        "shelltrap" | "spinout" => 10,
+        _ => std_pp.min(20),
+    }
 }
 
 fn keep_gen9<'a, T>(

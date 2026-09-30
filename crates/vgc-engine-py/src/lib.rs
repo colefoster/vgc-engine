@@ -114,7 +114,8 @@ fn observe_active_mon<'py>(
     d.set_item("is_terastallized", m.terastallized)?;
 
     // Move slots: skip empty (u16::MAX) slots. max_pp is the PP-maxed cap the
-    // engine builds with (boosted_max_pp), matching the starting PP.
+    // engine builds with (boosted_max_pp, or champions_max_pp in a Champions
+    // battle), matching the starting PP.
     let moves_list = PyList::empty(py);
     for i in 0..4 {
         let mid = m.moves[i];
@@ -359,8 +360,9 @@ impl PyBattle {
             }
             other => return Err(PyValueError::new_err(format!("unknown format: {other}"))),
         };
-        let mut p1 = core::TeamBuilder::from_json(p1_team_json).map_err(map_team_err)?;
-        let mut p2 = core::TeamBuilder::from_json(p2_team_json).map_err(map_team_err)?;
+        let champions = champions.unwrap_or(format_champions);
+        let mut p1 = core::TeamBuilder::from_json_in(p1_team_json, champions).map_err(map_team_err)?;
+        let mut p2 = core::TeamBuilder::from_json_in(p2_team_json, champions).map_err(map_team_err)?;
         if let Some(json) = move_pp_json {
             let pp: std::collections::HashMap<String, u8> = serde_json::from_str(json)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -383,7 +385,7 @@ impl PyBattle {
             }
         };
         inner.decision_phases = decision_phases;
-        inner.champions = champions.unwrap_or(format_champions);
+        inner.champions = champions;
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
@@ -779,7 +781,10 @@ fn damage_result_dict<'py>(
 /// `"Garchomp @ Life Orb / Jolly / 252 Atk"`) or a bare species/alias
 /// (`"chomp"`). `move_` is a move name or alias (`"eq"`). Optional field:
 /// `weather` (`sun`|`rain`|`sand`|`snow`), `terrain`
-/// (`electric`|`grassy`|`psychic`|`misty`), `spread` (Doubles ×0.75).
+/// (`electric`|`grassy`|`psychic`|`misty`), `spread` (Doubles ×0.75),
+/// `format` (as in `Battle.from_teams`: omitted, `"doubles"` / `"singles"`
+/// or a `gen9champions*` id use Champions move data; another PS id such as
+/// `"gen9vgc2025regh"` uses standard gen 9 data).
 ///
 /// Returns a dict:
 /// ```text
@@ -796,7 +801,8 @@ fn damage_result_dict<'py>(
 ///   r = vgc_engine.calc("chomp", "lando", "eq")
 ///   r["min"], r["max"], r["multi_hit"]["label"]
 #[pyfunction]
-#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false))]
+#[pyo3(signature = (attacker, defender, move_, weather = None, terrain = None, spread = false, format = None))]
+#[allow(clippy::too_many_arguments)]
 fn calc<'py>(
     py: Python<'py>,
     attacker: &str,
@@ -805,6 +811,7 @@ fn calc<'py>(
     weather: Option<&str>,
     terrain: Option<&str>,
     spread: bool,
+    format: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let atk = core::calc::QuickMon::parse(attacker)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -819,6 +826,9 @@ fn calc<'py>(
         field.terrain = parse_terrain(t)?;
     }
     field.spread = spread;
+    if let Some(id) = format {
+        field = field.format(id).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    }
 
     let r = core::calc::calc(&atk, &def, move_, field)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
