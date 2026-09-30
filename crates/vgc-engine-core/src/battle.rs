@@ -4670,7 +4670,7 @@ self.trigger_emergency_exits();
             data::ability_id::OVERGROW => Some(4u8), // Grass
             data::ability_id::BLAZE => Some(1),      // Fire
             data::ability_id::TORRENT => Some(2),    // Water
-            data::ability_id::SWARM => Some(6),      // Bug
+            data::ability_id::SWARM => Some(11),     // Bug
             _ => None,
         };
         if let Some(pt) = pinch_type {
@@ -32602,6 +32602,30 @@ mod tests {
         assert_eq!(phys[4], 2, "Weak Armor +2 Spe on physical hit");
         let spec = run(1); // Ice Beam (special)
         assert_eq!((spec[1], spec[4]), (0, 0), "no Weak Armor on a special hit");
+    }
+
+    #[test]
+    fn swarm_boosts_bug_moves_not_fighting_moves() {
+        // PS data/abilities.ts swarm: `move.type === 'Bug'` (type code 11).
+        let p1 = r#"[{"species":"kleavor","level":50,"ability":"swarm","item":"","nature":"adamant","moves":["xscissor","closecombat"],"evs":{"atk":252}}]"#;
+        let p2 = r#"[{"species":"hippowdon","level":50,"ability":"sandstream","item":"","nature":"impish","moves":["protect"],"evs":{"hp":252,"def":252}}]"#;
+        let dmg = |move_slot: u8, low_hp: bool| -> u32 {
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(1), crate::rng::RngEvent::Crit(false), crate::rng::RngEvent::DamageRoll(15)], 3),
+                TeamBuilder::from_json(p1).unwrap(), TeamBuilder::from_json(p2).unwrap());
+            if low_hp {
+                b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 3;
+            }
+            let before = b.p2.team[0].current_hp;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            (before - b.p2.team[0].current_hp) as u32
+        };
+        let (bug, bug_low) = (dmg(0, false), dmg(0, true));
+        assert!((1400..=1600).contains(&(bug_low * 1000 / bug)), "Swarm x1.5 on X-Scissor ({bug} -> {bug_low})");
+        assert_eq!(dmg(1, true), dmg(1, false), "no boost on Close Combat");
     }
 
     #[test]
