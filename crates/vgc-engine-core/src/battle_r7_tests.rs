@@ -600,3 +600,22 @@ fn seed_sower_sets_grassy_terrain_when_hit() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(matches!(b.terrain, crate::terrain::Terrain::Grassy));
 }
+
+#[test]
+fn curious_medicine_clears_the_allys_stat_changes_on_entry() {
+    // PS data/abilities.ts:772 curiousmedicine onStart: adjacent allies'
+    // boosts are cleared.
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]},
+            {"species":"slowking","level":50,"ability":"curiousmedicine","moves":["splash"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["swordsdance"]},
+            {"species":"raichu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_ne!(b.p1.team[0].boosts, [0; 7]);
+    b.step(&[mv(0, 0, None), Choice::Switch { actor_slot: 1, team_index: 2 }], &[mv(0, 0, None), mv(1, 0, None)]);
+    // Curse ran again after the switch: only this turn's +1/+1/-1 remain.
+    assert_eq!((b.p1.team[0].boosts[1], b.p1.team[0].boosts[4]), (1, -1));
+}
