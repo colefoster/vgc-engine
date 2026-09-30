@@ -860,10 +860,9 @@ with `ps-rng` off and on; the pyo3 tests pass (27) on the merge.
 
 ## Remaining (seeded: 319 battles whose first divergence is a draw)
 
-`hitStepAccuracy` 73 (mostly where the engine draws a target re-pick first),
-runAction `Update` ties 27, `getTarget` re-picks 27, resolveAction
-`getRandomTarget` 13, StallMove rolls 12, Residual handler sort 18, crits in
-spread hits 13. 74 more diverge in state with draws aligned (45 HP, 9
+`hitStepAccuracy` 87 (mostly where the engine draws a target re-pick first),
+`eachEvent` ties 40, `getTarget` re-picks 37, Residual handler sort 26,
+`secondaries` 22, resolveAction `getRandomTarget` 22, crit 21. 74 more diverge in state with draws aligned (45 HP, 9
 boosts). Note the seeded walk compares draw kinds and spans, not values: a
 target given another target's roll shows up as a state divergence (as the
 spread-order fix did).

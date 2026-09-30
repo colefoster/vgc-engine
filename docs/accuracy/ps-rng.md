@@ -114,13 +114,15 @@ draw (319 battles):
 
 | first divergent PS draw | battles | why the engine can't (yet) match it |
 |---|---|---|
-| `hitStepAccuracy` | 73 | mostly where the engine draws a getTarget re-pick first: target-validity edge cases (smart / ally targets, fainted targets) |
-| runAction `eachEvent('Update')` ties | 27 | downstream of a missed draw in the same action |
-| `getTarget` → `getRandomTarget` | 27 | re-picks for queued moves whose PS target validity differs |
-| Residual handler sort | 18 | handlers not in `ps_residual_ties`' list |
-| resolveAction `getRandomTarget` | 13 | nested `resolveAction` for `beforeTurnMove` / `priorityChargeMove` actions |
-| crit in spread hits | 13 | spread-hit steps the window doesn't reorder (multi-hit spread) |
-| StallMove (`onStallMove`) | 12 | Protect-family success rolls the engine draws elsewhere or not at all |
+| `hitStepAccuracy` | 87 | mostly where the engine draws a getTarget re-pick first: target-validity edge cases (smart / ally targets, fainted targets) |
+| `eachEvent` ties (runAction `Update`, weather) | 40 | downstream of a missed draw in the same action |
+| `getTarget` → `getRandomTarget` | 37 | re-picks for queued moves whose PS target validity differs |
+| Residual handler sort | 26 | handlers not in `ps_residual_ties`' list |
+| `secondaries` | 22 | secondaries PS rolls or skips differently (Sheer Force, multi-hit) |
+| resolveAction `getRandomTarget` | 22 | nested `resolveAction` for `beforeTurnMove` / `priorityChargeMove` actions |
+| crit | 21 | multi-hit and spread-hit steps the window doesn't reorder |
+| commitChoices `queue.sort` ties | 14 | ModifyPriority / fractional keys the engine doesn't model |
+| StallMove (`onStallMove`) | 12 | Protect-family success rolls |
 
 74 more battles diverge in state with every draw aligned to that point.
 The walk compares draw kinds and spans, not values, so a draw the engine
