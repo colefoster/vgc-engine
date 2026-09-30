@@ -10890,7 +10890,8 @@ self.trigger_emergency_exits();
             let skip = attacker_post.is_some_and(crate::ability::has_magic_guard);
             if !skip {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    let recoil = (a.stats.hp / 2).max(1);
+                    // Math.round(maxhp / 2): odd max HP rounds up.
+                    let recoil = a.stats.hp.div_ceil(2).max(1);
                     a.current_hp = a.current_hp.saturating_sub(recoil);
                     if a.current_hp == 0 {
                         a.fainted = true;

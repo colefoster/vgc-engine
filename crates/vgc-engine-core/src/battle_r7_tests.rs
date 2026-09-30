@@ -693,3 +693,16 @@ fn ps_rng_earthquake_rolls_for_the_ally_first() {
     let first = trace.iter().find(|d| d.op == "damage").map(|d| d.target);
     assert_eq!(first, Some(1), "p1b's roll first");
 }
+
+#[test]
+fn steel_beam_costs_half_max_hp_rounded() {
+    // PS data/moves.ts steelbeam: this.damage(Math.round(source.maxhp / 2)).
+    let mut b = singles(
+        r#"[{"species":"archaludon","level":50,"ability":"stamina","moves":["steelbeam"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    let max = b.p1.team[0].stats.hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(max - b.p1.team[0].current_hp, (max + 1) / 2, "max HP {max}");
+}
