@@ -17191,7 +17191,12 @@ fn stat_drop_secondary(slug: &str, champions: bool) -> Option<(u8, i8, u8)> {
         // Drum Beating: PS data/moves.ts drumbeating `secondary: { chance:
         // 100, boosts: { spe: -1 } }` (was missing).
         "icywind" | "bulldoze" | "electroweb" | "mudshot" | "glaciate"
-        | "rocktomb" | "drumbeating" => (4, -1, 100),
+        | "rocktomb" | "drumbeating" | "lowsweep" => (4, -1, 100),
+        // PS data/moves.ts crushclaw / razorshell (50%), firelash (100%),
+        // skittersmack (100% SpA).
+        "crushclaw" | "razorshell" => (1, -1, 50),
+        "firelash" => (1, -1, 100),
+        "skittersmack" => (2, -1, 100),
         // 100% -1 SpA — Mystical Fire, Snarl (spread), plus Spirit Break
         // (Grimmsnarl, single-target) and Struggle Bug (spread). PS
         // data/moves.ts each `secondary: { chance: 100, boosts: { spa: -1 } }`.

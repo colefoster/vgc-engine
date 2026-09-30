@@ -809,3 +809,18 @@ fn flinch_chances_match_ps_data() {
         assert_eq!(flinch_chance(slug, true), Some(want), "{slug}");
     }
 }
+
+#[test]
+fn stat_drop_secondaries_cover_ps_data() {
+    // PS data/moves.ts `secondary: { chance, boosts }` (stat index, delta, chance).
+    for (slug, want) in [
+        ("crushclaw", (1, -1, 50)),
+        ("firelash", (1, -1, 100)),
+        ("lowsweep", (4, -1, 100)),
+        ("razorshell", (1, -1, 50)),
+        ("skittersmack", (2, -1, 100)),
+        ("icywind", (4, -1, 100)),
+    ] {
+        assert_eq!(stat_drop_secondary(slug, true), Some(want), "{slug}");
+    }
+}
