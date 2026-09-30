@@ -13005,31 +13005,49 @@ self.trigger_emergency_exits();
                 }
                 let src_side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
                 let src_slot = ((payload >> 8) & 0xFF) as u8;
-                let Some(t) = self.side(side).active_mon(slot as usize) else { continue };
-                let mut deltas = [(0u8, 0i8); 2];
-                let mut k = 0;
-                for idx in [1u8, 3] {
-                    if !crate::ability::blocks_opposing_stat_drop_for(t, idx) {
-                        deltas[k] = (idx, -1);
-                        k += 1;
-                    }
-                }
-                if k == 0 {
-                    continue;
-                }
-                let before = t.boosts;
-                self.apply_boosts(side, slot, &deltas[..k], src_side, src_slot);
-                let dropped = self
-                    .side(side)
-                    .active_mon(slot as usize)
-                    .is_some_and(|m| (0..7).any(|i| m.boosts[i] < before[i]));
-                if dropped {
-                    crate::item::try_consume_white_herb(self, side, slot);
-                    let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
-                    crate::ability::react_to_opposing_stat_drop(self, side, slot);
-                }
+                self.apply_foe_stat_drop(side, slot, &[1, 3], -1, src_side, src_slot);
             }
         }
+    }
+
+    /// A stat drop a foe inflicts through PS `this.boost(...)` (Octolock,
+    /// Gooey): per-stat blockers (Clear Body, Big Pecks ...), Mist and
+    /// Mirror Armor (inside `apply_boosts`), then White Herb, Eject Pack and
+    /// Defiant / Competitive when a stat actually fell. Returns whether one
+    /// did.
+    pub(crate) fn apply_foe_stat_drop(
+        &mut self,
+        side: SideRef,
+        slot: u8,
+        stats: &[u8],
+        amount: i8,
+        src_side: SideRef,
+        src_slot: u8,
+    ) -> bool {
+        let Some(t) = self.side(side).active_mon(slot as usize).filter(|m| m.is_alive()) else { return false };
+        let mut deltas = [(0u8, 0i8); 7];
+        let mut k = 0;
+        for &idx in stats.iter().take(7) {
+            if !crate::ability::blocks_opposing_stat_drop_for(t, idx) {
+                deltas[k] = (idx, amount);
+                k += 1;
+            }
+        }
+        if k == 0 {
+            return false;
+        }
+        let before = t.boosts;
+        self.apply_boosts(side, slot, &deltas[..k], src_side, src_slot);
+        let dropped = self
+            .side(side)
+            .active_mon(slot as usize)
+            .is_some_and(|m| (0..7).any(|i| m.boosts[i] < before[i]));
+        if dropped {
+            crate::item::try_consume_white_herb(self, side, slot);
+            let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
+            crate::ability::react_to_opposing_stat_drop(self, side, slot);
+        }
+        dropped
     }
 
     /// EOT sub-phase `yawn`. Extracted from

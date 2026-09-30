@@ -1523,6 +1523,24 @@ pub fn on_damaging_hit(
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }
+    // Gooey / Tangling Hair — PS data/abilities.ts:1642 gooey (tanglinghair is
+    // the same handler) onDamagingHit: on contact,
+    // `this.boost({spe: -1}, source, target, null, true)`, a foe-sourced drop
+    // on the attacker. Fires on a KO hit too.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gooey_(Ability)>.
+    if battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| matches!(m.effective_ability_id(), data::ability_id::GOOEY | data::ability_id::TANGLINGHAIR))
+    {
+        let contact = battle
+            .side(attacker_side)
+            .active_mon(attacker_slot as usize)
+            .is_some_and(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a));
+        if contact {
+            battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
+        }
+    }
     // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
     // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
     // the move's type after type changes (Weather Ball in sun).

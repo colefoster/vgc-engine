@@ -494,3 +494,18 @@ fn feint_rolls_accuracy_against_a_protecting_target() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(accuracy_rolls(&b, data::move_id::FEINT), 1);
 }
+
+#[test]
+fn gooey_slows_a_contact_attacker() {
+    // PS data/abilities.ts:1642 gooey onDamagingHit: contact ->
+    // boost({spe: -1}, source, target).
+    let mut b = singles(
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw","earthquake"]}]"#,
+        r#"[{"species":"goodra","level":50,"ability":"gooey","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 1, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].boosts[4], 0, "Earthquake makes no contact");
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].boosts[4], -1);
+}
