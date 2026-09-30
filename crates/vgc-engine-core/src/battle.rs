@@ -5495,6 +5495,29 @@ impl Battle {
                 continue;
             }
 
+            // Type immunity — PS hitStepTypeImmunity (sim/battle-actions.ts:
+            // 654) drops a type-immune target before accuracy, so it draws no
+            // roll and takes no secondary effect (Electroweb's Spe -1 on a
+            // Ground-type). Status moves ignore type immunity
+            // (`ignoreImmunity = category === 'Status'`); Ground moves are
+            // gated on grounding above (PS runImmunity uses isGrounded).
+            if damaging && !is_fixed_damage {
+                let eff_ctx = DamageContext {
+                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                };
+                let move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &eff_ctx);
+                // 8 = Ground (grounding gate above); >= 18 = Stellar.
+                if move_type != 8
+                    && move_type < 18
+                    && crate::damage::effectiveness_for_move_type(move_id, move_type, &defender).is_immune()
+                {
+                    continue;
+                }
+            }
+
             // Accuracy. It runs after the TryHit checks above (Protect and
             // its kin, absorbing / immunity abilities, Wonder Guard) and the
             // Ground immunity, as PS orders its hit steps: TryHit, type
@@ -28852,6 +28875,55 @@ mod tests {
         }
         assert!(hits >= 5, "too few hits to validate ({hits})");
         assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn ate_ability_move_is_not_type_immune_by_its_base_type() {
+        // The type-immunity gate uses the post-onModifyType type: Aerilate
+        // Hyper Voice is Flying (PS data/abilities.ts aerilate), so it hits
+        // a Ghost-type.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"salamencemega","level":50,"ability":"aerilate","item":"","nature":"modest","moves":["hypervoice"]}]"#,
+        ).unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"gengar","level":50,"ability":"cursedbody","item":"","nature":"timid","moves":["splash"]}]"#,
+        ).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let hp = b.p2.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].current_hp < hp, "Aerilate Hyper Voice should hit a Ghost-type");
+    }
+
+    #[test]
+    fn type_immune_target_takes_no_secondary_effect() {
+        // PS sim/battle-actions.ts:562 hitStepTypeImmunity drops a type-immune
+        // target before accuracy, damage and secondaries: Electroweb's Spe -1
+        // never lands on a Ground-type.
+        for seed in 0..60u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"rotomwash","level":50,"ability":"levitate","item":"","nature":"modest","moves":["electroweb"]},
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"garchomp","level":50,"ability":"roughskin","item":"","nature":"jolly","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+            );
+            assert_eq!(b.p2.team[0].boosts[4], 0, "Electroweb lowered the Ground-type's Speed on seed {seed}");
+        }
     }
 
     #[test]
