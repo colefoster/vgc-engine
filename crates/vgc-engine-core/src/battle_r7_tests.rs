@@ -751,3 +751,16 @@ fn infestation_traps_the_target_it_hit() {
     assert!(b.p2.team[1].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
     assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
 }
+
+#[test]
+fn scrappy_fighting_moves_hit_ghosts() {
+    // PS data/abilities.ts scrappy onModifyMove: ignoreImmunity for
+    // Fighting and Normal, so Ghost's immunity counts as neutral.
+    let mut b = singles(
+        r#"[{"species":"sirfetchd","level":50,"ability":"scrappy","moves":["closecombat"]}]"#,
+        r#"[{"species":"gholdengo","level":50,"ability":"goodasgold","moves":["nastyplot"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp);
+}
