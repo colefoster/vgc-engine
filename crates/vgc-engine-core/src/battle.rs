@@ -6179,6 +6179,19 @@ self.trigger_emergency_exits();
                 continue;
             }
 
+            // Brick Break / Psychic Fangs / Raging Bull — PS data/moves.ts
+            // onTryHit(pokemon): the target's side loses Reflect, Light
+            // Screen and Aurora Veil. It runs in hitStepTryHitEvent, after
+            // Protect (onTryHitPriority 3) and before the type-immunity and
+            // accuracy steps (sim/battle-actions.ts:556-568), so it breaks
+            // them even when the hit then misses or doesn't affect.
+            if matches!(move_id, data::move_id::BRICKBREAK | data::move_id::PSYCHICFANGS | data::move_id::RAGINGBULL) {
+                let c = &mut self.side_mut(tside).conditions;
+                c.reflect_turns = 0;
+                c.light_screen_turns = 0;
+                c.aurora_veil_turns = 0;
+            }
+
             // Telepathy — PS `data/abilities.ts:4888`:
             //   onTryHit(target, source, move) {
             //     if (target.isAlly(source) && move.category !== 'Status') return null;
