@@ -361,3 +361,119 @@ with `ps-rng` both off and on. The pyo3 tests
 - **26 "RNG plumbing" battles** are really a whole extra move use. The
   engine acts where PS doesn't, so their causes are mechanics upstream on
   the same turn.
+
+---
+
+# Round 4 (2026-09-30, branch `mechanics-fixes-4`)
+
+Same 1,298-battle sample and PS battles (`b5`). Result: fully clean
+battles **65.9% → 68.9%**, per-turn agreement **95.3% → 95.8%**. Against
+the round-3 end, 48 battles' first divergence moved later and none moved
+earlier.
+
+## Owner decision: PS's bench order for random switch-ins (option A)
+
+`81282d1`. PS draws a random switch-in with `sample(possibleSwitches)`
+over `side.pokemon` from `active.length` on (`sim/battle.ts:1570-1585`).
+Every switch permutes that array: the incoming and outgoing mons swap
+places (`sim/battle-actions.ts:131-133`). The engine drew over roster
+order.
+
+- `Side::ps_order` now tracks PS's order and `Side::random_switch_candidates`
+  is `possibleSwitches`. Whirlwind, Roar, Dragon Tail, Circle Throw and
+  Red Card draw from it.
+- **Unconditional.** It only reorders the candidates, so the draw count
+  and distribution are unchanged. `ps_order` is not game state, so the
+  canonical hash ignores it, like any bench permutation.
+- **Behind `ps-rng`:** one difference. PS's `sample` draws `random(1)`
+  even for a one-mon bench, and the engine's `range(1)` skips that draw,
+  so `Rng::Ps` makes the draw explicitly.
+- **Keying.** The keyed harness needed no change. The driver already
+  records `sample` as a `range` draw under the move-use envelope
+  (turn, user, move). The engine draws under the same context, and the
+  repair pass pairs any target mismatch.
+- **Option B was not needed.** On the divergence turn:
+  - Whirlwind, Roar and Circle Throw had no divergences;
+  - the one Dragon Tail battle (`9ffd4d9774`) diverges on a battle-start
+    terrain order. Its drag already matched.
+  - Red Card was a first-bench auto-pick, not a random draw, so the
+    ordering alone changed nothing (bench order alone: 0 battles moved).
+    Fixing Red Card itself (F1, F3) took it from 12 battles to 1. The one
+    left, `7d4d22f12a`, also involves Emergency Exit.
+- **Seeded differential (`accuracy psrng`)**, `ps-rng` on. The sample has
+  32 PS drag draws. Only 3 are reached with the stream still aligned,
+  because most battles desynchronise earlier.
+  - Before: 2 of 3 matched through the drag; `b2c0f68e9c` diverged at the
+    drag draw itself (a Red Card).
+  - After: **3 of 3 match draw for draw.**
+  - Whole-sample rate: before 16 clean (1.2%), 1498/2780 turns; after 15
+    clean (1.2%), 1524/2807 turns. The clean battle lost, `21d2b3b4ce`, had
+    already desynchronised at turn 1 (an ability-roll order draw). It was
+    clean by luck; the recharge fix (F8) shifted its later stream.
+
+## Fixes (round 4)
+
+| # | bug | PS reference | tests added | commit | battles moved |
+|---|---|---|---|---|---|
+| D | Random switch-ins drew in roster order | `sim/battle.ts:1570-1585`; `sim/battle-actions.ts:131-133,162` | units `random_switch_candidates_follow_ps_side_order`, `whirlwind_draw_lands_on_the_mon_ps_would_drag_in` | `81282d1` | 0 |
+| F1 | Red Card swapped in the first bench mon mid-hit; PS flags `forceSwitchFlag` and drags a random mon after the action. The card is used up even when DragOut blocks | `data/items.ts:5152-5164`; `sim/battle.ts:2821-2829` | unit `red_card_drags_a_random_bench_mon_after_the_attackers_action` | `8c5ac4d` | 10 |
+| F2 | A pivot switch-in that Emergency Exited the same turn reused the slot's first mid-turn pick | `sim/battle.ts:2877-2915` | unit `emergency_exit_after_a_pivot_switch_in_takes_the_next_pick` | `ceb9a33` | 3 |
+| F3 | A Red-Carded attacker still took Life Orb recoil (and Shell Bell healed) | `data/items.ts:3414` lifeorb, `:5658` shellbell (`!source.forceSwitchFlag`) | F1's test, corrected | `71d123e` | 4 |
+| F4 | Drain healed after Rocky Helmet / Rough Skin and the secondaries; PS heals inside `spreadDamage` | `sim/battle.ts:2170`; `sim/battle-actions.ts:1121` | unit `drain_heals_before_rocky_helmet_hits_back` | `10f3207` | 10 |
+| F5 | Emergency Exit didn't fire from residual damage (poison, sand, Leech Seed) | `sim/battle.ts:2813-2816,2862-2868` | unit `emergency_exit_from_residual_damage_asks_for_a_switch` | `8789ec0` | 1 |
+| F6 | Swarm boosted Fighting moves (type 6) instead of Bug (11) | `data/abilities.ts` swarm | unit `swarm_boosts_bug_moves_not_fighting_moves` | `590689f` | 2 |
+| F7 | Baton Pass unimplemented (user stayed in) | `data/moves.ts:1092-1118`; `sim/pokemon.ts:1246-1268` copyVolatileFrom | unit `baton_pass_switches_out_mid_turn_and_passes_boosts_and_substitute` | `7a0f989` | 12 |
+| F8 | The recharge turn ran after the other before-move checks and the move's onTry, so a Fake Out picked on it kept the recharge pending | `data/conditions.ts:364` mustrecharge (priority 11) | unit `recharge_turn_is_spent_whatever_move_was_chosen` | `83c88d8` | 1 |
+| F9 | First Impression had no first-turn check | `data/moves.ts` firstimpression onTry | unit `first_impression_fails_after_the_first_move_action` | `4accbf9` | 1 |
+| F10 | Burn Up's Fire-type loss (and its fail when not Fire) | `data/moves.ts:2092-2117` | unit `burn_up_strips_the_fire_type_and_then_fails` | `f4ccdda` | 0 (3 uses, none divergent) |
+| F11 | Revival Blessing unimplemented | `data/moves.ts:15110`; `sim/side.ts:965-977`; `sim/battle.ts:2781-2797` | unit `revival_blessing_revives_the_picked_fainted_mon_at_half_hp` | `954b67c` | 7 |
+
+## Agreement trajectory (round 4)
+
+Wilson 95% CIs, n = 1,298. Measured after every change.
+
+| after | fully clean | per-turn | first divergences: RNG plumbing / mechanics / decision model |
+|---|---|---|---|
+| round 3 end | 856 = 65.9% (63.3–68.5) | 8904/9346 = 95.3% (94.8–95.7) | 39 / 373 / 29 |
+| D bench order | 856 = 65.9% (63.3–68.5) | 8904/9346 = 95.3% (94.8–95.7) | 39 / 373 / 29 |
+| F1 Red Card | 860 = 66.3% (63.6–68.8) | 8934/9372 = 95.3% (94.9–95.7) | 40 / 376 / 21 |
+| F2 second mid-turn pick | 863 = 66.5% (63.9–69.0) | 8958/9393 = 95.4% (94.9–95.8) | 40 / 376 / 18 |
+| F3 Life Orb on a flagged attacker | 867 = 66.8% (64.2–69.3) | 8974/9405 = 95.4% (95.0–95.8) | 40 / 374 / 16 |
+| F4 drain order | 877 = 67.6% (65.0–70.1) | 9037/9458 = 95.5% (95.1–95.9) | 40 / 365 / 15 |
+| F5 residual Emergency Exit | 878 = 67.6% (65.0–70.1) | 9043/9463 = 95.6% (95.1–96.0) | 40 / 365 / 14 |
+| F6 Swarm | 878 = 67.6% (65.0–70.1) | 9049/9469 = 95.6% (95.1–96.0) | 41 / 365 / 13 |
+| F7 Baton Pass | 886 = 68.3% (65.7–70.7) | 9110/9522 = 95.7% (95.2–96.1) | 42 / 357 / 12 |
+| F8 recharge order | 887 = 68.3% (65.8–70.8) | 9113/9524 = 95.7% (95.3–96.1) | 42 / 356 / 12 |
+| F9 First Impression | 887 = 68.3% (65.8–70.8) | 9115/9526 = 95.7% (95.3–96.1) | 41 / 357 / 12 |
+| F10 Burn Up | 887 = 68.3% (65.8–70.8) | 9115/9526 = 95.7% (95.3–96.1) | 41 / 357 / 12 |
+| F11 Revival Blessing | **894 = 68.9% (66.3–71.3)** | **9142/9546 = 95.8% (95.3–96.2)** | 41 / 355 / 7 |
+
+**Earlier divergences.** None against the round-3 end. One appeared in a
+trial: First Impression alone moved `21d2b3b4ce` from clean to turn 4. It
+exposed the recharge-order bug: Sirfetch'd picked First Impression on
+its recharge turn, the new gate aborted first, and the recharge carried
+into the next turn. F8 fixed that and landed first.
+
+`cargo test --workspace --exclude vgc-engine-py` passed at every commit,
+with `ps-rng` both off and on.
+
+## What leads now (404 diverged battles)
+
+- **Pivots and pick-driven effects are nearly gone.** On the divergence
+  turn: Emergency Exit 3, Eject Button 3, Revival Blessing 2, Red Card 1,
+  Baton Pass 0 (were 13 / 5 / 7 / 12 / 12).
+- **Encore (8) is mostly a co-occurring effect.** Its triaged battles
+  diverge on other mechanics:
+  - a self-boost secondary (Fiery Dance) doesn't apply when the target
+    faints;
+  - resist berries check the move's base type, not the −ate type (Roseli
+    Berry vs Pixilate Hyper Voice), at `battle.rs` `type_resist_berry_fires`
+    and `try_consume_type_resist_berry`;
+  - First Impression (fixed, F9).
+- **Mechanics offenders** (`switch` 55, Grassy Terrain 53, Life Orb 27,
+  Leftovers 25) are still mostly co-occurring. Close Combat 25 and Knock
+  Off 16 (10.8% of uses) lead the rest.
+- **Highest divergence rate per use:**
+  - Confusion 44% and Storm Throw 40%;
+  - Dragon Darts 36%, Feint 33%, Stockpile 29%;
+  - Roost 25% and Rage Fist 18%.
