@@ -17118,6 +17118,44 @@ mod tests {
     }
 
     #[test]
+    fn darkest_lariat_ignores_the_targets_defense_boosts() {
+        // PS data/moves.ts darkestlariat / sacredsword `ignoreDefensive:
+        // true`: getDamage drops the defender's Def/SpD boosts
+        // (sim/battle-actions.ts, `if (move.ignoreDefensive) ignoreNegativeOffensive...`).
+        for mv in ["darkestlariat", "sacredsword"] {
+            let dmg = |def_boost: i8| {
+                let p1 = TeamBuilder::from_json(&format!(r#"[{{"species":"incineroar","level":50,"moves":["{mv}"]}}]"#)).unwrap();
+                let p2 = TeamBuilder::from_json(r#"[{"species":"farigiraf","level":50,"moves":["trickroom"]}]"#).unwrap();
+                let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+                b.p2.team[0].boosts[1] = def_boost;
+                b.step(
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                    &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                );
+                b.p2.team[0].stats.hp - b.p2.team[0].current_hp
+            };
+            assert_eq!(dmg(2), dmg(0), "{mv} ignores +2 Def");
+        }
+    }
+
+    #[test]
+    fn darkest_lariat_ignores_the_targets_evasion() {
+        // PS sim/battle-actions.ts:719: `ignoreEvasion` skips the target's
+        // evasion stage, so +6 evasion can't make Darkest Lariat miss.
+        for seed in 0..20 {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"incineroar","level":50,"moves":["darkestlariat"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"farigiraf","level":50,"moves":["trickroom"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.p2.team[0].boosts[6] = 6;
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "seed {seed}: missed");
+        }
+    }
+
+    #[test]
     fn triple_arrows_def_drop_is_chance_gated() {
         // PS data/moves.ts:triplearrows — secondaries: [ { chance: 50, boosts:
         // { def: -1 } }, { chance: 30, volatileStatus: 'flinch' } ]. The 50%

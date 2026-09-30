@@ -109,7 +109,9 @@ pub(crate) fn effective_accuracy(
     }
 
     let acc_stage = attacker.boosts[5] as i32;
-    let eva_stage = defender.boosts[6] as i32;
+    // `ignoreEvasion` moves skip the target's evasion stage entirely (PS
+    // sim/battle-actions.ts:719; data/moves.ts darkestlariat et al.).
+    let eva_stage = if crate::damage::ignores_defensive_boosts(move_id) { 0 } else { defender.boosts[6] as i32 };
     let boost = (acc_stage - eva_stage).clamp(-6, 6);
     let mut eff_acc: u32 = if boost > 0 {
         (base_acc as u32) * (3 + boost as u32) / 3
