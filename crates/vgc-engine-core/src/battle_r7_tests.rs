@@ -640,3 +640,20 @@ fn ps_rng_modify_damage_shuffles_tied_screen_handlers() {
     let i = trace.iter().position(|d| d.op == "damage").unwrap_or_else(|| panic!("{:?}", trace.iter().map(|d| (d.op, d.a, d.b, d.move_id)).collect::<Vec<_>>()));
     assert_eq!((trace[i + 1].op, trace[i + 1].a, trace[i + 1].b), ("shuffle", 0, 2), "{trace:#?}");
 }
+
+#[test]
+fn defiant_triggers_once_per_stat_parting_shot_lowers() {
+    // PS boost() runs AfterEachBoost once per stat it changed
+    // (sim/battle.ts boost loop), so Parting Shot's -1 Atk / -1 SpA gives a
+    // Defiant target two +2 Atk rebounds.
+    let mut b = singles(
+        r#"[{"species":"incineroar","level":50,"ability":"intimidate","moves":["partingshot"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"kingambit","level":50,"ability":"defiant","moves":["swordsdance"]}]"#,
+        1,
+    );
+    let start = b.p2.team[0].boosts[0]; // Intimidate -1, Defiant +2
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    // Swords Dance +2; Parting Shot -1 then +2 +2.
+    assert_eq!(b.p2.team[0].boosts[0], (start + 2 - 1 + 4).min(6));
+}

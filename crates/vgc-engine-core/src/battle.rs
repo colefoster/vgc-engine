@@ -11899,10 +11899,9 @@ self.trigger_emergency_exits();
                     }
                 }
                 if k > 0 {
+                    let before = self.side(atk_side).active_mon(atk_slot as usize).map_or([0; 7], |a| a.boosts);
                     self.apply_boosts(atk_side, atk_slot, &buf[..k], def_side, def_slot);
-                    crate::item::try_consume_white_herb(self, atk_side, atk_slot);
-                    let _ = crate::item::try_consume_eject_pack(self, atk_side, atk_slot, true);
-                    crate::ability::react_to_opposing_stat_drop(self, atk_side, atk_slot);
+                    self.after_foe_drop(atk_side, atk_slot, before, true);
                 }
             }
             _ => {}
@@ -13168,16 +13167,31 @@ self.trigger_emergency_exits();
         }
         let before = t.boosts;
         self.apply_boosts(side, slot, &deltas[..k], src_side, src_slot);
-        let dropped = self
+        self.after_foe_drop(side, slot, before, true) > 0
+    }
+
+    /// The reactions to a foe-sourced stat drop, in PS's order. boost()
+    /// runs AfterEachBoost once per stat it changed (sim/battle.ts boost
+    /// loop), so Defiant / Competitive rebound once per lowered stat; then
+    /// Eject Pack (onAfterBoost; `eject` false for Parting Shot, which it
+    /// ignores, data/items.ts:1712) and White Herb, which restores what is
+    /// still negative. Returns how many stats fell.
+    pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
+        let lowered = self
             .side(side)
             .active_mon(slot as usize)
-            .is_some_and(|m| (0..7).any(|i| m.boosts[i] < before[i]));
-        if dropped {
-            crate::item::try_consume_white_herb(self, side, slot);
-            let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
+            .map_or(0, |m| (0..7).filter(|&i| m.boosts[i] < before[i]).count());
+        if lowered == 0 {
+            return 0;
+        }
+        for _ in 0..lowered {
             crate::ability::react_to_opposing_stat_drop(self, side, slot);
         }
-        dropped
+        if eject {
+            let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
+        }
+        crate::item::try_consume_white_herb(self, side, slot);
+        lowered
     }
 
     /// EOT sub-phase `yawn`. Extracted from
@@ -15590,16 +15604,10 @@ self.trigger_emergency_exits();
                     // switch fires (skip the dropped_any flip).
                     if !blocked {
                         // Opposing drop — source is the Parting Shot user.
+                        let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
                         self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
-                        crate::item::try_consume_white_herb(self, opp, slot);
-                        // Eject Pack: opposing-source stat drop triggers a
-                        // reactive switch on the target. PS handler order:
-                        // useItem fires after Defiant/Competitive
-                        // reactions (see `react_to_opposing_stat_drop`),
-                        // since onAfterEachBoost runs after the boost call
-                        // returns control.
-                        let _ = crate::item::try_consume_eject_pack(self, opp, slot, true);
-                        crate::ability::react_to_opposing_stat_drop(self, opp, slot);
+                        // Eject Pack ignores Parting Shot (data/items.ts:1712).
+                        self.after_foe_drop(opp, slot, before, false);
                         dropped_any = true;
                     }
                 }
@@ -16222,12 +16230,14 @@ self.trigger_emergency_exits();
                             }
                         }
                         if k > 0 {
+                            let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
                             self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
-                            crate::item::try_consume_white_herb(self, ts, tslot);
-                            let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
-                            // Defiant / Competitive ignore an ally's drop.
                             if ts != actor_side {
-                                crate::ability::react_to_opposing_stat_drop(self, ts, tslot);
+                                self.after_foe_drop(ts, tslot, before, true);
+                            } else {
+                                // Defiant / Competitive ignore an ally's drop.
+                                crate::item::try_consume_white_herb(self, ts, tslot);
+                                let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
                             }
                         }
                     }
@@ -17522,23 +17532,11 @@ fn apply_secondary_effect(
                 // PS clamps each stage to [-6, 6]. Opposing drop — source is
                 // the attacker (move secondary). Mirror Armor reflect hook
                 // will read the threaded source here.
+                let before = battle.side(target_side).active_mon(target_slot as usize).map_or([0; 7], |t| t.boosts);
                 battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
-                crate::item::try_consume_white_herb(battle, target_side, target_slot);
-                // Eject Pack: secondary-effect stat drop (move-secondary
-                // path, e.g. Crunch's 20% Def drop) triggers a reactive
-                // switch on the target.
-                let _ = crate::item::try_consume_eject_pack(
-                    battle, target_side, target_slot, true,
-                );
-                // Competitive (+2 SpA) / Defiant (+2 Atk) rebound when a foe
-                // lowers a stat — fires on the move-secondary drop path too
-                // (e.g. Crunch Def-drop, Lumina Crash SpD-drop into a
-                // Competitive mon). Mirrors the status-move ordering above
-                // (apply → White Herb → Eject Pack → react). PS
-                // data/abilities.ts competitive/defiant `onAfterEachBoost`.
-                crate::ability::react_to_opposing_stat_drop(
-                    battle, target_side, target_slot,
-                );
+                // Defiant / Competitive (onAfterEachBoost), Eject Pack, White
+                // Herb (e.g. Crunch's Def drop, Lumina Crash's SpD drop).
+                battle.after_foe_drop(target_side, target_slot, before, true);
             }
         }
     }
@@ -35116,8 +35114,9 @@ mod tests {
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         // Intimidate on Incineroar switch-in already dropped Bisharp's
         // atk by 1, which Defiant rebounds (+2). After the step, Parting
-        // Shot then drops Atk again (-1) and SpA (-1) and triggers
-        // another +2 atk rebound: total atk stage = -1 + 2 - 1 + 2 = +2.
+        // Shot then drops Atk again (-1) and SpA (-1); Defiant rebounds once
+        // per lowered stat (PS boost() runs AfterEachBoost per stat):
+        // total atk stage = -1 + 2 - 1 + 2 + 2 = +4.
         b.step(
             &[
                 Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) },
@@ -35125,7 +35124,7 @@ mod tests {
             ],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        assert_eq!(b.p2.team[0].boosts[0], 2, "Bisharp Defiant rebound stacks");
+        assert_eq!(b.p2.team[0].boosts[0], 4, "Bisharp Defiant rebound stacks");
         assert_eq!(b.p2.team[0].boosts[2], -1, "SpA -1 still landed");
     }
 
