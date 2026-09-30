@@ -9086,12 +9086,20 @@ self.trigger_emergency_exits();
             return MoveIdentityOutcome::Abort;
         }
 
+        // Burn Up — PS data/moves.ts:2092 onTryMove: fails unless the user
+        // is Fire-type (after PP is spent, like Fake Out below).
+        let burn_up_fails = move_id == data::move_id::BURNUP && {
+            let (types, n) = attacker.effective_types();
+            !types[..n as usize].contains(&1)
+        };
         // 2. Fake Out: fails unless this is the attacker's first move
         //    action since switching in. PS data/moves.ts:5097 fakeout
         //    `onTry`: `if (source.activeMoveActions > 1) return false`.
         //    First Impression has the same onTry (data/moves.ts
         //    firstimpression).
-        if matches!(move_id, data::move_id::FAKEOUT | data::move_id::FIRSTIMPRESSION) && attacker.move_actions > 1 {
+        if (matches!(move_id, data::move_id::FAKEOUT | data::move_id::FIRSTIMPRESSION) && attacker.move_actions > 1)
+            || burn_up_fails
+        {
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -9515,6 +9523,14 @@ self.trigger_emergency_exits();
         // committed Final Gambit's damage: gate on the move having dealt
         // (or attempted) damage this resolution via `any_damage_dealt`.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Final_Gambit_(move)>.
+        // Burn Up — PS data/moves.ts:2092 `self.onHit`: once the move has
+        // hit, the user's Fire type becomes '???'.
+        if move_id == data::move_id::BURNUP && any_damage_dealt > 0 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.lose_fire_type();
+            }
+        }
+
         if move_id == data::move_id::FINALGAMBIT && any_damage_dealt > 0 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.current_hp = 0;
@@ -17872,6 +17888,33 @@ mod tests {
         assert!(b.p2.team[0].current_hp >= chomp_hp, "Fake Out failed → Garchomp didn't lose HP");
         // Garchomp's Dragon Claw should have hit Iron Hands.
         assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn burn_up_strips_the_fire_type_and_then_fails() {
+        // PS data/moves.ts:2092 burnup: onTryMove fails unless the user is
+        // Fire-type; self.onHit replaces Fire with '???' (a pure Fire user
+        // is left typeless).
+        let foe = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"nature":"careful","evs":{"hp":252,"spd":252},"moves":["curse"]}]"#).unwrap();
+        let run = |species: &str| {
+            let p1 = TeamBuilder::from_json(&format!(r#"[{{"species":"{species}","level":50,"nature":"modest","moves":["burnup"]}}]"#)).unwrap();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+                Rng::oracle_partial(vec![crate::rng::RngEvent::PercentRoll(1), crate::rng::RngEvent::Crit(false), crate::rng::RngEvent::DamageRoll(15)], 3),
+                p1, foe.clone());
+            let go = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+            let curse = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+            let hp0 = b.p2.team[0].current_hp;
+            b.step(&go, &curse);
+            let hp1 = b.p2.team[0].current_hp;
+            assert!(hp1 < hp0, "{species}: Burn Up hits");
+            let types = b.p1.team[0].effective_types();
+            b.step(&go, &curse);
+            assert_eq!(b.p2.team[0].current_hp, hp1, "{species}: a second Burn Up fails");
+            types
+        };
+        let (types, n) = run("volcarona");
+        assert_eq!((types[0], n), (11, 1), "Bug/Fire Volcarona is left Bug");
+        assert_eq!(run("arcanine").1, 0, "pure Fire Arcanine is left typeless");
     }
 
     #[test]

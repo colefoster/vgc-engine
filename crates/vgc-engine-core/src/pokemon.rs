@@ -441,6 +441,10 @@ pub struct Volatile {
     pub payload: u32,
 }
 
+/// `Pokemon::type_override[0]` marker for PS's '???' type (Burn Up on a
+/// pure Fire mon): `effective_types` reports no type.
+pub const TYPELESS: u8 = 254;
+
 /// Fixed-cap volatile registry. 8 slots is comfortably more than the
 /// in-corpus max (≈4). `items[..len]` is the data store (linear scan for
 /// `get`/`position`); `present` is a presence bitmask kept in sync on every
@@ -1061,6 +1065,9 @@ impl Pokemon {
         let s = self.species();
         if self.terastallized && self.tera_type != 255 {
             ([self.tera_type, 0], 1)
+        } else if self.type_override[0] == TYPELESS {
+            // Burn Up on a pure Fire mon: PS '???', no type at all.
+            ([0, 0], 0)
         } else if self.type_override[0] != 255 {
             // Runtime type override (Protean / Color Change / ...).
             if self.type_override[1] == 255 {
@@ -1081,6 +1088,18 @@ impl Pokemon {
     #[inline]
     pub fn set_type_override(&mut self, primary: u8, secondary: Option<u8>) {
         self.type_override = [primary, secondary.unwrap_or(255)];
+    }
+
+    /// Burn Up's self effect (PS data/moves.ts:2092 burnup `self.onHit`):
+    /// every Fire type becomes '???'. A Fire/X mon is left X; a pure Fire
+    /// mon is left typeless ([`TYPELESS`]).
+    pub fn lose_fire_type(&mut self) {
+        let (types, n) = self.effective_types();
+        match (n, types) {
+            (2, [1, other]) | (2, [other, 1]) => self.set_type_override(other, None),
+            (1, [1, _]) => self.type_override = [TYPELESS, 255],
+            _ => {}
+        }
     }
 
     /// Remove any runtime type override, reverting to the species types.
