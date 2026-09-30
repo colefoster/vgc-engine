@@ -84,10 +84,11 @@ pub fn try_consume_type_resist_berry(
     battle: &mut Battle,
     target_side: SideRef,
     target_slot: u8,
+    move_id: u16,
     move_type: u8,
-    defender_species: &data::SpeciesDef,
+    defender: &crate::pokemon::Pokemon,
 ) -> bool {
-    if !type_resist_berry_fires(battle, target_side, target_slot, move_type, defender_species) {
+    if !type_resist_berry_fires(battle, target_side, target_slot, move_id, move_type, defender) {
         return false;
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
@@ -105,12 +106,19 @@ pub fn try_consume_type_resist_berry(
 /// Whether the defender's type-resist berry fires on this hit (see
 /// [`try_consume_type_resist_berry`]), without eating it. The damage calc
 /// chains its ×0.5 into the ModifyDamage event.
+///
+/// `move_type` is the move's type after type-changing effects (the -ate
+/// abilities, Liquid Voice, Weather Ball, Tera Blast ...: PS reads
+/// `move.type` after onModifyType), and the super-effective gate is PS's
+/// `getMoveHitData(move).typeMod > 0`: effectiveness against the
+/// defender's current (Tera, Soak, Burn Up ...) types.
 pub fn type_resist_berry_fires(
     battle: &Battle,
     target_side: SideRef,
     target_slot: u8,
+    move_id: u16,
     move_type: u8,
-    defender_species: &data::SpeciesDef,
+    defender: &crate::pokemon::Pokemon,
 ) -> bool {
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
@@ -159,7 +167,7 @@ pub fn type_resist_berry_fires(
     }
     if requires_se {
         use crate::damage::TypeEff;
-        let eff = crate::damage::type_effectiveness(move_type, defender_species);
+        let eff = crate::damage::effectiveness_for_move_type(move_id, move_type, defender);
         if !matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
             return false;
         }
