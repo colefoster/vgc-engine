@@ -1312,6 +1312,25 @@ impl Pokemon {
         });
     }
 
+    /// Mark a Revival Blessing pick (payload 3): the player picks a fainted
+    /// party member to revive; this mon stays in.
+    #[inline]
+    pub fn set_pending_revive(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 3,
+        });
+    }
+
+    /// True when the pending pick is a Revival Blessing
+    /// ([`Pokemon::set_pending_revive`]).
+    #[inline]
+    pub fn pending_switch_revives(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 3)
+    }
+
     /// True when the pending switch is a Baton Pass
     /// ([`Pokemon::set_pending_copy_switch`]).
     #[inline]

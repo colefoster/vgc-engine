@@ -3542,6 +3542,10 @@ self.trigger_emergency_exits();
                     .side(side)
                     .active_mon(slot as usize)
                     .is_some_and(|m| m.pending_switch_copies());
+                let revives = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_revives());
                 // Clear the flag regardless — even if no replacement is
                 // available, the move doesn't re-fire next turn.
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -3556,11 +3560,18 @@ self.trigger_emergency_exits();
                     if forced {
                         self.force_switch_auto(side, slot);
                     }
+                    if revives {
+                        self.revive_party_member(side, None);
+                    }
                     continue;
                 };
                 consumed[pos] = true;
                 self.mid_turn_picks_used[side as usize] |= 1 << pos;
                 let team_index = deferred[pos].1;
+                if revives {
+                    self.revive_party_member(side, Some(team_index));
+                    continue;
+                }
                 self.copy_volatiles_next_switch = copies;
                 let switched = self.do_switch(side, slot, team_index);
                 self.copy_volatiles_next_switch = false;
@@ -10267,6 +10278,32 @@ self.trigger_emergency_exits();
         None
     }
 
+    /// Revival Blessing's revive (PS sim/battle.ts:2781-2797): the picked
+    /// fainted party member, or the first fainted one when the pick isn't
+    /// a fainted mon, comes back with no status at trunc(maxhp / 2) HP
+    /// (min 1, PS `sethp`). A mon still sitting in an active slot returns
+    /// to the field there (PS queues an instaswitch).
+    fn revive_party_member(&mut self, side: SideRef, pick: Option<u8>) {
+        let s = self.side(side);
+        let fainted = |i: u8| s.team.get(i as usize).is_some_and(|m| m.fainted);
+        let Some(idx) = pick
+            .filter(|&i| fainted(i))
+            .or_else(|| (0..s.team.len() as u8).find(|&i| fainted(i)))
+        else {
+            return;
+        };
+        let active_slot = (0..self.format().active_count()).find(|&sl| self.side(side).active[sl] == idx);
+        let m = &mut self.side_mut(side).team[idx as usize];
+        m.fainted = false;
+        m.status = Status::None;
+        m.current_hp = (m.stats.hp / 2).max(1);
+        if let Some(sl) = active_slot {
+            self.sync_status_dot_bit(side, sl as u8);
+            crate::ability::on_switch_in(self, side, sl as u8);
+            crate::item::on_switch_in(self, side, sl as u8);
+        }
+    }
+
     /// Each active slot's (team index, HP), for the residual Emergency Exit check.
     fn active_hp_snapshot(&self) -> [[(u8, u16); 2]; 2] {
         let mut snap = [[(u8::MAX, 0u16); 2]; 2];
@@ -14061,6 +14098,19 @@ self.trigger_emergency_exits();
                 if dropped_any && self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
+                    }
+                }
+            }
+            data::move_id::REVIVALBLESSING => {
+                // Revival Blessing — PS data/moves.ts:15110: onTryHit fails
+                // with no fainted party member; otherwise a pick of a
+                // fainted mon to revive (`selfSwitch` only to get the
+                // request). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Revival_Blessing_(move)>.
+                let any_fainted = self.side(actor_side).team.iter().any(|m| m.fainted);
+                if any_fainted {
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.set_pending_revive();
                     }
                 }
             }
@@ -38558,6 +38608,34 @@ mod tests {
         assert_eq!(b.p1.team[1].boosts[0], 2, "the +2 Attack was passed");
         assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "Body Slam hit the incoming mon, not Ninetales");
         assert!(b.p1.team[1].substitute_hp() < 30, "the passed Substitute took Body Slam");
+    }
+
+    #[test]
+    fn revival_blessing_revives_the_picked_fainted_mon_at_half_hp() {
+        // PS data/moves.ts:15110 revivalblessing: fails with no fainted
+        // party member; otherwise the player picks a fainted mon
+        // (sim/side.ts:965-977) and it comes back with its status cleared
+        // at trunc(maxhp / 2) HP (sim/battle.ts:2781-2797). The user stays in.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pawmot","level":50,"moves":["revivalblessing"]},
+            {"species":"snorlax","level":50,"moves":["bodyslam"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"chansey","level":50,"moves":["softboiled"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        for i in [1, 2] {
+            b.p1.team[i].current_hp = 0;
+            b.p1.team[i].fainted = true;
+        }
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.active[0], 0, "Pawmot stays in");
+        assert!(b.p1.team[2].is_alive(), "Eevee was revived");
+        assert_eq!(b.p1.team[2].current_hp, b.p1.team[2].stats.hp / 2);
+        assert!(!b.p1.team[1].is_alive(), "Snorlax was not picked");
     }
 
     #[test]
