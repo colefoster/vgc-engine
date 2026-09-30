@@ -864,3 +864,21 @@ fn speed_boost_after_a_replacement_between_turns() {
     b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
     assert_eq!(b.p1.team[2].boosts[4], 1);
 }
+
+#[test]
+fn a_foes_move_hits_whoever_ally_switch_moved_into_its_target_slot() {
+    // PS move actions carry a target location (targetLoc); runMove's
+    // getTarget resolves it with getAtLoc, so after Ally Switch the move
+    // lands on the Pokemon now in that position.
+    let mut b = doubles(
+        r#"[{"species":"farigiraf","level":50,"ability":"armortail","moves":["allyswitch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    // Farigiraf (team 0) moved into slot 1 and took the Dragon Claw.
+    assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    assert_eq!(b.p1.team[1].current_hp, b.p1.team[1].stats.hp);
+}
