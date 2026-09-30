@@ -9089,7 +9089,9 @@ self.trigger_emergency_exits();
         // 2. Fake Out: fails unless this is the attacker's first move
         //    action since switching in. PS data/moves.ts:5097 fakeout
         //    `onTry`: `if (source.activeMoveActions > 1) return false`.
-        if move_id == data::move_id::FAKEOUT && attacker.move_actions > 1 {
+        //    First Impression has the same onTry (data/moves.ts
+        //    firstimpression).
+        if matches!(move_id, data::move_id::FAKEOUT | data::move_id::FIRSTIMPRESSION) && attacker.move_actions > 1 {
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -17870,6 +17872,23 @@ mod tests {
         assert!(b.p2.team[0].current_hp >= chomp_hp, "Fake Out failed → Garchomp didn't lose HP");
         // Garchomp's Dragon Claw should have hit Iron Hands.
         assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
+    }
+
+    #[test]
+    fn first_impression_fails_after_the_first_move_action() {
+        // PS data/moves.ts firstimpression onTry: fails when
+        // `source.activeMoveActions > 1`, the Fake Out counter.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"golisopod","level":50,"nature":"adamant","moves":["firstimpression"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"nature":"careful","evs":{"hp":252,"def":252},"moves":["curse"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let fi = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }];
+        let curse = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let hp0 = b.p2.team[0].current_hp;
+        b.step(&fi, &curse);
+        let hp1 = b.p2.team[0].current_hp;
+        assert!(hp1 < hp0, "First Impression hits on the first move action");
+        b.step(&fi, &curse);
+        assert_eq!(b.p2.team[0].current_hp, hp1, "and fails on the second");
     }
 
     #[test]
