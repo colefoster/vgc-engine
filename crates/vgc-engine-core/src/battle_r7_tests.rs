@@ -463,3 +463,20 @@ fn psychic_fangs_shatters_the_targets_screens() {
     assert_eq!(b.p2.conditions.reflect_turns, 0);
     assert_eq!(b.p2.conditions.light_screen_turns, 0);
 }
+
+#[test]
+fn stab_follows_the_current_type_after_protean() {
+    // PS modifyDamage STAB: pokemon.hasType(type) ||
+    // pokemon.getTypes(false, true).includes(type); getTypes reads the
+    // current `types`, which setType (Protean on Protect) replaced, so the
+    // original Grass type no longer gives STAB.
+    let run = |ability: &str| {
+        let p1 = format!(r#"[{{"species":"meowscarada","level":50,"ability":"{ability}","moves":["protect","flowertrick"]}}]"#);
+        let mut b = singles(&p1, r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#, 4);
+        b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+        b.step(&[mv(0, 1, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+        b.p2.team[0].stats.hp - b.p2.team[0].current_hp
+    };
+    let (protean, overgrow) = (run("protean"), run("overgrow"));
+    assert!(protean * 4 < overgrow * 3, "Normal-type Protean user: {protean} vs Grass STAB {overgrow}");
+}

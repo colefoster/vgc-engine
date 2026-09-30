@@ -2241,9 +2241,16 @@ pub(crate) fn calculate_damage_with_bp(
     //   1.5 → 2.0, and 2.0 (Tera ×2) → 2.25.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Terastal_Phenomenon>
     // <https://bulbapedia.bulbagarden.net/wiki/Adaptability_(Ability)>.
+    // `getTypes(false, true)` is the pre-Tera `types` array (sim/pokemon.ts
+    // getTypes), which setType replaced for a Protean / Soak / Burn Up user,
+    // so the species' types only count when nothing retyped the attacker.
     let species = attacker.species();
-    let base_has_move_type = (0..species.num_types as usize)
-        .any(|i| species.types[i] == move_type);
+    let base_has_move_type = if attacker.type_override[0] != 255 {
+        attacker.type_override[0] == move_type
+            || (attacker.type_override[1] != 255 && attacker.type_override[1] == move_type)
+    } else {
+        (0..species.num_types as usize).any(|i| species.types[i] == move_type)
+    };
     let (eff_atk_types, eff_atk_num) = attacker.effective_types();
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);
