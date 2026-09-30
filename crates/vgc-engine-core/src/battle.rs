@@ -3745,6 +3745,14 @@ self.trigger_emergency_exits();
         if n == 0 {
             return;
         }
+        // These switch in between turns, before PS's endTurn increments
+        // activeTurns (sim/battle.ts:1765), so the next residual counts them
+        // as having been out a turn (Speed Boost's `activeTurns` check).
+        for &(_, side, slot) in &entered[..n] {
+            if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                m.set_switched_in_this_turn(false);
+            }
+        }
         // The last instaswitch's eachEvent('Update'), then runSwitch's
         // speedSort(allActive).
         #[cfg(feature = "ps-rng")]
