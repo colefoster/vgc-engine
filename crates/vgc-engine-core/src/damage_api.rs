@@ -62,6 +62,18 @@ pub struct DamageQuery {
     pub champions: bool,
 }
 
+/// Opt-in field and battle effects for [`damage_only_with`]. Every flag
+/// defaults off, so `CalcMods::default()` is a bare calc: the two mons as
+/// given, no switch-in effects, no screens, no ally.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CalcMods {
+    /// Replay the leads' battle-start effects before the hit (the
+    /// defender's Intimidate, surge terrain eating seeds, White Herb, ...).
+    /// Off by default: PS `getDamage` (sim/battle-actions.ts) and
+    /// `@smogon/calc` read the mons as given.
+    pub switch_in_effects: bool,
+}
+
 /// The 16 damage values (one per roll `0..=15`) this move deals to the
 /// defender under the given field state. Pure — no RNG, no turn state,
 /// no EOT contamination. Returns `[0; 16]` if the move deals no damage
@@ -79,9 +91,14 @@ pub struct DamageQuery {
 /// This is the "Option 2" API: it replaces the ~200-trial back-solve
 /// path in `calc_oracle.rs` with a deterministic 16-run enumeration.
 pub fn damage_only(q: &DamageQuery) -> [u16; 16] {
+    damage_only_with(q, &CalcMods::default())
+}
+
+/// [`damage_only`] with opt-in field and battle effects ([`CalcMods`]).
+pub fn damage_only_with(q: &DamageQuery, mods: &CalcMods) -> [u16; 16] {
     let mut out = [0u16; 16];
     for k in 0..=15u8 {
-        out[k as usize] = single_roll(q, k);
+        out[k as usize] = single_roll(q, mods, k);
     }
     out
 }
@@ -89,7 +106,7 @@ pub fn damage_only(q: &DamageQuery) -> [u16; 16] {
 /// Run the synthetic battle once with the damage roll forced to `k`
 /// and the crit flag forced per `q.is_crit`. Returns the raw defender
 /// HP delta (pre-EOT), or 0 if the move failed to deal any damage.
-fn single_roll(q: &DamageQuery, k: u8) -> u16 {
+fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> u16 {
     // Fresh 1-mon "team" on each side. Attacker slot 0 = the requested
     // move; defender slot 0 = Splash so the p2 action is a no-op. We
     // set pp = 5 (a nominal, positive value — any > 0 keeps the move
@@ -103,7 +120,8 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     if def.pp[0] == 0 { def.pp[0] = 5; }
 
     let cfg = BattleConfig { format: Format::Singles, seed: 0xDA_DA_DA };
-    let mut battle = Battle::new(cfg, vec![atk], vec![def]);
+    let mut battle = Battle::new_for_calc(cfg, vec![atk], vec![def], mods.switch_in_effects);
+    battle.calc_mods = *mods;
     battle.champions = q.champions;
     battle.set_weather(q.weather);
     battle.set_terrain(q.terrain);
