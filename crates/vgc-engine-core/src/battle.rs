@@ -12092,33 +12092,18 @@ impl Battle {
                 }
             }
             data::move_id::WIDEGUARD | data::move_id::QUICKGUARD => {
-                // Both follow the Protect stall-counter family. PS
-                // data/moves.ts: `sideCondition` with `duration: 1`,
-                // gated by `onTry: !!this.queue.willAct()` (i.e. some
-                // actor still has an action queued — almost always
-                // true). We approximate by always allowing the set
-                // and rolling the stall counter the same way Protect
-                // does. The block itself fires at per-target damage
-                // resolution: Wide Guard short-circuits spread
-                // (`allAdjacent` / `allAdjacentFoes`) moves;
-                // Quick Guard short-circuits priority > 0 moves.
-                let stall_counter = {
-                    let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        Some(a) => a,
-                        None => return,
-                    };
-                    actor.mark_used_stall_this_turn();
-                    actor.stall_counter()
-                };
-                let denom: u32 = match stall_counter {
-                    0 => 1,
-                    n => 3u32.saturating_pow(n.min(6) as u32),
-                };
-                let success = self.rng.range(denom) == 0;
-                if !success {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.set_stall(0, true);
-                    }
+                // PS data/moves.ts wideguard / quickguard: `sideCondition`
+                // with `duration: 1`, gated only by `onTry:
+                // !!this.queue.willAct()` (approximated as always true). There
+                // is no StallMove roll, so they never fail to the stall
+                // counter; `onHitSide` adds the `stall` volatile, which
+                // raises the counter a following Protect rolls against. The
+                // block itself fires at per-target resolution: Wide Guard
+                // stops spread (`allAdjacent` / `allAdjacentFoes`) moves,
+                // Quick Guard priority > 0 moves.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.mark_used_stall_this_turn();
+                } else {
                     return;
                 }
                 let is_wide = move_id == data::move_id::WIDEGUARD;
@@ -28923,6 +28908,33 @@ mod tests {
                 ],
             );
             assert_eq!(b.p2.team[0].boosts[4], 0, "Electroweb lowered the Ground-type's Speed on seed {seed}");
+        }
+    }
+
+    #[test]
+    fn wide_guard_after_protect_always_succeeds() {
+        // PS data/moves.ts wideguard: `onTry` only needs `queue.willAct()`
+        // and there is no StallMove roll, so Wide Guard never fails to the
+        // Protect stall counter (it only feeds it, via `onHitSide`).
+        for seed in 0..60u64 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["protect","wideguard"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"sylveon","level":50,"ability":"pixilate","item":"","nature":"modest","moves":["hypervoice"]},
+                {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            let foes = [
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ];
+            let splash = Choice::Move { actor_slot: 1, move_slot: 0, target: None };
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, splash], &foes);
+            let hp = (b.p1.team[0].current_hp, b.p1.team[1].current_hp);
+            b.step(&[Choice::Move { actor_slot: 0, move_slot: 1, target: None }, splash], &foes);
+            assert_eq!((b.p1.team[0].current_hp, b.p1.team[1].current_hp), hp, "Wide Guard failed on seed {seed}");
         }
     }
 
