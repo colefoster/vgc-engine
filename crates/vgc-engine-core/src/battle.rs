@@ -561,6 +561,10 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_speed_cache: [[i64; 6]; 2],
+    /// `ps-rng` only: the current status move's accuracy roll missed.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_status_missed: bool,
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -658,6 +662,8 @@ impl Battle {
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
             ps_speed_cache: [[0; 6]; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_status_missed: false,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2048,6 +2054,24 @@ self.trigger_emergency_exits();
         let (i, spe) = (s.active[slot] as usize, m.stats.spe as i64);
         if i < 6 {
             self.ps_speed_cache[side as usize][i] = spe;
+        }
+    }
+
+    /// `ps-rng` only: whether a status move reached its hit loop's
+    /// spreadMoveHit with a result: not on a missed accuracy roll, and not
+    /// for a protect-family move or Endure whose stall check failed (PS
+    /// fails those in onPrepareHit, before the hit steps).
+    #[cfg(feature = "ps-rng")]
+    fn ps_status_move_landed(&self, side: SideRef, slot: u8, m: &data::MoveDef) -> bool {
+        if self.ps_status_missed {
+            return false;
+        }
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return false };
+        match m.slug {
+            "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
+            | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
+            "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
+            _ => true,
         }
     }
 
@@ -7298,7 +7322,24 @@ self.trigger_emergency_exits();
                 return;
             }
         }
+        // Every target type but all / foeSide / allySide / allyTeam goes
+        // through trySpreadMoveHit (sim/battle-actions.ts:505-518), whose hit
+        // loop ends a landed hit with eachEvent('Update') and then runs the
+        // post-loop one (data/mods/champions/scripts.ts:538, :575).
+        #[cfg(feature = "ps-rng")]
+        let ps_loop = self.rng.is_ps() && !matches!(m.target, 8 | 9 | 11 | 12);
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_status_missed = false;
+        }
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
+        #[cfg(feature = "ps-rng")]
+        if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m) {
+            self.ps_loop_hits = 1;
+            if self.ps_inline_hit_updates {
+                self.ps_active_ties(false, "shuffle");
+            }
+        }
         // Throat Spray on user — sound-flag status moves only.
         self.try_consume_throat_spray(actor_side, actor_slot, m.slug);
     }
@@ -10458,6 +10499,10 @@ self.trigger_emergency_exits();
         // compare. Records `m.accuracy` on DrawSpace::UniformPercent so a
         // future enumerator pass can collapse to hit/miss.
         let roll = self.rng.percent_1_100_t(m.accuracy.min(100)) as u32;
+        #[cfg(feature = "ps-rng")]
+        if roll > m.accuracy as u32 {
+            self.ps_status_missed = true;
+        }
         roll <= m.accuracy as u32
     }
 
@@ -17958,6 +18003,33 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 9, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_a_status_move_runs_the_hit_loop_updates() {
+        // Every move outside all / foeSide / allySide / allyTeam goes
+        // through trySpreadMoveHit, so a status move that lands also ends
+        // its hit with eachEvent('Update') and runs the post-loop one
+        // (sim/battle-actions.ts:505-518; data/mods/champions/scripts.ts:538,
+        // :575). Tied Snorlax, Protect vs Calm Mind: PS draws 10 shuffles.
+        let mut rng = Rng::ps("sodium,0000000000000000000000000000000b").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["protect"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap(),
+        );
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 10, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
