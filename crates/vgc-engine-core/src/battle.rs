@@ -2752,6 +2752,11 @@ self.trigger_emergency_exits();
     /// `getTarget` per queued move, and the re-sort's shuffle of tied moves.
     #[cfg(feature = "ps-rng")]
     fn ps_after_move_action(&mut self, order: &mut ActionOrder, idx: usize) {
+        // runAction's faintMessages ends the battle once a side is out,
+        // before the Update (sim/battle.ts:2834-2835).
+        if self.p1.is_defeated() || self.p2.is_defeated() {
+            return;
+        }
         self.ps_active_ties(false, "shuffle");
         let rest = &order[idx + 1..];
         // runAction re-sorts when the next queued action (queue.peek()) is a
