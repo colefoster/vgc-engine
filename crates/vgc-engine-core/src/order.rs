@@ -543,6 +543,7 @@ pub fn action_order(
         let mut queue_index: u16 = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             for c in choices {
+                let c = &battle.locked_move_choice(side, *c);
                 match *c {
                     Choice::Pass { .. } => {}
                     Choice::Switch { actor_slot, .. } => {
@@ -579,6 +580,7 @@ pub fn action_order(
 
     for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
         for c in choices {
+            let c = &battle.locked_move_choice(side, *c);
             match *c {
                 Choice::Pass { .. } => {}
                 Choice::Switch { actor_slot, .. } => {

@@ -1407,6 +1407,24 @@ impl Battle {
     /// Hot rollout loops should call `legal_choices_into` with a reused buffer
     /// instead (the perf review found this per-call `Vec` was ~30% of the
     /// per-turn rollout cost: 4 allocs + 4 frees per turn in doubles).
+    /// The choice a mon actually makes this turn. A mon mid-way through a
+    /// two-turn move is locked into it: PS `sim/side.ts:675-688` chooseMove
+    /// replaces the submitted move and target with the locked move at its
+    /// stored `targetLoc` (the charge turn's target).
+    pub(crate) fn locked_move_choice(&self, side: SideRef, c: Choice) -> Choice {
+        let (Choice::Move { actor_slot, .. } | Choice::Terastallize { actor_slot, .. } | Choice::MegaEvolve { actor_slot, .. }) = c else {
+            return c;
+        };
+        match self.side(side).active_mon(actor_slot as usize) {
+            Some(m) if m.charging_turns > 0 && m.charging_move_slot != 255 => Choice::Move {
+                actor_slot,
+                move_slot: m.charging_move_slot,
+                target: dec_target(m.last_used_move_target),
+            },
+            _ => c,
+        }
+    }
+
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let mut out = Vec::with_capacity(8);
         self.legal_choices_into(side, actor_slot, &mut out);
@@ -8548,6 +8566,7 @@ impl Battle {
                             *pp = pp.saturating_sub(1 + extra);
                         }
                         a.last_used_move_slot = move_slot;
+                        a.last_used_move_target = enc_target(target);
                         a.charging_turns = 1;
                         a.charging_move_slot = move_slot;
                     }
@@ -8576,6 +8595,7 @@ impl Battle {
                         *pp = pp.saturating_sub(1 + extra);
                     }
                     a.last_used_move_slot = move_slot;
+                    a.last_used_move_target = enc_target(target);
                     a.charging_turns = 1;
                     a.charging_move_slot = move_slot;
                     a.semi_invuln = semi_code;
@@ -34006,6 +34026,47 @@ mod tests {
             &[Choice::Switch { actor_slot: 0, team_index: 1 }],
         );
         assert_eq!(b.p2.team[1].current_hp, clef_max, "Magic Guard blocks SR");
+    }
+
+    #[test]
+    fn charged_move_releases_at_its_charge_target_whatever_the_choice() {
+        // PS sim/side.ts:675-688 chooseMove: a mon locked into a two-turn
+        // move (getLockedMove) uses it at the stored `targetLoc`, ignoring
+        // the submitted move slot and target.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"","nature":"modest","moves":["solarbeam","protect","heatwave","roost"]},
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["protect","hurricane","roost","tailwind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash","rest","curse","protect"]},
+            {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash","rest","curse","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+        let foes = [
+            Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+            Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+        ];
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None },
+            ],
+            &foes,
+        );
+        assert_eq!(b.p1.team[0].charging_turns, 1, "Solar Beam charges");
+        let (snorlax, blastoise) = (b.p2.team[0].current_hp, b.p2.team[1].current_hp);
+        // Turn 2: the player submits Protect (slot 1). PS releases Solar Beam
+        // at Blastoise instead.
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 1, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 2, target: None },
+            ],
+            &foes,
+        );
+        assert_eq!(b.p1.team[0].charging_turns, 0, "Solar Beam released");
+        assert!(b.p2.team[1].current_hp < blastoise, "Solar Beam hit its charge target");
+        assert_eq!(b.p2.team[0].current_hp, snorlax, "the other foe was not hit");
     }
 
     #[test]
