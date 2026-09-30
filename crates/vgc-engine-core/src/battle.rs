@@ -16522,14 +16522,13 @@ fn apply_secondary_effect(
     // Throat Chop — PS data/moves.ts:throatchop
     //   secondary: { chance: 100, onHit(target) { target.addVolatile('throatchop'); } }
     // A 100%-chance secondary that adds the 2-turn `throatchop` lockout to
-    // the target on every hit (locks out sound moves). No RNG draw — PS's
-    // `chance: 100` secondary skips the `randomChance` roll entirely
-    // (`secondary.chance === 100` short-circuits in sim/battle-actions),
-    // so we apply it unconditionally and consume no PRNG, preserving draw
-    // alignment. Covert Cloak (handled at the top of this fn) already
+    // the target on every hit (locks out sound moves). Covert Cloak (handled at the top of this fn) already
     // vetoes the whole secondary. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Throat_Chop_(move)>.
     if move_slug == "throatchop" {
+        // PS rolls random(100) for every secondary, a 100% one included
+        // (sim/battle-actions.ts:1343), then applies it.
+        let _ = rng.percent_1_100();
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() {
                 t.set_throat_chop(2);
@@ -16539,9 +16538,7 @@ fn apply_secondary_effect(
     // Salt Cure — PS data/moves.ts:15638 (saltcure)
     //   secondary: { chance: 100, volatileStatus: 'saltcure' }
     // A 100%-chance secondary that adds the `saltcure` volatile to the
-    // target on every hit. Like Throat Chop, PS's `chance: 100` secondary
-    // short-circuits the `randomChance` roll, so we apply it without
-    // consuming a PRNG draw (preserving oracle alignment). The volatile is
+    // target on every hit. The volatile is
     // indefinite (cleared on switch-out via the blanket `volatiles.clear()`);
     // the end-of-turn residual chip is applied in `resolve_end_of_turn`.
     // addVolatile is a no-op when the target is already salt-cured (PS
@@ -16549,6 +16546,9 @@ fn apply_secondary_effect(
     // the whole secondary. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Salt_Cure_(move)>.
     if move_slug == "saltcure" {
+        // PS rolls random(100) for every secondary, a 100% one included
+        // (sim/battle-actions.ts:1343), then applies it.
+        let _ = rng.percent_1_100();
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::SaltCure) {
                 let _ = t.volatiles.add(crate::pokemon::Volatile {
@@ -16564,16 +16564,16 @@ fn apply_secondary_effect(
     // A 100%-chance secondary that adds the `healblock` volatile to the
     // target on every hit. The Heal Block condition's `durationCallback`
     // (data/moves.ts:8288) returns 2 specifically for Psychic Noise (vs the
-    // default 5), so the lockout is 2 turns. Like Throat Chop / Salt Cure,
-    // PS's `chance: 100` secondary short-circuits the `randomChance` roll, so
-    // we apply it without consuming a PRNG draw (preserving oracle
-    // alignment). `addVolatile` is a no-op when the target is already
+    // default 5), so the lockout is 2 turns. `addVolatile` is a no-op when the target is already
     // heal-blocked (PS `onRestart` for Psychic Noise returns without
     // refreshing). Covert Cloak (gated at the top of this fn) already vetoes
     // the whole secondary. It's a sound move, so Soundproof / a substitute
     // already vetoed the hit upstream. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Psychic_Noise_(move)>.
     if move_slug == "psychicnoise" {
+        // PS rolls random(100) for every secondary, a 100% one included
+        // (sim/battle-actions.ts:1343), then applies it.
+        let _ = rng.percent_1_100();
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && t.heal_block_turns() == 0 {
                 t.set_heal_block(2);
@@ -17842,6 +17842,26 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 9, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_a_certain_secondary_still_rolls() {
+        // PS `secondaries` draws random(100) for every secondary before
+        // checking its chance (sim/battle-actions.ts:1343), so Throat Chop's
+        // 100% throatchop volatile costs one roll.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"tyranitar","level":50,"moves":["throatchop"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap();
+        let mut rng = Rng::ps("sodium,0000000000000000000000000000000a").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let rolls = trace.iter().filter(|d| d.move_id == data::move_id::THROATCHOP && d.decision == "secondary").count();
+        assert_eq!(rolls, 1, "{trace:#?}");
     }
 
     #[test]
