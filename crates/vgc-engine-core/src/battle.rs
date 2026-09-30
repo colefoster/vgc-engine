@@ -13062,7 +13062,14 @@ impl Battle {
                 }
             }
             data::move_id::TOXIC => {
-                if !self.rolled_accuracy_passed(m) { return; }
+                // A Poison-type user never misses and draws no accuracy roll:
+                // PS sim/battle-actions.ts:627 (invulnerability) and :731
+                // (`accuracy = true` for gen >= 8 Toxic from a Poison-type).
+                let poison_user = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                    let (types, n) = a.effective_types();
+                    types[..n as usize].contains(&7) // Poison (data TYPE_NAMES order)
+                });
+                if !poison_user && !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Toxic, actor_slot);
                 }
@@ -28818,6 +28825,28 @@ mod tests {
         }
         assert!(hits >= 5, "too few hits to validate ({hits})");
         assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn toxic_from_a_poison_type_never_misses_and_draws_no_accuracy() {
+        // PS sim/battle-actions.ts:627 (invulnerability) and :731 (accuracy):
+        // gen >= 8 Toxic used by a Poison-type is `accuracy = true` — no roll.
+        let run = |user: &str, seed: u64| {
+            let p1 = TeamBuilder::from_json(&format!(
+                r#"[{{"species":"{user}","level":50,"ability":"clearbody","item":"","nature":"bold","moves":["toxic"]}}]"#
+            )).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["splash"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            b.p2.team[0].status == Status::Toxic
+        };
+        assert!((0..150u64).all(|seed| run("toxapex", seed)), "Poison-type Toxic missed");
+        assert!((0..150u64).any(|seed| !run("snorlax", seed)), "control: non-Poison Toxic never missed");
     }
 
     #[test]
