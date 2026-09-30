@@ -77,6 +77,13 @@ compute them from its own state (`battle.rs`, all `#[cfg(feature =
 | `selfDrops` `random(100)` for `self.boosts` moves (Close Combat, Draco Meteor…) | `apply_self_effects` |
 | battle start: `insertChoice` ties for the four leads' `runSwitch`, the batched `speedSort(allActive)`, `Update` | `ps_start_draws` |
 | residual action `Update` ties | `turn_epilogue` |
+| `fieldEvent('Residual')` handler sort: ties among field, side and per-active handlers (order, priority, speed, subOrder) | `ps_residual_ties` |
+| spread moves (and single-target self-drop moves, Expanding Force in Psychic Terrain): PS's hit steps across all targets (accuracy, then crit and damage, selfDrops, secondaries, DamagingHit procs) | `ps_spread_window` + the `PsRng` reorder window |
+| `secondaries` rolls for a target the hit KO'd or a Substitute (`null`) | `ps_target_secondary_rolls` |
+| gen-8+ re-sort covers fainted users' queued moves; resolveAction's getTarget for chosen targets | `ps_after_move_action`, `ps_resolve_action_draws` |
+| Expanding Force's two `useMoveInner` re-picks | Expanding Force arm |
+| `eachEvent('WeatherChange' / 'TerrainChange')` on every weather / terrain change | `sync_weather_terrain_cache` |
+| Champions hit loop `Update` after each hit and after the loop (damaging moves) | `process_one_action` wrapper, `apply_single_hit` |
 
 These add draws but never change which outcome a draw selects, with one
 exception: tie shuffles order tied actions, which is PS's own semantics.
@@ -85,19 +92,21 @@ re-ordering (see the report).
 
 ## What is not emulated, and why
 
-These are the PS draws that still desynchronise the stream. They are ranked
-by how often they are the first divergent draw in the 1,298-battle Reg M-C
-sample (`accuracy psrng`, share of battles whose first draw divergence
-precedes or coincides with the first state divergence):
+After round 5 the seeded differential has 488 of 1,300 battles fully
+clean (37.5%) and 5895/6705 turns matched (round 4: 15, 1524/2807). The
+first divergent PS draw in the rest (`accuracy psrng`, stricter walk:
+same turn, same kind):
 
-| first divergent PS draw | share | why the engine can't (yet) match it |
+| first divergent PS draw | battles | why the engine can't (yet) match it |
 |---|---|---|
-| a secondary roll the engine doesn't make there | 17.5% | mostly mechanics: secondaries skipped when the target faints; missing per-move secondary tables; ability procs (Poison Touch, Flame Body…) rolled before the move's secondaries, the reverse of PS |
-| `getRandomTarget` inside `useMoveInner` | 17.1% | a move's target type changes mid-use (Expanding Force in Psychic Terrain becomes a spread move); the engine lacks that mechanic |
-| `fieldEvent` handler speed ties (Residual, SwitchIn) | 14.1% | PS speed-sorts event *handlers* (effect order, sub-order, holder speed); replicating it needs PS's handler lists, which the engine doesn't have |
-| spread-move accuracy order | 14.1% | PS rolls accuracy for every target before any crit/damage; the engine resolves target by target (a pure order difference) |
-| `eachEvent('Update')` inside the hit loop | 8.3% | the Champions mod calls `Update` per hit and after the hit loop; not hooked |
-| others (queue ties, sample(), Moody, freeze thaw…) | ~29% | long tail |
+| `hitStepAccuracy` | 163 | the engine skips an accuracy roll PS makes (or makes one PS skips): Protect-family / immunity step order differences |
+| runAction `eachEvent('Update')` ties | 144 | PS sorts on each mon's cached `speed` (updated per action); the engine uses live effective Speed, so ties differ (Choice Scarf, mid-action boosts) |
+| `getTarget` → `getRandomTarget` | 113 | retarget draws for moves whose target changed or fainted mid-turn that the engine doesn't mirror |
+| hit-loop `Update` ties | 78 | status moves' hit loops are not emitted; cached-speed ties |
+| resolveAction `getRandomTarget` | 59 | untargeted-move picks the engine counts differently |
+| commitChoices `queue.sort` ties | 54 | PS shuffles tied move actions here; emulating it with base priority and live Speed made agreement worse, so it is left out |
+| Residual handler sort | 46 | handlers not in the emulated list |
+| others | ~280 | long tail |
 
 The trace tools show exactly where a given battle breaks:
 
