@@ -570,6 +570,11 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_status_missed: bool,
+    /// `ps-rng` only: this turn's move actions in the order commitChoices'
+    /// queue.sort left them, as (side, slot).
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_commit_moves: ([(u8, u8); 4], u8),
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -670,6 +675,8 @@ impl Battle {
             ps_speed_cache: [[0; 6]; 2],
             #[cfg(feature = "ps-rng")]
             ps_status_missed: false,
+            #[cfg(feature = "ps-rng")]
+            ps_commit_moves: ([(0, 0); 4], 0),
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2496,6 +2503,8 @@ self.trigger_emergency_exits();
         // refreshed, before any switch or Mega Evolution this turn.
         // Quick Claw / Quick Draw rolls are not modelled here (frac 0).
         let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
+        // (side, slot, is the move action)
+        let mut items = [(SideRef::P1, 0u8, false); 12];
         let mut k = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let mut moved = [false; 2];
@@ -2508,22 +2517,23 @@ self.trigger_emergency_exits();
                 if !self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
                     continue;
                 }
-                let mut push = |key: (i64, i64, i64, i64)| {
+                let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
                     if k < keys.len() {
                         keys[k] = key;
+                        items[k] = (side, slot as u8, is_move);
                         k += 1;
                     }
                 };
                 match *c {
                     Choice::Switch { .. } => {
                         moved[slot.min(1)] = true;
-                        push((103, 0, 0, -spe));
+                        push((103, 0, 0, -spe), false);
                     }
                     Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
                         moved[slot.min(1)] = true;
                         match *c {
-                            Choice::Terastallize { .. } => push((106, 0, 0, -spe)),
-                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe)),
+                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), false),
+                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), false),
                             _ => {}
                         }
                         let pri = crate::order::state_priority(self, side, slot as u8, move_slot) as i64;
@@ -2548,32 +2558,21 @@ self.trigger_emergency_exits();
                         } else {
                             0
                         };
-                        push((200, -pri, -frac, -spe));
+                        push((200, -pri, -frac, -spe), true);
                     }
                     Choice::Pass { .. } => {}
                 }
             }
         }
-        keys[..k].sort_unstable();
-        let mut tie = [0i64; 12];
-        let mut g = 0i64;
-        for i in 0..k {
-            if i > 0 && keys[i] != keys[i - 1] {
-                g += 1;
+        crate::order::ps_speed_sort(&mut keys[..k], &mut items[..k], |a, b| self.rng.ps_random_range("shuffle", a, b));
+        let mut moves = ([(0u8, 0u8); 4], 0u8);
+        for &(side, slot, is_move) in &items[..k] {
+            if is_move && (moves.1 as usize) < 4 {
+                moves.0[moves.1 as usize] = (side as u8, slot);
+                moves.1 += 1;
             }
-            tie[i] = -g;
         }
-        let mut st = 0;
-        while st < k {
-            let mut end = st + 1;
-            while end < k && tie[end] == tie[st] {
-                end += 1;
-            }
-            for i in st..end.saturating_sub(1) {
-                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
-            }
-            st = end;
-        }
+        self.ps_commit_moves = moves;
         // beforeTurn action: eachEvent('BeforeTurn') + the post-action
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
@@ -2662,7 +2661,7 @@ self.trigger_emergency_exits();
             return;
         }
         let keys = self.turn_keys;
-        let _ = crate::order::resort_remaining(self, order, idx, &keys);
+        let _ = crate::order::resort_remaining(self, order, idx, &keys, None);
     }
 
     /// `ps-rng` only: [`Battle::after_move_action`] with PS's draws — the
@@ -2691,24 +2690,11 @@ self.trigger_emergency_exits();
             k += 1;
         }
         self.ps_resort_get_targets(&acts[..k]);
+        // queue.sort(): PS's speedSort, tie shuffles applied.
         let keys = self.turn_keys;
-        let (sorted, n) = crate::order::resort_remaining(self, order, idx, &keys);
-        // queue.sort()'s speedSort shuffles each run of tied moves.
-        let mut tie = [0i64; 8];
-        let mut g = 0i64;
-        for i in 0..n {
-            if i > 0 && sorted[i] != sorted[i - 1] {
-                g += 1;
-            }
-            tie[i] = -g;
-        }
-        let perm = self.ps_shuffle_ties(&tie[..n], "shuffle");
-        let tail = &mut order.as_mut_slice()[idx + 1..];
-        let mut tmp = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 8];
-        for i in 0..n {
-            tmp[i] = tail[perm[i] as usize];
-        }
-        tail[..n].copy_from_slice(&tmp[..n]);
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        let _ = crate::order::resort_remaining(self, order, idx, &keys, Some(&mut rng));
+        self.rng = rng;
     }
 
     fn turn_prologue(
@@ -2796,12 +2782,30 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            self.ps_update_speed_all();
             self.ps_resort_get_targets(&acts[..k]);
         }
         let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
         let mut keys = crate::order::TurnKeys::default();
-        let order = crate::order::action_order_keyed(self, p1_choices, p2_choices, &mut rng, &mut keys);
+        #[allow(unused_mut)]
+        let mut order = crate::order::action_order_keyed(self, p1_choices, p2_choices, &mut rng, &mut keys);
         self.turn_keys = keys;
+        // PS's re-sort before the first move (after beforeTurn, switches
+        // and Mega Evolution) sorts the queue commitChoices left.
+        #[cfg(feature = "ps-rng")]
+        if rng.is_ps() {
+            let start = order.iter().position(|a| !matches!(a.choice, Choice::Switch { .. })).unwrap_or(order.len());
+            let (cm, cn) = self.ps_commit_moves;
+            let tail = &mut order.as_mut_slice()[start..];
+            let mut next = 0;
+            for &(side, slot) in &cm[..cn as usize] {
+                if let Some(p) = tail[next..].iter().position(|a| a.side as u8 == side && a.actor_slot == slot) {
+                    tail[next..].swap(0, p);
+                    next += 1;
+                }
+            }
+            let _ = crate::order::resort_from(self, &mut order, start, &keys, Some(&mut rng));
+        }
         self.rng = rng;
         // Consume Custap Berry for any holder whose `onFractionalPriority`
         // fired this turn. PS `data/items.ts:custapberry` consumes the
@@ -18176,11 +18180,12 @@ mod tests {
     fn ps_rng_update_sorts_use_the_speed_cached_before_the_move() {
         // PS speed-sorts on `Pokemon.speed`, cached by updateSpeed() at
         // commitChoices and before each gen-8+ re-sort (sim/battle.ts:2999,
-        // :2921), not on live Speed. Two tied Snorlax, Icy Wind then Tackle:
-        // Icy Wind's two hit-loop Updates and its runAction Update still see
-        // the tie (the drop isn't cached yet); the re-sort caches it, so
-        // Tackle's Updates and the residual draw nothing. With
-        // commitChoices' queue.sort tie, PS draws 7 shuffles on turn 1.
+        // :2921), not on live Speed. Two tied Snorlax; with this seed PS's
+        // tie shuffles put Tackle first. Tackle's two hit-loop Updates and
+        // its runAction Update see the tie; so do Icy Wind's, as the re-sort
+        // before it cached the tied Speeds and the drop lands after. With
+        // commitChoices' sort, BeforeTurn, Update and the first re-sort, PS
+        // draws 10 shuffles on turn 1 (the same values, in order).
         let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
         rng.ps_mut().unwrap().enable_trace();
         let mut b = Battle::with_rng(
@@ -18198,7 +18203,7 @@ mod tests {
         assert_eq!(b.p2.team[0].boosts[4], -1);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
-        assert_eq!(shuffles, 7, "{trace:#?}");
+        assert_eq!(shuffles, 10, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
