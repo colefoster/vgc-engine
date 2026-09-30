@@ -16867,17 +16867,19 @@ fn enumerate_targets(
             }
             TargetBuf::new()
         }
-        // 5 allAdjacent — all adjacent foes + ally (skip self).
+        // 5 allAdjacent — the ally, then the adjacent foes (skip self), in
+        // PS's order: getMoveTargets pushes adjacentAllies() before
+        // adjacentFoes() (sim/pokemon.ts:808-811).
         5 => {
             let mut out = TargetBuf::new();
             for slot in 0..active_n {
-                if alive(opp, slot) {
-                    out.push((opp, slot));
+                if slot != actor_slot && alive(actor_side, slot) {
+                    out.push((actor_side, slot));
                 }
             }
             for slot in 0..active_n {
-                if slot != actor_slot && alive(actor_side, slot) {
-                    out.push((actor_side, slot));
+                if alive(opp, slot) {
+                    out.push((opp, slot));
                 }
             }
             out
