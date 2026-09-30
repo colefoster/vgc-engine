@@ -706,3 +706,13 @@ fn steel_beam_costs_half_max_hp_rounded() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(max - b.p1.team[0].current_hp, (max + 1) / 2, "max HP {max}");
 }
+
+#[test]
+fn confusion_self_hit_roll_bucket_zero_is_the_minimum() {
+    // PS getConfusionDamage (sim/battle-actions.ts:1850) runs randomizer:
+    // floor(base * (100 - random(16)) / 100). An engine damage bucket b is
+    // the (85 + b)% roll, so bucket 0 is 85% and bucket 15 is 100%.
+    // L50, 40 BP, Atk 100 / Def 100: base = floor(22 * 40 * 100 / 100 / 50) + 2 = 19.
+    assert_eq!(crate::damage::confusion_self_hit_damage_for_bucket(50, 100, 0, 100, 0, 0), 16);
+    assert_eq!(crate::damage::confusion_self_hit_damage_for_bucket(50, 100, 0, 100, 0, 15), 19);
+}

@@ -490,7 +490,8 @@ pub fn confusion_self_hit_damage_for_bucket(
     let def = apply_boost(def_base, def_boost).max(1);
     let lvl_factor = 2 * level / 5 + 2;
     let base = (lvl_factor * 40 * atk / def / 50) + 2;
-    (base * (100 - bucket as u32) / 100).max(1) as u16
+    // Engine bucket b is the (85 + b)% roll (PS `100 - random(16)`).
+    (base * (85 + bucket as u32) / 100).max(1) as u16
 }
 
 /// Pokémon Champions / mainline gen-9 damage rounding — a faithful port of
