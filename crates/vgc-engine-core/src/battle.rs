@@ -496,6 +496,11 @@ pub struct Battle {
     /// `None` in production. `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) captured_move_damage: Option<u32>,
+    /// `damage_only` companion to `captured_move_damage`: the same sum
+    /// taken BEFORE the Sturdy / Endure / Focus Sash / Focus Band clamp, so
+    /// the calc can report the uncapped damage. `None` in production.
+    #[serde(skip)]
+    pub(crate) captured_uncapped_damage: Option<u32>,
     /// `damage_only` accuracy forcing hook. When `Some(true)`, every
     /// accuracy check in `resolve_move_with_pending` skips the RNG
     /// draw and reports a hit; `Some(false)` reports a miss (unused,
@@ -693,6 +698,7 @@ impl Battle {
             force_damage_roll: None,
             force_crit: None,
             captured_move_damage: None,
+            captured_uncapped_damage: None,
             force_accuracy_hit: None,
             force_is_spread: None,
             calc_mods: crate::damage_api::CalcMods::default(),
@@ -7829,6 +7835,9 @@ self.trigger_emergency_exits();
             // `ctx.attacker_breaks_mold`) lifts it. OHKO-move arm
             // (`onTryHit` for `move.ohko`) is deferred — Horn Drill /
             // Fissure / Guillotine / Sheer Cold not implemented yet.
+            if let Some(acc) = self.captured_uncapped_damage.as_mut() {
+                *acc = acc.saturating_add(dmg as u32);
+            }
             let mut capped = dmg;
             let (def_ability, def_cur, def_max) = match self
                 .side(ctx.tside)

@@ -103,3 +103,13 @@ def test_calc_skips_switch_in_effects_unless_asked():
         atk, "Incineroar / Intimidate / 252 HP", "eq", switch_in_effects=True
     )
     assert replay["max"] < intim["max"]
+
+
+def test_calc_reports_uncapped_damage_into_focus_sash():
+    atk = "Garchomp @ Choice Band / Adamant / 252 Atk"
+    bare = vgc_engine.calc(atk, "Pikachu", "eq")
+    sash = vgc_engine.calc(atk, "Pikachu @ Focus Sash", "eq")
+    assert sash["rolls"] == bare["rolls"]
+    assert sash["survived_by"] == "focus_sash"
+    assert sash["ko"]["kind"] == "none"
+    assert bare["survived_by"] is None

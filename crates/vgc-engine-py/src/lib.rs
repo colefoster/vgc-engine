@@ -778,6 +778,9 @@ fn damage_result_dict<'py>(
     d.set_item("min_pct", r.min_pct)?;
     d.set_item("max_pct", r.max_pct)?;
     d.set_item("ko", ko_chance_dict(py, &r.ko_chance)?)?;
+    // "focus_sash" / "sturdy" when that effect leaves the defender at 1 HP
+    // on some roll (`rolls` stay uncapped; `ko` counts the capped outcome).
+    d.set_item("survived_by", r.survived_by.map(|s| s.slug()))?;
 
     // Multi-hit NHKO (2HKO/3HKO/…) plus its exact probability, and a
     // human label ("guaranteed 2HKO" / "56.3% to 3HKO" / "no KO").
@@ -809,6 +812,7 @@ fn damage_result_dict<'py>(
 ///   "rolls": [int; 16], "min": int, "max": int,
 ///   "defender_max_hp": int, "min_pct": float, "max_pct": float,
 ///   "ko":   {"kind": "guaranteed"|"chance"|"none", "pct": int|None},
+///   "survived_by": "focus_sash"|"sturdy"|None,
 ///   "multi_hit": {"hits": int, "chance": float, "label": str},
 ///   "crit": { ...same shape, no nested crit... } | None
 /// }

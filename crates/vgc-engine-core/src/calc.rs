@@ -21,7 +21,7 @@
 
 use crate::pokemon::{nature_by_slug, Status};
 use crate::team::{build_member, slugify, TeamMember};
-use crate::damage_api::{damage_only_with, CalcMods};
+use crate::damage_api::{damage_only_detail, CalcMods};
 use crate::{DamageQuery, Pokemon, StatSpread};
 use crate::{Terrain, Weather};
 
@@ -671,6 +671,23 @@ fn ko_word(hits: u8) -> String {
     }
 }
 
+/// A full-HP survival effect that left the defender at 1 HP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurvivalEffect {
+    FocusSash,
+    Sturdy,
+}
+
+impl SurvivalEffect {
+    pub fn slug(&self) -> &'static str {
+        match self {
+            SurvivalEffect::FocusSash => "focus_sash",
+            SurvivalEffect::Sturdy => "sturdy",
+        }
+    }
+}
+
 /// Result of a single-move damage calc: the 16 rolls plus derived range,
 /// percentages, and 1-hit KO estimate.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -692,6 +709,10 @@ pub struct DamageResult {
     /// callers can show either the terse single-hit verdict or the full
     /// NHKO label.
     pub multi_hit: MultiHitKo,
+    /// Set when the defender survives at least one roll only because Focus
+    /// Sash or Sturdy capped it at 1 HP. `rolls` stay uncapped; `ko_chance`
+    /// counts the capped outcome.
+    pub survived_by: Option<SurvivalEffect>,
     /// The crit-row result, when the caller asked for a non-crit calc we
     /// still compute the crit companion so callers can show both. `None`
     /// on a crit calc (no nested crit) or a 0-damage calc.
@@ -1105,7 +1126,19 @@ fn shape_result(
         is_spread: field.spread,
         champions: field.champions,
     };
-    let rolls = damage_only_with(&q, &field.mods());
+    let detail = damage_only_detail(&q, &field.mods());
+    let rolls = detail.rolls;
+    let survived_by = if detail.capped != detail.rolls {
+        if def.effective_ability_id() == data::ability_id::STURDY {
+            Some(SurvivalEffect::Sturdy)
+        } else if def.item_id == data::item_id::FOCUSSASH {
+            Some(SurvivalEffect::FocusSash)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let min = *rolls.iter().min().unwrap();
     let max = *rolls.iter().max().unwrap();
     let denom = defender_max_hp.max(1) as f32;
@@ -1114,10 +1147,14 @@ fn shape_result(
 
     // 1-hit KO from the rolls vs the defender's CURRENT hp (full by
     // default; `current_hp` respects a pre-damaged defender if set).
-    let ko_chance = ko_from_rolls(&rolls, def.current_hp);
+    let ko_chance = ko_from_rolls(&detail.capped, def.current_hp);
     // Multi-hit KO (2HKO/3HKO/…) via convolution — pure arithmetic on the
     // same rolls, no extra engine calls.
-    let multi_hit = multi_hit_ko(&rolls, def.current_hp);
+    let mut multi_hit = multi_hit_ko(&rolls, def.current_hp);
+    if survived_by.is_some() && multi_hit.hits == 1 {
+        // Sash / Sturdy only save a full-HP defender: the next hit KOs.
+        multi_hit = MultiHitKo { hits: 2, chance: 1.0 };
+    }
 
     DamageResult {
         rolls,
@@ -1128,6 +1165,7 @@ fn shape_result(
         max_pct,
         ko_chance,
         multi_hit,
+        survived_by,
         crit: None,
     }
 }
@@ -1337,6 +1375,29 @@ mod tests {
 
         let ursa = QuickMon::parse("Ursaluna-Bloodmoon / Mind's Eye / Modest / 252 SpA").unwrap();
         assert!(calc(&ursa, &def, "hypervoice", Field::none()).unwrap().min > 0);
+    }
+
+    #[test]
+    fn focus_sash_and_sturdy_report_uncapped_damage_and_a_survival_flag() {
+        // PS getDamage (sim/battle-actions.ts) returns the full damage;
+        // Focus Sash (data/items.ts focussash onDamage) and Sturdy
+        // (data/abilities.ts sturdy onDamage) cap it later, at spreadDamage.
+        let atk = QuickMon::parse("Garchomp @ Choice Band / Adamant / 252 Atk").unwrap();
+        let bare = QuickMon::parse("Pikachu").unwrap();
+        let sash = QuickMon::parse("Pikachu @ Focus Sash").unwrap();
+        let plain = calc(&atk, &bare, "earthquake", Field::none()).unwrap();
+        let r = calc(&atk, &sash, "earthquake", Field::none()).unwrap();
+        assert!(plain.min > plain.defender_max_hp, "setup: EQ should OHKO Pikachu");
+        assert_eq!(r.rolls, plain.rolls, "sash-capped rolls reported");
+        assert_eq!(r.survived_by, Some(SurvivalEffect::FocusSash));
+        assert_eq!(r.ko_chance, KoChance::None, "Sash survives the hit");
+        assert_eq!(plain.survived_by, None);
+
+        let ground = QuickMon::parse("Garchomp @ Choice Band / Adamant / 252 Atk").unwrap();
+        let aggron = QuickMon::parse("Aggron / Sturdy").unwrap();
+        let rs = calc(&ground, &aggron, "earthquake", Field::none()).unwrap();
+        assert!(rs.max > rs.defender_max_hp, "uncapped EQ into Aggron: {:?}", rs.rolls);
+        assert_eq!(rs.survived_by, Some(SurvivalEffect::Sturdy));
     }
 
     #[test]

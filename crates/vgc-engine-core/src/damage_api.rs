@@ -96,9 +96,27 @@ pub fn damage_only(q: &DamageQuery) -> [u16; 16] {
 
 /// [`damage_only`] with opt-in field and battle effects ([`CalcMods`]).
 pub fn damage_only_with(q: &DamageQuery, mods: &CalcMods) -> [u16; 16] {
-    let mut out = [0u16; 16];
+    damage_only_detail(q, mods).rolls
+}
+
+/// Per-roll damage with and without the defender's survival clamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageRolls {
+    /// The damage each roll deals, before Focus Sash / Sturdy / Focus Band
+    /// cap it (PS `getDamage`'s value).
+    pub rolls: [u16; 16],
+    /// The HP the defender actually loses to each roll, after that cap.
+    /// Differs from `rolls` only where a survival effect fired.
+    pub capped: [u16; 16],
+}
+
+/// [`damage_only_with`], also returning the survival-capped rolls.
+pub fn damage_only_detail(q: &DamageQuery, mods: &CalcMods) -> DamageRolls {
+    let mut out = DamageRolls { rolls: [0; 16], capped: [0; 16] };
     for k in 0..=15u8 {
-        out[k as usize] = single_roll(q, mods, k);
+        let (raw, capped) = single_roll(q, mods, k);
+        out.rolls[k as usize] = raw;
+        out.capped[k as usize] = capped;
     }
     out
 }
@@ -106,7 +124,7 @@ pub fn damage_only_with(q: &DamageQuery, mods: &CalcMods) -> [u16; 16] {
 /// Run the synthetic battle once with the damage roll forced to `k`
 /// and the crit flag forced per `q.is_crit`. Returns the raw defender
 /// HP delta (pre-EOT), or 0 if the move failed to deal any damage.
-fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> u16 {
+fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> (u16, u16) {
     // Fresh 1-mon "team" on each side. Attacker slot 0 = the requested
     // move; defender slot 0 = Splash so the p2 action is a no-op. We
     // set pp = 5 (a nominal, positive value — any > 0 keeps the move
@@ -143,6 +161,7 @@ fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> u16 {
     // `Battle::captured_move_damage`) so a KO doesn't clip the
     // reported value at defender_max_hp.
     battle.captured_move_damage = Some(0);
+    battle.captured_uncapped_damage = Some(0);
 
     let defender_max_hp = battle.p2.team[0].stats.hp;
     let p1_choices = [Choice::Move {
@@ -183,8 +202,10 @@ fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> u16 {
     // an immunity — accumulator stays 0, HP delta stays 0).
     let captured = battle.captured_move_damage.unwrap_or(0);
     let hp_delta = defender_max_hp.saturating_sub(battle.p2.team[0].current_hp) as u32;
-    let raw = captured.max(hp_delta);
-    raw.min(u16::MAX as u32) as u16
+    let capped = captured.max(hp_delta);
+    let raw = battle.captured_uncapped_damage.unwrap_or(0).max(capped);
+    let clip = |v: u32| v.min(u16::MAX as u32) as u16;
+    (clip(raw), clip(capped))
 }
 
 fn splash_move_id() -> u16 {
