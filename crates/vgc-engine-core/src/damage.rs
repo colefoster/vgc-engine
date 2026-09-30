@@ -2371,6 +2371,12 @@ pub(crate) fn calculate_damage_with_bp(
         dmg_mod = chain_modify(dmg_mod, 1, 2);
     }
 
+    // Glaive Rush — its user takes ×2 until its next move (the volatile's
+    // onSourceModifyDamage, data/moves.ts glaiverush).
+    if defender.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush) {
+        dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+
     // Tinted Lens — ×2 when the move was Not Very Effective. PS
     // `data/abilities.ts:tintedlens` onModifyDamage (attacker side). Venomoth /
     // Sigilyph.
