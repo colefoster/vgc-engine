@@ -1925,6 +1925,12 @@ impl Battle {
                     }
                     self.run_pending_drags();
 self.trigger_emergency_exits();
+                    // runAction's Update comes before a switch request
+                    // (sim/battle.ts:2861, :2900).
+                    #[cfg(feature = "ps-rng")]
+                    if ran && self.rng.is_ps() {
+                        self.ps_post_action_update();
+                    }
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
                     if ran {
                         self.after_move_action(&mut order, idx);
@@ -1952,6 +1958,10 @@ self.trigger_emergency_exits();
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_post_action_update();
+                }
                 if self.decision_phases { self.apply_self_switches(p1, p2); }
                 self.after_move_action(&mut order, idx);
                 idx += 1;
@@ -2747,17 +2757,28 @@ self.trigger_emergency_exits();
         let _ = crate::order::resort_remaining(self, order, idx, &keys, None);
     }
 
-    /// `ps-rng` only: [`Battle::after_move_action`] with PS's draws — the
-    /// Update ties, then (if another move is queued) `updateSpeed()`,
-    /// `getTarget` per queued move, and the re-sort's shuffle of tied moves.
+    /// `ps-rng` only: runAction's `eachEvent('Update')` after an executed
+    /// move. [`Battle::ps_after_move_action`] then draws (if another move is
+    /// queued) `updateSpeed()`, `getTarget` per queued move, and the
+    /// re-sort's shuffle of tied moves.
     #[cfg(feature = "ps-rng")]
-    fn ps_after_move_action(&mut self, order: &mut ActionOrder, idx: usize) {
+    fn ps_post_action_update(&mut self) {
         // runAction's faintMessages ends the battle once a side is out,
         // before the Update (sim/battle.ts:2834-2835).
         if self.p1.is_defeated() || self.p2.is_defeated() {
             return;
         }
         self.ps_active_ties(false, "shuffle");
+    }
+
+    /// `ps-rng` only: the gen-8+ re-sort half of [`Battle::after_move_action`];
+    /// the Update ([`Battle::ps_post_action_update`]) is drawn before any
+    /// mid-turn switch.
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_move_action(&mut self, order: &mut ActionOrder, idx: usize) {
+        if self.p1.is_defeated() || self.p2.is_defeated() {
+            return;
+        }
         let rest = &order[idx + 1..];
         // runAction re-sorts when the next queued action (queue.peek()) is a
         // move, and runs getActionSpeed for every queued action, a fainted
@@ -4333,15 +4354,31 @@ self.trigger_emergency_exits();
                 self.copy_volatiles_next_switch = copies;
                 let switched = self.do_switch(side, slot, team_index);
                 self.copy_volatiles_next_switch = false;
+                // The switch action ends with eachEvent('Update'); its
+                // BeforeSwitchOut ran before the request (skip flag).
+                #[cfg(feature = "ps-rng")]
+                if switched && self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
                 if switched && n_switched < switched_slots.len() {
                     self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
                     switched_slots[n_switched] = slot;
                     n_switched += 1;
                 }
             }
+            // The batched runSwitch: speedSort(allActive), the switch-ins,
+            // then its Update (sim/battle-actions.ts:171-189).
+            #[cfg(feature = "ps-rng")]
+            if n_switched > 0 && self.rng.is_ps() {
+                self.ps_active_ties(true, "shuffle");
+            }
             for &slot in &switched_slots[..n_switched] {
                 crate::ability::on_switch_in(self, side, slot);
                 crate::item::on_switch_in(self, side, slot);
+            }
+            #[cfg(feature = "ps-rng")]
+            if n_switched > 0 && self.rng.is_ps() {
+                self.ps_active_ties(false, "shuffle");
             }
         }
         // PR-LC1: a self-switch (U-turn / Volt Switch / Flip Turn / Parting
@@ -18387,6 +18424,35 @@ mod tests {
         let picks: Vec<u32> = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).map(|d| d.b).collect();
         // resolveAction (p1a, then p2a), then the re-sort (Jolteon first).
         assert_eq!(&picks[..6], &[1, 1, 2, 2, 2, 1], "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_a_u_turn_switch_runs_the_switch_sorts() {
+        // U-turn's runAction ends with its Update before the switch request
+        // (sim/battle.ts:2861, :2900); the switch action then ends with an
+        // Update and the queued runSwitch speed-sorts every active and ends
+        // with its own Update. Tied Snorlax, U-turn into another Snorlax vs
+        // Calm Mind: PS draws 14 shuffles on turn 1.
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000012").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["uturn"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap(),
+        );
+        b.decision_phases = true;
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.active[0], 1);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 14, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
