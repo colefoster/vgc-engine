@@ -10106,9 +10106,12 @@ self.trigger_emergency_exits();
 
         // Burn Up — PS data/moves.ts:2092 onTryMove: fails unless the user
         // is Fire-type (after PP is spent, like Fake Out below).
-        let burn_up_fails = move_id == data::move_id::BURNUP && {
+        // Double Shock (data/moves.ts doubleshock onTryMove) likewise needs
+        // an Electric-type user.
+        let burn_up_fails = matches!(move_id, data::move_id::BURNUP | data::move_id::DOUBLESHOCK) && {
             let (types, n) = attacker.effective_types();
-            !types[..n as usize].contains(&1)
+            let needed = if move_id == data::move_id::BURNUP { 1 } else { 3 };
+            !types[..n as usize].contains(&needed)
         };
         // 2. Fake Out: fails unless this is the attacker's first move
         //    action since switching in. PS data/moves.ts:5097 fakeout
@@ -10546,6 +10549,12 @@ self.trigger_emergency_exits();
         if move_id == data::move_id::BURNUP && any_damage_dealt > 0 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.lose_fire_type();
+            }
+        }
+        // Double Shock's self.onHit: Electric becomes '???'.
+        if move_id == data::move_id::DOUBLESHOCK && any_damage_dealt > 0 {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.lose_type(3);
             }
         }
 

@@ -544,3 +544,20 @@ fn ice_body_heals_a_sixteenth_in_snow() {
     let ((body, max), (plain, _)) = (run("icebody"), run("innerfocus"));
     assert_eq!(body, plain + max / 16);
 }
+
+#[test]
+fn double_shock_spends_the_users_electric_type() {
+    // PS data/moves.ts doubleshock: self.onHit turns Electric into '???';
+    // onTryMove fails a user that isn't Electric.
+    let mut b = singles(
+        r#"[{"species":"pawmot","level":50,"ability":"ironfist","moves":["doubleshock"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    let (types, n) = b.p1.team[0].effective_types();
+    assert_eq!((n, types[0]), (1, 6), "Electric/Fighting -> Fighting");
+    let hp = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].current_hp, hp, "a non-Electric user's Double Shock fails");
+}
