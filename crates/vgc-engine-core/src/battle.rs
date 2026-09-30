@@ -10581,7 +10581,9 @@ self.trigger_emergency_exits();
         // correct for all of them).
         // Steel Roller clears the terrain once it hits (PS data/moves.ts
         // steelroller onHit / onAfterSubDamage `this.field.clearTerrain()`).
-        if move_id == data::move_id::STEELROLLER && any_damage_dealt > 0 {
+        // Ice Spinner (data/moves.ts icespinner onAfterHit / onAfterSubDamage)
+        // does the same.
+        if matches!(move_id, data::move_id::STEELROLLER | data::move_id::ICESPINNER) && any_damage_dealt > 0 {
             self.terrain = crate::terrain::Terrain::None;
             self.terrain_turns = 0;
             self.sync_weather_terrain_cache();

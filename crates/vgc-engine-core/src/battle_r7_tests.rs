@@ -574,3 +574,16 @@ fn hard_press_power_follows_the_targets_hp() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "100 BP at full HP");
 }
+
+#[test]
+fn ice_spinner_clears_the_terrain() {
+    // PS data/moves.ts icespinner onAfterHit: this.field.clearTerrain().
+    let mut b = singles(
+        r#"[{"species":"weavile","level":50,"ability":"pressure","moves":["icespinner"]}]"#,
+        r#"[{"species":"pincurchin","level":50,"ability":"electricsurge","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    assert!(!matches!(b.terrain, crate::terrain::Terrain::None));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(matches!(b.terrain, crate::terrain::Terrain::None));
+}
