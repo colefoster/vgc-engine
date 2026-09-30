@@ -6055,6 +6055,12 @@ self.trigger_emergency_exits();
                     }
                     guarded
                 };
+            let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
+                weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                terrain: active_terrain,
+                champions: self.champions,
+                ..DamageContext::default()
+            });
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
@@ -6074,7 +6080,7 @@ self.trigger_emergency_exits();
                 attacker_moves_last: !will_act,
                 champions: self.champions,
                 defender_resist_berry: fixed_damage.is_none()
-                    && crate::item::type_resist_berry_fires(self, tside, tslot, m.type_, defender.species()),
+                    && crate::item::type_resist_berry_fires(self, tside, tslot, move_id, berry_move_type, &defender),
             };
             // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
             //   if (this.randomChance(3, 10)) return this.chainModify(2);
@@ -6328,8 +6334,14 @@ self.trigger_emergency_exits();
             // damage-modifier the holder's item can do — it runs before
             // Sub interception so the sub sees the halved value too.
             if fixed_dmg_snapshot.is_none() && dmg > 0 {
+                let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
+                    weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                });
                 let halved = crate::item::try_consume_type_resist_berry(
-                    self, tside, tslot, m.type_, defender.species(),
+                    self, tside, tslot, move_id, berry_move_type, &defender,
                 );
                 // The ×0.5 is already in the damage calc's ModifyDamage chain
                 // (`defender_resist_berry`); here the berry is only eaten.
@@ -17047,6 +17059,37 @@ mod tests {
         );
         assert!(!b.p2.team[0].is_alive());
         assert_eq!(b.p1.team[0].boosts[0], 1, "Power-Up Punch's +1 Atk on the KO");
+    }
+
+    #[test]
+    fn resist_berry_checks_the_moves_type_after_pixilate() {
+        // PS data/items.ts roseliberry onSourceModifyDamage reads `move.type`
+        // after onModifyType (data/abilities.ts pixilate: Normal -> Fairy),
+        // so Pixilate Hyper Voice eats a Roseli Berry.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"sylveon","level":50,"ability":"pixilate","moves":["hypervoice"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"dragonite","level":50,"item":"roseliberry","moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Roseli Berry eaten by Fairy-type Hyper Voice");
+    }
+
+    #[test]
+    fn resist_berry_checks_effectiveness_against_the_tera_type() {
+        // PS resist berries gate on `target.getMoveHitData(move).typeMod > 0`
+        // (data/items.ts passhoberry), the effectiveness against the
+        // target's current types: a Tera Fire Venusaur takes Water SE.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"blastoise","level":50,"moves":["watergun"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"venusaur","level":50,"item":"passhoberry","teratype":"fire","moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].terastallized = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Passho Berry eaten by Water vs Tera Fire");
     }
 
     #[test]
