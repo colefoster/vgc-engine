@@ -3985,7 +3985,7 @@ impl Battle {
         pending_kind: &[[u8; 2]; 2],
         will_act: bool,
     ) {
-        let (actor_slot, move_slot, mut target, tera) = match action.choice {
+        let (actor_slot, move_slot, target, tera) = match action.choice {
             Choice::Move { actor_slot, move_slot, target } => (actor_slot, move_slot, target, false),
             Choice::Terastallize { actor_slot, move_slot, target } => (actor_slot, move_slot, target, true),
             // Mega Evolution already transformed the actor in `apply_megas`
@@ -4019,6 +4019,8 @@ impl Battle {
                 a.move_actions = a.move_actions.saturating_add(1);
             }
         }
+        let (move_slot, target) = self.encore_override(actor_side, actor_slot, move_slot, target);
+        let mut target = target;
         // Snapshot attacker and defender — avoids overlapping borrows
         // through the damage calc. `mut` because Stance Change (below) can
         // forme-swap the actor mid-resolution and must refresh the snapshot
@@ -10240,6 +10242,55 @@ impl Battle {
         true
     }
 
+    /// Encore's `onOverrideAction` (PS data/moves.ts encore;
+    /// sim/battle-actions.ts:228-234 runMove): an encored mon that queued a
+    /// different move uses the encored one instead, keeping the queued
+    /// move's priority (ordering already ran), at a `getRandomTarget` pick
+    /// (sim/battle.ts:2490): the user for self / ally-side / field moves,
+    /// else a `sample` over the living foes (the only foe in singles).
+    fn encore_override(&mut self, side: SideRef, slot: u8, move_slot: u8, target: Option<Target>) -> (u8, Option<Target>) {
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return (move_slot, target) };
+        let enc = m.encored_move_slot();
+        if !m.is_alive() || m.encore_turns() == 0 || enc == 255 || enc == move_slot
+            || move_slot == crate::choice::STRUGGLE_MOVE_SLOT
+        {
+            return (move_slot, target);
+        }
+        let mid = m.moves[enc as usize];
+        if mid == u16::MAX {
+            return (move_slot, target);
+        }
+        let n_active = self.format().active_count();
+        let tcode = self.moves()[mid as usize].target;
+        if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
+            return (enc, None);
+        }
+        let foe = side.opposing();
+        let mut alive = [0u8; 2];
+        let mut n = 0usize;
+        for s in 0..n_active.min(2) {
+            if self.side(foe).active_mon(s).is_some_and(|p| p.is_alive()) {
+                alive[n] = s as u8;
+                n += 1;
+            }
+        }
+        if n == 0 || n_active == 1 {
+            return (enc, Some(Target { side: foe, slot: 0 }));
+        }
+        let actor_ref = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
+        self.rng.set_move_context(self.turn + 1, actor_ref, mid, crate::rng::NO_SLOT);
+        self.rng.set_decision(RngDecision::Range);
+        #[cfg(feature = "ps-rng")]
+        let pick = if self.rng.is_ps() {
+            self.rng.ps_random_range("random_target", 0, n as u32) as usize
+        } else {
+            self.rng.range(n as u32) as usize
+        };
+        #[cfg(not(feature = "ps-rng"))]
+        let pick = self.rng.range(n as u32) as usize;
+        (enc, Some(Target { side: foe, slot: alive[pick.min(n - 1)] }))
+    }
+
     /// Phazing force-switch: drag `slot` on `side` off the field and pull in
     /// a RANDOM eligible bench Pokemon. Used by Whirlwind / Roar / Dragon
     /// Tail / Circle Throw (`forceSwitch: true`). Unlike `force_switch_auto`
@@ -12712,67 +12763,62 @@ impl Battle {
                 }
             }
             data::move_id::ENCORE => {
-                // Locks the first alive opposing target into its last-
-                // used move for 3 turns. PS data/conditions.ts:encore
-                // duration 3; fails if target has no last move, used an
-                // exception move (Encore, Struggle, Sketch, Transform,
-                // Mimic, Mirror Move, Assist, Copycat, Me First, Nature
-                // Power, Metronome), or already encored.
-                let opp = opp_side;
-                let n = self.format().active_count() as u8;
-                for slot in 0..n {
-                    let (last, ok) = match self.side(opp).active_mon(slot as usize) {
-                        Some(t) if t.is_alive() => {
-                            if t.encore_turns() > 0 {
-                                continue;
-                            }
-                            let last = t.last_used_move_slot;
-                            if last == 255 {
-                                continue;
-                            }
-                            let mid = t.moves.get(last as usize).copied().unwrap_or(u16::MAX);
-                            if mid == u16::MAX {
-                                continue;
-                            }
-                            let exempt = matches!(
-                                mid,
-                                data::move_id::ENCORE | data::move_id::STRUGGLE
+                // Locks the chosen target into its last-used move. PS
+                // data/moves.ts:encore, condition duration 3 (+1 when the
+                // target will not move again this turn, `onStart`); fails if
+                // the target has no last move, used a `failencore` move
+                // (Encore, Struggle, Sketch, Transform, Mimic, Mirror Move,
+                // Assist, Copycat, Me First, Nature Power, Metronome), has no
+                // PP left for it, or is already encored. Accuracy 100: the
+                // roll is drawn like Taunt's.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                let last = match self.side(ts).active_mon(tslot as usize) {
+                    Some(t) if t.is_alive() && t.encore_turns() == 0 && t.last_used_move_slot != 255 => {
+                        let last = t.last_used_move_slot;
+                        let mid = t.moves.get(last as usize).copied().unwrap_or(u16::MAX);
+                        let exempt = matches!(
+                            mid,
+                            u16::MAX
+                                | data::move_id::ENCORE | data::move_id::STRUGGLE
                                 | data::move_id::SKETCH | data::move_id::TRANSFORM
                                 | data::move_id::MIMIC | data::move_id::MIRRORMOVE
                                 | data::move_id::ASSIST | data::move_id::COPYCAT
                                 | data::move_id::MEFIRST | data::move_id::NATUREPOWER
                                 | data::move_id::METRONOME
-                            );
-                            let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
-                            (last, !exempt && !no_pp)
+                        );
+                        let no_pp = t.pp.get(last as usize).copied().unwrap_or(0) == 0;
+                        if exempt || no_pp {
+                            return;
                         }
-                        _ => continue,
-                    };
-                    if !ok {
-                        continue;
+                        last
                     }
-                    // Aroma Veil — holder/partner immunity to Encore
-                    // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
-                    // a Mold-Breaker Encore user bypasses it. Whimsicott /
-                    // Tornadus etc. PS still consumes the move (no re-target
-                    // to another slot), so we bail out of the handler.
-                    let encore_src_breaks_mold = self
-                        .side(actor_side)
-                        .active_mon(actor_slot as usize)
-                        .is_some_and(|a| matches!(
-                            a.effective_ability_slug(),
-                            "moldbreaker" | "teravolt" | "turboblaze"
-                        ));
-                    if self.side_has_aroma_veil(opp, encore_src_breaks_mold) {
-                        return;
-                    }
-                    if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                        t.set_encore(3, last);
-                    }
-                    // Mental Herb cures Encore (PS onUpdate).
-                    crate::item::try_consume_mental_herb(self, opp, slot);
+                    _ => return,
+                };
+                // Aroma Veil — holder/partner immunity to Encore
+                // (PS abilities.ts:234 `onAllyTryAddVolatile`). Breakable:
+                // a Mold-Breaker Encore user bypasses it.
+                let encore_src_breaks_mold = self
+                    .side(actor_side)
+                    .active_mon(actor_slot as usize)
+                    .is_some_and(|a| matches!(
+                        a.effective_ability_slug(),
+                        "moldbreaker" | "teravolt" | "turboblaze"
+                    ));
+                if self.side_has_aroma_veil(ts, encore_src_breaks_mold) {
                     return;
                 }
+                // `!this.queue.willMove(target)`: its pending byte is no
+                // longer a move (1 / 2).
+                let k = pending_kind[ts as usize][(tslot as usize).min(1)];
+                let dur = if k != 1 && k != 2 { 4 } else { 3 };
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    t.set_encore(dur, last);
+                }
+                // Mental Herb cures Encore (PS onUpdate).
+                crate::item::try_consume_mental_herb(self, ts, tslot);
             }
             data::move_id::TAUNT => {
                 // Taunt — PS data/moves.ts:taunt, volatileStatus 'taunt',
@@ -24552,7 +24598,7 @@ mod tests {
         ]"#;
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
-        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2); // re-tuned when Encore began drawing its accuracy roll: Whimsicott must survive three Earthquakes
         // Turn 1: Whimsicott passes, Garchomp EQs.
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
@@ -29106,6 +29152,42 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert_eq!(b.p1.team[0].encored_move_slot(), 1);
+    }
+
+    #[test]
+    fn encore_hits_its_chosen_target_and_overrides_that_turns_move() {
+        // PS data/moves.ts encore: the chosen target is encored
+        // (`volatileStatus`), `onOverrideAction` swaps a different queued
+        // move for the encored one (sim/battle-actions.ts:228), and the
+        // duration is 3, +1 if the target has already moved this turn.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"whimsicott","level":50,"ability":"prankster","item":"","nature":"timid","moves":["encore","splash"]},
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"","nature":"bold","moves":["splash"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"sassy","moves":["curse","splash"]},
+            {"species":"blastoise","level":50,"ability":"torrent","item":"","nature":"bold","moves":["splash","irondefense"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+        let splash = Choice::Move { actor_slot: 1, move_slot: 0, target: None };
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }, splash],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        // Turn 2: Encore Blastoise (p2b), which then selects Iron Defense.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 1)) }, splash],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 1, target: None },
+            ],
+        );
+        assert_eq!(b.p2.team[0].encore_turns(), 0, "Snorlax (not the target) is not encored");
+        assert_eq!(b.p2.team[1].encore_turns(), 2, "Blastoise encored for 3 turns, one spent");
+        assert_eq!(b.p2.team[1].boosts[1], 0, "Encore turned this turn's Iron Defense into Splash");
     }
 
     #[test]
