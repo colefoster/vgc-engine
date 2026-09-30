@@ -1277,6 +1277,17 @@ pub(crate) fn calculate_damage_with_bp(
     // end of the block — matching PS/Champions (`runEvent` sums the chain, then
     // one `modify`). See `chain_modify` / `apply_modifier`.
     let mut bp_mod: u64 = 4096;
+    // Solar Beam / Solar Blade — PS data/moves.ts solarbeam (:17249) /
+    // solarblade onBasePower: chainModify(0.5) when the user's weather is
+    // rain, sand or snow.
+    if matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
+        && matches!(
+            ctx.weather,
+            crate::weather::Weather::Rain | crate::weather::Weather::Sand | crate::weather::Weather::Snow
+        )
+    {
+        bp_mod = chain_modify(bp_mod, 2048, 4096);
+    }
     let (tn, td) = ctx.terrain.damage_mult(move_type);
     let attacker_gets_terrain = attacker.is_grounded()
         && (matches!(ctx.terrain, crate::terrain::Terrain::Grassy) || attacker.semi_invuln == 0);

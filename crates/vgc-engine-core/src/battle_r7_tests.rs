@@ -716,3 +716,22 @@ fn confusion_self_hit_roll_bucket_zero_is_the_minimum() {
     assert_eq!(crate::damage::confusion_self_hit_damage_for_bucket(50, 100, 0, 100, 0, 0), 16);
     assert_eq!(crate::damage::confusion_self_hit_damage_for_bucket(50, 100, 0, 100, 0, 15), 19);
 }
+
+#[test]
+fn solar_beam_is_halved_in_rain() {
+    // PS data/moves.ts solarbeam onBasePower: chainModify(0.5) in rain,
+    // sand or snow (:17249).
+    let run = |weather: crate::weather::Weather| {
+        let mut b = singles(
+            r#"[{"species":"venusaur","level":50,"ability":"overgrow","item":"powerherb","moves":["solarbeam"]}]"#,
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+            3,
+        );
+        b.set_weather(weather);
+        b.weather_turns = 5;
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+        b.p2.team[0].stats.hp - b.p2.team[0].current_hp
+    };
+    let (clear, rain) = (run(crate::weather::Weather::None), run(crate::weather::Weather::Rain));
+    assert!(rain * 10 < clear * 6, "rain {rain} vs clear {clear}");
+}
