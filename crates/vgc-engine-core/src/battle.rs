@@ -2345,6 +2345,17 @@ self.trigger_emergency_exits();
     /// Pokemon, and the action ends with `eachEvent('Update')`.
     #[cfg(feature = "ps-rng")]
     fn ps_start_draws(&mut self) {
+        // Team preview's commitChoices -> queue.sort(): one `team` action
+        // per brought mon, priority -index, Speed getActionSpeed (no field
+        // yet), so team slot i of each side ties when their Speeds match
+        // (sim/side.ts:1086-1091, sim/battle.ts:2660).
+        let n_team = self.p1.team.len().min(self.p2.team.len());
+        for i in 0..n_team {
+            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None) as i64 & 0x1FFF;
+            if key(&self.p1.team[i]) == key(&self.p2.team[i]) {
+                let _ = self.rng.ps_random_range("shuffle", 2 * i as u32, 2 * i as u32 + 2);
+            }
+        }
         let n_active = self.format().active_count();
         let mut queue = [0i64; 4];
         let mut len = 0usize;
@@ -17901,9 +17912,9 @@ mod tests {
     fn ps_rng_terrain_change_speed_sorts_the_actives() {
         // PS field.setTerrain ends with eachEvent('TerrainChange'), a speed
         // sort of the living actives (sim/field.ts:155). Battle start with
-        // two mirrored Speed pairs: runSwitch's sort, Grassy Surge's
-        // TerrainChange sort and the closing Update sort each shuffle both
-        // tied pairs.
+        // two mirrored Speed pairs: team preview's queue.sort, runSwitch's
+        // sort, Grassy Surge's TerrainChange sort and the closing Update sort
+        // each shuffle both tied pairs.
         let p1 = TeamBuilder::from_json(r#"[
             {"species":"rillaboom","level":50,"ability":"grassysurge","moves":["woodhammer"]},
             {"species":"snorlax","level":50,"moves":["calmmind"]}
@@ -17918,7 +17929,7 @@ mod tests {
         assert_eq!(b.terrain, crate::terrain::Terrain::Grassy);
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
-        assert_eq!(shuffles, 6, "{trace:#?}");
+        assert_eq!(shuffles, 8, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
@@ -17947,6 +17958,26 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
         assert_eq!(shuffles, 9, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_team_preview_sorts_tied_team_slots() {
+        // Team preview's commitChoices sorts the `team` actions (priority
+        // -index, then Speed; sim/side.ts:1086-1091), shuffling each team
+        // index whose two mons tie. Mirrored Snorlax: the two gender rolls,
+        // that sort, the leads' insertChoice, runSwitch's sort and the
+        // Update: PS draws 6.
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["icywind"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        assert_eq!(trace.len(), 6, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
