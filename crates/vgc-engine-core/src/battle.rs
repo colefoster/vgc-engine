@@ -397,6 +397,10 @@ pub struct Battle {
     /// damaging move. See [`Battle::trigger_emergency_exits`].
     #[serde(default)]
     pub(crate) hp_before_action: Option<([[(u8, u16); 2]; 2], bool)>,
+    /// PS `pokemon.forceSwitchFlag` set mid-action by Red Card: the slot is
+    /// dragged out once the action ends ([`Battle::run_pending_drags`]).
+    #[serde(default)]
+    pub(crate) force_switch_flags: [[bool; 2]; 2],
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -593,6 +597,7 @@ impl Battle {
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
             hp_before_action: None,
+            force_switch_flags: [[false; 2]; 2],
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -1752,7 +1757,8 @@ impl Battle {
                         };
                         return StepProgress::ChanceYield { pending, key, space };
                     }
-                    self.trigger_emergency_exits();
+                    self.run_pending_drags();
+self.trigger_emergency_exits();
                     if self.decision_phases { self.apply_self_switches(p1, p2); }
                     #[cfg(feature = "ps-rng")]
                     if ps_ran {
@@ -1779,6 +1785,7 @@ impl Battle {
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                self.run_pending_drags();
                 self.trigger_emergency_exits();
                 if self.decision_phases { self.apply_self_switches(p1, p2); }
                 idx += 1;
@@ -10241,6 +10248,26 @@ impl Battle {
         crate::ability::on_switch_in(self, side, slot);
         crate::item::on_switch_in(self, side, slot);
         true
+    }
+
+    /// PS sim/battle.ts:2821-2829: after each action, every active mon with
+    /// `forceSwitchFlag` (Red Card) still standing is dragged out for a
+    /// random bench mon (`dragIn`, which re-runs the DragOut check).
+    fn run_pending_drags(&mut self) {
+        if self.force_switch_flags == [[false; 2]; 2] {
+            return;
+        }
+        let flags = std::mem::take(&mut self.force_switch_flags);
+        for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for slot in 0..self.format().active_count().min(2) {
+                if flags[si][slot]
+                    && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive())
+                    && self.can_be_dragged_out(side, slot as u8, false)
+                {
+                    self.force_switch_random(side, slot as u8);
+                }
+            }
+        }
     }
 
     /// Encore's `onOverrideAction` (PS data/moves.ts encore;
@@ -38339,6 +38366,39 @@ mod tests {
         // Holder still active, no longer holds the card.
         assert_eq!(b.p2.active[0], 0, "Red Card holder stays in");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Red Card consumed");
+    }
+
+    #[test]
+    fn red_card_drags_a_random_bench_mon_after_the_attackers_action() {
+        // PS data/items.ts:5152 redcard sets the attacker's forceSwitchFlag;
+        // sim/battle.ts:2821-2829 drags it out after the action ends (so the
+        // attacker's own Life Orb recoil still lands on it) with
+        // getRandomSwitchable = sample over PS's bench order.
+        use crate::rng::{RngDecision, RngEvent, RngKey};
+        use std::collections::{HashMap, VecDeque};
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"pikachu","level":50,"ability":"static","item":"lifeorb","nature":"jolly","moves":["quickattack","thunderbolt","grassknot","feint"]},
+            {"species":"pichu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]},
+            {"species":"raichu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"redcard","nature":"careful","moves":["bodyslam","rest","protect","crunch"]}
+        ]"#).unwrap();
+        let mut tbl: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        tbl.insert(
+            RngKey { turn: 1, actor: 0, target: 2, move_id: data::move_id::QUICKATTACK, decision: RngDecision::Range },
+            VecDeque::from([RngEvent::Range(1)]),
+        );
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 }, Rng::oracle_keyed(tbl, 7), p1, p2);
+        let pikachu_full = b.p1.team[0].current_hp;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p1.active[0], 2, "draw 1 over the bench [Pichu, Raichu] drags in Raichu");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX, "Red Card consumed");
+        assert!(b.p1.team[0].current_hp < pikachu_full, "Pikachu took its Life Orb recoil before leaving");
+        assert_eq!(b.p1.team[2].current_hp, b.p1.team[2].stats.hp, "Raichu took nothing");
     }
 
     #[test]
