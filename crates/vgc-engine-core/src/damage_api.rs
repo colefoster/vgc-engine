@@ -62,6 +62,34 @@ pub struct DamageQuery {
     pub champions: bool,
 }
 
+/// Opt-in field and battle effects for [`damage_only_with`]. Every flag
+/// defaults off, so `CalcMods::default()` is a bare calc: the two mons as
+/// given, no switch-in effects, no screens, no ally.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CalcMods {
+    /// Replay the leads' battle-start effects before the hit (the
+    /// defender's Intimidate, surge terrain eating seeds, White Herb, ...).
+    /// Off by default: PS `getDamage` (sim/battle-actions.ts) and
+    /// `@smogon/calc` read the mons as given.
+    pub switch_in_effects: bool,
+    /// Doubles battle: screens are x2732/4096 instead of x0.5, and the
+    /// ally-ability flags below apply. PS data/conditions.ts reflect
+    /// (`this.activePerHalf > 1`).
+    pub doubles: bool,
+    /// Defender's side has Reflect / Light Screen / Aurora Veil.
+    pub reflect: bool,
+    pub light_screen: bool,
+    pub aurora_veil: bool,
+    /// An ally used Helping Hand on the attacker (x1.5 BP).
+    pub helping_hand: bool,
+    /// The defender's ally has Friend Guard (x0.75, Doubles only).
+    pub friend_guard: bool,
+    /// The attacker's ally has Power Spot / Battery / Steely Spirit.
+    pub power_spot: bool,
+    pub battery: bool,
+    pub steely_spirit: bool,
+}
+
 /// The 16 damage values (one per roll `0..=15`) this move deals to the
 /// defender under the given field state. Pure — no RNG, no turn state,
 /// no EOT contamination. Returns `[0; 16]` if the move deals no damage
@@ -79,9 +107,32 @@ pub struct DamageQuery {
 /// This is the "Option 2" API: it replaces the ~200-trial back-solve
 /// path in `calc_oracle.rs` with a deterministic 16-run enumeration.
 pub fn damage_only(q: &DamageQuery) -> [u16; 16] {
-    let mut out = [0u16; 16];
+    damage_only_with(q, &CalcMods::default())
+}
+
+/// [`damage_only`] with opt-in field and battle effects ([`CalcMods`]).
+pub fn damage_only_with(q: &DamageQuery, mods: &CalcMods) -> [u16; 16] {
+    damage_only_detail(q, mods).rolls
+}
+
+/// Per-roll damage with and without the defender's survival clamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageRolls {
+    /// The damage each roll deals, before Focus Sash / Sturdy / Focus Band
+    /// cap it (PS `getDamage`'s value).
+    pub rolls: [u16; 16],
+    /// The HP the defender actually loses to each roll, after that cap.
+    /// Differs from `rolls` only where a survival effect fired.
+    pub capped: [u16; 16],
+}
+
+/// [`damage_only_with`], also returning the survival-capped rolls.
+pub fn damage_only_detail(q: &DamageQuery, mods: &CalcMods) -> DamageRolls {
+    let mut out = DamageRolls { rolls: [0; 16], capped: [0; 16] };
     for k in 0..=15u8 {
-        out[k as usize] = single_roll(q, k);
+        let (raw, capped) = single_roll(q, mods, k);
+        out.rolls[k as usize] = raw;
+        out.capped[k as usize] = capped;
     }
     out
 }
@@ -89,7 +140,7 @@ pub fn damage_only(q: &DamageQuery) -> [u16; 16] {
 /// Run the synthetic battle once with the damage roll forced to `k`
 /// and the crit flag forced per `q.is_crit`. Returns the raw defender
 /// HP delta (pre-EOT), or 0 if the move failed to deal any damage.
-fn single_roll(q: &DamageQuery, k: u8) -> u16 {
+fn single_roll(q: &DamageQuery, mods: &CalcMods, k: u8) -> (u16, u16) {
     // Fresh 1-mon "team" on each side. Attacker slot 0 = the requested
     // move; defender slot 0 = Splash so the p2 action is a no-op. We
     // set pp = 5 (a nominal, positive value — any > 0 keeps the move
@@ -103,8 +154,13 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     if def.pp[0] == 0 { def.pp[0] = 5; }
 
     let cfg = BattleConfig { format: Format::Singles, seed: 0xDA_DA_DA };
-    let mut battle = Battle::new(cfg, vec![atk], vec![def]);
+    let mut battle = Battle::new_for_calc(cfg, vec![atk], vec![def], mods.switch_in_effects);
+    battle.calc_mods = *mods;
     battle.champions = q.champions;
+    let conds = &mut battle.p2.conditions;
+    if mods.reflect { conds.reflect_turns = 5; }
+    if mods.light_screen { conds.light_screen_turns = 5; }
+    if mods.aurora_veil { conds.aurora_veil_turns = 5; }
     battle.set_weather(q.weather);
     battle.set_terrain(q.terrain);
     battle.set_force_damage_roll(Some(k));
@@ -125,6 +181,7 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     // `Battle::captured_move_damage`) so a KO doesn't clip the
     // reported value at defender_max_hp.
     battle.captured_move_damage = Some(0);
+    battle.captured_uncapped_damage = Some(0);
 
     let defender_max_hp = battle.p2.team[0].stats.hp;
     let p1_choices = [Choice::Move {
@@ -134,11 +191,9 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
         // engine resolves the sole foe automatically.
         target: Some(Target { side: SideRef::P2, slot: 0 }),
     }];
-    let p2_choices = [Choice::Move {
-        actor_slot: 0,
-        move_slot: 0,
-        target: None,
-    }];
+    // The defender takes no action: PS getDamage runs none, and a faster
+    // defender's Splash would trigger Protean / Libero before the hit.
+    let p2_choices = [Choice::Pass { actor_slot: 0 }];
 
     let mut cursor = StepCursor::start(&p1_choices, &p2_choices);
     loop {
@@ -165,8 +220,10 @@ fn single_roll(q: &DamageQuery, k: u8) -> u16 {
     // an immunity — accumulator stays 0, HP delta stays 0).
     let captured = battle.captured_move_damage.unwrap_or(0);
     let hp_delta = defender_max_hp.saturating_sub(battle.p2.team[0].current_hp) as u32;
-    let raw = captured.max(hp_delta);
-    raw.min(u16::MAX as u32) as u16
+    let capped = captured.max(hp_delta);
+    let raw = battle.captured_uncapped_damage.unwrap_or(0).max(capped);
+    let clip = |v: u32| v.min(u16::MAX as u32) as u16;
+    (clip(raw), clip(capped))
 }
 
 fn splash_move_id() -> u16 {
