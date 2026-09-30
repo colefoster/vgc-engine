@@ -824,3 +824,43 @@ fn stat_drop_secondaries_cover_ps_data() {
         assert_eq!(stat_drop_secondary(slug, true), Some(want), "{slug}");
     }
 }
+
+#[test]
+fn speed_boost_works_on_the_first_full_turn_after_a_faint_replacement() {
+    // PS speedboost onResidual: `if (pokemon.activeTurns) boost`. A
+    // replacement enters at the end of the turn, before endTurn increments
+    // activeTurns, so it boosts at the next residual.
+    let mut b = singles(
+        r#"[{"species":"magikarp","level":50,"ability":"swiftswim","moves":["splash"]},
+            {"species":"blaziken","level":50,"ability":"speedboost","moves":["protect"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"],"evs":{"atk":252}}]"#,
+        1,
+    );
+    b.p1.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert!(b.needs_replacements());
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[]);
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p1.team[1].boosts[4], 1);
+}
+// PS speedboost onResidual: `if (pokemon.activeTurns) boost`. A faint
+// replacement enters before endTurn increments activeTurns, so it boosts at
+// the next residual (here with the replacement as its own decision step).
+#[test]
+fn speed_boost_after_a_replacement_between_turns() {
+    let mut b = doubles(
+        r#"[{"species":"magikarp","level":50,"ability":"swiftswim","moves":["splash"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]},
+            {"species":"blaziken","level":50,"ability":"speedboost","moves":["protect"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonclaw"],"evs":{"atk":252}},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.decision_phases = true;
+    b.p1.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    assert!(b.needs_replacements());
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }], &[]);
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[2].boosts[4], 1);
+}
