@@ -200,3 +200,50 @@ fn magic_powder_is_a_powder_move_grass_types_ignore() {
     assert_eq!(accuracy_rolls(&b, data::move_id::MAGICPOWDER), 0);
     assert_eq!(b.p2.team[0].effective_types().1, 2);
 }
+
+#[test]
+fn octolock_traps_and_drops_def_and_spd_each_turn() {
+    // PS data/moves.ts:12960 octolock condition: onTrapPokemon while the
+    // source is active; onResidual (order 14) boosts {def: -1, spd: -1}.
+    let mut b = singles(
+        r#"[{"species":"grapploct","level":50,"ability":"limber","moves":["octolock","bulkup"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(b.is_trapped(SideRef::P2, 0));
+    assert_eq!((b.p2.team[0].boosts[1], b.p2.team[0].boosts[3]), (1 - 1, -1), "Curse +1 Def, Octolock -1/-1");
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
+    assert_eq!((b.p2.team[0].boosts[1], b.p2.team[0].boosts[3]), (2 - 2, -2));
+}
+
+#[test]
+fn octolock_cannot_trap_a_ghost_and_skips_its_accuracy_roll() {
+    // onTryImmunity: dex.getImmunity('trapped', target) — Ghost types.
+    let mut b = singles(
+        r#"[{"species":"grapploct","level":50,"ability":"limber","moves":["octolock"]}]"#,
+        r#"[{"species":"gengar","level":50,"ability":"cursedbody","moves":["calmmind"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::OCTOLOCK), 0);
+    assert_eq!(b.p2.team[0].boosts[1], 0);
+}
+
+#[test]
+fn octolock_ends_when_its_user_leaves() {
+    // onResidual: a source that is no longer active ends the lock, no drop.
+    let mut b = singles(
+        r#"[{"species":"grapploct","level":50,"ability":"limber","moves":["octolock"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"blissey","level":50,"ability":"naturalcure","moves":["calmmind"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].boosts[1], -1);
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].boosts[1], -1, "no drop once the user left");
+    assert!(!b.is_trapped(SideRef::P2, 0));
+}
