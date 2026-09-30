@@ -539,6 +539,13 @@ pub struct Battle {
     /// suppression rules and uniformity with the weather cache.
     #[serde(skip)]
     pub(crate) cached_terrain: crate::terrain::Terrain,
+    /// `ps-rng` only: the raw weather and terrain last seen by
+    /// [`Battle::sync_weather_terrain_cache`], to emulate the
+    /// `eachEvent('WeatherChange' / 'TerrainChange')` PS runs on every
+    /// change. `None` until the battle-start sequence arms it.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_field_seen: Option<(crate::weather::Weather, crate::terrain::Terrain)>,
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -628,6 +635,8 @@ impl Battle {
             // set weather or terrain from on_switch_in).
             cached_weather: crate::weather::Weather::None,
             cached_terrain: crate::terrain::Terrain::None,
+            #[cfg(feature = "ps-rng")]
+            ps_field_seen: None,
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -653,6 +662,12 @@ impl Battle {
         // (the four surge abilities), and after any suppression-relevant
         // abilities (Cloud Nine / Air Lock / Neutralizing Gas) are live.
         b.sync_weather_terrain_cache();
+        // The start runSwitch action ends with eachEvent('Update'), after
+        // the leads' abilities (and their weather / terrain changes).
+        #[cfg(feature = "ps-rng")]
+        if b.rng.is_ps() {
+            b.ps_active_ties(false, "shuffle");
+        }
         b
     }
 
@@ -819,6 +834,22 @@ impl Battle {
     pub(crate) fn sync_weather_terrain_cache(&mut self) {
         self.cached_weather = self.recompute_effective_weather();
         self.cached_terrain = self.recompute_effective_terrain();
+        // PS field.setWeather / clearWeather / setTerrain / clearTerrain
+        // each end with eachEvent('WeatherChange' / 'TerrainChange')
+        // (sim/field.ts:87, :97, :155, :165): a speed sort of the living
+        // actives. Every engine change site syncs right after it.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            if let Some((w, t)) = self.ps_field_seen {
+                if w != self.weather {
+                    self.ps_active_ties(false, "shuffle");
+                }
+                if t != self.terrain {
+                    self.ps_active_ties(false, "shuffle");
+                }
+                self.ps_field_seen = Some((self.weather, self.terrain));
+            }
+        }
     }
 
     /// Recompute every `#[serde(skip)]` derived cache from canonical state.
@@ -2262,7 +2293,7 @@ self.trigger_emergency_exits();
             }
         }
         self.ps_active_ties(true, "shuffle");
-        self.ps_active_ties(false, "shuffle");
+        self.ps_field_seen = Some((self.weather, self.terrain));
     }
 
     /// `ps-rng` only: the draws PS makes while resolving submitted choices,
@@ -17714,6 +17745,31 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let picks = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
         assert_eq!(picks, 3, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_terrain_change_speed_sorts_the_actives() {
+        // PS field.setTerrain ends with eachEvent('TerrainChange'), a speed
+        // sort of the living actives (sim/field.ts:155). Battle start with
+        // two mirrored Speed pairs: runSwitch's sort, Grassy Surge's
+        // TerrainChange sort and the closing Update sort each shuffle both
+        // tied pairs.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"rillaboom","level":50,"ability":"grassysurge","moves":["woodhammer"]},
+            {"species":"snorlax","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"rillaboom","level":50,"ability":"overgrow","moves":["woodhammer"]},
+            {"species":"snorlax","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000008").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Grassy);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles = trace.iter().filter(|d| d.op == "shuffle").count();
+        assert_eq!(shuffles, 6, "{trace:#?}");
     }
 
     #[test]
