@@ -617,6 +617,13 @@ pub(crate) fn resort_from(
     for (k, a) in s[start..].iter().enumerate() {
         let Some(move_slot) = move_slot_of(a.choice) else { return 0 };
         let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
+        // A mon forced out mid-turn had its action cancelled
+        // (sim/battle-actions.ts:107 queue.cancelAction): sort it last,
+        // tied with nothing.
+        if battle.replaced_mid_turn[si][sl] {
+            out[k] = (i8::MAX, k as i32, 0, 0);
+            continue;
+        }
         let pri = state_priority(battle, a.side, a.actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
         let speed = battle
             .side(a.side)
