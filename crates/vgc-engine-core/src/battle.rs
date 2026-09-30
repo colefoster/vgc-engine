@@ -2115,6 +2115,78 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: resolve a spread move (allAdjacent / allAdjacentFoes)
+    /// with its draws in PS's order. PS runs each hit step across every
+    /// target before the next (sim/battle-actions.ts trySpreadMoveHit:
+    /// all accuracy rolls, then spreadMoveHit: every target's crit and
+    /// damage, the selfDrops roll, every target's secondaries, then the
+    /// DamagingHit procs); the engine resolves target by target. A dry run
+    /// on a clone tags each engine draw with its phase; the real run then
+    /// reads the PS stream through a window that maps the engine's i-th
+    /// draw to PS's position for it. The mapping is iterated to a fixpoint
+    /// because the values it hands out can change which draws happen.
+    /// Returns false (nothing resolved) when the move isn't windowed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_spread_window(&mut self, action: ScheduledAction, pending_kind: &[[u8; 2]; 2], will_act: bool) -> bool {
+        use crate::ps_rng::WINDOW_CAP;
+        if !self.rng.is_ps() {
+            return false;
+        }
+        let (slot, move_slot) = match action.choice {
+            Choice::Move { actor_slot, move_slot, .. }
+            | Choice::Terastallize { actor_slot, move_slot, .. }
+            | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
+            _ => return false,
+        };
+        let spread = self
+            .side(action.side)
+            .active_mon(slot as usize)
+            .and_then(|m| m.moves.get(move_slot as usize).copied())
+            .filter(|&id| id != u16::MAX)
+            .is_some_and(|id| matches!(self.moves()[id as usize].target, 5 | 6));
+        if !spread || !matches!(self.format(), crate::format::Format::Doubles) {
+            return false;
+        }
+        let trace = self.rng.ps_mut().and_then(|p| p.take_trace_raw());
+        let mut map: Option<[u8; WINDOW_CAP]> = None;
+        for _ in 0..4 {
+            let mut dry = self.clone();
+            let Some(p) = dry.rng.ps_mut() else { break };
+            p.window_begin(map.as_ref());
+            dry.resolve_move_with_pending(action, pending_kind, will_act);
+            let Some((tags, n)) = dry.rng.ps_mut().and_then(|p| p.window_tags()) else { break };
+            if n > WINDOW_CAP {
+                map = None;
+                break;
+            }
+            let mut order = [0u8; WINDOW_CAP];
+            for (i, o) in order.iter_mut().enumerate() {
+                *o = i as u8;
+            }
+            order[..n].sort_by_key(|&i| tags[i as usize]);
+            let mut next = [0u8; WINDOW_CAP];
+            for (i, v) in next.iter_mut().enumerate() {
+                *v = i as u8;
+            }
+            for (pos, &i) in order[..n].iter().enumerate() {
+                next[i as usize] = pos as u8;
+            }
+            if map == Some(next) {
+                break;
+            }
+            map = Some(next);
+        }
+        if let Some(p) = self.rng.ps_mut() {
+            p.put_trace_raw(trace);
+            p.window_begin(map.as_ref());
+        }
+        self.resolve_move_with_pending(action, pending_kind, will_act);
+        if let Some(p) = self.rng.ps_mut() {
+            p.window_end();
+        }
+        true
+    }
+
     /// `ps-rng` only: battle start. PS switches the four leads in (p1 then
     /// p2, slot order); each `switchIn` queues a `runSwitch` via
     /// `insertChoice`, which draws `random(first, last + 1)` when the new
@@ -2614,7 +2686,13 @@ self.trigger_emergency_exits();
         // `!is_spread` block for those defenders only.
         self.spread_segmentable_defenders =
             self.compute_segmentable_spread_defenders(order);
-        self.resolve_move_with_pending(action, pending_kind, will_act);
+        #[cfg(feature = "ps-rng")]
+        let windowed = self.ps_spread_window(action, pending_kind, will_act);
+        #[cfg(not(feature = "ps-rng"))]
+        let windowed = false;
+        if !windowed {
+            self.resolve_move_with_pending(action, pending_kind, will_act);
+        }
         self.update_hp_berries();
         self.multi_targeted_defenders = 0;
         self.spread_segmentable_defenders = 0;
@@ -9787,7 +9865,7 @@ self.trigger_emergency_exits();
                 // (sim/battle-actions.ts selfDrops, a5df8274).
                 #[cfg(feature = "ps-rng")]
                 if self.rng.is_ps() {
-                    let _ = self.rng.percent_1_100();
+                    let _ = self.rng.ps_random_range("selfdrop", 0, 100);
                 }
                 self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
                 // White Herb consumes itself to restore negative stages.
@@ -17376,6 +17454,37 @@ mod tests {
             );
             assert_eq!(b.p2.team[0].status, Status::Paralysis, "seed {seed}");
         }
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_spread_move_draws_in_ps_step_order() {
+        // PS trySpreadMoveHit rolls accuracy for every target, then
+        // spreadMoveHit draws each target's crit and damage, then each
+        // target's secondaries (sim/battle-actions.ts; Champions
+        // scripts.ts:385-388). Rock Slide into two foes.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"tyranitar","level":50,"moves":["rockslide"]},
+            {"species":"snorlax","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"blissey","level":50,"moves":["calmmind"]},
+            {"species":"chansey","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000002").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let kinds: Vec<&str> = trace
+            .iter()
+            .filter(|d| d.move_id == data::move_id::ROCKSLIDE && matches!(d.op, "percent" | "crit" | "damage"))
+            .map(|d| if d.op == "percent" { d.decision } else { d.op })
+            .collect();
+        assert_eq!(kinds, ["accuracy", "accuracy", "crit", "damage", "crit", "damage", "secondary", "secondary"], "{trace:#?}");
     }
 
     #[test]

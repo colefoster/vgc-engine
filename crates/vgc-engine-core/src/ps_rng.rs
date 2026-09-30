@@ -155,6 +155,40 @@ pub struct PsRng {
     ctx_target: u8,
     #[serde(skip)]
     ctx_decision: &'static str,
+    /// An open reorder window ([`PsRng::window_begin`]), else `None`.
+    #[serde(skip)]
+    window: Option<Box<DrawWindow>>,
+}
+
+/// Capacity of a [`DrawWindow`]: draws past it pass through unmapped.
+pub const WINDOW_CAP: usize = 64;
+
+/// Phase tags for [`PsRng::window_tags`], in PS's spread-hit order
+/// (sim/battle-actions.ts trySpreadMoveHit / spreadMoveHit): draws before
+/// the hit steps, every target's accuracy, every target's crit and damage,
+/// the one `selfDrops` roll, every target's secondaries, then the
+/// DamagingHit ability procs.
+pub mod phase {
+    pub const PRE: u8 = 0;
+    pub const ACCURACY: u8 = 1;
+    pub const DAMAGE: u8 = 2;
+    pub const SELF_DROP: u8 = 3;
+    pub const SECONDARY: u8 = 4;
+    pub const ABILITY: u8 = 5;
+}
+
+/// A reorder window over the next draws: the engine's i-th draw inside it
+/// takes PS's draw at position `map[i]`. Lets the engine resolve a spread
+/// move target by target while PS draws step by step across all targets.
+#[derive(Debug, Clone)]
+struct DrawWindow {
+    start: PsBackend,
+    start_draws: u32,
+    raws: [u32; WINDOW_CAP],
+    map: [u8; WINDOW_CAP],
+    tags: [u8; WINDOW_CAP],
+    n: usize,
+    trace_from: usize,
 }
 
 impl PsRng {
@@ -181,6 +215,7 @@ impl PsRng {
             ctx_move: 0,
             ctx_target: 0xFF,
             ctx_decision: "",
+            window: None,
         }
     }
 
@@ -269,9 +304,94 @@ impl PsRng {
     }
 
     #[inline]
-    fn raw(&mut self) -> u32 {
+    fn raw(&mut self, op: &'static str, at: &'static std::panic::Location<'static>) -> u32 {
         self.draws += 1;
+        if let Some(w) = self.window.as_mut() {
+            let i = w.n;
+            w.n += 1;
+            if i < WINDOW_CAP {
+                let prev = if i == 0 { phase::PRE } else { w.tags[i - 1] };
+                w.tags[i] = match op {
+                    "crit" | "damage" => phase::DAMAGE,
+                    "selfdrop" => phase::SELF_DROP,
+                    "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY,
+                    "percent" if self.ctx_decision == "secondary" => phase::SECONDARY,
+                    _ if at.file().ends_with("ability.rs") => phase::ABILITY,
+                    _ => prev,
+                };
+                return w.raws[w.map[i] as usize];
+            }
+            // Past the window: PS's own next draws, after everything mapped.
+            let mut b = w.start.clone();
+            for _ in 0..i {
+                b.next();
+            }
+            return b.next();
+        }
         self.backend.next()
+    }
+
+    /// Open a reorder window over the next [`WINDOW_CAP`] draws; the
+    /// engine's i-th draw inside it returns PS's draw `map[i]` (a
+    /// permutation of `0..n`; `None` = in order).
+    pub fn window_begin(&mut self, map: Option<&[u8; WINDOW_CAP]>) {
+        let start = self.backend.clone();
+        let mut b = start.clone();
+        let mut raws = [0u32; WINDOW_CAP];
+        for r in raws.iter_mut() {
+            *r = b.next();
+        }
+        let mut ident = [0u8; WINDOW_CAP];
+        for (i, v) in ident.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+        self.window = Some(Box::new(DrawWindow {
+            start,
+            start_draws: self.draws,
+            raws,
+            map: *map.unwrap_or(&ident),
+            tags: [0; WINDOW_CAP],
+            n: 0,
+            trace_from: self.trace.as_ref().map_or(0, |t| t.len()),
+        }));
+    }
+
+    /// The phase tag of each draw made in the open window, in engine order.
+    pub fn window_tags(&self) -> Option<([u8; WINDOW_CAP], usize)> {
+        self.window.as_ref().map(|w| (w.tags, w.n))
+    }
+
+    /// Close the window: the stream resumes after the `n` draws it served,
+    /// and the trace lists them in PS's order.
+    pub fn window_end(&mut self) {
+        let Some(w) = self.window.take() else { return };
+        let mut b = w.start.clone();
+        for _ in 0..w.n {
+            b.next();
+        }
+        self.backend = b;
+        self.draws = w.start_draws + w.n as u32;
+        if let Some(t) = self.trace.as_mut() {
+            let n = w.n.min(WINDOW_CAP).min(t.len() - w.trace_from);
+            let seg: Vec<PsDraw> = t[w.trace_from..w.trace_from + n].to_vec();
+            for (i, d) in seg.into_iter().enumerate() {
+                let pos = w.map[i] as usize;
+                if pos < n {
+                    let mut d = d;
+                    d.seq = w.start_draws + pos as u32;
+                    t[w.trace_from + pos] = d;
+                }
+            }
+        }
+    }
+
+    /// Take the trace out (e.g. around a dry run on a clone).
+    pub fn take_trace_raw(&mut self) -> Option<Vec<PsDraw>> {
+        self.trace.take()
+    }
+
+    pub fn put_trace_raw(&mut self, t: Option<Vec<PsDraw>>) {
+        self.trace = t;
     }
 
     #[inline]
@@ -298,7 +418,7 @@ impl PsRng {
     /// PS `random(n)`: `floor(r * n / 2^32)`. Draws even for `n <= 1`.
     #[track_caller]
     pub fn random_n(&mut self, op: &'static str, n: u32) -> u32 {
-        let r = self.raw();
+        let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * n as u64) >> 32) as u32;
         self.log(op, n, 0, r, v, std::panic::Location::caller());
         v
@@ -307,7 +427,7 @@ impl PsRng {
     /// PS `random(m, n)`: `floor(r * (n - m) / 2^32) + m`.
     #[track_caller]
     pub fn random_range(&mut self, op: &'static str, m: u32, n: u32) -> u32 {
-        let r = self.raw();
+        let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * (n - m) as u64) >> 32) as u32 + m;
         self.log(op, m, n, r, v, std::panic::Location::caller());
         v
@@ -316,7 +436,7 @@ impl PsRng {
     /// PS `randomChance(num, den)`: `random(den) < num`.
     #[track_caller]
     pub fn random_chance(&mut self, op: &'static str, num: u32, den: u32) -> bool {
-        let r = self.raw();
+        let r = self.raw(op, std::panic::Location::caller());
         let v = ((r as u64 * den as u64) >> 32) as u32;
         let pass = v < num;
         self.log(op, den, num, r, pass as u32, std::panic::Location::caller());
@@ -327,7 +447,7 @@ impl PsRng {
     /// float is `raw / 2^32`, so callers compare raws directly).
     #[track_caller]
     pub fn random_raw(&mut self, op: &'static str) -> u32 {
-        let r = self.raw();
+        let r = self.raw(op, std::panic::Location::caller());
         self.log(op, 0, 0, r, r, std::panic::Location::caller());
         r
     }
@@ -343,13 +463,13 @@ mod tests {
     #[test]
     fn sodium_matches_ps() {
         let mut p = PsRng::from_seed_str("sodium,0123456789abcdef0123456789abcdef").unwrap();
-        let raws: Vec<u32> = (0..8).map(|_| p.raw()).collect();
+        let raws: Vec<u32> = (0..8).map(|_| p.random_raw("raw")).collect();
         assert_eq!(
             raws,
             [1564598223, 2628916691, 3021397871, 1916167142, 4157841405, 1076669892, 1746556866, 1976461880]
         );
         let mut z = PsRng::from_seed_str(&format!("sodium,{}", "00".repeat(16))).unwrap();
-        let raws: Vec<u32> = (0..8).map(|_| z.raw()).collect();
+        let raws: Vec<u32> = (0..8).map(|_| z.random_raw("raw")).collect();
         assert_eq!(
             raws,
             [4267713560, 2597593732, 1237973749, 687352079, 630900176, 1586261390, 31191460, 2410399535]
@@ -375,7 +495,7 @@ mod tests {
     fn gen5_matches_ps_both_seed_formats() {
         for s in ["gen5,0001000200030004", "1,2,3,4"] {
             let mut p = PsRng::from_seed_str(s).unwrap();
-            let raws: Vec<u32> = (0..8).map(|_| p.raw()).collect();
+            let raws: Vec<u32> = (0..8).map(|_| p.random_raw("raw")).collect();
             assert_eq!(
                 raws,
                 [2030470262, 3793892072, 2851743046, 574702432, 3620926519, 2468984361, 4121665136, 1670872321]
