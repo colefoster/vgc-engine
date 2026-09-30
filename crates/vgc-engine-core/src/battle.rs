@@ -10898,6 +10898,17 @@ self.trigger_emergency_exits();
         self.residual_index.set_status_dot(side, slot, on);
     }
 
+    /// Run `f` with `rng` installed as the battle RNG. Hooks that draw from
+    /// a `rng` swapped out of the battle (secondary effects, ability procs)
+    /// use it around calls that draw from `self.rng` themselves, such as a
+    /// status's own duration roll (sleep).
+    pub(crate) fn with_rng_installed<R>(&mut self, rng: &mut Rng, f: impl FnOnce(&mut Self) -> R) -> R {
+        std::mem::swap(&mut self.rng, rng);
+        let r = f(self);
+        std::mem::swap(&mut self.rng, rng);
+        r
+    }
+
     pub(crate) fn try_set_status(&mut self, side: SideRef, slot: u8, status: Status) {
         self.try_set_status_from(side, slot, status, side);
     }
@@ -16078,7 +16089,7 @@ fn apply_secondary_effect(
         if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
             // the target's side vetoes it.
-            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
+            battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot));
         }
     }
     if let Some(chance) = flinch_chance(move_slug, battle.champions) {
@@ -16230,7 +16241,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Freeze,
             };
-            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
+            battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot));
         }
     }
     if move_slug == "direclaw" {
@@ -16244,7 +16255,7 @@ fn apply_secondary_effect(
                 1 => Status::Paralysis,
                 _ => Status::Sleep,
             };
-            battle.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot);
+            battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, status, attacker_side, attacker_slot));
         }
     }
     // Triple Arrows — Decidueye-Hisui's signature (PS data/moves.ts:triplearrows).
@@ -17322,6 +17333,28 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let shuffles: Vec<_> = trace.iter().filter(|d| d.op == "shuffle").map(|d| d.b - d.a).collect();
         assert_eq!(shuffles, vec![2], "{trace:?}");
+    }
+
+    #[test]
+    fn sleep_from_a_secondary_draws_its_duration_from_the_battle_rng() {
+        // PS slp onStart draws the duration from the battle PRNG
+        // (data/conditions.ts:59 `random(2, 5)`), also when Dire Claw's
+        // secondary inflicts it. The engine drew it from the placeholder RNG
+        // swapped in around the secondary block, so it never varied.
+        let mut durations = std::collections::BTreeSet::new();
+        for seed in 0..400 {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"sneasler","level":50,"moves":["direclaw"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            if b.p2.team[0].status == Status::Sleep {
+                durations.insert(b.p2.team[0].sleep_turns());
+            }
+        }
+        assert!(durations.len() > 1, "sleep durations seen: {durations:?}");
     }
 
     #[test]

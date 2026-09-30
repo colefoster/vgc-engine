@@ -1829,12 +1829,9 @@ pub fn on_damaging_hit(
                 if let Some(s) = to_apply {
                     // Effect Spore: the holder (defender) is the source, so
                     // Safeguard on the attacker's side vetoes it.
-                    battle.try_set_status_from(
-                        attacker_side,
-                        attacker_slot,
-                        s,
-                        attacker_side.opposing(),
-                    );
+                    battle.with_rng_installed(rng, |b| {
+                        b.try_set_status_from(attacker_side, attacker_slot, s, attacker_side.opposing())
+                    });
                 }
             }
         }
