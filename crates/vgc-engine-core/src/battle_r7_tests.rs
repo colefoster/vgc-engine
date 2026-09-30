@@ -561,3 +561,16 @@ fn double_shock_spends_the_users_electric_type() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(b.p2.team[0].current_hp, hp, "a non-Electric user's Double Shock fails");
 }
+
+#[test]
+fn hard_press_power_follows_the_targets_hp() {
+    // PS data/moves.ts hardpress basePowerCallback: 100 at full HP, scaling
+    // down with the target's remaining HP.
+    let mut b = singles(
+        r#"[{"species":"archaludon","level":50,"ability":"stamina","moves":["hardpress"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "100 BP at full HP");
+}
