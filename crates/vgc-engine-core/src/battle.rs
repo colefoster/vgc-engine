@@ -17160,11 +17160,13 @@ fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
         // ironhead), 20% in Champions (data/mods/champions/moves.ts ironhead
         // `secondary.chance: 20`; conformance out_23).
         "ironhead" => if champions { 20 } else { 30 },
-        "rockslide" | "airslash" | "zenheadbutt"
-        | "headbutt" | "bite" | "stomp" | "needleam"
-        | "extrasensory" | "astonish" | "hyperfang" => 30,
-        "darkpulse" | "twister" | "dragonrush" | "snore"
+        // Chances per PS data/moves.ts `secondary` (flinch).
+        "rockslide" | "airslash" | "headbutt" | "bite" | "stomp" | "needlearm"
+        | "astonish" | "snore" | "rollingkick" | "steamroller" | "zingzap"
+        | "iciclecrash" | "mountaingale" | "skyattack" => 30,
+        "darkpulse" | "twister" | "dragonrush" | "zenheadbutt"
         | "waterfall" => 20,
+        "extrasensory" | "hyperfang" => 10,
         // Fire Blast (PS data/moves.ts:5330) only has a 10% burn
         // secondary — no flinch. Low Kick (PS data/moves.ts:10444) has
         // no secondary at all (just an onTryHit Dynamax veto). Both
@@ -17172,8 +17174,7 @@ fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
         // flinch roll every hit, diverging vs PS under Rng::OracleKeyed
         // (conformance draw-report round 2: lowkick 59 misses /
         // 49 battles, fireblast 18 / 13).
-        "icefang" | "thunderfang" | "firefang"
-        | "rollingkick" | "steamroller" => 10,
+        "icefang" | "thunderfang" | "firefang" => 10,
         // Heat Wave: 10% BURN, not flinch — handled elsewhere.
         _ => return None,
     })
