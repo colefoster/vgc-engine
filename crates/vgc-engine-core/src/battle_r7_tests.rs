@@ -350,3 +350,18 @@ fn quick_claw_rolls_when_choices_commit_before_switches() {
     let trace = log.iter().position(|e| matches!(e.space, crate::rng::DrawSpace::UniformRange(2))).expect("Trace pick");
     assert!(qc < trace, "Quick Claw at {qc}, Trace at {trace}");
 }
+
+#[test]
+fn thermal_exchange_raises_attack_on_a_fire_hit_and_blocks_burn() {
+    // PS data/abilities.ts:4990 thermalexchange: onDamagingHit Fire move ->
+    // boost({atk: 1}); onSetStatus: no burn.
+    let mut b = singles(
+        r#"[{"species":"baxcalibur","level":50,"ability":"thermalexchange","moves":["protect","bulkup"],"evs":{"hp":252}}]"#,
+        r#"[{"species":"arcanine","level":50,"ability":"justified","moves":["flamethrower","willowisp"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p1.team[0].boosts[0], 2, "Bulk Up +1, Thermal Exchange +1");
+    b.step(&[mv(0, 1, None)], &[mv(0, 1, Some(t(SideRef::P1, 0)))]);
+    assert!(!matches!(b.p1.team[0].status, Status::Burn));
+}

@@ -1523,6 +1523,29 @@ pub fn on_damaging_hit(
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }
+    // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
+    // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
+    // the move's type after type changes (Weather Ball in sun).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Thermal_Exchange_(Ability)>.
+    if target_alive
+        && battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|m| m.effective_ability_id() == data::ability_id::THERMALEXCHANGE)
+    {
+        let move_type = match battle.side(attacker_side).active_mon(attacker_slot as usize) {
+            Some(a) => crate::damage::move_type_in_ctx(a, move_id, &crate::damage::DamageContext {
+                weather: battle.effective_weather_for_pair(attacker_side, attacker_slot, target_side, target_slot),
+                terrain: battle.terrain,
+                champions: battle.champions,
+                ..crate::damage::DamageContext::default()
+            }),
+            None => data::MOVES[move_id as usize].type_,
+        };
+        if move_type == 1 {
+            battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
+        }
+    }
     // Steam Engine — PS `data/abilities.ts:steamengine`:
     //   onDamagingHit(damage, target, source, move) {
     //     if (['Water','Fire'].includes(move.type)) this.boost({spe: 6});

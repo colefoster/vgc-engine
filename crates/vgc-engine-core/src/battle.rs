@@ -11871,7 +11871,10 @@ self.trigger_emergency_exits();
                 let leaf_guard_blocks =
                     ab == data::ability_id::LEAFGUARD && leaf_guard_sun;
                 let ability_status_block = purifying_salt_blocks || leaf_guard_blocks || match status {
-                    Status::Burn => ab == data::ability_id::WATERBUBBLE || ab == data::ability_id::WATERVEIL,
+                    // Thermal Exchange: data/abilities.ts:5002 onSetStatus.
+                    Status::Burn => ab == data::ability_id::WATERBUBBLE
+                        || ab == data::ability_id::WATERVEIL
+                        || ab == data::ability_id::THERMALEXCHANGE,
                     Status::Paralysis => ab == data::ability_id::LIMBER,
                     Status::Freeze => ab == data::ability_id::MAGMAARMOR,
                     // Pastel Veil (PS data/abilities.ts:3162 `onSetStatus`)
