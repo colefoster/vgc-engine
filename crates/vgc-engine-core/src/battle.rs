@@ -691,7 +691,8 @@ impl Battle {
         [SideRef::P1, SideRef::P2].into_iter().any(|side| {
             let s = self.side(side);
             (0..self.format().active_count()).any(|slot|
-                s.active_mon(slot).is_some_and(|m| !m.is_alive()) && s.switch_candidates(slot).next().is_some())
+                s.active_mon(slot).is_some_and(|m| !m.is_alive() || m.pending_switch_is_forced())
+                    && s.switch_candidates(slot).next().is_some())
         })
     }
 
@@ -1459,7 +1460,13 @@ impl Battle {
         // auto-passes the slot (`side.ts` `getChoiceIndex` skips slots whose
         // `volatiles['commanding']` is set) — it can't move or switch.
         if self.decision_phases && self.needs_replacements() && active.is_alive() {
-            out.push(Choice::Pass { actor_slot });
+            // A residual Emergency Exit holder picks its replacement here.
+            if active.pending_switch_is_forced() {
+                out.extend(s.switch_candidates(slot).map(|team_index| Choice::Switch { actor_slot, team_index }));
+            }
+            if out.is_empty() {
+                out.push(Choice::Pass { actor_slot });
+            }
             return;
         }
         if active.commanding {
@@ -2467,9 +2474,11 @@ self.trigger_emergency_exits();
         // No residuals once a side is out: PS ended the battle at the faint
         // (sim/battle.ts faintMessages -> checkWin).
         if !(self.p1.is_defeated() || self.p2.is_defeated()) {
+            let hp_before = self.active_hp_snapshot();
             self.resolve_end_of_turn();
             // PS: the residual action ends with eachEvent('Update').
             self.update_hp_berries();
+            self.residual_emergency_exits(hp_before);
         }
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
@@ -2814,6 +2823,25 @@ self.trigger_emergency_exits();
                 if let Choice::Switch { actor_slot, team_index } = *c {
                     if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
                         entered[n] = (0, side, actor_slot);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        // A residual Emergency Exit with no pick queued: first bench mon,
+        // like Eject Button's fallback.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                let forced = self.side(side).active_mon(slot).is_some_and(|m| m.is_alive() && m.pending_switch_is_forced());
+                if !forced {
+                    continue;
+                }
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                    m.set_pending_self_switch(false);
+                }
+                if let Some(team_index) = self.first_bench_index(side) {
+                    if n < entered.len() && self.do_switch(side, slot as u8, team_index) {
+                        entered[n] = (0, side, slot as u8);
                         n += 1;
                     }
                 }
@@ -10179,6 +10207,54 @@ self.trigger_emergency_exits();
             }
         }
         None
+    }
+
+    /// Each active slot's (team index, HP), for the residual Emergency Exit check.
+    fn active_hp_snapshot(&self) -> [[(u8, u16); 2]; 2] {
+        let mut snap = [[(u8::MAX, 0u16); 2]; 2];
+        for (si, s) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for sl in 0..self.format().active_count().min(2) {
+                if let Some(m) = self.side(s).active_mon(sl) {
+                    snap[si][sl] = (self.side(s).active[sl], m.current_hp);
+                }
+            }
+        }
+        snap
+    }
+
+    /// PS sim/battle.ts:2862-2868: after the residual action, every mon that
+    /// went from above half HP to at or below it runs `EmergencyExit`
+    /// (data/mods/champions/abilities.ts:25). Its switch is answered in the
+    /// replacement request that closes the turn.
+    fn residual_emergency_exits(&mut self, snap: [[(u8, u16); 2]; 2]) {
+        if self.p1.is_defeated() || self.p2.is_defeated() {
+            return;
+        }
+        for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for slot in 0..self.format().active_count().min(2) {
+                let (team_idx, before) = snap[si][slot];
+                let fires = self.side(side).active[slot] == team_idx
+                    && self.side(side).active_mon(slot).is_some_and(|m| {
+                        let half = m.stats.hp / 2;
+                        m.is_alive()
+                            && m.effective_ability_id() == data::ability_id::EMERGENCYEXIT
+                            && before > half
+                            && m.current_hp <= half
+                            && !m.pending_self_switch()
+                    })
+                    && self.first_bench_index(side).is_some();
+                if !fires {
+                    continue;
+                }
+                if self.decision_phases {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                        m.set_pending_forced_switch();
+                    }
+                } else {
+                    self.force_switch_auto(side, slot as u8);
+                }
+            }
+        }
     }
 
     /// Record every active slot's HP before a move action (Emergency Exit).
@@ -38265,6 +38341,36 @@ mod tests {
         );
         assert!(b.p2.team[1].current_hp <= max / 2, "Dragon Claw hit Golisopod");
         assert_eq!(b.p2.active[0], 2, "Emergency Exit brings in the second pick");
+    }
+
+    #[test]
+    fn emergency_exit_from_residual_damage_asks_for_a_switch() {
+        // PS sim/battle.ts:2862-2868: after the residual action, a mon whose
+        // HP crossed half (residualPokemon snapshot) gets runEvent
+        // ('EmergencyExit'); its switchFlag is answered in the switch
+        // request that closes the turn.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"garchomp","level":50,"moves":["protect"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"golisopod","level":50,"ability":"emergencyexit","moves":["protect"]},
+            {"species":"eevee","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        let max = b.p2.team[0].stats.hp;
+        b.p2.team[0].current_hp = max / 2 + 2;
+        b.p2.team[0].status = Status::Poison;
+        b.sync_status_dot_bit(SideRef::P2, 0);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].current_hp <= max / 2, "poison crossed half");
+        assert!(b.needs_replacements(), "the Emergency Exit switch is pending");
+        assert!(b.legal_choices(SideRef::P2, 0).contains(&Choice::Switch { actor_slot: 0, team_index: 1 }));
+        assert_eq!(b.legal_choices(SideRef::P1, 0), vec![Choice::Pass { actor_slot: 0 }]);
+        b.step(&[Choice::Pass { actor_slot: 0 }], &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
+        assert_eq!(b.p2.active[0], 1, "Eevee replaced the Emergency Exit holder");
+        assert!(!b.needs_replacements());
     }
 
     #[test]
