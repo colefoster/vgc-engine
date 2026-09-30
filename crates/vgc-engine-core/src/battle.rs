@@ -2973,6 +2973,7 @@ impl Battle {
                 outgoing.ability_override = u16::MAX;
             }
             s.active[actor_slot as usize] = team_index;
+            s.note_ps_switch(actor_slot as usize, team_index);
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
@@ -10296,37 +10297,33 @@ impl Battle {
     /// Tail / Circle Throw (`forceSwitch: true`). Unlike `force_switch_auto`
     /// (deterministic first-bench pick, for the reactive items), PS chooses
     /// the replacement with `getRandomSwitchable` → `sample(canSwitchIn)`,
-    /// a single `random(N)` draw over the bench mons (PS `sim/battle.ts:1567`,
-    /// `sim/battle-actions.ts:162` dragIn). We mirror that draw shape: collect
-    /// every alive bench mon (in roster order — PS uses pokemon-array order;
-    /// the exact ordering is not chased for draw-parity), draw one, and run
-    /// the standard `do_switch` machinery. Returns true if a drag actually
+    /// a single `random(N)` draw over the bench mons (PS `sim/battle.ts:1570`,
+    /// `sim/battle-actions.ts:162` dragIn). The candidates are in PS's
+    /// `side.pokemon` order (`Side::random_switch_candidates`), so the same
+    /// drawn index picks the same mon. Returns true if a drag actually
     /// fired. Returns false with NO draw when there is no eligible bench
     /// (PS `canSwitch` gate fails before the move sets `forceSwitchFlag`).
     pub(crate) fn force_switch_random(&mut self, side: SideRef, slot: u8) -> bool {
-        // Collect alive bench indices (alive, not currently active).
-        let n = self.format().active_count();
         let mut bench: [u8; 6] = [0; 6];
         let mut count = 0usize;
-        {
-            let s = self.side(side);
-            for (idx, mon) in s.team.iter().enumerate() {
-                if !mon.is_alive() {
-                    continue;
-                }
-                let active = s.active.iter().take(n).any(|&a| a as usize == idx);
-                if active {
-                    continue;
-                }
-                bench[count] = idx as u8;
-                count += 1;
-            }
+        for idx in self.side(side).random_switch_candidates() {
+            bench[count] = idx;
+            count += 1;
         }
         if count == 0 {
             return false;
         }
+        // PS `sample` draws `random(N)` even for a one-mon bench; the engine's
+        // `range(1)` skips it, so PS mode draws explicitly.
+        #[cfg(feature = "ps-rng")]
+        let pick = if self.rng.is_ps() {
+            self.rng.ps_random_range("sample", 0, count as u32) as usize
+        } else {
+            self.rng.range(count as u32) as usize
+        };
+        #[cfg(not(feature = "ps-rng"))]
         let pick = self.rng.range(count as u32) as usize;
-        let team_index = bench[pick];
+        let team_index = bench[pick.min(count - 1)];
         if !self.do_switch(side, slot, team_index) {
             return false;
         }
@@ -32028,6 +32025,57 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         assert_eq!(b.p2.active[0], 0, "Substitute blocks the phaze");
+    }
+
+    /// Four-mon singles side for the PS bench-order tests.
+    fn ps_bench_order_battle(rng: Rng) -> Battle {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"arcanine","level":50,"ability":"intimidate","item":"","nature":"adamant","moves":["whirlwind","flareblitz","crunch","extremespeed"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"gyarados","level":50,"ability":"moxie","item":"","nature":"jolly","moves":["waterfall","crunch","dragondance","taunt"]},
+            {"species":"blissey","level":50,"ability":"naturalcure","item":"","nature":"bold","moves":["softboiled","seismictoss","toxic","protect"]},
+            {"species":"corviknight","level":50,"ability":"pressure","item":"","nature":"impish","moves":["bravebird","roost","bulkup","bodypress"]}
+        ]"#).unwrap();
+        Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 }, rng, p1, p2)
+    }
+
+    #[test]
+    fn random_switch_candidates_follow_ps_side_order() {
+        // PS sim/battle.ts:1575 possibleSwitches walks side.pokemon from
+        // active.length; sim/battle-actions.ts:131-133 switchIn swaps the
+        // incoming and outgoing mons' places in side.pokemon on every switch.
+        let mut b = ps_bench_order_battle(Rng::new(1));
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        b.step(&pass, &[Choice::Switch { actor_slot: 0, team_index: 2 }]);
+        // [Snorlax, Gyarados, Blissey, Corviknight] -> [Blissey, Gyarados, Snorlax, Corviknight]
+        assert_eq!(b.p2.random_switch_candidates().collect::<Vec<_>>(), vec![1, 0, 3]);
+        b.step(&pass, &[Choice::Switch { actor_slot: 0, team_index: 3 }]);
+        // -> [Corviknight, Gyarados, Snorlax, Blissey]
+        assert_eq!(b.p2.random_switch_candidates().collect::<Vec<_>>(), vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn whirlwind_draw_lands_on_the_mon_ps_would_drag_in() {
+        // PS sim/battle.ts:1570 getRandomSwitchable = sample(possibleSwitches):
+        // the same drawn index picks the same mon only in PS's bench order.
+        use crate::rng::{RngDecision, RngEvent, RngKey};
+        use std::collections::{HashMap, VecDeque};
+        let mut tbl: HashMap<RngKey, VecDeque<RngEvent>> = HashMap::new();
+        tbl.insert(
+            RngKey { turn: 2, actor: 0, target: 2, move_id: data::move_id::WHIRLWIND, decision: RngDecision::Range },
+            VecDeque::from([RngEvent::Range(0)]),
+        );
+        let mut b = ps_bench_order_battle(Rng::oracle_keyed(tbl, 7));
+        b.step(&[Choice::Pass { actor_slot: 0 }], &[Choice::Switch { actor_slot: 0, team_index: 2 }]);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+        );
+        // PS bench after the switch: [Gyarados, Snorlax, Corviknight]; index 0 = Gyarados.
+        assert_eq!(b.p2.active[0], 1, "Whirlwind drags in PS's first bench mon");
+        assert_eq!(b.rng().unmatched_draws(), Some(0), "the drag draw is keyed");
     }
 
     #[test]

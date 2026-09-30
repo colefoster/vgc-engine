@@ -33,6 +33,17 @@ pub struct Side {
     pub active: [u8; 2],
     pub format: Format,
     pub conditions: SideConditions,
+    /// Team indices in PS `side.pokemon` order, which random switch-ins
+    /// sample from. Starts in team order; every switch swaps the incoming
+    /// and outgoing mons' places (PS sim/battle-actions.ts:131-133), so
+    /// `ps_order[slot] == active[slot]`. Not game state: the canonical hash
+    /// ignores it.
+    #[serde(default = "identity_order")]
+    pub ps_order: [u8; 6],
+}
+
+fn identity_order() -> [u8; 6] {
+    [0, 1, 2, 3, 4, 5]
 }
 
 /// Side-wide conditions with their remaining-turn counters.
@@ -168,7 +179,7 @@ impl Side {
         for (i, slot) in active.iter_mut().take(n).enumerate() {
             *slot = i as u8;
         }
-        Self { team, active, format, conditions: SideConditions::default() }
+        Self { team, active, format, conditions: SideConditions::default(), ps_order: identity_order() }
     }
 
     pub fn active_mon(&self, slot: usize) -> Option<&Pokemon> {
@@ -194,6 +205,26 @@ impl Side {
     /// Last Respects (`BP = 50 + 50 * totalFainted`).
     pub fn total_fainted(&self) -> u8 {
         self.team.iter().filter(|m| m.fainted).count().min(u8::MAX as usize) as u8
+    }
+
+    /// Record a switch into `slot` in the PS order: the incoming mon takes
+    /// the slot's place and the outgoing one takes the incoming mon's.
+    pub(crate) fn note_ps_switch(&mut self, slot: usize, team_index: u8) {
+        if let Some(i) = self.ps_order.iter().position(|&x| x == team_index) {
+            self.ps_order.swap(i, slot);
+        }
+    }
+
+    /// Team indices a random switch-in (Whirlwind, Dragon Tail, Red Card)
+    /// draws from, in PS's order: PS sim/battle.ts:1575 `possibleSwitches`,
+    /// the unfainted mons after the active slots in `side.pokemon`.
+    pub fn random_switch_candidates(&self) -> impl Iterator<Item = u8> + '_ {
+        let n = self.format.active_count();
+        let len = self.team.len().min(self.ps_order.len());
+        self.ps_order[n.min(len)..len]
+            .iter()
+            .copied()
+            .filter(move |&i| self.team[i as usize].is_alive())
     }
 
     /// Indices of bench Pokémon that could be switched in.
