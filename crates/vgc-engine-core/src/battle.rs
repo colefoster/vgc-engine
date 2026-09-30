@@ -17665,6 +17665,23 @@ mod tests {
     }
 
     #[test]
+    fn covert_cloak_blocks_poison_touch() {
+        // PS data/abilities.ts poisontouch (a5df8274): `if
+        // (target.hasAbility('shielddust') || target.hasItem('covertcloak'))
+        // return;` before the roll.
+        for seed in 0..40 {
+            let p1 = TeamBuilder::from_json(r#"[{"species":"sneasler","level":50,"ability":"poisontouch","moves":["tackle"]}]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"item":"covertcloak","moves":["calmmind"]}]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].status, Status::None, "seed {seed}");
+        }
+    }
+
+    #[test]
     fn triple_arrows_def_drop_is_chance_gated() {
         // PS data/moves.ts:triplearrows — secondaries: [ { chance: 50, boosts:
         // { def: -1 } }, { chance: 30, volatileStatus: 'flinch' } ]. The 50%
