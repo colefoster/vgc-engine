@@ -7027,7 +7027,7 @@ self.trigger_emergency_exits();
                 defender_ability_id: defender.ability_id,
                 attacker_breaks_mold,
             };
-            let mut pipeline =
+            let pipeline =
                 DamagePipeline::new(dmg, fixed_dmg_snapshot.is_some(), post_inputs);
             // Life Orb / Expert Belt / Friend Guard are chained inside the
             // damage calc's ModifyDamage modifier (damage.rs).
@@ -7107,22 +7107,6 @@ self.trigger_emergency_exits();
             if move_id == data::move_id::BEATUP {
                 hits = self.beat_up_build_atk_table(actor_side, actor_slot, &mut beat_up_base_atks);
             }
-            // Defender post-formula halves: Thick Fat (Fire/Ice, breakable),
-            // Water Bubble (Fire, not breakable). Routed through
-            // `DamagePipeline::apply_thick_fat` / `apply_water_bubble` — both
-            // are byte-identical to the prior inline halves.
-            // PS refs:
-            //   data/abilities.ts:thickfat onSourceModifyAtk/SpA chainModify(0.5)
-            //     on Fire (type 1) or Ice (type 5); breakable.
-            //   data/abilities.ts:waterbubble onSourceModifyAtk/SpA chainModify(0.5)
-            //     on Fire; NOT breakable.
-            // Bulbapedia:
-            //   <https://bulbapedia.bulbagarden.net/wiki/Thick_Fat_(Ability)>,
-            //   <https://bulbapedia.bulbagarden.net/wiki/Water_Bubble_(Ability)>.
-            pipeline.current = dmg;
-            pipeline.apply_thick_fat();
-            pipeline.apply_water_bubble();
-            dmg = pipeline.current;
             // Knock Off's ×1.5 vs item holders is applied at the base-power
             // stage inside `calculate_damage` (PS data/moves.ts:knockoff
             // onBasePower chainModify(1.5)), not here on final damage — the

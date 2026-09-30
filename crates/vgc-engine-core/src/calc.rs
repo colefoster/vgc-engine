@@ -1582,6 +1582,24 @@ mod tests {
     }
 
     #[test]
+    fn thick_fat_and_water_bubble_halve_the_attacking_stat() {
+        // PS data/abilities.ts thickfat / waterbubble: onSourceModifyAtk /
+        // onSourceModifySpA chainModify(0.5) — a stat modifier, which rounds
+        // differently from halving the final damage. PS champions sim rows
+        // for real gate hits (bf-gate/ps_calc.js).
+        let zard = QuickMon::parse("Charizard-Mega-Y / Drought / Timid / 12 HP / 252 SpA / 252 Spe").unwrap();
+        let lax = QuickMon::parse("Snorlax @ Leftovers / Thick Fat / Relaxed / 252 HP / 252 Def / 12 SpD").unwrap();
+        assert_eq!(
+            calc(&zard, &lax, "heatwave", Field { spread: true, ..Field::none() }).unwrap().rolls,
+            [33, 33, 33, 33, 34, 34, 34, 34, 36, 36, 36, 36, 37, 37, 37, 39]
+        );
+        let cam = QuickMon::parse("Camerupt-Mega / Sheer Force / Quiet / 252 HP / 252 SpA / 12 SpD").unwrap();
+        let spider = QuickMon::parse("Araquanid @ Sitrus Berry / Water Bubble / Brave / 252 HP / 252 Atk / 12 Def").unwrap();
+        let crit = calc(&cam, &spider, "flamethrower", Field::terrain(Terrain::Grassy)).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [72, 73, 73, 75, 75, 76, 76, 78, 79, 79, 81, 81, 82, 82, 84, 85]);
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
