@@ -514,6 +514,12 @@ pub struct Battle {
     /// non-spread path (unused, exposed for symmetry). `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) force_is_spread: Option<bool>,
+    /// `damage_only` field / ally modifiers the synthetic Singles battle
+    /// can't express on its own (Doubles screen multiplier, Helping Hand,
+    /// ally Friend Guard / Power Spot / Battery / Steely Spirit). All-off
+    /// (the default) in production. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) calc_mods: crate::damage_api::CalcMods,
     /// `damage_only` move-gate bypass. When `true`, action-order-conditional
     /// move `onTry` gates (Sucker Punch's "target must be attacking") are
     /// treated as PASSED, so the fast-calc API reports the damage a move
@@ -612,9 +618,33 @@ impl Battle {
     /// when an Oracle RNG is supplied.
     pub fn with_rng(
         config: BattleConfig,
+        rng: Rng,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+    ) -> Self {
+        Self::with_rng_start(config, rng, p1_team, p2_team, true)
+    }
+
+    /// `damage_only` constructor: `switch_ins = false` skips the leads'
+    /// battle-start ability / item hooks (Intimidate, surge terrain, seeds,
+    /// White Herb, Trace, ...), so a standalone calc reads the mons exactly
+    /// as given — PS `getDamage` (sim/battle-actions.ts) has no switch-in.
+    pub(crate) fn new_for_calc(
+        config: BattleConfig,
+        p1_team: Vec<Pokemon>,
+        p2_team: Vec<Pokemon>,
+        switch_ins: bool,
+    ) -> Self {
+        let rng = Rng::new(config.seed);
+        Self::with_rng_start(config, rng, p1_team, p2_team, switch_ins)
+    }
+
+    fn with_rng_start(
+        config: BattleConfig,
         mut rng: Rng,
         mut p1_team: Vec<Pokemon>,
         mut p2_team: Vec<Pokemon>,
+        switch_ins: bool,
     ) -> Self {
         // Resolve unspecified gender exactly as PS does at `>player`
         // (team construction): a flat 50/50 roll per ratio'd individual
@@ -665,6 +695,7 @@ impl Battle {
             captured_move_damage: None,
             force_accuracy_hit: None,
             force_is_spread: None,
+            calc_mods: crate::damage_api::CalcMods::default(),
             force_move_gate_ok: false,
             residual_index: ResidualIndex::default(),
             // PR-LC1: initialized to None to match the freshly-cleared
@@ -707,8 +738,15 @@ impl Battle {
             b.ps_start_draws();
         }
         let n = b.format().active_count() as u8;
+        if !switch_ins {
+            // Field-wide suppression is state, not a switch-in effect.
+            crate::ability::recompute_neutralizing_gas(&mut b);
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
+                if !switch_ins {
+                    break;
+                }
                 crate::ability::on_switch_in(&mut b, side, slot);
                 // Item on-start hook (White Herb cleanup, ...). Runs
                 // after the ability so Intimidate's atk drop is seen

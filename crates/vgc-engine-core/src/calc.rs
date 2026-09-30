@@ -21,7 +21,8 @@
 
 use crate::pokemon::{nature_by_slug, Status};
 use crate::team::{build_member, slugify, TeamMember};
-use crate::{damage_only, DamageQuery, Pokemon, StatSpread};
+use crate::damage_api::{damage_only_with, CalcMods};
+use crate::{DamageQuery, Pokemon, StatSpread};
 use crate::{Terrain, Weather};
 
 use vgc_engine_data as data;
@@ -560,11 +561,27 @@ pub struct Field {
     /// Champions move data and rules (PS `data/mods/champions`). Defaults
     /// on, like the bare `"doubles"` / `"singles"` battle formats.
     pub champions: bool,
+    /// Replay battle-start switch-in effects (Intimidate, seeds, White
+    /// Herb, ...) before the hit. Off by default — see [`CalcMods`].
+    pub switch_in_effects: bool,
 }
 
 impl Default for Field {
     fn default() -> Self {
-        Field { weather: Weather::default(), terrain: Terrain::default(), spread: false, champions: true }
+        Field {
+            weather: Weather::default(),
+            terrain: Terrain::default(),
+            spread: false,
+            champions: true,
+            switch_in_effects: false,
+        }
+    }
+}
+
+impl Field {
+    /// The opt-in battle effects this field asks `damage_only_with` for.
+    pub fn mods(&self) -> CalcMods {
+        CalcMods { switch_in_effects: self.switch_in_effects }
     }
 }
 
@@ -1081,7 +1098,7 @@ fn shape_result(
         is_spread: field.spread,
         champions: field.champions,
     };
-    let rolls = damage_only(&q);
+    let rolls = damage_only_with(&q, &field.mods());
     let min = *rolls.iter().min().unwrap();
     let max = *rolls.iter().max().unwrap();
     let denom = defender_max_hp.max(1) as f32;
@@ -1246,6 +1263,36 @@ mod tests {
         let scaled = standard.max as f32 * 85.0 / 70.0;
         assert!((champions.max as f32 - scaled).abs() <= 2.0, "{} vs {scaled}", champions.max);
         assert!(Field::none().format("notaformat").is_err());
+    }
+
+    #[test]
+    fn calc_does_not_run_switch_in_effects_by_default() {
+        // A standalone calc is not a battle start: the defender's Intimidate
+        // must not lower the attacker's Attack, a surge ability must not eat
+        // the defender's seed, and White Herb has nothing to clear. PS's
+        // getDamage (sim/battle-actions.ts) reads the mons as given;
+        // @smogon/calc only applies Intimidate when the caller boosts -1.
+        let atk = QuickMon::parse("Garchomp / Adamant / 252 Atk").unwrap();
+        let plain = QuickMon::parse("Incineroar / Blaze / 252 HP").unwrap();
+        let intim = QuickMon::parse("Incineroar / Intimidate / 252 HP").unwrap();
+        let a = calc(&atk, &plain, "earthquake", Field::none()).unwrap();
+        let b = calc(&atk, &intim, "earthquake", Field::none()).unwrap();
+        assert_eq!(a.rolls, b.rolls, "defender Intimidate leaked into the calc");
+
+        // Rillaboom's Grassy Surge would consume a Grassy Seed (+1 Def).
+        let rilla = QuickMon::parse("Rillaboom / Grassy Surge / Adamant / 252 Atk").unwrap();
+        let seed = QuickMon::parse("Garchomp @ Grassy Seed / 252 HP").unwrap();
+        let noseed = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let f = Field::terrain(Terrain::Grassy);
+        assert_eq!(
+            calc(&rilla, &seed, "woodhammer", f).unwrap().rolls,
+            calc(&rilla, &noseed, "woodhammer", f).unwrap().rolls,
+            "seed consumed by a battle-start terrain"
+        );
+
+        // Opt-in keeps the old battle-start replay available.
+        let on = calc(&atk, &intim, "earthquake", Field { switch_in_effects: true, ..Field::none() }).unwrap();
+        assert!(on.max < b.max, "switch_in_effects: true should apply Intimidate");
     }
 
     #[test]

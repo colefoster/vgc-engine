@@ -91,3 +91,15 @@ if __name__ == "__main__":
             fn()
             print(f"ok  {name}")
     print("ALL CALC BINDING TESTS PASSED")
+
+
+def test_calc_skips_switch_in_effects_unless_asked():
+    # The defender's Intimidate is a switch-in effect, not part of the calc.
+    atk = "Garchomp / Adamant / 252 Atk"
+    plain = vgc_engine.calc(atk, "Incineroar / Blaze / 252 HP", "eq")
+    intim = vgc_engine.calc(atk, "Incineroar / Intimidate / 252 HP", "eq")
+    assert plain["rolls"] == intim["rolls"]
+    replay = vgc_engine.calc(
+        atk, "Incineroar / Intimidate / 252 HP", "eq", switch_in_effects=True
+    )
+    assert replay["max"] < intim["max"]
