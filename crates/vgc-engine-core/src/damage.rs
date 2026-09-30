@@ -2223,11 +2223,6 @@ pub(crate) fn calculate_damage_with_bp(
     // <https://bulbapedia.bulbagarden.net/wiki/Sniper_(Ability)>.
     if ctx.crit {
         dmg = dmg * 3 / 2;
-        let sniper = attacker.ability_id != u16::MAX
-            && attacker.ability_id == data::ability_id::SNIPER;
-        if sniper {
-            dmg = dmg * 6144 / 4096;
-        }
     }
 
     // Random
@@ -2391,6 +2386,12 @@ pub(crate) fn calculate_damage_with_bp(
         && matches!(eff, TypeEff::HalfX | TypeEff::QuarterX)
     {
         dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+
+    // Sniper — ×1.5 on a crit. PS `data/abilities.ts:sniper` onModifyDamage
+    // (in this chain, after the random roll — not beside the crit ×1.5).
+    if ctx.crit && attacker.effective_ability_id() == data::ability_id::SNIPER {
+        dmg_mod = chain_modify(dmg_mod, 3, 2);
     }
 
     // Filter / Solid Rock / Prism Armor — ×0.75 (= 3072/4096) on
