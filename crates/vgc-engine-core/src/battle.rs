@@ -378,6 +378,12 @@ pub struct Battle {
     /// every turn's queue.
     #[serde(skip)]
     pub(crate) turn_keys: crate::order::TurnKeys,
+    /// This turn's Quick Draw / Quick Claw outcomes per active slot, rolled
+    /// as the choices commit (PS resolveAction, sim/battle-queue.ts:249) and
+    /// read when the queue is built. `None` outside a step, where
+    /// `order::action_order` rolls them itself.
+    #[serde(skip)]
+    pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
     /// Set true for the duration of a single Pursuit switch-interception
     /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
     /// by the damage calc (BP ×2) and the accuracy block (no accuracy
@@ -649,6 +655,7 @@ impl Battle {
             wonder_room_turns: 0,
             pending_queue_reorder: None,
             turn_keys: crate::order::TurnKeys::default(),
+            quick_frac: None,
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
@@ -2527,7 +2534,14 @@ self.trigger_emergency_exits();
         self.ps_update_speed_all();
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
+            let mut seen = [false; 2];
             for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                if seen[slot] {
+                    continue; // a later choice for a slot is a mid-turn pick
+                }
+                seen[slot] = true;
+                self.roll_quick_fractional(side, *c);
                 let (actor_slot, move_slot, target) = match *c {
                     Choice::Move { actor_slot, move_slot, target }
                     | Choice::Terastallize { actor_slot, move_slot, target }
@@ -2591,7 +2605,6 @@ self.trigger_emergency_exits();
         // sharing priority, fractional
         // priority and Speed. Speed is the cached value commitChoices just
         // refreshed, before any switch or Mega Evolution this turn.
-        // Quick Claw / Quick Draw rolls are not modelled here (frac 0).
         let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
         // (side, slot, kind: 0 other, 1 move, 2 megaEvo)
         let mut items = [(SideRef::P1, 0u8, 0u8); 12];
@@ -2635,9 +2648,11 @@ self.trigger_emergency_exits();
                         // Fractional priority (data/items.ts custapberry,
                         // laggingtail, fullincense; data/abilities.ts
                         // myceliummight), in tenths.
-                        let frac = if m.item_id == data::item_id::CUSTAPBERRY
-                            && m.current_hp * 4 <= m.stats.hp
-                            && crate::item::can_eat_berry(self, side, m.item_id)
+                        let quick = self.quick_frac.is_some_and(|q| q[side as usize][slot.min(1)]);
+                        let frac = if quick
+                            || (m.item_id == data::item_id::CUSTAPBERRY
+                                && m.current_hp * 4 <= m.stats.hp
+                                && crate::item::can_eat_berry(self, side, m.item_id))
                         {
                             1
                         } else if m.item_id == data::item_id::LAGGINGTAIL
@@ -2817,8 +2832,24 @@ self.trigger_emergency_exits();
         p2_choices: &[Choice],
     ) -> (ActionOrder, [[u8; 2]; 2]) {
         #[cfg(feature = "ps-rng")]
-        if self.rng.is_ps() {
+        let ps = self.rng.is_ps();
+        #[cfg(not(feature = "ps-rng"))]
+        let ps = false;
+        self.quick_frac = Some([[false; 2]; 2]);
+        if ps {
+            #[cfg(feature = "ps-rng")]
             self.ps_resolve_action_draws(p1_choices, p2_choices);
+        } else {
+            for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+                let mut seen = [false; 2];
+                for c in choices {
+                    let slot = (c.actor_slot() as usize).min(1);
+                    if !seen[slot] {
+                        seen[slot] = true;
+                        self.roll_quick_fractional(side, *c);
+                    }
+                }
+            }
         }
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
@@ -2911,6 +2942,7 @@ self.trigger_emergency_exits();
         #[allow(unused_mut)]
         let mut order = crate::order::action_order_keyed(self, p1_choices, p2_choices, &mut rng, &mut keys);
         self.turn_keys = keys;
+        self.quick_frac = None;
         // PS's re-sort before the first move (after beforeTurn, switches
         // and Mega Evolution) sorts the queue commitChoices left.
         #[cfg(feature = "ps-rng")]
@@ -10887,6 +10919,37 @@ self.trigger_emergency_exits();
         // Cloud Nine / Air Lock gained or lost.
         self.sync_weather_terrain_cache();
         true
+    }
+
+    /// PS resolveAction's `runEvent('FractionalPriority')` for one committed
+    /// choice (sim/battle-queue.ts:249): the Quick Draw / Quick Claw rolls,
+    /// recorded in `quick_frac` for the queue build.
+    fn roll_quick_fractional(&mut self, side: SideRef, c: Choice) {
+        let c = self.locked_move_choice(side, c);
+        let (Choice::Move { actor_slot, move_slot, .. }
+        | Choice::Terastallize { actor_slot, move_slot, .. }
+        | Choice::MegaEvolve { actor_slot, move_slot, .. }) = c
+        else {
+            return;
+        };
+        if actor_slot as usize >= self.format().active_count().min(2) {
+            return;
+        }
+        let Some(mon) = self.side(side).active_mon(actor_slot as usize) else { return };
+        if !mon.is_alive() {
+            return;
+        }
+        let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
+            data::move_id::STRUGGLE
+        } else {
+            mon.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
+        };
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        let fired = crate::order::quick_fractional_roll(self, side, actor_slot, move_id, &mut rng);
+        self.rng = rng;
+        if let Some(q) = self.quick_frac.as_mut() {
+            q[side as usize][actor_slot as usize] = fired;
+        }
     }
 
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
