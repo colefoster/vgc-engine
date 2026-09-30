@@ -5880,6 +5880,8 @@ self.trigger_emergency_exits();
         // separate sub-state capture in the post-hit hook. Single-target
         // moves only, so the last writer is the move's one target.
         let mut drag_target: Option<(SideRef, u8)> = None;
+        // The last target a hit connected with (partial-trap volatile).
+        let mut hit_target: Option<(SideRef, u8)> = None;
 
         // Flash Fire — PS data/abilities.ts flashfire `onTryHit` sets
         // `move.accuracy = true` on the active move when it absorbs, and
@@ -7402,6 +7404,9 @@ self.trigger_emergency_exits();
             // Read accumulators back from ctx — the per-target tail
             // (crash damage / `apply_self_effects` / `apply_post_move_effects`)
             // continues to read the outer locals. See PR-D1 design.
+            if ctx.any_damage_dealt > any_damage_dealt {
+                hit_target = Some((tside, tslot));
+            }
             any_damage_dealt = ctx.any_damage_dealt;
             drag_target = ctx.drag_target;
         }
@@ -7448,6 +7453,7 @@ self.trigger_emergency_exits();
             m,
             any_damage_dealt,
             drag_target,
+            hit_target,
         );
     }
 
@@ -8748,6 +8754,7 @@ self.trigger_emergency_exits();
         m: &data::MoveDef,
         any_damage_dealt: u16,
         drag_target: Option<(SideRef, u8)>,
+        hit_target: Option<(SideRef, u8)>,
     ) {
         // Damaging self-switch moves — U-turn / Volt Switch / Flip Turn.
         // PS `data/moves.ts:uturn:20278` / `voltswitch:20442` /
@@ -8778,29 +8785,25 @@ self.trigger_emergency_exits();
                     | data::move_id::THUNDERCAGE
             )
         {
-            let dur = 5 + self.rng.range(2) as u32; // 5 or 6
-            let opp = actor_side.opposing();
-            let n = self.format().active_count() as u8;
-            for slot in 0..n {
-                let alive = self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.is_alive());
-                if !alive { continue; }
-                if self.side(opp).active_mon(slot as usize)
-                    .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap))
-                {
-                    break; // already trapped, PS no-ops
+            // The volatile goes on the target the hit connected with; its
+            // durationCallback (random(5, 7)) only runs when it is added.
+            if let Some((ts, tslot)) = hit_target {
+                let trappable = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
+                });
+                if trappable {
+                    let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+                    let payload = dur
+                        | ((actor_side as u8 as u32) << 8)
+                        | ((actor_slot as u32) << 16);
+                    if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                        let _ = t.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::PartialTrap,
+                            turns_remaining: 0,
+                            payload,
+                        });
+                    }
                 }
-                let payload = dur
-                    | ((actor_side as u8 as u32) << 8)
-                    | ((actor_slot as u32) << 16);
-                if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                    let _ = t.volatiles.add(crate::pokemon::Volatile {
-                        kind: crate::pokemon::VolatileKind::PartialTrap,
-                        turns_remaining: 0,
-                        payload,
-                    });
-                }
-                break; // single-target
             }
         }
 

@@ -735,3 +735,19 @@ fn solar_beam_is_halved_in_rain() {
     let (clear, rain) = (run(crate::weather::Weather::None), run(crate::weather::Weather::Rain));
     assert!(rain * 10 < clear * 6, "rain {rain} vs clear {clear}");
 }
+
+#[test]
+fn infestation_traps_the_target_it_hit() {
+    // PS partiallytrapped is the move's volatileStatus: it lands on the hit
+    // target, not the first foe.
+    let mut b = doubles(
+        r#"[{"species":"toxapex","level":50,"ability":"regenerator","moves":["infestation"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"sneasler","level":50,"ability":"poisontouch","moves":["swordsdance"]},
+            {"species":"golisopod","level":50,"ability":"emergencyexit","moves":["swordsdance"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(b.p2.team[1].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+    assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+}
