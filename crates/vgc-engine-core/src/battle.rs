@@ -2966,6 +2966,7 @@ self.trigger_emergency_exits();
                 // turn it was used, then expires. Cleared at the same
                 // per-turn reset as Protect so it never carries over.
                 m.volatiles.remove(crate::pokemon::VolatileKind::Endure);
+                m.volatiles.remove(crate::pokemon::VolatileKind::Roost);
             }
         }
 
@@ -15937,6 +15938,16 @@ self.trigger_emergency_exits();
                     if a.is_alive() && a.current_hp < a.stats.hp {
                         let heal = ((a.stats.hp as u32 * max_hp_factor.0) / max_hp_factor.1).max(1) as u16;
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(a.stats.hp as u32) as u16;
+                        // Roost's self volatile (duration 1, cleared at the
+                        // next turn's reset) drops Flying; a Terastallized
+                        // user keeps its type (roost condition onStart).
+                        if move_id == data::move_id::ROOST && !a.terastallized {
+                            let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                kind: crate::pokemon::VolatileKind::Roost,
+                                turns_remaining: 0,
+                                payload: 0,
+                            });
+                        }
                     }
                 }
             }

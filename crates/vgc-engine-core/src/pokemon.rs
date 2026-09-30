@@ -1078,15 +1078,27 @@ impl Pokemon {
         } else if self.type_override[0] == TYPELESS {
             // Burn Up on a pure Fire mon: PS '???', no type at all.
             ([0, 0], 0)
-        } else if self.type_override[0] != 255 {
-            // Runtime type override (Protean / Color Change / ...).
-            if self.type_override[1] == 255 {
-                ([self.type_override[0], 0], 1)
-            } else {
-                (self.type_override, 2)
-            }
         } else {
-            (s.types, s.num_types)
+            let (types, n) = if self.type_override[0] != 255 {
+                // Runtime type override (Protean / Color Change / ...).
+                if self.type_override[1] == 255 {
+                    ([self.type_override[0], 0], 1)
+                } else {
+                    (self.type_override, 2)
+                }
+            } else {
+                (s.types, s.num_types)
+            };
+            // Roost's volatile drops Flying for the turn (PS data/moves.ts
+            // roost condition onType); with nothing left, getTypes returns
+            // Normal (sim/pokemon.ts getTypes, gen 5+).
+            if self.volatiles.has(VolatileKind::Roost) && types[..n as usize].contains(&9) {
+                return match (n, types) {
+                    (2, [9, other]) | (2, [other, 9]) => ([other, 0], 1),
+                    _ => ([0, 0], 1),
+                };
+            }
+            (types, n)
         }
     }
 
@@ -2184,8 +2196,10 @@ impl Pokemon {
         // unaffected. So a Flying-type Ring Target holder grounds out, while
         // a Levitate / Air Balloon Ring Target holder stays airborne.
         let negate_type_immunity = self.effective_item_id() == data::item_id::RINGTARGET;
-        let s = self.species();
-        let flying = (0..s.num_types as usize).any(|i| s.types[i] == 9);
+        // PS isGrounded reads hasType('Flying'): the current types (Tera,
+        // Soak, Roost), not the species'.
+        let (types, n) = self.effective_types();
+        let flying = types[..n as usize].contains(&9);
         if flying && !negate_type_immunity {
             return false;
         }
