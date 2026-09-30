@@ -701,7 +701,7 @@ with `ps-rng` off and on; the pyo3 tests pass (24).
 Nothing was reverted. Earlier first draw divergences, all explained in the
 commit messages:
 - `5e78624` moved `827d3db65c` earlier (a Mega Floette under Trick Room;
-  it is later again after the following commits).
+  it is clean again after the following commits).
 - `2eb92ea` moved 11 earlier that were aligned by chance: the missing
   BeforeSwitchOut Update and PS's tie-group order, fixed by `fe44631` and
   `58a236a`.
