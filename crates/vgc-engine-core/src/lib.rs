@@ -47,9 +47,9 @@ pub use damage::{
 pub use calc::{
     best_move, calc, calc_default, matchup, min_evs_to_ko, min_evs_to_survive, ohko_chance,
     outspeeds, speed_tier, survives, AtkStat, CalcError, DamageResult, DefStat, Field, KoChance,
-    Matchup, MoveDamage, MultiHitKo, QuickMon, SpeedContext, SpeedWinner,
+    Matchup, MoveDamage, MultiHitKo, QuickMon, SpeedContext, SpeedWinner, SurvivalEffect,
 };
-pub use damage_api::{damage_only, damage_only_with, CalcMods, DamageQuery};
+pub use damage_api::{damage_only, damage_only_detail, damage_only_with, CalcMods, DamageQuery, DamageRolls};
 pub use format::Format;
 pub use format_rules::{
     rules_for, verify_showdown_text, verify_team, FormatRules, Rule, Violation, REG_M_B,
