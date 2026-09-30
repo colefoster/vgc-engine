@@ -1278,21 +1278,12 @@ pub(crate) fn try_consume_eject_button(
 
 /// Reactive switch trigger — Red Card.
 ///
-/// PS `data/items.ts:redcard`
-///   `onAfterDamagingHit(damage, target, source, move)`:
-///     if source is alive, not the target, move is damaging, and the
-///     attacker can be force-switched: consume the card and switch the
-///     ATTACKER out (a random eligible replacement on the attacker's
-///     side). Red Card does NOT fire if the move broke the holder's
-///     substitute (PS's `target.hp && target.isActive` check), and does
-///     not fire if the attacker has Suction Cups / Guard Dog / is
-///     dynamaxed — the latter two aren't modelled yet, so we approximate
-///     by checking only that the attacker is alive and has an eligible
-///     bench. We consume the card whenever the swap would actually
-///     occur (matching the "useItem on success" path).
-///
-/// V1 simplification: deterministic first-bench-index replacement
-/// (vs PS's random pick). Caller-supplied prompts are a follow-up.
+/// PS `data/items.ts:5152` redcard `onAfterMoveSecondary`: a damaging hit
+/// from a living attacker that has a bench, neither side already flagged
+/// to be dragged: the card is used up, and unless DragOut blocks it
+/// (Suction Cups / Guard Dog / Ingrain) the attacker gets
+/// `forceSwitchFlag`. It is dragged out for a random bench mon after its
+/// action ends (`Battle::run_pending_drags`, PS sim/battle.ts:2821).
 ///
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Red_Card>.
 pub(crate) fn try_consume_red_card(
@@ -1316,14 +1307,22 @@ pub(crate) fn try_consume_red_card(
     if !attacker_alive {
         return false;
     }
-    if battle.first_bench_index(attacker_side).is_none() {
+    let flagged = |b: &Battle, side: SideRef, slot: u8| b.force_switch_flags[side as usize][(slot as usize).min(1)];
+    if battle.first_bench_index(attacker_side).is_none()
+        || flagged(battle, attacker_side, attacker_slot)
+        || flagged(battle, target_side, target_slot)
+    {
         return false;
     }
-    // Consume the card on the holder, then force-switch the attacker.
+    // The card is used up even if the attacker can't be dragged out.
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
     }
-    battle.force_switch_auto(attacker_side, attacker_slot)
+    if !battle.can_be_dragged_out(attacker_side, attacker_slot, false) {
+        return false;
+    }
+    battle.force_switch_flags[attacker_side as usize][(attacker_slot as usize).min(1)] = true;
+    true
 }
 
 /// Reactive switch trigger — Eject Pack.
