@@ -2176,7 +2176,10 @@ self.trigger_emergency_exits();
             return false;
         };
         let md = &self.moves()[move_id as usize];
-        let spread = matches!(md.target, 5 | 6) && matches!(self.format(), crate::format::Format::Doubles);
+        let expanding_force = move_id == data::move_id::EXPANDINGFORCE
+            && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+            && self.side(action.side).active_mon(slot as usize).is_some_and(|m| m.is_grounded());
+        let spread = (matches!(md.target, 5 | 6) || expanding_force) && matches!(self.format(), crate::format::Format::Doubles);
         // A single-target move's steps only reorder around selfDrops (step
         // 4, before the secondaries and the DamagingHit procs). Multi-hit
         // moves run the steps once per hit, which a single sort can't model.
@@ -4872,8 +4875,10 @@ self.trigger_emergency_exits();
 
         // Expanding Force — PS data/moves.ts:4958 `onModifyMove`: a grounded
         // user in Psychic Terrain turns it into `allAdjacentFoes`. PS
-        // `useMoveInner` (sim/battle-actions.ts:432) then re-picks the
-        // target with `getRandomTarget` → `Side.randomFoe` (one `sample`).
+        // `useMoveInner` (sim/battle-actions.ts:432, :440) then re-picks the
+        // target with `getRandomTarget` → `Side.randomFoe` after the
+        // ModifyMove singleEvent and again after the runEvent: `baseTarget`
+        // still holds the original target type, so both checks fire.
         let ef_spread;
         let m = if move_id == data::move_id::EXPANDINGFORCE
             && matches!(self.terrain, crate::terrain::Terrain::Psychic)
@@ -4887,7 +4892,9 @@ self.trigger_emergency_exits();
                     .filter(|&s| self.side(foe).active_mon(s).is_some_and(|p| p.is_alive()))
                     .count();
                 if n > 0 {
-                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    for _ in 0..2 {
+                        let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    }
                 }
             }
             &ef_spread
@@ -17627,6 +17634,34 @@ mod tests {
             .map(|d| if d.op == "selfdrop" { "selfdrop" } else { "ability" })
             .collect();
         assert_eq!(kinds, ["selfdrop", "ability"], "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_expanding_force_repicks_its_target_twice() {
+        // PS useMoveInner compares `baseTarget` with move.target after the
+        // ModifyMove singleEvent and again after the runEvent
+        // (sim/battle-actions.ts:432, :440); Expanding Force in Psychic
+        // Terrain changes it at the first, so both draw getRandomTarget.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","moves":["expandingforce"]},
+            {"species":"snorlax","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"blissey","level":50,"moves":["calmmind"]},
+            {"species":"chansey","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000006").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Psychic);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
+        assert_eq!(picks, 2, "{trace:#?}");
     }
 
     #[test]
