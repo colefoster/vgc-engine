@@ -15,29 +15,33 @@ function set(m, move) {
     nature: m.nature || 'serious', evs, ivs: {hp:31,atk:31,def:31,spa:31,spd:31,spe:31}, level: 50, moves: [move], gender: ''};
 }
 function run(q) {
-  const filler = {species: 'Shuckle', name: 'Shuckle', ability: 'Contrary', moves: ['splash'], nature: 'serious', level: 50, evs: {}, item: ''};
+  // Optional ally abilities (Friend Guard, Power Spot, Battery, Steely Spirit)
+  // ride on the Shuckle filler in each side's second slot.
+  const filler = ab => ({species: 'Shuckle', name: 'Shuckle', ability: ab || 'Contrary', moves: ['splash'], nature: 'serious', level: 50, evs: {}, item: ''});
   const b = new Battle({formatid: 'gen9championsdoublescustomgame', seed: [1, 2, 3, 4]});
-  b.setPlayer('p1', {team: [set(q.atk, q.move), filler]});
-  b.setPlayer('p2', {team: [set(q.def, 'splash'), filler]});
+  b.setPlayer('p1', {team: [set(q.atk, q.move), filler(q.atk_ally_ability)]});
+  b.setPlayer('p2', {team: [set(q.def, 'splash'), filler(q.def_ally_ability)]});
   if (b.requestState === 'teampreview') b.makeChoices('team 12', 'team 12');
   const a = b.p1.active[0], d = b.p2.active[0];
   const reset = () => { for (const [m, mon] of [[q.atk, a], [q.def, d]]) {
     for (const k of BI) mon.boosts[k] = 0;
     (m.boosts || []).forEach((v, i) => mon.boosts[BI[i]] = v);
     mon.status = m.status || ''; mon.statusState = {id: mon.status};
-    mon.hp = mon.maxhp;
+    mon.hp = m.hp_pct ? Math.max(1, Math.ceil(mon.maxhp * m.hp_pct / 100)) : mon.maxhp;
     // Start-of-battle effects (seeds, berries eaten on an earlier roll) must not leak.
     mon.item = dex.toID(m.item || ''); mon.itemState = {id: mon.item, target: mon};
     mon.volatiles = {};
   } };
   reset();
   for (const s of [b.p1, b.p2]) for (const c of Object.keys(s.sideConditions)) s.removeSideCondition(c);
+  for (const c of q.screens || []) b.p2.addSideCondition(c, d);
   b.field.weather = W[q.weather] || ''; b.field.weatherState = {id: b.field.weather, duration: 5};
   b.field.terrain = T[q.terrain] || ''; b.field.terrainState = {id: b.field.terrain, duration: 5};
   b.field.pseudoWeather = {};
   const rolls = [];
   for (let k = 15; k >= 0; k--) {
     reset();
+    if (q.helping_hand) a.addVolatile('helpinghand');
     let move = b.dex.getActiveMove(q.move);
     b.activeMove = move; b.activePokemon = a; b.activeTarget = d;
     // Mirror useMoveInner's type/move modifiers (-ate abilities, Weather Ball, etc).

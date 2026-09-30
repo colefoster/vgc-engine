@@ -186,6 +186,9 @@ pub struct QuickMon {
     /// Stat-stage boosts, index order Atk/Def/SpA/SpD/Spe/Acc/Eva
     /// (matches `Pokemon::boosts`).
     pub boosts: [i8; 7],
+    /// Current HP as a percentage of max (`None` = full). Feeds pinch
+    /// abilities (Blaze / Torrent / Overgrow / Swarm) and full-HP effects.
+    pub hp_percent: Option<f32>,
 }
 
 /// Error from parsing/resolving a [`QuickMon`] or move.
@@ -345,6 +348,7 @@ impl QuickMon {
             terastallized: false,
             status: Status::None,
             boosts: [0; 7],
+            hp_percent: None,
         })
     }
 
@@ -391,7 +395,7 @@ impl QuickMon {
     ///
     /// ```text
     /// Species [@ Item] [/ Nature] [/ <N> <StatLabel>]... [/ +N Stat|-N Stat]...
-    ///         [/ Lvl n] [/ Tera Type] [/ Ability] [/ status]
+    ///         [/ Lvl n] [/ Tera Type] [/ Ability] [/ status] [/ NN%]
     /// ```
     ///
     /// Segment classification (first match wins): explicit `Lvl`/`Tera`
@@ -446,6 +450,16 @@ impl QuickMon {
             }
             self.tera_type = Some(ty.to_string());
             self.terastallized = true;
+            return Ok(());
+        }
+
+        // Current HP: "30%".
+        if let Some(pct) = seg.strip_suffix('%') {
+            let p: f32 = pct.trim().parse().map_err(|_| CalcError::BadSegment(seg.to_string()))?;
+            if !(0.0..=100.0).contains(&p) {
+                return Err(CalcError::BadSegment(seg.to_string()));
+            }
+            self.hp_percent = Some(p);
             return Ok(());
         }
 
@@ -534,6 +548,11 @@ impl QuickMon {
         mon.status = self.status;
         mon.terastallized = self.terastallized;
         mon.boosts = self.boosts;
+        if let Some(p) = self.hp_percent {
+            // Lowest HP that shows this percentage (PS `ceil`), at least 1.
+            let hp = (mon.stats.hp as f32 * p / 100.0).ceil() as u16;
+            mon.current_hp = hp.clamp(1, mon.stats.hp); // AUDIT-OK: calc scratch mon, not in a Battle
+        }
         Ok(mon)
     }
 }
@@ -571,6 +590,20 @@ pub struct Field {
     /// Replay battle-start switch-in effects (Intimidate, seeds, White
     /// Herb, ...) before the hit. Off by default — see [`CalcMods`].
     pub switch_in_effects: bool,
+    /// Doubles battle (screens x2732/4096; the ally flags below need it).
+    pub doubles: bool,
+    /// Defender's side screens.
+    pub reflect: bool,
+    pub light_screen: bool,
+    pub aurora_veil: bool,
+    /// Attacker boosted by an ally's Helping Hand.
+    pub helping_hand: bool,
+    /// Defender's ally has Friend Guard.
+    pub friend_guard: bool,
+    /// Attacker's ally has Power Spot / Battery / Steely Spirit.
+    pub power_spot: bool,
+    pub battery: bool,
+    pub steely_spirit: bool,
 }
 
 impl Default for Field {
@@ -581,6 +614,15 @@ impl Default for Field {
             spread: false,
             champions: true,
             switch_in_effects: false,
+            doubles: false,
+            reflect: false,
+            light_screen: false,
+            aurora_veil: false,
+            helping_hand: false,
+            friend_guard: false,
+            power_spot: false,
+            battery: false,
+            steely_spirit: false,
         }
     }
 }
@@ -588,7 +630,18 @@ impl Default for Field {
 impl Field {
     /// The opt-in battle effects this field asks `damage_only_with` for.
     pub fn mods(&self) -> CalcMods {
-        CalcMods { switch_in_effects: self.switch_in_effects }
+        CalcMods {
+            switch_in_effects: self.switch_in_effects,
+            doubles: self.doubles,
+            reflect: self.reflect,
+            light_screen: self.light_screen,
+            aurora_veil: self.aurora_veil,
+            helping_hand: self.helping_hand,
+            friend_guard: self.friend_guard,
+            power_spot: self.power_spot,
+            battery: self.battery,
+            steely_spirit: self.steely_spirit,
+        }
     }
 }
 
@@ -1398,6 +1451,77 @@ mod tests {
         let rs = calc(&ground, &aggron, "earthquake", Field::none()).unwrap();
         assert!(rs.max > rs.defender_max_hp, "uncapped EQ into Aggron: {:?}", rs.rolls);
         assert_eq!(rs.survived_by, Some(SurvivalEffect::Sturdy));
+    }
+
+    #[test]
+    fn doubles_screens_helping_hand_and_ally_abilities_match_ps() {
+        // Expected rows: PS champions sim getDamage, Doubles, same inputs
+        // (bf-gate/ps_calc.js). Screens are x2732/4096 in Doubles
+        // (data/conditions.ts reflect/lightscreen/auroraveil onAnyModifyDamage),
+        // crits ignore them; Helping Hand x1.5 BP (data/moves.ts helpinghand);
+        // Friend Guard x0.75 (data/abilities.ts friendguard); Power Spot x1.3
+        // (powerspot onAllyBasePower).
+        let atk = QuickMon::parse("Garchomp / Adamant / 252 Atk").unwrap();
+        let def = QuickMon::parse("Incineroar / Blaze / 252 HP").unwrap();
+        let d = Field { doubles: true, ..Field::none() };
+        let rolls = |f: Field| calc(&atk, &def, "earthquake", f).unwrap().rolls;
+        let base = [206, 210, 212, 216, 216, 218, 222, 224, 228, 230, 230, 234, 236, 240, 242, 246];
+        let screened = [137, 140, 141, 144, 144, 145, 148, 149, 152, 153, 153, 156, 157, 160, 161, 164];
+        assert_eq!(rolls(d), base);
+        assert_eq!(rolls(Field { reflect: true, ..d }), screened);
+        assert_eq!(rolls(Field { aurora_veil: true, ..d }), screened);
+        assert_eq!(rolls(Field { light_screen: true, ..d }), base, "Light Screen is special-only");
+        assert_eq!(
+            rolls(Field { helping_hand: true, ..d }),
+            [308, 312, 318, 320, 324, 326, 332, 336, 338, 342, 344, 350, 354, 356, 360, 366]
+        );
+        assert_eq!(
+            rolls(Field { friend_guard: true, ..d }),
+            [154, 157, 159, 162, 162, 163, 166, 168, 171, 172, 172, 175, 177, 180, 181, 184]
+        );
+        assert_eq!(
+            rolls(Field { power_spot: true, ..d }),
+            [270, 272, 276, 278, 282, 284, 288, 290, 294, 296, 300, 302, 306, 308, 312, 318]
+        );
+        assert_eq!(
+            rolls(Field { spread: true, reflect: true, helping_hand: true, friend_guard: true, ..d }),
+            [115, 117, 118, 120, 120, 121, 123, 124, 126, 127, 129, 130, 132, 133, 135, 136]
+        );
+        let crit = calc(&atk, &def, "earthquake", Field { reflect: true, ..d }).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [312, 314, 320, 324, 326, 330, 332, 338, 342, 344, 348, 354, 356, 360, 362, 368]);
+        // Singles screens halve.
+        let single = calc(&atk, &def, "earthquake", Field { reflect: true, ..Field::none() }).unwrap();
+        assert_eq!(single.max, 123);
+
+        let gross = QuickMon::parse("Metagross / Adamant / 252 Atk").unwrap();
+        let chomp = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        assert_eq!(
+            calc(&gross, &chomp, "ironhead", Field { steely_spirit: true, ..d }).unwrap().rolls,
+            [121, 123, 124, 126, 127, 129, 130, 132, 133, 135, 136, 138, 139, 141, 142, 144]
+        );
+        let gengar = QuickMon::parse("Gengar / Modest / 252 SpA").unwrap();
+        assert_eq!(
+            calc(&gengar, &chomp, "shadowball", Field { battery: true, ..d }).unwrap().rolls,
+            [112, 114, 115, 117, 118, 120, 120, 121, 123, 124, 126, 127, 129, 130, 132, 133]
+        );
+    }
+
+    #[test]
+    fn attacker_hp_percent_enables_pinch_abilities() {
+        // Blaze x1.5 at <= 1/3 HP (data/abilities.ts blaze onModifyAtk).
+        // PS rows from bf-gate/ps_calc.js with hp_pct 30 (hp = ceil(max*30/100)).
+        let def = QuickMon::parse("Garchomp / 252 HP").unwrap();
+        let full = QuickMon::parse("Incineroar / Blaze / Adamant / 252 Atk").unwrap();
+        let low = QuickMon::parse("Incineroar / Blaze / Adamant / 252 Atk / 30%").unwrap();
+        assert_eq!(low.hp_percent, Some(30.0));
+        assert_eq!(
+            calc(&full, &def, "flareblitz", Field::none()).unwrap().rolls,
+            [54, 54, 55, 56, 57, 57, 58, 59, 59, 60, 60, 61, 62, 63, 63, 64]
+        );
+        assert_eq!(
+            calc(&low, &def, "flareblitz", Field::none()).unwrap().rolls,
+            [80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 90, 92, 93, 93, 95]
+        );
     }
 
     #[test]

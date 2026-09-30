@@ -2884,6 +2884,12 @@ self.trigger_emergency_exits();
                 m.volatiles.remove(crate::pokemon::VolatileKind::Endure);
             }
         }
+        // damage_only: the calc's Helping Hand survives the reset above.
+        if self.calc_mods.helping_hand {
+            if let Some(m) = self.p1.active_mon_mut(0) {
+                m.set_helping_handed(true);
+            }
+        }
 
         // 1. Switches first (PS priority +6). Only "pre-turn" switches
         //    fire now — switches whose actor_slot already had a Move
@@ -6749,7 +6755,8 @@ self.trigger_emergency_exits();
             let defender_has_reflect = def_conds.reflect_turns > 0 && !attacker_infiltrates;
             let defender_has_light_screen = def_conds.light_screen_turns > 0 && !attacker_infiltrates;
             let defender_has_aurora_veil = def_conds.aurora_veil_turns > 0 && !attacker_infiltrates;
-            let is_doubles = matches!(self.config.format, crate::format::Format::Doubles);
+            let is_doubles = matches!(self.config.format, crate::format::Format::Doubles)
+                || self.calc_mods.doubles;
             // Raw field terrain; `damage.rs` checks attacker / defender
             // grounding per terrain rule.
             let active_terrain = self.terrain;
@@ -6796,6 +6803,13 @@ self.trigger_emergency_exits();
                             steely += 1;
                         }
                     }
+                }
+                // damage_only: the calc's attacker (p1) has a virtual ally.
+                let cm = self.calc_mods;
+                if actor_side == SideRef::P1 && cm.doubles {
+                    power_spot |= cm.power_spot;
+                    battery |= cm.battery;
+                    steely += cm.steely_spirit as u8;
                 }
                 (power_spot, battery, steely)
             };
@@ -6845,7 +6859,8 @@ self.trigger_emergency_exits();
                             }
                         }
                     }
-                    guarded
+                    // damage_only: the calc's defender (p2) has a virtual ally.
+                    guarded || (tside == SideRef::P2 && self.calc_mods.friend_guard)
                 };
             let berry_move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),

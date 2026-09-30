@@ -113,3 +113,32 @@ def test_calc_reports_uncapped_damage_into_focus_sash():
     assert sash["survived_by"] == "focus_sash"
     assert sash["ko"]["kind"] == "none"
     assert bare["survived_by"] is None
+
+
+def test_calc_doubles_modifiers_match_ps():
+    # PS champions sim getDamage rows (bf-gate/ps_calc.js), Doubles.
+    atk, dfn = "Garchomp / Adamant / 252 Atk", "Incineroar / Blaze / 252 HP"
+    r = vgc_engine.calc(atk, dfn, "eq", doubles=True, reflect=True)
+    assert r["rolls"][0] == 137 and r["max"] == 164
+    r = vgc_engine.calc(
+        atk, dfn, "eq", spread=True, doubles=True, reflect=True,
+        helping_hand=True, friend_guard=True,
+    )
+    assert r["min"] == 115 and r["max"] == 136
+    assert vgc_engine.calc(atk, dfn, "eq", doubles=True, power_spot=True)["max"] == 318
+    assert vgc_engine.calc(atk, dfn, "eq", doubles=True, aurora_veil=True)["max"] == 164
+    assert vgc_engine.calc(atk, dfn, "eq", doubles=True, light_screen=True)["max"] == 246
+    gross = vgc_engine.calc(
+        "Metagross / Adamant / 252 Atk", "Garchomp / 252 HP", "Iron Head",
+        doubles=True, steely_spirit=True,
+    )
+    assert gross["max"] == 144
+    gengar = vgc_engine.calc(
+        "Gengar / Modest / 252 SpA", "Garchomp / 252 HP", "Shadow Ball",
+        doubles=True, battery=True,
+    )
+    assert gengar["max"] == 133
+    low = vgc_engine.calc(
+        "Incineroar / Blaze / Adamant / 252 Atk / 30%", "Garchomp / 252 HP", "Flare Blitz"
+    )
+    assert low["max"] == 95
