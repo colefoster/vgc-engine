@@ -2167,13 +2167,21 @@ self.trigger_emergency_exits();
             | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
             _ => return false,
         };
-        let spread = self
+        let Some(move_id) = self
             .side(action.side)
             .active_mon(slot as usize)
             .and_then(|m| m.moves.get(move_slot as usize).copied())
             .filter(|&id| id != u16::MAX)
-            .is_some_and(|id| matches!(self.moves()[id as usize].target, 5 | 6));
-        if !spread || !matches!(self.format(), crate::format::Format::Doubles) {
+        else {
+            return false;
+        };
+        let md = &self.moves()[move_id as usize];
+        let spread = matches!(md.target, 5 | 6) && matches!(self.format(), crate::format::Format::Doubles);
+        // A single-target move's steps only reorder around selfDrops (step
+        // 4, before the secondaries and the DamagingHit procs). Multi-hit
+        // moves run the steps once per hit, which a single sort can't model.
+        let self_drop = self_stat_drops(md.slug, self.champions).is_some();
+        if !(spread || self_drop) || md.multihit_max > 1 {
             return false;
         }
         let trace = self.rng.ps_mut().and_then(|p| p.take_trace_raw());
@@ -17595,6 +17603,30 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let targets = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
         assert_eq!(targets, 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_self_drop_rolls_before_the_targets_contact_ability() {
+        // PS spreadMoveHit rolls selfDrops (step 4) before the DamagingHit
+        // event where Static rolls (data/mods/champions/scripts.ts:385,
+        // :409); the engine applies Close Combat's drop after the move.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"machamp","level":50,"moves":["closecombat"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"ability":"static","moves":["calmmind"]}]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000005").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let kinds: Vec<&str> = trace
+            .iter()
+            .filter(|d| d.op == "selfdrop" || d.file.ends_with("ability.rs"))
+            .map(|d| if d.op == "selfdrop" { "selfdrop" } else { "ability" })
+            .collect();
+        assert_eq!(kinds, ["selfdrop", "ability"], "{trace:#?}");
     }
 
     #[test]
