@@ -864,7 +864,7 @@ pub(crate) fn calculate_damage_with_bp(
         data::move_id::HEATCRASH | data::move_id::HEAVYSLAM
             | data::move_id::LOWKICK | data::move_id::GRASSKNOT
             | data::move_id::GYROBALL | data::move_id::ELECTROBALL
-            | data::move_id::FLING
+            | data::move_id::FLING | data::move_id::HARDPRESS
     ) {
         return 0;
     }
@@ -927,6 +927,12 @@ pub(crate) fn calculate_damage_with_bp(
             _ => m.type_,
         };
         (ty, m.base_power as u32)
+    } else if move_id == data::move_id::HARDPRESS {
+        // PS data/moves.ts hardpress basePowerCallback:
+        // floor(floor((100 * (100 * floor(hp * 4096 / maxhp)) + 2047) / 4096) / 100) || 1.
+        let (hp, max) = (defender.current_hp as u64, defender.stats.hp.max(1) as u64);
+        let bp = ((100 * (100 * (hp * 4096 / max)) + 2047) / 4096) / 100;
+        (m.type_, bp.max(1) as u32)
     } else if move_id == data::move_id::RAGEFIST {
         // PS data/moves.ts:14583 ragefist basePowerCallback:
         // `Math.min(350, 50 + 50 * pokemon.timesAttacked)`.

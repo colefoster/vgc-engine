@@ -5527,6 +5527,7 @@ self.trigger_emergency_exits();
             || matches!(move_id,
                 data::move_id::HEATCRASH | data::move_id::HEAVYSLAM | data::move_id::LOWKICK
                     | data::move_id::GRASSKNOT | data::move_id::GYROBALL | data::move_id::ELECTROBALL
+                    | data::move_id::HARDPRESS
                     // Fixed-damage / damage-callback moves carry
                     // basePower: 0 in PS but still deal damage via the
                     // `damage` / `damageCallback` early returns in
