@@ -1281,6 +1281,25 @@ impl Pokemon {
         self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 1)
     }
 
+    /// Mark a Baton Pass switch (payload 2): the player picks the
+    /// replacement, which inherits this mon's boosts and copyable volatiles.
+    #[inline]
+    pub fn set_pending_copy_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 2,
+        });
+    }
+
+    /// True when the pending switch is a Baton Pass
+    /// ([`Pokemon::set_pending_copy_switch`]).
+    #[inline]
+    pub fn pending_switch_copies(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 2)
+    }
+
     /// Set or clear the PendingSelfSwitch marker.
     #[inline]
     pub fn set_pending_self_switch(&mut self, on: bool) {
