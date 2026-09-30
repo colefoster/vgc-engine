@@ -728,6 +728,7 @@ fn engine_kind(d: &vgc_engine_core::ps_rng::PsDraw) -> String {
         "crit" => "crit".into(),
         "damage" => "damage".into(),
         "shuffle" => "shuffle".into(),
+        "get_target" | "random_target" => "random_target".into(),
         "percent" if d.decision == "accuracy" || d.decision == "secondary" => d.decision.into(),
         _ => {
             let file = d.file.rsplit('/').next().unwrap_or(d.file);
@@ -818,7 +819,9 @@ pub fn first_draw_divergence(
         let turn = p.map(|d| d.turn).or(e.map(|d| d.turn)).unwrap_or(0);
         let start = *turn_start.entry(turn).or_insert(i);
         let same = match (p, e) {
-            (Some(p), Some(e)) => ps_args(p) == engine_args(e) && kinds_compatible(&ps_kind(p), &engine_kind(e)),
+            (Some(p), Some(e)) => {
+                p.turn == e.turn && ps_args(p) == engine_args(e) && kinds_compatible(&ps_kind(p), &engine_kind(e))
+            }
             _ => false,
         };
         if !same {
