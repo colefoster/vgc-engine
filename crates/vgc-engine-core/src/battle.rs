@@ -2326,7 +2326,7 @@ self.trigger_emergency_exits();
                             V::Embargo => 21, V::LeechSeed => 8, V::Curse => 12, V::Nightmare => 11,
                             V::PerishSong => 24, V::Ingrain => 7, V::AquaRing => 6, V::MagnetRise => 18,
                             V::Telekinesis => 19, V::Roost => 25, V::SyrupBomb => 14, V::SaltCure => 13,
-                            V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13,
+                            V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13, V::Octolock => 14,
                             V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
                             | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch => NONE,
                             _ => continue,
@@ -11149,6 +11149,12 @@ self.trigger_emergency_exits();
         {
             return true;
         }
+        // Octolock's onTrapPokemon traps only while its source is active.
+        if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Octolock) {
+            if self.octolock_source_active(v.payload) {
+                return true;
+            }
+        }
         // Adjacent-foe trapper abilities.
         let opp = side.opposing();
         let n_active = self.format().active_count() as u8;
@@ -12118,6 +12124,7 @@ self.trigger_emergency_exits();
         self.eot_curse();
         self.eot_partial_trap();
         self.eot_salt_cure();
+        self.eot_octolock();
         self.eot_yawn();
         self.eot_perish_song();
         self.eot_late_item_residual();
@@ -12778,6 +12785,72 @@ self.trigger_emergency_exits();
                     if m.current_hp == 0 {
                         m.fainted = true;
                     }
+                }
+            }
+        }
+    }
+
+    /// Whether the Pokemon an Octolock payload names is still on the field
+    /// and able to act (PS: `source.isActive && source.hp`).
+    fn octolock_source_active(&self, payload: u32) -> bool {
+        let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
+        let slot = ((payload >> 8) & 0xFF) as usize;
+        let idx = (payload & 0xFF) as usize;
+        let s = self.side(side);
+        slot < self.format().active_count()
+            && s.active[slot] as usize == idx
+            && s.active_mon(slot).is_some_and(|m| m.is_alive())
+    }
+
+    /// EOT sub-phase `octolock`. PS data/moves.ts:12960 octolock condition,
+    /// onResidualOrder 14: when the source has left the field or fainted the
+    /// lock ends; otherwise `this.boost({def: -1, spd: -1}, pokemon, source)`,
+    /// a foe-sourced drop (Clear Body / Big Pecks / Mist / Mirror Armor, then
+    /// White Herb, Eject Pack, Defiant / Competitive).
+    fn eot_octolock(&mut self) {
+        let n = self.format().active_count() as u8;
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::Octolock) {
+            return;
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let payload = match self.side(side).active_mon(slot as usize) {
+                    Some(m) if m.is_alive() => match m.volatiles.get(crate::pokemon::VolatileKind::Octolock) {
+                        Some(v) => v.payload,
+                        None => continue,
+                    },
+                    _ => continue,
+                };
+                if !self.octolock_source_active(payload) {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::Octolock);
+                    }
+                    continue;
+                }
+                let src_side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
+                let src_slot = ((payload >> 8) & 0xFF) as u8;
+                let Some(t) = self.side(side).active_mon(slot as usize) else { continue };
+                let mut deltas = [(0u8, 0i8); 2];
+                let mut k = 0;
+                for idx in [1u8, 3] {
+                    if !crate::ability::blocks_opposing_stat_drop_for(t, idx) {
+                        deltas[k] = (idx, -1);
+                        k += 1;
+                    }
+                }
+                if k == 0 {
+                    continue;
+                }
+                let before = t.boosts;
+                self.apply_boosts(side, slot, &deltas[..k], src_side, src_slot);
+                let dropped = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| (0..7).any(|i| m.boosts[i] < before[i]));
+                if dropped {
+                    crate::item::try_consume_white_herb(self, side, slot);
+                    let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
+                    crate::ability::react_to_opposing_stat_drop(self, side, slot);
                 }
             }
         }
@@ -14922,6 +14995,42 @@ self.trigger_emergency_exits();
                 }
                 if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                     t.set_type_override(10, None);
+                }
+            }
+            data::move_id::OCTOLOCK => {
+                // PS data/moves.ts:12960 octolock (re-enabled by
+                // data/mods/champions/moves.ts:703). onTryImmunity:
+                // dex.getImmunity('trapped', target) fails a Ghost-type
+                // target before the accuracy roll (hitStepTryImmunity,
+                // sim/battle-actions.ts:666). In the hit loop a Substitute
+                // stops it, and addVolatile fails on a target already locked.
+                // Trap and residual drops: `is_trapped`, `eot_octolock`.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Octolock_(move)>
+                let Some((ts, tslot)) = opp_target else { return };
+                let ghost = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    let (types, n) = t.effective_types();
+                    (0..n as usize).any(|i| types[i] == 13)
+                });
+                if ghost {
+                    self.ps_status_failed();
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    t.is_alive() && t.substitute_hp() == 0 && !t.volatiles.has(crate::pokemon::VolatileKind::Octolock)
+                });
+                if !ok {
+                    self.ps_status_failed();
+                    return;
+                }
+                let idx = self.side(actor_side).active[actor_slot as usize] as u32;
+                let payload = ((actor_side as u32) << 16) | ((actor_slot as u32) << 8) | idx;
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    let _ = t.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::Octolock,
+                        turns_remaining: 0,
+                        payload,
+                    });
                 }
             }
             data::move_id::NORETREAT => {

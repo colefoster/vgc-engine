@@ -423,6 +423,10 @@ pub enum VolatileKind {
     /// `turns_remaining: 0` (indefinite); cleared on switch-out
     /// (`volatiles.clear()`). Payload unused.
     NoRetreat,
+    /// Octolock (PS `data/moves.ts:octolock` condition): traps the holder
+    /// while its source is active and lowers Def / SpD at each residual.
+    /// Payload: `side << 16 | slot << 8 | team index` of the source.
+    Octolock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
