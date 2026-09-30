@@ -114,7 +114,8 @@ fn observe_active_mon<'py>(
     d.set_item("is_terastallized", m.terastallized)?;
 
     // Move slots: skip empty (u16::MAX) slots. max_pp is the PP-maxed cap the
-    // engine builds with (boosted_max_pp), matching the starting PP.
+    // engine builds with (boosted_max_pp, or champions_max_pp in a Champions
+    // battle), matching the starting PP.
     let moves_list = PyList::empty(py);
     for i in 0..4 {
         let mid = m.moves[i];
@@ -359,8 +360,9 @@ impl PyBattle {
             }
             other => return Err(PyValueError::new_err(format!("unknown format: {other}"))),
         };
-        let mut p1 = core::TeamBuilder::from_json(p1_team_json).map_err(map_team_err)?;
-        let mut p2 = core::TeamBuilder::from_json(p2_team_json).map_err(map_team_err)?;
+        let champions = champions.unwrap_or(format_champions);
+        let mut p1 = core::TeamBuilder::from_json_in(p1_team_json, champions).map_err(map_team_err)?;
+        let mut p2 = core::TeamBuilder::from_json_in(p2_team_json, champions).map_err(map_team_err)?;
         if let Some(json) = move_pp_json {
             let pp: std::collections::HashMap<String, u8> = serde_json::from_str(json)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -383,7 +385,7 @@ impl PyBattle {
             }
         };
         inner.decision_phases = decision_phases;
-        inner.champions = champions.unwrap_or(format_champions);
+        inner.champions = champions;
         if !tera_allowed {
             inner.p1.conditions.tera_used = true;
             inner.p2.conditions.tera_used = true;
