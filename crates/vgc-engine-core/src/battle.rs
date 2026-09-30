@@ -5094,31 +5094,6 @@ impl Battle {
                 }
             }
 
-            // Accuracy. PS sim/battle-actions.ts:707 — extracted into
-            // `Battle::roll_accuracy`, which wraps the pure
-            // `crate::accuracy::effective_accuracy` helper (Phase A) with
-            // the single `percent_1_100` draw, Micle-latch clear, and
-            // Blunder Policy consumption on miss. Behavior is byte-
-            // identical to the prior inline computation.
-            match self.roll_accuracy(
-                &attacker,
-                &defender,
-                m,
-                move_id,
-                actor_side,
-                actor_slot,
-                tside,
-                tslot,
-                attacker_ability_id,
-                attacker_item_id,
-                no_guard_pair,
-                damaging,
-                pending_kind,
-            ) {
-                AccuracyOutcome::Hit => {}
-                AccuracyOutcome::Miss => continue,
-            }
-
             // Wide Guard — blocks spread moves directed at this side
             // (PS data/moves.ts:wideguard `onTryHit(target, source,
             // move) { if (move.target === 'allAdjacent' || move.target
@@ -5518,6 +5493,38 @@ impl Battle {
             // alongside this PR, below).
             if m.type_ == 8 && !defender_grounded && move_id != data::move_id::THOUSANDARROWS {
                 continue;
+            }
+
+            // Accuracy. It runs after the TryHit checks above (Protect and
+            // its kin, absorbing / immunity abilities, Wonder Guard) and the
+            // Ground immunity, as PS orders its hit steps: TryHit, type
+            // immunity, TryImmunity, then accuracy
+            // (sim/battle-actions.ts:556-577). A move a TryHit check stops
+            // draws no accuracy roll.
+            //
+            // PS sim/battle-actions.ts:707 — extracted into
+            // `Battle::roll_accuracy`, which wraps the pure
+            // `crate::accuracy::effective_accuracy` helper (Phase A) with
+            // the single `percent_1_100` draw, Micle-latch clear, and
+            // Blunder Policy consumption on miss. Behavior is byte-
+            // identical to the prior inline computation.
+            match self.roll_accuracy(
+                &attacker,
+                &defender,
+                m,
+                move_id,
+                actor_side,
+                actor_slot,
+                tside,
+                tslot,
+                attacker_ability_id,
+                attacker_item_id,
+                no_guard_pair,
+                damaging,
+                pending_kind,
+            ) {
+                AccuracyOutcome::Hit => {}
+                AccuracyOutcome::Miss => continue,
             }
 
             // Fixed-damage value (computed once the attacker / defender
@@ -28845,6 +28852,27 @@ mod tests {
         }
         assert!(hits >= 5, "too few hits to validate ({hits})");
         assert!(seen.len() >= 2, "duration variety too low: {seen:?}");
+    }
+
+    #[test]
+    fn absorbing_ability_fires_before_the_accuracy_roll() {
+        // PS sim/battle-actions.ts:556-577: hitStepTryHitEvent (Sap Sipper's
+        // onTryHit) runs before hitStepAccuracy, so a 90%-accurate Grass move
+        // into Sap Sipper is always absorbed (+1 Atk), never missed.
+        for seed in 0..150u64 {
+            let p1 = TeamBuilder::from_json(
+                r#"[{"species":"venusaur","level":50,"ability":"chlorophyll","item":"","nature":"modest","moves":["leafstorm"]}]"#,
+            ).unwrap();
+            let p2 = TeamBuilder::from_json(
+                r#"[{"species":"farigiraf","level":50,"ability":"sapsipper","item":"","nature":"sassy","moves":["splash"]}]"#,
+            ).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].boosts[0], 1, "Leaf Storm not absorbed on seed {seed}");
+        }
     }
 
     #[test]
