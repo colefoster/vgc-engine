@@ -8861,6 +8861,10 @@ impl Battle {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                         *pp = pp.saturating_sub(1 + extra);
                     }
+                    // PS runMove's moveUsed (lastMove) precedes the onTry
+                    // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
                 }
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
@@ -8905,6 +8909,10 @@ impl Battle {
                     if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                         *pp = pp.saturating_sub(1 + extra);
                     }
+                    // PS runMove's moveUsed (lastMove) precedes the onTry
+                    // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
                 }
                 crate::item::on_pp_depleted(self, actor_side, actor_slot);
                 return MoveIdentityOutcome::Abort;
@@ -8998,6 +9006,8 @@ impl Battle {
                 if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
                     *pp = pp.saturating_sub(1 + extra);
                 }
+                mon.last_used_move_slot = move_slot;
+                mon.last_used_move_target = enc_target(target);
             }
             crate::item::on_pp_depleted(self, actor_side, actor_slot);
             return MoveIdentityOutcome::Abort;
@@ -29067,6 +29077,35 @@ mod tests {
             );
             assert_eq!(b.p2.team[0].boosts[0], 1, "Leaf Storm not absorbed on seed {seed}");
         }
+    }
+
+    #[test]
+    fn a_move_that_fails_its_try_check_is_still_the_last_move() {
+        // PS runMove calls `pokemon.moveUsed(move)` (lastMove) before
+        // useMove runs the move's onTry, so a failed Sucker Punch is the
+        // user's last move and Encore locks it in.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"kingambit","level":50,"ability":"defiant","item":"","nature":"adamant","moves":["swordsdance","suckerpunch"]}]"#,
+        ).unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"whimsicott","level":50,"ability":"infiltrator","item":"","nature":"timid","moves":["encore","splash"]}]"#,
+        ).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        // Turn 2: Sucker Punch fails (the foe uses a status move).
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        // Turn 3: Encore locks Kingambit into Sucker Punch, not Swords Dance.
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].encored_move_slot(), 1);
     }
 
     #[test]
