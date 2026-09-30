@@ -2354,9 +2354,6 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else { continue };
-            if !mon.is_alive() {
-                continue;
-            }
             let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
                 data::move_id::STRUGGLE
             } else {
@@ -2421,9 +2418,13 @@ self.trigger_emergency_exits();
     fn ps_after_move_action(&mut self, order: &ActionOrder, idx: usize) {
         self.ps_active_ties(false, "shuffle");
         let rest = &order[idx + 1..];
-        let next_is_move = rest.iter().any(|a| {
+        // runAction re-sorts when the next queued action (queue.peek()) is a
+        // move, and runs getActionSpeed for every queued action, a fainted
+        // user's included: PS skips those only when it reaches them
+        // (sim/battle.ts:2917-2924).
+        let next_is_move = rest.first().is_some_and(|a| {
             matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
-                && self.side(a.side).active_mon(a.actor_slot as usize).is_some_and(|m| m.is_alive())
+                && self.side(a.side).active_mon(a.actor_slot as usize).is_some()
         });
         if !next_is_move {
             return;
@@ -2447,9 +2448,6 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             let Some(mon) = self.side(a.side).active_mon(slot as usize) else { continue };
-            if !mon.is_alive() {
-                continue;
-            }
             let pri = mon.moves.get(move_slot as usize).map(|&id| if id == u16::MAX { 0 } else { self.moves()[id as usize].priority as i64 }).unwrap_or(0);
             let spe = self.ps_speed(a.side, slot as usize).unwrap_or(0);
             keys[n] = pri * 100_000 + spe;
@@ -17564,6 +17562,39 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let secondaries = trace.iter().filter(|d| d.move_id == data::move_id::PSYCHIC && d.decision == "secondary").count();
         assert_eq!(secondaries, 1, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_resort_redraws_a_fainted_users_queued_spread_move() {
+        // PS runAction re-sorts when queue.peek() is a move and calls
+        // getActionSpeed -> getTarget for every queued action, a user that
+        // just fainted included (sim/battle.ts:2917-2924); a spread move's
+        // target never validates, so it draws. Draws counted: resolveAction
+        // (Rock Slide: random target + getTarget), the re-sort before the
+        // first move (Rock Slide), the re-sort after Jolteon's KO (fainted
+        // Garchomp's Rock Slide, Snorlax's Tackle at the fainted Garchomp),
+        // and Snorlax's runMove retarget.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"jolteon","level":50,"nature":"timid","moves":["tackle"]},
+            {"species":"snorlax","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"garchomp","level":50,"moves":["rockslide"]},
+            {"species":"shuckle","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000004").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(!b.p2.team[0].is_alive());
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let targets = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
+        assert_eq!(targets, 6, "{trace:#?}");
     }
 
     #[test]
