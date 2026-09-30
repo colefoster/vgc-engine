@@ -1824,7 +1824,7 @@ pub(crate) fn calculate_damage_with_bp(
     // items (Z-crystals, plates, Ogerpon masks) are out of scope for Reg M-B.
     if move_id == data::move_id::KNOCKOFF
         && defender.item_id != u16::MAX
-        && data::mega_stone_for(defender.item_id, defender.species_id).is_none()
+        && !defender.holds_own_mega_stone()
     {
         bp_mod = chain_modify(bp_mod, 3, 2);
     }

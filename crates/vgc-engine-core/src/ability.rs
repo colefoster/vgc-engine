@@ -1967,7 +1967,7 @@ pub fn on_damaging_hit(
             .and_then(|t| {
                 if t.item_id != u16::MAX
                     && t.effective_ability_id() != data::ability_id::STICKYHOLD
-                    && data::mega_stone_for(t.item_id, t.species_id).is_none()
+                    && !t.holds_own_mega_stone()
                 {
                     Some(t.item_id)
                 } else {
@@ -2082,10 +2082,12 @@ pub fn on_item_consumed(battle: &mut Battle, side: SideRef, slot: u8) {
         if partner_slot == slot {
             continue;
         }
+        // The donor's `takeItem` fails for its own Mega Stone (PS
+        // data/abilities.ts:4841 symbiosis, items.ts mega stone onTakeItem).
         let (has_symbiosis, partner_item) =
             match battle.side(side).active_mon(partner_slot as usize) {
                 Some(p) if p.is_alive() => (
-                    p.effective_ability_id() == data::ability_id::SYMBIOSIS,
+                    p.effective_ability_id() == data::ability_id::SYMBIOSIS && !p.holds_own_mega_stone(),
                     p.item_id,
                 ),
                 _ => (false, u16::MAX),

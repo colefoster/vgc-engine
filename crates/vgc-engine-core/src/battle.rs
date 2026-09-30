@@ -7174,7 +7174,7 @@ self.trigger_emergency_exits();
             let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
                 .is_some_and(|m| m.is_alive()
                     && m.ability_id != data::ability_id::STICKYHOLD
-                    && data::mega_stone_for(m.item_id, m.species_id).is_none());
+                    && !m.holds_own_mega_stone());
             if can_knock {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     t.item_id = u16::MAX;
@@ -17653,6 +17653,48 @@ mod tests {
         assert!(b.p1.team[0].stats.atk > atk_before, "Attack recomputed upward after mega");
         // Stone is NOT consumed.
         assert_eq!(b.p1.team[0].item_id, data::item_id::CHARIZARDITEX, "mega stone not consumed");
+    }
+
+    #[test]
+    fn symbiosis_cannot_hand_over_the_holders_own_mega_stone() {
+        // PS data/abilities.ts:4837 symbiosis: `source.takeItem()` fails for
+        // a Mega Stone its holder (or its Mega forme) uses (data/items.ts
+        // floettite onTakeItem), so nothing is passed and Floette-Eternal
+        // can still Mega Evolve.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"psychicseed","moves":["followme"]},
+            {"species":"floetteeternal","level":50,"ability":"symbiosis","item":"floettite","moves":["dazzlinggleam"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"moves":["rest"]},
+            {"species":"snorlax","level":50,"moves":["rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Psychic);
+        assert_eq!(b.p1.team[0].item_id, u16::MAX, "Psychic Seed eaten, Floettite not passed");
+        assert_eq!(b.p1.team[1].item_id, data::item_id::FLOETTITE);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::MegaEvolve { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[1].species().slug, "floettemega");
+    }
+
+    #[test]
+    fn knock_off_cannot_remove_a_mega_evolved_holders_stone() {
+        // PS data/items.ts floettite onTakeItem also blocks for the Mega
+        // forme (`Object.values(item.megaStone)`), so a Mega-Evolved holder
+        // keeps its stone and Knock Off gets no boost.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"tyranitar","level":50,"moves":["knockoff"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"floetteeternal","level":50,"item":"floettite","moves":["calmmind"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p2.team[0].species().slug, "floettemega");
+        assert!(b.p2.team[0].last_damage_taken > 0);
+        assert_eq!(b.p2.team[0].item_id, data::item_id::FLOETTITE, "stone not knocked off");
     }
 
     #[test]
