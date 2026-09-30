@@ -19304,6 +19304,30 @@ mod tests {
     }
 
     #[test]
+    fn trace_copies_a_random_adjacent_foe() {
+        // PS data/abilities.ts trace onUpdate: `this.sample(possibleTargets)`
+        // over the adjacent foes with a traceable ability.
+        let mut seen = [false; 2];
+        for seed in 0..40 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"porygon2","level":50,"ability":"trace","moves":["tackle"]},
+                {"species":"snorlax","level":50,"moves":["tackle"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","moves":["tackle"]},
+                {"species":"blissey","level":50,"ability":"naturalcure","moves":["tackle"]}
+            ]"#).unwrap();
+            let b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
+            match b.p1.team[0].ability_id {
+                data::ability_id::THICKFAT => seen[0] = true,
+                data::ability_id::NATURALCURE => seen[1] = true,
+                other => panic!("traced {other}"),
+            }
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
     fn faster_mega_evolves_first() {
         // megaEvo actions (order 104) sort by Speed like any action
         // (sim/battle-queue.ts:184, sim/battle.ts:404), not p1 first. Slow
