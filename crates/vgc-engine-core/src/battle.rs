@@ -575,6 +575,10 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_commit_moves: ([(u8, u8); 4], u8),
+    /// `ps-rng` only: this turn's Mega Evolutions in commit-sort order.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_commit_megas: ([(u8, u8); 4], u8),
 }
 
 /// PR-LC5: 4-bit bitset of which Ruin abilities are live on the field.
@@ -677,6 +681,8 @@ impl Battle {
             ps_status_missed: false,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
+            #[cfg(feature = "ps-rng")]
+            ps_commit_megas: ([(0, 0); 4], 0),
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
@@ -2503,8 +2509,8 @@ self.trigger_emergency_exits();
         // refreshed, before any switch or Mega Evolution this turn.
         // Quick Claw / Quick Draw rolls are not modelled here (frac 0).
         let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
-        // (side, slot, is the move action)
-        let mut items = [(SideRef::P1, 0u8, false); 12];
+        // (side, slot, kind: 0 other, 1 move, 2 megaEvo)
+        let mut items = [(SideRef::P1, 0u8, 0u8); 12];
         let mut k = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let mut moved = [false; 2];
@@ -2517,23 +2523,23 @@ self.trigger_emergency_exits();
                 if !self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
                     continue;
                 }
-                let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
+                let mut push = |key: (i64, i64, i64, i64), kind: u8| {
                     if k < keys.len() {
                         keys[k] = key;
-                        items[k] = (side, slot as u8, is_move);
+                        items[k] = (side, slot as u8, kind);
                         k += 1;
                     }
                 };
                 match *c {
                     Choice::Switch { .. } => {
                         moved[slot.min(1)] = true;
-                        push((103, 0, 0, -spe), false);
+                        push((103, 0, 0, -spe), 0);
                     }
                     Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
                         moved[slot.min(1)] = true;
                         match *c {
-                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), false),
-                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), false),
+                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), 0),
+                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), 2),
                             _ => {}
                         }
                         let pri = crate::order::state_priority(self, side, slot as u8, move_slot) as i64;
@@ -2558,7 +2564,7 @@ self.trigger_emergency_exits();
                         } else {
                             0
                         };
-                        push((200, -pri, -frac, -spe), true);
+                        push((200, -pri, -frac, -spe), 1);
                     }
                     Choice::Pass { .. } => {}
                 }
@@ -2566,13 +2572,20 @@ self.trigger_emergency_exits();
         }
         crate::order::ps_speed_sort(&mut keys[..k], &mut items[..k], |a, b| self.rng.ps_random_range("shuffle", a, b));
         let mut moves = ([(0u8, 0u8); 4], 0u8);
-        for &(side, slot, is_move) in &items[..k] {
-            if is_move && (moves.1 as usize) < 4 {
-                moves.0[moves.1 as usize] = (side as u8, slot);
-                moves.1 += 1;
+        let mut megas = ([(0u8, 0u8); 4], 0u8);
+        for &(side, slot, kind) in &items[..k] {
+            let list = match kind {
+                1 => &mut moves,
+                2 => &mut megas,
+                _ => continue,
+            };
+            if (list.1 as usize) < 4 {
+                list.0[list.1 as usize] = (side as u8, slot);
+                list.1 += 1;
             }
         }
         self.ps_commit_moves = moves;
+        self.ps_commit_megas = megas;
         // beforeTurn action: eachEvent('BeforeTurn') + the post-action
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
@@ -2750,6 +2763,7 @@ self.trigger_emergency_exits();
         // force-switch (Roar/Whirlwind/Dragon Tail/Circle Throw) switches
         // are NOT intercepted (they don't run through `apply_switches`'
         // voluntary path).
+        let megas = self.mega_order(p1_choices, p2_choices);
         self.apply_pre_turn_switches(p1_choices, p2_choices);
 
         // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
@@ -2758,8 +2772,7 @@ self.trigger_emergency_exits();
         //     `set_forme`) governs this turn's move order, matching PS where
         //     a mon that Mega-Evolves into higher Speed moves accordingly.
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
-        self.apply_megas(SideRef::P1, p1_choices);
-        self.apply_megas(SideRef::P2, p2_choices);
+        self.apply_megas(megas);
 
         // 2. Resolve moves in priority+speed order.
         // Temporarily move rng out to split-borrow with `self`. `Rng`
@@ -3229,19 +3242,61 @@ self.trigger_emergency_exits();
         StepResult::Continue
     }
 
-    /// Resolve any `MegaEvolve` declarations in one side's choice queue.
-    /// Runs at PS `order: 104` — after switches, before move ordering — so
-    /// the recomputed Speed governs this turn. No-op when the side has no
-    /// `MegaEvolve` choice.
-    fn apply_megas(&mut self, side: SideRef, choices: &[Choice]) {
-        for c in choices {
-            if let Choice::MegaEvolve { actor_slot, .. } = *c {
-                self.try_mega_evolve(side, actor_slot);
-                // PS: the megaEvo action ends with eachEvent('Update').
-                #[cfg(feature = "ps-rng")]
-                if self.rng.is_ps() {
-                    self.ps_active_ties(false, "shuffle");
+    /// This turn's Mega Evolutions in PS's order. megaEvo actions (order
+    /// 104, sim/battle-queue.ts:184) are sorted with the rest of the queue
+    /// at commitChoices by Speed (sim/battle.ts:404), before this turn's
+    /// switches run, and are not re-sorted before they execute. Ties keep
+    /// p1 first; under `ps-rng` the commit sort's shuffled order is used.
+    fn mega_order(&self, p1: &[Choice], p2: &[Choice]) -> ([(SideRef, u8); 4], usize) {
+        let mut out = [(SideRef::P1, 0u8); 4];
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let (cm, cn) = self.ps_commit_megas;
+            for &(side, slot) in &cm[..cn as usize] {
+                out[n] = (if side == 0 { SideRef::P1 } else { SideRef::P2 }, slot);
+                n += 1;
+            }
+            return (out, n);
+        }
+        let trick_room = self.trick_room_turns > 0;
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            for c in choices {
+                if let Choice::MegaEvolve { actor_slot, .. } = *c {
+                    let Some(m) = self.side(side).active_mon(actor_slot as usize) else { continue };
+                    if n < out.len() {
+                        let tw = self.side(side).conditions.tailwind_turns > 0;
+                        let spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+                        out[n] = (side, actor_slot);
+                        keys[n] = if trick_room { spe } else { -spe };
+                        n += 1;
+                    }
                 }
+            }
+        }
+        // Stable: equal Speeds keep p1 first.
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 && keys[j] < keys[j - 1] {
+                keys.swap(j, j - 1);
+                out.swap(j, j - 1);
+                j -= 1;
+            }
+        }
+        (out, n)
+    }
+
+    /// Resolve this turn's `MegaEvolve` declarations in [`Battle::mega_order`]
+    /// order. Runs at PS `order: 104` — after switches, before move
+    /// ordering — so the recomputed Speed governs this turn.
+    fn apply_megas(&mut self, megas: ([(SideRef, u8); 4], usize)) {
+        for &(side, actor_slot) in &megas.0[..megas.1] {
+            self.try_mega_evolve(side, actor_slot);
+            // PS: the megaEvo action ends with eachEvent('Update').
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_active_ties(false, "shuffle");
             }
         }
     }
@@ -18837,6 +18892,26 @@ mod tests {
         assert_eq!(b.p2.team[0].species().slug, "floettemega");
         assert!(b.p2.team[0].last_damage_taken > 0);
         assert_eq!(b.p2.team[0].item_id, data::item_id::FLOETTITE, "stone not knocked off");
+    }
+
+    #[test]
+    fn faster_mega_evolves_first() {
+        // megaEvo actions (order 104) sort by Speed like any action
+        // (sim/battle-queue.ts:184, sim/battle.ts:404), not p1 first. Slow
+        // Abomasnow (p1) and fast Charizard (p2) both Mega Evolve: Drought
+        // sets sun first, then Snow Warning replaces it.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"abomasnow","level":50,"ability":"soundproof","item":"abomasite","nature":"quiet","moves":["protect"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"charizard","level":50,"ability":"blaze","item":"charizarditey","nature":"timid","moves":["protect"],"evs":{"spe":252}}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.weather, crate::weather::Weather::Snow);
     }
 
     #[test]
