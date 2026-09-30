@@ -9716,8 +9716,11 @@ self.trigger_emergency_exits();
             let sheer_force_skip = attacker_post
                 .is_some_and(crate::damage::attacker_has_sheer_force)
                 && crate::damage::move_is_sheer_force_boosted(m);
+            // A Red-Carded attacker (forceSwitchFlag) skips it too:
+            // data/items.ts:3414.
             let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
-                || sheer_force_skip;
+                || sheer_force_skip
+                || self.force_switch_flags[actor_side as usize][(actor_slot as usize).min(1)];
             if !skip_recoil {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     let recoil = (a.stats.hp / 10).max(1);
@@ -9745,7 +9748,9 @@ self.trigger_emergency_exits();
         // anyway). Magic Guard does NOT block heals; PS routes through
         // onTryHeal, not onDamage.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Shell_Bell>.
-        if attacker_item_id == data::item_id::SHELLBELL && any_damage_dealt > 0 && damaging {
+        if attacker_item_id == data::item_id::SHELLBELL && any_damage_dealt > 0 && damaging
+            && !self.force_switch_flags[actor_side as usize][(actor_slot as usize).min(1)]
+        {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 // Heal Block vetoes the Shell Bell recovery (PS `onTryHeal`).
                 if a.is_alive() && !a.is_heal_blocked() {
@@ -38412,9 +38417,9 @@ mod tests {
     #[test]
     fn red_card_drags_a_random_bench_mon_after_the_attackers_action() {
         // PS data/items.ts:5152 redcard sets the attacker's forceSwitchFlag;
-        // sim/battle.ts:2821-2829 drags it out after the action ends (so the
-        // attacker's own Life Orb recoil still lands on it) with
-        // getRandomSwitchable = sample over PS's bench order.
+        // sim/battle.ts:2821-2829 drags it out after the action ends with
+        // getRandomSwitchable = sample over PS's bench order. The flag also
+        // skips the attacker's Life Orb recoil (data/items.ts:3414).
         use crate::rng::{RngDecision, RngEvent, RngKey};
         use std::collections::{HashMap, VecDeque};
         let p1 = TeamBuilder::from_json(r#"[
@@ -38438,7 +38443,7 @@ mod tests {
         );
         assert_eq!(b.p1.active[0], 2, "draw 1 over the bench [Pichu, Raichu] drags in Raichu");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "Red Card consumed");
-        assert!(b.p1.team[0].current_hp < pikachu_full, "Pikachu took its Life Orb recoil before leaving");
+        assert_eq!(b.p1.team[0].current_hp, pikachu_full, "a flagged attacker takes no Life Orb recoil");
         assert_eq!(b.p1.team[2].current_hp, b.p1.team[2].stats.hp, "Raichu took nothing");
     }
 
