@@ -576,6 +576,23 @@ pub fn effectiveness_for_move_type(
     move_type: u8,
     defender: &Pokemon,
 ) -> TypeEff {
+    effectiveness_ex(move_id, move_type, defender, false)
+}
+
+/// [`effectiveness_for_move_type`] for a known attacker: Scrappy and Mind's
+/// Eye (data/abilities.ts scrappy / mindseye onModifyMove) set
+/// `ignoreImmunity` for Fighting and Normal moves, so a Ghost type's
+/// immunity counts as neutral.
+pub fn effectiveness_vs(move_id: u16, move_type: u8, attacker: &Pokemon, defender: &Pokemon) -> TypeEff {
+    let scrappy = matches!(move_type, 0 | 6)
+        && matches!(
+            attacker.effective_ability_id(),
+            data::ability_id::SCRAPPY | data::ability_id::MINDSEYE
+        );
+    effectiveness_ex(move_id, move_type, defender, scrappy)
+}
+
+fn effectiveness_ex(move_id: u16, move_type: u8, defender: &Pokemon, scrappy: bool) -> TypeEff {
     let (def_eff_types, def_eff_num) = defender.effective_types();
     // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
     // demoted to a neutral (×1) contribution rather than zeroing the hit.
@@ -643,6 +660,7 @@ pub fn effectiveness_for_move_type(
                     0 => {}
                     1 => net += 1,
                     2 => net -= 1,
+                    3 if scrappy && def_type == 13 && atk_type == 6 => {}
                     3 => immune = !negate_immunity,
                     other => unreachable!("bad type-chart code {other}"),
                 }
@@ -681,6 +699,7 @@ pub fn effectiveness_for_move_type(
                 0 => {}
                 1 => weak += 1,
                 2 => resist += 1,
+                3 if scrappy && def_type == 13 => {}
                 3 => immune = !negate_immunity,
                 other => unreachable!("bad type-chart code {other}"),
             }
@@ -2331,7 +2350,7 @@ pub(crate) fn calculate_damage_with_bp(
     // Press / Stellar / Smack Down). Factored into
     // `effectiveness_for_move_type` so the Wonder Guard immunity gate can
     // share the exact same computation PS's `runEffectiveness` uses.
-    let eff = effectiveness_for_move_type(move_id, move_type, defender);
+    let eff = effectiveness_vs(move_id, move_type, attacker, defender);
     if eff.is_immune() {
         return 0;
     }
