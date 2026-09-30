@@ -730,3 +730,140 @@ handler sort 28, Residual handler sort 27, resolveAction `getRandomTarget`
 2. **Quick Claw / Quick Draw draw position.** PS rolls them in
    `resolveAction`, before commitChoices' sort; the engine rolls them at
    queue build. Moving the draw changes the default stream too.
+
+---
+
+# Round 7 (2026-09-30, branch `mechanics-fixes-7`)
+
+Same 1,298 / 1,300-battle sample and PS battles as rounds 5-6; the round-6
+end reproduced exactly (forced-RNG 980 clean, 9691/10009 turns; seeded 804
+clean, 8572/9066).
+
+Result: forced-RNG fully clean **75.5% → 86.7%** (980 → 1125), per-turn
+**96.8% → 98.4%** (9691/10009 → 10653/10826); seeded (`ps-rng`) fully clean
+**804 → 974 (61.8% → 74.9%)**, turns 8572/9066 → 9801/10125. Against the
+round-6 end, 157 forced-RNG battles improved and none regressed; 209 seeded
+battles' first divergent draw moved later and none earlier.
+
+## Owner-approved work
+
+| commit | change | PS reference |
+|---|---|---|
+| `4decb05` | Simple (needed by Simple Beam) | `data/abilities.ts` simple `onChangeBoost` |
+| `cefda5a` | Simple Beam | `data/moves.ts:16482`; `sim/pokemon.ts:1908` setAbility |
+| `cdfe319` | Entrainment (gained ability's onStart runs) | `data/moves.ts:4859`; `sim/pokemon.ts:1943` |
+| `7297108` | Worry Seed | `data/moves.ts:21050` |
+| `d103e96` | Magic Powder | `data/moves.ts:10738`; `sim/battle-actions.ts:669` (powder) |
+| `8afd40a` | Octolock (trap, residual Def/SpD drops, Ghost immunity) | `data/moves.ts:12960`; `data/mods/champions/moves.ts:703` |
+| `7401247` | Dragon Darts: foe + its ally, one accuracy roll each; both hits on the survivor of a failed step | `data/moves.ts:4118`; `sim/pokemon.ts:757`; `sim/battle-actions.ts:607`; `data/mods/champions/scripts.ts:467` |
+| `b99f0b8` | Quick Claw is +0.1 fractional priority (was +1 priority), rolls for any move; Quick Draw first | `data/items.ts:4989`; `data/abilities.ts:3735`; `sim/battle.ts:2647` |
+| `ae654f6` | Quick Draw / Quick Claw rolled as the choices commit (resolveAction), before switches | `sim/battle-queue.ts:249` |
+
+Each of the five moves fails in PS's hit-step order: onTryHit / onTryImmunity
+before the accuracy roll (no roll), Substitute and onHit failures after it.
+
+## Unimplemented mechanics in the M-C corpus
+
+The scan matched every move, ability and item in the 3,000 sampled logs and
+the 1,300 PS teams against the engine's handlers. Implemented this round
+because they sat on first-divergence turns: Thermal Exchange (`bd7aa56`),
+Rage Fist (`086f094`), always-crit moves (`0ed0029`), Feint / Phantom Force
+breaking Protect (`0be918e`, `2a35fd6`), screen breaking (`960c122`),
+Gooey / Tangling Hair (`2e8725e`), Rain Dish / Ice Body (`4c001b2`), Double
+Shock (`47aa381`), Hard Press (`00b2795`), Ice Spinner (`3d2376e`), Seed
+Sower (`00fd08a`), Curious Medicine (`3db7c84`), Roost's type loss
+(`f8d0ec3`), Scrappy / Mind's Eye (`6af1241`; main's calc-fixes branch
+landed the same fix, the merge keeps main's version).
+
+Still missing (first-divergence co-occurrences in brackets, forced-RNG /
+seeded): Stomping Tantrum (2/2, needs a move-result history), Last Resort
+(3/3, needs per-slot used flags), Upper Hand (3/2, needs the target's queued
+move priority), Imprison (3/3), Minimize's damage-doubling volatile (3/3),
+Beak Blast (1), Charge the move (1), Bug Bite / Pluck (1), Shed Tail (1),
+Topsy-Turvy, Memento, Fairy Lock, Acupressure, Thief, Lash Out, Assurance,
+Payback, Water Shuriken's Ash form; abilities Frisk (no mechanical effect),
+Flower Veil, Pickpocket, Innards Out, Gale Wings, Illusion, Surge Surfer;
+the type gems (Normal Gem, 3 battles).
+
+## Mechanics fixes (all builds), from the remaining divergences
+
+| commit | bug | PS reference |
+|---|---|---|
+| `17696b5` | STAB counted the species' types after a retype (Protean) | `data/mods/champions/scripts.ts:233`; `sim/pokemon.ts` getTypes |
+| `e764ebf` | Defiant / Competitive rebounded once per drop, not once per lowered stat; White Herb before them | `sim/battle.ts` boost (AfterEachBoost per stat); `data/items.ts:1712` |
+| `21c0c0f` | Steel Beam / Mind Blown floored half max HP (PS rounds) | `data/moves.ts:17888`, `:11889` |
+| `b13f44f` | Confusion self-hit roll inverted (min roll dealt max) | `sim/battle-actions.ts:1850` |
+| `76104ce` | Solar Beam / Blade not halved in rain, sand, snow | `data/moves.ts:17249` |
+| `4534ef1` | Partial-trap moves trapped the first foe, not the hit target | `data/conditions.ts` partiallytrapped |
+| `29ef7ef` | Status-secondary table vs PS data (Matcha Gotcha 20%, Sludge Wave 10%, Zing Zap, 7 missing) | `data/moves.ts` `secondary` |
+| `1ab3bc5` | Flinch table vs PS data (Zen Headbutt, Extrasensory, Hyper Fang, 4 missing ...) | same |
+| `e4c05d3` | Missing stat-drop secondaries (Low Sweep, Fire Lash, ...) | same |
+| `09cbf3c` | Between-turn replacements kept the switched-in marker for the next turn (no Speed Boost) | `sim/battle.ts:1765`; `data/abilities.ts` speedboost |
+| `cf5ca13` | After Ally Switch a foe's move followed the Pokemon, not the target slot | `sim/battle.ts` getTarget / `sim/pokemon.ts` getAtLoc |
+| `912fa41` | Prankster's Dark immunity required every foe to be Dark | `sim/battle-actions.ts:674` |
+
+## `ps-rng`
+
+| commit | change |
+|---|---|
+| `9acb843` | ModifyDamage handler-sort ties (two screens on the field, Friend Guard, items at equal Speed) |
+| `dab377f` | Spread-hit window orders each step's draws by PS's target order (ally before foes) |
+
+## Trajectory
+
+| after | forced-RNG clean | turns | seeded clean | turns |
+|---|---|---|---|---|
+| round 6 end | 980 (75.5%) | 9691/10009 | 804 | 8572/9066 |
+| five moves + Dragon Darts (`7401247`) | 992 | 9814/10120 | 813 | 8667/9152 |
+| Quick Claw / Draw (`ae654f6`) | 992 | 9814/10120 | 813 | 8667/9152 |
+| Thermal Exchange (`bd7aa56`) | 1003 | 9889/10184 | 822 | 8735/9211 |
+| Rage Fist ... STAB (`17696b5`) | 1036 | 10076/10338 | 845 | 8879/9332 |
+| ModifyDamage ties (`9acb843`) | 1051 | 10179/10426 | 883 | 9205/9620 |
+| Defiant per stat (`e764ebf`) | 1059 | 10230/10469 | 889 | 9246/9655 |
+| spread target order (`dab377f`) | 1061 | 10255/10492 | 914 | 9428/9812 |
+| Steel Beam ... partial trap (`4534ef1`) | 1078 | 10347/10567 | 926 | 9503/9875 |
+| Scrappy ... flinch table (`1ab3bc5`) | 1092 | 10429/10635 | 946 | 9617/9969 |
+| replacement marker (`09cbf3c`) | 1106 | 10511/10703 | 958 | 9692/10032 |
+| Ally Switch targets (`cf5ca13`) | 1119 | 10614/10793 | 968 | 9774/10104 |
+| Prankster per target (`912fa41`) | 1124 | 10648/10822 | 973 | 9796/10121 |
+| merge of main (`bb081a9`) | **1125 (86.7%)** | **10653/10826** | **974 (74.9%)** | **9801/10125** |
+
+## Default RNG stream changes
+
+Simple Beam, Entrainment, Worry Seed, Magic Powder, Octolock (new accuracy
+rolls); Dragon Darts (second target's rolls); Quick Claw semantics and draw
+position (owner-approved); Storm Throw / Flower Trick / Frost Breath (no crit
+roll); Feint / Phantom Force (rolls against protected targets); Double Shock
+(fails without draws); Hard Press (now damages); partial-trap duration draw
+only when trapping; status / flinch table corrections (Zing Zap and the
+added moves); replacement Moody holders roll a turn earlier; Prankster
+per-target block. Commit messages say which.
+
+## Guard exceptions and reverts
+
+- `b19b5be` (allAdjacent targets ally-first in every build) broke the strict
+  golden `corpus_zero_divergences` (`doubles-stealth-rock-chip`): the golden
+  oracle pops PS's draws in order and PS rolls every target's accuracy
+  first. Reverted in `8520bbf`; the same order is applied under `ps-rng`
+  only (`dab377f`). `b19b5be` and `f8d0ec3` carry that failing golden.
+- `b13f44f` through `e4c05d3` carry a failing `chance` feature test that
+  pinned the inverted confusion roll; fixed in `c495bcc`.
+- `29ef7ef` moved two seeded battles' first draw earlier (Zing Zap lost its
+  paralysis roll, PS rolls a flinch); `1ab3bc5` restored them.
+- `vgc-solver`'s `auto_lossy_off_preserves_full_lossless` failed once
+  (`960c122`, ps-rng on) and passed on reruns: it reads a process-global
+  counter that the unlocked `recursive.rs` tests also bump.
+- No battle diverges earlier than at the round-6 end, in either mode.
+
+Every other commit passed `cargo test --workspace --exclude vgc-engine-py`
+with `ps-rng` off and on; the pyo3 tests pass (27) on the merge.
+
+## Remaining (seeded: 319 battles whose first divergence is a draw)
+
+`hitStepAccuracy` 73 (mostly where the engine draws a target re-pick first),
+runAction `Update` ties 27, `getTarget` re-picks 27, resolveAction
+`getRandomTarget` 13, StallMove rolls 12, Residual handler sort 18, crits in
+spread hits 13. 74 more diverge in state with draws aligned (45 HP, 9
+boosts). Note the seeded walk compares draw kinds and spans, not values: a
+target given another target's roll shows up as a state divergence (as the
+spread-order fix did).
