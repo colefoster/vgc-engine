@@ -2784,7 +2784,8 @@ self.trigger_emergency_exits();
         // move, and runs getActionSpeed for every queued action, a fainted
         // user's included: PS skips those only when it reaches them
         // (sim/battle.ts:2917-2924).
-        let next_is_move = rest.first().is_some_and(|a| {
+        let replaced = |b: &Self, a: &ScheduledAction| b.replaced_mid_turn[a.side as usize][(a.actor_slot as usize).min(1)];
+        let next_is_move = rest.iter().find(|a| !replaced(self, a)).is_some_and(|a| {
             matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
                 && self.side(a.side).active_mon(a.actor_slot as usize).is_some()
         });
@@ -2794,7 +2795,7 @@ self.trigger_emergency_exits();
         self.ps_update_speed_all();
         let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
         let mut k = 0;
-        for a in rest.iter().take(4) {
+        for a in rest.iter().filter(|a| !replaced(self, a)).take(4) {
             acts[k] = *a;
             k += 1;
         }
@@ -18518,6 +18519,38 @@ mod tests {
         }
         assert!(passed > 0);
         assert_eq!(samples, passed);
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_an_ejected_mons_cancelled_move_draws_no_target() {
+        // switchIn cancels the leaving mon's queued action
+        // (sim/battle-actions.ts:107), so the re-sort after Eject Button no
+        // longer runs getTarget for its Rock Slide: PS draws 3 target picks
+        // (resolveAction's two and the first re-sort's), not 4.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","moves":["rockslide"]},
+            {"species":"chansey","level":50,"moves":["calmmind"]},
+            {"species":"blissey","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"jolteon","level":50,"moves":["tackle"]},
+            {"species":"chansey","level":50,"moves":["calmmind"]}
+        ]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000013").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.decision_phases = true;
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.rng_mut().ps_mut().unwrap().enable_trace();
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }, Choice::Switch { actor_slot: 0, team_index: 2 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.active[0], 2);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
+        assert_eq!(picks, 3, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
