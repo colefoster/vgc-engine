@@ -14868,6 +14868,35 @@ self.trigger_emergency_exits();
                 }
                 crate::ability::on_start(self, ts, tslot);
             }
+            data::move_id::WORRYSEED => {
+                // PS data/moves.ts:21050 worryseed. onTryHit fails against a
+                // cantsuppress target and onTryImmunity against Truant or
+                // Insomnia, both before the accuracy roll
+                // (sim/battle-actions.ts:559-568). onHit runs
+                // setAbility('insomnia') and cures sleep. A Substitute stops
+                // it after the roll.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Worry_Seed_(move)>
+                let Some((ts, tslot)) = opp_target else { return };
+                let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
+                if ps_cantsuppress(cur) || cur == data::ability_id::TRUANT || cur == data::ability_id::INSOMNIA {
+                    self.ps_status_failed();
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                let behind_sub = ts != actor_side
+                    && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::INSOMNIA) {
+                    self.ps_status_failed();
+                    return;
+                }
+                if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                    if matches!(t.status, Status::Sleep) {
+                        t.status = Status::None;
+                        t.set_sleep_turns(0);
+                    }
+                }
+                self.sync_status_dot_bit(ts, tslot);
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced

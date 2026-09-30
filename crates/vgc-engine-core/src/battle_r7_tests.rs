@@ -143,3 +143,32 @@ fn entrainment_fails_on_a_shared_ability_before_its_accuracy_roll() {
     b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(accuracy_rolls(&b, data::move_id::ENTRAINMENT), 0);
 }
+
+#[test]
+fn worry_seed_gives_insomnia_and_wakes_the_target() {
+    // PS data/moves.ts:worryseed onHit: setAbility('insomnia'), then
+    // `if (target.status === 'slp') target.cureStatus()`.
+    let mut b = singles(
+        r#"[{"species":"breloom","level":50,"ability":"technician","moves":["spore","worryseed"],"evs":{"spe":252}}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(matches!(b.p2.team[0].status, Status::Sleep));
+    b.step(&[mv(0, 1, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::INSOMNIA);
+    assert!(!matches!(b.p2.team[0].status, Status::Sleep));
+}
+
+#[test]
+fn worry_seed_is_immune_on_insomnia_before_its_accuracy_roll() {
+    // PS worryseed onTryImmunity (hitStepTryImmunity): Truant / Insomnia.
+    let mut b = singles(
+        r#"[{"species":"breloom","level":50,"ability":"technician","moves":["worryseed"]}]"#,
+        r#"[{"species":"hypno","level":50,"ability":"insomnia","moves":["calmmind"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::WORRYSEED), 0);
+}
