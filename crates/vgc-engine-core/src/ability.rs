@@ -440,12 +440,10 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             continue;
         }
         // Intimidate's Atk drop — source is the Intimidate user.
+        let before = battle.side(opp).active_mon(s as usize).map_or([0; 7], |t| t.boosts);
         battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
-        crate::item::try_consume_white_herb(battle, opp, s);
-        // Eject Pack — PS `data/items.ts:ejectpack.onAfterEachBoost` fires on
-        // any stat drop regardless of source.
-        let _ = crate::item::try_consume_eject_pack(battle, opp, s, true);
-        react_to_opposing_stat_drop(battle, opp, s);
+        // Defiant / Competitive, Eject Pack, then White Herb.
+        battle.after_foe_drop(opp, s, before, true);
         // Rattled — PS `data/abilities.ts:rattled` onAfterBoost grants +1 Spe
         // on an Intimidate target (stacks with the drop).
         if target_ability == data::ability_id::RATTLED {
