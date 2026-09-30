@@ -882,3 +882,33 @@ fn a_foes_move_hits_whoever_ally_switch_moved_into_its_target_slot() {
     assert!(b.p1.team[0].current_hp < b.p1.team[0].stats.hp);
     assert_eq!(b.p1.team[1].current_hp, b.p1.team[1].stats.hp);
 }
+
+#[test]
+fn prankster_status_move_fails_on_a_dark_target_even_beside_a_non_dark_foe() {
+    // PS hitStepTryImmunity (sim/battle-actions.ts:674): a Prankster-boosted
+    // move fails against each Dark-type target, whatever the other foe is.
+    let mut b = doubles(
+        r#"[{"species":"grimmsnarl","level":50,"ability":"prankster","moves":["partingshot"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"incineroar","level":50,"ability":"blaze","moves":["bulkup"]},
+            {"species":"sneasler","level":50,"ability":"poisontouch","moves":["swordsdance"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].boosts[2], 0, "no SpA drop on the Dark-type Incineroar");
+}
+
+#[test]
+fn good_as_gold_blocks_parting_shot_in_doubles() {
+    // PS data/abilities.ts goodasgold onTryHit: status moves from others
+    // fail against the holder.
+    let mut b = doubles(
+        r#"[{"species":"incineroar","level":50,"ability":"blaze","moves":["partingshot"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        r#"[{"species":"gholdengo","level":50,"ability":"goodasgold","moves":["nastyplot"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].boosts[0], 0);
+}
