@@ -4125,6 +4125,22 @@ self.trigger_emergency_exits();
                 _ => return,
             }
         };
+        // Recharge after Hyper Beam family. PS data/conditions.ts:364
+        // `mustrecharge` volatile with `onBeforeMove` priority 11 that
+        // consumes the action and removes itself: it runs before every other
+        // BeforeMove check (flinch, sleep, paralysis ...) and before the
+        // chosen move's onTry (Fake Out), and PS locks the choice to
+        // 'recharge' (a self-target move, so no target draw). We collapse to
+        // a single `must_recharge: bool` field. Skip the entire move, clear
+        // the flag, no PP deduct.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
+        if attacker.must_recharge {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.must_recharge = false;
+            }
+            return;
+        }
+
         let m = &self.moves()[move_id as usize];
 
         #[cfg(feature = "ps-rng")]
@@ -4244,19 +4260,6 @@ self.trigger_emergency_exits();
             self.shell_side_arm_modify_move(actor_side, &attacker, target, &mut m_owned);
         }
         let m = &m_owned;
-
-        // 2b. Recharge after Hyper Beam family. PS data/conditions.ts:364
-        //     `mustrecharge` volatile with `onBeforeMove` priority 11 that
-        //     consumes the action and removes itself. We collapse to a
-        //     single `must_recharge: bool` field. Skip the entire move,
-        //     clear the flag, no PP deduct.
-        //     Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recharge>.
-        if attacker.must_recharge {
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.must_recharge = false;
-            }
-            return;
-        }
 
         // 2c. Two-turn charge / semi-invulnerable moves (Solar Beam family
         //     without semi-invuln + Fly / Dig / Dive / Bounce / Phantom
@@ -35180,6 +35183,27 @@ mod tests {
         );
         assert!(!b.p1.team[0].must_recharge, "must_recharge cleared after recharge turn");
         assert_eq!(b.p1.team[0].pp[1], body_slam_pp, "no PP deducted while recharging");
+    }
+
+    #[test]
+    fn recharge_turn_is_spent_whatever_move_was_chosen() {
+        // PS data/conditions.ts mustrecharge: onBeforeMovePriority 11 runs
+        // before every other BeforeMove check and before the chosen move's
+        // onTry, so a Fake Out picked on the recharge turn doesn't keep the
+        // recharge pending into the next turn.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"nature":"adamant","moves":["hyperbeam","fakeout","bodyslam"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"chansey","level":50,"item":"eviolite","nature":"bold","evs":{"hp":252,"def":252},"moves":["softboiled"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let foe = |slot: u8| [Choice::Move { actor_slot: 0, move_slot: slot, target: Some(t(SideRef::P2, 0)) }];
+        let heal = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        b.step(&foe(1), &heal); // Fake Out
+        b.step(&foe(0), &heal); // Hyper Beam
+        assert!(b.p1.team[0].must_recharge);
+        b.step(&foe(1), &heal); // recharge turn, Fake Out chosen
+        assert!(!b.p1.team[0].must_recharge, "the recharge turn is spent");
+        let pp = b.p1.team[0].pp[2];
+        b.step(&foe(2), &heal);
+        assert_eq!(b.p1.team[0].pp[2], pp - 1, "Body Slam is used the turn after");
     }
 
     #[test]
