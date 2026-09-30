@@ -1992,6 +1992,129 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], op);
     }
 
+    /// `ps-rng` only: the speed sort of PS's `fieldEvent('Residual')`
+    /// handler list (sim/battle.ts:484-507), which shuffles every run of
+    /// handlers tied on (order, priority, speed, subOrder)
+    /// (comparePriority :404, resolvePriority :950). The list holds the
+    /// field's and each side's conditions with a Residual callback or a
+    /// duration, then per active slot (fainted ones included; their
+    /// handlers are skipped only after the sort): status, volatiles, slot
+    /// conditions, ability, item, and Grassy Terrain's per-mon heal.
+    /// Orders and subOrders are PS's `on[Field|Side]Residual{Order,SubOrder}`
+    /// (Champions dex), else the effect-type default (Condition 2, slot
+    /// condition 3, side 4, field 5, Ability 7, Item 8; Status 0).
+    /// Draws only; the engine keeps its own residual order.
+    #[cfg(feature = "ps-rng")]
+    fn ps_residual_ties(&mut self) {
+        const NONE: i64 = 4_294_967_296;
+        // (order, priority, speed, subOrder)
+        let mut h = [(0i64, 0i64, 0i64, 0i64); 64];
+        let mut n = 0usize;
+        let mut push = |h: &mut [(i64, i64, i64, i64); 64], k: (i64, i64, i64, i64)| {
+            if n < h.len() {
+                h[n] = k;
+                n += 1;
+            }
+        };
+        // Field: weather (onFieldResidualOrder 1, Weather 5), terrain
+        // (27/7), pseudo-weathers (27 and their subOrders).
+        if !matches!(self.weather, crate::weather::Weather::None) {
+            push(&mut h, (1, 0, 0, 5));
+        }
+        if !matches!(self.terrain, crate::terrain::Terrain::None) {
+            push(&mut h, (27, 0, 0, 7));
+        }
+        if self.trick_room_turns > 0 { push(&mut h, (27, 0, 0, 1)); }
+        if self.gravity_turns > 0 { push(&mut h, (27, 0, 0, 2)); }
+        if self.wonder_room_turns > 0 { push(&mut h, (27, 0, 0, 5)); }
+        if self.magic_room_turns > 0 { push(&mut h, (27, 0, 0, 6)); }
+        // Sides (onSideResidualOrder 26 and subOrder; duration-1 guards
+        // have no order and the side default 4).
+        for side in [SideRef::P1, SideRef::P2] {
+            let c = self.side(side).conditions;
+            if c.reflect_turns > 0 { push(&mut h, (26, 0, 0, 1)); }
+            if c.light_screen_turns > 0 { push(&mut h, (26, 0, 0, 2)); }
+            if c.safeguard_turns > 0 { push(&mut h, (26, 0, 0, 3)); }
+            if c.mist_turns > 0 { push(&mut h, (26, 0, 0, 4)); }
+            if c.tailwind_turns > 0 { push(&mut h, (26, 0, 0, 5)); }
+            if c.aurora_veil_turns > 0 { push(&mut h, (26, 0, 0, 10)); }
+            for on in [c.wide_guard_this_turn, c.quick_guard_this_turn, c.mat_block_this_turn, c.crafty_shield_this_turn] {
+                if on { push(&mut h, (NONE, 0, 0, 4)); }
+            }
+        }
+        let grassy = matches!(self.terrain, crate::terrain::Terrain::Grassy);
+        let n_active = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot) else { continue };
+                let spe = self.ps_speed(side, slot).unwrap_or(0);
+                match m.status {
+                    Status::Burn => push(&mut h, (10, 0, spe, 0)),
+                    Status::Poison | Status::Toxic => push(&mut h, (9, 0, spe, 0)),
+                    _ => {}
+                }
+                if m.is_alive() {
+                    use crate::pokemon::VolatileKind as V;
+                    let vols = m.volatiles;
+                    for v in &vols.items[..vols.len as usize] {
+                        let order = match v.kind {
+                            V::Taunt => 15, V::Disable => 17, V::Yawn => 23, V::HealBlock => 20,
+                            V::Embargo => 21, V::LeechSeed => 8, V::Curse => 12, V::Nightmare => 11,
+                            V::PerishSong => 24, V::Ingrain => 7, V::AquaRing => 6, V::MagnetRise => 18,
+                            V::Telekinesis => 19, V::Roost => 25, V::SyrupBomb => 14, V::SaltCure => 13,
+                            V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13,
+                            V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
+                            | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch => NONE,
+                            _ => continue,
+                        };
+                        push(&mut h, (order, 0, spe, 2));
+                    }
+                    // twoturnmove / mustrecharge / lockedmove (duration 2).
+                    if m.charging_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
+                    if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                }
+                // Slot conditions: Wish (4), Future Sight (3); subOrder 3.
+                if self.wish_pending[side as usize][slot.min(1)].is_some() { push(&mut h, (4, 0, spe, 3)); }
+                if self.future_pending[side as usize][slot.min(1)].is_some() { push(&mut h, (3, 0, spe, 3)); }
+                let ability = match m.effective_ability_id() {
+                    data::ability_id::HEALER | data::ability_id::HYDRATION | data::ability_id::SHEDSKIN => Some((5, 3)),
+                    data::ability_id::BADDREAMS | data::ability_id::CUDCHEW | data::ability_id::HARVEST
+                    | data::ability_id::MOODY | data::ability_id::PICKUP | data::ability_id::SLOWSTART
+                    | data::ability_id::SPEEDBOOST => Some((28, 2)),
+                    data::ability_id::HUNGERSWITCH | data::ability_id::OPPORTUNIST | data::ability_id::ZENMODE
+                    | data::ability_id::SCHOOLING | data::ability_id::SHIELDSDOWN | data::ability_id::POWERCONSTRUCT => Some((29, 7)),
+                    _ => None,
+                };
+                if let Some((o, sub)) = ability { push(&mut h, (o, 0, spe, sub)); }
+                let item = match m.item_id {
+                    data::item_id::LEFTOVERS | data::item_id::BLACKSLUDGE => Some((5, 4)),
+                    data::item_id::FLAMEORB | data::item_id::TOXICORB | data::item_id::STICKYBARB => Some((28, 3)),
+                    data::item_id::EJECTPACK | data::item_id::MIRRORHERB | data::item_id::WHITEHERB => Some((29, 8)),
+                    data::item_id::MICLEBERRY => Some((NONE, 8)),
+                    _ => None,
+                };
+                if let Some((o, sub)) = item { push(&mut h, (o, 0, spe, sub)); }
+                if grassy { push(&mut h, (5, 0, spe, 2)); }
+            }
+        }
+        let list = &mut h[..n];
+        // comparePriority: order asc, priority desc, speed desc, subOrder asc.
+        list.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)).then(a.3.cmp(&b.3)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
     /// `ps-rng` only: battle start. PS switches the four leads in (p1 then
     /// p2, slot order); each `switchIn` queues a `runSwitch` via
     /// `insertChoice`, which draws `random(first, last + 1)` when the new
@@ -2537,6 +2660,10 @@ self.trigger_emergency_exits();
         // No residuals once a side is out: PS ended the battle at the faint
         // (sim/battle.ts faintMessages -> checkWin).
         if !(self.p1.is_defeated() || self.p2.is_defeated()) {
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_residual_ties();
+            }
             let hp_before = self.active_hp_snapshot();
             self.resolve_end_of_turn();
             // PS: the residual action ends with eachEvent('Update').
@@ -17177,6 +17304,24 @@ mod tests {
         assert_eq!(b.p1.team[1].sleep_turns(), 2);
         b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
         assert_eq!(b.p1.team[1].status, Status::Sleep, "one attempt spent, still asleep");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_residual_shuffles_a_protect_users_tied_volatiles() {
+        // PS fieldEvent('Residual') speed-sorts its handlers
+        // (sim/battle.ts:484-507); a Protect user's `protect` and `stall`
+        // volatiles (both duration-only: no order, Condition subOrder 2, the
+        // holder's speed) tie, so the sort draws one shuffle.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["protect"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["calmmind"]}]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000001").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let shuffles: Vec<_> = trace.iter().filter(|d| d.op == "shuffle").map(|d| d.b - d.a).collect();
+        assert_eq!(shuffles, vec![2], "{trace:?}");
     }
 
     #[test]
