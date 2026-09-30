@@ -431,7 +431,11 @@ fn schedule_move(
             //   randomChance(1, 5)`, where `priority` is the event's relay
             //   (0, or Quick Draw's 0.1), not the move's priority
             //   (sim/battle-queue.ts:249).
-            let quick = quick_fractional_roll(battle, side, actor_slot, mid, rng);
+            // Inside a step the rolls were made as the choices committed.
+            let quick = match battle.quick_frac {
+                Some(q) => q[side as usize][(actor_slot as usize).min(1)],
+                None => quick_fractional_roll(battle, side, actor_slot, mid, rng),
+            };
             let frac = if quick { -1i8 } else { frac };
             // Mycelium Might — PS `data/abilities.ts:myceliummight`. A Status
             // move used by a Mycelium Might holder always moves LAST within

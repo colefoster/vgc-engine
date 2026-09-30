@@ -326,3 +326,27 @@ fn quick_claw_rolls_for_a_priority_move_too() {
         .count();
     assert_eq!(rolls, 1);
 }
+
+#[test]
+fn quick_claw_rolls_when_choices_commit_before_switches() {
+    // PS rolls FractionalPriority in resolveAction (sim/battle-queue.ts:249),
+    // as commitChoices queues each action, before any switch runs; here the
+    // Quick Claw roll precedes the switched-in Trace's random pick.
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]},
+            {"species":"porygon2","level":50,"ability":"trace","moves":["recover"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","item":"quickclaw","moves":["dragonclaw"]},
+            {"species":"pikachu","level":50,"ability":"static","moves":["growl"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)],
+        &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)],
+    );
+    let log = b.rng.recording_log().unwrap();
+    let qc = log.iter().position(|e| matches!(e.space, crate::rng::DrawSpace::UniformRange(5))).expect("Quick Claw roll");
+    let trace = log.iter().position(|e| matches!(e.space, crate::rng::DrawSpace::UniformRange(2))).expect("Trace pick");
+    assert!(qc < trace, "Quick Claw at {qc}, Trace at {trace}");
+}
