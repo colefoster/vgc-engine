@@ -764,3 +764,27 @@ fn scrappy_fighting_moves_hit_ghosts() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp);
 }
+
+#[test]
+fn status_secondaries_match_ps_data() {
+    // Chances from PS data/moves.ts `secondary` (Champions dex, a5df8274).
+    use Status::{Burn, Paralysis, Poison, Toxic};
+    for (slug, want) in [
+        ("matchagotcha", Some((Burn, 20))),
+        ("sludgewave", Some((Poison, 10))),
+        ("zingzap", Option::None),
+        ("blueflare", Some((Burn, 20))),
+        ("searingshot", Some((Burn, 30))),
+        ("spark", Some((Paralysis, 30))),
+        ("infernalparade", Some((Burn, 30))),
+        ("inferno", Some((Burn, 100))),
+        ("poisonfang", Some((Toxic, 50))),
+        ("pyroball", Some((Burn, 10))),
+        ("volttackle", Some((Paralysis, 10))),
+        ("bounce", Some((Paralysis, 30))),
+        ("shellsidearm", Some((Poison, 20))),
+        ("scald", Some((Burn, 30))),
+    ] {
+        assert_eq!(status_secondary(slug, true), want, "{slug}");
+    }
+}

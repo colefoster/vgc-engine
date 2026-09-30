@@ -17065,12 +17065,20 @@ fn status_secondary(slug: &str, champions: bool) -> Option<(Status, u8)> {
         "freezedry" if !champions => (Status::Freeze, 10),
         // Burn 10% (mostly Fire-type physical / mixed):
         "flamethrower" | "fireblast" | "firepunch" | "ember" | "flareblitz"
-        | "blueflare" | "heatwave" | "blazekick" | "firefang" | "searingshot" => (Status::Burn, 10),
-        // Burn 30%:
-        "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "matchagotcha" => (Status::Burn, 30),
-        // Paralysis 10%:
-        "thunderbolt" | "thundershock" | "spark" | "thunderpunch"
-        | "thunderfang" | "zingzap" => (Status::Paralysis, 10),
+        | "heatwave" | "blazekick" | "firefang" | "pyroball" => (Status::Burn, 10),
+        // Burn 20% / 30% / 100% (PS data/moves.ts `secondary.chance`):
+        "blueflare" | "matchagotcha" => (Status::Burn, 20),
+        "scald" | "lavaplume" | "steameruption" | "scorchingsands" | "searingshot"
+        | "infernalparade" => (Status::Burn, 30),
+        "inferno" => (Status::Burn, 100),
+        // Paralysis 10% (Zing Zap's secondary is a 30% flinch, not
+        // paralysis — `flinch_chance`):
+        "thunderbolt" | "thundershock" | "thunderpunch"
+        | "thunderfang" | "volttackle" => (Status::Paralysis, 10),
+        // Bad poison 50%:
+        "poisonfang" => (Status::Toxic, 50),
+        // Poison 20%:
+        "shellsidearm" => (Status::Poison, 20),
         // Freeze 10% — Ice Fang plus Ice Beam, Ice Punch, Blizzard. PS
         // data/moves.ts each `secondary: { chance: 10, status: 'frz' }`. The
         // freeze application path (try_set_status) already gates Ice-type /
@@ -17088,7 +17096,7 @@ fn status_secondary(slug: &str, champions: bool) -> Option<(Status, u8)> {
         // `stat_drop_secondary` below.)
         // Thunder — PS data/moves.ts thunder (num 87) `chance: 30, status: 'par'`
         // (NOT 10% like Thunderbolt). Was mis-bucketed with the 10% arm.
-        "thunder" | "discharge" | "bodyslam"
+        "thunder" | "discharge" | "bodyslam" | "spark" | "bounce"
         | "dragonbreath" | "secretpower" => (Status::Paralysis, 30),
         // Paralysis 100% — Nuzzle and Zap Cannon (PS data/moves.ts each
         // `secondary: { chance: 100, status: 'par' }`). Zap Cannon is 50%
@@ -17096,8 +17104,10 @@ fn status_secondary(slug: &str, champions: bool) -> Option<(Status, u8)> {
         // missing, so it never paralyzed.
         "nuzzle" | "zapcannon" => (Status::Paralysis, 100),
         // Poison 30%:
-        "sludgebomb" | "sludgewave" | "sludge" | "gunkshot"
+        "sludgebomb" | "sludge" | "gunkshot"
         | "poisonjab" => (Status::Poison, 30),
+        // Poison 10%:
+        "sludgewave" => (Status::Poison, 10),
         // Poison 40% — Smog (PS data/moves.ts:17042 `chance: 40`):
         "smog" => (Status::Poison, 40),
         // Poison 50% — Barb Barrage (PS data/moves.ts:barbbarrage
