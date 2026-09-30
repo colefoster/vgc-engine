@@ -2475,7 +2475,9 @@ self.trigger_emergency_exits();
                         (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
                     }
                 };
-                if n > 0 {
+                // Singles picks the foe without a draw (sim/battle.ts
+                // getRandomTarget: `gameType === 'singles'`).
+                if n > 0 && n_active > 1 {
                     let _ = self.rng.ps_random_range("random_target", 0, n as u32);
                 }
                 // resolveAction then calls getActionSpeed -> getTarget, whose
@@ -2574,7 +2576,7 @@ self.trigger_emergency_exits();
             let foe = side.opposing();
             (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
         };
-        if n > 0 {
+        if n > 0 && n_active > 1 {
             let _ = self.rng.ps_random_range("get_target", 0, n as u32);
         }
     }
@@ -18076,6 +18078,28 @@ mod tests {
         );
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         assert_eq!(trace.len(), 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_singles_picks_targets_without_a_draw() {
+        // getRandomTarget returns the one foe in singles without sampling
+        // (sim/battle.ts getRandomTarget, `gameType === 'singles'`).
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000009").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Singles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["icywind"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["tackle"]}]"#).unwrap(),
+        );
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
+        assert_eq!(picks, 0, "{trace:#?}");
     }
 
     #[cfg(feature = "ps-rng")]
