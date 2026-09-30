@@ -25,9 +25,8 @@
 //!      boost still does (`SelfOnly`).
 //!   3. **Substitute absorption** — `hit_sub == true`: the hit was absorbed
 //!      by a Substitute (sound + Infiltrator already cleared the flag
-//!      upstream), so opposing secondaries don't land. PS
-//!      `sim/battle-actions.ts` short-circuits the secondary block when the
-//!      hit went to the sub.
+//!      upstream), so opposing secondaries don't land; the user's own
+//!      `self` boost still does (`SelfOnly`).
 //!
 //! The remaining "should this individual secondary proc?" predicates
 //! (Shield Dust, Covert Cloak, status immunity, Safeguard, Inner Focus,
@@ -83,14 +82,15 @@ pub(crate) fn should_run_secondary_block(
 ) -> SecondaryProcDecision {
     let sheer_force_strip = damage::attacker_has_sheer_force(attacker)
         && damage::move_is_sheer_force_boosted(move_def);
-    if sheer_force_strip || hit_sub {
+    if sheer_force_strip {
         return SecondaryProcDecision::Skip;
     }
     // A KO'd target stays in PS's `targets` (hp 0; `fainted` is set later,
-    // in faintMessages), so `secondaries` still rolls for it and a `self`
-    // boost lands (data/mods/champions/scripts.ts:385-388,
+    // in faintMessages), and a Substitute hit leaves it as `null`, not
+    // `false` (data/mods/champions/scripts.ts:350-353), so `secondaries`
+    // still rolls for it and a `self` boost lands (scripts.ts:385-388,
     // sim/battle-actions.ts:1336-1351). Effects on the target fail.
-    if !alive_post {
+    if !alive_post || hit_sub {
         return SecondaryProcDecision::SelfOnly;
     }
     SecondaryProcDecision::Run

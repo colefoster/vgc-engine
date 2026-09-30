@@ -17488,6 +17488,23 @@ mod tests {
     }
 
     #[test]
+    fn self_boost_secondary_lands_through_a_substitute() {
+        // PS spreadMoveHit turns a Substitute hit's target into `null`, not
+        // `false` (data/mods/champions/scripts.ts:350-353), so `secondaries`
+        // still rolls for it and the `self` boost lands.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"hitmonchan","level":50,"moves":["poweruppunch"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["calmmind"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p2.team[0].set_substitute_hp(200);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert!(b.p2.team[0].substitute_hp() < 200, "the Substitute took the hit");
+        assert_eq!(b.p1.team[0].boosts[0], 1);
+    }
+
+    #[test]
     fn triple_arrows_def_drop_is_chance_gated() {
         // PS data/moves.ts:triplearrows — secondaries: [ { chance: 50, boosts:
         // { def: -1 } }, { chance: 30, volatileStatus: 'flinch' } ]. The 50%
