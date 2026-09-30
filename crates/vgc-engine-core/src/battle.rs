@@ -3129,7 +3129,11 @@ self.trigger_emergency_exits();
             incoming.must_recharge = false;
             incoming.lockin_turns = 0;
             incoming.lockin_move_slot = 255;
+            // The sleep / Champions freeze counter is status state (PS
+            // `statusState`), not a volatile: it survives the switch.
+            let status_counter = if matches!(incoming.status, Status::Sleep | Status::Freeze) { incoming.sleep_turns() } else { 0 };
             incoming.volatiles.clear();
+            incoming.set_sleep_turns(status_counter);
             // PR-LC3: the blanket `volatiles.clear()` above wiped any
             // remaining lock-volatile (Disable / Throat Chop / Heal Block /
             // Taunt — Choice/Encore were already cleared via their setters
@@ -17153,6 +17157,26 @@ mod tests {
             );
             assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "seed {seed}: missed");
         }
+    }
+
+    #[test]
+    fn sleep_counter_survives_switching_out() {
+        // PS keeps the sleep counter in `statusState` (data/conditions.ts slp
+        // onStart `effectState.time`), which stays with the Pokémon across a
+        // switch; only volatiles are cleared. A mon switched out asleep with
+        // 2 attempts left still has 2 when it returns.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"moves":["tackle"]},
+            {"species":"metagross","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"chansey","level":50,"moves":["softboiled"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[1].status = Status::Sleep;
+        b.p1.team[1].set_sleep_turns(2);
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        assert_eq!(b.p1.team[1].sleep_turns(), 2);
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        assert_eq!(b.p1.team[1].status, Status::Sleep, "one attempt spent, still asleep");
     }
 
     #[test]
