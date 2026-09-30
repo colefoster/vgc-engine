@@ -111,12 +111,44 @@ def eligible(h):
     if a["transformed"] or d["transformed"] or a["boost_uncertain"] or d["boost_uncertain"]: return "state_uncertain"
     if set(a["vol"]) & DMG_VOLATILES or set(d["vol"]) & DMG_VOLATILES: return "volatile"
     if slug(a["species"]) not in POKEDEX or slug(d["species"]) not in POKEDEX: return "unknown_species"
-    if h["helped"]: return "api_gap_helping_hand"
-    if h["screens"] and not h["crit"]: return "api_gap_screens"
-    if a["hp"] != "100" and int(re.sub(r"[a-z]+$", "", a["hp"])) <= 34 and \
-            (slug(a["ability"] or "") in PINCH or (not a["ability_known"] and any(slug(x) in PINCH for x in legal_abilities(a["species"])))):
-        return "api_gap_pinch_ability"
+    # Helping Hand, screens and attacker HP (pinch abilities) are calc
+    # inputs now; see field_extras.
     return None
+
+
+def field_extras(h):
+    """Calc inputs from the hit's battle state: screens, Helping Hand, attacker HP."""
+    return {"screens": [slug(x) for x in h["screens"]], "helping_hand": bool(h["helped"])}
+
+
+def hp_pct(tok):
+    return None if tok == "100" else float(re.sub(r"[a-z]+$", "", tok))
+
+
+ALLY_ATK_FLAGS = ("Power Spot", "Battery", "Steely Spirit")
+
+
+def ally_abilities(h, mode, corner):
+    """Ally abilities to model. WIDE/EXT: the low corner gives the defender's
+    ally Friend Guard and the high corner the attacker's ally Power Spot /
+    Battery / Steely Spirit whenever the ally species can have it. TIGHT: each
+    ally's most common ability."""
+    out = {}
+    if mode == "tight":
+        for key, allies in (("def_ally_ability", h["ally_def"]), ("atk_ally_ability", h["ally_atk"])):
+            for sp in allies:
+                t = stats_top(sp, "abilities")
+                if t and (t[0] == "Friend Guard" if key == "def_ally_ability" else t[0] in ALLY_ATK_FLAGS):
+                    out[key] = t[0]
+        return out
+    if corner == "lo" and any("Friend Guard" in legal_abilities(sp) for sp in h["ally_def"]):
+        out["def_ally_ability"] = "Friend Guard"
+    if corner == "hi":
+        for ab in ALLY_ATK_FLAGS:
+            if any(ab in legal_abilities(sp) for sp in h["ally_atk"]):
+                out["atk_ally_ability"] = ab
+                break
+    return out
 
 
 def stat_roles(move):
@@ -196,7 +228,7 @@ def build_queries(h, mode):
     a, d = h["atk"], h["def"]
     off, dfn, _ = stat_roles(h["move"])
     base = {"move": h["move"], "weather": h["weather"], "terrain": h["terrain"], "spread": h["spread"],
-            "crit": h["crit"]}
+            "crit": h["crit"], **field_extras(h)}
     qs = []
     for ai, aa, di, da in candidates(h, mode):
         if mode == "tight":
@@ -208,6 +240,8 @@ def build_queries(h, mode):
                      def_=None)
             q["def"] = mon(d["species"], di, da, dn, parse_sp(td["stat_points"]), d["boosts"], d["status"])
             q.pop("def_")
+            q["atk"]["hp_pct"] = hp_pct(a["hp"])
+            q.update(ally_abilities(h, "tight", None))
             qs.append(("t", q))
             continue
         ans = nat_options(a["nature"], off, "atk", mode)
@@ -226,7 +260,10 @@ def build_queries(h, mode):
                   **{"def": mon(d["species"], di, da, d_hi, sp_d_bulk, d["boosts"], d["status"])})
         hi = dict(base, atk=mon(a["species"], ai, aa, a_hi, sp_a_hi, a["boosts"], a["status"]),
                   **{"def": mon(d["species"], di, da, d_lo, [0] * 6, d["boosts"], d["status"])})
-        qs.append(("lo", lo)); qs.append(("hi", hi))
+        for tag, q in (("lo", lo), ("hi", hi)):
+            q["atk"]["hp_pct"] = hp_pct(a["hp"])
+            q.update(ally_abilities(h, mode, tag))
+            qs.append((tag, q))
     return qs
 
 
