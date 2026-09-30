@@ -10814,6 +10814,40 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// A status move that failed where PS's hit loop never reaches its
+    /// `eachEvent('Update')`: an onTryHit / onTryImmunity failure before the
+    /// accuracy roll, or an onHit that returned false in the loop (which
+    /// breaks before the per-hit Update, data/mods/champions/scripts.ts:528).
+    fn ps_status_failed(&mut self) {
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_status_missed = true;
+        }
+    }
+
+    /// PS `Pokemon.setAbility` (sim/pokemon.ts:1908) for a move's onHit
+    /// (Simple Beam, Entrainment, Worry Seed): fails on a fainted target,
+    /// when either ability is `cantsuppress`, or when Ability Shield's
+    /// onSetAbility blocks it (data/items.ts:11); otherwise the new ability
+    /// replaces the current one. The gained ability's onStart is the
+    /// caller's to run. Returns whether the ability changed hands.
+    fn set_ability_by_move(&mut self, side: SideRef, slot: u8, ability: u16) -> bool {
+        let Some(t) = self.side(side).active_mon(slot as usize) else { return false };
+        let old = current_ability(t);
+        if !t.is_alive() || ps_cantsuppress(ability) || ps_cantsuppress(old) || crate::ability::has_ability_shield(t) {
+            return false;
+        }
+        if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+            t.ability_override = ability;
+        }
+        if old == data::ability_id::NEUTRALIZINGGAS || ability == data::ability_id::NEUTRALIZINGGAS {
+            crate::ability::recompute_neutralizing_gas(self);
+        }
+        // Cloud Nine / Air Lock gained or lost.
+        self.sync_weather_terrain_cache();
+        true
+    }
+
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
         if m.accuracy == 255 {
             return true;
@@ -14786,6 +14820,25 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::SIMPLEBEAM => {
+                // PS data/moves.ts:simplebeam. onTryHit (hitStepTryHitEvent,
+                // before the accuracy roll) fails against a cantsuppress,
+                // Simple or Truant target; onHit runs setAbility('simple').
+                // A Substitute stops it in the hit loop, after the roll
+                // (data/conditions.ts substitute onTryPrimaryHit).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Simple_Beam_(move)>
+                let Some((ts, tslot)) = opp_target else { return };
+                let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
+                if ps_cantsuppress(cur) || cur == data::ability_id::SIMPLE || cur == data::ability_id::TRUANT {
+                    self.ps_status_failed();
+                    return;
+                }
+                if !self.rolled_accuracy_passed(m) { return; }
+                let behind_sub = self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
+                if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::SIMPLE) {
+                    self.ps_status_failed();
+                }
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced
@@ -15759,6 +15812,25 @@ self.trigger_emergency_exits();
             }
         }
     }
+}
+
+/// PS `pokemon.ability`: the current ability, whether or not it is
+/// suppressed (Gastro Acid, Neutralizing Gas).
+fn current_ability(m: &Pokemon) -> u16 {
+    if m.ability_override != u16::MAX { m.ability_override } else { m.ability_id }
+}
+
+/// Abilities with PS's `cantsuppress` flag (data/abilities.ts at a5df8274,
+/// Champions dex). Neutralizing Gas is not among them.
+fn ps_cantsuppress(a: u16) -> bool {
+    use data::ability_id as A;
+    matches!(
+        a,
+        A::ASONEGLASTRIER | A::ASONESPECTRIER | A::BATTLEBOND | A::COMATOSE | A::DISGUISE
+            | A::GULPMISSILE | A::ICEFACE | A::MULTITYPE | A::POWERCONSTRUCT | A::RKSSYSTEM
+            | A::SCHOOLING | A::SHIELDSDOWN | A::STANCECHANGE | A::TERASHIFT | A::ZENMODE
+            | A::ZEROTOHERO
+    )
 }
 
 /// Per-slug self-target stat-boost table for boosting status moves.
