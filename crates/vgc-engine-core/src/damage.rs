@@ -2097,6 +2097,15 @@ pub(crate) fn calculate_damage_with_bp(
         a = (a * 2).max(1);
     }
 
+    // Light Ball — PS `data/items.ts:lightball` onModifyAtk / onModifySpA
+    // chainModify(2) when the holder's base species is Pikachu (any forme).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Light_Ball>.
+    if attacker.effective_item_id() == data::item_id::LIGHTBALL
+        && attacker.species().slug.starts_with("pikachu")
+    {
+        a = (a * 2).max(1);
+    }
+
     // Marvel Scale — PS `data/abilities.ts:marvelscale`:
     //   onModifyDef(def, pokemon) {
     //     if (pokemon.status) return this.chainModify(1.5);
