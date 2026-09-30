@@ -7195,6 +7195,20 @@ self.trigger_emergency_exits();
             }
         }
 
+        // Drain — heal the attacker for `round(damage * num/den)`
+        // of the HP damage just applied. PS sim/battle.ts:2173
+        // (`this.gen > 4`): `Math.round(targetDamage * drain[0] / drain[1])`.
+        // Per-target heal (spread drain moves like Matcha Gotcha
+        // tick once per target); sub-absorbed hits are skipped —
+        // PS's `targetDamage` is non-zero on sub absorption but
+        // the engine doesn't expose that signal here yet, and the
+        // common case (single-target drain into a live mon) is
+        // exact. Liquid Ooze flip not modelled (rare ability).
+        // Big Root +30% boost also deferred. It heals inside PS's
+        // spreadDamage, so before the secondaries and the onDamagingHit
+        // reactions (Rocky Helmet, Rough Skin).
+        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, hp_lost);
+
         // Destiny Bond — if this hit fainted a holder of the volatile,
         // the attacker faints too (PS onFaint). Fires after the damage /
         // item hooks above so the target's faint state is settled.
@@ -7234,18 +7248,6 @@ self.trigger_emergency_exits();
             apply_secondary_effect(self, ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m.slug, &mut rng);
             self.rng = rng;
         }
-
-        // Drain — heal the attacker for `round(damage * num/den)`
-        // of the HP damage just applied. PS sim/battle.ts:2173
-        // (`this.gen > 4`): `Math.round(targetDamage * drain[0] / drain[1])`.
-        // Per-target heal (spread drain moves like Matcha Gotcha
-        // tick once per target); sub-absorbed hits are skipped —
-        // PS's `targetDamage` is non-zero on sub absorption but
-        // the engine doesn't expose that signal here yet, and the
-        // common case (single-target drain into a live mon) is
-        // exact. Liquid Ooze flip not modelled (rare ability).
-        // Big Root +30% boost also deferred.
-        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, hp_lost);
 
         // PS stops a multi-hit move the moment the target faints
         // (battle-actions.ts:888 / :971). A Substitute that broke
@@ -27736,6 +27738,27 @@ mod tests {
             "Drain Punch heal off: dealt={} healed={} expected≈{} diff={}",
             dmg_dealt, healed, expected, diff
         );
+    }
+
+    #[test]
+    fn drain_heals_before_rocky_helmet_hits_back() {
+        // PS sim/battle.ts:2170 heals the drain inside spreadDamage, right
+        // after the damage; Rocky Helmet is an onDamagingHit handler that
+        // runs later (sim/battle-actions.ts:1121). A near-full attacker is
+        // capped at full by the drain first, then loses 1/6.
+        use crate::rng::RngEvent;
+        let p1 = TeamBuilder::from_json(r#"[{"species":"golisopod","level":50,"ability":"emergencyexit","nature":"adamant","moves":["leechlife"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"incineroar","level":50,"ability":"blaze","item":"rockyhelmet","nature":"careful","moves":["protect"]}]"#).unwrap();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 1 },
+            Rng::oracle_partial(vec![RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(15)], 3), p1, p2);
+        let max = b.p1.team[0].stats.hp;
+        b.p1.team[0].current_hp = max - 5;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Leech Life landed");
+        assert_eq!(b.p1.team[0].current_hp, max - max / 6);
     }
 
     #[test]
