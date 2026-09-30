@@ -788,3 +788,24 @@ fn status_secondaries_match_ps_data() {
         assert_eq!(status_secondary(slug, true), want, "{slug}");
     }
 }
+
+#[test]
+fn flinch_chances_match_ps_data() {
+    // PS data/moves.ts `secondary: { chance, volatileStatus: 'flinch' }`.
+    for (slug, want) in [
+        ("zenheadbutt", 20),
+        ("extrasensory", 10),
+        ("hyperfang", 10),
+        ("snore", 30),
+        ("rollingkick", 30),
+        ("steamroller", 30),
+        ("zingzap", 30),
+        ("iciclecrash", 30),
+        ("mountaingale", 30),
+        ("skyattack", 30),
+        ("rockslide", 30),
+        ("darkpulse", 20),
+    ] {
+        assert_eq!(flinch_chance(slug, true), Some(want), "{slug}");
+    }
+}
