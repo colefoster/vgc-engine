@@ -1600,6 +1600,18 @@ mod tests {
     }
 
     #[test]
+    fn sniper_is_part_of_the_modify_damage_chain() {
+        // PS data/abilities.ts sniper: onModifyDamage chainModify(1.5) on a
+        // crit — applied with the ModifyDamage chain after the random roll,
+        // not next to the crit multiplier. PS champions sim row for a real
+        // gate hit (bf-gate/ps_calc.js).
+        let atk = QuickMon::parse("Inteleon @ Scope Lens / Sniper / Timid / 252 HP / 252 Atk / 252 SpA").unwrap();
+        let def = QuickMon::parse("Metagross-Mega / Adamant / 12 HP / 252 Atk / 252 Spe").unwrap();
+        let crit = calc(&atk, &def, "snipeshot", Field::terrain(Terrain::Grassy)).unwrap().crit.unwrap();
+        assert_eq!(crit.rolls, [148, 150, 150, 153, 154, 157, 157, 159, 162, 163, 166, 166, 168, 171, 172, 175]);
+    }
+
+    #[test]
     fn alias_resolution() {
         assert_eq!(resolve_species("chomp").unwrap(), "garchomp");
         assert_eq!(resolve_species("lando").unwrap(), "landorustherian");
