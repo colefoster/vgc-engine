@@ -388,3 +388,25 @@ fn rage_fist_gains_fifty_power_per_hit_taken() {
     let (fresh, after_two) = (run(1), run(0));
     assert!(after_two * 2 > fresh * 3, "150 BP ({after_two}, or a KO) vs 50 BP ({fresh})");
 }
+
+#[test]
+fn storm_throw_always_crits_without_a_crit_roll() {
+    // PS data/moves.ts stormthrow `willCrit: true`: getDamage sets
+    // moveHit.crit without drawing (sim/battle-actions.ts:1638), so the hit
+    // ignores the target's Def boost.
+    let run = |def_boost: i8| {
+        let mut b = singles(
+            r#"[{"species":"throh","level":50,"ability":"guts","moves":["stormthrow"]}]"#,
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+            9,
+        );
+        b.p2.team[0].boosts[1] = def_boost;
+        b.set_rng(crate::rng::Rng::recording(9));
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+        let crit_draws = b.rng.recording_log().unwrap().iter().filter(|e| e.key.decision == crate::rng::RngDecision::Crit).count();
+        (b.p2.team[0].stats.hp - b.p2.team[0].current_hp, crit_draws)
+    };
+    let (plain, draws) = run(0);
+    assert_eq!(draws, 0);
+    assert_eq!(run(6).0, plain, "a crit ignores +6 Def");
+}
