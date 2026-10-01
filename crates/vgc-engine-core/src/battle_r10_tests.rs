@@ -166,3 +166,21 @@ fn life_orb_recoil_after_a_disguise_hit() {
     assert!(b.p2.team[0].disguise_busted);
     assert_eq!(b.p1.team[0].current_hp, max - max / 10);
 }
+
+#[test]
+fn burning_jealousy_burns_a_target_whose_stats_rose_this_turn() {
+    // PS data/moves.ts burningjealousy secondary onHit: trySetStatus('brn')
+    // when target.statsRaisedThisTurn (set by sim/battle.ts boost, cleared
+    // at endTurn). Study 63ba3973ec (Calm Mind, then Burning Jealousy).
+    let run = |foe_move: &str| {
+        let mut b = singles(
+            r#"[{"species":"torkoal","level":50,"ability":"drought","moves":["burningjealousy"]}]"#,
+            &format!(r#"[{{"species":"floette","level":50,"ability":"flowerveil","moves":["{foe_move}"]}}]"#),
+            3,
+        );
+        b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+        b.p2.team[0].status
+    };
+    assert!(matches!(run("calmmind"), Status::Burn));
+    assert!(matches!(run("splash"), Status::None));
+}

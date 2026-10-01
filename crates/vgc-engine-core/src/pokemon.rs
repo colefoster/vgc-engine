@@ -675,6 +675,10 @@ pub struct Pokemon {
     /// paralysed action counts). Fake Out and Mat Block need it to be 1.
     #[serde(default)]
     pub move_actions: u8,
+    /// PS `statsRaisedThisTurn`: a boost raised a stat this turn
+    /// (sim/battle.ts boost; cleared at endTurn). Burning Jealousy reads it.
+    #[serde(default)]
+    pub stats_raised_this_turn: bool,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -1014,6 +1018,7 @@ impl Pokemon {
             fainted: false,
             turns_active: 0,
             move_actions: 0,
+            stats_raised_this_turn: false,
             last_used_move_slot: 255,
             last_used_move_target: 255,
             boosted_stat: 255,
