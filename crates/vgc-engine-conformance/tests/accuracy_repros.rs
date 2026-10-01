@@ -347,3 +347,11 @@ fn a_traced_ability_reverts_on_switch_out() {
 fn a_traced_inner_focus_blocks_intimidate() {
     assert_matches_ps("study-7e05dfe023-traced-inner-focus");
 }
+
+/// Study battle 5111885ee2: a Water Bubble gained by Entrainment halves the
+/// Fire attack and doubles the holder's Water attacks (the damage calc reads
+/// the current ability).
+#[test]
+fn an_entrained_water_bubble_applies_in_the_damage_calc() {
+    assert_matches_ps("study-5111885ee2-entrained-water-bubble");
+}

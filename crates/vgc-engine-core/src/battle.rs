@@ -1544,7 +1544,7 @@ impl Battle {
             // all Tatsugiri formes share national-dex num 978.
             let (is_commander_tatsu, commanding) = match self.side(side).active_mon(slot as usize) {
                 Some(m) => (
-                    m.ability_id == data::ability_id::COMMANDER
+                    m.effective_ability_id() == data::ability_id::COMMANDER
                         && data::SPECIES[m.species_id as usize].num == 978,
                     m.commanding,
                 ),
@@ -2302,7 +2302,7 @@ self.trigger_emergency_exits();
             );
             let filtered = self.side(tside).active_mon(tslot as usize).is_some_and(|d| {
                 d.item_id == data::item_id::COVERTCLOAK
-                    || (d.ability_id == data::ability_id::SHIELDDUST && !breaks_mold)
+                    || (d.effective_ability_id() == data::ability_id::SHIELDDUST && !breaks_mold)
             });
             if filtered {
                 return 0;
@@ -5428,7 +5428,7 @@ self.trigger_emergency_exits();
         {
             // Effective priority — mirror order.rs's integer bumps.
             let mut eff_priority = m.priority as i32;
-            if m.category == 2 && attacker.ability_id == data::ability_id::PRANKSTER {
+            if m.category == 2 && attacker.effective_ability_id() == data::ability_id::PRANKSTER {
                 eff_priority += 1;
             }
             if move_id == data::move_id::GRASSYGLIDE
@@ -5464,7 +5464,7 @@ self.trigger_emergency_exits();
                 };
                 if targets_protected_side {
                     let attacker_breaks_mold = matches!(
-                        attacker.ability_id,
+                        attacker.effective_ability_id(),
                         data::ability_id::MOLDBREAKER
                             | data::ability_id::TERAVOLT
                             | data::ability_id::TURBOBLAZE
@@ -5867,7 +5867,7 @@ self.trigger_emergency_exits();
         // can't also carry a type-changing ability, so the only unmodeled edge
         // is Weather Ball's weather-typing. Not breakable. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Overgrow_(Ability)> et al.
-        let pinch_type = match attacker.ability_id {
+        let pinch_type = match attacker.effective_ability_id() {
             data::ability_id::OVERGROW => Some(4u8), // Grass
             data::ability_id::BLAZE => Some(1),      // Fire
             data::ability_id::TORRENT => Some(2),    // Water
@@ -5913,7 +5913,7 @@ self.trigger_emergency_exits();
         // PS data/abilities.ts:hadronengine `onModifyAtk` is misnamed in
         // the file — the real handler is `onModifySpA`. Same chainModify
         // shape as Orichalcum Pulse on Atk.
-        let attacker_ability_id = attacker.ability_id;
+        let attacker_ability_id = attacker.effective_ability_id();
         // Mold Breaker / Teravolt / Turboblaze — the attacker's
         // damaging moves bypass defender abilities flagged
         // `breakable: 1`. PS sets `move.ignoreAbility = true` in the
@@ -6082,7 +6082,7 @@ self.trigger_emergency_exits();
                     && self
                         .side(ts)
                         .active_mon(tsl as usize)
-                        .is_some_and(|d| d.is_alive() && d.ability_id == data::ability_id::FLASHFIRE)
+                        .is_some_and(|d| d.is_alive() && d.effective_ability_id() == data::ability_id::FLASHFIRE)
             });
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
@@ -6491,7 +6491,7 @@ self.trigger_emergency_exits();
             // attacker bypasses. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Telepathy_(Ability)>.
             if tside == actor_side && tslot != actor_slot {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::TELEPATHY && !attacker_breaks_mold {
                     continue;
                 }
@@ -6511,7 +6511,7 @@ self.trigger_emergency_exits();
             // plumbing — tracked for a follow-up. Brambleghast signature.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Wind_Rider_(Ability)>.
             if m.is_wind {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::WINDRIDER && !attacker_breaks_mold {
                     // Self-boost (+1 Atk) on absorbing a wind move.
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
@@ -6525,7 +6525,7 @@ self.trigger_emergency_exits();
             // return null on Electric-type moves and apply their effect.
             // Electric type code = 3. Mold Breaker honored.
             if m.type_ == 3 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if !attacker_breaks_mold {
                     match def_ability {
                         data::ability_id::MOTORDRIVE => {
@@ -6569,7 +6569,7 @@ self.trigger_emergency_exits();
             // Lumineon. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
             if m.type_ == 2 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::STORMDRAIN && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                     continue;
@@ -6584,7 +6584,7 @@ self.trigger_emergency_exits();
             // `flags: { breakable: 1 }` — Mold Breaker bypasses.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
             if m.type_ == 1 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::FLASHFIRE && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         d.volatiles.add(crate::pokemon::Volatile {
@@ -6621,7 +6621,7 @@ self.trigger_emergency_exits();
             // same — Flying defenders skip damage anyway.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Earth_Eater_(Ability)>.
             if m.type_ == 8 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::EARTHEATER && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         let heal = (d.stats.hp / 4).max(1);
@@ -6643,7 +6643,7 @@ self.trigger_emergency_exits();
             // self-check is implicit. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Soundproof_(Ability)>.
             if is_sound_move(m.slug) {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::SOUNDPROOF && !attacker_breaks_mold {
                     continue;
                 }
@@ -6659,7 +6659,7 @@ self.trigger_emergency_exits();
             // PS `flags.bullet`. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Bulletproof_(Ability)>.
             if m.is_bullet {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::BULLETPROOF && !attacker_breaks_mold {
                     continue;
                 }
@@ -6674,7 +6674,7 @@ self.trigger_emergency_exits();
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>,
             //             <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
             if m.type_ == 2 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if matches!(def_ability, data::ability_id::WATERABSORB | data::ability_id::DRYSKIN) && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
                         let heal = (d.stats.hp / 4).max(1);
@@ -6690,7 +6690,7 @@ self.trigger_emergency_exits();
             // damage, no secondaries). Goodra / Azumarill HA fallback.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sap_Sipper_(Ability)>.
             if m.type_ == 4 {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::SAPSIPPER && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
                     continue;
@@ -6719,7 +6719,7 @@ self.trigger_emergency_exits();
             // signature. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Wonder_Guard_(Ability)>.
             {
-                let def_ability = defender.ability_id;
+                let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::WONDERGUARD
                     && !attacker_breaks_mold
                     && move_id != data::move_id::STRUGGLE
@@ -7406,7 +7406,7 @@ self.trigger_emergency_exits();
                 life_orb,
                 physical_move,
                 special_move,
-                defender_ability_id: defender.ability_id,
+                defender_ability_id: defender.effective_ability_id(),
                 attacker_breaks_mold,
             };
             let pipeline =
@@ -7441,7 +7441,7 @@ self.trigger_emergency_exits();
             //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
             let mut hits: u32 = 1;
             if m.multihit_min > 0 && dmg > 0 {
-                let skill_link = attacker.ability_id == data::ability_id::SKILLLINK;
+                let skill_link = attacker.effective_ability_id() == data::ability_id::SKILLLINK;
                 let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
                 hits = if m.multihit_min == m.multihit_max {
                     // Fixed multihit (Double Hit = 2, Population Bomb = 10).
@@ -7831,7 +7831,7 @@ self.trigger_emergency_exits();
         special_move: bool,
         atk_stats_ovr: &mut crate::pokemon::FinalStats,
     ) {
-        let attacker_ability_id = attacker.ability_id;
+        let attacker_ability_id = attacker.effective_ability_id();
         if attacker_ability_id == data::ability_id::HADRONENGINE
             && special_move
             && matches!(self.terrain, crate::terrain::Terrain::Electric)
@@ -7899,7 +7899,7 @@ self.trigger_emergency_exits();
         will_act: bool,
     ) {
         // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
-        let prankster_boosted = attacker.ability_id == data::ability_id::PRANKSTER;
+        let prankster_boosted = attacker.effective_ability_id() == data::ability_id::PRANKSTER;
         let opposing_targeting = is_targeting_move(m.target);
         if prankster_boosted && opposing_targeting {
             let opp = actor_side.opposing();
@@ -7933,7 +7933,7 @@ self.trigger_emergency_exits();
         }
         // Psychic Terrain — PS data/moves.ts:psychicterrain onTryHit.
         let eff_priority = m.priority as i32
-            + if attacker.ability_id == data::ability_id::PRANKSTER { 1 } else { 0 };
+            + if attacker.effective_ability_id() == data::ability_id::PRANKSTER { 1 } else { 0 };
         if eff_priority > 0
             && matches!(self.terrain, crate::terrain::Terrain::Psychic)
             && is_targeting_move(m.target)
@@ -7976,7 +7976,7 @@ self.trigger_emergency_exits();
             // move.ignoreAbility for Status). This block only runs for
             // Status moves.
             let attacker_breaks_mold = matches!(
-                attacker.ability_id,
+                attacker.effective_ability_id(),
                 data::ability_id::MOLDBREAKER
                     | data::ability_id::TERAVOLT
                     | data::ability_id::TURBOBLAZE
@@ -8257,7 +8257,7 @@ self.trigger_emergency_exits();
                 .side(ctx.tside)
                 .active_mon(ctx.tslot as usize)
             {
-                Some(d) => (d.ability_id, d.current_hp, d.stats.hp),
+                Some(d) => (d.effective_ability_id(), d.current_hp, d.stats.hp),
                 None => (u16::MAX, 0, 0),
             };
             if def_ability == data::ability_id::STURDY
@@ -8413,7 +8413,7 @@ self.trigger_emergency_exits();
         if ctx.move_id == data::move_id::KNOCKOFF {
             let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
                 .is_some_and(|m| m.is_alive()
-                    && m.ability_id != data::ability_id::STICKYHOLD
+                    && m.effective_ability_id() != data::ability_id::STICKYHOLD
                     && !m.holds_own_mega_stone());
             if can_knock {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
@@ -8435,7 +8435,7 @@ self.trigger_emergency_exits();
             if let (true, Some(berry)) = (user_alive, berry) {
                 if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                     t.item_id = u16::MAX;
-                    if t.is_alive() && t.ability_id == data::ability_id::UNBURDEN {
+                    if t.is_alive() && t.effective_ability_id() == data::ability_id::UNBURDEN {
                         t.unburden_active = true;
                     }
                 }
@@ -9427,7 +9427,7 @@ self.trigger_emergency_exits();
                                 (0..s.num_types as usize).any(|i| s.types[i] == 4);
                             if grass_attacker
                                 || attacker.item_id == data::item_id::SAFETYGOGGLES
-                                || attacker.ability_id == data::ability_id::OVERCOAT
+                                || attacker.effective_ability_id() == data::ability_id::OVERCOAT
                             {
                                 blocked = true;
                             }
@@ -9502,12 +9502,12 @@ self.trigger_emergency_exits();
             // `breakable`, which Mold Breaker bypasses). Gated on Status
             // category since this block also runs for damaging moves.
             let attacker_breaks_mold = matches!(
-                attacker.ability_id,
+                attacker.effective_ability_id(),
                 data::ability_id::MOLDBREAKER
                     | data::ability_id::TERAVOLT
                     | data::ability_id::TURBOBLAZE
             ) || (m.category == 2
-                && attacker.ability_id == data::ability_id::MYCELIUMMIGHT);
+                && attacker.effective_ability_id() == data::ability_id::MYCELIUMMIGHT);
             if let (Some(want), false) = (want_ability, attacker_breaks_mold) {
                 let orig = targets[0];
                 let n = self.format().active_count() as u8;
@@ -12978,7 +12978,7 @@ self.trigger_emergency_exits();
                                 // Overcoat — PS `data/abilities.ts:overcoat`
                                 // same `onImmunity` block. Bulbapedia:
                                 // <https://bulbapedia.bulbagarden.net/wiki/Safety_Goggles>.
-                                if matches!(m.ability_id,
+                                if matches!(m.effective_ability_id(),
                                     data::ability_id::SANDFORCE | data::ability_id::SANDRUSH
                                         | data::ability_id::SANDVEIL | data::ability_id::OVERCOAT)
                                     || m.item_id == data::item_id::SAFETYGOGGLES
@@ -13319,7 +13319,7 @@ self.trigger_emergency_exits();
                         // Bronzong / Camerupt. Mold-Breaker doesn't apply
                         // here (no attacker on a residual). Bulbapedia:
                         // <https://bulbapedia.bulbagarden.net/wiki/Heatproof_(Ability)>.
-                        let heatproof = m.ability_id == data::ability_id::HEATPROOF;
+                        let heatproof = m.effective_ability_id() == data::ability_id::HEATPROOF;
                         // Poison Heal — PS `data/abilities.ts:3286`:
                         //   onDamage(damage, target, source, effect) {
                         //     if (effect.id === 'psn' || effect.id === 'tox') {
@@ -14795,7 +14795,7 @@ self.trigger_emergency_exits();
                     .side(actor_side)
                     .active_mon(actor_slot as usize)
                     .is_some_and(|a| matches!(
-                        a.ability_id,
+                        a.effective_ability_id(),
                         data::ability_id::MOLDBREAKER
                             | data::ability_id::TERAVOLT
                             | data::ability_id::TURBOBLAZE

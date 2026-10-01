@@ -24,10 +24,10 @@ use vgc_engine_data as data;
 /// True iff the attacker's ability is Sheer Force. Inlined here so the
 /// damage calculation stays pure (no battle-state lookup).
 pub(crate) fn attacker_has_sheer_force(mon: &Pokemon) -> bool {
-    if mon.ability_id == u16::MAX {
+    if mon.effective_ability_id() == u16::MAX {
         return false;
     }
-    mon.ability_id == data::ability_id::SHEERFORCE
+    mon.effective_ability_id() == data::ability_id::SHEERFORCE
 }
 
 /// True iff this move is boosted by Sheer Force on a Sheer Force user —
@@ -733,7 +733,7 @@ pub fn move_type_in_ctx(
         )
         && !(move_id == data::move_id::TERABLAST && attacker.terastallized)
     {
-        match attacker.ability_id {
+        match attacker.effective_ability_id() {
             data::ability_id::AERILATE => return 9,
             data::ability_id::PIXILATE => return 17,
             data::ability_id::REFRIGERATE => return 5,
@@ -755,7 +755,7 @@ fn base_move_type_in_ctx(
     // sound move becomes Water. Gated on the sound flag (not Normal-type), so
     // it precedes the type-specific branches below; none of Tera Blast /
     // Weather Ball / Terrain Pulse is a sound move, so there is no conflict.
-    if m.is_sound && attacker.ability_id == data::ability_id::LIQUIDVOICE {
+    if m.is_sound && attacker.effective_ability_id() == data::ability_id::LIQUIDVOICE {
         return 2; // Water
     }
     if matches!(move_id, data::move_id::TERABLAST | data::move_id::TERASTARSTORM) {
@@ -1206,7 +1206,7 @@ pub(crate) fn calculate_damage_with_bp(
     // exclusive with the -ate abilities (one ability per mon). Primarina
     // signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Liquid_Voice_(Ability)>.
-    if m.is_sound && attacker.ability_id == data::ability_id::LIQUIDVOICE {
+    if m.is_sound && attacker.effective_ability_id() == data::ability_id::LIQUIDVOICE {
         move_type = 2; // Water
     }
 
@@ -1241,7 +1241,7 @@ pub(crate) fn calculate_damage_with_bp(
     // <https://bulbapedia.bulbagarden.net/wiki/Aerilate_(Ability)> et al.
     let mut ate_boost = false;
     if move_type == 0 // Normal
-        && attacker.ability_id != u16::MAX
+        && attacker.effective_ability_id() != u16::MAX
         && !matches!(
             move_id,
             data::move_id::JUDGMENT | data::move_id::MULTIATTACK
@@ -1251,7 +1251,7 @@ pub(crate) fn calculate_damage_with_bp(
         )
         && !(move_id == data::move_id::TERABLAST && attacker.terastallized)
     {
-        let ate_type: Option<u8> = match attacker.ability_id {
+        let ate_type: Option<u8> = match attacker.effective_ability_id() {
             data::ability_id::AERILATE => Some(9),    // Flying
             data::ability_id::PIXILATE => Some(17),   // Fairy
             data::ability_id::REFRIGERATE => Some(5), // Ice
@@ -1342,8 +1342,8 @@ pub(crate) fn calculate_damage_with_bp(
     // Scizor-Mega signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Technician_(Ability)>.
     if apply_modifier(bp, bp_mod) <= 60
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::TECHNICIAN
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::TECHNICIAN
     {
         bp_mod = chain_modify(bp_mod, 3, 2);
     }
@@ -1359,8 +1359,8 @@ pub(crate) fn calculate_damage_with_bp(
     // between Technician (30) and the -ate ×1.2 (23). No Champions override.
     // Pyroar / Haxorus / Nidoking signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Rivalry_(Ability)>.
-    if attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::RIVALRY
+    if attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::RIVALRY
     {
         let known = |g| matches!(g, data::Gender::Male | data::Gender::Female);
         let (ag, dg) = (attacker.gender, defender.gender);
@@ -1400,8 +1400,8 @@ pub(crate) fn calculate_damage_with_bp(
     // offensive ability). No Champions override. Starmie / Magnezone signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Analytic_(Ability)>.
     if ctx.attacker_moves_last
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::ANALYTIC
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::ANALYTIC
     {
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
@@ -1476,8 +1476,8 @@ pub(crate) fn calculate_damage_with_bp(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sand_Force_(Ability)>.
     if matches!(ctx.weather, crate::weather::Weather::Sand)
         && matches!(move_type, 8 | 12 | 16)
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::SANDFORCE
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::SANDFORCE
     {
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
@@ -1488,8 +1488,8 @@ pub(crate) fn calculate_damage_with_bp(
     // Hitmonchan / Conkeldurr. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Iron_Fist_(Ability)>.
     if m.is_punch
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::IRONFIST
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::IRONFIST
     {
         bp_mod = chain_modify(bp_mod, 4915, 4096);
     }
@@ -1545,8 +1545,8 @@ pub(crate) fn calculate_damage_with_bp(
     // boost is handled by the status-move path, not here.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Mega_Launcher_(Ability)>.
     if m.is_pulse
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::MEGALAUNCHER
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::MEGALAUNCHER
     {
         bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
@@ -1556,8 +1556,8 @@ pub(crate) fn calculate_damage_with_bp(
     // `flags.bite`. Hydreigon / Mega Sharpedo / Krookodile (HA).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Strong_Jaw_(Ability)>.
     if m.is_bite
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::STRONGJAW
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::STRONGJAW
     {
         bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
@@ -1572,8 +1572,8 @@ pub(crate) fn calculate_damage_with_bp(
     // offensive ability. Kingambit / Gallade / Samurott-Hisui signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sharpness_(Ability)>.
     if m.is_slicing
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::SHARPNESS
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::SHARPNESS
     {
         bp_mod = chain_modify(bp_mod, 6144, 4096);
     }
@@ -1584,8 +1584,8 @@ pub(crate) fn calculate_damage_with_bp(
     // / Crawdaunt / Binacle line. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Tough_Claws_(Ability)>.
     if move_makes_contact(m, attacker)
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::TOUGHCLAWS
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::TOUGHCLAWS
     {
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
@@ -1599,8 +1599,8 @@ pub(crate) fn calculate_damage_with_bp(
     // normally see its own teammates faint between its switch-in and its
     // own move). Kingambit signature, 24.5% usage per Smogon 2026-05.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Supreme_Overlord_(Ability)>.
-    if attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::SUPREMEOVERLORD
+    if attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::SUPREMEOVERLORD
     {
         let fallen = (ctx.attacker_total_fainted_allies as usize).min(5);
         const POW_MOD: [u32; 6] = [4096, 4506, 4915, 5325, 5734, 6144];
@@ -1617,8 +1617,8 @@ pub(crate) fn calculate_damage_with_bp(
     // Kick miss penalty) is not modelled yet, so skipped.
     // Emboar / Staraptor / Pawmot use this.
     if m.recoil_num > 0
-        && attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::RECKLESS
+        && attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::RECKLESS
     {
         bp_mod = chain_modify(bp_mod, 4915, 4096);
     }
@@ -2251,8 +2251,8 @@ pub(crate) fn calculate_damage_with_bp(
     // regardless of the actual field weather. Keyed on the ATTACKER so it only
     // affects this user's moves, not damage it takes. (Out of scope here:
     // Solar Beam's skipped charge / Chlorophyll / Growth — non-damage effects.)
-    let effective_weather = if attacker.ability_id != u16::MAX
-        && attacker.ability_id == data::ability_id::MEGASOL
+    let effective_weather = if attacker.effective_ability_id() != u16::MAX
+        && attacker.effective_ability_id() == data::ability_id::MEGASOL
     {
         crate::weather::Weather::Sun
     } else {
@@ -2329,8 +2329,8 @@ pub(crate) fn calculate_damage_with_bp(
             && attacker.tera_type != 255
             && attacker.tera_type == move_type
             && base_has_move_type;
-        let adaptability = attacker.ability_id != u16::MAX
-            && attacker.ability_id == data::ability_id::ADAPTABILITY;
+        let adaptability = attacker.effective_ability_id() != u16::MAX
+            && attacker.effective_ability_id() == data::ability_id::ADAPTABILITY;
         if tera_boosted_stab {
             if adaptability {
                 // ×2.25 = 9/4. PS returns 2.25 from onModifySTAB (modify).
