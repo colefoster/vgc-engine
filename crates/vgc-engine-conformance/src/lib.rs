@@ -183,7 +183,7 @@ pub struct SideState {
 /// One recorded randomized outcome. `value` is the RAW PS value (bool for
 /// crit; 0..15 for damage; 0..99 roll or bool for accuracy/secondary; etc.);
 /// the runner applies the contract's representation flips.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DrawRecord {
     pub turn: u32,
     #[serde(default)]

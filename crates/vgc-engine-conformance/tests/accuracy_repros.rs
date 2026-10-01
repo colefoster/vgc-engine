@@ -281,3 +281,190 @@ fn roost_heals_half_rounded() {
 fn a_replaced_stamina_does_not_trigger() {
     assert_matches_ps("study-aedae40015-simple-beam-stamina");
 }
+
+/// Study battle e57f4e89e3: Moody's two `sample()` picks at the residual are
+/// keyed by holder and ability like any ability roll, so the keyed replay
+/// raises and lowers the same stats as PS.
+#[test]
+fn moody_picks_are_keyed_to_the_holder() {
+    assert_matches_ps("study-e57f4e89e3-moody");
+}
+
+/// Study battle 047cc41478: the leads' Drizzle and Sand Stream fire in Speed
+/// order at battle start (runSwitch's speed-sorted SwitchIn), so the slower
+/// setter's weather is the one on the field.
+#[test]
+fn lead_weather_setters_fire_in_speed_order() {
+    assert_matches_ps("study-047cc41478-lead-weather-speed-order");
+}
+
+/// Study battle 0355ae7c44: Kingambit's Sucker Punch aimed at a fainted foe
+/// retargets to Gholdengo and checks that mon's queued move (it was
+/// attacking), so Sucker Punch hits.
+#[test]
+fn sucker_punch_checks_the_retargeted_foe() {
+    assert_matches_ps("study-0355ae7c44-sucker-punch-retarget");
+}
+
+/// Study battle e5bcb1085f: Sucker Punch redirected by Rage Powder checks
+/// the Rage Powder user's queued move, not the chosen target's.
+#[test]
+fn sucker_punch_checks_the_redirected_target() {
+    assert_matches_ps("study-e5bcb1085f-sucker-punch-rage-powder");
+}
+
+/// Study battle acb2e577ac: Toxic deals floor(maxhp / 16) * stage, flooring
+/// before the multiply (data/conditions.ts:159).
+#[test]
+fn toxic_floors_the_sixteenth_before_the_stage() {
+    assert_matches_ps("study-acb2e577ac-toxic-rounding");
+}
+
+/// Study battle 43b96379ab: Trace's `sample()` of an adjacent foe is keyed by
+/// holder and ability, so the keyed replay traces the same foe as PS.
+#[test]
+fn trace_pick_is_keyed_to_the_holder() {
+    assert_matches_ps("study-43b96379ab-trace-pick");
+}
+
+/// Study battle 7e8cd717ef: a Psychic Surge gained by Skill Swap runs its
+/// onStart and sets Psychic Terrain (sim/battle.ts:1311 skillSwap).
+#[test]
+fn skill_swapped_surge_runs_its_on_start() {
+    assert_matches_ps("study-7e8cd717ef-skill-swap-surge");
+}
+
+/// Study battle 3517310941: a traced ability is lost when the Tracer switches
+/// out (setAbility changes `ability`, not `baseAbility`).
+#[test]
+fn a_traced_ability_reverts_on_switch_out() {
+    assert_matches_ps("study-3517310941-trace-reverts-on-switch");
+}
+
+/// Study battle 7e05dfe023: Mega Alakazam's Trace on Mega Evolution, then
+/// Gardevoir's traced Inner Focus blocks Incineroar's Intimidate.
+#[test]
+fn a_traced_inner_focus_blocks_intimidate() {
+    assert_matches_ps("study-7e05dfe023-traced-inner-focus");
+}
+
+/// Study battle 5111885ee2: a Water Bubble gained by Entrainment halves the
+/// Fire attack and doubles the holder's Water attacks (the damage calc reads
+/// the current ability).
+#[test]
+fn an_entrained_water_bubble_applies_in_the_damage_calc() {
+    assert_matches_ps("study-5111885ee2-entrained-water-bubble");
+}
+
+/// Study battle 53a95d56c8: Follow Me redirects Parting Shot.
+#[test]
+fn follow_me_redirects_parting_shot() {
+    assert_matches_ps("study-53a95d56c8-follow-me-parting-shot");
+}
+
+/// Study battle bc20b85092: Hypnosis aimed at the foe beside a Magic Bounce
+/// holder is not reflected.
+#[test]
+fn magic_bounce_ignores_a_move_aimed_at_its_partner() {
+    assert_matches_ps("study-bc20b85092-magic-bounce-chosen-target");
+}
+
+/// Study battle 4800ac3963: Explosion faints its user before the hit, so a
+/// replacement comes in at the end of the turn.
+#[test]
+fn explosion_faints_its_user() {
+    assert_matches_ps("study-4800ac3963-explosion-faints-user");
+}
+
+/// Study battle 97bfceddd1: Parting Shot into a protecting Magic Bounce
+/// Hatterene is blocked by Protect, not reflected.
+#[test]
+fn protect_blocks_before_magic_bounce() {
+    assert_matches_ps("study-97bfceddd1-protect-before-magic-bounce");
+}
+
+/// Study battle e81e74426e: Infestation stops chipping once its user faints.
+#[test]
+fn partial_trap_ends_with_its_source() {
+    assert_matches_ps("study-e81e74426e-infestation-source-fainted");
+}
+
+/// Study battle 2a77dad1ee: Leech Seed drains nothing while the seeder's
+/// slot holds a fainted mon.
+#[test]
+fn leech_seed_needs_a_live_seeder_slot() {
+    assert_matches_ps("study-2a77dad1ee-leech-seed-seeder-fainted");
+}
+
+/// Study battle c1480b7942: a Sneasler mirror speed tie. PS shuffles the tie
+/// again in the gen-8+ re-sort before the first move (sim/battle.ts runAction
+/// queue.sort), and the keyed replay applies PS's recorded shuffle there too.
+#[test]
+fn keyed_speed_ties_follow_the_mid_turn_resort() {
+    assert_matches_ps("study-c1480b7942-speed-tie-resort");
+}
+
+/// Study battle 2aac00140c: PS's commitChoices sort runs on pre-Mega Speed
+/// and its tie offsets index PS's own queue (the Mega action included).
+#[test]
+fn keyed_commit_sort_runs_before_mega_evolution() {
+    assert_matches_ps("study-2aac00140c-commit-sort-before-mega");
+}
+
+/// Study battle 4338912265: a commit-time speed tie, then the re-sort before
+/// the first move; both shuffles index PS's queue.
+#[test]
+fn keyed_commit_sort_follows_ps_queue_order() {
+    assert_matches_ps("study-4338912265-commit-sort-order");
+}
+
+/// Study battle 4731c6ae5a: Knock Off into a Rocky Helmet holder; the helmet
+/// damages the attacker (DamagingHit) before Knock Off removes it (AfterHit).
+#[test]
+fn rocky_helmet_fires_before_knock_off_removes_it() {
+    assert_matches_ps("study-4731c6ae5a-knock-off-rocky-helmet");
+}
+
+/// Study battle 12ea08df40: PS's `random(2, 6)` confusion length is keyed as
+/// the offset from 2, the engine's `2 + range(4)`.
+#[test]
+fn two_argument_random_draws_key_as_offsets() {
+    assert_matches_ps("study-12ea08df40-confusion-duration-key");
+}
+
+/// Study battle fb2bf66e3b: a paralyzed Dire Claw user's full-paralysis
+/// check (a bool PS records under the move's range key) must not take Dire
+/// Claw's status pick from the same key.
+#[test]
+fn full_paralysis_gate_does_not_take_dire_claws_pick() {
+    assert_matches_ps("study-fb2bf66e3b-paralysis-gate-key");
+}
+
+/// Study battle 907733b22f: the infatuation check (a bool PS keys under the
+/// attracted mon's move) pairs with PS's outcome, not a stale context.
+#[test]
+fn attract_gate_is_keyed_to_the_infatuated_mon() {
+    assert_matches_ps("study-907733b22f-attract-gate-key");
+}
+
+/// Study battle 1b664d1de5: Triple Axel's later hits read the attacker's
+/// live state (Flame Body's burn from an earlier hit), so the Shell Bell
+/// heal matches PS.
+#[test]
+fn multi_hit_reads_live_stats_each_hit() {
+    assert_matches_ps("study-1b664d1de5-multihit-live-stats");
+}
+
+/// Study battle 622d179172: Dual Wingbeat stops once Rough Skin knocks its
+/// user out (data/mods/champions/scripts.ts hitStepMoveHitLoop).
+#[test]
+fn multi_hit_stops_when_its_user_faints() {
+    assert_matches_ps("study-622d179172-multihit-stops-on-user-faint");
+}
+
+/// Study battle 59e92f3ccd: Swagger's confusion is cured at once by the
+/// target's Lum Berry.
+#[test]
+fn lum_berry_cures_swagger_confusion() {
+    assert_matches_ps("study-59e92f3ccd-lum-berry-confusion");
+}

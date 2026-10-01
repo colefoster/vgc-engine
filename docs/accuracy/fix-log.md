@@ -992,3 +992,172 @@ add or remove no draws.
 | Payback (`b446daf`) | 1139 | 10788/10947 | 985 | 9898/10211 |
 | heal rounding (`cfe66b0`) | 1143 | 10812/10967 | 988 | 9910/10220 |
 | current ability on hit (`2c2ef64`) | **1144 (88.1%)** | **10820/10974** | **990 (76.2%)** | **9925/10233** |
+
+---
+
+# Round 9 (2026-10-01, branch `mechanics-fixes-9`)
+
+Same 1,298 / 1,300-battle sample and PS battles as rounds 5-8; the round-8
+end reproduced exactly (forced-RNG 1144 clean, 10820/10974 turns; seeded
+990 clean, 9925/10233).
+
+Result: forced-RNG fully clean **88.1% → 96.3%** (1144 → 1250), per-turn
+**98.6% → 99.6%** (10820/10974 → 11462/11510); seeded (`ps-rng`) fully
+clean **990 → 1123 (76.2% → 86.4%)**, turns 9925/10233 → 10725/10900.
+Against the round-8 end, 111 forced-RNG battles improved and none
+regressed; 170 seeded battles' first divergent draw moved later and none
+earlier.
+
+## Triage of the 154 diverged forced-RNG battles
+
+Each battle's first divergence was traced to a cause (four parallel triage
+passes over `show.sh`, the PS log and the PS source). Buckets, largest
+first:
+
+| bucket | kind | battles | status after round 9 |
+|---|---|---|---|
+| leads' switch-in handlers run p1a, p1b, p2a, p2b, not by Speed (Surge / weather setters, White Herb) | mechanic | 18 | 14 fixed (`1348ab3`); 3 White Herb + 1 terrain remain |
+| keyed speed ties: the engine consumed only the commit shuffle and on its own move list | harness | 22 | 20 fixed (`77947df`, `c30f490`) |
+| a move's checks read the chosen target, not the retargeted / redirected one (Sucker Punch 9; status moves: Good as Gold, Magic Bounce, Follow Me, a fainted ally 5) | mechanic | 14 | fixed (`57e10c8`, `64bc495`) |
+| abilities and their RNG picks the keyed oracle could not supply: Moody 8, Trace 6 | RNG plumbing | 14 | 12 fixed (`2941fce`, `2350053`) |
+| replaced abilities: a gained ability's onStart (4), Trace / Mummy surviving switch-out (3), reads of the base ability (2) | mechanic | 9 | fixed (`419d6f4`, `d7a25a8`, `91822e3`) |
+| other draws keyed wrongly: `random(m, n)` stored with `m`, paralysis / Attract gates under a stale or shared key, confusion length | harness | 8 | 7 fixed (`edb0981`, `9e8c609`, `dfd5fea`) |
+| repair-pass aliasing (clean in the seeded run) | harness | 6 | all clean now (downstream of the tie / key fixes) |
+| Toxic damage `floor(hp × n / 16)` instead of `floor(hp / 16) × n` | mechanic | 6 | 5 fixed (`a047558`) |
+| Explosion / Self-Destruct never fainted the user | mechanic | 4 | fixed (`49c7e82`) |
+| partial trap / Leech Seed kept going after the source left or fainted | mechanic | 4 | fixed (`3d869ce`) |
+| multi-hit: per-hit damage from move-start snapshots; kept hitting after the user fainted | mechanic | 4 | 2 fixed (`137f489`) |
+| Knock Off removed Rocky Helmet before it fired | mechanic | 3 | fixed (`0601d19`) |
+| pairs: Lum Berry vs confusion, Friend Guard mid-spread, Sitrus after sand chip, Weather Ball vs Mega Sol, Transform's moves, Trick vs Mega Stone, Toxic Debris hit by an ally, Surge Surfer, Parental Bond | mechanic | 18 | Lum Berry fixed (`70a0d35`); 16 remain |
+| one each: Mirror Armor → Competitive, Champions Encore retarget, Aromatic Mist, Solar Power order, Mental Herb vs Disable, Stone Axe + Life Orb KO, Shield Dust vs Fake Out, Life Orb vs Disguise, Sap Sipper / Soundproof / Oblivious status-move gates, Burning Jealousy, Harvest, Sitrus on switch-in | mechanic | 14 | remain |
+| duplicate species name in the log (Palafin and Palafin-Hero) | harness | 2 | remain |
+| Struggle under Encore (Champions Fake Out) | out of scope | 4 | remain (owner decision) |
+| unexplained at triage | unknown | 4 | all clean now |
+| **total** | | **154** | **106 fixed, 48 remain** |
+
+## Fixes
+
+| commit | change | PS reference | tests |
+|---|---|---|---|
+| `2941fce` | Moody's picks keyed as ability draws; the harness recovers residual ability `sample()`s from the raw trace | `data/abilities.ts:2701` | study `e57f4e89e3` |
+| `5d53be7` | `ps-rng`: a mon locked into a two-turn move draws no resolveAction target | `sim/side.ts:675-688` | `ps-rng` unit |
+| `1348ab3` | Leads' SwitchIn handlers in Speed order, items after abilities | `sim/battle-actions.ts:172-184` | unit; study `047cc41478` |
+| `57e10c8` | Sucker Punch / Upper Hand check the retargeted / redirected target | `sim/battle.ts:2437-2487`; `data/moves.ts` suckerpunch | unit; studies `0355ae7c44`, `e5bcb1085f` |
+| `a047558` | Toxic floors the sixteenth before the stage multiply | `data/conditions.ts:159` | unit (one old test corrected); study `acb2e577ac` |
+| `2350053` | Trace's pick keyed as an ability draw (battle start included) | `data/abilities.ts:5143` | study `43b96379ab` |
+| `419d6f4` | Skill Swap / Role Play / Trace run the gained ability's onStart | `sim/pokemon.ts:1943`; `sim/battle.ts:1311` | 2 unit; study `7e8cd717ef` |
+| `d7a25a8` | Trace / Mummy / Wandering Spirit set the current ability (lost on switch-out); Intimidate, Defiant, Regenerator, Poison Touch read it | `sim/pokemon.ts` setAbility, clearVolatile | 2 unit; studies `3517310941`, `7e05dfe023` |
+| `91822e3` | Hit-time ability checks and the damage calc read the current ability | `data/abilities.ts` soundproof, waterbubble ... | unit; study `5111885ee2` |
+| `64bc495` | Single-target status moves: retarget, keep a fainted ally (fail), redirect; Magic Bounce only on its holder | `sim/battle.ts:2437-2487`; `data/moves.ts` followme | 2 unit; studies `53a95d56c8`, `bc20b85092` |
+| `49c7e82` | Explosion / Self-Destruct / Misty Explosion faint the user before the hit | `sim/battle-actions.ts:500` | unit; study `4800ac3963` |
+| `527363a` | Protect blocks before Magic Bounce reflects | `data/abilities.ts` magicbounce onTryHitPriority | unit; study `97bfceddd1` |
+| `3d869ce` | Partial trap ends without its source; Leech Seed needs a live seeder slot | `data/conditions.ts:238`; `data/moves.ts` leechseed | 2 unit; studies `e81e74426e`, `2a77dad1ee` |
+| `77947df` | Keyed oracle: PS's tie shuffles replayed in the gen-8+ re-sorts | `sim/battle.ts` runAction queue.sort | study `c1480b7942` |
+| `c30f490` | Keyed oracle: PS's commitChoices sort on PS's action list, before switches and Megas | `sim/battle.ts` commitChoices, comparePriority :404 | studies `2aac00140c`, `4338912265` |
+| `0601d19` | Hit order: DamagingHit, Knock Off, pinch berries, Red Card / Eject Button | `data/mods/champions/scripts.ts` spreadMoveHit | 2 unit; study `4731c6ae5a` |
+| `edb0981` | Harness: two-argument `random(m, n)` keyed as offsets from `m` | `data/conditions.ts` confusion onStart | study `12ea08df40` |
+| `9e8c609` | Keyed oracle: the full-paralysis gate drawn apart from the move's range key | `data/mods/champions/conditions.ts:5` | study `fb2bf66e3b` |
+| `dfd5fea` | Keyed oracle: the infatuation gate under its own context | `data/moves.ts:706` | study `907733b22f` |
+| `137f489` | Multi-hit: live boosts / status per hit; stop when the user faints | `data/mods/champions/scripts.ts` hitStepMoveHitLoop | studies `1b664d1de5`, `622d179172` |
+| `70a0d35` | Lum Berry cures confusion; Persim / Lum checked where confusion lands | `data/items.ts` lumberry | unit; study `59e92f3ccd` |
+| `68d5440` | `ps-rng`: the first re-sort's getTarget reads a locked move's target | `sim/battle.ts` getActionSpeed | `ps-rng` unit |
+| `308b481` | `ps-rng`: Champions Curse's getTarget (self / tracksTarget) | `data/mods/champions/moves.ts` curse | `ps-rng` unit |
+| `9a8b075` | `ps-rng`: tied faint replacements draw insertChoice's tie | `sim/battle-queue.ts` insertChoice | `ps-rng` unit |
+| `5de743e` | `ps-rng`: a recharging mon's 'recharge' action redraws a random foe in every getTarget | `sim/battle.ts:2437-2533`; `sim/battle-actions.ts:209` | `ps-rng` unit |
+
+## Default RNG stream changes
+
+`57e10c8` (Sucker Punch / Upper Hand hit or fail differently), `d7a25a8`
+(Poison Touch on a replaced ability; a reverted ability's procs),
+`91822e3` (absorb / immunity / Skill Link on a current ability),
+`64bc495` (retargeted and redirected status moves), `49c7e82` (the user
+leaves), `527363a` (no bounced copy), `0601d19` (helmet damage first;
+berries such as Starf roll after the contact procs), `137f489` (fewer
+hits after a user KO), `70a0d35` (a cured confusion rolls no self-hit),
+and `1348ab3` through order only (a lead's Trace pick). Toxic, Trace /
+Skill Swap onStart, partial trap and Leech Seed change HP or field state
+but add or remove no draw sites. The keyed-oracle and `ps-rng` commits
+leave the default stream alone. Commit messages say which.
+
+## Decisions
+
+- **Keyed-only code in the engine.** The keyed oracle now replays PS's
+  commitChoices sort (`keyed_commit_sort`) and every re-sort's tie
+  shuffles, and draws the paralysis and Attract gates under a context no
+  PS draw carries (`u16::MAX - 4`). These run only under
+  `Rng::OracleKeyed` (`is_oracle_keyed()`); SplitMix battles keep
+  `shuffle_tie_groups` and the stable re-sort. The alternative was to
+  regenerate the 1,300 PS battles with a driver that keys these draws;
+  that changes the dataset, so it was not done.
+- **Moody and Trace samples.** `ps-battle.js` routes `Battle.sample`
+  through `Battle.random` from its own wrapper, so the envelope loses the
+  ability frame. The harness recovers residual and onUpdate ability
+  samples from the raw trace (`add_ability_samples`) rather than changing
+  the driver, for the same reason.
+- **Pinch berries after the DamagingHit reactions.** Champions'
+  spreadMoveHit runs DamagingHit, then AfterHit, then the hit loop's
+  Update; the engine now follows that order, so a target's Sitrus is
+  eaten after Rough Skin / Rocky Helmet resolve on the attacker.
+- **Gates through the guard.** `64bc495` exposed `97bfceddd1` (Magic
+  Bounce used to look at the first live foe, which hid Protect's
+  priority); fixed in `527363a`. `77947df` put 7 previously clean
+  battles out of order (the commit shuffle was replayed on the engine's
+  own list); fixed in `c30f490`. A first version of `5de743e` moved 14
+  seeded battles earlier (it left out runMove's getTarget for the
+  recharge action); the amended commit moves none earlier.
+
+## Guards
+
+- `cargo test --workspace --exclude vgc-engine-py` passes with `ps-rng`
+  off and on at the branch head, under the resource cap (`-j 4`,
+  `RUST_TEST_THREADS=4`). `vgc-solver`'s
+  `auto_lossy_off_preserves_full_lossless` fails at 4 threads as before
+  and passes single-threaded (the test script reruns it).
+- Harness runs every 2-3 fixes; no battle diverges earlier than at the
+  round-8 end in either mode.
+- `tools/audit-residual-index/audit.sh` is clean.
+
+## Still unimplemented / not fixed (48 forced-RNG battles)
+
+- Mechanics (37): White Herb at battle start after both Intimidates (3),
+  Friend Guard for the second target after its holder faints mid-spread,
+  Sitrus straight after sand chip (weather's Update), Weather Ball under
+  Mega Sol, Transform / Imposter copying moves, Trick refusing a Mega
+  Stone, Toxic Debris hit by an ally, Surge Surfer (needs the terrain in
+  `effective_speed`, 39 call sites), Parental Bond (2 each); one each:
+  Mirror Armor's reflected drop triggering Competitive, the Champions
+  Encore retarget, Aromatic Mist, Solar Power's residual order, Mental
+  Herb vs Disable, Stone Axe after a Life Orb KO, Shield Dust vs Fake
+  Out's flinch, Life Orb after a Disguise hit, Sap Sipper / Soundproof /
+  Oblivious blocking status moves, Burning Jealousy, Harvest, Sitrus on
+  switch-in, multi-hit damage after a mid-move burn (2), a Psychic
+  Terrain lead order (1), and one former Toxic battle that now diverges
+  later on a stat boost (1).
+- Harness (5): a pre-turn switch tie and a Gravity / switch tie order
+  (2), the Infestation duration on one battle, Palafin / Palafin-Hero
+  naming (2).
+- RNG plumbing (2): a Moody holder at the battle-start residual, one
+  Trace pick.
+- Out of scope: Struggle under Encore (4).
+- Seeded first divergent draws (151 battles; 24 more diverge in state with
+  draws aligned): a random target PS draws that the engine doesn't (15,
+  mostly drag-in and residual Update ties), resolveAction / getTarget
+  random targets vs accuracy (18), eachEvent ties (20), fieldEvent ties
+  (12), commitChoices sort ties (11), secondaries (16), crit and stall
+  rolls (the rest).
+
+## Trajectory
+
+| after | forced-RNG clean | turns | seeded clean | turns |
+|---|---|---|---|---|
+| round 8 end (`d3c5f71`) | 1144 (88.1%) | 10820/10974 | 990 | 9925/10233 |
+| Moody, locked targets, lead order (`1348ab3`) | 1164 | 11003/11137 | 1001 | 10047/10344 |
+| Sucker Punch, Toxic (`a047558`) | 1179 | 11049/11168 | 1015 | 10093/10376 |
+| Trace pick, gained onStart, current ability (`d7a25a8`) | 1191 | 11104/11211 | 1024 | 10126/10400 |
+| ability reads, status targets, Explosion (`49c7e82`) | 1201 | 11177/11274 | 1034 | 10201/10465 |
+| Magic Bounce / Protect, trap, keyed re-sort ties (`77947df`) | 1220 | 11279/11357 | 1039 | 10226/10485 |
+| keyed commit sort, hit order (`0601d19`) | 1239 | 11385/11444 | 1042 | 10247/10503 |
+| `random(m, n)`, paralysis / Attract keys (`dfd5fea`) | 1246 | 11435/11487 | 1042 | 10247/10503 |
+| multi-hit, Lum Berry (`70a0d35`) | 1250 | 11462/11510 | 1045 | 10272/10525 |
+| `ps-rng` locked target, Curse (`308b481`) | 1250 | 11462/11510 | 1099 | 10599/10798 |
+| `ps-rng` replacements, recharge (`5de743e`) | **1250 (96.3%)** | **11462/11510** | **1123 (86.4%)** | **10725/10900** |
