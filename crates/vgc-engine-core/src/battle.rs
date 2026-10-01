@@ -13399,6 +13399,16 @@ self.trigger_emergency_exits();
             // later residuals (Grassy Terrain, Leftovers).
             self.update_hp_berries();
         }
+        // Solar Power / Dry Skin onWeather, in the same eachEvent('Weather').
+        if matches!(weather, crate::weather::Weather::Sun | crate::weather::Weather::Rain) {
+            let n = self.format().active_count() as u8;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    crate::ability::on_weather(self, side, slot);
+                }
+            }
+            self.update_hp_berries();
+        }
         // Rain Dish (data/abilities.ts:3759) and Ice Body (:1955) onWeather:
         // heal(baseMaxhp / 16) in rain / snow, in the same eachEvent('Weather').
         let heal_ability = match weather {

@@ -1217,6 +1217,16 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         }
     }
 
+}
+
+/// Ability `onWeather` handlers — PS runs them inside the weather's
+/// eachEvent('Weather') (data/conditions.ts sunnyday / raindance
+/// onFieldResidual), before the other residuals such as Grassy Terrain.
+pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
+    let ability_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.effective_ability_id(),
+        _ => return,
+    };
     // Solar Power — PS `data/abilities.ts:solarpower`:
     //   onWeather(target, source, effect) {
     //     if (effect.id === 'sunnyday' || effect.id === 'desolateland')
