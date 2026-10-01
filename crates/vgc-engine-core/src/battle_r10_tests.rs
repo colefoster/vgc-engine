@@ -150,3 +150,19 @@ fn mental_herb_cures_disable() {
     assert_eq!(b.p2.team[0].disabled_move_slot(), 255);
     assert_eq!(b.p2.team[0].item_id, u16::MAX);
 }
+
+#[test]
+fn life_orb_recoil_after_a_disguise_hit() {
+    // PS sim/battle-actions.ts:536-539: AfterMoveSecondarySelf (Life Orb's
+    // recoil, data/items.ts:3413) runs whenever the move hit, and a hit
+    // Disguise absorbs is a hit. Study e5af60d10c.
+    let mut b = singles(
+        r#"[{"species":"toxtricity","level":50,"ability":"punkrock","item":"lifeorb","moves":["overdrive"]}]"#,
+        r#"[{"species":"mimikyu","level":50,"ability":"disguise","moves":["splash"]}]"#,
+        3,
+    );
+    let max = b.p1.team[0].stats.hp;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert!(b.p2.team[0].disguise_busted);
+    assert_eq!(b.p1.team[0].current_hp, max - max / 10);
+}

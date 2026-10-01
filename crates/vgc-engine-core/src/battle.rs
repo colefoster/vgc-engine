@@ -327,6 +327,10 @@ pub struct Battle {
     /// ability handler (Intimidate, priority 0) has run.
     #[serde(skip)]
     defer_white_herb: bool,
+    /// The current move hit a Disguise (no damage dealt, but PS's
+    /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
+    #[serde(skip)]
+    disguise_hit_this_move: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -698,6 +702,7 @@ impl Battle {
             decision_phases: false,
             champions: false,
             defer_white_herb: false,
+            disguise_hit_this_move: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -5388,6 +5393,7 @@ self.trigger_emergency_exits();
             }
         }
 
+        self.disguise_hit_this_move = false;
         // PS `runMove` (sim/battle-actions.ts:217) counts the action before
         // any beforeMove check can stop it.
         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -8649,6 +8655,7 @@ self.trigger_emergency_exits();
             d.disguise_busted = true;
             d.current_hp = d.current_hp.saturating_sub(chip);
         }
+        self.disguise_hit_this_move = true;
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
         true
     }
@@ -11600,7 +11607,7 @@ self.trigger_emergency_exits();
         // for any non-Move effect, and Life Orb's recoil is an item-side
         // residual, not the move itself. PS: `data/items.ts:lifeorb` recoil
         // routes through the standard onDamage event.
-        if attacker_item_id == data::item_id::LIFEORB && any_damage_dealt > 0 {
+        if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
             // `!(move.hasSheerForce && pokemon.hasAbility('sheerforce'))`,
