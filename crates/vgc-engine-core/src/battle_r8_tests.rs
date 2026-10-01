@@ -468,3 +468,25 @@ fn ps_rng_beak_blast_charge_action_draws_a_random_target() {
     };
     assert_eq!(draws("beakblast"), draws("drillpeck") + 1);
 }
+
+// ---- Payback ----
+
+#[test]
+fn payback_doubles_against_a_target_that_already_moved() {
+    // PS data/moves.ts:13190 payback basePowerCallback: x2 unless the target
+    // is newly switched in or will still move this turn.
+    let run = |foe_json: &str| {
+        let mut b = singles(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["payback"]}]"#,
+            foe_json,
+            6,
+        );
+        let hp = b.p2.team[0].current_hp;
+        b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+        (hp - b.p2.team[0].current_hp) as u32
+    };
+    // Both foes are Snorlax-bulk; the faster one moves before Payback.
+    let after = run(r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"jolly","moves":["splash"],"evs":{"hp":252,"spe":252}}]"#);
+    let before = run(r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["splash"],"evs":{"hp":252},"ivs":{"spe":0}}]"#);
+    assert!(after * 2 > before * 3, "x2 ({after}) vs ({before})");
+}

@@ -7253,6 +7253,15 @@ self.trigger_emergency_exits();
                 && self.rng.chance_keyed(3, 10)
             {
                 Some((self.moves()[move_id as usize].base_power as u32) * 2)
+            } else if move_id == data::move_id::PAYBACK
+                && !matches!(pending_kind[tside as usize][(tslot as usize).min(1)], 1 | 2)
+                && !defender.switched_in_this_turn()
+            {
+                // Payback — PS data/moves.ts:13190 basePowerCallback: x2
+                // unless the target is newly switched in or will still move
+                // this turn (queue.willMove; `pending_kind` clears as each
+                // action starts).
+                Some((self.moves()[move_id as usize].base_power as u32) * 2)
             } else {
                 None
             };

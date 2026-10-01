@@ -260,3 +260,10 @@ fn normal_gem_is_used_by_a_normal_move() {
 fn beak_blast_burns_a_contact_attacker() {
     assert_matches_ps("beak-blast-burns-contact");
 }
+
+/// Study battle 574176a1f8: Grapploct's Payback hits Gengar after Gengar
+/// moved, so it has 100 BP (data/moves.ts:13190; 157 -> 35 HP).
+#[test]
+fn payback_doubles_after_the_target_moved() {
+    assert_matches_ps("study-574176a1f8-payback");
+}
