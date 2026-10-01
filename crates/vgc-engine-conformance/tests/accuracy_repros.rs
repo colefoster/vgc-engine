@@ -253,3 +253,10 @@ fn charge_raises_special_defense() {
 fn normal_gem_is_used_by_a_normal_move() {
     assert_matches_ps("study-45afe9c9b0-normal-gem");
 }
+
+/// Garchomp's Dragon Claw hits Toucannon while it charges Beak Blast and is
+/// burned (data/moves.ts:1119 beakblast, priorityChargeCallback + onHit).
+#[test]
+fn beak_blast_burns_a_contact_attacker() {
+    assert_matches_ps("beak-blast-burns-contact");
+}

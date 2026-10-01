@@ -3041,6 +3041,35 @@ self.trigger_emergency_exits();
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
         self.apply_megas(megas);
 
+        // 1c. Beak Blast's priorityChargeCallback — PS order-107
+        //     `priorityChargeMove` action (sim/battle-queue.ts:242,
+        //     sim/battle.ts:2739), after switches and Mega Evolution, before
+        //     any move: the user gains the beakblast volatile.
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                if std::mem::replace(&mut seen[slot], true) {
+                    continue;
+                }
+                let (Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. }) = *c
+                else {
+                    continue;
+                };
+                if let Some(a) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() && a.moves.get(move_slot as usize) == Some(&data::move_id::BEAKBLAST) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::BeakBlast,
+                            turns_remaining: 1,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
+        }
+
         // 2. Resolve moves in priority+speed order.
         // Temporarily move rng out to split-borrow with `self`. `Rng`
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
@@ -5181,6 +5210,14 @@ self.trigger_emergency_exits();
             PreMoveOutcome::Abort
         ) {
             return;
+        }
+        // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
+        // the user's own move runs in between, so drop it now. An aborted
+        // move keeps it (PS FIXME: no onMoveAborted).
+        if move_id == data::move_id::BEAKBLAST {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.volatiles.remove(crate::pokemon::VolatileKind::BeakBlast);
+            }
         }
 
         // Move-identity onTry checks — Destiny Bond pre-move clear, Stance
@@ -8681,6 +8718,14 @@ self.trigger_emergency_exits();
                 self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
             );
             self.rng = rng;
+            // Beak Blast's charge — PS data/moves.ts:1136 beakblast condition
+            // onHit: a contact move burns its user (the holder is the source).
+            if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::BeakBlast))
+                && crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker)
+                && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive())
+            {
+                self.try_set_status_from(actor_side, actor_slot, Status::Burn, tside);
+            }
             // Defender's held item reacts to the contact hit —
             // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
             // Skin / Iron Barbs: contact-only, attacker not Magic-

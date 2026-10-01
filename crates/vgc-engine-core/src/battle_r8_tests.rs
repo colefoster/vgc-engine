@@ -413,3 +413,31 @@ fn normal_gem_boosts_and_is_used_up() {
     assert_eq!(left, u16::MAX, "Gem used");
     assert!(gem * 100 > plain * 120, "x1.3 ({gem}) vs ({plain})");
 }
+
+// ---- Beak Blast ----
+//
+// PS data/moves.ts:1119 beakblast: priorityChargeCallback (an order-107
+// action before any move) adds the beakblast volatile; a contact move that
+// hits the holder burns its user (condition onHit); onAfterMove removes it.
+
+#[test]
+fn beak_blast_burns_a_contact_attacker_before_it_moves() {
+    let mut b = singles(
+        r#"[{"species":"toucannon","level":50,"ability":"keeneye","moves":["beakblast"],"evs":{"hp":252,"def":252}}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam","earthquake"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p2.team[0].status, Status::Burn, "Body Slam made contact during the charge");
+}
+
+#[test]
+fn beak_blast_ignores_non_contact_moves() {
+    let mut b = singles(
+        r#"[{"species":"toucannon","level":50,"ability":"keeneye","moves":["beakblast"],"evs":{"hp":252,"def":252}}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam","rockslide"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, foe())], &[mv(0, 1, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p2.team[0].status, Status::None);
+}
