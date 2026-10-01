@@ -1447,6 +1447,9 @@ pub fn try_consume_mirror_herb_on_foe_boost(
 }
 
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.white_herb_deferred() {
+        return;
+    }
     let item_id = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
         _ => return,
