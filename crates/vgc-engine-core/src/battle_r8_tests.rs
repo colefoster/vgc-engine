@@ -490,3 +490,36 @@ fn payback_doubles_against_a_target_that_already_moved() {
     let before = run(r#"[{"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["splash"],"evs":{"hp":252},"ivs":{"spe":0}}]"#);
     assert!(after * 2 > before * 3, "x2 ({after}) vs ({before})");
 }
+
+// ---- Self-heal rounding ----
+
+#[test]
+fn half_heal_moves_round_half_up() {
+    // PS runMoveEffects (sim/battle-actions.ts:1209): `heal: [1, 2]` heals
+    // Math.round(maxhp / 2).
+    let mut b = singles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["slackoff"]}]"#,
+        LR_FOE,
+        1,
+    );
+    let max = b.p1.team[0].stats.hp;
+    assert_eq!(max % 2, 1, "odd max HP for this test");
+    b.p1.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].current_hp, 1 + max.div_ceil(2));
+}
+
+#[test]
+fn weather_heals_use_ps_modify() {
+    // PS data/moves.ts moonlight onHit: heal(this.modify(maxhp, factor)),
+    // factor 0.667 in sun: tr((maxhp * 2732 + 2047) / 4096).
+    let mut b = singles(
+        r#"[{"species":"clefable","level":50,"ability":"magicguard","moves":["moonlight"],"evs":{"hp":12}}]"#,
+        r#"[{"species":"torkoal","level":50,"ability":"drought","moves":["splash"]}]"#,
+        1,
+    );
+    let max = b.p1.team[0].stats.hp as u32;
+    b.p1.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].current_hp as u32, 1 + (max * 2732 + 2047) / 4096, "max {max}");
+}
