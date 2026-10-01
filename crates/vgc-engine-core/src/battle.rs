@@ -2908,7 +2908,18 @@ self.trigger_emergency_exits();
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
             return;
         }
-        let tracks = move_id == data::move_id::SNIPESHOT
+        // Champions Curse: a non-Ghost user's is a self move (no draw, as in
+        // resolveAction); a Ghost's tracks its target
+        // (data/mods/champions/moves.ts curse `tracksTarget: true`).
+        let curse = move_id == data::move_id::CURSE;
+        if curse {
+            let (types, nt) = user.effective_types();
+            if !types[..nt as usize].contains(&13) {
+                return;
+            }
+        }
+        let tracks = curse
+            || move_id == data::move_id::SNIPESHOT
             || ability == data::ability_id::STALWART
             || ability == data::ability_id::PROPELLERTAIL;
         if let Some(t) = target {
