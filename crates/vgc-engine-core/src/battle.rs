@@ -2669,6 +2669,9 @@ self.trigger_emergency_exits();
                     continue; // a later choice for a slot is a mid-turn pick
                 }
                 seen[slot] = true;
+                // A mon locked into a two-turn move acts at its stored target
+                // (sim/side.ts:675-688), so it draws no random target.
+                let c = &self.locked_move_choice(side, *c);
                 // A move with a priorityChargeCallback first resolves its
                 // targetless `priorityChargeMove` action (sim/battle-queue.ts:242,
                 // :266): getRandomTarget draws in doubles.
@@ -43466,3 +43469,7 @@ mod r7_tests;
 #[cfg(test)]
 #[path = "battle_r8_tests.rs"]
 mod r8_tests;
+
+#[cfg(test)]
+#[path = "battle_r9_tests.rs"]
+mod r9_tests;
