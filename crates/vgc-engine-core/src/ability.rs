@@ -1153,7 +1153,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // == `arr[this.random(arr.length)]`, one PRNG draw per sample. We
     // mirror the exact draw order: pick the +2 stat first (consuming
     // one `range`), then the -1 stat from the remainder (one more
-    // `range`). Both boosts are applied together via the apply_boosts
+    // `range`). The picks go through `ability_random` so the keyed oracle
+    // matches them to PS's ability-handler draws (holder + ability). Both
+    // boosts are applied together via the apply_boosts
     // choke point. Octillery / Bidoof / Glalie line.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moody_(Ability)>.
     if ability_id == data::ability_id::MOODY {
@@ -1171,7 +1173,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             }
         }
         let chosen_plus = if plus_n > 0 {
-            Some(plus[rng.range(plus_n as u32) as usize])
+            Some(plus[rng.ability_random(battle.turn() + 1, holder_ref((side, slot)), ability_id, plus_n as u32) as usize])
         } else {
             None
         };
@@ -1186,7 +1188,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             }
         }
         let chosen_minus = if minus_n > 0 {
-            Some(minus[rng.range(minus_n as u32) as usize])
+            Some(minus[rng.ability_random(battle.turn() + 1, holder_ref((side, slot)), ability_id, minus_n as u32) as usize])
         } else {
             None
         };

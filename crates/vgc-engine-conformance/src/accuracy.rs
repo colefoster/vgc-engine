@@ -440,6 +440,33 @@ fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
     }
 }
 
+/// Sentinel move id for an ability's `this.sample(...)` at the residual
+/// (Moody's +2 and -1 picks, `data/abilities.ts` moody `onResidual`).
+/// `ps-battle.js` routes `Battle.sample` through `Battle.random` from its own
+/// wrapper, so the envelope loses the ability frame and lands under
+/// `range/<none>` with no holder. They are recovered from the raw trace, taken
+/// off the `<none>` queue, and handed to the engine's `Ability` draws of the
+/// same turn by the repair pass.
+const ABILITY_SAMPLE: u16 = u16::MAX - 3;
+
+fn add_ability_samples(table: &mut Table, acc: &AccBattle) {
+    for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
+        let from_ability = d.op == "random"
+            && d.site.first().is_some_and(|s| s.contains(".onResidual@data/abilities.js"));
+        if !from_ability {
+            continue;
+        }
+        let v = RngEvent::Range(d.result.max(0.0) as u32);
+        let none = RngKey { turn: d.turn, actor: NO_SLOT, target: NO_SLOT, move_id: 0, decision: RngDecision::Range };
+        if let Some(q) = table.get_mut(&none) {
+            if let Some(pos) = q.iter().rposition(|e| *e == v) {
+                q.remove(pos);
+            }
+        }
+        table.entry(RngKey { move_id: ABILITY_SAMPLE, ..none }).or_default().push_back(v);
+    }
+}
+
 /// Sentinel move id for PS `randomChance` gates recorded as a bool under
 /// `range` (stall roll, full paralysis, Poison Touch, ...). The contract
 /// stores them as `Range(1)` pass / `Range(0)` fail, which only
@@ -539,6 +566,7 @@ fn repaired_table(
     let (mut table, _unresolved) = build_table_from(acc.turns.iter().flat_map(|t| t.base.draws.iter()));
     add_queue_tiebreaks(&mut table, acc);
     add_condition_samples(&mut table, acc);
+    add_ability_samples(&mut table, acc);
     park_bool_gates(&mut table, acc);
     let mut repaired = 0u32;
     let (mut b, mut res, mut misses) = keyed_run(acc, &table);
@@ -566,6 +594,7 @@ fn repaired_table(
                     **n > 0
                         && ((k.turn == mk.turn && k.actor == mk.actor && (k.move_id == mk.move_id || k.move_id == BOOL_GATE))
                             || (k.move_id == CONDITION_SAMPLE && k.turn == mk.turn && mk.decision == RngDecision::Range)
+                            || (k.move_id == ABILITY_SAMPLE && k.turn == mk.turn && mk.decision == RngDecision::Ability)
                             || (mk.decision == RngDecision::Tiebreak
                                 && k.decision == RngDecision::Tiebreak
                                 && (k.turn == mk.turn || k.turn == mk.turn + 1)))
@@ -576,7 +605,7 @@ fn repaired_table(
             // between equally good candidates: keeps runs reproducible.
             // Condition samples are the last resort: they carry no actor or
             // move, so any same-move-use candidate is a better match.
-            cands.sort_by_key(|k| (k.move_id == CONDITION_SAMPLE, k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
+            cands.sort_by_key(|k| (k.move_id == CONDITION_SAMPLE, k.move_id != ABILITY_SAMPLE, k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
             for k in cands {
                 let n = remaining[&k];
                 let q = table.get(&k).expect("leftover key in table");
