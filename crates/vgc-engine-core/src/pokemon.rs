@@ -1424,6 +1424,25 @@ impl Pokemon {
         self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 3)
     }
 
+    /// Mark a Shed Tail switch (payload 4): the player picks the
+    /// replacement, which inherits only this mon's Substitute.
+    #[inline]
+    pub fn set_pending_shed_tail_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 4,
+        });
+    }
+
+    /// True when the pending switch is a Shed Tail
+    /// ([`Pokemon::set_pending_shed_tail_switch`]).
+    #[inline]
+    pub fn pending_switch_sheds_tail(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 4)
+    }
+
     /// True when the pending switch is a Baton Pass
     /// ([`Pokemon::set_pending_copy_switch`]).
     #[inline]

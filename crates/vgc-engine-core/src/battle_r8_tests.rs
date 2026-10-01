@@ -303,3 +303,36 @@ fn thunder_wave_fails_on_a_ground_type_without_an_accuracy_roll() {
         .count();
     assert_eq!(rolls, 0);
 }
+
+// ---- Shed Tail ----
+//
+// PS data/moves.ts:16161 shedtail: fails without a switch target, with a
+// Substitute up, or at or below half HP (onTryHit, NOT_FAIL); otherwise
+// adds a Substitute (floor(maxhp/4) HP), pays ceil(maxhp/2) HP and switches
+// out; the replacement gets only the Substitute (copyVolatileFrom
+// 'shedtail', sim/pokemon.ts:1246: no boosts).
+
+const SHED_USER: &str = r#"[{"species":"cyclizar","level":50,"ability":"shedskin","moves":["shedtail","swordsdance"]},
+    {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+
+#[test]
+fn shed_tail_passes_a_substitute_to_the_replacement() {
+    let mut b = singles(SHED_USER, LR_FOE, 1);
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
+    let max = b.p1.team[0].stats.hp;
+    b.step(&[mv(0, 0, None), Choice::Switch { actor_slot: 0, team_index: 1 }], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.active[0], 1, "Snorlax came in");
+    assert_eq!(b.p1.team[0].current_hp, max - max.div_ceil(2), "paid half its HP");
+    assert_eq!(b.p1.team[1].substitute_hp(), max / 4, "Substitute from Cyclizar's max HP");
+    assert_eq!(b.p1.team[1].boosts[0], 0, "boosts stay behind");
+}
+
+#[test]
+fn shed_tail_fails_at_half_hp_or_less() {
+    let mut b = singles(SHED_USER, LR_FOE, 1);
+    let max = b.p1.team[0].stats.hp;
+    b.p1.team[0].current_hp = max.div_ceil(2);
+    b.step(&[mv(0, 0, None), Choice::Switch { actor_slot: 0, team_index: 1 }], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.active[0], 0, "no switch");
+    assert_eq!(b.p1.team[0].current_hp, max.div_ceil(2));
+}

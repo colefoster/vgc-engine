@@ -225,3 +225,10 @@ fn imprison_stops_a_shared_move() {
 fn heat_crash_hits_a_minimized_target_for_double() {
     assert_matches_ps("study-799492fe70-heat-crash-minimize");
 }
+
+/// Study battle eaedb64b2a: Shed Tail pays half the user's HP and its
+/// replacement comes in behind the Substitute (data/moves.ts:16161).
+#[test]
+fn shed_tail_passes_its_substitute() {
+    assert_matches_ps("study-eaedb64b2a-shed-tail");
+}

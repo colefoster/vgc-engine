@@ -426,6 +426,9 @@ pub struct Battle {
     /// next `do_switch` copies the outgoing mon's boosts and volatiles.
     #[serde(default)]
     pub(crate) copy_volatiles_next_switch: bool,
+    /// Shed Tail: the next `do_switch` passes only the outgoing mon's
+    /// Substitute (PS copyVolatileFrom 'shedtail', sim/pokemon.ts:1246).
+    pub(crate) shed_tail_next_switch: bool,
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -704,6 +707,7 @@ impl Battle {
             force_switch_flags: [[false; 2]; 2],
             mid_turn_picks_used: [0; 2],
             copy_volatiles_next_switch: false,
+            shed_tail_next_switch: false,
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -1651,7 +1655,8 @@ impl Battle {
             | data::move_id::PARTINGSHOT
             | data::move_id::TELEPORT
             | data::move_id::CHILLYRECEPTION
-            | data::move_id::BATONPASS => out.extend(
+            | data::move_id::BATONPASS
+            | data::move_id::SHEDTAIL => out.extend(
                 s.switch_candidates(actor_slot as usize)
                     .map(|team_index| Choice::Switch { actor_slot, team_index }),
             ),
@@ -3946,6 +3951,7 @@ self.trigger_emergency_exits();
         let gravity_active = self.gravity_turns > 0;
         let magic_room_active = self.magic_room_turns > 0;
         let copy_volatiles = self.copy_volatiles_next_switch;
+        let shed_tail = self.shed_tail_next_switch;
         let s = self.side_mut(side);
         if (actor_slot as usize) < s.active.len()
             && (team_index as usize) < s.team.len()
@@ -4067,6 +4073,12 @@ self.trigger_emergency_exits();
                     }
                 }
                 incoming.sync_move_locks();
+            }
+            if shed_tail {
+                let sub = s.team[outgoing_idx].volatiles.get(crate::pokemon::VolatileKind::Substitute).copied();
+                if let Some(v) = sub {
+                    s.team[team_index as usize].volatiles.add(v);
+                }
             }
         } else {
             return false;
@@ -4498,6 +4510,10 @@ self.trigger_emergency_exits();
                     .side(side)
                     .active_mon(slot as usize)
                     .is_some_and(|m| m.pending_switch_copies());
+                let sheds_tail = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_sheds_tail());
                 let revives = self
                     .side(side)
                     .active_mon(slot as usize)
@@ -4536,8 +4552,10 @@ self.trigger_emergency_exits();
                     continue;
                 }
                 self.copy_volatiles_next_switch = copies;
+                self.shed_tail_next_switch = sheds_tail;
                 let switched = self.do_switch(side, slot, team_index);
                 self.copy_volatiles_next_switch = false;
+                self.shed_tail_next_switch = false;
                 // The switch action ends with eachEvent('Update'); its
                 // BeforeSwitchOut ran before the request (skip flag).
                 #[cfg(feature = "ps-rng")]
@@ -15943,6 +15961,24 @@ self.trigger_emergency_exits();
                 if any_fainted {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_revive();
+                    }
+                }
+            }
+            data::move_id::SHEDTAIL => {
+                // Shed Tail — PS data/moves.ts:16161. onTryHit fails (NOT_FAIL)
+                // without a mon to switch to or while commanded, with a
+                // Substitute up, or at or below ceil(maxhp/2) HP. Otherwise
+                // the substitute volatile starts (floor(maxhp/4) HP), onHit
+                // directDamages ceil(maxhp/2), and selfSwitch 'shedtail'
+                // passes only the Substitute (see `do_switch`). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Shed_Tail_(move)>.
+                let can_switch = self.has_eligible_bench(actor_side);
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let half = a.stats.hp.div_ceil(2);
+                    if can_switch && !a.commanded && a.substitute_hp() == 0 && a.current_hp > half {
+                        a.set_substitute_hp((a.stats.hp / 4).max(1));
+                        a.current_hp -= half;
+                        a.set_pending_shed_tail_switch();
                     }
                 }
             }
