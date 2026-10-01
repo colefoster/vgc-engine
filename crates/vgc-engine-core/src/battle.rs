@@ -18917,6 +18917,11 @@ fn held_item_is_swappable(mon: &Pokemon) -> bool {
     if mon.item_id == u16::MAX {
         return true;
     }
+    // A Mega Stone can't leave its own species (data/items.ts mega stones
+    // onTakeItem).
+    if mon.holds_own_mega_stone() {
+        return false;
+    }
     let num = mon.species().num;
     match mon.item_id {
         data::item_id::CORNERSTONEMASK

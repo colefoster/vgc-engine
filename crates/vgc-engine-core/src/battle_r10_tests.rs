@@ -120,3 +120,18 @@ fn sitrus_fires_right_after_sand_chip_before_grassy_heal() {
     let sand = (max / 16).max(1);
     assert_eq!(b.p1.team[0].current_hp, hp - sand + max / 4 + max / 16);
 }
+
+#[test]
+fn trick_fails_against_a_mega_stone_holder() {
+    // PS data/moves.ts trick onHit: target.takeItem() is false for a Mega
+    // Stone of the holder's species (data/items.ts salamencite onTakeItem).
+    // Study 4bb7820163 (Trick into Salamence-Mega).
+    let mut b = singles(
+        r#"[{"species":"indeedee","level":50,"ability":"psychicsurge","item":"focussash","moves":["trick"]}]"#,
+        r#"[{"species":"salamence","level":50,"ability":"intimidate","item":"salamencite","moves":["splash"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[Choice::MegaEvolve { actor_slot: 0, move_slot: 0, target: None }]);
+    assert_eq!(b.p2.team[0].item_id, data::item_id::SALAMENCITE);
+    assert_eq!(b.p1.team[0].item_id, data::item_id::FOCUSSASH);
+}
