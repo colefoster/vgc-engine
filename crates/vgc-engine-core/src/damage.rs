@@ -1302,7 +1302,7 @@ pub(crate) fn calculate_damage_with_bp(
     // rain, sand or snow.
     if matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
         && matches!(
-            ctx.weather,
+            mega_sol_weather(attacker, ctx.weather),
             crate::weather::Weather::Rain | crate::weather::Weather::Sand | crate::weather::Weather::Snow
         )
     {
