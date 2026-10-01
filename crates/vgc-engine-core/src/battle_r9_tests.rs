@@ -185,3 +185,23 @@ fn a_mummy_ability_is_lost_on_switch_out() {
     b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::THICKFAT);
 }
+
+// ---- Hit-time ability checks read the current ability ----
+//
+// PS runEvent / hasAbility read pokemon.getAbility() (the current, possibly
+// swapped ability), e.g. data/abilities.ts soundproof onTryHit.
+
+#[test]
+fn a_skill_swapped_soundproof_blocks_sound_moves() {
+    let mut b = doubles(
+        r#"[{"species":"alakazam","level":50,"ability":"innerfocus","moves":["skillswap","splash"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"exploud","level":50,"ability":"soundproof","moves":["splash"]},{"species":"exploud","level":50,"ability":"scrappy","moves":["hypervoice","splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 1, None)]);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::SOUNDPROOF);
+    let before = b.p1.team[0].current_hp;
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(b.p1.team[1].current_hp < b.p1.team[1].stats.hp, "Hyper Voice should hit Snorlax");
+    assert_eq!(b.p1.team[0].current_hp, before, "Soundproof (swapped in) blocks Hyper Voice");
+}
