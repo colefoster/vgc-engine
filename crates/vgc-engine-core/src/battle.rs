@@ -1469,7 +1469,11 @@ impl Battle {
                         self.side_mut(target_side).active_mon_mut(target_slot as usize)
                     {
                         let stage = &mut m.boosts[idx as usize];
+                        let before = *stage;
                         *stage = (*stage + delta).clamp(-6, 6);
+                        if *stage > before {
+                            m.stats_raised_this_turn = true;
+                        }
                     }
                 }
             }
@@ -1486,7 +1490,11 @@ impl Battle {
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
+                let before = *stage;
                 *stage = (*stage + delta).clamp(-6, 6);
+                if *stage > before {
+                    m.stats_raised_this_turn = true;
+                }
             }
         }
         self.mirror_to_opportunist(target_side, target_slot, deltas);
@@ -3769,6 +3777,12 @@ self.trigger_emergency_exits();
         self.commander_update(SideRef::P1);
         self.commander_update(SideRef::P2);
 
+        // endTurn clears statsRaisedThisTurn (sim/battle.ts endTurn).
+        for side in [SideRef::P1, SideRef::P2] {
+            for m in self.side_mut(side).team.iter_mut() {
+                m.stats_raised_this_turn = false;
+            }
+        }
         self.turn = self.turn.saturating_add(1);
         let p1_dead = self.p1.is_defeated();
         let p2_dead = self.p2.is_defeated();
@@ -18397,6 +18411,17 @@ fn apply_secondary_effect(
     // Luxray Ice Fang on Salazzle recorded [89, 6]; pre-swap engine
     // popped 89 for flinch (no flinch) then 6 for status (≤10 = freeze
     // applied, diverged from PS=none).
+    // Burning Jealousy — PS data/moves.ts burningjealousy: secondary
+    // { chance: 100, onHit: burn if target.statsRaisedThisTurn }.
+    if move_slug == "burningjealousy" && rng.percent_1_100_t(sg(100)) <= sg(100) {
+        let raised = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|t| t.stats_raised_this_turn);
+        if raised {
+            battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, Status::Burn, attacker_side, attacker_slot));
+        }
+    }
     if let Some((status, chance)) = status_secondary(move_slug, battle.champions) {
         if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
