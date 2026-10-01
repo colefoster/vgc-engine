@@ -281,3 +281,11 @@ fn roost_heals_half_rounded() {
 fn a_replaced_stamina_does_not_trigger() {
     assert_matches_ps("study-aedae40015-simple-beam-stamina");
 }
+
+/// Study battle e57f4e89e3: Moody's two `sample()` picks at the residual are
+/// keyed by holder and ability like any ability roll, so the keyed replay
+/// raises and lowers the same stats as PS.
+#[test]
+fn moody_picks_are_keyed_to_the_holder() {
+    assert_matches_ps("study-e57f4e89e3-moody");
+}
