@@ -188,3 +188,10 @@ fn champions_sleep_duration() {
 fn stomping_tantrum_doubles_after_a_failed_move() {
     assert_matches_ps("stomping-tantrum-after-a-miss");
 }
+
+/// Study battle 5a4e6093bf: Mega Metagross flinches to Fake Out on turn 5,
+/// so its turn-6 Stomping Tantrum has 150 BP (Rillaboom 177 -> 49).
+#[test]
+fn stomping_tantrum_doubles_after_a_flinch() {
+    assert_matches_ps("study-5a4e6093bf-stomping-tantrum-after-flinch");
+}
