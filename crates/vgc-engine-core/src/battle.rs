@@ -3225,7 +3225,9 @@ self.trigger_emergency_exits();
                         && !moved[(c.actor_slot() as usize).min(1)]
                     {
                         moved[(c.actor_slot() as usize).min(1)] = true;
-                        acts[k] = ScheduledAction { side, actor_slot: c.actor_slot(), choice: *c };
+                        // A locked two-turn move keeps its stored target
+                        // (sim/side.ts:675-688).
+                        acts[k] = ScheduledAction { side, actor_slot: c.actor_slot(), choice: self.locked_move_choice(side, *c) };
                         k += 1;
                     }
                 }
