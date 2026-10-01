@@ -18495,6 +18495,21 @@ fn apply_secondary_effect(
     if defender_has_covert_cloak {
         return;
     }
+    // Shield Dust — PS data/abilities.ts shielddust onModifySecondaries:
+    // the same filter as Covert Cloak; breakable (Mold Breaker family).
+    let attacker_breaks_mold = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| {
+        matches!(
+            a.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )
+    });
+    let defender_shield_dust = battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SHIELDDUST);
+    if defender_shield_dust && !attacker_breaks_mold {
+        return;
+    }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
     // secondaries)`, one `random(100)` per entry. The elemental Fangs
