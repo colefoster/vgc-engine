@@ -135,3 +135,18 @@ fn trick_fails_against_a_mega_stone_holder() {
     assert_eq!(b.p2.team[0].item_id, data::item_id::SALAMENCITE);
     assert_eq!(b.p1.team[0].item_id, data::item_id::FOCUSSASH);
 }
+
+#[test]
+fn mental_herb_cures_disable() {
+    // PS data/items.ts mentalherb onUpdate removes disable among its
+    // volatiles. Study 9af2fea75f.
+    let mut b = singles(
+        r#"[{"species":"sableye","level":50,"ability":"keeneye","moves":["disable"]}]"#,
+        r#"[{"species":"farigiraf","level":50,"ability":"armortail","item":"mentalherb","moves":["tackle"]}]"#,
+        3,
+    );
+    // Farigiraf moves first, so Sableye's Disable lands on Tackle.
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p2.team[0].disabled_move_slot(), 255);
+    assert_eq!(b.p2.team[0].item_id, u16::MAX);
+}

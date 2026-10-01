@@ -16016,6 +16016,8 @@ self.trigger_emergency_exits();
                         if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                             t.set_disable(4, last_slot);
                         }
+                        // Mental Herb's onUpdate cures it (data/items.ts mentalherb).
+                        crate::item::try_consume_mental_herb(self, opp, slot);
                     }
                 }
             }
