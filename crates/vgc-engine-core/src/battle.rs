@@ -23932,6 +23932,28 @@ mod tests {
     }
 
     #[test]
+    fn toxic_debris_hit_by_ally_lays_spikes_on_the_foes_side() {
+        // PS data/abilities.ts:5106: `source.isAlly(target) ? source.side.foe
+        // : source.side`. An ally's Earthquake puts the layer on the foes'
+        // side. Study 11b4f8b12c (Swampert's Earthquake into Glimmora).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"glimmora","level":50,"ability":"toxicdebris","nature":"bold","moves":["powergem","sludgewave","spikyshield","stealthrock"],"evs":{"hp":252,"def":252}},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonpulse","stoneedge","ironhead"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 5 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.conditions.toxic_spikes_layers, 0);
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 1);
+    }
+
+    #[test]
     fn counter_returns_double_last_physical_damage_at_attacker() {
         // P1 Snorlax holds Counter (slot 0). P2 Garchomp uses a weak
         // physical move (Tackle) so the doubled retaliation can't KO and

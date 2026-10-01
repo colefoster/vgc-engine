@@ -1436,9 +1436,9 @@ pub fn on_damaging_hit(
     // contact. `move.category` Physical = 0. Glimmora signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Toxic_Debris_(Ability)>.
     if ability_id == data::ability_id::TOXICDEBRIS && data::MOVES[move_id as usize].category == 0 {
-        // The attacker is by definition a foe of the holder, so the layer
-        // lands on the attacker's own side.
-        let layers = &mut battle.side_mut(attacker_side).conditions.toxic_spikes_layers;
+        // The attacker's side, or its foes' side when an ally hit the holder.
+        let side = if attacker_side == target_side { attacker_side.opposing() } else { attacker_side };
+        let layers = &mut battle.side_mut(side).conditions.toxic_spikes_layers;
         if *layers < 2 {
             *layers += 1;
         }
