@@ -5709,6 +5709,15 @@ self.trigger_emergency_exits();
         if targets.is_empty() {
             return;
         }
+        // Explosion / Self-Destruct / Misty Explosion (`selfdestruct:
+        // 'always'`): the user faints before the hit, whatever the hit does
+        // (sim/battle-actions.ts:500). The damage calc reads the snapshot.
+        if matches!(move_id, data::move_id::EXPLOSION | data::move_id::SELFDESTRUCT | data::move_id::MISTYEXPLOSION) {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.current_hp = 0;
+                a.fainted = true;
+            }
+        }
         // Resolve target redirection (Follow Me / Rage Powder, Lightning
         // Rod / Storm Drain). Pure read of self — no RNG draws here. Spread
         // moves and tracksTarget bypass are handled internally. See
