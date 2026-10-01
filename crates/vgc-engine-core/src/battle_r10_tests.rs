@@ -262,3 +262,19 @@ fn sticky_web_drop_triggers_defiant() {
     let m = b.p1.active_mon(0).unwrap();
     assert_eq!((m.boosts[0], m.boosts[4]), (2, -1));
 }
+
+#[test]
+fn aromatic_mist_raises_the_allys_special_defense() {
+    // PS data/moves.ts aromaticmist: target adjacentAlly, boosts {spd: 1}.
+    // Study 6d4e9037cb.
+    let mut b = doubles(
+        r#"[{"species":"alcremie","level":50,"ability":"aromaveil","moves":["aromaticmist"]},
+            {"species":"sinistcha","level":50,"ability":"hospitality","moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[1].boosts[3], 1);
+    assert_eq!(b.p1.team[0].boosts[3], 0);
+}
