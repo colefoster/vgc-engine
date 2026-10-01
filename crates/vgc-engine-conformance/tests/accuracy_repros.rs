@@ -431,3 +431,11 @@ fn rocky_helmet_fires_before_knock_off_removes_it() {
 fn two_argument_random_draws_key_as_offsets() {
     assert_matches_ps("study-12ea08df40-confusion-duration-key");
 }
+
+/// Study battle fb2bf66e3b: a paralyzed Dire Claw user's full-paralysis
+/// check (a bool PS records under the move's range key) must not take Dire
+/// Claw's status pick from the same key.
+#[test]
+fn full_paralysis_gate_does_not_take_dire_claws_pick() {
+    assert_matches_ps("study-fb2bf66e3b-paralysis-gate-key");
+}
