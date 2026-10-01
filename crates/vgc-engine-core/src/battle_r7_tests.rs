@@ -672,7 +672,7 @@ fn roost_grounds_a_flying_type_for_the_rest_of_the_turn() {
     b.p1.team[0].current_hp = 40;
     b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
     let max = b.p1.team[0].stats.hp;
-    assert_eq!(b.p1.team[0].current_hp, 40 + max / 2 + max / 16);
+    assert_eq!(b.p1.team[0].current_hp, 40 + max.div_ceil(2) + max / 16); // heal rounds (battle-actions.ts:1209)
 }
 
 #[cfg(feature = "ps-rng")]

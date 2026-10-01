@@ -267,3 +267,10 @@ fn beak_blast_burns_a_contact_attacker() {
 fn payback_doubles_after_the_target_moved() {
     assert_matches_ps("study-574176a1f8-payback");
 }
+
+/// Study battle c46a2e1300: Roost heals Math.round(maxhp / 2) (odd max HP;
+/// sim/battle-actions.ts:1209), one more than a floored half.
+#[test]
+fn roost_heals_half_rounded() {
+    assert_matches_ps("study-c46a2e1300-roost-rounds-half");
+}

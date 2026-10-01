@@ -16388,24 +16388,35 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recover_(move)>
                 // Heal moves read weather from the USER's perspective —
                 // Utility Umbrella holders see Sun/Rain as clear.
+                //
+                // Rounding (PS): `heal: [1, 2]` moves heal Math.round(maxhp/2)
+                // (sim/battle-actions.ts:1209); the weather moves heal
+                // this.modify(maxhp, factor) with factor 0.5 / 0.667 / 0.25,
+                // i.e. tr((maxhp * tr(factor * 4096) + 2047) / 4096).
                 let user_weather = self.effective_weather_for(actor_side, actor_slot);
-                let max_hp_factor: (u32, u32) = match move_id {
-                    data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => match user_weather {
-                        crate::weather::Weather::Sun => (2, 3),
+                // `None` = heal: [1, 2]; `Some(m)` = modify by m/4096.
+                let modifier: Option<u32> = match move_id {
+                    data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => Some(match user_weather {
+                        crate::weather::Weather::Sun => 2732,
                         crate::weather::Weather::Rain
                         | crate::weather::Weather::Sand
-                        | crate::weather::Weather::Snow => (1, 4),
-                        _ => (1, 2),
-                    },
-                    data::move_id::SHOREUP => match user_weather {
-                        crate::weather::Weather::Sand => (2, 3),
-                        _ => (1, 2),
-                    },
-                    _ => (1, 2),
+                        | crate::weather::Weather::Snow => 1024,
+                        _ => 2048,
+                    }),
+                    data::move_id::SHOREUP => Some(match user_weather {
+                        crate::weather::Weather::Sand => 2732,
+                        _ => 2048,
+                    }),
+                    _ => None,
                 };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() && a.current_hp < a.stats.hp {
-                        let heal = ((a.stats.hp as u32 * max_hp_factor.0) / max_hp_factor.1).max(1) as u16;
+                        let max = a.stats.hp as u32;
+                        let heal = match modifier {
+                            Some(m) => (max * m + 2047) / 4096,
+                            None => max.div_ceil(2),
+                        }
+                        .max(1) as u16;
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(a.stats.hp as u32) as u16;
                         // Roost's self volatile (duration 1, cleared at the
                         // next turn's reset) drops Flying; a Terastallized
@@ -36050,7 +36061,8 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         let max = b.p1.team[0].stats.hp;
-        let expected = (half as u32 + (max as u32 / 2)).min(max as u32) as u16;
+        // Math.round(maxhp / 2) (sim/battle-actions.ts:1209).
+        let expected = (half as u32 + (max as u32).div_ceil(2)).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Recover heals 50% max HP");
     }
 
@@ -36270,7 +36282,8 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        let expected = (1u32 + (max as u32 / 4)).min(max as u32) as u16;
+        // this.modify(maxhp, 0.25): tr((maxhp * 1024 + 2047) / 4096).
+        let expected = (1u32 + (max as u32 * 1024 + 2047) / 4096).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Moonlight heals 1/4 in Rain");
     }
 
