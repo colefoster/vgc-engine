@@ -446,3 +446,18 @@ fn full_paralysis_gate_does_not_take_dire_claws_pick() {
 fn attract_gate_is_keyed_to_the_infatuated_mon() {
     assert_matches_ps("study-907733b22f-attract-gate-key");
 }
+
+/// Study battle 1b664d1de5: Triple Axel's later hits read the attacker's
+/// live state (Flame Body's burn from an earlier hit), so the Shell Bell
+/// heal matches PS.
+#[test]
+fn multi_hit_reads_live_stats_each_hit() {
+    assert_matches_ps("study-1b664d1de5-multihit-live-stats");
+}
+
+/// Study battle 622d179172: Dual Wingbeat stops once Rough Skin knocks its
+/// user out (data/mods/champions/scripts.ts hitStepMoveHitLoop).
+#[test]
+fn multi_hit_stops_when_its_user_faints() {
+    assert_matches_ps("study-622d179172-multihit-stops-on-user-faint");
+}
