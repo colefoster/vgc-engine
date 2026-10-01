@@ -1161,6 +1161,13 @@ pub(crate) fn calculate_damage_with_bp(
         // `sim/pokemon.ts` `ignoreBurnHalving` for Facade. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Facade_(move)>.
         (m.type_, (m.base_power as u32) * 2)
+    } else if matches!(move_id, data::move_id::STOMPINGTANTRUM | data::move_id::TEMPERFLARE)
+        && attacker.move_last_turn_result == crate::pokemon::MoveResult::Failed
+    {
+        // PS data/moves.ts:18050 stompingtantrum / :19186 temperflare
+        // basePowerCallback: `if (pokemon.moveLastTurnResult === false)
+        // return move.basePower * 2`.
+        (m.type_, (m.base_power as u32) * 2)
     } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
