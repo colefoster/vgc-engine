@@ -368,3 +368,10 @@ fn follow_me_redirects_parting_shot() {
 fn magic_bounce_ignores_a_move_aimed_at_its_partner() {
     assert_matches_ps("study-bc20b85092-magic-bounce-chosen-target");
 }
+
+/// Study battle 4800ac3963: Explosion faints its user before the hit, so a
+/// replacement comes in at the end of the turn.
+#[test]
+fn explosion_faints_its_user() {
+    assert_matches_ps("study-4800ac3963-explosion-faints-user");
+}

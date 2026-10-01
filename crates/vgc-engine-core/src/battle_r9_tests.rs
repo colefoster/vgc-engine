@@ -237,3 +237,21 @@ fn magic_bounce_reflects_only_the_move_aimed_at_its_holder() {
     assert_eq!(b.p2.team[1].status, crate::pokemon::Status::Paralysis, "Glare at Chansey lands");
     assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None, "nothing bounced back");
 }
+
+// ---- Explosion / Self-Destruct / Misty Explosion faint the user ----
+//
+// sim/battle-actions.ts:500: `if (move.selfdestruct === 'always')
+// this.battle.faint(pokemon, pokemon, move)` before the hit, so the user
+// faints even when every target protects.
+
+#[test]
+fn explosion_faints_its_user_even_into_protect() {
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["explosion"]},{"species":"chansey","level":50,"moves":["splash"]},{"species":"blissey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"moves":["protect"]},{"species":"chansey","level":50,"moves":["protect"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(!b.p1.team[0].is_alive(), "Explosion's user faints");
+    assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp);
+}
