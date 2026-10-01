@@ -439,3 +439,10 @@ fn two_argument_random_draws_key_as_offsets() {
 fn full_paralysis_gate_does_not_take_dire_claws_pick() {
     assert_matches_ps("study-fb2bf66e3b-paralysis-gate-key");
 }
+
+/// Study battle 907733b22f: the infatuation check (a bool PS keys under the
+/// attracted mon's move) pairs with PS's outcome, not a stale context.
+#[test]
+fn attract_gate_is_keyed_to_the_infatuated_mon() {
+    assert_matches_ps("study-907733b22f-attract-gate-key");
+}

@@ -11120,8 +11120,15 @@ self.trigger_emergency_exits();
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.clear_attract();
                 }
-            } else if self.rng.range(2) == 0 {
-                return PreMoveOutcome::Abort;
+            } else {
+                // Keyed oracle: a parked bool, like the paralysis gate above.
+                let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
+                self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+                let immobilized = self.rng.range(2) == 0;
+                self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                if immobilized {
+                    return PreMoveOutcome::Abort;
+                }
             }
         }
 
