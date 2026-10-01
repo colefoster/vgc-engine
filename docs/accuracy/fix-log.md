@@ -1205,23 +1205,27 @@ earlier.
 
 ## Triage of the 48 diverged forced-RNG battles
 
-| bucket | battles | status after round 10 |
+Each round-9 divergence, by first-divergence cause:
+
+| cause | battles | status after round 10 |
 |---|---|---|
-| Struggle under Encore (+ recoil, Protect, typeless) | 4 | fixed |
-| White Herb after both lead Intimidates | 3 | 2 fixed; 1 is a pre-turn switch tie (harness) |
+| Struggle under Encore (+ recoil rounding, Protect, typeless) | 4 | fixed |
 | Friend Guard for the second spread target after its holder faints | 3 | fixed |
-| Sap Sipper / Soundproof / Oblivious vs status moves | 4 | fixed |
-| Transform / Imposter moves | 3 | 2 fixed; 1 is a Red Card / Emergency Exit pick (decision model) |
+| Sap Sipper / Soundproof / Oblivious vs status moves | 4 | 3 fixed; Oblivious `7bd3433b14` now diverges later (untriaged last-turn Earthquake) |
+| White Herb after both lead Intimidates | 2 | fixed |
+| Transform / Imposter moves | 2 | fixed |
 | Trick vs a Mega Stone holder | 2 | fixed |
 | Parental Bond | 2 | fixed |
-| Mega Sol (Weather Ball, then Solar Beam) | 1 | fixed |
-| one each: Surge Surfer, Toxic Debris by an ally, Mirror Armor → Competitive, Aromatic Mist, Solar Power order, Mental Herb vs Disable (then Disable's duration), Stone Axe + Life Orb KO, Shield Dust vs Fake Out, Life Orb vs Disguise, Burning Jealousy, Harvest, Sitrus on switch-in, Sitrus after sand chip, Healer before burn, Sticky Web → Defiant | 15 | fixed |
-| Palafin / Palafin-Hero both on one team (driver remaps switches by name) | 3 | remain (harness) |
+| Toxic Debris hit by an ally | 2 | fixed |
+| one each: Surge Surfer, Mirror Armor → Competitive, Mega Sol, Aromatic Mist, Solar Power order, Mental Herb vs Disable, Stone Axe + Life Orb KO, Shield Dust vs Fake Out, Life Orb vs Disguise, Burning Jealousy, Harvest, Sitrus on switch-in, Sitrus after sand chip, Healer before burn | 14 | fixed |
+| Sticky Web → Defiant | 1 | fixed; `7d354ee6d9` now diverges later on the Palafin naming issue |
+| cleared as a side effect of the fixes above | 3 | fixed (`33238f5ca3`, `9de74b3c92`, `ddfb361dce`) |
+| Palafin and Palafin-Hero on one team (`ps-battle.js` remaps switches by name) | 2 | remain (harness) |
 | pre-turn switch tie, Psychic Terrain lead order | 2 | remain (harness) |
-| Infestation duration | 1 | remain (harness) |
 | Champions Encore's retarget draw (no keyed context) | 1 | remain (harness) |
+| Infestation duration | 1 | remain (harness) |
+| Red Card / Emergency Exit replacement pick | 1 | remain (decision model) |
 | Trace pick | 1 | remain (RNG plumbing) |
-| Slowbro survives an Earthquake at the battle's last turn | 1 | remain (not triaged) |
 | **total** | **48** | **38 fixed, 10 remain** |
 
 ## Fixes
@@ -1304,12 +1308,12 @@ only. Commit messages say which.
 
 ## Still not fixed (10 forced-RNG battles)
 
-- Harness (6): Palafin and Palafin-Hero on one team (3; `ps-battle.js`
+- Harness (7): Palafin and Palafin-Hero on one team (3; `ps-battle.js`
   remaps switch targets by species name), a pre-turn switch tie and a
-  Psychic Terrain lead order (2), Champions Encore's retarget draw (1).
-- Infestation duration (1), Trace pick (1), a Red Card / Emergency Exit
-  replacement pick (1, decision model), and one untriaged last-turn
-  Earthquake (1).
+  Psychic Terrain lead order (2), Champions Encore's retarget draw (1),
+  the Infestation duration (1).
+- Trace pick (1, RNG plumbing), a Red Card / Emergency Exit replacement
+  pick (1, decision model), and one untriaged last-turn Earthquake (1).
 - Seeded (`ps-rng`): 136 battles diverge, 131 first on a draw.
   `eachEvent` ties 20, resolveAction random targets 19, `secondaries` 18,
   `fieldEvent` ties 14, commitChoices sort ties 14, accuracy 13,
