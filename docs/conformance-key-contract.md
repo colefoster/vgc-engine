@@ -136,3 +136,21 @@ The engine reads these from: `Pokemon.{status,boosts,effective_item_id,effective
 Still NOT in the diff (follow-up): PP per slot, volatiles (Substitute/Leech
 Seed/confusion/Taunt-Encore-Disable turns/Protect), current types/forme,
 Wish/Future-Sight pending, Tera-used.
+
+## Oracle-only engine branches
+
+Some draws PS makes cannot be keyed by the contract above without changing
+the recorded dataset (the 1,300 PS battles in `~/Library/Caches/vgc-acc`).
+Instead, the engine carries a few branches that run **only under
+`Rng::OracleKeyed`** (`Rng::is_oracle_keyed()`), i.e. only in the
+conformance harness. Owner-approved (rounds 9 and 10); SplitMix battles
+(self-play, search) and `Rng::Ps` battles never take them.
+
+| branch | where | why |
+|---|---|---|
+| PS's commitChoices `queue.sort()` replayed with PS's recorded tie offsets | `Battle::keyed_commit_sort`, `turn_prologue` | the offsets index PS's action list (switches, Megas, Tera, moves), not the engine's move list |
+| no `shuffle_tie_groups` in the initial order | `order::action_order_keyed` | the commit order above replaces it |
+| PS's tie shuffles replayed in every gen-8+ re-sort | `after_move_action` → `order::resort_remaining` with the keyed rng | SplitMix keeps tied moves in queue order |
+| full-paralysis and infatuation gates drawn under context `u16::MAX - 4` | `battle.rs` paralysis / Attract gates | the harness parks these pass/fail bools apart from the move's range draws (Dire Claw shares the key) |
+
+If the harness driver ever keys these draws directly, delete the branches.

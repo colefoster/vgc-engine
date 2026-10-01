@@ -571,6 +571,20 @@ impl Rng {
     }
 
     /// True for the keyed-oracle variant (the conformance harness).
+    ///
+    /// TEST-ORACLE-ONLY engine branches hang off this predicate (owner-approved,
+    /// round 10). They exist so the forced-RNG harness can replay draws PS
+    /// recorded without re-keying them, and never run for `Splitmix`, `Ps`,
+    /// `Recording` or `PsGen5` battles (self-play, search, `ps-rng`):
+    /// - `Battle::keyed_commit_sort` and the keyed branch of
+    ///   `Battle::turn_prologue`: PS's commitChoices sort and its tie shuffles;
+    /// - `order::action_order_keyed` skips `shuffle_tie_groups`, and the
+    ///   after-move re-sort replays PS's tie shuffles (`resort_remaining`
+    ///   with the keyed rng);
+    /// - the full-paralysis and infatuation gates draw under the context
+    ///   `u16::MAX - 4`, which no PS draw carries.
+    ///
+    /// See `docs/conformance-key-contract.md`, "Oracle-only engine branches".
     #[inline(always)]
     pub fn is_oracle_keyed(&self) -> bool {
         matches!(self, Rng::OracleKeyed(_))

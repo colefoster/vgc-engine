@@ -104,6 +104,15 @@ moves next), Mega Evolution in Speed order, a fainted mon's queued move
 sorting on its cleared Speed, Glaive Rush's drawback, and Trace's random
 pick. See [`fix-log.md`](fix-log.md), round 6.
 
+## Not `ps-rng`: the keyed oracle's own branches
+
+A few engine branches run only under `Rng::OracleKeyed` (the forced-RNG
+harness): PS's commitChoices sort and re-sort tie shuffles, and the
+paralysis / Attract gates under their own key. They are test-oracle-only,
+separate from the `ps-rng` emulation above, and never run in a SplitMix or
+`Rng::Ps` battle. See
+[`conformance-key-contract.md`](../conformance-key-contract.md#oracle-only-engine-branches).
+
 ## What is not emulated, and why
 
 After round 9 the seeded differential has 1,123 of 1,300 battles fully
