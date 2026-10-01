@@ -675,6 +675,14 @@ pub struct Pokemon {
     /// paralysed action counts). Fake Out and Mat Block need it to be 1.
     #[serde(default)]
     pub move_actions: u8,
+    /// PS `statsRaisedThisTurn`: a boost raised a stat this turn
+    /// (sim/battle.ts boost; cleared at endTurn). Burning Jealousy reads it.
+    #[serde(default)]
+    pub stats_raised_this_turn: bool,
+    /// Transform / Imposter: the species, stats, moves and PP from before
+    /// the copy (PS baseSpecies / baseMoveSlots), restored on switch-out.
+    #[serde(default)]
+    pub transform_base: Option<TransformBase>,
     /// Encoded `(side_byte, slot_byte)` of the most recent attacker
     /// that landed damaging-move HP damage on this mon this turn.
     /// `(255, 255)` = no attacker recorded. `side_byte`: 0 = P1,
@@ -1014,6 +1022,8 @@ impl Pokemon {
             fainted: false,
             turns_active: 0,
             move_actions: 0,
+            stats_raised_this_turn: false,
+            transform_base: None,
             last_used_move_slot: 255,
             last_used_move_target: 255,
             boosted_stat: 255,
@@ -1324,6 +1334,21 @@ impl Pokemon {
     #[inline]
     pub fn sync_can_mega_evolve(&mut self) {
         self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
+    }
+
+    /// Undo Transform / Imposter (PS clearVolatile on switch-out:
+    /// setSpecies(baseSpecies), moveSlots = baseMoveSlots).
+    pub fn revert_transform(&mut self) {
+        if let Some(base) = self.transform_base.take() {
+            let hp = self.stats.hp;
+            self.species_id = base.species_id;
+            self.ability_id = base.ability_id;
+            self.stats = base.stats;
+            self.stats.hp = hp;
+            self.moves = base.moves;
+            self.pp = base.pp;
+            self.sync_can_mega_evolve();
+        }
     }
 
     /// True when the held item can't be taken (Knock Off, Thief, Symbiosis,
@@ -2464,4 +2489,14 @@ mod tests {
         // HP: (2*108 + 31 + 0) * 50 / 100 + 50 + 10 = 183
         assert_eq!(stats.hp, 183, "Garchomp L50 31/0 hp");
     }
+}
+
+/// The transformer's own state saved by Transform / Imposter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransformBase {
+    pub species_id: u16,
+    pub ability_id: u16,
+    pub stats: FinalStats,
+    pub moves: [u16; 4],
+    pub pp: [u8; 4],
 }

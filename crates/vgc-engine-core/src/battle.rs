@@ -322,6 +322,19 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Set while a batched SwitchIn's abilities run: White Herb's
+    /// onAnySwitchIn (priority -2, data/items.ts:7692) waits until every
+    /// ability handler (Intimidate, priority 0) has run.
+    #[serde(skip)]
+    defer_white_herb: bool,
+    /// The current move hit a Disguise (no damage dealt, but PS's
+    /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
+    #[serde(skip)]
+    disguise_hit_this_move: bool,
+    /// The status move being resolved cannot miss its target (Glaive Rush
+    /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
+    #[serde(skip)]
+    status_sure_hit: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -692,6 +705,9 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            defer_white_herb: false,
+            disguise_hit_this_move: false,
+            status_sure_hit: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -783,7 +799,7 @@ impl Battle {
                         let spe = b
                             .side(side)
                             .active_mon(slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, b.weather))
+                            .map(|m| crate::order::effective_speed(m, tw, b.weather, b.terrain))
                             .unwrap_or(0);
                         leads[k] = (spe, side, slot);
                         k += 1;
@@ -791,9 +807,11 @@ impl Battle {
                 }
             }
             leads[..k].sort_by(|a, c| c.0.cmp(&a.0));
+            b.defer_white_herb = true;
             for &(_, side, slot) in &leads[..k] {
                 crate::ability::on_switch_in(&mut b, side, slot);
             }
+            b.defer_white_herb = false;
             for &(_, side, slot) in &leads[..k] {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
@@ -1253,8 +1271,21 @@ impl Battle {
             .side(target_side)
             .active_mon(target_slot as usize)
             .filter(|m| m.is_alive())
-            .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts));
-        let Some((sp, ab, st, boosts)) = payload else { return false };
+            .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts, m.moves));
+        let Some((sp, ab, st, boosts, moves)) = payload else { return false };
+        // Save the transformer's own species / stats / moves for the
+        // switch-out revert (PS baseSpecies, baseMoveSlots).
+        if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
+            if m.transform_base.is_none() {
+                m.transform_base = Some(crate::pokemon::TransformBase {
+                    species_id: m.species_id,
+                    ability_id: m.ability_id,
+                    stats: m.stats,
+                    moves: m.moves,
+                    pp: m.pp,
+                });
+            }
+        }
         // The transformer's ability BEFORE the copy — PS `oldAbility` in
         // `sim/pokemon.ts:setAbility`. Used below to decide whether the copied
         // ability's onStart re-fires.
@@ -1276,6 +1307,12 @@ impl Battle {
             m.stats.hp = hp;
             // PS copies every boost stage from the target onto the transformer.
             m.boosts = boosts;
+            // moveSlots: the target's moves at min(5, pp) PP
+            // (sim/pokemon.ts:1305-1326).
+            m.moves = moves;
+            for i in 0..4 {
+                m.pp[i] = if moves[i] == u16::MAX { 0 } else { data::MOVES[moves[i] as usize].pp.min(5) };
+            }
         }
         // PS `transformInto` -> `setAbility(target.ability, ..., isTransform=true)`
         // (sim/pokemon.ts:1358). `setAbility` runs the acquired ability's onStart
@@ -1430,6 +1467,7 @@ impl Battle {
                 .side(source_side)
                 .active_mon(source_slot as usize)
                 .is_some_and(|m| m.is_alive());
+            let source_before = self.side(source_side).active_mon(source_slot as usize).map(|m| m.boosts);
             for &(idx, delta) in deltas {
                 if delta < 0 {
                     // PS skips the bounce entirely when the holder's stage
@@ -1455,17 +1493,32 @@ impl Battle {
                         self.side_mut(target_side).active_mon_mut(target_slot as usize)
                     {
                         let stage = &mut m.boosts[idx as usize];
+                        let before = *stage;
                         *stage = (*stage + delta).clamp(-6, 6);
+                        if *stage > before {
+                            m.stats_raised_this_turn = true;
+                        }
                     }
                 }
             }
             self.mirror_to_opportunist(target_side, target_slot, deltas);
+            // The bounce is a full boost on the source (`this.boost(boosts,
+            // source, target, null, true)`), so its foe-drop reactions run:
+            // Defiant / Competitive (they skip an ally's drop), Eject Pack,
+            // White Herb.
+            if let Some(before) = source_before.filter(|_| source_alive && source_side != target_side) {
+                self.after_foe_drop(source_side, source_slot, before, true);
+            }
             return;
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
+                let before = *stage;
                 *stage = (*stage + delta).clamp(-6, 6);
+                if *stage > before {
+                    m.stats_raised_this_turn = true;
+                }
             }
         }
         self.mirror_to_opportunist(target_side, target_slot, deltas);
@@ -1831,6 +1884,16 @@ impl Battle {
             if self.imprisoned(side, move_id) {
                 continue;
             }
+            // Champions: Fake Out / First Impression are disabled once the mon
+            // has started a move action since switching in
+            // (data/mods/champions/moves.ts:352, :384 onDisableMove,
+            // `pokemon.activeMoveActions`). Encored into one, it Struggles.
+            if self.champions
+                && active.move_actions > 0
+                && matches!(move_id, data::move_id::FAKEOUT | data::move_id::FIRSTIMPRESSION)
+            {
+                continue;
+            }
             // Survived every selection filter — this is a selectable move, so
             // PS's `hasValidMove` is set and Struggle will NOT be offered. (PS
             // sets the flag at the "not disabled" point, independent of whether
@@ -2124,7 +2187,7 @@ self.trigger_emergency_exits();
     fn ps_live_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
         let m = self.side(side).active_mon(slot)?;
         let tw = self.side(side).conditions.tailwind_turns > 0;
-        let mut spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+        let mut spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
         if self.trick_room_turns > 0 {
             spe = 10000 - spe;
         }
@@ -2632,7 +2695,7 @@ self.trigger_emergency_exits();
         // (sim/side.ts:1086-1091, sim/battle.ts:2660).
         let n_team = self.p1.team.len().min(self.p2.team.len());
         for i in 0..n_team {
-            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None) as i64 & 0x1FFF;
+            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None, crate::terrain::Terrain::None) as i64 & 0x1FFF;
             if key(&self.p1.team[i]) == key(&self.p2.team[i]) {
                 let _ = self.rng.ps_random_range("shuffle", 2 * i as u32, 2 * i as u32 + 2);
             }
@@ -2996,7 +3059,7 @@ self.trigger_emergency_exits();
                 }
                 let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
                 seen[slot.min(1)] = true;
-                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather) as i64;
+                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather, self.terrain) as i64;
                 let spe = if trick_room { 10000 - raw } else { raw };
                 let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
                     if k < keys.len() {
@@ -3738,6 +3801,12 @@ self.trigger_emergency_exits();
         self.commander_update(SideRef::P1);
         self.commander_update(SideRef::P2);
 
+        // endTurn clears statsRaisedThisTurn (sim/battle.ts endTurn).
+        for side in [SideRef::P1, SideRef::P2] {
+            for m in self.side_mut(side).team.iter_mut() {
+                m.stats_raised_this_turn = false;
+            }
+        }
         self.turn = self.turn.saturating_add(1);
         let p1_dead = self.p1.is_defeated();
         let p2_dead = self.p2.is_defeated();
@@ -3779,7 +3848,7 @@ self.trigger_emergency_exits();
                     let Some(m) = self.side(side).active_mon(actor_slot as usize) else { continue };
                     if n < out.len() {
                         let tw = self.side(side).conditions.tailwind_turns > 0;
-                        let spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+                        let spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
                         out[n] = (side, actor_slot);
                         keys[n] = if trick_room { spe } else { -spe };
                         n += 1;
@@ -3910,7 +3979,7 @@ self.trigger_emergency_exits();
                         let spd = self
                             .side(side)
                             .active_mon(actor_slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                            .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
                             .unwrap_or(0);
                         if n < acts.len() {
                             acts[n] = (spd, side, actor_slot, team_index);
@@ -4060,15 +4129,25 @@ self.trigger_emergency_exits();
             e.0 = self
                 .side(e.1)
                 .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
                 .unwrap_or(0);
         }
         entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
         // Handlers sort by priority before Speed: abilities (0) all run
         // before the item handlers (seeds / Booster Energy / Room Service
         // carry `onSwitchInPriority` -1 or -2, data/items.ts).
+        self.defer_white_herb = true;
         for &(_, side, slot) in &entered[..n] {
             crate::ability::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        // White Herb's onAnySwitchIn also fires for a holder already in.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                if !entered[..n].iter().any(|e| e.1 == side && e.2 == slot) {
+                    crate::item::try_consume_white_herb(self, side, slot);
+                }
+            }
         }
         for &(_, side, slot) in &entered[..n] {
             crate::item::on_switch_in(self, side, slot);
@@ -4124,7 +4203,7 @@ self.trigger_emergency_exits();
                 if !is_pursuit {
                     continue;
                 }
-                let spe = crate::order::effective_speed(mon, tailwind, self.weather);
+                let spe = crate::order::effective_speed(mon, tailwind, self.weather, self.terrain);
                 if n < sources.len() {
                     sources[n] = (actor_slot, move_slot, spe);
                     n += 1;
@@ -4214,6 +4293,7 @@ self.trigger_emergency_exits();
             let outgoing_idx = s.active[actor_slot as usize] as usize;
             if let Some(outgoing) = s.team.get_mut(outgoing_idx) {
                 outgoing.ability_override = u16::MAX;
+                outgoing.revert_transform();
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);
@@ -4667,8 +4747,12 @@ self.trigger_emergency_exits();
         // slot 0 (PS `pokemon.side.foe.active[0]`). Mirror Armor reflect
         // and White Herb restore ride through from here.
         let source_side = side.opposing();
+        let before = self.side(side).active_mon(slot as usize).map(|m| m.boosts);
         self.apply_boosts(side, slot, &[(4, -1)], source_side, 0);
-        crate::item::try_consume_white_herb(self, side, slot);
+        // A foe-sourced drop: Defiant / Competitive, Eject Pack, White Herb.
+        if let Some(before) = before {
+            self.after_foe_drop(side, slot, before, true);
+        }
     }
 
     /// Clear all modelled entry hazards (Spikes / Toxic Spikes / Stealth
@@ -5352,6 +5436,7 @@ self.trigger_emergency_exits();
             }
         }
 
+        self.disguise_hit_this_move = false;
         // PS `runMove` (sim/battle-actions.ts:217) counts the action before
         // any beforeMove check can stop it.
         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -7405,7 +7490,11 @@ self.trigger_emergency_exits();
                     for s in 0..n {
                         if s == tslot { continue; }
                         if let Some(ally) = self.side(tside).active_mon(s as usize) {
-                            if ally.is_alive()
+                            // PS computes a spread move's damage for every
+                            // target before dealing any (spreadMoveHit), so a
+                            // holder this move already KO'd still guards.
+                            let hit_by_this_spread = is_spread && targets.iter().any(|&t| t == (tside, s));
+                            if (ally.is_alive() || hit_by_this_spread)
                                 && ally.effective_ability_id()
                                     == data::ability_id::FRIENDGUARD
                             {
@@ -7459,6 +7548,7 @@ self.trigger_emergency_exits();
                 champions: self.champions,
                 defender_resist_berry: fixed_damage.is_none()
                     && crate::item::type_resist_berry_fires(self, tside, tslot, move_id, berry_move_type, &defender),
+                parental_bond_hit: false,
             };
             // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
             //   if (this.randomChance(3, 10)) return this.chainModify(2);
@@ -7674,6 +7764,31 @@ self.trigger_emergency_exits();
             if darts_phase[ti] == 2 && darts_pass == [true, true] {
                 hits = 1;
             }
+            // Parental Bond — PS data/abilities.ts parentalbond onPrepareHit:
+            // a damaging move that is not already multi-hit, not spread,
+            // not a charge / future move and not flagged noparentalbond
+            // hits twice.
+            if hits == 1
+                && dmg > 0
+                && m.multihit_min == 0
+                && !is_spread
+                && attacker.effective_ability_id() == data::ability_id::PARENTALBOND
+                && !matches!(
+                    move_id,
+                    data::move_id::DRAGONDARTS | data::move_id::ENDEAVOR | data::move_id::EXPLOSION
+                        | data::move_id::FINALGAMBIT | data::move_id::FLING | data::move_id::ICEBALL
+                        | data::move_id::ROLLOUT | data::move_id::SELFDESTRUCT
+                        | data::move_id::BOUNCE | data::move_id::DIG | data::move_id::DIVE
+                        | data::move_id::ELECTROSHOT | data::move_id::FLY | data::move_id::FREEZESHOCK
+                        | data::move_id::ICEBURN | data::move_id::METEORBEAM | data::move_id::PHANTOMFORCE
+                        | data::move_id::RAZORWIND | data::move_id::SHADOWFORCE | data::move_id::SKULLBASH
+                        | data::move_id::SKYATTACK | data::move_id::SKYDROP | data::move_id::SOLARBEAM
+                        | data::move_id::SOLARBLADE | data::move_id::DOOMDESIRE | data::move_id::FUTURESIGHT
+                        | data::move_id::BEATUP
+                )
+            {
+                hits = 2;
+            }
             // Beat Up — hit count = number of ELIGIBLE party members on the
             // user's side, and each hit's BP keys off that member's SPECIES
             // base Attack. PS data/moves.ts:beatup `onModifyMove`:
@@ -7883,6 +7998,7 @@ self.trigger_emergency_exits();
             self.apply_crash_damage(actor_side, actor_slot);
         }
 
+        self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -7904,6 +8020,68 @@ self.trigger_emergency_exits();
             drag_target,
             hit_target,
         );
+    }
+
+    /// Ceaseless Edge / Stone Axe hazards: their onAfterHit runs inside the
+    /// hit (gated on `source.hp`), before the AfterMoveSecondarySelf step
+    /// that applies Life Orb's recoil (sim/battle-actions.ts:536), so it is
+    /// called ahead of `apply_self_effects`.
+    fn apply_after_hit_hazards(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+    ) {
+        // Ceaseless Edge — PS data/moves.ts:ceaselessedge `onAfterHit` (+
+        // `onAfterSubDamage`): `if (!move.hasSheerForce && source.hp) { for
+        // (const side of source.side.foeSidesWithConditions())
+        // side.addSideCondition('spikes'); }`. After a connecting hit, lay one
+        // Spikes layer on the FOE's side (caps at 3). Gated identically to
+        // Rapid Spin above — the user must survive and NOT be a Sheer Force
+        // user (Sheer Force converts the `secondary: {}` into the damage boost
+        // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
+        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                let layers = &mut self.side_mut(opp).conditions.spikes_layers;
+                if *layers < 3 {
+                    *layers += 1;
+                }
+            }
+        }
+
+        // Stone Axe — PS data/moves.ts:stoneaxe `onAfterHit` (+
+        // `onAfterSubDamage`): identical shape to Ceaseless Edge but sets
+        // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
+        // && source.hp` gate. Kleavor's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
+        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                self.side_mut(opp).conditions.stealth_rock = true;
+            }
+        }
     }
 
     // ===== PR-LC4: cold helpers outlined from resolve_move_with_pending =====
@@ -8230,6 +8408,33 @@ self.trigger_emergency_exits();
                         .unwrap_or(false);
                     if !is_self && target_good_as_gold {
                         return;
+                    }
+                    // Sap Sipper / Soundproof / Oblivious onTryHit block
+                    // status moves as well (data/abilities.ts sapsipper,
+                    // soundproof, oblivious). Sap Sipper's +1 Atk is the
+                    // holder's own boost.
+                    let t_ability = self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .filter(|tm| tm.is_alive())
+                        .map(|tm| tm.effective_ability_id());
+                    if !is_self {
+                        match t_ability {
+                            Some(data::ability_id::SAPSIPPER) if m.type_ == 4 => {
+                                self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
+                                return;
+                            }
+                            Some(data::ability_id::SOUNDPROOF) if m.is_sound => return,
+                            Some(data::ability_id::OBLIVIOUS)
+                                if matches!(
+                                    move_id,
+                                    data::move_id::ATTRACT | data::move_id::CAPTIVATE | data::move_id::TAUNT
+                                ) =>
+                            {
+                                return
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -8582,6 +8787,7 @@ self.trigger_emergency_exits();
             d.disguise_busted = true;
             d.current_hp = d.current_hp.saturating_sub(chip);
         }
+        self.disguise_hit_this_move = true;
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
         true
     }
@@ -9364,54 +9570,6 @@ self.trigger_emergency_exits();
             }
         }
 
-        // Ceaseless Edge — PS data/moves.ts:ceaselessedge `onAfterHit` (+
-        // `onAfterSubDamage`): `if (!move.hasSheerForce && source.hp) { for
-        // (const side of source.side.foeSidesWithConditions())
-        // side.addSideCondition('spikes'); }`. After a connecting hit, lay one
-        // Spikes layer on the FOE's side (caps at 3). Gated identically to
-        // Rapid Spin above — the user must survive and NOT be a Sheer Force
-        // user (Sheer Force converts the `secondary: {}` into the damage boost
-        // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
-        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                let opp = actor_side.opposing();
-                let layers = &mut self.side_mut(opp).conditions.spikes_layers;
-                if *layers < 3 {
-                    *layers += 1;
-                }
-            }
-        }
-
-        // Stone Axe — PS data/moves.ts:stoneaxe `onAfterHit` (+
-        // `onAfterSubDamage`): identical shape to Ceaseless Edge but sets
-        // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
-        // && source.hp` gate. Kleavor's signature. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
-        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                let opp = actor_side.opposing();
-                self.side_mut(opp).conditions.stealth_rock = true;
-            }
-        }
 
         // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
         // Overdrive...) trigger +1 SpA on the user after the hit. PS
@@ -9770,7 +9928,7 @@ self.trigger_emergency_exits();
                         if !p.is_alive() || p.effective_ability_id() != want {
                             continue;
                         }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
+                        let spe = crate::order::effective_speed(p, tailwind, self.weather, self.terrain);
                         if best.is_none() || spe > best_spe {
                             best = Some((side, slot));
                             best_spe = spe;
@@ -10204,6 +10362,9 @@ self.trigger_emergency_exits();
                 let mut inp = inv.inputs;
                 inp.crit = hc;
                 inp.defender_resist_berry = false;
+                // A single-hit move only reaches a second hit through
+                // Parental Bond: x0.25 (data/mods/champions/scripts.ts:209).
+                inp.parental_bond_hit = hit_idx == 1 && data::MOVES[inv.move_id as usize].multihit_min == 0;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
                 } else {
@@ -10318,8 +10479,12 @@ self.trigger_emergency_exits();
                 }
                 // Skip-charge gates: weather (Solar Beam / Solar Blade in Sun,
                 // Electro Shot in Rain) or Power Herb consumption.
+                // Mega Sol reads as sun for the user's own moves except
+                // Electro Shot (sim/pokemon.ts:2193 effectiveWeather).
+                let mega_sol = attacker.effective_ability_id() == data::ability_id::MEGASOL;
                 let weather_skip = (matches!(move_id, data::move_id::SOLARBEAM | data::move_id::SOLARBLADE)
-                    && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun))
+                    && (mega_sol
+                        || matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Sun)))
                     || (move_id == data::move_id::ELECTROSHOT
                         && matches!(self.effective_weather_for(actor_side, actor_slot), crate::weather::Weather::Rain));
                 let power_herb = attacker.item_id == data::item_id::POWERHERB;
@@ -11504,8 +11669,8 @@ self.trigger_emergency_exits();
             }
         }
 
-        // Struggle recoil — PS `sim/battle-actions.ts:992` `struggleRecoil`:
-        //   recoilDamage = clampIntRange(trunc(pokemon.maxhp / 4), 1)
+        // Struggle recoil — PS `sim/battle-actions.ts:1381` `struggleRecoil`:
+        //   recoilDamage = clampIntRange(Math.round(pokemon.baseMaxhp / 4), 1)
         //   this.battle.directDamage(recoilDamage, pokemon, pokemon, 'strugglerecoil')
         // The user loses 1/4 of its MAX HP (not damage-dealt). The @pkmn/dex
         // dump strips the `struggleRecoil` flag, so Struggle's `recoil_num` is
@@ -11515,7 +11680,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
         if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                let recoil = (a.stats.hp / 4).max(1);
+                let recoil = ((a.stats.hp + 2) / 4).max(1);
                 a.current_hp = a.current_hp.saturating_sub(recoil);
                 if a.current_hp == 0 {
                     a.fainted = true;
@@ -11529,7 +11694,7 @@ self.trigger_emergency_exits();
         // for any non-Move effect, and Life Orb's recoil is an item-side
         // residual, not the move itself. PS: `data/items.ts:lifeorb` recoil
         // routes through the standard onDamage event.
-        if attacker_item_id == data::item_id::LIFEORB && any_damage_dealt > 0 {
+        if attacker_item_id == data::item_id::LIFEORB && (any_damage_dealt > 0 || self.disguise_hit_this_move) {
             // Sheer Force + Life Orb: PS `sim/battle-actions.ts:531`
             // gates the whole `AfterMoveSecondarySelf` step on
             // `!(move.hasSheerForce && pokemon.hasAbility('sheerforce'))`,
@@ -11886,7 +12051,7 @@ self.trigger_emergency_exits();
     }
 
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
-        if m.accuracy == 255 {
+        if m.accuracy == 255 || self.status_sure_hit {
             return true;
         }
         // `damage_only` synth path — force the accuracy result to
@@ -13065,6 +13230,7 @@ self.trigger_emergency_exits();
                     attacker_moves_last: false,
                     champions: self.champions,
                     defender_resist_berry: false,
+                    parental_bond_hit: false,
                 },
             )
         };
@@ -13166,6 +13332,7 @@ self.trigger_emergency_exits();
         self.eot_future_sight_delivery();
         self.eot_wish();
         self.eot_grassy_terrain_heal();
+        self.eot_cure_abilities();
         self.eot_item_residual();
         self.eot_leech_seed();
         self.eot_status_dot();
@@ -13303,6 +13470,19 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            // The weather's eachEvent('Update'): HP berries eat before the
+            // later residuals (Grassy Terrain, Leftovers).
+            self.update_hp_berries();
+        }
+        // Solar Power / Dry Skin onWeather, in the same eachEvent('Weather').
+        if matches!(weather, crate::weather::Weather::Sun | crate::weather::Weather::Rain) {
+            let n = self.format().active_count() as u8;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    crate::ability::on_weather(self, side, slot);
+                }
+            }
+            self.update_hp_berries();
         }
         // Rain Dish (data/abilities.ts:3759) and Ice Body (:1955) onWeather:
         // heal(baseMaxhp / 16) in rain / snow, in the same eachEvent('Weather').
@@ -13957,6 +14137,10 @@ self.trigger_emergency_exits();
     /// Eject Pack (onAfterBoost; `eject` false for Parting Shot, which it
     /// ignores, data/items.ts:1712) and White Herb, which restores what is
     /// still negative. Returns how many stats fell.
+    pub(crate) fn white_herb_deferred(&self) -> bool {
+        self.defer_white_herb
+    }
+
     pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
         let lowered = self
             .side(side)
@@ -14082,6 +14266,19 @@ self.trigger_emergency_exits();
     /// pre-F3 inline version; the section's own PS-citation comments
     /// remain at the top of the body. No RNG draws are added or
     /// removed; behavior is byte-identical.
+    /// Healer / Hydration / Shed Skin (PS onResidualOrder 5), ahead of
+    /// Leftovers and the status damage.
+    fn eot_cure_abilities(&mut self) {
+        let n = self.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::ability::on_residual_cures(self, side, slot, &mut rng);
+                self.rng = rng;
+            }
+        }
+    }
+
     fn eot_ability_residual(&mut self) {
         // 28. Ability residuals (Speed Boost etc.). PS onResidualOrder
         // for speedboost is 28 — last among the residual phases.
@@ -14317,6 +14514,18 @@ self.trigger_emergency_exits();
                 _ => self.resolve_status_target(opp_side),
             },
         };
+        // A target in Glaive Rush's drawback (data/moves.ts glaiverush
+        // condition onAccuracy) or a No Guard user / target (data/abilities.ts
+        // noguard onAnyAccuracy) makes the move sure-hit: no accuracy roll.
+        self.status_sure_hit = opp_target.is_some_and(|(ts, tslot)| {
+            self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
+                    || t.effective_ability_id() == data::ability_id::NOGUARD
+            })
+        }) || self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
         // Keyed-oracle attribution for this status move's own draws
         // (accuracy, sleep length, ...): without it they carry whatever move
         // context the last damaging move left behind. No-op for every
@@ -14732,6 +14941,20 @@ self.trigger_emergency_exits();
                 crate::item::try_consume_mirror_herb_on_foe_boost(
                     self, tside, tslot, boosts,
                 );
+            }
+            data::move_id::AROMATICMIST => {
+                // PS data/moves.ts:aromaticmist — target adjacentAlly,
+                // boosts {spd: 1}; fails without a live ally.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aromatic_Mist_(move)>.
+                let ally = actor_slot ^ 1;
+                if self.format().active_count() < 2
+                    || !self.side(actor_side).active_mon(ally as usize).is_some_and(|m| m.is_alive())
+                {
+                    return;
+                }
+                let boosts: &[(u8, i8)] = &[(3, 1)];
+                self.apply_boosts(actor_side, ally, boosts, actor_side, actor_slot);
+                crate::item::try_consume_mirror_herb_on_foe_boost(self, actor_side, ally, boosts);
             }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
@@ -15935,9 +16158,15 @@ self.trigger_emergency_exits();
                         })
                         && !self.side_has_aroma_veil(opp, attacker_breaks_mold);
                     if appliable {
+                        // duration 5; onStart takes one off while the target
+                        // still has its move queued (queue.willMove).
+                        let will_move = matches!(pending_kind[opp as usize][(slot as usize).min(1)], 1 | 2);
+                        let turns = if will_move { 4 } else { 5 };
                         if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                            t.set_disable(4, last_slot);
+                            t.set_disable(turns, last_slot);
                         }
+                        // Mental Herb's onUpdate cures it (data/items.ts mentalherb).
+                        crate::item::try_consume_mental_herb(self, opp, slot);
                     }
                 }
             }
@@ -18297,6 +18526,21 @@ fn apply_secondary_effect(
     if defender_has_covert_cloak {
         return;
     }
+    // Shield Dust — PS data/abilities.ts shielddust onModifySecondaries:
+    // the same filter as Covert Cloak; breakable (Mold Breaker family).
+    let attacker_breaks_mold = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| {
+        matches!(
+            a.effective_ability_id(),
+            data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+        )
+    });
+    let defender_shield_dust = battle
+        .side(target_side)
+        .active_mon(target_slot as usize)
+        .is_some_and(|m| m.is_alive() && m.effective_ability_id() == data::ability_id::SHIELDDUST);
+    if defender_shield_dust && !attacker_breaks_mold {
+        return;
+    }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
     // secondaries)`, one `random(100)` per entry. The elemental Fangs
@@ -18310,6 +18554,17 @@ fn apply_secondary_effect(
     // Luxray Ice Fang on Salazzle recorded [89, 6]; pre-swap engine
     // popped 89 for flinch (no flinch) then 6 for status (≤10 = freeze
     // applied, diverged from PS=none).
+    // Burning Jealousy — PS data/moves.ts burningjealousy: secondary
+    // { chance: 100, onHit: burn if target.statsRaisedThisTurn }.
+    if move_slug == "burningjealousy" && rng.percent_1_100_t(sg(100)) <= sg(100) {
+        let raised = battle
+            .side(target_side)
+            .active_mon(target_slot as usize)
+            .is_some_and(|t| t.stats_raised_this_turn);
+        if raised {
+            battle.with_rng_installed(rng, |b| b.try_set_status_from_src(target_side, target_slot, Status::Burn, attacker_side, attacker_slot));
+        }
+    }
     if let Some((status, chance)) = status_secondary(move_slug, battle.champions) {
         if rng.percent_1_100_t(sg(chance)) <= sg(chance) {
             // Move secondary: the attacker is the source, so Safeguard on
@@ -18839,6 +19094,11 @@ fn held_item_is_swappable(mon: &Pokemon) -> bool {
     if mon.item_id == u16::MAX {
         return true;
     }
+    // A Mega Stone can't leave its own species (data/items.ts mega stones
+    // onTakeItem).
+    if mon.holds_own_mega_stone() {
+        return false;
+    }
     let num = mon.species().num;
     match mon.item_id {
         data::item_id::CORNERSTONEMASK
@@ -18869,7 +19129,9 @@ pub(crate) fn is_targeting_move(target_code: u8) -> bool {
     // hit while siblings still take damage.
     // 14 scripted (Counter / Mirror Coat / Metal Burst) carries the
     // `protect` flag in PS, so it is blocked by a protected target.
-    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10 | 14)
+    // 13 randomNormal (Struggle, Outrage, Thrash, Petal Dance, Raging Fury)
+    // hits one foe and carries the `protect` flag.
+    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10 | 13 | 14)
 }
 
 #[cfg(test)]
@@ -21792,11 +22054,11 @@ mod tests {
         // Garchomp jolly 252 ev L50 base 102 → 169. Garchomp still
         // outpaces — switch to a moderately fast mon.
         // Actually just check the order math directly.
-        let scarfed = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let scarfed = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         let bare    = {
             let mut m = b.p1.team[0].clone();
             m.item_id = u16::MAX;
-            crate::order::effective_speed(&m, false, crate::weather::Weather::None)
+            crate::order::effective_speed(&m, false, crate::weather::Weather::None, crate::terrain::Terrain::None)
         };
         assert!(scarfed > bare);
         assert_eq!(scarfed, bare * 3 / 2);
@@ -23920,6 +24182,28 @@ mod tests {
     }
 
     #[test]
+    fn toxic_debris_hit_by_ally_lays_spikes_on_the_foes_side() {
+        // PS data/abilities.ts:5106: `source.isAlly(target) ? source.side.foe
+        // : source.side`. An ally's Earthquake puts the layer on the foes'
+        // side. Study 11b4f8b12c (Swampert's Earthquake into Glimmora).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"glimmora","level":50,"ability":"toxicdebris","nature":"bold","moves":["powergem","sludgewave","spikyshield","stealthrock"],"evs":{"hp":252,"def":252}},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonpulse","stoneedge","ironhead"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 5 }, p1, p2);
+        b.step(
+            &[Choice::Pass { actor_slot: 0 }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.conditions.toxic_spikes_layers, 0);
+        assert_eq!(b.p2.conditions.toxic_spikes_layers, 1);
+    }
+
+    #[test]
     fn counter_returns_double_last_physical_damage_at_attacker() {
         // P1 Snorlax holds Counter (slot 0). P2 Garchomp uses a weak
         // physical move (Tackle) so the doubled retaliation can't KO and
@@ -25350,11 +25634,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -25400,6 +25684,27 @@ mod tests {
         // Holder's Atk untouched; the drop bounced back onto the source.
         assert_eq!(b.p1.team[0].boosts[0], 0, "Mirror Armor holder's Atk not lowered");
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drop reflected onto the foe");
+    }
+
+    #[test]
+    fn mirror_armor_reflected_drop_triggers_competitive() {
+        // PS data/abilities.ts mirrorarmor: `this.boost(boosts, source,
+        // target, null, true)` is a full boost on the source, so its
+        // AfterEachBoost (Competitive) fires. Study 1c4ec0648a.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"milotic","level":50,"ability":"competitive","nature":"modest","moves":["icywind","scald","recover","protect"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"corviknight","level":50,"ability":"mirrorarmor","nature":"impish","moves":["bravebird","roost","uturn","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], -1, "Spe drop reflected");
+        assert_eq!(b.p1.team[0].boosts[2], 2, "Competitive +2 SpA");
+        assert_eq!(b.p2.team[0].boosts[4], 0);
     }
 
     #[test]
@@ -25702,8 +26007,8 @@ mod tests {
         assert_eq!(b.p1.conditions.tailwind_turns, 3, "tick from 4 → 3 at end of turn 1");
         // Pelipper-side speed should be doubled while active. Use the
         // order module to verify.
-        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true, crate::weather::Weather::None);
-        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert_eq!(pel_spe_with_tw, pel_spe_no_tw * 2);
         // Steps 2–4: tick down.
         for _ in 0..3 {
@@ -27219,11 +27524,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        let base_speed = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        let base_speed = crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain);
         assert!(!b.p1.team[0].unburden_active, "latch starts clear (item still held)");
         assert_eq!(
             base_speed,
-            crate::order::effective_speed(&b.p1.team[0], false, b.weather),
+            crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain),
             "no doubling while the berry is held",
         );
         // Drop to <=50% max HP so Sitrus fires.
@@ -27231,7 +27536,7 @@ mod tests {
         crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus Berry consumed");
         assert!(b.p1.team[0].unburden_active, "Unburden latch set when item left");
-        let boosted = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        let boosted = crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain);
         assert_eq!(boosted, base_speed * 2, "Unburden doubles Speed once itemless");
     }
 
@@ -27933,11 +28238,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        let no_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let no_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         // Force Spe as the boosted stat (Flutter Mane's best stat is
         // SpA, but the order math only cares about boosted_stat == 4).
         b.p1.team[0].boosted_stat = 4;
-        let with_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let with_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         // ×1.5 with rounding tolerance.
         let pct = with_boost as i32 * 100 / no_boost as i32;
         assert!((148..=152).contains(&pct), "expected ~150%; got {pct}%");
@@ -28595,11 +28900,11 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         let pre_hp = b.p1.team[0].current_hp;
-        let spe = effective_speed(&b.p1.team[0], false, Weather::None);
+        let spe = effective_speed(&b.p1.team[0], false, Weather::None, crate::terrain::Terrain::None);
         // Build a vanilla Pidgey w/o item for comparison.
         let mut bare = b.p1.team[0].clone();
         bare.item_id = u16::MAX;
-        let spe_bare = effective_speed(&bare, false, Weather::None);
+        let spe_bare = effective_speed(&bare, false, Weather::None, crate::terrain::Terrain::None);
         assert_eq!(spe, spe_bare / 2, "Iron Ball halves speed");
         // Pidgey holding Iron Ball IS grounded → EQ hits it.
         assert!(b.p1.team[0].is_grounded(), "Iron Ball grounds the holder");
@@ -28698,6 +29003,25 @@ mod tests {
         let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         assert_eq!(b.p2.team[0].boosts[0], 0, "White Herb restored Atk to 0");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_waits_for_every_lead_intimidate() {
+        // PS data/items.ts:7692 whiteherb onAnySwitchInPriority -2: the
+        // leads' batched SwitchIn runs both Intimidates (priority 0) first,
+        // so the herb restores both drops. Study 1aca10e8ce.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]},
+            {"species":"salamence","level":50,"ability":"intimidate","nature":"adamant","moves":["dragonclaw","protect","tailwind","fly"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"sneasler","level":50,"ability":"unburden","item":"whiteherb","nature":"jolly","moves":["fakeout","closecombat","direclaw","protect"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], 0, "both drops restored");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX);
+        assert_eq!(b.p2.team[1].boosts[0], -2);
     }
 
     #[test]
@@ -29477,11 +29801,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
@@ -37286,6 +37610,56 @@ mod tests {
         assert!(!b.p2.conditions.sticky_web, "Magic Bounce holder's side stays clear");
     }
 
+    fn fake_out_encore_battle(champions: bool) -> Battle {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":["fakeout","flareblitz","knockoff","partingshot"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"whimsicott","level":50,"ability":"innerfocus","nature":"bold","moves":["encore","moonblast","tailwind","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.champions = champions;
+        b
+    }
+
+    #[test]
+    fn champions_encored_fake_out_forces_struggle() {
+        // PS data/mods/champions/moves.ts:352 fakeout onDisableMove: disabled
+        // once `pokemon.activeMoveActions` is non-zero. Encore disables every
+        // other move (data/moves.ts encore onDisableMove), so nothing is
+        // selectable and getMoveRequestData forces Struggle
+        // (sim/pokemon.ts:1109).
+        let mut b = fake_out_encore_battle(true);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].encore_turns() > 0, "Encore landed");
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(!lc.is_empty());
+        assert!(
+            lc.iter().all(|c| matches!(c, Choice::Move { move_slot: crate::choice::STRUGGLE_MOVE_SLOT, .. })),
+            "only Struggle, got {lc:?}"
+        );
+    }
+
+    #[test]
+    fn champions_fake_out_unselectable_after_first_action() {
+        // Same onDisableMove, without Encore: Fake Out drops out of the
+        // choice set, the other moves stay. Standard gen 9 keeps offering it.
+        for champions in [true, false] {
+            let mut b = fake_out_encore_battle(champions);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            );
+            let lc = b.legal_choices(SideRef::P1, 0);
+            let fake_out = lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. }));
+            assert_eq!(fake_out, !champions, "champions={champions}: {lc:?}");
+            assert!(lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 1, .. })));
+        }
+    }
+
     #[test]
     fn struggle_offered_only_when_no_usable_move_and_deals_recoil() {
         // PS `sim/pokemon.ts` getMoves/getMoveRequestData: a Pokémon whose
@@ -37348,12 +37722,66 @@ mod tests {
             b.p2.team[0].current_hp < foe_hp_before,
             "Struggle dealt damage to the foe",
         );
-        let expected_recoil = (user_maxhp / 4).max(1);
+        let expected_recoil = ((user_maxhp + 2) / 4).max(1);
         assert_eq!(
             b.p1.team[0].current_hp,
             user_maxhp - expected_recoil,
             "Struggle recoil is 1/4 of the user's max HP",
         );
+    }
+
+    #[test]
+    fn struggle_recoil_rounds_quarter_max_hp() {
+        // PS sim/battle-actions.ts:1381 applyRecoilDamage:
+        // clampIntRange(Math.round(baseMaxhp / 4), 1): 202 HP -> 51 (50.5).
+        // Study 6d4e9037cb (Incineroar, 202 HP, 202 -> 151).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":["fakeout","flareblitz","knockoff","partingshot"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia","bodyslam","crunch","rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].stats.hp = 202;
+        b.p1.team[0].current_hp = 202;
+        for pp in b.p1.team[0].pp.iter_mut() {
+            *pp = 0;
+        }
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: crate::choice::STRUGGLE_MOVE_SLOT, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, 151);
+    }
+
+    #[test]
+    fn protect_blocks_random_normal_moves() {
+        // Struggle and Outrage are `target: randomNormal` with the `protect`
+        // flag (PS data/moves.ts struggle, outrage); Protect's onTryHit
+        // (data/moves.ts:14506) blocks them, so Struggle deals no damage and
+        // takes no recoil (applyRecoilDamage needs damage dealt).
+        // Study 6d4e9037cb (Struggle into Protect, turn 4).
+        for (moves, slot) in [("[\"fakeout\",\"flareblitz\",\"knockoff\",\"partingshot\"]", crate::choice::STRUGGLE_MOVE_SLOT), ("[\"outrage\",\"flareblitz\",\"knockoff\",\"partingshot\"]", 0)] {
+            let p1 = TeamBuilder::from_json(&format!(r#"[
+                {{"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":{moves}}}
+            ]"#)).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            if slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                for pp in b.p1.team[0].pp.iter_mut() {
+                    *pp = 0;
+                }
+            }
+            let (hp, foe) = (b.p1.team[0].current_hp, b.p2.team[0].current_hp);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: slot, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].current_hp, foe, "slot {slot}: blocked");
+            assert_eq!(b.p1.team[0].current_hp, hp, "slot {slot}: no recoil");
+        }
     }
 
     #[test]
@@ -43810,3 +44238,7 @@ mod r8_tests;
 #[cfg(test)]
 #[path = "battle_r9_tests.rs"]
 mod r9_tests;
+
+#[cfg(test)]
+#[path = "battle_r10_tests.rs"]
+mod r10_tests;

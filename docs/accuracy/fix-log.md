@@ -1161,3 +1161,178 @@ leave the default stream alone. Commit messages say which.
 | multi-hit, Lum Berry (`70a0d35`) | 1250 | 11462/11510 | 1045 | 10272/10525 |
 | `ps-rng` locked target, Curse (`308b481`) | 1250 | 11462/11510 | 1099 | 10599/10798 |
 | `ps-rng` replacements, recharge (`5de743e`) | **1250 (96.3%)** | **11462/11510** | **1123 (86.4%)** | **10725/10900** |
+
+---
+
+# Round 10 (2026-10-01, branch `mechanics-fixes-10`)
+
+Same 1,298 / 1,300-battle sample and PS battles as rounds 5-9; the round-9
+end reproduced exactly (forced-RNG 1250 clean, 11462/11510 turns; seeded
+1123 clean, 10725/10900).
+
+Result: forced-RNG fully clean **96.3% → 99.2%** (1250 → 1288), per-turn
+**99.6% → 99.9%** (11462/11510 → 11735/11745); seeded (`ps-rng`) fully
+clean **1123 → 1164 (86.4% → 89.5%)**, turns 10725/10900 → 11023/11157.
+Against the round-9 end, 40 forced-RNG battles improved and none
+regressed; 49 seeded battles' first divergent draw moved later and none
+earlier.
+
+## Owner decisions carried out
+
+- **Oracle-only engine branches kept** (keyed commit sort, keyed re-sort
+  tie shuffles, the `u16::MAX - 4` paralysis / Attract gate context).
+  Documented as test-oracle-only on `Rng::is_oracle_keyed`, in
+  `docs/conformance-key-contract.md` ("Oracle-only engine branches") and
+  linked from `ps-rng.md` (`abe77b4`).
+- **Struggle under Encore (Champions).** `legal_choices` applies the
+  Champions `onDisableMove` for Fake Out / First Impression
+  (`data/mods/champions/moves.ts:352, :384`): once the mon has started a
+  move action since switching in, the move is unselectable, so an Encored
+  Fake Out user gets Struggle only (`8d00851`). This is PS's general rule,
+  so **the solver's choice sets change for every Champions battle**: Fake
+  Out / First Impression drop out after the first action, not only under
+  Encore. vgc-solver's tests pass. The keyed harness reads PS's `move 1`
+  as Struggle when the engine offers only Struggle (`c4268bb`) and aims it
+  at PS's logged target (`abed19a`). Three Struggle bugs surfaced:
+  recoil rounding (`073f844`), Protect not blocking randomNormal moves
+  (`3faad43`, also Outrage / Thrash / Petal Dance / Raging Fury), and
+  Struggle's typelessness (`a9c20a9`).
+- **Surge Surfer** (`43697b3`): `order::effective_speed` takes the
+  terrain; every caller passes its battle's terrain, tests and
+  `calc::speed_tier` pass `Terrain::None`. Public API change:
+  `vgc-winrates/engine/src/main.rs` calls the 3-argument form and needs
+  `Terrain::None` appended when its ENGINE_REF moves past this merge.
+
+## Triage of the 48 diverged forced-RNG battles
+
+Each round-9 divergence, by first-divergence cause:
+
+| cause | battles | status after round 10 |
+|---|---|---|
+| Struggle under Encore (+ recoil rounding, Protect, typeless) | 4 | fixed |
+| Friend Guard for the second spread target after its holder faints | 3 | fixed |
+| Sap Sipper / Soundproof / Oblivious vs status moves | 4 | 3 fixed; Oblivious `7bd3433b14` now diverges later (untriaged last-turn Earthquake) |
+| White Herb after both lead Intimidates | 2 | fixed |
+| Transform / Imposter moves | 2 | fixed |
+| Trick vs a Mega Stone holder | 2 | fixed |
+| Parental Bond | 2 | fixed |
+| Toxic Debris hit by an ally | 2 | fixed |
+| one each: Surge Surfer, Mirror Armor → Competitive, Mega Sol, Aromatic Mist, Solar Power order, Mental Herb vs Disable, Stone Axe + Life Orb KO, Shield Dust vs Fake Out, Life Orb vs Disguise, Burning Jealousy, Harvest, Sitrus on switch-in, Sitrus after sand chip, Healer before burn | 14 | fixed |
+| Sticky Web → Defiant | 1 | fixed; `7d354ee6d9` now diverges later on the Palafin naming issue |
+| cleared as a side effect of the fixes above | 3 | fixed (`33238f5ca3`, `9de74b3c92`, `ddfb361dce`) |
+| Palafin and Palafin-Hero on one team (`ps-battle.js` remaps switches by name) | 2 | remain (harness) |
+| pre-turn switch tie, Psychic Terrain lead order | 2 | remain (harness) |
+| Champions Encore's retarget draw (no keyed context) | 1 | remain (harness) |
+| Infestation duration | 1 | remain (harness) |
+| Red Card / Emergency Exit replacement pick | 1 | remain (decision model) |
+| Trace pick | 1 | remain (RNG plumbing) |
+| **total** | **48** | **38 fixed, 10 remain** |
+
+## Fixes
+
+| commit | change | PS reference | tests |
+|---|---|---|---|
+| `8d00851` | Champions: Fake Out / First Impression unselectable after the first move action | `data/mods/champions/moves.ts:352, :384`; `sim/pokemon.ts:1109` | 2 unit |
+| `073f844` | Struggle recoil `round(maxhp / 4)` | `sim/battle-actions.ts:1381` | unit; study `6d4e9037cb` |
+| `3faad43` | Protect blocks randomNormal moves | `data/moves.ts` struggle / outrage flags; protect onTryHit | unit |
+| `a9c20a9` | Struggle is typeless | `data/moves.ts` struggle onModifyMove | unit; study `8b67530c3a` |
+| `43697b3` | Surge Surfer (terrain into `effective_speed`) | `data/abilities.ts:4755` | unit; study `0861359e14` |
+| `d2899b4` | Toxic Debris hit by an ally: foes' side | `data/abilities.ts:5106` | unit; study `11b4f8b12c` |
+| `ea61c28` | White Herb waits for every batched switch-in ability | `data/items.ts:7692` | unit; studies `1aca10e8ce`, `7fb33f269d` |
+| `7851499` | Mirror Armor's bounce runs the source's drop reactions | `data/abilities.ts` mirrorarmor | unit; study `1c4ec0648a` |
+| `3a6faee`, `ffe91cf` | Mega Sol: Weather Ball Fire 100; Solar Beam / Blade no charge | `sim/pokemon.ts:2193`; `data/moves.ts:17238, :20701` | 2 unit; study `4598041866` |
+| `be1a431` | Sap Sipper / Soundproof / Oblivious block status moves | `data/abilities.ts` sapsipper, soundproof, oblivious | unit; 4 studies |
+| `c76d9ba` | Friend Guard holds for the whole spread hit | `sim/battle-actions.ts` spreadMoveHit | unit; 3 studies |
+| `ec42536` | HP berries right after sand chip | `data/conditions.ts` sandstorm onFieldResidual | unit; study `252c896fb8` |
+| `67cde90` | Trick fails against its own Mega Stone | `data/moves.ts` trick; `data/items.ts` mega stones | unit; studies `4bb7820163`, `6a62ab1faf` |
+| `fa9f0c7`, `ff17229` | Mental Herb cures Disable; Disable lasts 5 on a target that already moved | `data/items.ts` mentalherb; `data/moves.ts:3664` | 2 unit; study `9af2fea75f` |
+| `d1f5f01` | Life Orb after a Disguise-only hit | `sim/battle-actions.ts:536` | unit; study `e5af60d10c` |
+| `e756973` | Burning Jealousy (`stats_raised_this_turn`) | `data/moves.ts` burningjealousy | unit; study `63ba3973ec` |
+| `24e7686` | Solar Power / Dry Skin in the weather step | `data/abilities.ts:4403` | unit; study `966745efb4` |
+| `ce5b0e3` | HP berries on switch-in | `data/items.ts` sitrusberry onUpdate | unit; study `a6f2f065f3` |
+| `7964fbb` | Sticky Web's drop runs Defiant / Competitive / Eject Pack | `data/moves.ts` stickyweb | unit; study `7d354ee6d9` |
+| `24eb9ff` | Aromatic Mist | `data/moves.ts` aromaticmist | unit; study `6d4e9037cb` |
+| `eec53e8` | Stone Axe / Ceaseless Edge before Life Orb | `data/moves.ts` stoneaxe onAfterHit | unit; study `b00eb62aee` |
+| `f25f47d` | Transform / Imposter copy moves; switch-out reverts | `sim/pokemon.ts:1305-1326` | unit; studies `5abc255afc`, `ae0f734f2d` |
+| `990f645` | Parental Bond | `data/abilities.ts` parentalbond; `data/mods/champions/scripts.ts:209` | unit; studies `91790f18a3`, `d17595827b` |
+| `fa7edd4` | Shield Dust filters target secondaries | `data/abilities.ts` shielddust | unit; study `e33011c991` |
+| `c60f758` | Harvest | `data/abilities.ts:1800` | unit; study `7adc8cfb39` |
+| `423b27e` | Healer / Hydration / Shed Skin at residual order 5 | `data/abilities.ts:1817` | unit; study `0ecfd594d5` |
+| `3d1c44c` | Status moves sure-hit vs Glaive Rush / No Guard | `data/moves.ts` glaiverush onAccuracy | unit; seeded study `4111a15689` |
+
+Unit tests for round 10 live in `crates/vgc-engine-core/src/battle_r10_tests.rs`
+(and `damage.rs` / `order.rs` for the damage and speed ones).
+
+## Default RNG stream changes
+
+`3faad43` (blocked randomNormal moves roll nothing), `a9c20a9` (Struggle
+into a Ghost rolls), `43697b3` (order, Surge Surfer in Electric Terrain),
+`7851499` and `7964fbb` (Eject Pack can now switch), `ffe91cf` (Solar
+Beam fires a turn earlier), `be1a431` (blocked status moves roll
+nothing), `ec42536`, `24e7686` and `ce5b0e3` (a Starf roll's timing),
+`e756973` (Burning Jealousy's secondary roll), `f25f47d` (copied moves),
+`990f645` (Parental Bond's second crit / damage roll), `fa7edd4` (no
+secondary rolls into Shield Dust), `c60f758` (Harvest's roll),
+`423b27e` (cure rolls move earlier), `3d1c44c` (no status accuracy roll
+vs Glaive Rush / No Guard). The rest change HP, items or field state
+only. Commit messages say which.
+
+## Decisions
+
+- **Fake Out's rule applies everywhere in Champions**, not just under
+  Encore (see above): PS has one rule, and an Encore-only version would
+  offer illegal choices.
+- **Harness limits worked around in the harness, not the engine:** a
+  Struggle choice and its target come from PS's request shape and log
+  (keyed mode only; the seeded replay lets the engine draw). Draws PS
+  makes with no attributable context (Champions Encore's retarget,
+  resolveAction's random targets) are not keyed; fixing that needs a
+  driver change and a regenerated dataset.
+- **Transform state** is a new `Pokemon::transform_base` (species,
+  ability, stats, moves, PP), hashed by `canonical_hash`.
+- **Parental Bond's 0.25** rides a new `DamageContext::parental_bond_hit`;
+  the struct literals in tests and `vgc-engine-replay` were updated
+  mechanically.
+
+## Guards
+
+- `cargo test --workspace --exclude vgc-engine-py` passes with `ps-rng`
+  off and on at every checkpoint (-j 4, `RUST_TEST_THREADS=4`), except
+  vgc-solver's known `auto_lossy_off_preserves_full_lossless` counter
+  race, which passes single-threaded (the script reruns it). The script
+  now runs `cargo test --no-fail-fast` so a failing crate can't hide
+  later ones.
+- Ten harness checkpoints; no forced-RNG battle regressed and no seeded
+  first divergent draw moved earlier against the round-9 end.
+- `tools/audit-residual-index/audit.sh` is clean.
+
+## Still not fixed (10 forced-RNG battles)
+
+- Harness (7): Palafin and Palafin-Hero on one team (3; `ps-battle.js`
+  remaps switch targets by species name), a pre-turn switch tie and a
+  Psychic Terrain lead order (2), Champions Encore's retarget draw (1),
+  the Infestation duration (1).
+- Trace pick (1, RNG plumbing), a Red Card / Emergency Exit replacement
+  pick (1, decision model), and one untriaged last-turn Earthquake (1).
+- Seeded (`ps-rng`): 136 battles diverge, 131 first on a draw.
+  `eachEvent` ties 20, resolveAction random targets 19, `secondaries` 18,
+  `fieldEvent` ties 14, commitChoices sort ties 14, accuracy 13,
+  getTarget random targets 9, crit 8, Champions sleep length 4, the rest
+  1-3 each. Example: `0fd2fb8dad` — a fainted user's queued move still
+  draws getTarget in the post-move re-sort.
+
+## Trajectory
+
+| after | forced-RNG clean | turns | seeded clean | turns |
+|---|---|---|---|---|
+| round 9 end (`6d8cb99`) | 1250 (96.3%) | 11462/11510 | 1123 | 10725/10900 |
+| Struggle under Encore (`abed19a`) | 1253 | 11494/11539 | 1125 | 10748/10921 |
+| Surge Surfer, Toxic Debris, White Herb, Mirror Armor | 1261 | 11544/11581 | 1133 | 10802/10967 |
+| Mega Sol, status-move abilities | 1266 | 11593/11625 | 1136 | 10842/11004 |
+| Friend Guard, sand berries, Trick, Mental Herb | 1273 | 11633/11658 | 1143 | 10880/11035 |
+| Life Orb / Disguise, Burning Jealousy, Disable | 1276 | 11646/11668 | 1144 | 10887/11041 |
+| Solar Power order, switch-in berries | 1278 | 11657/11677 | 1145 | 10892/11045 |
+| Sticky Web, Aromatic Mist, Stone Axe | 1281 | 11683/11700 | 1147 | 10909/11060 |
+| Transform, Parental Bond | 1285 | 11712/11725 | 1151 | 10938/11085 |
+| Shield Dust, Harvest | 1286 | 11721/11733 | 1157 | 10985/11126 |
+| Healer order, sure-hit status (`3d1c44c`) | **1288 (99.2%)** | **11735/11745** | **1164 (89.5%)** | **11023/11157** |
