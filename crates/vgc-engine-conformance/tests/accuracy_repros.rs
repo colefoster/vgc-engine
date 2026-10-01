@@ -403,3 +403,17 @@ fn leech_seed_needs_a_live_seeder_slot() {
 fn keyed_speed_ties_follow_the_mid_turn_resort() {
     assert_matches_ps("study-c1480b7942-speed-tie-resort");
 }
+
+/// Study battle 2aac00140c: PS's commitChoices sort runs on pre-Mega Speed
+/// and its tie offsets index PS's own queue (the Mega action included).
+#[test]
+fn keyed_commit_sort_runs_before_mega_evolution() {
+    assert_matches_ps("study-2aac00140c-commit-sort-before-mega");
+}
+
+/// Study battle 4338912265: a commit-time speed tie, then the re-sort before
+/// the first move; both shuffles index PS's queue.
+#[test]
+fn keyed_commit_sort_follows_ps_queue_order() {
+    assert_matches_ps("study-4338912265-commit-sort-order");
+}
