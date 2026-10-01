@@ -523,3 +523,21 @@ fn weather_heals_use_ps_modify() {
     b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
     assert_eq!(b.p1.team[0].current_hp as u32, 1 + (max * 2732 + 2047) / 4096, "max {max}");
 }
+
+// ---- onDamagingHit reads the current ability ----
+
+#[test]
+fn a_replaced_ability_no_longer_reacts_to_hits() {
+    // PS runEvent('DamagingHit') calls the holder's current ability
+    // (sim/battle.ts, pokemon.getAbility()): after Simple Beam replaces
+    // Stamina, a hit raises nothing.
+    let mut b = singles(
+        r#"[{"species":"audino","level":50,"ability":"healer","moves":["simplebeam","tackle"]}]"#,
+        r#"[{"species":"archaludon","level":50,"ability":"stamina","moves":["splash"],"evs":{"hp":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::SIMPLE);
+    b.step(&[mv(0, 1, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].boosts[1], 0);
+}
