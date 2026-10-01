@@ -215,3 +215,35 @@ fn upper_hand_fails_against_a_priority_status_move() {
     let foe = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["taunt"],"evs":{"hp":252}}]"#;
     assert!(!upper_hand(foe, 0).0, "Prankster Taunt is +1 but Status");
 }
+
+// ---- Imprison ----
+//
+// PS data/moves.ts:9489 imprison: the user gains the `imprison` volatile;
+// foes can't select a move the user also knows (onFoeDisableMove), and one
+// already queued fails in BeforeMove (onFoeBeforeMove, priority 4).
+
+const IMPRISON_USER: &str = r#"[{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["imprison","tackle","protect"]}]"#;
+const IMPRISON_FOE: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["tackle","protect","splash"]}]"#;
+
+#[test]
+fn imprison_stops_a_shared_move_queued_this_turn() {
+    let mut b = singles(IMPRISON_USER, IMPRISON_FOE, 1);
+    let hp = b.p1.team[0].current_hp;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p1.team[0].current_hp, hp, "Snorlax's Tackle is imprisoned");
+}
+
+#[test]
+fn imprison_disables_shared_moves_for_foes() {
+    let mut b = singles(IMPRISON_USER, IMPRISON_FOE, 1);
+    b.step(&[mv(0, 0, None)], &[mv(0, 2, None)]);
+    let slots: Vec<u8> = b
+        .legal_choices(SideRef::P2, 0)
+        .into_iter()
+        .filter_map(|c| match c {
+            Choice::Move { move_slot, .. } => Some(move_slot),
+            _ => None,
+        })
+        .collect();
+    assert!(!slots.contains(&0) && !slots.contains(&1) && slots.contains(&2), "{slots:?}");
+}

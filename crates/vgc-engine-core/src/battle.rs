@@ -1801,6 +1801,10 @@ impl Battle {
             if is_assault_vest && m.category == 2 {
                 continue;
             }
+            // Imprison: a foe's imprison onFoeDisableMove (data/moves.ts:9504).
+            if self.imprisoned(side, move_id) {
+                continue;
+            }
             // Survived every selection filter — this is a selectable move, so
             // PS's `hasValidMove` is set and Struggle will NOT be offered. (PS
             // sets the flag at the "not disabled" point, independent of whether
@@ -10678,6 +10682,12 @@ self.trigger_emergency_exits();
             }
         }
 
+        // Imprison — PS data/moves.ts:9512 imprison onFoeBeforeMove
+        // (priority 4): a move the foe's imprisoner knows fails, no PP.
+        if self.imprisoned(actor_side, move_id) {
+            return PreMoveOutcome::Abort;
+        }
+
         // 1c. Paralysis full-skip. PS data/conditions.ts:par
         //     onBeforeMove fires `randomChance(1, 4)` — 25% chance to
         //     skip the move entirely (no PP, no effect). Matches PS
@@ -11267,6 +11277,20 @@ self.trigger_emergency_exits();
         if let Some(q) = self.quick_frac.as_mut() {
             q[side as usize][actor_slot as usize] = fired;
         }
+    }
+
+    /// PS imprison condition (data/moves.ts:9504, :9512): whether a foe of
+    /// `side` holding Imprison also knows `move_id`.
+    fn imprisoned(&self, side: SideRef, move_id: u16) -> bool {
+        let foe = self.side(side.opposing());
+        move_id != data::move_id::STRUGGLE
+            && (0..self.format().active_count()).any(|s| {
+                foe.active_mon(s).is_some_and(|m| {
+                    m.is_alive()
+                        && m.volatiles.has(crate::pokemon::VolatileKind::Imprison)
+                        && m.moves.contains(&move_id)
+                })
+            })
     }
 
     /// Record the actor's PS `moveThisTurnResult`.
@@ -15633,6 +15657,19 @@ self.trigger_emergency_exits();
                         turns_remaining: 0,
                         payload,
                     });
+                }
+            }
+            data::move_id::IMPRISON => {
+                // PS data/moves.ts:9489: volatileStatus 'imprison' on the
+                // user (fails if already held); effects in `imprisoned`.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if !a.volatiles.has(crate::pokemon::VolatileKind::Imprison) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Imprison,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
                 }
             }
             data::move_id::NORETREAT => {
