@@ -267,3 +267,44 @@ fn a_protected_magic_bounce_holder_does_not_reflect() {
     assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None, "Protect blocks before Magic Bounce");
     assert_eq!(b.p2.team[0].status, crate::pokemon::Status::None);
 }
+
+// ---- Partial trap and Leech Seed need a live source ----
+//
+// data/conditions.ts:238 partiallytrapped onResidual ends silently when the
+// source is no longer active or has fainted; data/moves.ts leechseed
+// onResidual does nothing when the mon in the seeder's slot has fainted.
+
+fn trap_battle() -> Battle {
+    doubles(
+        r#"[{"species":"toxapex","level":50,"moves":["infestation","splash"]},{"species":"snorlax","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    )
+}
+
+#[test]
+fn partial_trap_ends_when_its_source_switches_out() {
+    let mut b = trap_battle();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+    let before = b.p2.team[0].current_hp;
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].current_hp, before, "no Infestation chip once Toxapex left");
+    assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+}
+
+#[test]
+fn leech_seed_does_nothing_while_the_seeders_slot_is_fainted() {
+    let mut b = doubles(
+        r#"[{"species":"ferrothorn","level":50,"moves":["leechseed"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::LeechSeed), "Leech Seed should land");
+    b.p1.team[0].current_hp = 0;
+    b.p1.team[0].fainted = true;
+    let before = b.p2.team[0].current_hp;
+    b.step(&[Choice::Pass { actor_slot: 0 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].current_hp, before, "nothing to leech into");
+}

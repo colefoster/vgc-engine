@@ -9083,9 +9083,11 @@ self.trigger_emergency_exits();
                 });
                 if trappable {
                     let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+                    let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
                     let payload = dur
                         | ((actor_side as u8 as u32) << 8)
-                        | ((actor_slot as u32) << 16);
+                        | ((actor_slot as u32) << 16)
+                        | (src_team << 24);
                     if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                         let _ = t.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::PartialTrap,
@@ -13274,6 +13276,11 @@ self.trigger_emergency_exits();
                 if chip == 0 || magic_guard {
                     continue;
                 }
+                // PS leechseed onResidual: nothing happens while the mon in
+                // the seeder's slot has fainted (getAtSlot(sourceSlot)).
+                if !self.side(source_side).active_mon(source_slot as usize).is_some_and(|s| s.is_alive()) {
+                    continue;
+                }
                 // Damage target.
                 let actual = if let Some(m) =
                     self.side_mut(target_side).active_mon_mut(target_slot as usize)
@@ -13508,7 +13515,7 @@ self.trigger_emergency_exits();
         }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
-                let (chip, magic_guard, expires) = match self
+                let (chip, magic_guard, expires, src) = match self
                     .side(side)
                     .active_mon(slot as usize)
                 {
@@ -13520,13 +13527,27 @@ self.trigger_emergency_exits();
                             let chip = (m.stats.hp / 8).max(1);
                             let remaining = (v.payload & 0xFF) as u8;
                             let expires = remaining <= 1;
-                            (chip, crate::ability::has_magic_guard(m), expires)
+                            (chip, crate::ability::has_magic_guard(m), expires, v.payload >> 8)
                         }
-                        None => (0, false, false),
+                        None => (0, false, false, 0),
                     },
-                    _ => (0, false, false),
+                    _ => (0, false, false, 0),
                 };
                 if chip == 0 {
+                    continue;
+                }
+                // PS data/conditions.ts:238: the trap ends silently, with no
+                // chip, once its source has left the field or fainted.
+                let src_side = if src & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
+                let src_slot = ((src >> 8) & 0xFF) as usize;
+                let src_team = ((src >> 16) & 0xFF) as u8;
+                let src_present = src_slot < n as usize
+                    && self.side(src_side).active[src_slot] == src_team
+                    && self.side(src_side).active_mon(src_slot).is_some_and(|s| s.is_alive());
+                if !src_present {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                    }
                     continue;
                 }
                 if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
