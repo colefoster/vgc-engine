@@ -184,6 +184,7 @@ fn damage_range_no_ctx(a: &Pokemon, d: &Pokemon, mid: u16) -> (u16, u16) {
         // Replay recon reads Champions ladder logs.
         champions: true,
         defender_resist_berry: false,
+        parental_bond_hit: false,
     };
     let lo = calculate_damage(a, d, mid, ctx(DamageContext::MIN_ROLL));
     let hi = calculate_damage(a, d, mid, ctx(DamageContext::MAX_ROLL));
