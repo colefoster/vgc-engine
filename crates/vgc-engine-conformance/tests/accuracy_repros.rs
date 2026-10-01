@@ -297,3 +297,18 @@ fn moody_picks_are_keyed_to_the_holder() {
 fn lead_weather_setters_fire_in_speed_order() {
     assert_matches_ps("study-047cc41478-lead-weather-speed-order");
 }
+
+/// Study battle 0355ae7c44: Kingambit's Sucker Punch aimed at a fainted foe
+/// retargets to Gholdengo and checks that mon's queued move (it was
+/// attacking), so Sucker Punch hits.
+#[test]
+fn sucker_punch_checks_the_retargeted_foe() {
+    assert_matches_ps("study-0355ae7c44-sucker-punch-retarget");
+}
+
+/// Study battle e5bcb1085f: Sucker Punch redirected by Rage Powder checks
+/// the Rage Powder user's queued move, not the chosen target's.
+#[test]
+fn sucker_punch_checks_the_redirected_target() {
+    assert_matches_ps("study-e5bcb1085f-sucker-punch-rage-powder");
+}
