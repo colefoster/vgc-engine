@@ -746,9 +746,7 @@ impl Battle {
             ps_commit_megas: ([(0, 0); 4], 0),
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
-        // Drizzle, Sand Stream, etc.). P1 resolves first (PS-canonical
-        // ordering matches turn-order but at battle start it's by side
-        // and slot; refinement deferred).
+        // Drizzle, Sand Stream, etc.), in Speed order (below).
         #[cfg(feature = "ps-rng")]
         if b.rng.is_ps() {
             // The Pokemon constructor's clearVolatile -> setSpecies caches
@@ -765,15 +763,33 @@ impl Battle {
             // Field-wide suppression is state, not a switch-in effect.
             crate::ability::recompute_neutralizing_gas(&mut b);
         }
-        for side in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                if !switch_ins {
-                    break;
+        if switch_ins {
+            // The leads' runSwitch batches all four switch-ins: their
+            // SwitchIn handlers run in Speed order, abilities (priority 0)
+            // before the items' negative-priority handlers
+            // (sim/battle-actions.ts:172-184; data/items.ts onSwitchInPriority),
+            // as in `apply_replacement_switches`.
+            let mut leads: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
+            let mut k = 0usize;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    if k < leads.len() {
+                        let tw = b.side(side).conditions.tailwind_turns > 0;
+                        let spe = b
+                            .side(side)
+                            .active_mon(slot as usize)
+                            .map(|m| crate::order::effective_speed(m, tw, b.weather))
+                            .unwrap_or(0);
+                        leads[k] = (spe, side, slot);
+                        k += 1;
+                    }
                 }
+            }
+            leads[..k].sort_by(|a, c| c.0.cmp(&a.0));
+            for &(_, side, slot) in &leads[..k] {
                 crate::ability::on_switch_in(&mut b, side, slot);
-                // Item on-start hook (White Herb cleanup, ...). Runs
-                // after the ability so Intimidate's atk drop is seen
-                // and rebounded by White Herb in the SAME switch-in.
+            }
+            for &(_, side, slot) in &leads[..k] {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
         }
