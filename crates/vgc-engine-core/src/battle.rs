@@ -3995,10 +3995,36 @@ self.trigger_emergency_exits();
                 m.set_switched_in_this_turn(false);
             }
         }
-        // The last instaswitch's eachEvent('Update'), then runSwitch's
+        // Each instaswitch's switchIn queues its runSwitch with insertChoice,
+        // which draws when it ties an already-queued runSwitch on Speed
+        // (sim/battle-queue.ts insertChoice, sim/battle-actions.ts:155);
+        // then the last instaswitch's eachEvent('Update') and runSwitch's
         // speedSort(allActive).
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
+            let mut queue = [0i64; 4];
+            let mut len = 0usize;
+            for &(_, side, slot) in &entered[..n] {
+                self.ps_update_speed(side, slot as usize);
+                let Some(spe) = self.ps_speed(side, slot as usize) else { continue };
+                let first = (0..len).find(|&i| spe >= queue[i]);
+                let idx = match first {
+                    None => len,
+                    Some(f) => {
+                        let last = (f..len).find(|&i| spe > queue[i]).unwrap_or(len);
+                        if f == last {
+                            f
+                        } else {
+                            self.rng.ps_random_range("insert_choice", f as u32, last as u32 + 1) as usize
+                        }
+                    }
+                };
+                for i in (idx..len).rev() {
+                    queue[i + 1] = queue[i];
+                }
+                queue[idx] = spe;
+                len += 1;
+            }
             self.ps_active_ties(false, "shuffle");
             self.ps_active_ties(true, "shuffle");
         }
