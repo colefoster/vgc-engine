@@ -90,6 +90,9 @@ compute them from its own state (`battle.rs`, all `#[cfg(feature =
 | Expanding Force's two `useMoveInner` re-picks | Expanding Force arm |
 | `eachEvent('WeatherChange' / 'TerrainChange')` on every weather / terrain change | `sync_weather_terrain_cache` |
 | Champions hit loop `Update` after each hit (still sorting a target the hit knocked out, which is not `fainted` until `faintMessages`) and after the loop, for damaging moves and for status moves that reach the loop (not a missed roll, a failed stall check, or a Protect-blocked target) | `process_one_action` wrapper, `apply_single_hit`, `ps_hit_update`, `resolve_status_move_branch` |
+| a mon locked into a two-turn move, or recharging: its action keeps the stored target loc (`sim/side.ts:675-688`); 'recharge' is not in the dex, so every getTarget for it falls to `randomFoe` (resolveAction, each re-sort, runMove) | `locked_move_choice` in `ps_resolve_action_draws` and the first re-sort; `must_recharge` arms in `ps_get_target_draw` and the recharge early return |
+| Champions Curse's getTarget: none for a non-Ghost user, `tracksTarget` otherwise | `ps_get_target_draw` |
+| faint replacements: each instaswitch's runSwitch `insertChoice` tie | `apply_replacement_switches` |
 
 These add draws but never change which outcome a draw selects, with one
 exception: tie shuffles order tied actions, which is PS's own semantics.
@@ -102,6 +105,15 @@ sorting on its cleared Speed, Glaive Rush's drawback, and Trace's random
 pick. See [`fix-log.md`](fix-log.md), round 6.
 
 ## What is not emulated, and why
+
+After round 9 the seeded differential has 1,123 of 1,300 battles fully
+clean (86.4%) and 10725/10900 turns matched. Of the 175 that diverge, 151
+diverge first on a draw: random targets PS draws that the engine doesn't
+or vice versa (about 45, mostly drag-in, residual-Update and nested
+resolveAction cases), `eachEvent` ties (20), `fieldEvent` ties (12),
+commitChoices sort ties (11), `secondaries` (16), crit and stall rolls
+(the rest). See [`fix-log.md`](fix-log.md), round 9. The round-7 table
+below is kept for its explanations.
 
 After round 7 the seeded differential has 974 of 1,300 battles fully
 clean (74.9%) and 9801/10125 turns matched (round 6: 804, 8572/9066). Round
