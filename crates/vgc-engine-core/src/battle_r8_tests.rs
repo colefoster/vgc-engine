@@ -441,3 +441,30 @@ fn beak_blast_ignores_non_contact_moves() {
     b.step(&[mv(0, 0, foe())], &[mv(0, 1, Some(t(SideRef::P1, 0)))]);
     assert_eq!(b.p2.team[0].status, Status::None);
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_beak_blast_charge_action_draws_a_random_target() {
+    // resolveAction unshifts a targetless priorityChargeMove action
+    // (sim/battle-queue.ts:242) whose getRandomTarget (:266) draws in doubles.
+    let draws = |m: &str| {
+        let p1 = TeamBuilder::from_json(&format!(
+            r#"[{{"species":"toucannon","level":50,"moves":["{m}"]}},{{"species":"snorlax","level":50,"moves":["calmmind"]}}]"#
+        ))
+        .unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"blissey","level":50,"moves":["calmmind"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+        )
+        .unwrap();
+        let mut rng = crate::rng::Rng::ps("sodium,00000000000000000000000000000007").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)],
+            &[mv(0, 0, None), mv(1, 0, None)],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        trace.iter().filter(|d| d.op == "random_target").count()
+    };
+    assert_eq!(draws("beakblast"), draws("drillpeck") + 1);
+}
