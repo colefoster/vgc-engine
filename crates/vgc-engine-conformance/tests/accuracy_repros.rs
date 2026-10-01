@@ -312,3 +312,10 @@ fn sucker_punch_checks_the_retargeted_foe() {
 fn sucker_punch_checks_the_redirected_target() {
     assert_matches_ps("study-e5bcb1085f-sucker-punch-rage-powder");
 }
+
+/// Study battle acb2e577ac: Toxic deals floor(maxhp / 16) * stage, flooring
+/// before the multiply (data/conditions.ts:159).
+#[test]
+fn toxic_floors_the_sixteenth_before_the_stage() {
+    assert_matches_ps("study-acb2e577ac-toxic-rounding");
+}
