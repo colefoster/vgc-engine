@@ -2669,6 +2669,27 @@ self.trigger_emergency_exits();
                     continue; // a later choice for a slot is a mid-turn pick
                 }
                 seen[slot] = true;
+                // A move with a priorityChargeCallback first resolves its
+                // targetless `priorityChargeMove` action (sim/battle-queue.ts:242,
+                // :266): getRandomTarget draws in doubles.
+                if let Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } = *c
+                {
+                    let charge_move = self.side(side).active_mon(actor_slot as usize).and_then(|m| {
+                        let id = *m.moves.get(move_slot as usize)?;
+                        (m.is_alive()
+                            && matches!(id, data::move_id::BEAKBLAST | data::move_id::FOCUSPUNCH | data::move_id::SHELLTRAP))
+                        .then_some(id)
+                    });
+                    if charge_move.is_some() && n_active > 1 {
+                        let foe = side.opposing();
+                        let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
+                        if n > 0 {
+                            let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                        }
+                    }
+                }
                 self.roll_quick_fractional(side, *c);
                 let (actor_slot, move_slot, target) = match *c {
                     Choice::Move { actor_slot, move_slot, target }
