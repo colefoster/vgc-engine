@@ -910,6 +910,11 @@ pub struct Pokemon {
     /// PS `moveLastTurnResult`, read by Stomping Tantrum / Temper Flare.
     #[serde(default)]
     pub move_last_turn_result: MoveResult,
+    /// PS `moveSlot.used` per move slot (bit `i`): set when the slot's PP
+    /// is spent (sim/pokemon.ts:892), cleared on switch-in
+    /// (sim/battle-actions.ts:139). Read by Last Resort.
+    #[serde(default)]
+    pub moves_used: u8,
 }
 
 /// PS's four-valued move result (`boolean | null | undefined`,
@@ -1028,6 +1033,15 @@ impl Pokemon {
             cud_chew_counter: 0,
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
+            moves_used: 0,
+        }
+    }
+
+    /// PS `deductPP`: spend `n` PP from `slot` and mark the slot used.
+    pub fn spend_pp(&mut self, slot: u8, n: u8) {
+        if let Some(pp) = self.pp.get_mut(slot as usize) {
+            *pp = pp.saturating_sub(n);
+            self.moves_used |= 1 << slot;
         }
     }
 

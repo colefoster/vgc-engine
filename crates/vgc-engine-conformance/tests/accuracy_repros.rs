@@ -195,3 +195,10 @@ fn stomping_tantrum_doubles_after_a_failed_move() {
 fn stomping_tantrum_doubles_after_a_flinch() {
     assert_matches_ps("study-5a4e6093bf-stomping-tantrum-after-flinch");
 }
+
+/// Study battle b8f3217152: Kangaskhan switched in on turn 4 and hasn't used
+/// its other moves, so its turn-5 Last Resort fails (data/moves.ts:10075).
+#[test]
+fn last_resort_fails_before_the_other_moves_are_used() {
+    assert_matches_ps("study-b8f3217152-last-resort-fails");
+}
