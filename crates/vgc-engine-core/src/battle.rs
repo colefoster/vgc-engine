@@ -7441,7 +7441,11 @@ self.trigger_emergency_exits();
                     for s in 0..n {
                         if s == tslot { continue; }
                         if let Some(ally) = self.side(tside).active_mon(s as usize) {
-                            if ally.is_alive()
+                            // PS computes a spread move's damage for every
+                            // target before dealing any (spreadMoveHit), so a
+                            // holder this move already KO'd still guards.
+                            let hit_by_this_spread = is_spread && targets.iter().any(|&t| t == (tside, s));
+                            if (ally.is_alive() || hit_by_this_spread)
                                 && ally.effective_ability_id()
                                     == data::ability_id::FRIENDGUARD
                             {
