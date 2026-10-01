@@ -902,6 +902,30 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
+    /// move this mon used this turn. Moved to `move_last_turn_result` at
+    /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
+    #[serde(default)]
+    pub move_this_turn_result: MoveResult,
+    /// PS `moveLastTurnResult`, read by Stomping Tantrum / Temper Flare.
+    #[serde(default)]
+    pub move_last_turn_result: MoveResult,
+}
+
+/// PS's four-valued move result (`boolean | null | undefined`,
+/// sim/pokemon.ts:200-230).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MoveResult {
+    /// `undefined`: no move attempt finished.
+    #[default]
+    None,
+    /// `null`: skipped without counting as a failure (recharge, a charge
+    /// turn, every target protected).
+    Skipped,
+    /// `false`: the move failed (missed, immune, fully paralysed, ...).
+    Failed,
+    /// `true`: the move did something to at least one target.
+    Succeeded,
 }
 
 impl Pokemon {
@@ -1002,6 +1026,8 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            move_this_turn_result: MoveResult::None,
+            move_last_turn_result: MoveResult::None,
         }
     }
 

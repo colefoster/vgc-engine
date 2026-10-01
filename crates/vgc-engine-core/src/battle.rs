@@ -2159,35 +2159,8 @@ self.trigger_emergency_exits();
         // A foe's Protect removes it from the targets in hitStepTryHit
         // (hitStepTryHitEvent, sim/battle-actions.ts:643); with none left the
         // loop never runs.
-        let protected = |t: Target| {
-            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
-        };
-        let foe = side.opposing();
-        match m.target {
-            0 | 4 | 10 | 13 => {
-                if let Some(t) = target.filter(|t| t.side == foe) {
-                    if protected(t) {
-                        return false;
-                    }
-                }
-            }
-            5 | 6 => {
-                let mut any = false;
-                let mut all_protected = true;
-                for s in 0..self.format().active_count() {
-                    for (ts, include) in [(foe, true), (side, m.target == 5 && s != slot as usize)] {
-                        let t = Target { side: ts, slot: s as u8 };
-                        if include && self.side(ts).active_mon(s).is_some_and(|d| d.is_alive()) {
-                            any = true;
-                            all_protected &= protected(t);
-                        }
-                    }
-                }
-                if any && all_protected {
-                    return false;
-                }
-            }
-            _ => {}
+        if self.status_move_protected(side, slot, m, target) {
+            return false;
         }
         let Some(user) = self.side(side).active_mon(slot as usize) else { return false };
         match m.slug {
@@ -3384,6 +3357,9 @@ self.trigger_emergency_exits();
                     let mon = &mut side.team[active_idx as usize];
                     mon.turns_active = mon.turns_active.saturating_add(1);
                     mon.set_switched_in_this_turn(false);
+                    // PS nextTurn (sim/battle.ts:1674).
+                    mon.move_last_turn_result = mon.move_this_turn_result;
+                    mon.move_this_turn_result = crate::pokemon::MoveResult::None;
                     // Encore tick. PS: duration counts down each end of
                     // turn; the volatile ends at 0. Also clears early
                     // if the locked move has no PP left.
@@ -4008,6 +3984,8 @@ self.trigger_emergency_exits();
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
+            incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
             incoming.consumed_item = u16::MAX; // Recycle memory (PS `lastItem`) is per-active-stint.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
@@ -5098,6 +5076,9 @@ self.trigger_emergency_exits();
             if a.is_alive() {
                 a.move_actions = a.move_actions.saturating_add(1);
             }
+            // Every early return below is a failed move (BeforeMove false,
+            // onTry false, no target ...) unless it records otherwise.
+            a.move_this_turn_result = crate::pokemon::MoveResult::Failed;
         }
         let (move_slot, target) = self.encore_override(actor_side, actor_slot, move_slot, target);
         let mut target = target;
@@ -5140,6 +5121,8 @@ self.trigger_emergency_exits();
         if attacker.must_recharge {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
+                // mustrecharge's onBeforeMove returns null.
+                a.move_this_turn_result = crate::pokemon::MoveResult::Skipped;
             }
             return;
         }
@@ -5278,7 +5261,11 @@ self.trigger_emergency_exits();
             actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
         ) {
             ChargeOutcome::Continue { skip_pp_deduct } => skip_pp_deduct,
-            ChargeOutcome::Abort => return,
+            ChargeOutcome::Abort => {
+                // The charge turn's onTryMove returns null.
+                self.set_move_result(actor_side, actor_slot, crate::pokemon::MoveResult::Skipped);
+                return;
+            }
         };
         // Electro Shot / Meteor Beam boost SpA in onTryMove, before a Rain /
         // Power Herb skip (PS data/moves.ts:4644); the hit reads the boosted
@@ -5429,6 +5416,8 @@ self.trigger_emergency_exits();
                     source_team_idx: src_idx,
                     move_id,
                 });
+                // futuresight onTry returns NOT_FAIL.
+                self.set_move_result(actor_side, actor_slot, crate::pokemon::MoveResult::Skipped);
             }
             return;
         }
@@ -5492,9 +5481,13 @@ self.trigger_emergency_exits();
         //    path below dominates ~6× at the bench's random-picker mix;
         //    outlining keeps the icache compact. Byte-identical behavior.
         if m.category == 2 {
+            let before = self.status_effect_snapshot();
+            let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m).is_some();
             self.resolve_status_move_branch(
                 actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
             );
+            let r = self.status_move_result(actor_side, actor_slot, m, target, &before, bounced);
+            self.set_move_result(actor_side, actor_slot, r);
             return;
         }
 
@@ -5930,6 +5923,10 @@ self.trigger_emergency_exits();
         // pure no-target fizzle — PS returns before `MoveFail` when there were
         // no targets at all (battle-actions.ts:512).
         let mut had_live_target = false;
+        // PS move result (sim/battle-actions.ts:604-616): a hit on any target
+        // succeeds; with none, all targets protected (NOT_FAIL) is null and
+        // anything else (miss, immunity, no target) is a failure.
+        let (mut n_live, mut n_protected, mut move_hit) = (0u8, 0u8, false);
         // Phazing target for Dragon Tail / Circle Throw (`forceSwitch`): the
         // opposing slot that took a REAL (non-Substitute) hit this move. PS
         // runs forceSwitch (battle-actions.ts:1124, step 6) only for targets
@@ -5968,6 +5965,7 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             had_live_target = true;
+            n_live += 1;
             // Conformance keyed-oracle context: attribute every randomized
             // draw made resolving this (attacker, move, target) hit — the
             // accuracy roll (below), crit, damage, and (via the mem::replace
@@ -6256,6 +6254,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.wide_guard_this_turn
                 && matches!(m.target, 5 | 6 | 11)
             {
+                n_protected += 1;
                 continue;
             }
             // Quick Guard — blocks priority moves (priority > 0) aimed
@@ -6267,6 +6266,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.quick_guard_this_turn
                 && m.priority > 0
             {
+                n_protected += 1;
                 continue;
             }
             // Mat Block — whole-side Protect against DAMAGING moves.
@@ -6284,6 +6284,7 @@ self.trigger_emergency_exits();
                 && damaging
                 && is_targeting_move(m.target)
             {
+                n_protected += 1;
                 continue;
             }
             // Protect interception (single-target codes only; spread
@@ -6327,6 +6328,7 @@ self.trigger_emergency_exits();
                             variant, actor_side, actor_slot, tside, tslot,
                         );
                     }
+                    n_protected += 1;
                     continue;
                 }
             }
@@ -7454,6 +7456,7 @@ self.trigger_emergency_exits();
             // driver checks here to break the multi-hit loop. Behavior
             // byte-identical to the pre-PR-D2 inline body. See
             // `docs/per-target-context-design.md`.
+            move_hit = true;
             for hit_idx in 0..ctx.hits {
                 self.apply_single_hit(&mut ctx, hit_idx);
                 if ctx.target_fainted_this_hit {
@@ -7481,6 +7484,17 @@ self.trigger_emergency_exits();
         // (PS routes through onDamage); Rock Head does NOT (PS scopes Rock Head
         // to the `recoil` effect id only — same as Mind Blown's max-HP recoil).
         // PS: this.damage(source.baseMaxhp / 2, source, source, ...).
+        self.set_move_result(
+            actor_side,
+            actor_slot,
+            if move_hit {
+                crate::pokemon::MoveResult::Succeeded
+            } else if n_live > 0 && n_protected == n_live {
+                crate::pokemon::MoveResult::Skipped
+            } else {
+                crate::pokemon::MoveResult::Failed
+            },
+        );
         if matches!(
             move_id,
             data::move_id::JUMPKICK
@@ -11218,6 +11232,135 @@ self.trigger_emergency_exits();
         self.rng = rng;
         if let Some(q) = self.quick_frac.as_mut() {
             q[side as usize][actor_slot as usize] = fired;
+        }
+    }
+
+    /// Record the actor's PS `moveThisTurnResult`.
+    fn set_move_result(&mut self, side: SideRef, slot: u8, r: crate::pokemon::MoveResult) {
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.move_this_turn_result = r;
+        }
+    }
+
+    /// What a status move can change, for its PS move result. PS decides
+    /// per effect (runMoveEffects, sim/battle-actions.ts:1186: a boost,
+    /// status, volatile, side or field condition that did not apply makes
+    /// the hit `false`); the engine's status handlers do not report that, so
+    /// the result is read off whether any of this state changed. PP, the
+    /// choice lock and the stall counter are left out: using any move
+    /// changes them.
+    fn status_effect_snapshot(&self) -> StatusEffectSnapshot {
+        use crate::pokemon::VolatileKind as V;
+        let bookkeeping = (1u64 << V::Locked as u8)
+            | (1u64 << V::Stall as u8)
+            | (1u64 << V::DamagedThisTurn as u8)
+            | (1u64 << V::AllySwitch as u8);
+        let mut snap = StatusEffectSnapshot {
+            mons: [[MonEffectSnapshot::default(); 2]; 2],
+            sides: [self.p1.conditions, self.p2.conditions],
+            active: [[255; 2]; 2],
+            field: [
+                self.trick_room_turns,
+                self.gravity_turns,
+                self.magic_room_turns,
+                self.wonder_room_turns,
+            ],
+            weather: self.weather,
+            terrain: self.terrain,
+            pending: [
+                self.future_pending.iter().flatten().filter(|f| f.is_some()).count() as u8,
+                self.wish_pending.iter().flatten().filter(|w| w.is_some()).count() as u8,
+                self.pending_queue_reorder.is_some() as u8,
+                self.ally_switch_pending.is_some() as u8 | (self.copy_volatiles_next_switch as u8) << 1,
+            ],
+        };
+        for side in [SideRef::P1, SideRef::P2] {
+            let sd = self.side(side);
+            for slot in 0..self.format().active_count().min(2) {
+                snap.active[side as usize][slot] = sd.active.get(slot).copied().unwrap_or(255);
+                if let Some(m) = sd.active_mon(slot) {
+                    let v = &m.volatiles;
+                    let mut payloads = 0u64;
+                    for it in &v.items[..v.len as usize] {
+                        if bookkeeping & (1u64 << it.kind as u8) == 0 {
+                            payloads = payloads.wrapping_mul(31).wrapping_add(((it.kind as u64) << 32) | it.payload as u64);
+                        }
+                    }
+                    snap.mons[side as usize][slot] = MonEffectSnapshot {
+                        status: m.status,
+                        boosts: m.boosts,
+                        volatiles: v.present & !bookkeeping,
+                        payloads,
+                        hp: m.current_hp,
+                        item: m.item_id,
+                        ability: (m.ability_override, m.ability_suppressed),
+                        types: m.type_override,
+                        species: m.species_id,
+                    };
+                }
+            }
+        }
+        snap
+    }
+
+    /// PS move result of a status move, from its effect on the battle.
+    #[allow(clippy::too_many_arguments)]
+    fn status_move_result(
+        &self,
+        side: SideRef,
+        slot: u8,
+        m: &data::MoveDef,
+        target: Option<Target>,
+        before: &StatusEffectSnapshot,
+        bounced: bool,
+    ) -> crate::pokemon::MoveResult {
+        use crate::pokemon::MoveResult;
+        // Magic Bounce's onTryHit returns null, which hitStepTryHitEvent
+        // turns into a failure (sim/battle-actions.ts:577).
+        if bounced {
+            return MoveResult::Failed;
+        }
+        // Protect & co. return NOT_FAIL: no target left and no failure
+        // gives a null result (sim/battle-actions.ts:616).
+        if self.status_move_protected(side, slot, m, target) {
+            return MoveResult::Skipped;
+        }
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return MoveResult::Failed };
+        let ok = match m.slug {
+            "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
+            | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
+            "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
+            // No effect of their own to fail (Splash onTryHit, Haze onHitField).
+            "splash" | "celebrate" | "holdhands" | "haze" => true,
+            _ => self.status_effect_snapshot() != *before,
+        };
+        if ok { MoveResult::Succeeded } else { MoveResult::Failed }
+    }
+
+    /// Whether a foe's Protect blocks every target of a status move
+    /// (hitStepTryHitEvent, sim/battle-actions.ts:643).
+    fn status_move_protected(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
+        let protected = |t: Target| {
+            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
+        };
+        let foe = side.opposing();
+        match m.target {
+            0 | 4 | 10 | 13 => target.filter(|t| t.side == foe).is_some_and(protected),
+            5 | 6 => {
+                let mut any = false;
+                let mut all_protected = true;
+                for s in 0..self.format().active_count() {
+                    for (ts, include) in [(foe, true), (side, m.target == 5 && s != slot as usize)] {
+                        let t = Target { side: ts, slot: s as u8 };
+                        if include && self.side(ts).active_mon(s).is_some_and(|d| d.is_alive()) {
+                            any = true;
+                            all_protected &= protected(t);
+                        }
+                    }
+                }
+                any && all_protected
+            }
+            _ => false,
         }
     }
 
@@ -16554,6 +16697,31 @@ mod protect_variant {
 
 /// Map a protect-family move id to its [`protect_variant`] code. Plain
 /// Protect / Detect (and the side-wide guards) carry no side effect → PLAIN.
+/// See [`Battle::status_effect_snapshot`].
+#[derive(Clone, Copy, PartialEq)]
+struct StatusEffectSnapshot {
+    mons: [[MonEffectSnapshot; 2]; 2],
+    sides: [crate::side::SideConditions; 2],
+    active: [[u8; 2]; 2],
+    field: [u8; 4],
+    weather: crate::weather::Weather,
+    terrain: crate::terrain::Terrain,
+    pending: [u8; 4],
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+struct MonEffectSnapshot {
+    status: Status,
+    boosts: [i8; 7],
+    volatiles: u64,
+    payloads: u64,
+    hp: u16,
+    item: u16,
+    ability: (u16, bool),
+    types: [u8; 2],
+    species: u16,
+}
+
 fn protect_variant_for(move_id: u16) -> u8 {
     match move_id {
         data::move_id::SPIKYSHIELD => protect_variant::SPIKY,
@@ -43020,3 +43188,7 @@ mod tests {
 #[cfg(test)]
 #[path = "battle_r7_tests.rs"]
 mod r7_tests;
+
+#[cfg(test)]
+#[path = "battle_r8_tests.rs"]
+mod r8_tests;

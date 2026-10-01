@@ -180,3 +180,11 @@ fn battle_ends_at_the_last_faint() {
 fn champions_sleep_duration() {
     assert_matches_ps("study-a6a15861c8-champions-sleep");
 }
+
+/// Garchomp's Stomping Tantrum is immune into Corviknight on turn 1, so the
+/// next turn's Stomping Tantrum has 150 BP (data/moves.ts:18050,
+/// `moveLastTurnResult === false`): Rillaboom 182 -> 70.
+#[test]
+fn stomping_tantrum_doubles_after_a_failed_move() {
+    assert_matches_ps("stomping-tantrum-after-a-miss");
+}
