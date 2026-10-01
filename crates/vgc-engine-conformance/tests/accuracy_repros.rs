@@ -424,3 +424,10 @@ fn keyed_commit_sort_follows_ps_queue_order() {
 fn rocky_helmet_fires_before_knock_off_removes_it() {
     assert_matches_ps("study-4731c6ae5a-knock-off-rocky-helmet");
 }
+
+/// Study battle 12ea08df40: PS's `random(2, 6)` confusion length is keyed as
+/// the offset from 2, the engine's `2 + range(4)`.
+#[test]
+fn two_argument_random_draws_key_as_offsets() {
+    assert_matches_ps("study-12ea08df40-confusion-duration-key");
+}
