@@ -2941,6 +2941,15 @@ self.trigger_emergency_exits();
             return;
         }
         let keys = self.turn_keys;
+        // The keyed oracle replays PS's recorded tie shuffles in each re-sort
+        // (sim/battle.ts runAction queue.sort); other rngs keep tied moves in
+        // queue order.
+        if self.rng.is_oracle_keyed() {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            let _ = crate::order::resort_remaining(self, order, idx, &keys, Some(&mut rng));
+            self.rng = rng;
+            return;
+        }
         let _ = crate::order::resort_remaining(self, order, idx, &keys, None);
     }
 
@@ -3161,6 +3170,12 @@ self.trigger_emergency_exits();
                     next += 1;
                 }
             }
+            let _ = crate::order::resort_from(self, &mut order, start, &keys, Some(&mut rng));
+        }
+        // The keyed oracle: the same re-sort before the first move, with
+        // PS's recorded tie shuffle.
+        if rng.is_oracle_keyed() {
+            let start = order.iter().position(|a| !matches!(a.choice, Choice::Switch { .. })).unwrap_or(order.len());
             let _ = crate::order::resort_from(self, &mut order, start, &keys, Some(&mut rng));
         }
         self.rng = rng;

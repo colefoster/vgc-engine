@@ -599,8 +599,9 @@ pub(crate) fn resort_remaining(
     resort_from(battle, order, after + 1, keys, ps)
 }
 
-/// [`resort_remaining`] from index `start`. With a PS rng it sorts with
-/// PS's own speedSort, shuffling tie groups as PS does.
+/// [`resort_remaining`] from index `start`. With an rng (PS or the keyed
+/// oracle) it sorts with PS's own speedSort, shuffling tie groups as PS
+/// does.
 pub(crate) fn resort_from(
     battle: &Battle,
     order: &mut ActionOrder,
@@ -634,9 +635,8 @@ pub(crate) fn resort_from(
         let speed_key = if trick_room { speed } else { -speed };
         out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
     }
-    #[cfg(feature = "ps-rng")]
     if let Some(rng) = ps {
-        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.ps_random_range("shuffle", a, b));
+        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.speed_sort_draw(a, b));
         return n;
     }
     // Stable insertion sort (n <= 8, heap-free): ties keep queue order.
@@ -656,7 +656,6 @@ pub(crate) fn resort_from(
 /// shuffles the run with `random(i, end)` (sim/prng.ts shuffle). `keys`
 /// ascending = earlier. The swaps can reorder later tie groups before
 /// their own shuffle, so a stable sort would not reproduce PS's order.
-#[cfg(feature = "ps-rng")]
 pub(crate) fn ps_speed_sort<K: Ord + Copy, T: Copy>(keys: &mut [K], items: &mut [T], mut draw: impl FnMut(u32, u32) -> u32) {
     let n = keys.len().min(items.len());
     let mut sorted = 0;

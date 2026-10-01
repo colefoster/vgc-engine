@@ -395,3 +395,11 @@ fn partial_trap_ends_with_its_source() {
 fn leech_seed_needs_a_live_seeder_slot() {
     assert_matches_ps("study-2a77dad1ee-leech-seed-seeder-fainted");
 }
+
+/// Study battle c1480b7942: a Sneasler mirror speed tie. PS shuffles the tie
+/// again in the gen-8+ re-sort before the first move (sim/battle.ts runAction
+/// queue.sort), and the keyed replay applies PS's recorded shuffle there too.
+#[test]
+fn keyed_speed_ties_follow_the_mid_turn_resort() {
+    assert_matches_ps("study-c1480b7942-speed-tie-resort");
+}
