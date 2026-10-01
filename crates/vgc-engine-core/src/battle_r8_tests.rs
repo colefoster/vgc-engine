@@ -278,3 +278,28 @@ fn body_slam_cannot_miss_a_minimized_target() {
         assert!(body_slam_after(0, seed) > 0, "seed {seed}: Body Slam missed a +2 evasion Minimize user");
     }
 }
+
+// ---- Thunder Wave's Ground immunity ----
+
+#[test]
+fn thunder_wave_fails_on_a_ground_type_without_an_accuracy_roll() {
+    // PS data/moves.ts:19601 thunderwave `ignoreImmunity: false`:
+    // hitStepTypeImmunity (sim/battle-actions.ts:654) runs before
+    // hitStepAccuracy, so a Ground type is immune and nothing is rolled.
+    let mut b = singles(
+        r#"[{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["thunderwave"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["splash"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].status, Status::None);
+    let rolls = b
+        .rng
+        .recording_log()
+        .unwrap()
+        .iter()
+        .filter(|e| e.key.move_id == data::move_id::THUNDERWAVE)
+        .count();
+    assert_eq!(rolls, 0);
+}
