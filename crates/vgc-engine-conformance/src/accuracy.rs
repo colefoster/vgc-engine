@@ -440,8 +440,9 @@ fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
     }
 }
 
-/// Sentinel move id for an ability's `this.sample(...)` at the residual
-/// (Moody's +2 and -1 picks, `data/abilities.ts` moody `onResidual`).
+/// Sentinel move id for an ability's `this.sample(...)`: Moody's +2 and -1
+/// picks (`data/abilities.ts` moody `onResidual`) and Trace's target
+/// (trace `onUpdate`, also at battle start).
 /// `ps-battle.js` routes `Battle.sample` through `Battle.random` from its own
 /// wrapper, so the envelope loses the ability frame and lands under
 /// `range/<none>` with no holder. They are recovered from the raw trace, taken
@@ -450,9 +451,11 @@ fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
 const ABILITY_SAMPLE: u16 = u16::MAX - 3;
 
 fn add_ability_samples(table: &mut Table, acc: &AccBattle) {
-    for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
+    for d in acc.start_raw.iter().chain(acc.turns.iter().flat_map(|t| t.raw.iter())) {
         let from_ability = d.op == "random"
-            && d.site.first().is_some_and(|s| s.contains(".onResidual@data/abilities.js"));
+            && d.site.first().is_some_and(|s| {
+                s.contains(".onResidual@data/abilities.js") || s.contains(".onUpdate@data/abilities.js")
+            });
         if !from_ability {
             continue;
         }
@@ -463,7 +466,9 @@ fn add_ability_samples(table: &mut Table, acc: &AccBattle) {
                 q.remove(pos);
             }
         }
-        table.entry(RngKey { move_id: ABILITY_SAMPLE, ..none }).or_default().push_back(v);
+        // Battle-start draws (turn 0) go to turn 1, where the engine's
+        // `turn() + 1` convention files them; FIFO keeps them first.
+        table.entry(RngKey { move_id: ABILITY_SAMPLE, turn: d.turn.max(1), ..none }).or_default().push_back(v);
     }
 }
 

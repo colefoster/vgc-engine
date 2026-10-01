@@ -319,3 +319,10 @@ fn sucker_punch_checks_the_redirected_target() {
 fn toxic_floors_the_sixteenth_before_the_stage() {
     assert_matches_ps("study-acb2e577ac-toxic-rounding");
 }
+
+/// Study battle 43b96379ab: Trace's `sample()` of an adjacent foe is keyed by
+/// holder and ability, so the keyed replay traces the same foe as PS.
+#[test]
+fn trace_pick_is_keyed_to_the_holder() {
+    assert_matches_ps("study-43b96379ab-trace-pick");
+}

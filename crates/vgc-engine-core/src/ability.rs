@@ -31,6 +31,13 @@ fn proc_chance(
     rng.ability_chance(battle.turn() + 1, holder_ref(holder), ability, num, den)
 }
 
+/// Trace's `sample(possibleTargets)` (PS data/abilities.ts:5143), keyed by
+/// holder and ability so the keyed oracle can hand it PS's pick.
+fn trace_pick(battle: &mut Battle, side: SideRef, slot: u8, n: usize) -> usize {
+    let turn = battle.turn() + 1;
+    battle.rng_mut().ability_random(turn, holder_ref((side, slot)), data::ability_id::TRACE, n as u32) as usize
+}
+
 fn holder_ref((side, slot): (SideRef, u8)) -> crate::rng::SlotRef {
     (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot
 }
@@ -703,10 +710,10 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     let pick = if battle.rng_mut().is_ps() {
                         battle.rng_mut().ps_random_range("sample", 0, n_cands as u32) as usize
                     } else {
-                        battle.rng_mut().range(n_cands as u32) as usize
+                        trace_pick(battle, side, slot, n_cands)
                     };
                     #[cfg(not(feature = "ps-rng"))]
-                    let pick = battle.rng_mut().range(n_cands as u32) as usize;
+                    let pick = trace_pick(battle, side, slot, n_cands);
                     Some(cands[pick.min(n_cands - 1)])
                 }
             };
