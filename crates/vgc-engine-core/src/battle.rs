@@ -2481,6 +2481,9 @@ self.trigger_emergency_exits();
             if d.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush) {
                 push(&mut h, (0, spe, 2));
             }
+            if d.volatiles.has(crate::pokemon::VolatileKind::Minimize) {
+                push(&mut h, (0, spe, 2));
+            }
         }
         for side in [SideRef::P1, SideRef::P2] {
             let c = self.side(side).conditions;
@@ -16604,6 +16607,18 @@ self.trigger_emergency_exits();
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                    // Minimize's volatileStatus (data/moves.ts:11926).
+                    if move_id == data::move_id::MINIMIZE {
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            if !a.volatiles.has(crate::pokemon::VolatileKind::Minimize) {
+                                let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                    kind: crate::pokemon::VolatileKind::Minimize,
+                                    turns_remaining: 0,
+                                    payload: 0,
+                                });
+                            }
+                        }
+                    }
                     // Mirror Herb — PS data/items.ts:mirrorherb fires on
                     // `onFoeAfterBoost` whenever a foe's stat goes up.
                     // Dispatch once with the full boost set so multi-stat
@@ -17071,10 +17086,8 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         "agility" | "rockpolish" | "autotomize" => &[(4, 2)],
         "amnesia" => &[(3, 2)],
         // Evasion (index 6). PS data/moves.ts: minimize `boosts {evasion:2}`,
-        // doubleteam `boosts {evasion:1}`, both target self. NOTE: Minimize's
-        // `volatileStatus: 'minimize'` (always-hit + 2x damage from Body Slam
-        // / Stomp / etc.) is a separate interaction, not yet modelled — this
-        // adds only the evasion stage.
+        // doubleteam `boosts {evasion:1}`, both target self. Minimize's
+        // `volatileStatus: 'minimize'` is added at the call site.
         "minimize" => &[(6, 2)],
         "doubleteam" => &[(6, 1)],
         "tailglow" => &[(2, 3)],

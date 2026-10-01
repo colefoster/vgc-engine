@@ -427,6 +427,20 @@ pub enum VolatileKind {
     /// while its source is active and lowers Def / SpD at each residual.
     /// Payload: `side << 16 | slot << 8 | team index` of the source.
     Octolock,
+    /// Minimize (PS `data/moves.ts:11926` condition): moves with
+    /// `flags.minimize` deal 2x to and cannot miss the holder. Indefinite;
+    /// cleared on switch-out.
+    Minimize,
+}
+
+/// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
+pub fn hits_minimized(move_id: u16) -> bool {
+    use crate::data::move_id as M;
+    matches!(
+        move_id,
+        M::BODYSLAM | M::DRAGONRUSH | M::FLYINGPRESS | M::HEATCRASH | M::HEAVYSLAM | M::MALICIOUSMOONSAULT | M::STEAMROLLER
+            | M::STOMP | M::SUPERCELLSLAM
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

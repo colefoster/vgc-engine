@@ -217,3 +217,11 @@ fn upper_hand_needs_a_queued_priority_attack() {
 fn imprison_stops_a_shared_move() {
     assert_matches_ps("study-00a2a3d4e1-imprison-trick-room");
 }
+
+/// Study battle 799492fe70: Emboar's Heat Crash can't miss Overqwil at +4
+/// evasion after two Minimizes and deals double damage (170 -> 18;
+/// data/moves.ts:11930 minimize condition).
+#[test]
+fn heat_crash_hits_a_minimized_target_for_double() {
+    assert_matches_ps("study-799492fe70-heat-crash-minimize");
+}
