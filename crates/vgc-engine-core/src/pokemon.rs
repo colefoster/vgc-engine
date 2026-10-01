@@ -431,6 +431,9 @@ pub enum VolatileKind {
     /// `flags.minimize` deal 2x to and cannot miss the holder. Indefinite;
     /// cleared on switch-out.
     Minimize,
+    /// Beak Blast's charge (PS `data/moves.ts:1119` condition): a contact
+    /// hit burns the attacker. Duration 1; removed when its user moves.
+    BeakBlast,
 }
 
 /// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
