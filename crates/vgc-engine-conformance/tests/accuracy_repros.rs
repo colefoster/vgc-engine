@@ -239,3 +239,10 @@ fn shed_tail_passes_its_substitute() {
 fn bug_bite_eats_the_targets_berry() {
     assert_matches_ps("study-d2cd6086c6-bug-bite-sitrus");
 }
+
+/// Study battle 7dd9b58cae: Ampharos's Charge raises its Sp. Def and
+/// starts the charge volatile (data/moves.ts charge).
+#[test]
+fn charge_raises_special_defense() {
+    assert_matches_ps("study-7dd9b58cae-charge");
+}
