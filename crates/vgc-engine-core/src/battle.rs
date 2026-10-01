@@ -16916,6 +16916,8 @@ self.trigger_emergency_exits();
                             payload: dur,
                         });
                     }
+                    // Persim / Lum Berry onUpdate cures it at once.
+                    crate::item::try_consume_persim_berry(self, ts, tslot);
                 }
             }
             _ => {
@@ -18333,6 +18335,8 @@ fn apply_secondary_effect(
                         payload: dur,
                     });
                 }
+                // Persim / Lum Berry onUpdate cures it at once.
+                crate::item::try_consume_persim_berry(battle, target_side, target_slot);
             }
         }
     }
