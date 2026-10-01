@@ -750,6 +750,16 @@ pub fn move_type_in_ctx(
     t
 }
 
+/// The weather a move reads for its own effects: PS sim/pokemon.ts:2193
+/// effectiveWeather reports 'sunnyday' during a Mega Sol user's move.
+fn mega_sol_weather(attacker: &Pokemon, weather: crate::weather::Weather) -> crate::weather::Weather {
+    if attacker.effective_ability_id() == data::ability_id::MEGASOL {
+        crate::weather::Weather::Sun
+    } else {
+        weather
+    }
+}
+
 fn base_move_type_in_ctx(
     attacker: &Pokemon,
     move_id: u16,
@@ -771,7 +781,7 @@ fn base_move_type_in_ctx(
         }
     } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
-        match ctx.weather {
+        match mega_sol_weather(attacker, ctx.weather) {
             Weather::Sun => 1,
             Weather::Rain => 2,
             Weather::Sand => 12,
@@ -912,7 +922,7 @@ pub(crate) fn calculate_damage_with_bp(
         (ttype, bp_local)
     } else if move_id == data::move_id::WEATHERBALL {
         use crate::weather::Weather;
-        match ctx.weather {
+        match mega_sol_weather(attacker, ctx.weather) {
             Weather::Sun => (1u8, 100u32),
             Weather::Rain => (2u8, 100),
             Weather::Sand => (12u8, 100),
@@ -4017,6 +4027,23 @@ mod tests {
             "Mega Sol boosts Fire as in sun (ctrl {ctrl_fire}, ms {ms_fire})");
         assert!(ms_water < ctrl_water,
             "Mega Sol halves Water as in sun (ctrl {ctrl_water}, ms {ms_water})");
+    }
+
+    #[test]
+    fn mega_sol_weather_ball_is_fire_100() {
+        // PS sim/pokemon.ts:2193 effectiveWeather: during a Mega Sol user's
+        // move it reads 'sunnyday', so Weather Ball (data/moves.ts:20701)
+        // is a 100 BP Fire move. Study 4598041866.
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false };
+        let mut atk = make_mon("snorlax", 50, "modest", StatSpread { hp: 0, atk: 0, def: 0, spa: 252, spd: 0, spe: 0 });
+        atk.ability_id = data::ability_id::MEGASOL;
+        let def = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        assert_eq!(move_type_in_ctx(&atk, move_id("weatherball"), &ctx), 1, "Fire");
+        let sunny = DamageContext { weather: crate::weather::Weather::Sun, ..ctx };
+        assert_eq!(
+            calculate_damage(&atk, &def, move_id("weatherball"), ctx),
+            calculate_damage(&atk, &def, move_id("weatherball"), sunny),
+        );
     }
 
     #[test]
