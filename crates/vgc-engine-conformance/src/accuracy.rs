@@ -194,8 +194,11 @@ fn turn_choices(main: &[String], mid: &[String], side: SideRef) -> Result<Vec<Ch
 
 /// PS sends a Struggle-only request as `move 1` (sim/pokemon.ts:1109
 /// getMoveRequestData). When the engine also offers that slot nothing but
-/// Struggle, the move choice means Struggle.
-fn struggle_choices(b: &Battle, side: SideRef, choices: &mut [Choice]) {
+/// Struggle, the move choice means Struggle. Struggle is randomNormal: PS
+/// picks its foe in resolveAction's getRandomTarget, a draw the keyed oracle
+/// can't attribute, so under the keyed oracle the target is read from PS's
+/// `|move|` line (`log_turn`); otherwise the engine picks it.
+fn struggle_choices(b: &Battle, side: SideRef, choices: &mut [Choice], log_turn: Option<(&str, u32)>) {
     const STRUGGLE: u8 = 4; // vgc-engine-core `choice::STRUGGLE_MOVE_SLOT` (private module)
     for c in choices.iter_mut() {
         let Choice::Move { actor_slot, move_slot, .. } = *c else { continue };
@@ -209,7 +212,14 @@ fn struggle_choices(b: &Battle, side: SideRef, choices: &mut [Choice]) {
         });
         let first = moves.next();
         if first == Some(STRUGGLE) && moves.all(|m| m == STRUGGLE) {
-            *c = Choice::Move { actor_slot, move_slot: STRUGGLE, target: None };
+            let target = log_turn.and_then(|(log, turn)| {
+                let me = format!("{}{}", if side == SideRef::P1 { "p1" } else { "p2" }, if actor_slot == 0 { 'a' } else { 'b' });
+                let (_, _, tgt) = turn_context(log, turn).moves.into_iter().find(|(a, m, _)| *a == me && m == "struggle")?;
+                let t_side = match tgt.get(..2)? { "p1" => SideRef::P1, "p2" => SideRef::P2, _ => return None };
+                let t_slot = match tgt.get(2..3)? { "a" => 0, "b" => 1, _ => return None };
+                Some(Target { side: t_side, slot: t_slot })
+            });
+            *c = Choice::Move { actor_slot, move_slot: STRUGGLE, target };
         }
     }
 }
@@ -361,8 +371,9 @@ fn drive(
             before_step(&mut b, t.base.turn);
             let mut p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
             let mut p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;
-            struggle_choices(&b, SideRef::P1, &mut p1c);
-            struggle_choices(&b, SideRef::P2, &mut p2c);
+            let log_turn = b.rng_mut().is_oracle_keyed().then_some((acc.meta.log.as_str(), t.base.turn));
+            struggle_choices(&b, SideRef::P1, &mut p1c, log_turn);
+            struggle_choices(&b, SideRef::P2, &mut p2c, log_turn);
             let mut r = b.step(&p1c, &p2c);
             // Only when the engine itself is waiting for replacements: if its
             // state already diverged (nobody fainted), stepping PS's
@@ -1047,8 +1058,9 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
         };
         let _ = writeln!(out, "== turn {}  p1 {:?} mid {:?} rep {:?} | p2 {:?} mid {:?} rep {:?}", t.base.turn,
             t.base.choices.p1, t.midturn.p1, t.replace.p1, t.base.choices.p2, t.midturn.p2, t.replace.p2);
-        struggle_choices(&b, SideRef::P1, &mut p1c);
-        struggle_choices(&b, SideRef::P2, &mut p2c);
+        let log_turn = Some((acc.meta.log.as_str(), t.base.turn));
+        struggle_choices(&b, SideRef::P1, &mut p1c, log_turn);
+        struggle_choices(&b, SideRef::P2, &mut p2c, log_turn);
         let mut r = b.step(&p1c, &p2c);
         if !matches!(r, StepResult::Ended { .. }) && (!t.replace.p1.is_empty() || !t.replace.p2.is_empty()) && b.needs_replacements() {
             let rp1 = turn_choices(&t.replace.p1, &[], SideRef::P1).unwrap_or_default();
