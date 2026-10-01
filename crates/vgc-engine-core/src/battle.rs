@@ -14846,6 +14846,20 @@ self.trigger_emergency_exits();
                     self, tside, tslot, boosts,
                 );
             }
+            data::move_id::AROMATICMIST => {
+                // PS data/moves.ts:aromaticmist — target adjacentAlly,
+                // boosts {spd: 1}; fails without a live ally.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aromatic_Mist_(move)>.
+                let ally = actor_slot ^ 1;
+                if self.format().active_count() < 2
+                    || !self.side(actor_side).active_mon(ally as usize).is_some_and(|m| m.is_alive())
+                {
+                    return;
+                }
+                let boosts: &[(u8, i8)] = &[(3, 1)];
+                self.apply_boosts(actor_side, ally, boosts, actor_side, actor_slot);
+                crate::item::try_consume_mirror_herb_on_foe_boost(self, actor_side, ally, boosts);
+            }
             data::move_id::ALLYSWITCH => {
                 // PS data/moves.ts:allyswitch (num 502) — priority +2,
                 // target: self. The user swaps board positions with its
