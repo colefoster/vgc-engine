@@ -7947,6 +7947,7 @@ self.trigger_emergency_exits();
             self.apply_crash_damage(actor_side, actor_slot);
         }
 
+        self.apply_after_hit_hazards(actor_side, actor_slot, move_id, m, any_damage_dealt);
         self.apply_self_effects(
             actor_side,
             actor_slot,
@@ -7968,6 +7969,68 @@ self.trigger_emergency_exits();
             drag_target,
             hit_target,
         );
+    }
+
+    /// Ceaseless Edge / Stone Axe hazards: their onAfterHit runs inside the
+    /// hit (gated on `source.hp`), before the AfterMoveSecondarySelf step
+    /// that applies Life Orb's recoil (sim/battle-actions.ts:536), so it is
+    /// called ahead of `apply_self_effects`.
+    fn apply_after_hit_hazards(
+        &mut self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        m: &data::MoveDef,
+        any_damage_dealt: u16,
+    ) {
+        // Ceaseless Edge — PS data/moves.ts:ceaselessedge `onAfterHit` (+
+        // `onAfterSubDamage`): `if (!move.hasSheerForce && source.hp) { for
+        // (const side of source.side.foeSidesWithConditions())
+        // side.addSideCondition('spikes'); }`. After a connecting hit, lay one
+        // Spikes layer on the FOE's side (caps at 3). Gated identically to
+        // Rapid Spin above — the user must survive and NOT be a Sheer Force
+        // user (Sheer Force converts the `secondary: {}` into the damage boost
+        // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
+        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                let layers = &mut self.side_mut(opp).conditions.spikes_layers;
+                if *layers < 3 {
+                    *layers += 1;
+                }
+            }
+        }
+
+        // Stone Axe — PS data/moves.ts:stoneaxe `onAfterHit` (+
+        // `onAfterSubDamage`): identical shape to Ceaseless Edge but sets
+        // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
+        // && source.hp` gate. Kleavor's signature. Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
+        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
+            let sheer_force = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(crate::damage::attacker_has_sheer_force)
+                && crate::damage::move_is_sheer_force_boosted(m);
+            let user_alive = self
+                .side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| a.is_alive());
+            if !sheer_force && user_alive {
+                let opp = actor_side.opposing();
+                self.side_mut(opp).conditions.stealth_rock = true;
+            }
+        }
     }
 
     // ===== PR-LC4: cold helpers outlined from resolve_move_with_pending =====
@@ -9456,54 +9519,6 @@ self.trigger_emergency_exits();
             }
         }
 
-        // Ceaseless Edge — PS data/moves.ts:ceaselessedge `onAfterHit` (+
-        // `onAfterSubDamage`): `if (!move.hasSheerForce && source.hp) { for
-        // (const side of source.side.foeSidesWithConditions())
-        // side.addSideCondition('spikes'); }`. After a connecting hit, lay one
-        // Spikes layer on the FOE's side (caps at 3). Gated identically to
-        // Rapid Spin above — the user must survive and NOT be a Sheer Force
-        // user (Sheer Force converts the `secondary: {}` into the damage boost
-        // and suppresses the hazard). Samurott-Hisui's signature. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Ceaseless_Edge_(move)>.
-        if move_id == data::move_id::CEASELESSEDGE && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                let opp = actor_side.opposing();
-                let layers = &mut self.side_mut(opp).conditions.spikes_layers;
-                if *layers < 3 {
-                    *layers += 1;
-                }
-            }
-        }
-
-        // Stone Axe — PS data/moves.ts:stoneaxe `onAfterHit` (+
-        // `onAfterSubDamage`): identical shape to Ceaseless Edge but sets
-        // Stealth Rock on the FOE's side (idempotent). Same `!move.hasSheerForce
-        // && source.hp` gate. Kleavor's signature. Bulbapedia:
-        // <https://bulbapedia.bulbagarden.net/wiki/Stone_Axe_(move)>.
-        if move_id == data::move_id::STONEAXE && any_damage_dealt > 0 {
-            let sheer_force = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(crate::damage::attacker_has_sheer_force)
-                && crate::damage::move_is_sheer_force_boosted(m);
-            let user_alive = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .is_some_and(|a| a.is_alive());
-            if !sheer_force && user_alive {
-                let opp = actor_side.opposing();
-                self.side_mut(opp).conditions.stealth_rock = true;
-            }
-        }
 
         // Throat Spray: sound damaging moves (Hyper Voice, Boomburst,
         // Overdrive...) trigger +1 SpA on the user after the hit. PS
