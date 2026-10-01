@@ -292,3 +292,27 @@ fn stone_axe_sets_rocks_before_life_orb_ko() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert!(b.p2.conditions.stealth_rock);
 }
+
+#[test]
+fn imposter_copies_the_moves_and_reverts_on_switch_out() {
+    // PS sim/pokemon.ts:1305-1326 transformInto: moveSlots become the
+    // target's moves at min(5, pp) PP; clearVolatile on switch-out restores
+    // the base species, ability and moves. Studies 5abc255afc, ae0f734f2d.
+    let mut b = singles(
+        r#"[{"species":"ditto","level":50,"ability":"imposter","moves":["transform"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#,
+        r#"[{"species":"charizard","level":50,"ability":"blaze","moves":["dragondance","splash"]}]"#,
+        3,
+    );
+    let ditto = b.p1.team[0].clone();
+    assert_eq!(ditto.species_id, data::species_id::CHARIZARD, "Imposter transformed");
+    assert_eq!(ditto.moves[0], data::move_id::DRAGONDANCE);
+    assert_eq!(ditto.pp[0], 5);
+    b.step(&[mv(0, 0, None)], &[mv(0, 1, None)]);
+    assert_eq!(b.p1.team[0].boosts[0], 1, "used the copied Dragon Dance");
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[mv(0, 1, None)]);
+    let d = &b.p1.team[0];
+    assert_eq!(d.species_id, data::species_id::DITTO);
+    assert_eq!(d.moves[0], data::move_id::TRANSFORM);
+    assert_eq!(d.effective_ability_id(), data::ability_id::IMPOSTER);
+}

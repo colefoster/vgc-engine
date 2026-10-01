@@ -1266,8 +1266,21 @@ impl Battle {
             .side(target_side)
             .active_mon(target_slot as usize)
             .filter(|m| m.is_alive())
-            .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts));
-        let Some((sp, ab, st, boosts)) = payload else { return false };
+            .map(|m| (m.species_id, m.ability_id, m.stats, m.boosts, m.moves));
+        let Some((sp, ab, st, boosts, moves)) = payload else { return false };
+        // Save the transformer's own species / stats / moves for the
+        // switch-out revert (PS baseSpecies, baseMoveSlots).
+        if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
+            if m.transform_base.is_none() {
+                m.transform_base = Some(crate::pokemon::TransformBase {
+                    species_id: m.species_id,
+                    ability_id: m.ability_id,
+                    stats: m.stats,
+                    moves: m.moves,
+                    pp: m.pp,
+                });
+            }
+        }
         // The transformer's ability BEFORE the copy — PS `oldAbility` in
         // `sim/pokemon.ts:setAbility`. Used below to decide whether the copied
         // ability's onStart re-fires.
@@ -1289,6 +1302,12 @@ impl Battle {
             m.stats.hp = hp;
             // PS copies every boost stage from the target onto the transformer.
             m.boosts = boosts;
+            // moveSlots: the target's moves at min(5, pp) PP
+            // (sim/pokemon.ts:1305-1326).
+            m.moves = moves;
+            for i in 0..4 {
+                m.pp[i] = if moves[i] == u16::MAX { 0 } else { data::MOVES[moves[i] as usize].pp.min(5) };
+            }
         }
         // PS `transformInto` -> `setAbility(target.ability, ..., isTransform=true)`
         // (sim/pokemon.ts:1358). `setAbility` runs the acquired ability's onStart
@@ -4269,6 +4288,7 @@ self.trigger_emergency_exits();
             let outgoing_idx = s.active[actor_slot as usize] as usize;
             if let Some(outgoing) = s.team.get_mut(outgoing_idx) {
                 outgoing.ability_override = u16::MAX;
+                outgoing.revert_transform();
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);

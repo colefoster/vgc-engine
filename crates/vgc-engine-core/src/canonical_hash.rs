@@ -196,7 +196,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 42)?;
+        let mut s = ser.serialize_struct("Pokemon", 43)?;
         s.serialize_field("species_id", &p.species_id)?;
         s.serialize_field("level", &p.level)?;
         s.serialize_field("gender", &(p.gender as u8))?;
@@ -235,6 +235,8 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("fainted", &p.fainted)?;
         s.serialize_field("turns_active", &p.turns_active)?;
         s.serialize_field("move_actions", &p.move_actions)?;
+        // Transform / Imposter: the state restored on switch-out.
+        s.serialize_field("transform_base", &p.transform_base)?;
         // PR-J — last_attacker / last_attacker_category /
         // last_damage_taken / last_phys_* / last_spec_* OMITTED:
         // wiped at top of every `step()` by `Battle::start_turn`
