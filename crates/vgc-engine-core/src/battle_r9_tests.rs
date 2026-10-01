@@ -255,3 +255,15 @@ fn explosion_faints_its_user_even_into_protect() {
     assert!(!b.p1.team[0].is_alive(), "Explosion's user faints");
     assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp);
 }
+
+#[test]
+fn a_protected_magic_bounce_holder_does_not_reflect() {
+    let mut b = doubles(
+        r#"[{"species":"arbok","level":50,"ability":"intimidate","moves":["glare"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"hatterene","level":50,"ability":"magicbounce","moves":["protect"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None, "Protect blocks before Magic Bounce");
+    assert_eq!(b.p2.team[0].status, crate::pokemon::Status::None);
+}

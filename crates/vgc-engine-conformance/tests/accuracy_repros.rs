@@ -375,3 +375,10 @@ fn magic_bounce_ignores_a_move_aimed_at_its_partner() {
 fn explosion_faints_its_user() {
     assert_matches_ps("study-4800ac3963-explosion-faints-user");
 }
+
+/// Study battle 97bfceddd1: Parting Shot into a protecting Magic Bounce
+/// Hatterene is blocked by Protect, not reflected.
+#[test]
+fn protect_blocks_before_magic_bounce() {
+    assert_matches_ps("study-97bfceddd1-protect-before-magic-bounce");
+}

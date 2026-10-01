@@ -11801,10 +11801,14 @@ self.trigger_emergency_exits();
         target: Option<Target>,
     ) -> Option<(SideRef, u8)> {
         let opp = actor_side.opposing();
+        // A protected holder blocks the move first: Protect's onTryHit runs
+        // at priority 3, Magic Bounce's at 1 (data/moves.ts protect,
+        // data/abilities.ts magicbounce).
         let eligible = |slot: u8| -> bool {
             self.side(opp).active_mon(slot as usize).is_some_and(|t| {
                 t.is_alive()
                     && t.semi_invuln == 0
+                    && !(m.blocked_by_protect && t.is_protected_this_turn())
                     && t.effective_ability_id() == data::ability_id::MAGICBOUNCE
             })
         };
