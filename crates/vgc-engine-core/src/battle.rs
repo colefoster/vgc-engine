@@ -1438,6 +1438,7 @@ impl Battle {
                 .side(source_side)
                 .active_mon(source_slot as usize)
                 .is_some_and(|m| m.is_alive());
+            let source_before = self.side(source_side).active_mon(source_slot as usize).map(|m| m.boosts);
             for &(idx, delta) in deltas {
                 if delta < 0 {
                     // PS skips the bounce entirely when the holder's stage
@@ -1468,6 +1469,13 @@ impl Battle {
                 }
             }
             self.mirror_to_opportunist(target_side, target_slot, deltas);
+            // The bounce is a full boost on the source (`this.boost(boosts,
+            // source, target, null, true)`), so its foe-drop reactions run:
+            // Defiant / Competitive (they skip an ally's drop), Eject Pack,
+            // White Herb.
+            if let Some(before) = source_before.filter(|_| source_alive && source_side != target_side) {
+                self.after_foe_drop(source_side, source_slot, before, true);
+            }
             return;
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
@@ -25456,6 +25464,27 @@ mod tests {
         // Holder's Atk untouched; the drop bounced back onto the source.
         assert_eq!(b.p1.team[0].boosts[0], 0, "Mirror Armor holder's Atk not lowered");
         assert_eq!(b.p2.team[0].boosts[0], -1, "Intimidate drop reflected onto the foe");
+    }
+
+    #[test]
+    fn mirror_armor_reflected_drop_triggers_competitive() {
+        // PS data/abilities.ts mirrorarmor: `this.boost(boosts, source,
+        // target, null, true)` is a full boost on the source, so its
+        // AfterEachBoost (Competitive) fires. Study 1c4ec0648a.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"milotic","level":50,"ability":"competitive","nature":"modest","moves":["icywind","scald","recover","protect"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"corviknight","level":50,"ability":"mirrorarmor","nature":"impish","moves":["bravebird","roost","uturn","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }],
+        );
+        assert_eq!(b.p1.team[0].boosts[4], -1, "Spe drop reflected");
+        assert_eq!(b.p1.team[0].boosts[2], 2, "Competitive +2 SpA");
+        assert_eq!(b.p2.team[0].boosts[4], 0);
     }
 
     #[test]
