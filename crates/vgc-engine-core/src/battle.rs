@@ -15040,6 +15040,18 @@ self.trigger_emergency_exits();
                 // already encodes this, but resolve_status_move is called
                 // AFTER the category check and BEFORE the accuracy roll.
                 // Roll accuracy here so failures behave correctly.
+                // `ignoreImmunity: false` (data/moves.ts:19601): a Ground
+                // type is immune in hitStepTypeImmunity, before the roll.
+                let ground = opp_target.is_some_and(|(ts, tslot)| {
+                    self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        types[..n as usize].contains(&8)
+                    })
+                });
+                if ground {
+                    self.ps_status_failed();
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
