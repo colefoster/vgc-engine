@@ -11075,11 +11075,18 @@ self.trigger_emergency_exits();
             None => crate::rng::NO_SLOT,
         };
         if matches!(attacker.status, Status::Paralysis) {
-            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
             // PS data/conditions.ts par `randomChance(1, 4)`; Champions
             // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
             let denom = if self.champions { 8 } else { 4 };
-            if self.rng.range(denom) == 0 {
+            // The keyed oracle holds this gate as a pass/fail bool, which the
+            // harness parks apart from the move's own range draws (Dire
+            // Claw's status pick shares the key). Draw it under a context
+            // no PS draw carries, so it pairs with the parked bool.
+            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
+            self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+            let full = self.rng.range(denom) == 0;
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if full {
                 return PreMoveOutcome::Abort;
             }
         }
