@@ -278,3 +278,17 @@ fn aromatic_mist_raises_the_allys_special_defense() {
     assert_eq!(b.p1.team[1].boosts[3], 1);
     assert_eq!(b.p1.team[0].boosts[3], 0);
 }
+
+#[test]
+fn stone_axe_sets_rocks_before_life_orb_ko() {
+    // PS stoneaxe onAfterHit (source.hp) runs in the hit, before Life Orb's
+    // AfterMoveSecondarySelf (sim/battle-actions.ts:536). Study b00eb62aee.
+    let mut b = singles(
+        r#"[{"species":"kleavor","level":50,"ability":"sharpness","item":"lifeorb","moves":["stoneaxe"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+        3,
+    );
+    b.p1.team[0].current_hp = 1;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert!(b.p2.conditions.stealth_rock);
+}
