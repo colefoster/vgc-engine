@@ -16034,8 +16034,12 @@ self.trigger_emergency_exits();
                         })
                         && !self.side_has_aroma_veil(opp, attacker_breaks_mold);
                     if appliable {
+                        // duration 5; onStart takes one off while the target
+                        // still has its move queued (queue.willMove).
+                        let will_move = matches!(pending_kind[opp as usize][(slot as usize).min(1)], 1 | 2);
+                        let turns = if will_move { 4 } else { 5 };
                         if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
-                            t.set_disable(4, last_slot);
+                            t.set_disable(turns, last_slot);
                         }
                         // Mental Herb's onUpdate cures it (data/items.ts mentalherb).
                         crate::item::try_consume_mental_herb(self, opp, slot);
