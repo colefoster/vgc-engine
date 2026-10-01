@@ -274,3 +274,10 @@ fn payback_doubles_after_the_target_moved() {
 fn roost_heals_half_rounded() {
     assert_matches_ps("study-c46a2e1300-roost-rounds-half");
 }
+
+/// Study battle aedae40015: Archaludon's Stamina was replaced by Simple Beam,
+/// so Body Press raises nothing (onDamagingHit reads the current ability).
+#[test]
+fn a_replaced_stamina_does_not_trigger() {
+    assert_matches_ps("study-aedae40015-simple-beam-stamina");
+}
