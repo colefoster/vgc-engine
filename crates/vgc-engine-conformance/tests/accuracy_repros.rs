@@ -232,3 +232,10 @@ fn heat_crash_hits_a_minimized_target_for_double() {
 fn shed_tail_passes_its_substitute() {
     assert_matches_ps("study-eaedb64b2a-shed-tail");
 }
+
+/// Study battle d2cd6086c6: Scizor's Bug Bite takes and eats Milotic's
+/// Sitrus Berry (data/moves.ts bugbite onHit, `[from] stealeat`).
+#[test]
+fn bug_bite_eats_the_targets_berry() {
+    assert_matches_ps("study-d2cd6086c6-bug-bite-sitrus");
+}

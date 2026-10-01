@@ -336,3 +336,34 @@ fn shed_tail_fails_at_half_hp_or_less() {
     assert_eq!(b.p1.active[0], 0, "no switch");
     assert_eq!(b.p1.team[0].current_hp, max.div_ceil(2));
 }
+
+// ---- Bug Bite / Pluck ----
+//
+// PS data/moves.ts bugbite / pluck onHit: if the user has HP and the target
+// holds a Berry it can lose (takeItem: Sticky Hold blocks), the user eats it
+// (singleEvent 'Eat') and the target loses it.
+
+#[test]
+fn bug_bite_eats_the_targets_berry() {
+    let mut b = singles(
+        r#"[{"species":"scizor","level":50,"ability":"technician","moves":["bugbite"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"sitrusberry","moves":["splash"],"evs":{"hp":252,"def":252}}]"#,
+        1,
+    );
+    let max = b.p1.team[0].stats.hp;
+    b.p1.team[0].current_hp = max / 2;
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].item_id, u16::MAX, "Sitrus taken");
+    assert_eq!(b.p1.team[0].current_hp, max / 2 + max / 4, "Scizor ate it");
+}
+
+#[test]
+fn sticky_hold_keeps_the_berry_from_pluck() {
+    let mut b = singles(
+        r#"[{"species":"staraptor","level":50,"ability":"reckless","moves":["pluck"]}]"#,
+        r#"[{"species":"gastrodon","level":50,"ability":"stickyhold","item":"sitrusberry","moves":["splash"],"evs":{"hp":252,"def":252}}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].item_id, data::item_id::SITRUSBERRY);
+}

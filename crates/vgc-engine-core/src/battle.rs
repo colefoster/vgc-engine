@@ -8314,6 +8314,28 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // Bug Bite / Pluck — PS data/moves.ts bugbite / pluck onHit: a user
+        // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
+        // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
+        // Losing it triggers the target's Unburden (onTakeItem), not Symbiosis.
+        if matches!(ctx.move_id, data::move_id::BUGBITE | data::move_id::PLUCK) {
+            let user_alive = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive());
+            let berry = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
+                let sticky = t.is_alive() && t.effective_ability_id() == data::ability_id::STICKYHOLD;
+                (t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry && !sticky).then_some(t.item_id)
+            });
+            if let (true, Some(berry)) = (user_alive, berry) {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    t.item_id = u16::MAX;
+                    if t.is_alive() && t.ability_id == data::ability_id::UNBURDEN {
+                        t.unburden_active = true;
+                    }
+                }
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::cud_chew_reeat(self, ctx.actor_side, ctx.actor_slot, berry, &mut rng);
+                self.rng = rng;
+            }
+        }
         if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) {
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                 if t.is_alive() {
