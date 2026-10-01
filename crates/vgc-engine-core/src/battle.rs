@@ -3986,6 +3986,7 @@ self.trigger_emergency_exits();
             incoming.cud_chew_counter = 0;
             incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
             incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
+            incoming.moves_used = 0;
             incoming.consumed_item = u16::MAX; // Recycle memory (PS `lastItem`) is per-active-stint.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
@@ -5664,6 +5665,21 @@ self.trigger_emergency_exits();
         // !this.field.isTerrain(''); }`: fails (after PP) with no terrain.
         if move_id == data::move_id::STEELROLLER && self.terrain == crate::terrain::Terrain::None {
             return;
+        }
+        // Last Resort — PS data/moves.ts:10075 lastresort onTry: fails
+        // unless the user knows two or more moves and has used every one
+        // but Last Resort since switching in.
+        if move_id == data::move_id::LASTRESORT {
+            let others_used = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                let known = a.moves.iter().filter(|&&id| id != u16::MAX).count();
+                known >= 2
+                    && (0..4).all(|i| {
+                        matches!(a.moves[i], u16::MAX | data::move_id::LASTRESORT) || a.moves_used & (1 << i) != 0
+                    })
+            });
+            if !others_used {
+                return;
+            }
         }
 
         // Variable-BP moves carry `basePower: 0` in PS and compute the
@@ -9910,9 +9926,7 @@ self.trigger_emergency_exits();
                     // applies on turn 1 only), set charging state, return.
                     let extra = pressure_extra_pp(self, actor_side, m, target);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                            *pp = pp.saturating_sub(1 + extra);
-                        }
+                        a.spend_pp(move_slot, 1 + extra);
                         a.last_used_move_slot = move_slot;
                         a.last_used_move_target = enc_target(target);
                         a.charging_turns = 1;
@@ -9939,9 +9953,7 @@ self.trigger_emergency_exits();
                 // applied turn 1 only per PS), no damage.
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    a.spend_pp(move_slot, 1 + extra);
                     a.last_used_move_slot = move_slot;
                     a.last_used_move_target = enc_target(target);
                     a.charging_turns = 1;
@@ -10007,9 +10019,7 @@ self.trigger_emergency_exits();
         };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + pressure_extra);
-                }
+                mon.spend_pp(move_slot, 1 + pressure_extra);
                 if is_choice && mon.locked_move_slot() == 255 {
                     mon.set_locked_move_slot(move_slot);
                 }
@@ -10161,9 +10171,7 @@ self.trigger_emergency_exits();
                 // `pressure_extra_pp`.
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
                     // veto: the failed move is still the last move.
                     mon.last_used_move_slot = move_slot;
@@ -10209,9 +10217,7 @@ self.trigger_emergency_exits();
             if !ok {
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
                     // veto: the failed move is still the last move.
                     mon.last_used_move_slot = move_slot;
@@ -10236,9 +10242,7 @@ self.trigger_emergency_exits();
         if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }
@@ -10262,9 +10266,7 @@ self.trigger_emergency_exits();
         {
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 // Set last_used_move_slot to 255 so a third attempt
                 // succeeds — PS clears the volatile on every other
                 // turn (the move becomes usable again every other
@@ -10319,9 +10321,7 @@ self.trigger_emergency_exits();
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }

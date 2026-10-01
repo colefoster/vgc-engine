@@ -134,3 +134,48 @@ fn temper_flare_doubles_after_a_move_that_failed() {
     assert!(failed * 2 > landed * 3, "150 BP ({failed}) vs 75 BP ({landed})");
 }
 
+
+// ---- Last Resort: moveSlot.used ----
+//
+// PS data/moves.ts:10075 lastresort onTry: fails unless the user knows at
+// least two moves and every other move slot is `used`; deductPP sets `used`
+// (sim/pokemon.ts:892) and switching in clears it (sim/battle-actions.ts:139).
+
+const LR_USER: &str = r#"[{"species":"eevee","level":50,"ability":"adaptability","moves":["lastresort","growl","tailwhip"]},
+    {"species":"chansey","level":50,"ability":"naturalcure","moves":["splash"]}]"#;
+const LR_FOE: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252,"def":252}}]"#;
+
+fn last_resort_hits(script: &[Choice]) -> bool {
+    let mut b = singles(LR_USER, LR_FOE, 1);
+    for c in script {
+        b.step(&[*c], &[mv(0, 0, None)]);
+    }
+    let hp = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    b.p2.team[0].current_hp < hp
+}
+
+#[test]
+fn last_resort_fails_until_every_other_move_was_used() {
+    assert!(!last_resort_hits(&[]), "no other move used");
+    assert!(!last_resort_hits(&[mv(0, 1, foe())]), "Tail Whip not used yet");
+    assert!(last_resort_hits(&[mv(0, 1, foe()), mv(0, 2, foe())]), "Growl and Tail Whip used");
+}
+
+#[test]
+fn last_resort_forgets_used_moves_on_switch_out() {
+    let sw = |i| Choice::Switch { actor_slot: 0, team_index: i };
+    assert!(!last_resort_hits(&[mv(0, 1, foe()), mv(0, 2, foe()), sw(1), sw(0)]));
+}
+
+#[test]
+fn last_resort_fails_as_the_only_move() {
+    let mut b = singles(
+        r#"[{"species":"eevee","level":50,"ability":"adaptability","moves":["lastresort"]}]"#,
+        LR_FOE,
+        1,
+    );
+    let hp = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+    assert_eq!(b.p2.team[0].current_hp, hp);
+}
