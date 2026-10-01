@@ -210,3 +210,10 @@ fn last_resort_fails_before_the_other_moves_are_used() {
 fn upper_hand_needs_a_queued_priority_attack() {
     assert_matches_ps("upper-hand-flinches-extreme-speed");
 }
+
+/// Study battle 00a2a3d4e1: the foe's Imprison stops a Trick Room queued the
+/// same turn (data/moves.ts:9512 imprison onFoeBeforeMove).
+#[test]
+fn imprison_stops_a_shared_move() {
+    assert_matches_ps("study-00a2a3d4e1-imprison-trick-room");
+}
