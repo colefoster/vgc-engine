@@ -153,3 +153,35 @@ fn traced_drought_sets_the_sun() {
     assert_eq!(b.p1.team[2].effective_ability_id(), data::ability_id::DROUGHT);
     assert_eq!(b.weather, crate::weather::Weather::Sun);
 }
+
+// ---- Trace / Mummy / Wandering Spirit set the current ability only ----
+//
+// setAbility changes `pokemon.ability`, not `baseAbility`; switching out
+// restores the base (sim/pokemon.ts clearVolatile: `this.ability =
+// this.baseAbility`).
+
+#[test]
+fn a_traced_ability_is_lost_on_switch_out() {
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]},{"species":"gardevoir","level":50,"ability":"trace","moves":["splash"]}]"#,
+        r#"[{"species":"torkoal","level":50,"ability":"drought","moves":["splash"]},{"species":"ninetales","level":50,"ability":"drought","moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[2].effective_ability_id(), data::ability_id::DROUGHT);
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 0 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[2].effective_ability_id(), data::ability_id::TRACE);
+}
+
+#[test]
+fn a_mummy_ability_is_lost_on_switch_out() {
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["crunch"]},{"species":"chansey","level":50,"moves":["splash"]},{"species":"blissey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"cofagrigus","level":50,"ability":"mummy","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::MUMMY);
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::THICKFAT);
+}

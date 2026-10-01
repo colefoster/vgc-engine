@@ -20533,7 +20533,7 @@ mod tests {
                 {"species":"blissey","level":50,"ability":"naturalcure","moves":["tackle"]}
             ]"#).unwrap();
             let b = Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2);
-            match b.p1.team[0].ability_id {
+            match b.p1.team[0].effective_ability_id() {
                 data::ability_id::THICKFAT => seen[0] = true,
                 data::ability_id::NATURALCURE => seen[1] = true,
                 other => panic!("traced {other}"),
@@ -39227,7 +39227,7 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         // Gardevoir traced Intimidate and fired it on the foe.
-        assert_eq!(b.p1.team[1].ability_id, data::ability_id::INTIMIDATE,
+        assert_eq!(b.p1.team[1].effective_ability_id(), data::ability_id::INTIMIDATE,
                    "Gardevoir traced Intimidate");
         assert_eq!(b.p2.team[0].boosts[0], -1,
                    "traced Intimidate lowers the foe's Atk by 1");

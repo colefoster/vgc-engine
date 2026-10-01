@@ -333,3 +333,17 @@ fn trace_pick_is_keyed_to_the_holder() {
 fn skill_swapped_surge_runs_its_on_start() {
     assert_matches_ps("study-7e8cd717ef-skill-swap-surge");
 }
+
+/// Study battle 3517310941: a traced ability is lost when the Tracer switches
+/// out (setAbility changes `ability`, not `baseAbility`).
+#[test]
+fn a_traced_ability_reverts_on_switch_out() {
+    assert_matches_ps("study-3517310941-trace-reverts-on-switch");
+}
+
+/// Study battle 7e05dfe023: Mega Alakazam's Trace on Mega Evolution, then
+/// Gardevoir's traced Inner Focus blocks Incineroar's Intimidate.
+#[test]
+fn a_traced_inner_focus_blocks_intimidate() {
+    assert_matches_ps("study-7e05dfe023-traced-inner-focus");
+}
