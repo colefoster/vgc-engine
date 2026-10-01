@@ -247,3 +247,34 @@ fn imprison_disables_shared_moves_for_foes() {
         .collect();
     assert!(!slots.contains(&0) && !slots.contains(&1) && slots.contains(&2), "{slots:?}");
 }
+
+// ---- Minimize ----
+//
+// PS data/moves.ts:11926 minimize volatile: moves with flags.minimize (Body
+// Slam, Stomp, Heat Crash, Heavy Slam, Dragon Rush, Flying Press ...)
+// deal 2x (onSourceModifyDamage) and cannot miss (onAccuracy) against it.
+
+fn body_slam_after(foe_move: u8, seed: u64) -> u32 {
+    let mut b = singles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["bodyslam","splash"]}]"#,
+        r#"[{"species":"blissey","level":50,"ability":"naturalcure","moves":["minimize","splash"],"evs":{"hp":252,"def":252}}]"#,
+        seed,
+    );
+    b.step(&[mv(0, 1, None)], &[mv(0, foe_move, None)]);
+    let hp = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, foe())], &[mv(0, 1, None)]);
+    (hp - b.p2.team[0].current_hp) as u32
+}
+
+#[test]
+fn minimize_doubles_body_slam_damage() {
+    let (minimized, plain) = (body_slam_after(0, 2), body_slam_after(1, 2));
+    assert!(minimized * 2 > plain * 3, "2x ({minimized}) vs ({plain})");
+}
+
+#[test]
+fn body_slam_cannot_miss_a_minimized_target() {
+    for seed in 1..30 {
+        assert!(body_slam_after(0, seed) > 0, "seed {seed}: Body Slam missed a +2 evasion Minimize user");
+    }
+}
