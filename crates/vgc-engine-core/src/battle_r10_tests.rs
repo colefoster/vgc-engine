@@ -184,3 +184,23 @@ fn burning_jealousy_burns_a_target_whose_stats_rose_this_turn() {
     assert!(matches!(run("calmmind"), Status::Burn));
     assert!(matches!(run("splash"), Status::None));
 }
+
+#[test]
+fn disable_on_a_target_that_already_moved_lasts_five_turns() {
+    // PS data/moves.ts disable condition: duration 5, and onStart takes one
+    // off only when the target still has its move queued. Study
+    // 9af2fea75f (Eruption disabled on turn 6 ends on turn 10).
+    let mut b = singles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["disable","splash"]}]"#,
+        r#"[{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["tackle","splash"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert_eq!(b.p2.team[0].disabled_move_slot(), 0);
+    for _ in 0..3 {
+        b.step(&[mv(0, 1, None)], &[mv(0, 1, None)]);
+    }
+    assert_eq!(b.p2.team[0].disabled_move_slot(), 0, "still disabled after 4 residuals");
+    b.step(&[mv(0, 1, None)], &[mv(0, 1, None)]);
+    assert_eq!(b.p2.team[0].disabled_move_slot(), 255, "ends at the fifth");
+}
