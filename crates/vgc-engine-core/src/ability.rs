@@ -1127,6 +1127,22 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         }
     }
 
+    // Harvest — PS data/abilities.ts:1800 onResidual: in sun (no roll) or
+    // on randomChance(1, 2), an itemless holder regains its last-used berry.
+    if ability_id == data::ability_id::HARVEST {
+        let sunny = matches!(battle.weather, crate::weather::Weather::Sun);
+        if sunny || proc_chance(battle, rng, (side, slot), ability_id, 1, 2) {
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                let last = m.consumed_item;
+                if m.is_alive() && m.item_id == u16::MAX && last != u16::MAX && data::ITEMS[last as usize].is_berry {
+                    m.item_id = last;
+                    m.consumed_item = u16::MAX;
+                    m.sync_can_mega_evolve();
+                }
+            }
+        }
+    }
+
     // Speed Boost: +1 Spe at end of turn, except on the turn the mon
     // was switched in mid-battle. PS guards with `if (pokemon.activeTurns)`
     // — activeTurns is incremented at turn-start in nextTurn(), so it's

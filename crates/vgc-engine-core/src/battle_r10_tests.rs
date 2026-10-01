@@ -350,3 +350,20 @@ fn shield_dust_blocks_fake_out_flinch() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
     assert!(matches!(b.p2.team[0].status, Status::Sleep));
 }
+
+#[test]
+fn harvest_restores_a_berry_in_sun() {
+    // PS data/abilities.ts:1800 harvest onResidual: in sun (no roll), or on
+    // randomChance(1, 2), an itemless holder regains its last berry.
+    // Study 7adc8cfb39 (Arboliva).
+    let mut b = singles(
+        r#"[{"species":"arboliva","level":50,"ability":"harvest","item":"sitrusberry","moves":["splash"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["dragonrage"]}]"#,
+        3,
+    );
+    b.set_weather(crate::weather::Weather::Sun);
+    b.weather_turns = 5;
+    b.p1.team[0].current_hp = b.p1.team[0].stats.hp / 2 + 30;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].item_id, data::item_id::SITRUSBERRY, "berry regrown");
+}
