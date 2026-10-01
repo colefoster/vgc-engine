@@ -382,3 +382,16 @@ fn explosion_faints_its_user() {
 fn protect_blocks_before_magic_bounce() {
     assert_matches_ps("study-97bfceddd1-protect-before-magic-bounce");
 }
+
+/// Study battle e81e74426e: Infestation stops chipping once its user faints.
+#[test]
+fn partial_trap_ends_with_its_source() {
+    assert_matches_ps("study-e81e74426e-infestation-source-fainted");
+}
+
+/// Study battle 2a77dad1ee: Leech Seed drains nothing while the seeder's
+/// slot holds a fainted mon.
+#[test]
+fn leech_seed_needs_a_live_seeder_slot() {
+    assert_matches_ps("study-2a77dad1ee-leech-seed-seeder-fainted");
+}

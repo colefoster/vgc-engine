@@ -346,6 +346,8 @@ pub enum VolatileKind {
     ///               turn; volatile drops at 0)
     ///   bits 8..15 → source side (0 = P1, 1 = P2)
     ///   bits 16..23 → source slot (0 or 1)
+    ///   bits 24..31 → source team index (the trap ends once that mon
+    ///               leaves the slot or faints)
     /// Each end of turn (PS onResidualOrder 13) the holder takes
     /// 1/8 max HP damage; Magic Guard blocks. Binding Band held by
     /// the source bumps the chip to 1/6 — deferred (no consumer in
