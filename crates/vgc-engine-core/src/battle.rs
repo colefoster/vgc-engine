@@ -331,6 +331,10 @@ pub struct Battle {
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
     #[serde(skip)]
     disguise_hit_this_move: bool,
+    /// The status move being resolved cannot miss its target (Glaive Rush
+    /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
+    #[serde(skip)]
+    status_sure_hit: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -703,6 +707,7 @@ impl Battle {
             champions: false,
             defer_white_herb: false,
             disguise_hit_this_move: false,
+            status_sure_hit: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -12046,7 +12051,7 @@ self.trigger_emergency_exits();
     }
 
     fn rolled_accuracy_passed(&mut self, m: &data::MoveDef) -> bool {
-        if m.accuracy == 255 {
+        if m.accuracy == 255 || self.status_sure_hit {
             return true;
         }
         // `damage_only` synth path — force the accuracy result to
@@ -14509,6 +14514,18 @@ self.trigger_emergency_exits();
                 _ => self.resolve_status_target(opp_side),
             },
         };
+        // A target in Glaive Rush's drawback (data/moves.ts glaiverush
+        // condition onAccuracy) or a No Guard user / target (data/abilities.ts
+        // noguard onAnyAccuracy) makes the move sure-hit: no accuracy roll.
+        self.status_sure_hit = opp_target.is_some_and(|(ts, tslot)| {
+            self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
+                    || t.effective_ability_id() == data::ability_id::NOGUARD
+            })
+        }) || self
+            .side(actor_side)
+            .active_mon(actor_slot as usize)
+            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
         // Keyed-oracle attribution for this status move's own draws
         // (accuracy, sleep length, ...): without it they carry whatever move
         // context the last damaging move left behind. No-op for every

@@ -393,3 +393,24 @@ fn healer_cures_before_burn_damage() {
     }
     assert!(cured > 0);
 }
+
+#[test]
+fn status_moves_cannot_miss_a_glaive_rush_user() {
+    // PS data/moves.ts glaiverush condition onAccuracy: return true — moves
+    // aimed at the user skip the accuracy roll, status moves included.
+    // Study 4111a15689 (Sleep Powder into Baxcalibur after Glaive Rush).
+    for seed in 0..20 {
+        let mut b = singles(
+            r#"[{"species":"gengar","level":50,"ability":"cursedbody","moves":["hypnosis"]}]"#,
+            r#"[{"species":"baxcalibur","level":50,"ability":"thermalexchange","moves":["splash"]}]"#,
+            seed,
+        );
+        b.p2.team[0].volatiles.add(crate::pokemon::Volatile {
+            kind: crate::pokemon::VolatileKind::GlaiveRush,
+            turns_remaining: 2,
+            payload: 0,
+        });
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+        assert!(matches!(b.p2.team[0].status, Status::Sleep), "seed {seed}");
+    }
+}
