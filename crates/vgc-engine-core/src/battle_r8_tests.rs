@@ -367,3 +367,27 @@ fn sticky_hold_keeps_the_berry_from_pluck() {
     b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
     assert_eq!(b.p2.team[0].item_id, data::item_id::SITRUSBERRY);
 }
+
+// ---- Charge (the move) ----
+
+#[test]
+fn charge_raises_spd_and_doubles_the_next_electric_move() {
+    // PS data/moves.ts charge: boosts spd +1, volatileStatus 'charge'
+    // (onBasePower x2 for Electric, removed after an Electric move).
+    let run = |first: u8| {
+        let mut b = singles(
+            r#"[{"species":"ampharos","level":50,"ability":"static","moves":["charge","thunderbolt","splash"]}]"#,
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252,"spd":252}}]"#,
+            4,
+        );
+        b.step(&[mv(0, first, None)], &[mv(0, 0, None)]);
+        let spd = b.p1.team[0].boosts[3];
+        let hp = b.p2.team[0].current_hp;
+        b.step(&[mv(0, 1, foe())], &[mv(0, 0, None)]);
+        (spd, (hp - b.p2.team[0].current_hp) as u32, b.p1.team[0].is_charged())
+    };
+    let ((spd, charged, left), (_, plain, _)) = (run(0), run(2));
+    assert_eq!(spd, 1);
+    assert!(charged * 2 > plain * 3, "x2 ({charged}) vs ({plain})");
+    assert!(!left, "used up by Thunderbolt");
+}

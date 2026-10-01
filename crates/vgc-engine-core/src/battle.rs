@@ -5521,6 +5521,12 @@ self.trigger_emergency_exits();
             );
             let r = self.status_move_result(actor_side, actor_slot, m, target, &before, bounced);
             self.set_move_result(actor_side, actor_slot, r);
+            // charge onAfterMove: any Electric move but Charge ends it.
+            if m.type_ == 3 && move_id != data::move_id::CHARGE {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_charged(false);
+                }
+            }
             return;
         }
 
@@ -9066,9 +9072,8 @@ self.trigger_emergency_exits();
         // Charge consume — PS data/conditions.ts:charge `onAfterMove`
         // removes the volatile once the holder fires an Electric move
         // (the ×2 BP was already read in calculate_damage). Electric
-        // type index = 3. Status Electric moves (Thunder Wave) route
-        // through resolve_status_move and clear it there is deferred —
-        // the BP-relevant consumer is the damaging path.
+        // type index = 3. Status Electric moves clear it after the status
+        // branch in resolve_move_with_pending.
         if m.type_ == 3 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.set_charged(false);
@@ -16677,6 +16682,13 @@ self.trigger_emergency_exits();
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                    // Charge's volatileStatus (data/moves.ts charge; onRestart
+                    // keeps it).
+                    if move_id == data::move_id::CHARGE {
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            a.set_charged(true);
+                        }
+                    }
                     // Minimize's volatileStatus (data/moves.ts:11926).
                     if move_id == data::move_id::MINIMIZE {
                         if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -17159,6 +17171,9 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         // doubleteam `boosts {evasion:1}`, both target self. Minimize's
         // `volatileStatus: 'minimize'` is added at the call site.
         "minimize" => &[(6, 2)],
+        // Charge: boosts {spd: 1} plus volatileStatus 'charge' (added at the
+        // call site). PS data/moves.ts charge.
+        "charge" => &[(3, 1)],
         "doubleteam" => &[(6, 1)],
         "tailglow" => &[(2, 3)],
         "howl" => &[(0, 1)],
