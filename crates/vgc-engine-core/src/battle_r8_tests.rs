@@ -179,3 +179,39 @@ fn last_resort_fails_as_the_only_move() {
     b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
     assert_eq!(b.p2.team[0].current_hp, hp);
 }
+
+// ---- Upper Hand: the target's queued move priority ----
+//
+// PS data/moves.ts:20196 upperhand onTry: fails unless the target will
+// still move this turn with a damaging move whose priority is above 0.1
+// (the move's priority after ModifyPriority, sim/battle.ts getActionSpeed);
+// 100% flinch.
+
+fn upper_hand(foe_json: &str, foe_move: u8) -> (bool, bool) {
+    let mut b = singles(
+        r#"[{"species":"lucario","level":50,"ability":"justified","moves":["upperhand"],"evs":{"hp":252,"def":252}}]"#,
+        foe_json,
+        1,
+    );
+    let (hp, foe_hp) = (b.p1.team[0].current_hp, b.p2.team[0].current_hp);
+    b.step(&[mv(0, 0, foe())], &[mv(0, foe_move, Some(t(SideRef::P1, 0)))]);
+    (b.p2.team[0].current_hp < foe_hp, b.p1.team[0].current_hp < hp)
+}
+
+const UH_FOE: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["quickattack","bodyslam"],"evs":{"hp":252}}]"#;
+
+#[test]
+fn upper_hand_hits_and_flinches_a_priority_attacker() {
+    assert_eq!(upper_hand(UH_FOE, 0), (true, false), "hit, and Quick Attack flinched");
+}
+
+#[test]
+fn upper_hand_fails_against_a_non_priority_attack() {
+    assert_eq!(upper_hand(UH_FOE, 1), (false, true), "fails; Body Slam lands");
+}
+
+#[test]
+fn upper_hand_fails_against_a_priority_status_move() {
+    let foe = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["taunt"],"evs":{"hp":252}}]"#;
+    assert!(!upper_hand(foe, 0).0, "Prankster Taunt is +1 but Status");
+}

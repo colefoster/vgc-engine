@@ -384,6 +384,10 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// Move slot each active queued this turn (`[side][slot]`, 255 = no
+    /// move). With `pending_kind` it answers PS `queue.willMove(target)`
+    /// for Upper Hand's priority check.
+    pub(crate) queued_move_slot: [[u8; 2]; 2],
     /// Set true for the duration of a single Pursuit switch-interception
     /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
     /// by the damage calc (BP ×2) and the accuracy block (no accuracy
@@ -692,6 +696,7 @@ impl Battle {
             pending_queue_reorder: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            queued_move_slot: [[255; 2]; 2],
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
@@ -3114,6 +3119,7 @@ self.trigger_emergency_exits();
         // surveyed by `this.queue.willMove(target)` / `willSwitch` /
         // `cancelMove`.
         let mut queue = ActionQueue::default();
+        self.queued_move_slot = [[255; 2]; 2];
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
@@ -3122,6 +3128,7 @@ self.trigger_emergency_exits();
                     | Choice::Terastallize { actor_slot, move_slot, .. }
                     | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
+                        self.queued_move_slot[s][slot] = move_slot;
                         // Struggle (sentinel slot) is a damaging move; map the
                         // sentinel to `move_id::STRUGGLE` so opposing Sucker
                         // Punch / Encore read the correct `pending_kind` byte.
@@ -10220,6 +10227,33 @@ self.trigger_emergency_exits();
                     mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
                     // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
+                }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                return MoveIdentityOutcome::Abort;
+            }
+        }
+
+        // Upper Hand — PS data/moves.ts:20196 upperhand onTry: fails unless
+        // the target will still move this turn with a damaging move whose
+        // priority (after ModifyPriority) is above 0.1. Fails after PP.
+        if move_id == data::move_id::UPPERHAND && !self.force_move_gate_ok {
+            let opp = actor_side.opposing();
+            let tslot = match target {
+                Some(Target { side, slot }) if side == opp => Some(slot),
+                _ => (0..self.format().active_count() as u8)
+                    .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|p| p.is_alive())),
+            };
+            let ok = tslot.is_some_and(|ts| {
+                let k = (ts as usize).min(1);
+                pending_kind[opp as usize][k] == 1
+                    && crate::order::state_priority(self, opp, ts, self.queued_move_slot[opp as usize][k]) > 0
+            });
+            if !ok {
+                let extra = pressure_extra_pp(self, actor_side, m, target);
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    mon.spend_pp(move_slot, 1 + extra);
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
                 }
@@ -17406,6 +17440,7 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
 fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
     Some(match slug {
         "fakeout" => 100,
+        "upperhand" => 100, // moves.ts:20203
         // Iron Head is 30% flinch in standard gen 9 (PS data/moves.ts
         // ironhead), 20% in Champions (data/mods/champions/moves.ts ironhead
         // `secondary.chance: 20`; conformance out_23).
