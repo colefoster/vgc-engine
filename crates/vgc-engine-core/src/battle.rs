@@ -8267,6 +8267,33 @@ self.trigger_emergency_exits();
                     if !is_self && target_good_as_gold {
                         return;
                     }
+                    // Sap Sipper / Soundproof / Oblivious onTryHit block
+                    // status moves as well (data/abilities.ts sapsipper,
+                    // soundproof, oblivious). Sap Sipper's +1 Atk is the
+                    // holder's own boost.
+                    let t_ability = self
+                        .side(tside)
+                        .active_mon(tslot as usize)
+                        .filter(|tm| tm.is_alive())
+                        .map(|tm| tm.effective_ability_id());
+                    if !is_self {
+                        match t_ability {
+                            Some(data::ability_id::SAPSIPPER) if m.type_ == 4 => {
+                                self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
+                                return;
+                            }
+                            Some(data::ability_id::SOUNDPROOF) if m.is_sound => return,
+                            Some(data::ability_id::OBLIVIOUS)
+                                if matches!(
+                                    move_id,
+                                    data::move_id::ATTRACT | data::move_id::CAPTIVATE | data::move_id::TAUNT
+                                ) =>
+                            {
+                                return
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
