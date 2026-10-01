@@ -18879,7 +18879,9 @@ pub(crate) fn is_targeting_move(target_code: u8) -> bool {
     // hit while siblings still take damage.
     // 14 scripted (Counter / Mirror Coat / Metal Burst) carries the
     // `protect` flag in PS, so it is blocked by a protected target.
-    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10 | 14)
+    // 13 randomNormal (Struggle, Outrage, Thrash, Petal Dance, Raging Fury)
+    // hits one foe and carries the `protect` flag.
+    matches!(target_code, 0 | 2 | 3 | 4 | 5 | 6 | 10 | 13 | 14)
 }
 
 #[cfg(test)]
@@ -37438,6 +37440,36 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
         );
         assert_eq!(b.p1.team[0].current_hp, 151);
+    }
+
+    #[test]
+    fn protect_blocks_random_normal_moves() {
+        // Struggle and Outrage are `target: randomNormal` with the `protect`
+        // flag (PS data/moves.ts struggle, outrage); Protect's onTryHit
+        // (data/moves.ts:14506) blocks them, so Struggle deals no damage and
+        // takes no recoil (applyRecoilDamage needs damage dealt).
+        // Study 6d4e9037cb (Struggle into Protect, turn 4).
+        for (moves, slot) in [("[\"fakeout\",\"flareblitz\",\"knockoff\",\"partingshot\"]", crate::choice::STRUGGLE_MOVE_SLOT), ("[\"outrage\",\"flareblitz\",\"knockoff\",\"partingshot\"]", 0)] {
+            let p1 = TeamBuilder::from_json(&format!(r#"[
+                {{"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":{moves}}}
+            ]"#)).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+            ]"#).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            if slot == crate::choice::STRUGGLE_MOVE_SLOT {
+                for pp in b.p1.team[0].pp.iter_mut() {
+                    *pp = 0;
+                }
+            }
+            let (hp, foe) = (b.p1.team[0].current_hp, b.p2.team[0].current_hp);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: slot, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            );
+            assert_eq!(b.p2.team[0].current_hp, foe, "slot {slot}: blocked");
+            assert_eq!(b.p1.team[0].current_hp, hp, "slot {slot}: no recoil");
+        }
     }
 
     #[test]
