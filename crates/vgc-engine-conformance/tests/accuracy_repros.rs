@@ -180,3 +180,104 @@ fn battle_ends_at_the_last_faint() {
 fn champions_sleep_duration() {
     assert_matches_ps("study-a6a15861c8-champions-sleep");
 }
+
+/// Garchomp's Stomping Tantrum is immune into Corviknight on turn 1, so the
+/// next turn's Stomping Tantrum has 150 BP (data/moves.ts:18050,
+/// `moveLastTurnResult === false`): Rillaboom 182 -> 70.
+#[test]
+fn stomping_tantrum_doubles_after_a_failed_move() {
+    assert_matches_ps("stomping-tantrum-after-a-miss");
+}
+
+/// Study battle 5a4e6093bf: Mega Metagross flinches to Fake Out on turn 5,
+/// so its turn-6 Stomping Tantrum has 150 BP (Rillaboom 177 -> 49).
+#[test]
+fn stomping_tantrum_doubles_after_a_flinch() {
+    assert_matches_ps("study-5a4e6093bf-stomping-tantrum-after-flinch");
+}
+
+/// Study battle b8f3217152: Kangaskhan switched in on turn 4 and hasn't used
+/// its other moves, so its turn-5 Last Resort fails (data/moves.ts:10075).
+#[test]
+fn last_resort_fails_before_the_other_moves_are_used() {
+    assert_matches_ps("study-b8f3217152-last-resort-fails");
+}
+
+/// Sneasler's Upper Hand hits Dragonite, which queued Extreme Speed (+2),
+/// and flinches it; next turn Dragonite queues Dragon Claw (priority 0) and
+/// Upper Hand fails (data/moves.ts:20196).
+#[test]
+fn upper_hand_needs_a_queued_priority_attack() {
+    assert_matches_ps("upper-hand-flinches-extreme-speed");
+}
+
+/// Study battle 00a2a3d4e1: the foe's Imprison stops a Trick Room queued the
+/// same turn (data/moves.ts:9512 imprison onFoeBeforeMove).
+#[test]
+fn imprison_stops_a_shared_move() {
+    assert_matches_ps("study-00a2a3d4e1-imprison-trick-room");
+}
+
+/// Study battle 799492fe70: Emboar's Heat Crash can't miss Overqwil at +4
+/// evasion after two Minimizes and deals double damage (170 -> 18;
+/// data/moves.ts:11930 minimize condition).
+#[test]
+fn heat_crash_hits_a_minimized_target_for_double() {
+    assert_matches_ps("study-799492fe70-heat-crash-minimize");
+}
+
+/// Study battle eaedb64b2a: Shed Tail pays half the user's HP and its
+/// replacement comes in behind the Substitute (data/moves.ts:16161).
+#[test]
+fn shed_tail_passes_its_substitute() {
+    assert_matches_ps("study-eaedb64b2a-shed-tail");
+}
+
+/// Study battle d2cd6086c6: Scizor's Bug Bite takes and eats Milotic's
+/// Sitrus Berry (data/moves.ts bugbite onHit, `[from] stealeat`).
+#[test]
+fn bug_bite_eats_the_targets_berry() {
+    assert_matches_ps("study-d2cd6086c6-bug-bite-sitrus");
+}
+
+/// Study battle 7dd9b58cae: Ampharos's Charge raises its Sp. Def and
+/// starts the charge volatile (data/moves.ts charge).
+#[test]
+fn charge_raises_special_defense() {
+    assert_matches_ps("study-7dd9b58cae-charge");
+}
+
+/// Study battle 45afe9c9b0: Staraptor's Double-Edge uses its Normal Gem
+/// (data/items.ts:4324; x5325/4096 BP, data/conditions.ts:463).
+#[test]
+fn normal_gem_is_used_by_a_normal_move() {
+    assert_matches_ps("study-45afe9c9b0-normal-gem");
+}
+
+/// Garchomp's Dragon Claw hits Toucannon while it charges Beak Blast and is
+/// burned (data/moves.ts:1119 beakblast, priorityChargeCallback + onHit).
+#[test]
+fn beak_blast_burns_a_contact_attacker() {
+    assert_matches_ps("beak-blast-burns-contact");
+}
+
+/// Study battle 574176a1f8: Grapploct's Payback hits Gengar after Gengar
+/// moved, so it has 100 BP (data/moves.ts:13190; 157 -> 35 HP).
+#[test]
+fn payback_doubles_after_the_target_moved() {
+    assert_matches_ps("study-574176a1f8-payback");
+}
+
+/// Study battle c46a2e1300: Roost heals Math.round(maxhp / 2) (odd max HP;
+/// sim/battle-actions.ts:1209), one more than a floored half.
+#[test]
+fn roost_heals_half_rounded() {
+    assert_matches_ps("study-c46a2e1300-roost-rounds-half");
+}
+
+/// Study battle aedae40015: Archaludon's Stamina was replaced by Simple Beam,
+/// so Body Press raises nothing (onDamagingHit reads the current ability).
+#[test]
+fn a_replaced_stamina_does_not_trigger() {
+    assert_matches_ps("study-aedae40015-simple-beam-stamina");
+}

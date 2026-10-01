@@ -1161,6 +1161,13 @@ pub(crate) fn calculate_damage_with_bp(
         // `sim/pokemon.ts` `ignoreBurnHalving` for Facade. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Facade_(move)>.
         (m.type_, (m.base_power as u32) * 2)
+    } else if matches!(move_id, data::move_id::STOMPINGTANTRUM | data::move_id::TEMPERFLARE)
+        && attacker.move_last_turn_result == crate::pokemon::MoveResult::Failed
+    {
+        // PS data/moves.ts:18050 stompingtantrum / :19186 temperflare
+        // basePowerCallback: `if (pokemon.moveLastTurnResult === false)
+        // return move.basePower * 2`.
+        (m.type_, (m.base_power as u32) * 2)
     } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
@@ -1395,6 +1402,17 @@ pub(crate) fn calculate_damage_with_bp(
     if ctx.attacker_moves_last
         && attacker.ability_id != u16::MAX
         && attacker.ability_id == data::ability_id::ANALYTIC
+    {
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
+    }
+
+    // Normal Gem — PS data/items.ts:4324 normalgem: a Normal damaging move
+    // uses the Gem (onSourceTryPrimaryHit) and the gem condition's
+    // onBasePower (priority 14, data/conditions.ts:463) is ×5325/4096. The
+    // caller consumes it.
+    if move_type == 0
+        && attacker.effective_item_id() == data::item_id::NORMALGEM
+        && attacker.effective_ability_id() != data::ability_id::KLUTZ
     {
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
@@ -2414,6 +2432,11 @@ pub(crate) fn calculate_damage_with_bp(
     // Glaive Rush — its user takes ×2 until its next move (the volatile's
     // onSourceModifyDamage, data/moves.ts glaiverush).
     if defender.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush) {
+        dmg_mod = chain_modify(dmg_mod, 2, 1);
+    }
+    // Minimize — ×2 from a minimize-flagged move (the volatile's
+    // onSourceModifyDamage, data/moves.ts:11930).
+    if defender.volatiles.has(crate::pokemon::VolatileKind::Minimize) && crate::pokemon::hits_minimized(move_id) {
         dmg_mod = chain_modify(dmg_mod, 2, 1);
     }
 

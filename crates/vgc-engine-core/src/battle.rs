@@ -384,6 +384,10 @@ pub struct Battle {
     /// `order::action_order` rolls them itself.
     #[serde(skip)]
     pub(crate) quick_frac: Option<[[bool; 2]; 2]>,
+    /// Move slot each active queued this turn (`[side][slot]`, 255 = no
+    /// move). With `pending_kind` it answers PS `queue.willMove(target)`
+    /// for Upper Hand's priority check.
+    pub(crate) queued_move_slot: [[u8; 2]; 2],
     /// Set true for the duration of a single Pursuit switch-interception
     /// `resolve_move_with_pending` re-entry (from `apply_switches`). Read
     /// by the damage calc (BP ×2) and the accuracy block (no accuracy
@@ -422,6 +426,9 @@ pub struct Battle {
     /// next `do_switch` copies the outgoing mon's boosts and volatiles.
     #[serde(default)]
     pub(crate) copy_volatiles_next_switch: bool,
+    /// Shed Tail: the next `do_switch` passes only the outgoing mon's
+    /// Substitute (PS copyVolatileFrom 'shedtail', sim/pokemon.ts:1246).
+    pub(crate) shed_tail_next_switch: bool,
     /// Set by a successful Ally Switch resolution to the side whose two
     /// active slots were just swapped, so the `step` move loop can re-point
     /// the still-unprocessed action tail (actions + targets are bound to
@@ -692,6 +699,7 @@ impl Battle {
             pending_queue_reorder: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
+            queued_move_slot: [[255; 2]; 2],
             pursuit_intercepting: false,
             pursuit_consumed: [[false; 2]; 2],
             replaced_mid_turn: [[false; 2]; 2],
@@ -699,6 +707,7 @@ impl Battle {
             force_switch_flags: [[false; 2]; 2],
             mid_turn_picks_used: [0; 2],
             copy_volatiles_next_switch: false,
+            shed_tail_next_switch: false,
             ally_switch_pending: None,
             future_pending: [[None; 2]; 2],
             wish_pending: [[None; 2]; 2],
@@ -1646,7 +1655,8 @@ impl Battle {
             | data::move_id::PARTINGSHOT
             | data::move_id::TELEPORT
             | data::move_id::CHILLYRECEPTION
-            | data::move_id::BATONPASS => out.extend(
+            | data::move_id::BATONPASS
+            | data::move_id::SHEDTAIL => out.extend(
                 s.switch_candidates(actor_slot as usize)
                     .map(|team_index| Choice::Switch { actor_slot, team_index }),
             ),
@@ -1794,6 +1804,10 @@ impl Battle {
             // Assault Vest: status moves disallowed. Item-level, not a
             // per-mon volatile — stays outside the `move_locks` gate.
             if is_assault_vest && m.category == 2 {
+                continue;
+            }
+            // Imprison: a foe's imprison onFoeDisableMove (data/moves.ts:9504).
+            if self.imprisoned(side, move_id) {
                 continue;
             }
             // Survived every selection filter — this is a selectable move, so
@@ -2159,35 +2173,8 @@ self.trigger_emergency_exits();
         // A foe's Protect removes it from the targets in hitStepTryHit
         // (hitStepTryHitEvent, sim/battle-actions.ts:643); with none left the
         // loop never runs.
-        let protected = |t: Target| {
-            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
-        };
-        let foe = side.opposing();
-        match m.target {
-            0 | 4 | 10 | 13 => {
-                if let Some(t) = target.filter(|t| t.side == foe) {
-                    if protected(t) {
-                        return false;
-                    }
-                }
-            }
-            5 | 6 => {
-                let mut any = false;
-                let mut all_protected = true;
-                for s in 0..self.format().active_count() {
-                    for (ts, include) in [(foe, true), (side, m.target == 5 && s != slot as usize)] {
-                        let t = Target { side: ts, slot: s as u8 };
-                        if include && self.side(ts).active_mon(s).is_some_and(|d| d.is_alive()) {
-                            any = true;
-                            all_protected &= protected(t);
-                        }
-                    }
-                }
-                if any && all_protected {
-                    return false;
-                }
-            }
-            _ => {}
+        if self.status_move_protected(side, slot, m, target) {
+            return false;
         }
         let Some(user) = self.side(side).active_mon(slot as usize) else { return false };
         match m.slug {
@@ -2499,6 +2486,9 @@ self.trigger_emergency_exits();
             if d.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush) {
                 push(&mut h, (0, spe, 2));
             }
+            if d.volatiles.has(crate::pokemon::VolatileKind::Minimize) {
+                push(&mut h, (0, spe, 2));
+            }
         }
         for side in [SideRef::P1, SideRef::P2] {
             let c = self.side(side).conditions;
@@ -2679,6 +2669,27 @@ self.trigger_emergency_exits();
                     continue; // a later choice for a slot is a mid-turn pick
                 }
                 seen[slot] = true;
+                // A move with a priorityChargeCallback first resolves its
+                // targetless `priorityChargeMove` action (sim/battle-queue.ts:242,
+                // :266): getRandomTarget draws in doubles.
+                if let Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. } = *c
+                {
+                    let charge_move = self.side(side).active_mon(actor_slot as usize).and_then(|m| {
+                        let id = *m.moves.get(move_slot as usize)?;
+                        (m.is_alive()
+                            && matches!(id, data::move_id::BEAKBLAST | data::move_id::FOCUSPUNCH | data::move_id::SHELLTRAP))
+                        .then_some(id)
+                    });
+                    if charge_move.is_some() && n_active > 1 {
+                        let foe = side.opposing();
+                        let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
+                        if n > 0 {
+                            let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                        }
+                    }
+                }
                 self.roll_quick_fractional(side, *c);
                 let (actor_slot, move_slot, target) = match *c {
                     Choice::Move { actor_slot, move_slot, target }
@@ -3051,6 +3062,35 @@ self.trigger_emergency_exits();
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
         self.apply_megas(megas);
 
+        // 1c. Beak Blast's priorityChargeCallback — PS order-107
+        //     `priorityChargeMove` action (sim/battle-queue.ts:242,
+        //     sim/battle.ts:2739), after switches and Mega Evolution, before
+        //     any move: the user gains the beakblast volatile.
+        for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                if std::mem::replace(&mut seen[slot], true) {
+                    continue;
+                }
+                let (Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. }) = *c
+                else {
+                    continue;
+                };
+                if let Some(a) = self.side_mut(side).active_mon_mut(actor_slot as usize) {
+                    if a.is_alive() && a.moves.get(move_slot as usize) == Some(&data::move_id::BEAKBLAST) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::BeakBlast,
+                            turns_remaining: 1,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
+        }
+
         // 2. Resolve moves in priority+speed order.
         // Temporarily move rng out to split-borrow with `self`. `Rng`
         // is not `Copy` (Oracle variant owns a Vec), so swap in a cheap
@@ -3141,6 +3181,7 @@ self.trigger_emergency_exits();
         // surveyed by `this.queue.willMove(target)` / `willSwitch` /
         // `cancelMove`.
         let mut queue = ActionQueue::default();
+        self.queued_move_slot = [[255; 2]; 2];
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
@@ -3149,6 +3190,7 @@ self.trigger_emergency_exits();
                     | Choice::Terastallize { actor_slot, move_slot, .. }
                     | Choice::MegaEvolve { actor_slot, move_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
+                        self.queued_move_slot[s][slot] = move_slot;
                         // Struggle (sentinel slot) is a damaging move; map the
                         // sentinel to `move_id::STRUGGLE` so opposing Sucker
                         // Punch / Encore read the correct `pending_kind` byte.
@@ -3384,6 +3426,9 @@ self.trigger_emergency_exits();
                     let mon = &mut side.team[active_idx as usize];
                     mon.turns_active = mon.turns_active.saturating_add(1);
                     mon.set_switched_in_this_turn(false);
+                    // PS nextTurn (sim/battle.ts:1674).
+                    mon.move_last_turn_result = mon.move_this_turn_result;
+                    mon.move_this_turn_result = crate::pokemon::MoveResult::None;
                     // Encore tick. PS: duration counts down each end of
                     // turn; the volatile ends at 0. Also clears early
                     // if the locked move has no PP left.
@@ -3956,6 +4001,7 @@ self.trigger_emergency_exits();
         let gravity_active = self.gravity_turns > 0;
         let magic_room_active = self.magic_room_turns > 0;
         let copy_volatiles = self.copy_volatiles_next_switch;
+        let shed_tail = self.shed_tail_next_switch;
         let s = self.side_mut(side);
         if (actor_slot as usize) < s.active.len()
             && (team_index as usize) < s.team.len()
@@ -4008,6 +4054,9 @@ self.trigger_emergency_exits();
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
+            incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
+            incoming.moves_used = 0;
             incoming.consumed_item = u16::MAX; // Recycle memory (PS `lastItem`) is per-active-stint.
             // Multi-turn move state — semi-invuln / charging / recharge /
             // lock-in are all field-only volatiles. PS drops the
@@ -4074,6 +4123,12 @@ self.trigger_emergency_exits();
                     }
                 }
                 incoming.sync_move_locks();
+            }
+            if shed_tail {
+                let sub = s.team[outgoing_idx].volatiles.get(crate::pokemon::VolatileKind::Substitute).copied();
+                if let Some(v) = sub {
+                    s.team[team_index as usize].volatiles.add(v);
+                }
             }
         } else {
             return false;
@@ -4505,6 +4560,10 @@ self.trigger_emergency_exits();
                     .side(side)
                     .active_mon(slot as usize)
                     .is_some_and(|m| m.pending_switch_copies());
+                let sheds_tail = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .is_some_and(|m| m.pending_switch_sheds_tail());
                 let revives = self
                     .side(side)
                     .active_mon(slot as usize)
@@ -4543,8 +4602,10 @@ self.trigger_emergency_exits();
                     continue;
                 }
                 self.copy_volatiles_next_switch = copies;
+                self.shed_tail_next_switch = sheds_tail;
                 let switched = self.do_switch(side, slot, team_index);
                 self.copy_volatiles_next_switch = false;
+                self.shed_tail_next_switch = false;
                 // The switch action ends with eachEvent('Update'); its
                 // BeforeSwitchOut ran before the request (skip flag).
                 #[cfg(feature = "ps-rng")]
@@ -5098,6 +5159,9 @@ self.trigger_emergency_exits();
             if a.is_alive() {
                 a.move_actions = a.move_actions.saturating_add(1);
             }
+            // Every early return below is a failed move (BeforeMove false,
+            // onTry false, no target ...) unless it records otherwise.
+            a.move_this_turn_result = crate::pokemon::MoveResult::Failed;
         }
         let (move_slot, target) = self.encore_override(actor_side, actor_slot, move_slot, target);
         let mut target = target;
@@ -5140,6 +5204,8 @@ self.trigger_emergency_exits();
         if attacker.must_recharge {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
+                // mustrecharge's onBeforeMove returns null.
+                a.move_this_turn_result = crate::pokemon::MoveResult::Skipped;
             }
             return;
         }
@@ -5165,6 +5231,14 @@ self.trigger_emergency_exits();
             PreMoveOutcome::Abort
         ) {
             return;
+        }
+        // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
+        // the user's own move runs in between, so drop it now. An aborted
+        // move keeps it (PS FIXME: no onMoveAborted).
+        if move_id == data::move_id::BEAKBLAST {
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.volatiles.remove(crate::pokemon::VolatileKind::BeakBlast);
+            }
         }
 
         // Move-identity onTry checks — Destiny Bond pre-move clear, Stance
@@ -5278,7 +5352,11 @@ self.trigger_emergency_exits();
             actor_side, actor_slot, move_id, move_slot, m, &attacker, target,
         ) {
             ChargeOutcome::Continue { skip_pp_deduct } => skip_pp_deduct,
-            ChargeOutcome::Abort => return,
+            ChargeOutcome::Abort => {
+                // The charge turn's onTryMove returns null.
+                self.set_move_result(actor_side, actor_slot, crate::pokemon::MoveResult::Skipped);
+                return;
+            }
         };
         // Electro Shot / Meteor Beam boost SpA in onTryMove, before a Rain /
         // Power Herb skip (PS data/moves.ts:4644); the hit reads the boosted
@@ -5429,6 +5507,8 @@ self.trigger_emergency_exits();
                     source_team_idx: src_idx,
                     move_id,
                 });
+                // futuresight onTry returns NOT_FAIL.
+                self.set_move_result(actor_side, actor_slot, crate::pokemon::MoveResult::Skipped);
             }
             return;
         }
@@ -5492,9 +5572,19 @@ self.trigger_emergency_exits();
         //    path below dominates ~6× at the bench's random-picker mix;
         //    outlining keeps the icache compact. Byte-identical behavior.
         if m.category == 2 {
+            let before = self.status_effect_snapshot();
+            let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m).is_some();
             self.resolve_status_move_branch(
                 actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
             );
+            let r = self.status_move_result(actor_side, actor_slot, m, target, &before, bounced);
+            self.set_move_result(actor_side, actor_slot, r);
+            // charge onAfterMove: any Electric move but Charge ends it.
+            if m.type_ == 3 && move_id != data::move_id::CHARGE {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_charged(false);
+                }
+            }
             return;
         }
 
@@ -5671,6 +5761,21 @@ self.trigger_emergency_exits();
         // !this.field.isTerrain(''); }`: fails (after PP) with no terrain.
         if move_id == data::move_id::STEELROLLER && self.terrain == crate::terrain::Terrain::None {
             return;
+        }
+        // Last Resort — PS data/moves.ts:10075 lastresort onTry: fails
+        // unless the user knows two or more moves and has used every one
+        // but Last Resort since switching in.
+        if move_id == data::move_id::LASTRESORT {
+            let others_used = self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| {
+                let known = a.moves.iter().filter(|&&id| id != u16::MAX).count();
+                known >= 2
+                    && (0..4).all(|i| {
+                        matches!(a.moves[i], u16::MAX | data::move_id::LASTRESORT) || a.moves_used & (1 << i) != 0
+                    })
+            });
+            if !others_used {
+                return;
+            }
         }
 
         // Variable-BP moves carry `basePower: 0` in PS and compute the
@@ -5930,6 +6035,10 @@ self.trigger_emergency_exits();
         // pure no-target fizzle — PS returns before `MoveFail` when there were
         // no targets at all (battle-actions.ts:512).
         let mut had_live_target = false;
+        // PS move result (sim/battle-actions.ts:604-616): a hit on any target
+        // succeeds; with none, all targets protected (NOT_FAIL) is null and
+        // anything else (miss, immunity, no target) is a failure.
+        let (mut n_live, mut n_protected, mut move_hit) = (0u8, 0u8, false);
         // Phazing target for Dragon Tail / Circle Throw (`forceSwitch`): the
         // opposing slot that took a REAL (non-Substitute) hit this move. PS
         // runs forceSwitch (battle-actions.ts:1124, step 6) only for targets
@@ -5968,6 +6077,7 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             had_live_target = true;
+            n_live += 1;
             // Conformance keyed-oracle context: attribute every randomized
             // draw made resolving this (attacker, move, target) hit — the
             // accuracy roll (below), crit, damage, and (via the mem::replace
@@ -6256,6 +6366,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.wide_guard_this_turn
                 && matches!(m.target, 5 | 6 | 11)
             {
+                n_protected += 1;
                 continue;
             }
             // Quick Guard — blocks priority moves (priority > 0) aimed
@@ -6267,6 +6378,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.quick_guard_this_turn
                 && m.priority > 0
             {
+                n_protected += 1;
                 continue;
             }
             // Mat Block — whole-side Protect against DAMAGING moves.
@@ -6284,6 +6396,7 @@ self.trigger_emergency_exits();
                 && damaging
                 && is_targeting_move(m.target)
             {
+                n_protected += 1;
                 continue;
             }
             // Protect interception (single-target codes only; spread
@@ -6327,6 +6440,7 @@ self.trigger_emergency_exits();
                             variant, actor_side, actor_slot, tside, tslot,
                         );
                     }
+                    n_protected += 1;
                     continue;
                 }
             }
@@ -7089,6 +7203,22 @@ self.trigger_emergency_exits();
                 champions: self.champions,
                 ..DamageContext::default()
             });
+            // Normal Gem — used at the first hit (onSourceTryPrimaryHit,
+            // data/items.ts:4324); the damage calc reads the move-start
+            // snapshot, so every target of the move gets the boost.
+            if berry_move_type == 0 && damaging {
+                let used = self.side_mut(actor_side).active_mon_mut(actor_slot as usize).is_some_and(|a| {
+                    let holds = a.effective_item_id() == data::item_id::NORMALGEM
+                        && a.effective_ability_id() != data::ability_id::KLUTZ;
+                    if holds {
+                        a.consume_item();
+                    }
+                    holds
+                });
+                if used {
+                    crate::ability::on_item_consumed(self, actor_side, actor_slot);
+                }
+            }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
@@ -7122,6 +7252,15 @@ self.trigger_emergency_exits();
                 && fixed_damage.is_none()
                 && self.rng.chance_keyed(3, 10)
             {
+                Some((self.moves()[move_id as usize].base_power as u32) * 2)
+            } else if move_id == data::move_id::PAYBACK
+                && !matches!(pending_kind[tside as usize][(tslot as usize).min(1)], 1 | 2)
+                && !defender.switched_in_this_turn()
+            {
+                // Payback — PS data/moves.ts:13190 basePowerCallback: x2
+                // unless the target is newly switched in or will still move
+                // this turn (queue.willMove; `pending_kind` clears as each
+                // action starts).
                 Some((self.moves()[move_id as usize].base_power as u32) * 2)
             } else {
                 None
@@ -7454,6 +7593,7 @@ self.trigger_emergency_exits();
             // driver checks here to break the multi-hit loop. Behavior
             // byte-identical to the pre-PR-D2 inline body. See
             // `docs/per-target-context-design.md`.
+            move_hit = true;
             for hit_idx in 0..ctx.hits {
                 self.apply_single_hit(&mut ctx, hit_idx);
                 if ctx.target_fainted_this_hit {
@@ -7481,6 +7621,17 @@ self.trigger_emergency_exits();
         // (PS routes through onDamage); Rock Head does NOT (PS scopes Rock Head
         // to the `recoil` effect id only — same as Mind Blown's max-HP recoil).
         // PS: this.damage(source.baseMaxhp / 2, source, source, ...).
+        self.set_move_result(
+            actor_side,
+            actor_slot,
+            if move_hit {
+                crate::pokemon::MoveResult::Succeeded
+            } else if n_live > 0 && n_protected == n_live {
+                crate::pokemon::MoveResult::Skipped
+            } else {
+                crate::pokemon::MoveResult::Failed
+            },
+        );
         if matches!(
             move_id,
             data::move_id::JUMPKICK
@@ -8252,6 +8403,28 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // Bug Bite / Pluck — PS data/moves.ts bugbite / pluck onHit: a user
+        // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
+        // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
+        // Losing it triggers the target's Unburden (onTakeItem), not Symbiosis.
+        if matches!(ctx.move_id, data::move_id::BUGBITE | data::move_id::PLUCK) {
+            let user_alive = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive());
+            let berry = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
+                let sticky = t.is_alive() && t.effective_ability_id() == data::ability_id::STICKYHOLD;
+                (t.item_id != u16::MAX && data::ITEMS[t.item_id as usize].is_berry && !sticky).then_some(t.item_id)
+            });
+            if let (true, Some(berry)) = (user_alive, berry) {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    t.item_id = u16::MAX;
+                    if t.is_alive() && t.ability_id == data::ability_id::UNBURDEN {
+                        t.unburden_active = true;
+                    }
+                }
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::item::cud_chew_reeat(self, ctx.actor_side, ctx.actor_slot, berry, &mut rng);
+                self.rng = rng;
+            }
+        }
         if matches!(ctx.move_id, data::move_id::SMACKDOWN | data::move_id::THOUSANDARROWS) {
             if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
                 if t.is_alive() {
@@ -8575,6 +8748,14 @@ self.trigger_emergency_exits();
                 self, tside, tslot, move_id, actor_side, actor_slot, &mut rng, crit,
             );
             self.rng = rng;
+            // Beak Blast's charge — PS data/moves.ts:1136 beakblast condition
+            // onHit: a contact move burns its user (the holder is the source).
+            if self.side(tside).active_mon(tslot as usize).is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::BeakBlast))
+                && crate::damage::move_makes_contact(&self.moves()[move_id as usize], attacker)
+                && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive())
+            {
+                self.try_set_status_from(actor_side, actor_slot, Status::Burn, tside);
+            }
             // Defender's held item reacts to the contact hit —
             // Rocky Helmet (1/6 max HP recoil). Same gate as Rough
             // Skin / Iron Barbs: contact-only, attacker not Magic-
@@ -8982,9 +9163,8 @@ self.trigger_emergency_exits();
         // Charge consume — PS data/conditions.ts:charge `onAfterMove`
         // removes the volatile once the holder fires an Electric move
         // (the ×2 BP was already read in calculate_damage). Electric
-        // type index = 3. Status Electric moves (Thunder Wave) route
-        // through resolve_status_move and clear it there is deferred —
-        // the BP-relevant consumer is the damaging path.
+        // type index = 3. Status Electric moves clear it after the status
+        // branch in resolve_move_with_pending.
         if m.type_ == 3 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.set_charged(false);
@@ -9896,9 +10076,7 @@ self.trigger_emergency_exits();
                     // applies on turn 1 only), set charging state, return.
                     let extra = pressure_extra_pp(self, actor_side, m, target);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                            *pp = pp.saturating_sub(1 + extra);
-                        }
+                        a.spend_pp(move_slot, 1 + extra);
                         a.last_used_move_slot = move_slot;
                         a.last_used_move_target = enc_target(target);
                         a.charging_turns = 1;
@@ -9925,9 +10103,7 @@ self.trigger_emergency_exits();
                 // applied turn 1 only per PS), no damage.
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = a.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    a.spend_pp(move_slot, 1 + extra);
                     a.last_used_move_slot = move_slot;
                     a.last_used_move_target = enc_target(target);
                     a.charging_turns = 1;
@@ -9993,9 +10169,7 @@ self.trigger_emergency_exits();
         };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + pressure_extra);
-                }
+                mon.spend_pp(move_slot, 1 + pressure_extra);
                 if is_choice && mon.locked_move_slot() == 255 {
                     mon.set_locked_move_slot(move_slot);
                 }
@@ -10147,9 +10321,7 @@ self.trigger_emergency_exits();
                 // `pressure_extra_pp`.
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
                     // veto: the failed move is still the last move.
                     mon.last_used_move_slot = move_slot;
@@ -10195,11 +10367,36 @@ self.trigger_emergency_exits();
             if !ok {
                 let extra = pressure_extra_pp(self, actor_side, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                        *pp = pp.saturating_sub(1 + extra);
-                    }
+                    mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
                     // veto: the failed move is still the last move.
+                    mon.last_used_move_slot = move_slot;
+                    mon.last_used_move_target = enc_target(target);
+                }
+                crate::item::on_pp_depleted(self, actor_side, actor_slot);
+                return MoveIdentityOutcome::Abort;
+            }
+        }
+
+        // Upper Hand — PS data/moves.ts:20196 upperhand onTry: fails unless
+        // the target will still move this turn with a damaging move whose
+        // priority (after ModifyPriority) is above 0.1. Fails after PP.
+        if move_id == data::move_id::UPPERHAND && !self.force_move_gate_ok {
+            let opp = actor_side.opposing();
+            let tslot = match target {
+                Some(Target { side, slot }) if side == opp => Some(slot),
+                _ => (0..self.format().active_count() as u8)
+                    .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|p| p.is_alive())),
+            };
+            let ok = tslot.is_some_and(|ts| {
+                let k = (ts as usize).min(1);
+                pending_kind[opp as usize][k] == 1
+                    && crate::order::state_priority(self, opp, ts, self.queued_move_slot[opp as usize][k]) > 0
+            });
+            if !ok {
+                let extra = pressure_extra_pp(self, actor_side, m, target);
+                if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    mon.spend_pp(move_slot, 1 + extra);
                     mon.last_used_move_slot = move_slot;
                     mon.last_used_move_target = enc_target(target);
                 }
@@ -10222,9 +10419,7 @@ self.trigger_emergency_exits();
         if move_id == data::move_id::FOCUSPUNCH && attacker.damaged_this_turn() {
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }
@@ -10248,9 +10443,7 @@ self.trigger_emergency_exits();
         {
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 // Set last_used_move_slot to 255 so a third attempt
                 // succeeds — PS clears the volatile on every other
                 // turn (the move becomes usable again every other
@@ -10305,9 +10498,7 @@ self.trigger_emergency_exits();
             // Failure still ticks PP per PS (plus Pressure extra).
             let extra = pressure_extra_pp(self, actor_side, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                if let Some(pp) = mon.pp.get_mut(move_slot as usize) {
-                    *pp = pp.saturating_sub(1 + extra);
-                }
+                mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
             }
@@ -10628,6 +10819,12 @@ self.trigger_emergency_exits();
             } else {
                 return PreMoveOutcome::Abort;
             }
+        }
+
+        // Imprison — PS data/moves.ts:9512 imprison onFoeBeforeMove
+        // (priority 4): a move the foe's imprisoner knows fails, no PP.
+        if self.imprisoned(actor_side, move_id) {
+            return PreMoveOutcome::Abort;
         }
 
         // 1c. Paralysis full-skip. PS data/conditions.ts:par
@@ -11218,6 +11415,149 @@ self.trigger_emergency_exits();
         self.rng = rng;
         if let Some(q) = self.quick_frac.as_mut() {
             q[side as usize][actor_slot as usize] = fired;
+        }
+    }
+
+    /// PS imprison condition (data/moves.ts:9504, :9512): whether a foe of
+    /// `side` holding Imprison also knows `move_id`.
+    fn imprisoned(&self, side: SideRef, move_id: u16) -> bool {
+        let foe = self.side(side.opposing());
+        move_id != data::move_id::STRUGGLE
+            && (0..self.format().active_count()).any(|s| {
+                foe.active_mon(s).is_some_and(|m| {
+                    m.is_alive()
+                        && m.volatiles.has(crate::pokemon::VolatileKind::Imprison)
+                        && m.moves.contains(&move_id)
+                })
+            })
+    }
+
+    /// Record the actor's PS `moveThisTurnResult`.
+    fn set_move_result(&mut self, side: SideRef, slot: u8, r: crate::pokemon::MoveResult) {
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.move_this_turn_result = r;
+        }
+    }
+
+    /// What a status move can change, for its PS move result. PS decides
+    /// per effect (runMoveEffects, sim/battle-actions.ts:1186: a boost,
+    /// status, volatile, side or field condition that did not apply makes
+    /// the hit `false`); the engine's status handlers do not report that, so
+    /// the result is read off whether any of this state changed. PP, the
+    /// choice lock and the stall counter are left out: using any move
+    /// changes them.
+    fn status_effect_snapshot(&self) -> StatusEffectSnapshot {
+        use crate::pokemon::VolatileKind as V;
+        let bookkeeping = (1u64 << V::Locked as u8)
+            | (1u64 << V::Stall as u8)
+            | (1u64 << V::DamagedThisTurn as u8)
+            | (1u64 << V::AllySwitch as u8);
+        let mut snap = StatusEffectSnapshot {
+            mons: [[MonEffectSnapshot::default(); 2]; 2],
+            sides: [self.p1.conditions, self.p2.conditions],
+            active: [[255; 2]; 2],
+            field: [
+                self.trick_room_turns,
+                self.gravity_turns,
+                self.magic_room_turns,
+                self.wonder_room_turns,
+            ],
+            weather: self.weather,
+            terrain: self.terrain,
+            pending: [
+                self.future_pending.iter().flatten().filter(|f| f.is_some()).count() as u8,
+                self.wish_pending.iter().flatten().filter(|w| w.is_some()).count() as u8,
+                self.pending_queue_reorder.is_some() as u8,
+                self.ally_switch_pending.is_some() as u8 | (self.copy_volatiles_next_switch as u8) << 1,
+            ],
+        };
+        for side in [SideRef::P1, SideRef::P2] {
+            let sd = self.side(side);
+            for slot in 0..self.format().active_count().min(2) {
+                snap.active[side as usize][slot] = sd.active.get(slot).copied().unwrap_or(255);
+                if let Some(m) = sd.active_mon(slot) {
+                    let v = &m.volatiles;
+                    let mut payloads = 0u64;
+                    for it in &v.items[..v.len as usize] {
+                        if bookkeeping & (1u64 << it.kind as u8) == 0 {
+                            payloads = payloads.wrapping_mul(31).wrapping_add(((it.kind as u64) << 32) | it.payload as u64);
+                        }
+                    }
+                    snap.mons[side as usize][slot] = MonEffectSnapshot {
+                        status: m.status,
+                        boosts: m.boosts,
+                        volatiles: v.present & !bookkeeping,
+                        payloads,
+                        hp: m.current_hp,
+                        item: m.item_id,
+                        ability: (m.ability_override, m.ability_suppressed),
+                        types: m.type_override,
+                        species: m.species_id,
+                    };
+                }
+            }
+        }
+        snap
+    }
+
+    /// PS move result of a status move, from its effect on the battle.
+    #[allow(clippy::too_many_arguments)]
+    fn status_move_result(
+        &self,
+        side: SideRef,
+        slot: u8,
+        m: &data::MoveDef,
+        target: Option<Target>,
+        before: &StatusEffectSnapshot,
+        bounced: bool,
+    ) -> crate::pokemon::MoveResult {
+        use crate::pokemon::MoveResult;
+        // Magic Bounce's onTryHit returns null, which hitStepTryHitEvent
+        // turns into a failure (sim/battle-actions.ts:577).
+        if bounced {
+            return MoveResult::Failed;
+        }
+        // Protect & co. return NOT_FAIL: no target left and no failure
+        // gives a null result (sim/battle-actions.ts:616).
+        if self.status_move_protected(side, slot, m, target) {
+            return MoveResult::Skipped;
+        }
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return MoveResult::Failed };
+        let ok = match m.slug {
+            "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
+            | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
+            "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
+            // No effect of their own to fail (Splash onTryHit, Haze onHitField).
+            "splash" | "celebrate" | "holdhands" | "haze" => true,
+            _ => self.status_effect_snapshot() != *before,
+        };
+        if ok { MoveResult::Succeeded } else { MoveResult::Failed }
+    }
+
+    /// Whether a foe's Protect blocks every target of a status move
+    /// (hitStepTryHitEvent, sim/battle-actions.ts:643).
+    fn status_move_protected(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
+        let protected = |t: Target| {
+            self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
+        };
+        let foe = side.opposing();
+        match m.target {
+            0 | 4 | 10 | 13 => target.filter(|t| t.side == foe).is_some_and(protected),
+            5 | 6 => {
+                let mut any = false;
+                let mut all_protected = true;
+                for s in 0..self.format().active_count() {
+                    for (ts, include) in [(foe, true), (side, m.target == 5 && s != slot as usize)] {
+                        let t = Target { side: ts, slot: s as u8 };
+                        if include && self.side(ts).active_mon(s).is_some_and(|d| d.is_alive()) {
+                            any = true;
+                            all_protected &= protected(t);
+                        }
+                    }
+                }
+                any && all_protected
+            }
+            _ => false,
         }
     }
 
@@ -14836,6 +15176,18 @@ self.trigger_emergency_exits();
                 // already encodes this, but resolve_status_move is called
                 // AFTER the category check and BEFORE the accuracy roll.
                 // Roll accuracy here so failures behave correctly.
+                // `ignoreImmunity: false` (data/moves.ts:19601): a Ground
+                // type is immune in hitStepTypeImmunity, before the roll.
+                let ground = opp_target.is_some_and(|(ts, tslot)| {
+                    self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        types[..n as usize].contains(&8)
+                    })
+                });
+                if ground {
+                    self.ps_status_failed();
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_status_to_target(ts, tslot, Status::Paralysis, actor_slot);
@@ -15458,6 +15810,19 @@ self.trigger_emergency_exits();
                     });
                 }
             }
+            data::move_id::IMPRISON => {
+                // PS data/moves.ts:9489: volatileStatus 'imprison' on the
+                // user (fails if already held); effects in `imprisoned`.
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if !a.volatiles.has(crate::pokemon::VolatileKind::Imprison) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::Imprison,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced
@@ -15714,6 +16079,24 @@ self.trigger_emergency_exits();
                 if any_fainted {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_revive();
+                    }
+                }
+            }
+            data::move_id::SHEDTAIL => {
+                // Shed Tail — PS data/moves.ts:16161. onTryHit fails (NOT_FAIL)
+                // without a mon to switch to or while commanded, with a
+                // Substitute up, or at or below ceil(maxhp/2) HP. Otherwise
+                // the substitute volatile starts (floor(maxhp/4) HP), onHit
+                // directDamages ceil(maxhp/2), and selfSwitch 'shedtail'
+                // passes only the Substitute (see `do_switch`). Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Shed_Tail_(move)>.
+                let can_switch = self.has_eligible_bench(actor_side);
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    let half = a.stats.hp.div_ceil(2);
+                    if can_switch && !a.commanded && a.substitute_hp() == 0 && a.current_hp > half {
+                        a.set_substitute_hp((a.stats.hp / 4).max(1));
+                        a.current_hp -= half;
+                        a.set_pending_shed_tail_switch();
                     }
                 }
             }
@@ -16005,24 +16388,35 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Recover_(move)>
                 // Heal moves read weather from the USER's perspective —
                 // Utility Umbrella holders see Sun/Rain as clear.
+                //
+                // Rounding (PS): `heal: [1, 2]` moves heal Math.round(maxhp/2)
+                // (sim/battle-actions.ts:1209); the weather moves heal
+                // this.modify(maxhp, factor) with factor 0.5 / 0.667 / 0.25,
+                // i.e. tr((maxhp * tr(factor * 4096) + 2047) / 4096).
                 let user_weather = self.effective_weather_for(actor_side, actor_slot);
-                let max_hp_factor: (u32, u32) = match move_id {
-                    data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => match user_weather {
-                        crate::weather::Weather::Sun => (2, 3),
+                // `None` = heal: [1, 2]; `Some(m)` = modify by m/4096.
+                let modifier: Option<u32> = match move_id {
+                    data::move_id::SYNTHESIS | data::move_id::MORNINGSUN | data::move_id::MOONLIGHT => Some(match user_weather {
+                        crate::weather::Weather::Sun => 2732,
                         crate::weather::Weather::Rain
                         | crate::weather::Weather::Sand
-                        | crate::weather::Weather::Snow => (1, 4),
-                        _ => (1, 2),
-                    },
-                    data::move_id::SHOREUP => match user_weather {
-                        crate::weather::Weather::Sand => (2, 3),
-                        _ => (1, 2),
-                    },
-                    _ => (1, 2),
+                        | crate::weather::Weather::Snow => 1024,
+                        _ => 2048,
+                    }),
+                    data::move_id::SHOREUP => Some(match user_weather {
+                        crate::weather::Weather::Sand => 2732,
+                        _ => 2048,
+                    }),
+                    _ => None,
                 };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     if a.is_alive() && a.current_hp < a.stats.hp {
-                        let heal = ((a.stats.hp as u32 * max_hp_factor.0) / max_hp_factor.1).max(1) as u16;
+                        let max = a.stats.hp as u32;
+                        let heal = match modifier {
+                            Some(m) => (max * m + 2047) / 4096,
+                            None => max.div_ceil(2),
+                        }
+                        .max(1) as u16;
                         a.current_hp = (a.current_hp as u32 + heal as u32).min(a.stats.hp as u32) as u16;
                         // Roost's self volatile (duration 1, cleared at the
                         // next turn's reset) drops Flying; a Terastallized
@@ -16390,6 +16784,25 @@ self.trigger_emergency_exits();
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
+                    // Charge's volatileStatus (data/moves.ts charge; onRestart
+                    // keeps it).
+                    if move_id == data::move_id::CHARGE {
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            a.set_charged(true);
+                        }
+                    }
+                    // Minimize's volatileStatus (data/moves.ts:11926).
+                    if move_id == data::move_id::MINIMIZE {
+                        if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                            if !a.volatiles.has(crate::pokemon::VolatileKind::Minimize) {
+                                let _ = a.volatiles.add(crate::pokemon::Volatile {
+                                    kind: crate::pokemon::VolatileKind::Minimize,
+                                    turns_remaining: 0,
+                                    payload: 0,
+                                });
+                            }
+                        }
+                    }
                     // Mirror Herb — PS data/items.ts:mirrorherb fires on
                     // `onFoeAfterBoost` whenever a foe's stat goes up.
                     // Dispatch once with the full boost set so multi-stat
@@ -16554,6 +16967,31 @@ mod protect_variant {
 
 /// Map a protect-family move id to its [`protect_variant`] code. Plain
 /// Protect / Detect (and the side-wide guards) carry no side effect → PLAIN.
+/// See [`Battle::status_effect_snapshot`].
+#[derive(Clone, Copy, PartialEq)]
+struct StatusEffectSnapshot {
+    mons: [[MonEffectSnapshot; 2]; 2],
+    sides: [crate::side::SideConditions; 2],
+    active: [[u8; 2]; 2],
+    field: [u8; 4],
+    weather: crate::weather::Weather,
+    terrain: crate::terrain::Terrain,
+    pending: [u8; 4],
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+struct MonEffectSnapshot {
+    status: Status,
+    boosts: [i8; 7],
+    volatiles: u64,
+    payloads: u64,
+    hp: u16,
+    item: u16,
+    ability: (u16, bool),
+    types: [u8; 2],
+    species: u16,
+}
+
 fn protect_variant_for(move_id: u16) -> u8 {
     match move_id {
         data::move_id::SPIKYSHIELD => protect_variant::SPIKY,
@@ -16832,11 +17270,12 @@ fn self_boost_moves(slug: &str) -> Option<&'static [(u8, i8)]> {
         "agility" | "rockpolish" | "autotomize" => &[(4, 2)],
         "amnesia" => &[(3, 2)],
         // Evasion (index 6). PS data/moves.ts: minimize `boosts {evasion:2}`,
-        // doubleteam `boosts {evasion:1}`, both target self. NOTE: Minimize's
-        // `volatileStatus: 'minimize'` (always-hit + 2x damage from Body Slam
-        // / Stomp / etc.) is a separate interaction, not yet modelled — this
-        // adds only the evasion stage.
+        // doubleteam `boosts {evasion:1}`, both target self. Minimize's
+        // `volatileStatus: 'minimize'` is added at the call site.
         "minimize" => &[(6, 2)],
+        // Charge: boosts {spd: 1} plus volatileStatus 'charge' (added at the
+        // call site). PS data/moves.ts charge.
+        "charge" => &[(3, 1)],
         "doubleteam" => &[(6, 1)],
         "tailglow" => &[(2, 3)],
         "howl" => &[(0, 1)],
@@ -17238,6 +17677,7 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
 fn flinch_chance(slug: &str, champions: bool) -> Option<u8> {
     Some(match slug {
         "fakeout" => 100,
+        "upperhand" => 100, // moves.ts:20203
         // Iron Head is 30% flinch in standard gen 9 (PS data/moves.ts
         // ironhead), 20% in Champions (data/mods/champions/moves.ts ironhead
         // `secondary.chance: 20`; conformance out_23).
@@ -35621,7 +36061,8 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }],
         );
         let max = b.p1.team[0].stats.hp;
-        let expected = (half as u32 + (max as u32 / 2)).min(max as u32) as u16;
+        // Math.round(maxhp / 2) (sim/battle-actions.ts:1209).
+        let expected = (half as u32 + (max as u32).div_ceil(2)).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Recover heals 50% max HP");
     }
 
@@ -35841,7 +36282,8 @@ mod tests {
             &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        let expected = (1u32 + (max as u32 / 4)).min(max as u32) as u16;
+        // this.modify(maxhp, 0.25): tr((maxhp * 1024 + 2047) / 4096).
+        let expected = (1u32 + (max as u32 * 1024 + 2047) / 4096).min(max as u32) as u16;
         assert_eq!(b.p1.team[0].current_hp, expected, "Moonlight heals 1/4 in Rain");
     }
 
@@ -43020,3 +43462,7 @@ mod tests {
 #[cfg(test)]
 #[path = "battle_r7_tests.rs"]
 mod r7_tests;
+
+#[cfg(test)]
+#[path = "battle_r8_tests.rs"]
+mod r8_tests;
