@@ -376,3 +376,19 @@ fn ps_rng_a_charged_move_draws_no_target_in_the_first_resort() {
     let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
     assert_eq!(trace.iter().filter(|d| d.op == "get_target").count(), 0);
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_a_non_ghost_curse_draws_no_target() {
+    // Champions Curse is a self move for a non-Ghost user: neither
+    // resolveAction nor the re-sort's getTarget draws for it.
+    let mut b = ps_doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["curse"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["calmmind"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+    );
+    b.champions = true;
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    assert_eq!(trace.iter().filter(|d| d.op == "get_target" || d.op == "random_target").count(), 0);
+}
