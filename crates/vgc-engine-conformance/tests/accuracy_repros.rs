@@ -417,3 +417,10 @@ fn keyed_commit_sort_runs_before_mega_evolution() {
 fn keyed_commit_sort_follows_ps_queue_order() {
     assert_matches_ps("study-4338912265-commit-sort-order");
 }
+
+/// Study battle 4731c6ae5a: Knock Off into a Rocky Helmet holder; the helmet
+/// damages the attacker (DamagingHit) before Knock Off removes it (AfterHit).
+#[test]
+fn rocky_helmet_fires_before_knock_off_removes_it() {
+    assert_matches_ps("study-4731c6ae5a-knock-off-rocky-helmet");
+}
