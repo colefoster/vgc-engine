@@ -67,3 +67,28 @@ fn battle_start_surges_resolve_fastest_first_so_the_slowest_wins() {
     );
     assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
 }
+
+// ---- Sucker Punch checks the target it actually hits ----
+//
+// runMove retargets a move aimed at a fainted foe (sim/battle.ts:2437
+// getTarget) and useMoveInner applies redirection before the move's onTry
+// (data/moves.ts suckerpunch onTry), so the "is it attacking" check reads the
+// retargeted / redirected target.
+
+#[test]
+fn sucker_punch_at_a_fainted_foe_checks_the_retargeted_foe() {
+    // Weavile's Ice Shard KOs the level-1 Magikarp first; Kingambit's Sucker
+    // Punch aimed at that slot retargets to Snorlax, which is attacking.
+    let mut b = doubles(
+        r#"[{"species":"kingambit","level":50,"moves":["suckerpunch"]},{"species":"weavile","level":50,"moves":["iceshard"]}]"#,
+        r#"[{"species":"magikarp","level":1,"moves":["splash"]},{"species":"snorlax","level":50,"moves":["tackle"]}]"#,
+        3,
+    );
+    b.step(
+        &[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 0)))],
+        &[mv(0, 0, None), mv(1, 0, Some(t(SideRef::P1, 1)))],
+    );
+    assert!(!b.p2.team[0].is_alive(), "Ice Shard should KO the Magikarp");
+    let snorlax = &b.p2.team[1];
+    assert!(snorlax.current_hp < snorlax.stats.hp, "Sucker Punch should hit the attacking Snorlax");
+}

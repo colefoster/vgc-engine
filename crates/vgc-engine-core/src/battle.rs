@@ -10229,6 +10229,24 @@ self.trigger_emergency_exits();
     /// reads the new forme's stats — see the Stance Change arm below.
     ///
     /// Deterministic — no RNG draws.
+    /// The foe a single-target move will actually hit: PS runMove's getTarget
+    /// retargets a move aimed at a fainted foe (sim/battle.ts:2437), and
+    /// useMoveInner applies redirection (Follow Me, Rage Powder, Lightning
+    /// Rod ...) before the move's onTry. Pure read, no draws.
+    fn final_single_target(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &Pokemon,
+        m: &data::MoveDef,
+        target: Option<Target>,
+    ) -> Option<(SideRef, u8)> {
+        let targets = enumerate_targets(self, actor_side, actor_slot, m, target);
+        let targets = self.resolve_targets(actor_side, actor_slot, move_id, attacker, m, targets);
+        (targets.len() == 1).then(|| targets[0])
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_move_identity_pre_use(
         &mut self,
@@ -10376,8 +10394,8 @@ self.trigger_emergency_exits();
             // damage Sucker Punch would deal (@smogon/calc parity) instead
             // of a spurious 0 against the synthetic forced-Splash defender.
             let ok = self.force_move_gate_ok
-                || match target {
-                    Some(Target { side, slot }) if side == actor_side.opposing() => {
+                || match self.final_single_target(actor_side, actor_slot, move_id, attacker, m, target) {
+                    Some((side, slot)) if side == actor_side.opposing() => {
                         let s = slot as usize & 1;
                         pending_kind[opp][s] == 1
                     }
@@ -10402,8 +10420,8 @@ self.trigger_emergency_exits();
         // priority (after ModifyPriority) is above 0.1. Fails after PP.
         if move_id == data::move_id::UPPERHAND && !self.force_move_gate_ok {
             let opp = actor_side.opposing();
-            let tslot = match target {
-                Some(Target { side, slot }) if side == opp => Some(slot),
+            let tslot = match self.final_single_target(actor_side, actor_slot, move_id, attacker, m, target) {
+                Some((side, slot)) if side == opp => Some(slot),
                 _ => (0..self.format().active_count() as u8)
                     .find(|&s| self.side(opp).active_mon(s as usize).is_some_and(|p| p.is_alive())),
             };
