@@ -308,3 +308,36 @@ fn leech_seed_does_nothing_while_the_seeders_slot_is_fainted() {
     b.step(&[Choice::Pass { actor_slot: 0 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(b.p2.team[0].current_hp, before, "nothing to leech into");
 }
+
+// ---- Knock Off removes the item after the DamagingHit reactions ----
+//
+// data/mods/champions/scripts.ts spreadMoveHit: runEvent('DamagingHit')
+// (Rocky Helmet, Rough Skin ...) runs before the move's AfterHit (Knock Off
+// takes the item), and the pinch-berry Update comes after both.
+
+#[test]
+fn knock_off_into_rocky_helmet_still_takes_the_helmet_damage() {
+    let mut b = doubles(
+        r#"[{"species":"incineroar","level":50,"moves":["knockoff"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"item":"rockyhelmet","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].item_id, u16::MAX, "Knock Off removes the helmet");
+    let inc = &b.p1.team[0];
+    assert_eq!(inc.stats.hp - inc.current_hp, inc.stats.hp / 6, "Rocky Helmet hits first");
+}
+
+#[test]
+fn knock_off_takes_a_sitrus_berry_before_it_can_be_eaten() {
+    let mut b = doubles(
+        r#"[{"species":"incineroar","level":50,"moves":["knockoff"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"item":"sitrusberry","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 2 + 5;
+    let before = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[0].item_id, u16::MAX);
+    assert!(b.p2.team[0].current_hp < before, "no Sitrus heal");
+}

@@ -8539,18 +8539,6 @@ self.trigger_emergency_exits();
         if hit_sub {
             return;
         }
-        if ctx.move_id == data::move_id::KNOCKOFF {
-            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                .is_some_and(|m| m.is_alive()
-                    && m.effective_ability_id() != data::ability_id::STICKYHOLD
-                    && !m.holds_own_mega_stone());
-            if can_knock {
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    t.item_id = u16::MAX;
-                    t.sync_can_mega_evolve();
-                }
-            }
-        }
         // Bug Bite / Pluck — PS data/moves.ts bugbite / pluck onHit: a user
         // with HP takes the target's Berry (takeItem; Sticky Hold blocks while
         // its holder has HP) and eats it (singleEvent 'Eat', no Unnerve check).
@@ -8812,6 +8800,29 @@ self.trigger_emergency_exits();
 
         self.apply_move_specific_post_damage(ctx, hit_sub);
 
+        // Defender ability `onDamagingHit` and the DamagingHit items (Rocky
+        // Helmet, Jaboca). Runs only when the hit actually reached the mon —
+        // sub-absorbed hits skipped. PS runs DamagingHit before the move's
+        // AfterHit (data/mods/champions/scripts.ts spreadMoveHit).
+        self.apply_on_hit_reactions(
+            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
+        );
+
+        // Knock Off's AfterHit takes the item after the DamagingHit
+        // reactions (data/moves.ts knockoff onAfterHit).
+        if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
+            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
+                .is_some_and(|m| m.is_alive()
+                    && m.effective_ability_id() != data::ability_id::STICKYHOLD
+                    && !m.holds_own_mega_stone());
+            if can_knock {
+                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+                    t.item_id = u16::MAX;
+                    t.sync_can_mega_evolve();
+                }
+            }
+        }
+
         // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
         // eachEvent('Update'), after the move's AfterHit (Knock Off takes
         // the berry first): data/mods/champions/scripts.ts:538. Starf Berry
@@ -8823,12 +8834,8 @@ self.trigger_emergency_exits();
             self.rng = rng;
         }
 
-        // Defender ability `onDamagingHit` and the reactive items
-        // (Rocky Helmet, Red Card, Eject Button). Runs only when the hit
-        // actually reached the mon — sub-absorbed hits skipped.
-        self.apply_on_hit_reactions(
-            ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, ctx.move_id, &ctx.attacker, ctx.crit, hit_sub, effective_dmg,
-        );
+        // Red Card / Eject Button (PS onAfterMoveSecondary).
+        self.apply_reactive_switch_items(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, hit_sub, effective_dmg);
         self.apply_attacker_ko_boost_triggers(ctx, alive_post, hit_sub, effective_dmg);
 
         // PS stops a multi-hit move the moment the target faints
@@ -8870,8 +8877,8 @@ self.trigger_emergency_exits();
     ///     `move_makes_contact`.
     ///   - Jaboca / other non-contact onDamagingHit items
     ///     (`item::on_damaging_hit`).
-    ///   - Red Card then Eject Button reactive-switch items in PS handler
-    ///     order, each gated on the holder still being alive.
+    ///
+    /// Red Card / Eject Button run later, in `apply_reactive_switch_items`.
     #[allow(clippy::too_many_arguments)]
     fn apply_on_hit_reactions(
         &mut self,
@@ -8920,6 +8927,20 @@ self.trigger_emergency_exits();
             crate::item::on_damaging_hit(
                 self, tside, tslot, actor_side, actor_slot, move_id,
             );
+        }
+    }
+
+    /// Red Card, then Eject Button, after a hit that reached the holder.
+    fn apply_reactive_switch_items(
+        &mut self,
+        tside: SideRef,
+        tslot: u8,
+        actor_side: SideRef,
+        actor_slot: u8,
+        hit_sub: bool,
+        effective_dmg: u16,
+    ) {
+        if !hit_sub && effective_dmg > 0 {
             // Reactive-switch items — PS `onAfterDamage` slot.
             //   Red Card (forces ATTACKER out) runs BEFORE Eject
             //   Button (forces holder out) in PS handler order:
