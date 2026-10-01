@@ -7743,8 +7743,27 @@ self.trigger_emergency_exits();
             // `docs/per-target-context-design.md`.
             move_hit = true;
             for hit_idx in 0..ctx.hits {
+                // Each hit's getDamage reads the live mons: a burn, Weak
+                // Armor or Stamina from an earlier hit applies to the next
+                // (data/mods/champions/scripts.ts hitStepMoveHitLoop).
+                if hit_idx > 0 {
+                    if let Some(a) = self.side(actor_side).active_mon(actor_slot as usize) {
+                        ctx.attacker.boosts = a.boosts;
+                        ctx.attacker.status = a.status;
+                    }
+                    if let Some(d) = self.side(tside).active_mon(tslot as usize) {
+                        ctx.defender.boosts = d.boosts;
+                        ctx.defender.status = d.status;
+                    }
+                }
                 self.apply_single_hit(&mut ctx, hit_idx);
                 if ctx.target_fainted_this_hit {
+                    break;
+                }
+                // The loop also ends once the user is knocked out (Rough
+                // Skin, Rocky Helmet): `if (!pokemon.hp && targets.length
+                // === 1) break`, same file.
+                if !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_alive()) {
                     break;
                 }
             }
