@@ -244,3 +244,21 @@ fn sitrus_eats_when_a_faint_replacement_comes_in_at_half_hp() {
     b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Pass { actor_slot: 0 }]);
     assert_eq!(b.p1.active_mon(0).unwrap().current_hp, hp + max / 4);
 }
+
+#[test]
+fn sticky_web_drop_triggers_defiant() {
+    // PS stickyweb onSwitchIn: this.boost({spe: -1}, pokemon,
+    // pokemon.side.foe.active[0], ...), a foe-sourced drop, so Defiant's
+    // onAfterEachBoost fires. Study 7d354ee6d9.
+    let mut b = singles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+            {"species":"kingambit","level":50,"ability":"defiant","moves":["splash"]}]"#,
+        r#"[{"species":"ribombee","level":50,"ability":"shielddust","moves":["stickyweb"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert!(b.p1.conditions.sticky_web);
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[mv(0, 0, None)]);
+    let m = b.p1.active_mon(0).unwrap();
+    assert_eq!((m.boosts[0], m.boosts[4]), (2, -1));
+}
