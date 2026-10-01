@@ -322,6 +322,11 @@ pub struct Battle {
     /// default so standard gen 9 formats keep their rules.
     #[serde(default)]
     pub champions: bool,
+    /// Set while a batched SwitchIn's abilities run: White Herb's
+    /// onAnySwitchIn (priority -2, data/items.ts:7692) waits until every
+    /// ability handler (Intimidate, priority 0) has run.
+    #[serde(skip)]
+    defer_white_herb: bool,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -692,6 +697,7 @@ impl Battle {
             config, p1, p2, rng, turn: 0, ended: None,
             decision_phases: false,
             champions: false,
+            defer_white_herb: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -791,9 +797,11 @@ impl Battle {
                 }
             }
             leads[..k].sort_by(|a, c| c.0.cmp(&a.0));
+            b.defer_white_herb = true;
             for &(_, side, slot) in &leads[..k] {
                 crate::ability::on_switch_in(&mut b, side, slot);
             }
+            b.defer_white_herb = false;
             for &(_, side, slot) in &leads[..k] {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
@@ -4077,8 +4085,18 @@ self.trigger_emergency_exits();
         // Handlers sort by priority before Speed: abilities (0) all run
         // before the item handlers (seeds / Booster Energy / Room Service
         // carry `onSwitchInPriority` -1 or -2, data/items.ts).
+        self.defer_white_herb = true;
         for &(_, side, slot) in &entered[..n] {
             crate::ability::on_switch_in(self, side, slot);
+        }
+        self.defer_white_herb = false;
+        // White Herb's onAnySwitchIn also fires for a holder already in.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                if !entered[..n].iter().any(|e| e.1 == side && e.2 == slot) {
+                    crate::item::try_consume_white_herb(self, side, slot);
+                }
+            }
         }
         for &(_, side, slot) in &entered[..n] {
             crate::item::on_switch_in(self, side, slot);
@@ -13967,6 +13985,10 @@ self.trigger_emergency_exits();
     /// Eject Pack (onAfterBoost; `eject` false for Parting Shot, which it
     /// ignores, data/items.ts:1712) and White Herb, which restores what is
     /// still negative. Returns how many stats fell.
+    pub(crate) fn white_herb_deferred(&self) -> bool {
+        self.defer_white_herb
+    }
+
     pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
         let lowered = self
             .side(side)
@@ -28732,6 +28754,25 @@ mod tests {
         let b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         assert_eq!(b.p2.team[0].boosts[0], 0, "White Herb restored Atk to 0");
         assert_eq!(b.p2.team[0].item_id, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_waits_for_every_lead_intimidate() {
+        // PS data/items.ts:7692 whiteherb onAnySwitchInPriority -2: the
+        // leads' batched SwitchIn runs both Intimidates (priority 0) first,
+        // so the herb restores both drops. Study 1aca10e8ce.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout","knockoff","flareblitz","partingshot"]},
+            {"species":"salamence","level":50,"ability":"intimidate","nature":"adamant","moves":["dragonclaw","protect","tailwind","fly"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"sneasler","level":50,"ability":"unburden","item":"whiteherb","nature":"jolly","moves":["fakeout","closecombat","direclaw","protect"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"jolly","moves":["thunderbolt","quickattack","grassknot","feint"]}
+        ]"#).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_eq!(b.p2.team[0].boosts[0], 0, "both drops restored");
+        assert_eq!(b.p2.team[0].item_id, u16::MAX);
+        assert_eq!(b.p2.team[1].boosts[0], -2);
     }
 
     #[test]
