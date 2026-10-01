@@ -182,7 +182,12 @@ impl<'a> IntoIterator for &'a ActionOrder {
 /// (Tailwind), held item (Choice Scarf), Paradox booster, and weather-
 /// keyed speed abilities (Swift Swim / Chlorophyll / Sand Rush / Slush
 /// Rush). Trick Room is handled by the comparator at the call site.
-pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::weather::Weather) -> u16 {
+pub fn effective_speed(
+    mon: &Pokemon,
+    tailwind_active: bool,
+    weather: crate::weather::Weather,
+    terrain: crate::terrain::Terrain,
+) -> u16 {
     // A fainted mon keeps its queued action (gen 5+) but faintMessages ran
     // clearVolatile on it (sim/battle.ts:2563): no boosts or volatiles
     // (Protosynthesis / Quark Drive, Unburden, Slow Start) in the Speed
@@ -259,7 +264,11 @@ pub fn effective_speed(mon: &Pokemon, tailwind_active: bool, weather: crate::wea
             | (data::ability_id::SANDRUSH, Weather::Sand)
             | (data::ability_id::SLUSHRUSH, Weather::Snow)
     );
-    let after_weather = if weather_double { after_unburden * 2 } else { after_unburden };
+    // Surge Surfer — PS data/abilities.ts surgesurfer `onModifySpe`:
+    // chainModify(2) in Electric Terrain (no grounding check).
+    let surge_double = mon.ability_id == data::ability_id::SURGESURFER
+        && matches!(terrain, crate::terrain::Terrain::Electric);
+    let after_weather = if weather_double || surge_double { after_unburden * 2 } else { after_unburden };
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
     let after_slowstart = if !cleared
@@ -451,7 +460,7 @@ fn schedule_move(
             } else {
                 frac
             };
-            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather) as i64)
+            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather, battle.terrain) as i64)
         }
         None => (0, 0, 0),
     };
@@ -630,7 +639,7 @@ pub(crate) fn resort_from(
         let speed = battle
             .side(a.side)
             .active_mon(a.actor_slot as usize)
-            .map(|m| effective_speed(m, battle.side(a.side).conditions.tailwind_turns > 0, battle.weather) as i64)
+            .map(|m| effective_speed(m, battle.side(a.side).conditions.tailwind_turns > 0, battle.weather, battle.terrain) as i64)
             .unwrap_or(0);
         let speed_key = if trick_room { speed } else { -speed };
         out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
@@ -863,10 +872,10 @@ mod tests {
         let mut b = make_battle();
         let m = &mut b.p1.team[0];
         m.boosts[4] = -1;
-        let dropped = effective_speed(m, false, crate::weather::Weather::None);
+        let dropped = effective_speed(m, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         m.current_hp = 0;
         m.fainted = true;
-        assert_eq!(effective_speed(m, false, crate::weather::Weather::None), m.stats.spe);
+        assert_eq!(effective_speed(m, false, crate::weather::Weather::None, crate::terrain::Terrain::None), m.stats.spe);
         assert!(dropped < m.stats.spe);
     }
 
@@ -953,16 +962,16 @@ mod tests {
         let b = make_battle();
         let mut mon = b.p1.team[0].clone();
         mon.status = Status::Paralysis;
-        let before = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
-        let after = effective_speed(&mon, false, crate::weather::Weather::None);
+        let before = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let after = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert_eq!(after, before / 2);
     }
 
     #[test]
     fn tailwind_doubles_speed_for_order() {
         let b = make_battle();
-        let base = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
-        let with_tw = effective_speed(&b.p1.team[0], true, crate::weather::Weather::None);
+        let base = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let with_tw = effective_speed(&b.p1.team[0], true, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert_eq!(with_tw, base * 2);
     }
 
@@ -973,11 +982,26 @@ mod tests {
         let ss_id = data::ABILITIES.iter()
             .position(|a| a.slug == "swiftswim").unwrap() as u16;
         mon.ability_id = ss_id;
-        let dry = effective_speed(&mon, false, crate::weather::Weather::None);
-        let rain = effective_speed(&mon, false, crate::weather::Weather::Rain);
-        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
+        let dry = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let rain = effective_speed(&mon, false, crate::weather::Weather::Rain, crate::terrain::Terrain::None);
+        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun, crate::terrain::Terrain::None);
         assert_eq!(rain, dry * 2, "Swift Swim doubles in Rain");
         assert_eq!(sun, dry, "Swift Swim no-op in Sun");
+    }
+
+    #[test]
+    fn surge_surfer_doubles_speed_in_electric_terrain_only() {
+        // PS data/abilities.ts surgesurfer onModifySpe: chainModify(2) in
+        // Electric Terrain. Study 0861359e14 (Raichu-Alola outspeeds Absol).
+        let b = make_battle();
+        let mut mon = b.p1.team[0].clone();
+        mon.ability_id = data::ability_id::SURGESURFER;
+        let w = crate::weather::Weather::None;
+        let none = effective_speed(&mon, false, w, crate::terrain::Terrain::None);
+        let electric = effective_speed(&mon, false, w, crate::terrain::Terrain::Electric);
+        let grassy = effective_speed(&mon, false, w, crate::terrain::Terrain::Grassy);
+        assert_eq!(electric, none * 2);
+        assert_eq!(grassy, none);
     }
 
     #[test]
@@ -987,8 +1011,8 @@ mod tests {
         let id = data::ABILITIES.iter()
             .position(|a| a.slug == "chlorophyll").unwrap() as u16;
         mon.ability_id = id;
-        let dry = effective_speed(&mon, false, crate::weather::Weather::None);
-        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun);
+        let dry = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let sun = effective_speed(&mon, false, crate::weather::Weather::Sun, crate::terrain::Terrain::None);
         assert_eq!(sun, dry * 2);
     }
 
@@ -1016,8 +1040,8 @@ mod tests {
         // Sanity: the MM user (Toedscruel, base 100) outspeeds Torkoal
         // (base 20), so any "foe first" result is purely the MM penalty.
         assert!(
-            effective_speed(&b.p1.team[0], false, b.weather)
-                > effective_speed(&b.p2.team[0], false, b.weather),
+            effective_speed(&b.p1.team[0], false, b.weather, b.terrain)
+                > effective_speed(&b.p2.team[0], false, b.weather, b.terrain),
             "Toedscruel must outspeed Torkoal for the test to be meaningful",
         );
 
@@ -1295,14 +1319,14 @@ mod tests {
         let mut mon = b.p1.team[0].clone();
         let qf = data::ABILITIES.iter().position(|a| a.slug == "quickfeet").expect("quickfeet") as u16;
         mon.ability_id = qf;
-        let healthy = effective_speed(&mon, false, crate::weather::Weather::None);
+        let healthy = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         mon.status = Status::Burn; // statused but not paralyzed // AUDIT-OK: standalone clone, not a Battle slot
-        let burned = effective_speed(&mon, false, crate::weather::Weather::None);
+        let burned = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert!(burned > healthy, "Quick Feet should raise Spe when statused (h={healthy}, b={burned})");
 
         // Paralyzed Quick Feet user: no halve, and the ×1.5 still applies.
         mon.status = Status::Paralysis;
-        let para = effective_speed(&mon, false, crate::weather::Weather::None);
+        let para = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert!(para >= healthy, "Quick Feet should ignore paralysis halve (h={healthy}, p={para})");
     }
 

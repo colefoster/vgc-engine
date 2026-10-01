@@ -867,7 +867,7 @@ impl SpeedContext {
 pub fn speed_tier(mon: &QuickMon, ctx: SpeedContext) -> Result<u16, CalcError> {
     // Any move keeps `build_member` happy; speed is move-independent.
     let p = mon.to_pokemon("splash")?;
-    Ok(crate::order::effective_speed(&p, ctx.tailwind, ctx.weather))
+    Ok(crate::order::effective_speed(&p, ctx.tailwind, ctx.weather, crate::terrain::Terrain::None))
 }
 
 /// The winner of a speed comparison between two mons, respecting Trick

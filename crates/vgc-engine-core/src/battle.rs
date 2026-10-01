@@ -783,7 +783,7 @@ impl Battle {
                         let spe = b
                             .side(side)
                             .active_mon(slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, b.weather))
+                            .map(|m| crate::order::effective_speed(m, tw, b.weather, b.terrain))
                             .unwrap_or(0);
                         leads[k] = (spe, side, slot);
                         k += 1;
@@ -2134,7 +2134,7 @@ self.trigger_emergency_exits();
     fn ps_live_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
         let m = self.side(side).active_mon(slot)?;
         let tw = self.side(side).conditions.tailwind_turns > 0;
-        let mut spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+        let mut spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
         if self.trick_room_turns > 0 {
             spe = 10000 - spe;
         }
@@ -2642,7 +2642,7 @@ self.trigger_emergency_exits();
         // (sim/side.ts:1086-1091, sim/battle.ts:2660).
         let n_team = self.p1.team.len().min(self.p2.team.len());
         for i in 0..n_team {
-            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None) as i64 & 0x1FFF;
+            let key = |m: &Pokemon| crate::order::effective_speed(m, false, crate::weather::Weather::None, crate::terrain::Terrain::None) as i64 & 0x1FFF;
             if key(&self.p1.team[i]) == key(&self.p2.team[i]) {
                 let _ = self.rng.ps_random_range("shuffle", 2 * i as u32, 2 * i as u32 + 2);
             }
@@ -3006,7 +3006,7 @@ self.trigger_emergency_exits();
                 }
                 let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
                 seen[slot.min(1)] = true;
-                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather) as i64;
+                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather, self.terrain) as i64;
                 let spe = if trick_room { 10000 - raw } else { raw };
                 let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
                     if k < keys.len() {
@@ -3789,7 +3789,7 @@ self.trigger_emergency_exits();
                     let Some(m) = self.side(side).active_mon(actor_slot as usize) else { continue };
                     if n < out.len() {
                         let tw = self.side(side).conditions.tailwind_turns > 0;
-                        let spe = crate::order::effective_speed(m, tw, self.weather) as i64;
+                        let spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
                         out[n] = (side, actor_slot);
                         keys[n] = if trick_room { spe } else { -spe };
                         n += 1;
@@ -3920,7 +3920,7 @@ self.trigger_emergency_exits();
                         let spd = self
                             .side(side)
                             .active_mon(actor_slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                            .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
                             .unwrap_or(0);
                         if n < acts.len() {
                             acts[n] = (spd, side, actor_slot, team_index);
@@ -4070,7 +4070,7 @@ self.trigger_emergency_exits();
             e.0 = self
                 .side(e.1)
                 .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.weather))
+                .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
                 .unwrap_or(0);
         }
         entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
@@ -4134,7 +4134,7 @@ self.trigger_emergency_exits();
                 if !is_pursuit {
                     continue;
                 }
-                let spe = crate::order::effective_speed(mon, tailwind, self.weather);
+                let spe = crate::order::effective_speed(mon, tailwind, self.weather, self.terrain);
                 if n < sources.len() {
                     sources[n] = (actor_slot, move_slot, spe);
                     n += 1;
@@ -9780,7 +9780,7 @@ self.trigger_emergency_exits();
                         if !p.is_alive() || p.effective_ability_id() != want {
                             continue;
                         }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather);
+                        let spe = crate::order::effective_speed(p, tailwind, self.weather, self.terrain);
                         if best.is_none() || spe > best_spe {
                             best = Some((side, slot));
                             best_spe = spe;
@@ -21804,11 +21804,11 @@ mod tests {
         // Garchomp jolly 252 ev L50 base 102 → 169. Garchomp still
         // outpaces — switch to a moderately fast mon.
         // Actually just check the order math directly.
-        let scarfed = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let scarfed = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         let bare    = {
             let mut m = b.p1.team[0].clone();
             m.item_id = u16::MAX;
-            crate::order::effective_speed(&m, false, crate::weather::Weather::None)
+            crate::order::effective_speed(&m, false, crate::weather::Weather::None, crate::terrain::Terrain::None)
         };
         assert!(scarfed > bare);
         assert_eq!(scarfed, bare * 3 / 2);
@@ -25714,8 +25714,8 @@ mod tests {
         assert_eq!(b.p1.conditions.tailwind_turns, 3, "tick from 4 → 3 at end of turn 1");
         // Pelipper-side speed should be doubled while active. Use the
         // order module to verify.
-        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true, crate::weather::Weather::None);
-        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let pel_spe_with_tw = crate::order::effective_speed(&b.p1.team[0], true, crate::weather::Weather::None, crate::terrain::Terrain::None);
+        let pel_spe_no_tw = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert_eq!(pel_spe_with_tw, pel_spe_no_tw * 2);
         // Steps 2–4: tick down.
         for _ in 0..3 {
@@ -27231,11 +27231,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        let base_speed = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        let base_speed = crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain);
         assert!(!b.p1.team[0].unburden_active, "latch starts clear (item still held)");
         assert_eq!(
             base_speed,
-            crate::order::effective_speed(&b.p1.team[0], false, b.weather),
+            crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain),
             "no doubling while the berry is held",
         );
         // Drop to <=50% max HP so Sitrus fires.
@@ -27243,7 +27243,7 @@ mod tests {
         crate::item::on_after_damage(&mut b, SideRef::P1, 0, &mut crate::rng::Rng::new(0));
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "Sitrus Berry consumed");
         assert!(b.p1.team[0].unburden_active, "Unburden latch set when item left");
-        let boosted = crate::order::effective_speed(&b.p1.team[0], false, b.weather);
+        let boosted = crate::order::effective_speed(&b.p1.team[0], false, b.weather, b.terrain);
         assert_eq!(boosted, base_speed * 2, "Unburden doubles Speed once itemless");
     }
 
@@ -27945,11 +27945,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
-        let no_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let no_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         // Force Spe as the boosted stat (Flutter Mane's best stat is
         // SpA, but the order math only cares about boosted_stat == 4).
         b.p1.team[0].boosted_stat = 4;
-        let with_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None);
+        let with_boost = crate::order::effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         // ×1.5 with rounding tolerance.
         let pct = with_boost as i32 * 100 / no_boost as i32;
         assert!((148..=152).contains(&pct), "expected ~150%; got {pct}%");
@@ -28607,11 +28607,11 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         let pre_hp = b.p1.team[0].current_hp;
-        let spe = effective_speed(&b.p1.team[0], false, Weather::None);
+        let spe = effective_speed(&b.p1.team[0], false, Weather::None, crate::terrain::Terrain::None);
         // Build a vanilla Pidgey w/o item for comparison.
         let mut bare = b.p1.team[0].clone();
         bare.item_id = u16::MAX;
-        let spe_bare = effective_speed(&bare, false, Weather::None);
+        let spe_bare = effective_speed(&bare, false, Weather::None, crate::terrain::Terrain::None);
         assert_eq!(spe, spe_bare / 2, "Iron Ball halves speed");
         // Pidgey holding Iron Ball IS grounded → EQ hits it.
         assert!(b.p1.team[0].is_grounded(), "Iron Ball grounds the holder");
