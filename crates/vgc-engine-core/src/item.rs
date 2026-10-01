@@ -1098,13 +1098,17 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
 /// Persim only handles confusion. Call this immediately after any site
 /// that adds the Confusion volatile to the holder, and on switch-in.
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Persim_Berry>.
+///
+/// Lum Berry (PS `data/items.ts` lumberry) also eats on confusion
+/// (`onUpdate`: `pokemon.status || pokemon.volatiles['confusion']`) and its
+/// `onEat` cures both.
 pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     use crate::pokemon::VolatileKind as VK;
     let (item_id, confused) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => (m.effective_item_id(), m.volatiles.has(VK::Confusion)),
         _ => return,
     };
-    if item_id != data::item_id::PERSIMBERRY || !confused {
+    if !matches!(item_id, data::item_id::PERSIMBERRY | data::item_id::LUMBERRY) || !confused {
         return;
     }
     // Opposing Unnerve suppresses the Persim eat (it is a Berry).
@@ -1113,7 +1117,15 @@ pub fn try_consume_persim_berry(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
         m.volatiles.remove(VK::Confusion);
+        if item_id == data::item_id::LUMBERRY {
+            m.status = crate::pokemon::Status::None;
+            m.set_toxic_counter(0);
+            m.set_sleep_turns(0);
+        }
         m.consume_item();
+    }
+    if item_id == data::item_id::LUMBERRY {
+        battle.sync_status_dot_bit(side, slot);
     }
     maybe_on_item_consumed(battle, side, slot, item_id);
 }

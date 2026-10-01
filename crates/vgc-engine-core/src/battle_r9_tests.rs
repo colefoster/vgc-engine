@@ -132,6 +132,7 @@ fn skill_swapped_psychic_surge_sets_the_terrain() {
     );
     b.terrain = crate::terrain::Terrain::None;
     b.terrain_turns = 0;
+    b.sync_weather_terrain_cache();
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::PSYCHICSURGE);
     assert_eq!(b.terrain, crate::terrain::Terrain::Psychic);
@@ -340,4 +341,22 @@ fn knock_off_takes_a_sitrus_berry_before_it_can_be_eaten() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(b.p2.team[0].item_id, u16::MAX);
     assert!(b.p2.team[0].current_hp < before, "no Sitrus heal");
+}
+
+// ---- Lum Berry cures confusion ----
+//
+// data/items.ts lumberry: onUpdate eats when `pokemon.status ||
+// pokemon.volatiles['confusion']`; onEat cures both.
+
+#[test]
+fn lum_berry_cures_confusion() {
+    let mut b = doubles(
+        r#"[{"species":"gengar","level":50,"moves":["swagger"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"item":"lumberry","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.set_force_accuracy_hit(Some(true));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion), "Lum Berry cures confusion");
+    assert_eq!(b.p2.team[0].item_id, u16::MAX, "and is eaten");
 }

@@ -461,3 +461,10 @@ fn multi_hit_reads_live_stats_each_hit() {
 fn multi_hit_stops_when_its_user_faints() {
     assert_matches_ps("study-622d179172-multihit-stops-on-user-faint");
 }
+
+/// Study battle 59e92f3ccd: Swagger's confusion is cured at once by the
+/// target's Lum Berry.
+#[test]
+fn lum_berry_cures_swagger_confusion() {
+    assert_matches_ps("study-59e92f3ccd-lum-berry-confusion");
+}
