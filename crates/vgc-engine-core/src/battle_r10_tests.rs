@@ -204,3 +204,22 @@ fn disable_on_a_target_that_already_moved_lasts_five_turns() {
     b.step(&[mv(0, 1, None)], &[mv(0, 1, None)]);
     assert_eq!(b.p2.team[0].disabled_move_slot(), 255, "ends at the fifth");
 }
+
+#[test]
+fn solar_power_chips_in_the_weather_step_before_grassy_heal() {
+    // PS solarpower onWeather (data/abilities.ts:4403) runs in sunnyday's
+    // eachEvent('Weather'), before Grassy Terrain's residual heal.
+    // Study 966745efb4: 182 -> 160 -> 171.
+    let mut b = singles(
+        r#"[{"species":"houndoom","level":50,"ability":"solarpower","moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#,
+        3,
+    );
+    b.set_weather(crate::weather::Weather::Sun);
+    b.weather_turns = 5;
+    b.set_terrain(crate::terrain::Terrain::Grassy);
+    b.terrain_turns = 5;
+    let max = b.p1.team[0].stats.hp;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert_eq!(b.p1.team[0].current_hp, max - max / 8 + max / 16);
+}
