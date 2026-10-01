@@ -13374,6 +13374,9 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            // The weather's eachEvent('Update'): HP berries eat before the
+            // later residuals (Grassy Terrain, Leftovers).
+            self.update_hp_berries();
         }
         // Rain Dish (data/abilities.ts:3759) and Ice Body (:1955) onWeather:
         // heal(baseMaxhp / 16) in rain / snow, in the same eachEvent('Weather').

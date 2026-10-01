@@ -96,3 +96,27 @@ fn friend_guard_holds_for_the_whole_spread_hit() {
     // the holder survives the hit.
     assert_eq!(run(1), run(150));
 }
+
+#[test]
+fn sitrus_fires_right_after_sand_chip_before_grassy_heal() {
+    // PS sandstorm onFieldResidual runs eachEvent('Weather') then
+    // eachEvent('Update') (data/conditions.ts sandstorm; sim/battle.ts
+    // eachEvent), so Sitrus (onUpdate) eats before Grassy Terrain's heal
+    // (residualOrder 5). Study 252c896fb8: 93 -> 82 (sand) -> 127 -> 138.
+    let mut b = singles(
+        r#"[{"species":"incineroar","level":50,"ability":"intimidate","item":"sitrusberry","moves":["splash"],"evs":{"hp":252}}]"#,
+        r#"[{"species":"tyranitar","level":50,"ability":"unnerve","moves":["splash"]}]"#,
+        3,
+    );
+    b.set_weather(crate::weather::Weather::Sand);
+    b.weather_turns = 5;
+    b.set_terrain(crate::terrain::Terrain::Grassy);
+    b.terrain_turns = 5;
+    b.p2.team[0].ability_id = data::ability_id::SANDSTREAM;
+    let max = b.p1.team[0].stats.hp;
+    b.p1.team[0].current_hp = max / 2 + 3;
+    let hp = b.p1.team[0].current_hp;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    let sand = (max / 16).max(1);
+    assert_eq!(b.p1.team[0].current_hp, hp - sand + max / 4 + max / 16);
+}
