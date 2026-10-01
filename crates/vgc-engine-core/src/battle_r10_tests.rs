@@ -64,3 +64,35 @@ fn ability_immunities_block_targeted_status_moves() {
         assert_eq!(foe.taunt_turns(), 0, "{ability}: no taunt");
     }
 }
+
+fn doubles(p1: &str, p2: &str, seed: u64) -> Battle {
+    Battle::new(
+        BattleConfig { format: Format::Doubles, seed },
+        TeamBuilder::from_json(p1).unwrap(),
+        TeamBuilder::from_json(p2).unwrap(),
+    )
+}
+
+#[test]
+fn friend_guard_holds_for_the_whole_spread_hit() {
+    // PS spreadMoveHit computes every target's damage (getDamage, where
+    // friendguard onAnyModifyDamage runs) before any HP is dealt, so a
+    // Friend Guard holder the spread move KOs still guards its ally.
+    // Studies 8c0a76b5df, 5095129db1, 1cee6e86b6.
+    let run = |holder_hp: u16| {
+        let mut b = doubles(
+            r#"[{"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["rockslide"],"evs":{"atk":252}},
+                {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#,
+            r#"[{"species":"maushold","level":50,"ability":"friendguard","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252}}]"#,
+            3,
+        );
+        b.p2.team[0].current_hp = holder_hp;
+        let before = b.p2.team[1].current_hp;
+        b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+        before - b.p2.team[1].current_hp
+    };
+    // Same seed, same rolls: the ally takes the same damage whether or not
+    // the holder survives the hit.
+    assert_eq!(run(1), run(150));
+}
