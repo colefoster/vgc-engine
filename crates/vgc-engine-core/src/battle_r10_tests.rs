@@ -223,3 +223,24 @@ fn solar_power_chips_in_the_weather_step_before_grassy_heal() {
     b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
     assert_eq!(b.p1.team[0].current_hp, max - max / 8 + max / 16);
 }
+
+#[test]
+fn sitrus_eats_when_a_faint_replacement_comes_in_at_half_hp() {
+    // PS sitrusberry onUpdate runs in the replacement's runSwitch Update.
+    // Study a6f2f065f3 (Farigiraf replacement at 113/227 eats at once).
+    let mut b = singles(
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+            {"species":"farigiraf","level":50,"ability":"armortail","item":"sitrusberry","moves":["splash"]}]"#,
+        r#"[{"species":"garchomp","level":50,"ability":"roughskin","moves":["earthquake"]}]"#,
+        3,
+    );
+    b.decision_phases = true;
+    b.p1.team[0].current_hp = 1;
+    let max = b.p1.team[1].stats.hp;
+    b.p1.team[1].current_hp = max / 2;
+    let hp = b.p1.team[1].current_hp;
+    b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
+    assert!(b.needs_replacements());
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Pass { actor_slot: 0 }]);
+    assert_eq!(b.p1.active_mon(0).unwrap().current_hp, hp + max / 4);
+}
