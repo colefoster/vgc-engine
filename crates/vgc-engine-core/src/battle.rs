@@ -4722,8 +4722,12 @@ self.trigger_emergency_exits();
         // slot 0 (PS `pokemon.side.foe.active[0]`). Mirror Armor reflect
         // and White Herb restore ride through from here.
         let source_side = side.opposing();
+        let before = self.side(side).active_mon(slot as usize).map(|m| m.boosts);
         self.apply_boosts(side, slot, &[(4, -1)], source_side, 0);
-        crate::item::try_consume_white_herb(self, side, slot);
+        // A foe-sourced drop: Defiant / Competitive, Eject Pack, White Herb.
+        if let Some(before) = before {
+            self.after_foe_drop(side, slot, before, true);
+        }
     }
 
     /// Clear all modelled entry hazards (Spikes / Toxic Spikes / Stealth
