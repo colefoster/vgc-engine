@@ -419,3 +419,22 @@ fn ps_rng_tied_replacements_draw_an_insert_choice() {
     assert_eq!(draws(r#"{"species":"blissey","level":50,"moves":["splash"]}"#), 1);
     assert_eq!(draws(r#"{"species":"snorlax","level":50,"moves":["splash"]}"#), 0);
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_a_recharging_mon_redraws_its_target_in_every_get_target() {
+    // A mon recharging from Hyper Beam acts with 'recharge', a move not in
+    // the dex: it keeps its last target loc (no resolveAction draw), but its
+    // undefined target never validates, so each getTarget draws a randomFoe.
+    let mut b = ps_doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["hyperbeam"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["calmmind"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+    );
+    b.p1.team[0].must_recharge = true;
+    b.p1.team[0].last_used_move_target = 2;
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    assert_eq!(trace.iter().filter(|d| d.op == "random_target").count(), 0);
+    assert!(trace.iter().filter(|d| d.op == "get_target").count() >= 2, "resolveAction and the first re-sort");
+}

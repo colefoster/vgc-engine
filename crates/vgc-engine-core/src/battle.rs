@@ -2728,6 +2728,21 @@ self.trigger_emergency_exits();
                 if !mon.is_alive() {
                     continue;
                 }
+                // A recharging mon's 'recharge' action is aimed at its last
+                // move's target (sim/side.ts:677 lastMoveTargetLoc), so
+                // resolveAction draws a random target only when there is
+                // none; getActionSpeed's getTarget then always draws.
+                if mon.must_recharge {
+                    if mon.last_used_move_target == 255 && n_active > 1 {
+                        let foe = side.opposing();
+                        let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
+                        if n > 0 {
+                            let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                        }
+                    }
+                    self.ps_get_target_draw(side, actor_slot, data::move_id::HYPERBEAM, None);
+                    continue;
+                }
                 let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
                     data::move_id::STRUGGLE
                 } else {
@@ -2903,6 +2918,18 @@ self.trigger_emergency_exits();
         let n_active = self.format().active_count();
         let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
         let Some(user) = self.side(side).active_mon(slot as usize) else { return };
+        // A recharging mon's action is the locked 'recharge' move
+        // (data/conditions.ts mustrecharge onLockMove), not in the dex: its
+        // undefined target never validates (sim/battle.ts validTargetLoc), so
+        // getTarget always falls to getRandomTarget -> randomFoe.
+        if user.must_recharge {
+            let foe = side.opposing();
+            let n = (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count();
+            if n > 0 && n_active > 1 {
+                let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+            }
+            return;
+        }
         let ability = user.effective_ability_id();
         let tcode = self.moves()[move_id as usize].target;
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
@@ -5374,6 +5401,12 @@ self.trigger_emergency_exits();
             a.volatiles.remove(crate::pokemon::VolatileKind::GlaiveRush);
         }
         if attacker.must_recharge {
+            // runMove's getTarget for the 'recharge' action (sim/battle-actions.ts:209)
+            // draws before mustrecharge's onBeforeMove cancels it.
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            }
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.must_recharge = false;
                 // mustrecharge's onBeforeMove returns null.
