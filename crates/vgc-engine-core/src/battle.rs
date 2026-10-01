@@ -13341,8 +13341,10 @@ self.trigger_emergency_exits();
                             }
                             Status::Poison => (m.stats.hp / 8).max(1),
                             Status::Toxic => {
-                                let c = m.toxic_counter().max(1) as u32;
-                                ((m.stats.hp as u32 * c / 16) as u16).max(1)
+                                // PS floors the sixteenth before the stage multiply
+                                // (data/conditions.ts:159 clampIntRange).
+                                let c = m.toxic_counter().max(1) as u16;
+                                (m.stats.hp / 16).max(1) * c
                             }
                             _ => 0,
                         };
@@ -22952,12 +22954,13 @@ mod tests {
         // After turn 1: damage = max * 1 / 16. Counter now 2.
         let hp_after_1 = b.p2.team[0].current_hp;
         assert_eq!(hp_after_1, max - (max / 16).max(1));
-        // After turn 2: damage = max * 2 / 16 (counter was 2).
+        // After turn 2: damage = floor(max / 16) * 2 (counter was 2;
+        // data/conditions.ts:159 floors before the multiply).
         b.step(
             &[Choice::Pass { actor_slot: 0 }],
             &[Choice::Pass { actor_slot: 0 }],
         );
-        let expected_tick2 = ((max as u32 * 2) / 16) as u16;
+        let expected_tick2 = (max / 16) * 2;
         assert_eq!(b.p2.team[0].current_hp, hp_after_1 - expected_tick2.max(1));
     }
 

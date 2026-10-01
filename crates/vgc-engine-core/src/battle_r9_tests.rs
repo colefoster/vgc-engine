@@ -92,3 +92,26 @@ fn sucker_punch_at_a_fainted_foe_checks_the_retargeted_foe() {
     let snorlax = &b.p2.team[1];
     assert!(snorlax.current_hp < snorlax.stats.hp, "Sucker Punch should hit the attacking Snorlax");
 }
+
+// ---- Toxic: floor(maxhp / 16) * stage ----
+//
+// data/conditions.ts:159 tox onResidual:
+// `this.damage(this.clampIntRange(pokemon.baseMaxhp / 16, 1) * stage)`;
+// clampIntRange floors before the multiply.
+
+#[test]
+fn toxic_damage_floors_the_sixteenth_before_multiplying() {
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    let hp = b.p1.team[0].stats.hp;
+    assert!(hp % 16 >= 8, "fixture needs maxhp % 16 >= 8 (got {hp})");
+    b.p1.team[0].status = crate::pokemon::Status::Toxic;
+    b.p1.team[0].set_toxic_counter(2);
+    b.sync_status_dot_bit(SideRef::P1, 0);
+    let before = b.p1.team[0].current_hp;
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(before - b.p1.team[0].current_hp, (hp / 16) * 2);
+}
