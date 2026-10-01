@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use vgc_engine_core::rng::{DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
 use vgc_engine_core::{Battle, BattleConfig, Choice, Format, SideRef, StepResult, Target};
 
-use crate::{build_engine_team, build_table_from, decode_slot_ref, diff_turn, Divergence, TurnRecord};
+use crate::{build_engine_team, build_table_from, decode_slot_ref, diff_turn, Divergence, DrawRecord, TurnRecord};
 
 // ---------------------------------------------------------------------------
 // Input schema
@@ -421,6 +421,30 @@ fn add_queue_tiebreaks(table: &mut HashMap<RngKey, VecDeque<RngEvent>>, acc: &Ac
     }
 }
 
+/// The keyed envelopes, with PS's two-argument `random(m, n)` draws made
+/// offsets from `m`. The envelope stores the result itself, while the
+/// engine draws `range(n - m)` and adds `m` (confusion's `random(2, 6)`,
+/// data/conditions.ts confusion onStart; partial trap's `random(5, 7)`,
+/// durationCallback). Each turn's envelopes are its raw `random` /
+/// `randomChance` calls, in order, so the raw trace gives `m`.
+fn offset_two_arg_draws(acc: &AccBattle) -> Vec<DrawRecord> {
+    let mut out = Vec::new();
+    for t in &acc.turns {
+        let raw: Vec<&RawDraw> = t.raw.iter().filter(|d| d.op == "random" || d.op == "randomChance").collect();
+        let aligned = raw.len() == t.base.draws.len();
+        for (i, d) in t.base.draws.iter().enumerate() {
+            let mut d = d.clone();
+            if aligned && raw[i].op == "random" && raw[i].a > 0.0 && raw[i].b > 0.0 {
+                if let Some(v) = d.value.as_f64() {
+                    d.value = serde_json::json!((v - raw[i].a).max(0.0) as u64);
+                }
+            }
+            out.push(d);
+        }
+    }
+    out
+}
+
 /// Sentinel move id for PS `this.sample(...)` draws made from a condition's
 /// `onStart` (Champions sleep: data/mods/champions/conditions.ts slp
 /// `startTime = this.sample([2, 3, 3])`). `sample` goes through the PRNG,
@@ -568,7 +592,8 @@ pub fn replay_keyed(acc: &AccBattle) -> Replayed {
 fn repaired_table(
     acc: &AccBattle,
 ) -> (Table, u32, Battle, Result<(u32, u32, Option<Divergence>, bool), String>, Vec<RecordedDraw>) {
-    let (mut table, _unresolved) = build_table_from(acc.turns.iter().flat_map(|t| t.base.draws.iter()));
+    let draws = offset_two_arg_draws(acc);
+    let (mut table, _unresolved) = build_table_from(draws.iter());
     add_queue_tiebreaks(&mut table, acc);
     add_condition_samples(&mut table, acc);
     add_ability_samples(&mut table, acc);
