@@ -605,6 +605,10 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_commit_moves: ([(u8, u8); 4], u8),
+    /// Keyed oracle: the move order PS's commitChoices queue.sort produced
+    /// (`keyed_commit_sort`), applied before the first re-sort.
+    #[serde(skip)]
+    keyed_commit_moves: ([(u8, u8); 4], u8),
     /// `ps-rng` only: this turn's Mega Evolutions in commit-sort order.
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
@@ -742,6 +746,7 @@ impl Battle {
             ps_action_live: 0,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
+            keyed_commit_moves: ([(0, 0); 4], 0),
             #[cfg(feature = "ps-rng")]
             ps_commit_megas: ([(0, 0); 4], 0),
         };
@@ -2929,6 +2934,86 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// Keyed oracle only: PS's commitChoices `queue.sort()` (sim/battle.ts
+    /// commitChoices -> speedSort, comparePriority :404) over the actions
+    /// PS queues, in choice order: a switch (order 103), Mega Evolution
+    /// (104), Terastallization (106) and the move (200, by priority,
+    /// fractional priority, Speed; Trick Room flips Speed as getActionSpeed
+    /// does). Its tie shuffles take PS's recorded offsets, which index this
+    /// list (the selection sort's swaps move later actions), so the result
+    /// is PS's commit order; recorded in `keyed_commit_moves`. The same
+    /// sort as the `ps-rng` emulation, on the engine's Speed.
+    fn keyed_commit_sort(&mut self, p1: &[Choice], p2: &[Choice]) {
+        let trick_room = self.trick_room_turns > 0;
+        let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
+        let mut items = [(SideRef::P1, 0u8, false); 12];
+        let mut k = 0;
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let c = self.locked_move_choice(side, *c);
+                let slot = c.actor_slot() as usize;
+                if slot >= self.format().active_count() || seen[slot.min(1)] {
+                    continue;
+                }
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
+                seen[slot.min(1)] = true;
+                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather) as i64;
+                let spe = if trick_room { 10000 - raw } else { raw };
+                let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
+                    if k < keys.len() {
+                        keys[k] = key;
+                        items[k] = (side, slot as u8, is_move);
+                        k += 1;
+                    }
+                };
+                match c {
+                    Choice::Switch { .. } => push((103, 0, 0, -spe), false),
+                    Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
+                        match c {
+                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), false),
+                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), false),
+                            _ => {}
+                        }
+                        let pri = crate::order::state_priority(self, side, slot as u8, move_slot) as i64;
+                        let status = m
+                            .moves
+                            .get(move_slot as usize)
+                            .is_some_and(|&id| id != u16::MAX && self.moves()[id as usize].category == 2);
+                        let quick = self.quick_frac.is_some_and(|q| q[side as usize][slot.min(1)]);
+                        let frac = if quick
+                            || (m.item_id == data::item_id::CUSTAPBERRY
+                                && m.current_hp * 4 <= m.stats.hp
+                                && crate::item::can_eat_berry(self, side, m.item_id))
+                        {
+                            1
+                        } else if m.item_id == data::item_id::LAGGINGTAIL
+                            || m.item_id == data::item_id::FULLINCENSE
+                            || (status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
+                        {
+                            -1
+                        } else {
+                            0
+                        };
+                        push((200, -pri, -frac, -spe), true);
+                    }
+                    Choice::Pass { .. } => {}
+                }
+            }
+        }
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        crate::order::ps_speed_sort(&mut keys[..k], &mut items[..k], |a, b| rng.speed_sort_draw(a, b));
+        self.rng = rng;
+        let mut moves = ([(0u8, 0u8); 4], 0u8);
+        for &(side, slot, is_move) in &items[..k] {
+            if is_move && (moves.1 as usize) < 4 {
+                moves.0[moves.1 as usize] = (side as u8, slot);
+                moves.1 += 1;
+            }
+        }
+        self.keyed_commit_moves = moves;
+    }
+
     /// What PS does between an executed move action and the next action
     /// (sim/battle.ts:2861-2924): `eachEvent('Update')`, then, when the next
     /// queued action is a move, the gen-8+ dynamic re-sort. Under `ps-rng`
@@ -3079,6 +3164,11 @@ self.trigger_emergency_exits();
         // force-switch (Roar/Whirlwind/Dragon Tail/Circle Throw) switches
         // are NOT intercepted (they don't run through `apply_switches`'
         // voluntary path).
+        // The keyed oracle replays PS's commitChoices sort on the pre-switch,
+        // pre-Mega state PS sorted.
+        if self.rng.is_oracle_keyed() {
+            self.keyed_commit_sort(p1_choices, p2_choices);
+        }
         let megas = self.mega_order(p1_choices, p2_choices);
         self.apply_pre_turn_switches(p1_choices, p2_choices);
 
@@ -3172,10 +3262,19 @@ self.trigger_emergency_exits();
             }
             let _ = crate::order::resort_from(self, &mut order, start, &keys, Some(&mut rng));
         }
-        // The keyed oracle: the same re-sort before the first move, with
-        // PS's recorded tie shuffle.
+        // The keyed oracle: PS's commit order, then the same re-sort before
+        // the first move, with PS's recorded tie shuffles.
         if rng.is_oracle_keyed() {
             let start = order.iter().position(|a| !matches!(a.choice, Choice::Switch { .. })).unwrap_or(order.len());
+            let (cm, cn) = self.keyed_commit_moves;
+            let tail = &mut order.as_mut_slice()[start..];
+            let mut next = 0;
+            for &(side, slot) in &cm[..cn as usize] {
+                if let Some(p) = tail[next..].iter().position(|a| a.side as u8 == side && a.actor_slot == slot) {
+                    tail[next..].swap(0, p);
+                    next += 1;
+                }
+            }
             let _ = crate::order::resort_from(self, &mut order, start, &keys, Some(&mut rng));
         }
         self.rng = rng;

@@ -810,8 +810,12 @@ pub(crate) fn action_order_keyed(
     // replaces the old injective RNG nonce) and never heap-allocates.
     moves[..n_move].sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
     // THEN break genuine ties with a PS-faithful Fisher-Yates shuffle that
-    // draws RNG only when ≥2 actions share the full sort key.
-    shuffle_tie_groups(&mut moves[..n_move], rng);
+    // draws RNG only when ≥2 actions share the full sort key. The keyed
+    // oracle instead replays PS's own commitChoices sort
+    // (`Battle::keyed_commit_sort`) and the re-sort before the first move.
+    if !rng.is_oracle_keyed() {
+        shuffle_tie_groups(&mut moves[..n_move], rng);
+    }
     record_turn_keys(battle, &moves[..n_move], keys);
     let mut out = ActionOrder::new();
     for s in &switches[..n_switch] {
