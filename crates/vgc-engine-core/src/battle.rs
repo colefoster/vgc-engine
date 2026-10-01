@@ -1831,6 +1831,16 @@ impl Battle {
             if self.imprisoned(side, move_id) {
                 continue;
             }
+            // Champions: Fake Out / First Impression are disabled once the mon
+            // has started a move action since switching in
+            // (data/mods/champions/moves.ts:352, :384 onDisableMove,
+            // `pokemon.activeMoveActions`). Encored into one, it Struggles.
+            if self.champions
+                && active.move_actions > 0
+                && matches!(move_id, data::move_id::FAKEOUT | data::move_id::FIRSTIMPRESSION)
+            {
+                continue;
+            }
             // Survived every selection filter — this is a selectable move, so
             // PS's `hasValidMove` is set and Struggle will NOT be offered. (PS
             // sets the flag at the "not disabled" point, independent of whether
@@ -37284,6 +37294,56 @@ mod tests {
         );
         assert!(b.p1.conditions.sticky_web, "sticky web bounced onto caster's side");
         assert!(!b.p2.conditions.sticky_web, "Magic Bounce holder's side stays clear");
+    }
+
+    fn fake_out_encore_battle(champions: bool) -> Battle {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":["fakeout","flareblitz","knockoff","partingshot"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"whimsicott","level":50,"ability":"innerfocus","nature":"bold","moves":["encore","moonblast","tailwind","protect"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.champions = champions;
+        b
+    }
+
+    #[test]
+    fn champions_encored_fake_out_forces_struggle() {
+        // PS data/mods/champions/moves.ts:352 fakeout onDisableMove: disabled
+        // once `pokemon.activeMoveActions` is non-zero. Encore disables every
+        // other move (data/moves.ts encore onDisableMove), so nothing is
+        // selectable and getMoveRequestData forces Struggle
+        // (sim/pokemon.ts:1109).
+        let mut b = fake_out_encore_battle(true);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].encore_turns() > 0, "Encore landed");
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(!lc.is_empty());
+        assert!(
+            lc.iter().all(|c| matches!(c, Choice::Move { move_slot: crate::choice::STRUGGLE_MOVE_SLOT, .. })),
+            "only Struggle, got {lc:?}"
+        );
+    }
+
+    #[test]
+    fn champions_fake_out_unselectable_after_first_action() {
+        // Same onDisableMove, without Encore: Fake Out drops out of the
+        // choice set, the other moves stay. Standard gen 9 keeps offering it.
+        for champions in [true, false] {
+            let mut b = fake_out_encore_battle(champions);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }],
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: None }],
+            );
+            let lc = b.legal_choices(SideRef::P1, 0);
+            let fake_out = lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 0, .. }));
+            assert_eq!(fake_out, !champions, "champions={champions}: {lc:?}");
+            assert!(lc.iter().any(|c| matches!(c, Choice::Move { move_slot: 1, .. })));
+        }
     }
 
     #[test]
