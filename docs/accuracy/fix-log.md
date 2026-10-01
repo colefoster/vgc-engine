@@ -866,3 +866,129 @@ with `ps-rng` off and on; the pyo3 tests pass (27) on the merge.
 boosts). Note the seeded walk compares draw kinds and spans, not values: a
 target given another target's roll shows up as a state divergence (as the
 spread-order fix did).
+
+---
+
+# Round 8 (2026-10-01, branch `mechanics-fixes-8`)
+
+Same 1,298 / 1,300-battle sample and PS battles as rounds 5-7; the round-7
+end reproduced exactly (forced-RNG 1125 clean, 10653/10826 turns; seeded
+974 clean, 9801/10125).
+
+Result: forced-RNG fully clean **86.7% → 88.1%** (1125 → 1144), per-turn
+**98.4% → 98.6%** (10653/10826 → 10820/10974); seeded (`ps-rng`) fully
+clean **974 → 990 (74.9% → 76.2%)**, turns 9801/10125 → 9925/10233. Against
+the round-7 end, 20 forced-RNG battles improved and none regressed; 21
+seeded battles' first divergent draw moved later and none earlier (state
+divergences: 21 later, none earlier).
+
+## Fixes
+
+| commit | change | PS reference | tests |
+|---|---|---|---|
+| `4f617d9` | Per-mon move result (`moveThisTurnResult` / `moveLastTurnResult`); Stomping Tantrum and Temper Flare double after a failed move | `sim/battle-actions.ts:262, :274, :285, :371-374, :507, :616`; `sim/battle.ts:1674`; `sim/pokemon.ts:200-230, :1545`; `data/moves.ts:18050, :19186` | 7 unit; repro `stomping-tantrum-after-a-miss`; study `5a4e6093bf` (`e7b5f18`) |
+| `77aeb9a` | Used move slots (`moveSlot.used`); Last Resort fails unless every other move was used since switch-in | `sim/pokemon.ts:892`; `sim/battle-actions.ts:139`; `data/moves.ts:10075` | 3 unit; study `b8f3217152` |
+| `8fe4aff` | Upper Hand: fails unless the target queued a damaging move with priority > 0; 100% flinch | `data/moves.ts:20196`; `sim/battle.ts` getActionSpeed | 3 unit; repro `upper-hand-flinches-extreme-speed` |
+| `30d040a` | Imprison (foes can't select or use the user's moves) | `data/moves.ts:9489` | 2 unit; study `00a2a3d4e1` |
+| `abd5160` | Minimize's volatile: x2 and sure-hit for minimize-flagged moves (Body Slam, Heat Crash, Heavy Slam, Stomp ...) | `data/moves.ts:11926` | 2 unit; study `799492fe70` |
+| `654e13b` | Thunder Wave: Ground types immune before the accuracy roll (engine paralyzed them) | `data/moves.ts:19601`; `sim/battle-actions.ts:654` | 1 unit |
+| `d9bc676` | Shed Tail | `data/moves.ts:16161`; `sim/pokemon.ts:1246` | 2 unit; study `eaedb64b2a` |
+| `658889b` | Bug Bite / Pluck eat the target's Berry | `data/moves.ts` bugbite / pluck | 2 unit; study `d2cd6086c6` |
+| `22660f4` | Charge (the move): +1 SpD and the charge volatile; a status Electric move ends it | `data/moves.ts` charge | 1 unit; study `7dd9b58cae` |
+| `4636d00` | Normal Gem | `data/items.ts:4324`; `data/conditions.ts:463` | 1 unit; study `45afe9c9b0` |
+| `bc30a19` | Beak Blast's charge burns contact attackers | `data/moves.ts:1119`; `sim/battle-queue.ts:242`; `sim/battle.ts:2739` | 2 unit; repro `beak-blast-burns-contact` |
+| `2c2086c` | `ps-rng`: the priority-charge action's `getRandomTarget` draw | `sim/battle-queue.ts:242, :266` | 1 `ps-rng` unit |
+| `b446daf` | Payback doubles against a target that already acted | `data/moves.ts:13190` | 1 unit; study `574176a1f8` |
+| `cfe66b0` | Self-heal rounding: `heal: [1, 2]` rounds; weather heals use `modify` | `sim/battle-actions.ts:1209`; `sim/battle.ts:2332` | 2 unit; study `c46a2e1300`; 3 old tests corrected |
+| `2c2ef64` | onDamagingHit abilities read the current ability (Simple Beam'd Stamina kept firing) | `data/abilities.ts` stamina et al.; `sim/battle.ts` runEvent | 1 unit; study `aedae40015` |
+
+## Decisions
+
+- **What counts as a failed move.** PS sets the move result at many sites
+  (every `return false` in the hit steps, onTry, BeforeMove). The engine
+  records it at the same boundaries: Failed by default when a move action
+  starts (BeforeMove and onTry failures: flinch, sleep, full paralysis,
+  confusion self-hit, Sucker Punch, Fake Out ...); Skipped (PS `null`) for
+  recharge, a charge turn, Future Sight, and a move whose every target was
+  protected (Protect returns `NOT_FAIL`); damaging moves succeed when any
+  target is hit. **Status moves** are the approximation: the engine's
+  status handlers don't report success, so a status move succeeds when it
+  changed any battle state (boosts, status, volatiles, HP, item, ability,
+  types, side and field conditions, pending Wish / Future Sight / switches),
+  ignoring PP, the choice lock and the stall counter. Magic-Bounced moves
+  fail, protected ones are Skipped, the Protect family reads whether the
+  user is protected, and Splash / Celebrate / Hold Hands / Haze always
+  succeed. A status move the engine doesn't implement therefore counts as
+  failed. The result persists one turn: it moves to the last-turn slot at
+  the end of each turn and clears on switch-in.
+- **Struggle under Encore (Champions).** Not changed: the Champions mod
+  disables Fake Out / First Impression after the first move action
+  (`data/mods/champions/moves.ts:352, :384`), so a mon Encored into Fake
+  Out is forced to Struggle (4 forced-RNG battles: `6d4e9037cb`,
+  `8b67530c3a`, `f75f638eca`, `acdf078ffc`). PS still runs the failing
+  Fake Out on the turn right after the Encore and only then Struggles; the
+  request-time rule behind that needs a closer look before changing
+  `legal_choices`, which would also change the solver's choice sets.
+
+## Default RNG stream changes
+
+Last Resort, Upper Hand, Imprison, Thunder Wave (rolls skipped when they
+fail); Upper Hand's flinch roll on a hit; Minimize (no accuracy roll for
+minimize-flagged moves); Shed Tail (its user leaves mid-turn); Bug Bite's
+stolen Starf Berry roll; the current-ability fix (a replaced or suppressed
+contact-chance ability no longer rolls). Commit messages say which.
+Stomping Tantrum, Charge, Normal Gem, Beak Blast, Payback and heal rounding
+add or remove no draws.
+
+## Guards
+
+- Every commit passed `cargo test --workspace --exclude vgc-engine-py` with
+  `ps-rng` off and on, run under the new resource cap (`-j 4`,
+  `RUST_TEST_THREADS=4`). At 4 test threads `vgc-solver`'s
+  `auto_lossy_off_preserves_full_lossless` fails on every run (the
+  process-global counter race noted in round 7); it passes alone and with
+  the crate single-threaded, which the test script reruns. The pyo3 tests
+  pass (27).
+- No battle diverges earlier than at the round-7 end, in either mode.
+- One scripted golden was dropped: Thunder Wave into a Ground type replays
+  clean even without the fix, because the keyed oracle answers an unmatched
+  accuracy draw with a miss; the unit test checks that no roll is made.
+
+## Still unimplemented / not fixed
+
+- Illusion (no mechanical effect in PS's simulator beyond display; the one
+  divergence is the log reconstruction).
+- Frisk (no mechanical effect); Topsy-Turvy, Memento, Fairy Lock,
+  Acupressure, Thief, Lash Out, Assurance, Water Shuriken's Ash form,
+  Flower Veil, Pickpocket, Innards Out, Gale Wings, Surge Surfer: unused or
+  never on a first-divergence turn in the sample.
+- Struggle under Encore in Champions (above).
+- Moody (8 forced-RNG battles) is RNG plumbing: the keyed oracle doesn't
+  supply Moody's stat picks.
+- Round's BP double writes the move-data copy that the damage calc doesn't
+  read (`battle.rs` Round block); Payback uses the BP override seam instead.
+  Not changed here.
+- Seeded first divergent draws (306 battles): `hitStepAccuracy` 88,
+  `getTarget` re-picks 35, `eachEvent` ties 33, `fieldEvent` ties 25,
+  resolveAction `getRandomTarget` 24, `secondaries` 21, crit 20, stall
+  rolls 12.
+
+## Trajectory
+
+| after | forced-RNG clean | turns | seeded clean | turns |
+|---|---|---|---|---|
+| round 7 end (`45fe4e2`) | 1125 (86.7%) | 10653/10826 | 974 | 9801/10125 |
+| Stomping Tantrum (`4f617d9`) | 1126 | 10655/10827 | 975 | 9803/10126 |
+| Last Resort (`77aeb9a`) | 1128 | 10688/10858 | 977 | 9821/10142 |
+| Upper Hand (`8fe4aff`) | 1131 | 10711/10878 | 978 | 9833/10153 |
+| Imprison (`30d040a`) | 1132 | 10728/10894 | 978 | 9840/10160 |
+| Minimize (`abd5160`) | 1133 | 10748/10913 | 979 | 9860/10179 |
+| Thunder Wave (`654e13b`) | 1133 | 10748/10913 | 979 | 9860/10179 |
+| Shed Tail (`d9bc676`) | 1135 | 10758/10921 | 981 | 9870/10187 |
+| Bug Bite (`658889b`) | 1136 | 10770/10932 | 982 | 9882/10198 |
+| Charge (`22660f4`) | 1137 | 10777/10938 | 983 | 9889/10204 |
+| Normal Gem (`4636d00`) | 1138 | 10785/10945 | 983 | 9892/10207 |
+| Beak Blast + `ps-rng` draw (`2c2086c`) | 1138 | 10785/10945 | 984 | 9895/10209 |
+| Payback (`b446daf`) | 1139 | 10788/10947 | 985 | 9898/10211 |
+| heal rounding (`cfe66b0`) | 1143 | 10812/10967 | 988 | 9910/10220 |
+| current ability on hit (`2c2ef64`) | **1144 (88.1%)** | **10820/10974** | **990 (76.2%)** | **9925/10233** |
