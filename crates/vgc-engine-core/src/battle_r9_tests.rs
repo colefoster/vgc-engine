@@ -115,3 +115,41 @@ fn toxic_damage_floors_the_sixteenth_before_multiplying() {
     b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(before - b.p1.team[0].current_hp, (hp / 16) * 2);
 }
+
+// ---- A gained ability's onStart runs (Skill Swap, Role Play, Trace) ----
+//
+// Pokemon.setAbility runs the new ability's Start event (sim/pokemon.ts:1943);
+// Battle.skillSwap does so for both mons (sim/battle.ts:1311).
+
+#[test]
+fn skill_swapped_psychic_surge_sets_the_terrain() {
+    // Alakazam Skill Swaps with Indeedee (terrain cleared first): the
+    // Psychic Surge it gains sets Psychic Terrain.
+    let mut b = doubles(
+        r#"[{"species":"alakazam","level":50,"ability":"innerfocus","moves":["skillswap"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"indeedee","level":50,"ability":"psychicsurge","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.terrain = crate::terrain::Terrain::None;
+    b.terrain_turns = 0;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::PSYCHICSURGE);
+    assert_eq!(b.terrain, crate::terrain::Terrain::Psychic);
+}
+
+#[test]
+fn traced_drought_sets_the_sun() {
+    // Gardevoir switches in against two Drought leads (weather cleared
+    // first) and traces Drought, whose onStart sets the sun.
+    let mut b = doubles(
+        r#"[{"species":"snorlax","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]},{"species":"gardevoir","level":50,"ability":"trace","moves":["splash"]}]"#,
+        r#"[{"species":"torkoal","level":50,"ability":"drought","moves":["splash"]},{"species":"ninetales","level":50,"ability":"drought","moves":["splash"]}]"#,
+        1,
+    );
+    b.weather = crate::weather::Weather::None;
+    b.weather_turns = 0;
+    b.sync_weather_terrain_cache();
+    b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[2].effective_ability_id(), data::ability_id::DROUGHT);
+    assert_eq!(b.weather, crate::weather::Weather::Sun);
+}

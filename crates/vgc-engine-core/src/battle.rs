@@ -15402,23 +15402,11 @@ self.trigger_emergency_exits();
                             t.ability_override = source_eff_id;
                         }
                         // PS `Battle.skillSwap` runs each gained ability's
-                        // `onStart` (source first, then target). A freshly-
-                        // acquired Intimidate fires immediately, lowering its
-                        // new foes' Atk. Gate on the EFFECTIVE ability so
-                        // Neutralizing Gas suppression is honored. Other gained
-                        // onStart abilities (weather/terrain/Download/...) are
-                        // not yet re-fired here — only Intimidate surfaced in
-                        // the breadth corpus.
-                        if self.side(actor_side).active_mon(actor_slot as usize)
-                            .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
-                        {
-                            crate::ability::fire_intimidate(self, actor_side, actor_slot);
-                        }
-                        if self.side(ts).active_mon(tslot as usize)
-                            .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
-                        {
-                            crate::ability::fire_intimidate(self, ts, tslot);
-                        }
+                        // `onStart`, source first, then target (Intimidate,
+                        // weather, terrain ...). on_start reads the EFFECTIVE
+                        // ability, so Neutralizing Gas suppression holds.
+                        crate::ability::on_start(self, actor_side, actor_slot);
+                        crate::ability::on_start(self, ts, tslot);
                     }
                 }
             }
@@ -15434,9 +15422,7 @@ self.trigger_emergency_exits();
                 // Those two PS flag-sets are the signature/form abilities; we
                 // approximate BOTH with `ability_fails_skill_swap` (same form/
                 // signature set — no common copyable ability is wrongly blocked,
-                // matching the Skill Swap simplification right above). Copying
-                // an on-switch-in ability does NOT re-fire its onStart here, the
-                // same simplification Skill Swap uses. Surfaced by the breadth
+                // matching the Skill Swap simplification right above). Surfaced by the breadth
                 // corpus (out_845fe3662f etc.: Mr. Rime Role Plays Flash Fire /
                 // Sand Veil / Volt Absorb but kept Tangled Feet).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Role_Play_(move)>.
@@ -15464,15 +15450,10 @@ self.trigger_emergency_exits();
                                 s.ability_override = target_eff_id;
                             }
                             // PS Role Play `source.setAbility(target.ability)`
-                            // runs the gained ability's `onStart` on the user —
-                            // a copied Intimidate fires immediately. Gate on the
-                            // EFFECTIVE ability (honors Neutralizing Gas). Other
-                            // onStart abilities are not yet re-fired here.
-                            if self.side(actor_side).active_mon(actor_slot as usize)
-                                .is_some_and(|m| m.effective_ability_id() == data::ability_id::INTIMIDATE)
-                            {
-                                crate::ability::fire_intimidate(self, actor_side, actor_slot);
-                            }
+                            // runs the gained ability's `onStart` on the user
+                            // (on_start reads the EFFECTIVE ability, so
+                            // Neutralizing Gas suppression holds).
+                            crate::ability::on_start(self, actor_side, actor_slot);
                         }
                     }
                 }

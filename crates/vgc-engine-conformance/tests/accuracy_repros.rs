@@ -326,3 +326,10 @@ fn toxic_floors_the_sixteenth_before_the_stage() {
 fn trace_pick_is_keyed_to_the_holder() {
     assert_matches_ps("study-43b96379ab-trace-pick");
 }
+
+/// Study battle 7e8cd717ef: a Psychic Surge gained by Skill Swap runs its
+/// onStart and sets Psychic Terrain (sim/battle.ts:1311 skillSwap).
+#[test]
+fn skill_swapped_surge_runs_its_on_start() {
+    assert_matches_ps("study-7e8cd717ef-skill-swap-surge");
+}

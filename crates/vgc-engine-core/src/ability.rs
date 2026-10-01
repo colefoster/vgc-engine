@@ -722,15 +722,10 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.ability_id = new_id;
                 }
                 // PS Trace calls `pokemon.setAbility(ability, target)`, which
-                // runs the copied ability's onStart. The local `ability_id`
-                // bound at the top of this fn is still TRACE, so the Intimidate
-                // arm at the bottom never fired for a traced Intimidate. Fire it
-                // here, matching the Skill Swap / Role Play handling. Traced
-                // weather / terrain / Download onStart is future work (see the
-                // dispatch comment below the Intimidate arm).
-                if new_id == data::ability_id::INTIMIDATE {
-                    fire_intimidate(battle, side, slot);
-                }
+                // runs the copied ability's onStart (sim/pokemon.ts:1943). The
+                // local `ability_id` is still TRACE, so run it afresh; Trace is
+                // never a candidate, so this can't recurse into Trace.
+                on_start(battle, side, slot);
             }
         }
     }
