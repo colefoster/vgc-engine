@@ -360,3 +360,19 @@ fn lum_berry_cures_confusion() {
     assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion), "Lum Berry cures confusion");
     assert_eq!(b.p2.team[0].item_id, u16::MAX, "and is eaten");
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_a_charged_move_draws_no_target_in_the_first_resort() {
+    // The re-sort before the first move runs getActionSpeed -> getTarget per
+    // queued move; the locked move's stored target is alive, so no draw.
+    let mut b = ps_doubles(
+        r#"[{"species":"archaludon","level":50,"moves":["electroshot"]},{"species":"snorlax","level":50,"moves":["calmmind"]}]"#,
+        r#"[{"species":"blissey","level":50,"moves":["calmmind"]},{"species":"chansey","level":50,"moves":["calmmind"]}]"#,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    assert_eq!(trace.iter().filter(|d| d.op == "get_target").count(), 0);
+}
