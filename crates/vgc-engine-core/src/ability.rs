@@ -1293,8 +1293,10 @@ pub fn on_damaging_hit(
     // (PS contact-status abilities like Static still paralyze the
     // attacker even if the target faints). Per-arm gates below decide
     // whether the target being alive is required.
+    // The current ability (Skill Swap / Simple Beam / Entrainment / Gastro
+    // Acid apply): PS runEvent('DamagingHit') calls pokemon.getAbility().
     let (ability_id, target_alive) = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) => (m.ability_id, m.is_alive()),
+        Some(m) => (m.effective_ability_id(), m.is_alive()),
         None => return,
     };
     // Cotton Down — PS `data/abilities.ts:715` `onDamagingHit`:

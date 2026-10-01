@@ -289,6 +289,8 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("commanded", &p.commanded)?;
         s.serialize_field("cud_chew_berry", &p.cud_chew_berry)?;
         s.serialize_field("cud_chew_counter", &p.cud_chew_counter)?;
+        s.serialize_field("move_last_turn_result", &(p.move_last_turn_result as u8))?;
+        s.serialize_field("moves_used", &p.moves_used)?;
         s.end()
     }
 }

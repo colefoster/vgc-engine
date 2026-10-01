@@ -427,6 +427,23 @@ pub enum VolatileKind {
     /// while its source is active and lowers Def / SpD at each residual.
     /// Payload: `side << 16 | slot << 8 | team index` of the source.
     Octolock,
+    /// Minimize (PS `data/moves.ts:11926` condition): moves with
+    /// `flags.minimize` deal 2x to and cannot miss the holder. Indefinite;
+    /// cleared on switch-out.
+    Minimize,
+    /// Beak Blast's charge (PS `data/moves.ts:1119` condition): a contact
+    /// hit burns the attacker. Duration 1; removed when its user moves.
+    BeakBlast,
+}
+
+/// PS moves with `flags: { minimize: 1 }` (data/moves.ts).
+pub fn hits_minimized(move_id: u16) -> bool {
+    use crate::data::move_id as M;
+    matches!(
+        move_id,
+        M::BODYSLAM | M::DRAGONRUSH | M::FLYINGPRESS | M::HEATCRASH | M::HEAVYSLAM | M::MALICIOUSMOONSAULT | M::STEAMROLLER
+            | M::STOMP | M::SUPERCELLSLAM
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -902,6 +919,35 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
+    /// move this mon used this turn. Moved to `move_last_turn_result` at
+    /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
+    #[serde(default)]
+    pub move_this_turn_result: MoveResult,
+    /// PS `moveLastTurnResult`, read by Stomping Tantrum / Temper Flare.
+    #[serde(default)]
+    pub move_last_turn_result: MoveResult,
+    /// PS `moveSlot.used` per move slot (bit `i`): set when the slot's PP
+    /// is spent (sim/pokemon.ts:892), cleared on switch-in
+    /// (sim/battle-actions.ts:139). Read by Last Resort.
+    #[serde(default)]
+    pub moves_used: u8,
+}
+
+/// PS's four-valued move result (`boolean | null | undefined`,
+/// sim/pokemon.ts:200-230).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MoveResult {
+    /// `undefined`: no move attempt finished.
+    #[default]
+    None,
+    /// `null`: skipped without counting as a failure (recharge, a charge
+    /// turn, every target protected).
+    Skipped,
+    /// `false`: the move failed (missed, immune, fully paralysed, ...).
+    Failed,
+    /// `true`: the move did something to at least one target.
+    Succeeded,
 }
 
 impl Pokemon {
@@ -1002,6 +1048,17 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            move_this_turn_result: MoveResult::None,
+            move_last_turn_result: MoveResult::None,
+            moves_used: 0,
+        }
+    }
+
+    /// PS `deductPP`: spend `n` PP from `slot` and mark the slot used.
+    pub fn spend_pp(&mut self, slot: u8, n: u8) {
+        if let Some(pp) = self.pp.get_mut(slot as usize) {
+            *pp = pp.saturating_sub(n);
+            self.moves_used |= 1 << slot;
         }
     }
 
@@ -1368,6 +1425,25 @@ impl Pokemon {
     #[inline]
     pub fn pending_switch_revives(&self) -> bool {
         self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 3)
+    }
+
+    /// Mark a Shed Tail switch (payload 4): the player picks the
+    /// replacement, which inherits only this mon's Substitute.
+    #[inline]
+    pub fn set_pending_shed_tail_switch(&mut self) {
+        self.volatiles.remove(VolatileKind::PendingSelfSwitch);
+        self.volatiles.add(Volatile {
+            kind: VolatileKind::PendingSelfSwitch,
+            turns_remaining: 0,
+            payload: 4,
+        });
+    }
+
+    /// True when the pending switch is a Shed Tail
+    /// ([`Pokemon::set_pending_shed_tail_switch`]).
+    #[inline]
+    pub fn pending_switch_sheds_tail(&self) -> bool {
+        self.volatiles.get(VolatileKind::PendingSelfSwitch).is_some_and(|v| v.payload == 4)
     }
 
     /// True when the pending switch is a Baton Pass
