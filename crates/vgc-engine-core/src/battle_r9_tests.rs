@@ -392,3 +392,30 @@ fn ps_rng_a_non_ghost_curse_draws_no_target() {
     let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
     assert_eq!(trace.iter().filter(|d| d.op == "get_target" || d.op == "random_target").count(), 0);
 }
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_tied_replacements_draw_an_insert_choice() {
+    // Two equally fast replacements: the second instaswitch's runSwitch ties
+    // the first in insertChoice (sim/battle-queue.ts), one random(0, 2).
+    let draws = |p1_bench: &str| {
+        let mut b = ps_doubles(
+            &format!(r#"[{{"species":"snorlax","level":50,"moves":["splash"]}},{{"species":"chansey","level":50,"moves":["splash"]}},{{"species":"blissey","level":50,"moves":["splash"]}},{p1_bench}]"#),
+            r#"[{"species":"blissey","level":50,"moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        );
+        b.decision_phases = true;
+        for i in 0..2 {
+            b.p1.team[i].current_hp = 0;
+            b.p1.team[i].fainted = true;
+        }
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Switch { actor_slot: 1, team_index: 3 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        trace.iter().filter(|d| d.op == "insert_choice").count()
+    };
+    assert_eq!(draws(r#"{"species":"blissey","level":50,"moves":["splash"]}"#), 1);
+    assert_eq!(draws(r#"{"species":"snorlax","level":50,"moves":["splash"]}"#), 0);
+}
