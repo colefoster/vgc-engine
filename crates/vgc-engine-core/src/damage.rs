@@ -574,6 +574,11 @@ fn effectiveness_inner(
     defender: &Pokemon,
     ignore_ghost: bool,
 ) -> TypeEff {
+    // Struggle's '???' type (data/moves.ts struggle onModifyMove) matches
+    // nothing in the chart: neutral against every type, no immunity.
+    if move_id == data::move_id::STRUGGLE {
+        return TypeEff::Neutral;
+    }
     let (def_eff_types, def_eff_num) = defender.effective_types();
     // Ring Target negates the holder's TYPE-chart immunities: a 0× entry is
     // demoted to a neutral (×1) contribution rather than zeroing the hit.
@@ -2301,7 +2306,8 @@ pub(crate) fn calculate_damage_with_bp(
     let (eff_atk_types, eff_atk_num) = attacker.effective_types();
     let eff_has_move_type = (0..eff_atk_num as usize)
         .any(|i| eff_atk_types[i] == move_type);
-    let is_stab = base_has_move_type || eff_has_move_type;
+    // Struggle is typeless (data/moves.ts struggle onModifyMove: '???').
+    let is_stab = (base_has_move_type || eff_has_move_type) && move_id != data::move_id::STRUGGLE;
     // Stellar STAB. PS sim/battle-actions.ts:1781:
     //   if (pokemon.terastallized === 'Stellar') {
     //     stab = isSTAB ? 2 : [4915, 4096];   // ×2 or ×1.2
@@ -3412,6 +3418,23 @@ mod tests {
         // base = 22 * 40 * 200 / 60 / 50 + 2 = 176000/3000 + 2 = 58 + 2 = 60.
         // × 100/100 × 1.0 STAB × 1.0 type = 60.
         assert_eq!(dmg, 60);
+    }
+
+    #[test]
+    fn struggle_is_typeless() {
+        // PS data/moves.ts struggle onModifyMove: `move.type = '???'`. No
+        // STAB for a Normal-type user and no type chart (it hits Ghosts).
+        // Study 8b67530c3a (Struggle into Sableye).
+        let ctx = DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false };
+        let struggle = move_id("struggle");
+        let mut attacker = make_mon("snorlax", 50, "adamant", StatSpread { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 0 });
+        let defender = make_mon("snorlax", 50, "hardy", StatSpread::ZERO);
+        let normal_user = calculate_damage(&attacker, &defender, struggle, ctx);
+        attacker.set_type_override(1 /* Fire */, None);
+        assert_eq!(calculate_damage(&attacker, &defender, struggle, ctx), normal_user, "no STAB");
+        let ghost = make_mon("gengar", 50, "hardy", StatSpread::ZERO);
+        assert!(!effectiveness_for_attack(&attacker, struggle, 0, &ghost).is_immune());
+        assert!(calculate_damage(&attacker, &ghost, struggle, ctx) > 0);
     }
 
     #[test]
