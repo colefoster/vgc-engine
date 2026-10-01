@@ -316,3 +316,23 @@ fn imposter_copies_the_moves_and_reverts_on_switch_out() {
     assert_eq!(d.moves[0], data::move_id::TRANSFORM);
     assert_eq!(d.effective_ability_id(), data::ability_id::IMPOSTER);
 }
+
+#[test]
+fn parental_bond_hits_twice_the_second_at_a_quarter() {
+    // PS data/abilities.ts parentalbond onPrepareHit: multihit 2 for a
+    // single-target damaging move; data/mods/champions/scripts.ts:209
+    // modifyDamage: hit 2 at x0.25. Rocky Helmet fires per hit. Studies
+    // 91790f18a3, d17595827b.
+    let mut b = singles(
+        r#"[{"species":"kangaskhan","level":50,"ability":"parentalbond","moves":["doubleedge"],"nature":"adamant","evs":{"atk":252}}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"rockyhelmet","moves":["splash"],"evs":{"hp":252}}]"#,
+        3,
+    );
+    let max = b.p1.team[0].stats.hp;
+    let foe_max = b.p2.team[0].stats.hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    let dealt = foe_max - b.p2.team[0].current_hp;
+    let helmet = 2 * (max / 6);
+    let recoil = (dealt as u32 * 33 + 50) / 100;
+    assert_eq!(b.p1.team[0].current_hp as u32, max as u32 - helmet as u32 - recoil);
+}

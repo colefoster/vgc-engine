@@ -7543,6 +7543,7 @@ self.trigger_emergency_exits();
                 champions: self.champions,
                 defender_resist_berry: fixed_damage.is_none()
                     && crate::item::type_resist_berry_fires(self, tside, tslot, move_id, berry_move_type, &defender),
+                parental_bond_hit: false,
             };
             // Fickle Beam — PS data/moves.ts:ficklebeam onBasePower:
             //   if (this.randomChance(3, 10)) return this.chainModify(2);
@@ -7757,6 +7758,31 @@ self.trigger_emergency_exits();
             }
             if darts_phase[ti] == 2 && darts_pass == [true, true] {
                 hits = 1;
+            }
+            // Parental Bond — PS data/abilities.ts parentalbond onPrepareHit:
+            // a damaging move that is not already multi-hit, not spread,
+            // not a charge / future move and not flagged noparentalbond
+            // hits twice.
+            if hits == 1
+                && dmg > 0
+                && m.multihit_min == 0
+                && !is_spread
+                && attacker.effective_ability_id() == data::ability_id::PARENTALBOND
+                && !matches!(
+                    move_id,
+                    data::move_id::DRAGONDARTS | data::move_id::ENDEAVOR | data::move_id::EXPLOSION
+                        | data::move_id::FINALGAMBIT | data::move_id::FLING | data::move_id::ICEBALL
+                        | data::move_id::ROLLOUT | data::move_id::SELFDESTRUCT
+                        | data::move_id::BOUNCE | data::move_id::DIG | data::move_id::DIVE
+                        | data::move_id::ELECTROSHOT | data::move_id::FLY | data::move_id::FREEZESHOCK
+                        | data::move_id::ICEBURN | data::move_id::METEORBEAM | data::move_id::PHANTOMFORCE
+                        | data::move_id::RAZORWIND | data::move_id::SHADOWFORCE | data::move_id::SKULLBASH
+                        | data::move_id::SKYATTACK | data::move_id::SKYDROP | data::move_id::SOLARBEAM
+                        | data::move_id::SOLARBLADE | data::move_id::DOOMDESIRE | data::move_id::FUTURESIGHT
+                        | data::move_id::BEATUP
+                )
+            {
+                hits = 2;
             }
             // Beat Up — hit count = number of ELIGIBLE party members on the
             // user's side, and each hit's BP keys off that member's SPECIES
@@ -10331,6 +10357,9 @@ self.trigger_emergency_exits();
                 let mut inp = inv.inputs;
                 inp.crit = hc;
                 inp.defender_resist_berry = false;
+                // A single-hit move only reaches a second hit through
+                // Parental Bond: x0.25 (data/mods/champions/scripts.ts:209).
+                inp.parental_bond_hit = hit_idx == 1 && data::MOVES[inv.move_id as usize].multihit_min == 0;
                 let bp_ov = if ramped {
                     Some(inv.base_power * (hit_idx + 1))
                 } else {
@@ -13196,6 +13225,7 @@ self.trigger_emergency_exits();
                     attacker_moves_last: false,
                     champions: self.champions,
                     defender_resist_berry: false,
+                    parental_bond_hit: false,
                 },
             )
         };
@@ -25558,11 +25588,11 @@ mod tests {
         let surf_id = data::MOVES.iter().position(|m| m.slug == "surf").unwrap() as u16;
         let no_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         let in_rain = calculate_damage(
             &p1[0], &p2[0], surf_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::Rain, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         assert!(in_rain > no_rain, "Surf in Rain should hit harder");
         // Should be ~1.5×; integer truncation may push it slightly under.
@@ -29725,11 +29755,11 @@ mod tests {
         let eq_id = data::MOVES.iter().position(|m| m.slug == "earthquake").unwrap() as u16;
         let single = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: false, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         let spread = calculate_damage(
             &p1_team[0], &p2_team[0], eq_id,
-            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false },
+            DamageContext { crit: false, roll: 15, is_spread: true, weather: crate::weather::Weather::None, defender_has_reflect: false, defender_has_light_screen: false, defender_has_aurora_veil: false, is_doubles: false, terrain: crate::terrain::Terrain::None, fairy_aura_active: false, dark_aura_active: false, aura_break_active: false, attacker_total_fainted_allies: 0, attacker_stats: None, defender_stats: None, pursuit_doubled: false, ally_power_spot: false, ally_battery: false, steely_spirit_holders: 0, defender_friend_guarded: false, attacker_moves_last: false, champions: false, defender_resist_berry: false, parental_bond_hit: false },
         );
         // spread should be ~0.75× single (truncation-modulo).
         assert!(spread < single);
