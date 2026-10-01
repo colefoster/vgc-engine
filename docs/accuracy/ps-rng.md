@@ -115,7 +115,11 @@ separate from the `ps-rng` emulation above, and never run in a SplitMix or
 
 ## What is not emulated, and why
 
-After round 9 the seeded differential has 1,123 of 1,300 battles fully
+After round 10 the seeded differential has 1,164 of 1,300 battles fully
+clean (89.5%) and 11023/11157 turns matched; of the 136 that diverge, 131
+diverge first on a draw (see [`fix-log.md`](fix-log.md), round 10).
+
+After round 9 the seeded differential had 1,123 of 1,300 battles fully
 clean (86.4%) and 10725/10900 turns matched. Of the 175 that diverge, 151
 diverge first on a draw: random targets PS draws that the engine doesn't
 or vice versa (about 45, mostly drag-in, residual-Update and nested
