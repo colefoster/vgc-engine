@@ -987,66 +987,14 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
 /// from `Battle::resolve_end_of_turn` after item residuals, status DOT,
 /// and weather damage — the relative order matches PS (item order ≈ 5,
 /// status ≈ 9, speedboost = 28).
-pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
-    // Dispatch on the EFFECTIVE ability so residual hooks (Speed Boost, Shed
-    // Skin, Moody, Cud Chew, …) follow Skill Swap / Trace / Gastro Acid: a mon
-    // that swapped Speed Boost away must not still gain +1 Spe at end of turn,
-    // and a Gastro-Acid'd residual ability is suppressed. effective_ability_id()
-    // returns the override (or u16::MAX when suppressed), else the base id.
-    let (ability_id, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => (m.effective_ability_id(), m.switched_in_this_turn()),
+/// Status-curing ability residuals — PS onResidualOrder 5 (Healer
+/// subOrder 3, Hydration / Shed Skin subOrder 4): after Grassy Terrain's
+/// heal, before Leftovers and the status damage (brn / psn order 10).
+pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
+    let ability_id = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => m.effective_ability_id(),
         _ => return,
     };
-
-    // Cud Chew (Farigiraf signature) — PS `data/abilities.ts:732`:
-    //   onResidualOrder: 28, onResidualSubOrder: 2,
-    //   onResidual(pokemon) {
-    //     if (!effectState.berry || !pokemon.hp) return;
-    //     if (--effectState.counter <= 0) {
-    //       const item = effectState.berry;
-    //       this.singleEvent('Eat', item, ...); this.runEvent('EatItem', ...);
-    //       delete effectState.berry; delete effectState.counter;
-    //     }
-    //   }
-    // A Berry eaten by the holder is re-eaten ONE more time at the end of
-    // the turn AFTER the one it was eaten on. The counter is set to 2 on
-    // eat (item.rs); here we decrement each end-of-turn and re-apply the
-    // Berry's onEat effect when it reaches 0. The re-eat ignores the HP
-    // gate (PS calls the Berry's `onEat` directly), and the item itself is
-    // already gone. Bulbapedia:
-    // <https://bulbapedia.bulbagarden.net/wiki/Cud_Chew_(Ability)>.
-    if ability_id == data::ability_id::CUDCHEW {
-        let pending = battle
-            .side(side)
-            .active_mon(slot as usize)
-            .map(|m| (m.cud_chew_berry, m.cud_chew_counter));
-        if let Some((berry, counter)) = pending {
-            if berry != u16::MAX && counter > 0 {
-                let next = counter - 1;
-                if next == 0 {
-                    crate::item::cud_chew_reeat(battle, side, slot, berry, rng);
-                    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                        m.cud_chew_berry = u16::MAX;
-                        m.cud_chew_counter = 0;
-                    }
-                } else if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                    m.cud_chew_counter = next;
-                }
-            }
-        }
-    }
-
-    // Slow Start counter — decrement at end of turn while > 0.
-    // PS keeps a turn counter on the slowstart volatile; we mirror
-    // the same lifetime here.
-    if ability_id == data::ability_id::SLOWSTART {
-        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-            if m.slow_start_active_turns > 0 {
-                m.slow_start_active_turns -= 1;
-            }
-        }
-    }
-
     // Shed Skin — PS `data/abilities.ts:shedskin`:
     //   onResidualOrder: 5, onResidualSubOrder: 4,
     //   onResidual(pokemon) {
@@ -1123,6 +1071,68 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 }
                 // PR-EOT3: Healer may have cleared a DOT on the ally slot.
                 battle.sync_status_dot_bit(side, s);
+            }
+        }
+    }
+
+}
+
+pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate::rng::Rng) {
+    // Dispatch on the EFFECTIVE ability so residual hooks (Speed Boost, Shed
+    // Skin, Moody, Cud Chew, …) follow Skill Swap / Trace / Gastro Acid: a mon
+    // that swapped Speed Boost away must not still gain +1 Spe at end of turn,
+    // and a Gastro-Acid'd residual ability is suppressed. effective_ability_id()
+    // returns the override (or u16::MAX when suppressed), else the base id.
+    let (ability_id, switched_in_this_turn) = match battle.side(side).active_mon(slot as usize) {
+        Some(m) if m.is_alive() => (m.effective_ability_id(), m.switched_in_this_turn()),
+        _ => return,
+    };
+
+    // Cud Chew (Farigiraf signature) — PS `data/abilities.ts:732`:
+    //   onResidualOrder: 28, onResidualSubOrder: 2,
+    //   onResidual(pokemon) {
+    //     if (!effectState.berry || !pokemon.hp) return;
+    //     if (--effectState.counter <= 0) {
+    //       const item = effectState.berry;
+    //       this.singleEvent('Eat', item, ...); this.runEvent('EatItem', ...);
+    //       delete effectState.berry; delete effectState.counter;
+    //     }
+    //   }
+    // A Berry eaten by the holder is re-eaten ONE more time at the end of
+    // the turn AFTER the one it was eaten on. The counter is set to 2 on
+    // eat (item.rs); here we decrement each end-of-turn and re-apply the
+    // Berry's onEat effect when it reaches 0. The re-eat ignores the HP
+    // gate (PS calls the Berry's `onEat` directly), and the item itself is
+    // already gone. Bulbapedia:
+    // <https://bulbapedia.bulbagarden.net/wiki/Cud_Chew_(Ability)>.
+    if ability_id == data::ability_id::CUDCHEW {
+        let pending = battle
+            .side(side)
+            .active_mon(slot as usize)
+            .map(|m| (m.cud_chew_berry, m.cud_chew_counter));
+        if let Some((berry, counter)) = pending {
+            if berry != u16::MAX && counter > 0 {
+                let next = counter - 1;
+                if next == 0 {
+                    crate::item::cud_chew_reeat(battle, side, slot, berry, rng);
+                    if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                        m.cud_chew_berry = u16::MAX;
+                        m.cud_chew_counter = 0;
+                    }
+                } else if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                    m.cud_chew_counter = next;
+                }
+            }
+        }
+    }
+
+    // Slow Start counter — decrement at end of turn while > 0.
+    // PS keeps a turn counter on the slowstart volatile; we mirror
+    // the same lifetime here.
+    if ability_id == data::ability_id::SLOWSTART {
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            if m.slow_start_active_turns > 0 {
+                m.slow_start_active_turns -= 1;
             }
         }
     }

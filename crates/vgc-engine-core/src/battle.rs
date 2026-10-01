@@ -13327,6 +13327,7 @@ self.trigger_emergency_exits();
         self.eot_future_sight_delivery();
         self.eot_wish();
         self.eot_grassy_terrain_heal();
+        self.eot_cure_abilities();
         self.eot_item_residual();
         self.eot_leech_seed();
         self.eot_status_dot();
@@ -14260,6 +14261,19 @@ self.trigger_emergency_exits();
     /// pre-F3 inline version; the section's own PS-citation comments
     /// remain at the top of the body. No RNG draws are added or
     /// removed; behavior is byte-identical.
+    /// Healer / Hydration / Shed Skin (PS onResidualOrder 5), ahead of
+    /// Leftovers and the status damage.
+    fn eot_cure_abilities(&mut self) {
+        let n = self.format().active_count() as u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+                crate::ability::on_residual_cures(self, side, slot, &mut rng);
+                self.rng = rng;
+            }
+        }
+    }
+
     fn eot_ability_residual(&mut self) {
         // 28. Ability residuals (Speed Boost etc.). PS onResidualOrder
         // for speedboost is 28 — last among the residual phases.

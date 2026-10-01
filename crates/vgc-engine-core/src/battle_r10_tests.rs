@@ -367,3 +367,29 @@ fn harvest_restores_a_berry_in_sun() {
     b.step(&[mv(0, 0, None)], &[mv(0, 0, None)]);
     assert_eq!(b.p1.team[0].item_id, data::item_id::SITRUSBERRY, "berry regrown");
 }
+
+#[test]
+fn healer_cures_before_burn_damage() {
+    // PS healer onResidualOrder 5 (data/abilities.ts:1817) runs before
+    // brn's residual (order 10), so a cured ally takes no burn chip that
+    // turn. Same order for Shed Skin / Hydration. Study 0ecfd594d5.
+    let mut cured = 0;
+    for seed in 0..40 {
+        let mut b = doubles(
+            r#"[{"species":"aromatisse","level":50,"ability":"healer","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#,
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+                {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#,
+            seed,
+        );
+        b.p1.team[1].status = Status::Burn;
+        b.sync_status_dot_bit(SideRef::P1, 1);
+        let hp = b.p1.team[1].current_hp;
+        b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+        if matches!(b.p1.team[1].status, Status::None) {
+            cured += 1;
+            assert_eq!(b.p1.team[1].current_hp, hp, "seed {seed}: cured before the chip");
+        }
+    }
+    assert!(cured > 0);
+}
