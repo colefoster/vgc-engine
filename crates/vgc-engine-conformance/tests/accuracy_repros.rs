@@ -202,3 +202,11 @@ fn stomping_tantrum_doubles_after_a_flinch() {
 fn last_resort_fails_before_the_other_moves_are_used() {
     assert_matches_ps("study-b8f3217152-last-resort-fails");
 }
+
+/// Sneasler's Upper Hand hits Dragonite, which queued Extreme Speed (+2),
+/// and flinches it; next turn Dragonite queues Dragon Claw (priority 0) and
+/// Upper Hand fails (data/moves.ts:20196).
+#[test]
+fn upper_hand_needs_a_queued_priority_attack() {
+    assert_matches_ps("upper-hand-flinches-extreme-speed");
+}
