@@ -336,3 +336,17 @@ fn parental_bond_hits_twice_the_second_at_a_quarter() {
     let recoil = (dealt as u32 * 33 + 50) / 100;
     assert_eq!(b.p1.team[0].current_hp as u32, max as u32 - helmet as u32 - recoil);
 }
+
+#[test]
+fn shield_dust_blocks_fake_out_flinch() {
+    // PS data/abilities.ts shielddust onModifySecondaries keeps only self
+    // secondaries; Fake Out's flinch is a target secondary. Study
+    // e33011c991 (Vivillon still uses Sleep Powder).
+    let mut b = singles(
+        r#"[{"species":"vivillon","level":50,"ability":"shielddust","moves":["sleeppowder"]}]"#,
+        r#"[{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["fakeout"]}]"#,
+        3,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    assert!(matches!(b.p2.team[0].status, Status::Sleep));
+}
