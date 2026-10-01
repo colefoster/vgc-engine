@@ -192,6 +192,28 @@ fn turn_choices(main: &[String], mid: &[String], side: SideRef) -> Result<Vec<Ch
     Ok(out)
 }
 
+/// PS sends a Struggle-only request as `move 1` (sim/pokemon.ts:1109
+/// getMoveRequestData). When the engine also offers that slot nothing but
+/// Struggle, the move choice means Struggle.
+fn struggle_choices(b: &Battle, side: SideRef, choices: &mut [Choice]) {
+    const STRUGGLE: u8 = 4; // vgc-engine-core `choice::STRUGGLE_MOVE_SLOT` (private module)
+    for c in choices.iter_mut() {
+        let Choice::Move { actor_slot, move_slot, .. } = *c else { continue };
+        if move_slot == STRUGGLE {
+            continue;
+        }
+        let legal = b.legal_choices(side, actor_slot);
+        let mut moves = legal.iter().filter_map(|l| match l {
+            Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => Some(*move_slot),
+            _ => None,
+        });
+        let first = moves.next();
+        if first == Some(STRUGGLE) && moves.all(|m| m == STRUGGLE) {
+            *c = Choice::Move { actor_slot, move_slot: STRUGGLE, target: None };
+        }
+    }
+}
+
 fn species_slug(b: &Battle, side: SideRef, slot: usize) -> Option<&'static str> {
     b.side(side).active_mon(slot).map(|m| data::SPECIES[m.species_id as usize].slug)
 }
@@ -337,8 +359,10 @@ fn drive(
     let res = (|| {
         for t in &acc.turns {
             before_step(&mut b, t.base.turn);
-            let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
-            let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;
+            let mut p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1)?;
+            let mut p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2)?;
+            struggle_choices(&b, SideRef::P1, &mut p1c);
+            struggle_choices(&b, SideRef::P2, &mut p2c);
             let mut r = b.step(&p1c, &p2c);
             // Only when the engine itself is waiting for replacements: if its
             // state already diverged (nobody fainted), stepping PS's
@@ -1017,12 +1041,14 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
     for t in &acc.turns {
         let p1c = turn_choices(&t.base.choices.p1, &t.midturn.p1, SideRef::P1);
         let p2c = turn_choices(&t.base.choices.p2, &t.midturn.p2, SideRef::P2);
-        let (Ok(p1c), Ok(p2c)) = (p1c, p2c) else {
+        let (Ok(mut p1c), Ok(mut p2c)) = (p1c, p2c) else {
             let _ = writeln!(out, "turn {}: choice parse error", t.base.turn);
             break;
         };
         let _ = writeln!(out, "== turn {}  p1 {:?} mid {:?} rep {:?} | p2 {:?} mid {:?} rep {:?}", t.base.turn,
             t.base.choices.p1, t.midturn.p1, t.replace.p1, t.base.choices.p2, t.midturn.p2, t.replace.p2);
+        struggle_choices(&b, SideRef::P1, &mut p1c);
+        struggle_choices(&b, SideRef::P2, &mut p2c);
         let mut r = b.step(&p1c, &p2c);
         if !matches!(r, StepResult::Ended { .. }) && (!t.replace.p1.is_empty() || !t.replace.p2.is_empty()) && b.needs_replacements() {
             let rp1 = turn_choices(&t.replace.p1, &[], SideRef::P1).unwrap_or_default();

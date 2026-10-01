@@ -7,7 +7,7 @@
 # Needs a release build of the `accuracy` binary (see README.md).
 set -euo pipefail
 D=$1; ID=$2; T=${3:-}
-BIN=$(dirname "$0")/../../target/release/accuracy
+BIN=${ACC_BIN:-$(dirname "$0")/../../target/release/accuracy}
 F=$D/out_$ID.json
 if [ -z "$T" ]; then
   T=$("$BIN" keyed "$F" --jsonl /dev/stdout 2>/dev/null | python3 -c "import json,sys
