@@ -41,3 +41,29 @@ fn ps_rng_a_charged_move_resolves_at_its_stored_target_without_a_draw() {
     let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
     assert_eq!(trace.iter().filter(|d| d.op == "random_target").count(), 0);
 }
+
+fn doubles(p1: &str, p2: &str, seed: u64) -> Battle {
+    Battle::new(
+        BattleConfig { format: Format::Doubles, seed },
+        TeamBuilder::from_json(p1).unwrap(),
+        TeamBuilder::from_json(p2).unwrap(),
+    )
+}
+
+// ---- Battle start: the leads' SwitchIn handlers run in Speed order ----
+//
+// sim/battle-actions.ts:172-184 runSwitch batches every pending switch-in
+// and runs their SwitchIn handlers through a speed-sorted fieldEvent, so the
+// slowest Surge / weather setter goes last and its field effect stays.
+
+#[test]
+fn battle_start_surges_resolve_fastest_first_so_the_slowest_wins() {
+    // P1 Pincurchin (Electric Surge, base 15 Spe) is far slower than P2
+    // Rillaboom (Grassy Surge, base 85): Grassy goes up first, then Electric.
+    let b = doubles(
+        r#"[{"species":"pincurchin","level":50,"ability":"electricsurge","moves":["protect"]},{"species":"snorlax","level":50,"moves":["protect"]}]"#,
+        r#"[{"species":"rillaboom","level":50,"ability":"grassysurge","moves":["protect"]},{"species":"chansey","level":50,"moves":["protect"]}]"#,
+        1,
+    );
+    assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+}

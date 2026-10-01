@@ -289,3 +289,11 @@ fn a_replaced_stamina_does_not_trigger() {
 fn moody_picks_are_keyed_to_the_holder() {
     assert_matches_ps("study-e57f4e89e3-moody");
 }
+
+/// Study battle 047cc41478: the leads' Drizzle and Sand Stream fire in Speed
+/// order at battle start (runSwitch's speed-sorted SwitchIn), so the slower
+/// setter's weather is the one on the field.
+#[test]
+fn lead_weather_setters_fire_in_speed_order() {
+    assert_matches_ps("study-047cc41478-lead-weather-speed-order");
+}
