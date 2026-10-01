@@ -31,6 +31,20 @@ fn proc_chance(
     rng.ability_chance(battle.turn() + 1, holder_ref(holder), ability, num, den)
 }
 
+/// Trace's `sample(possibleTargets)` (PS data/abilities.ts:5143), keyed by
+/// holder and ability so the keyed oracle can hand it PS's pick.
+fn trace_pick(battle: &mut Battle, side: SideRef, slot: u8, n: usize) -> usize {
+    let turn = battle.turn() + 1;
+    battle.rng_mut().ability_random(turn, holder_ref((side, slot)), data::ability_id::TRACE, n as u32) as usize
+}
+
+/// The mon's current ability, suppression aside (PS `pokemon.ability`): a
+/// mid-battle setAbility lives in `ability_override` and is dropped on
+/// switch-out, restoring the base (sim/pokemon.ts clearVolatile).
+fn current_ability(m: &crate::pokemon::Pokemon) -> u16 {
+    if m.ability_override != u16::MAX { m.ability_override } else { m.ability_id }
+}
+
 fn holder_ref((side, slot): (SideRef, u8)) -> crate::rng::SlotRef {
     (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot
 }
@@ -167,7 +181,7 @@ pub(crate) fn react_to_opposing_stat_drop(
     target_slot: u8,
 ) {
     let ability_id = match battle.side(target_side).active_mon(target_slot as usize) {
-        Some(m) if m.is_alive() => m.ability_id,
+        Some(m) if m.is_alive() => m.effective_ability_id(),
         _ => return,
     };
     let stat_index: usize = match ability_id {
@@ -405,7 +419,7 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
     let n = battle.format().active_count() as u8;
     for s in 0..n {
         let target_ability = match battle.side(opp).active_mon(s as usize) {
-            Some(m) if m.is_alive() => m.ability_id,
+            Some(m) if m.is_alive() => m.effective_ability_id(),
             _ => continue,
         };
         // Adrenaline Orb — PS `data/items.ts:adrenalineorb` fires on
@@ -678,7 +692,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             let mut n_cands = 0usize;
             for s in 0..n {
                 let candidate = match battle.side(opp).active_mon(s as usize) {
-                    Some(m) if m.is_alive() => m.ability_id,
+                    Some(m) if m.is_alive() => current_ability(m),
                     _ => continue,
                 };
                 if candidate == u16::MAX || candidate == data::ability_id::TRACE { continue; }
@@ -703,27 +717,22 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     let pick = if battle.rng_mut().is_ps() {
                         battle.rng_mut().ps_random_range("sample", 0, n_cands as u32) as usize
                     } else {
-                        battle.rng_mut().range(n_cands as u32) as usize
+                        trace_pick(battle, side, slot, n_cands)
                     };
                     #[cfg(not(feature = "ps-rng"))]
-                    let pick = battle.rng_mut().range(n_cands as u32) as usize;
+                    let pick = trace_pick(battle, side, slot, n_cands);
                     Some(cands[pick.min(n_cands - 1)])
                 }
             };
             if let Some(new_id) = found {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
-                    m.ability_id = new_id;
+                    m.ability_override = new_id;
                 }
                 // PS Trace calls `pokemon.setAbility(ability, target)`, which
-                // runs the copied ability's onStart. The local `ability_id`
-                // bound at the top of this fn is still TRACE, so the Intimidate
-                // arm at the bottom never fired for a traced Intimidate. Fire it
-                // here, matching the Skill Swap / Role Play handling. Traced
-                // weather / terrain / Download onStart is future work (see the
-                // dispatch comment below the Intimidate arm).
-                if new_id == data::ability_id::INTIMIDATE {
-                    fire_intimidate(battle, side, slot);
-                }
+                // runs the copied ability's onStart (sim/pokemon.ts:1943). The
+                // local `ability_id` is still TRACE, so run it afresh; Trace is
+                // never a candidate, so this can't recurse into Trace.
+                on_start(battle, side, slot);
             }
         }
     }
@@ -907,7 +916,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
 /// <https://bulbapedia.bulbagarden.net/wiki/Regenerator_(Ability)>.
 pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
     let ability_id = match battle.side(side).active_mon(slot as usize) {
-        Some(m) if m.is_alive() => m.ability_id,
+        Some(m) if m.is_alive() => m.effective_ability_id(),
         _ => return,
     };
     if ability_id == data::ability_id::REGENERATOR {
@@ -1153,7 +1162,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // == `arr[this.random(arr.length)]`, one PRNG draw per sample. We
     // mirror the exact draw order: pick the +2 stat first (consuming
     // one `range`), then the -1 stat from the remainder (one more
-    // `range`). Both boosts are applied together via the apply_boosts
+    // `range`). The picks go through `ability_random` so the keyed oracle
+    // matches them to PS's ability-handler draws (holder + ability). Both
+    // boosts are applied together via the apply_boosts
     // choke point. Octillery / Bidoof / Glalie line.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Moody_(Ability)>.
     if ability_id == data::ability_id::MOODY {
@@ -1171,7 +1182,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             }
         }
         let chosen_plus = if plus_n > 0 {
-            Some(plus[rng.range(plus_n as u32) as usize])
+            Some(plus[rng.ability_random(battle.turn() + 1, holder_ref((side, slot)), ability_id, plus_n as u32) as usize])
         } else {
             None
         };
@@ -1186,7 +1197,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             }
         }
         let chosen_minus = if minus_n > 0 {
-            Some(minus[rng.range(minus_n as u32) as usize])
+            Some(minus[rng.ability_random(battle.turn() + 1, holder_ref((side, slot)), ability_id, minus_n as u32) as usize])
         } else {
             None
         };
@@ -1946,7 +1957,7 @@ pub fn on_damaging_hit(
             let attacker_curr_id = battle
                 .side(attacker_side)
                 .active_mon(attacker_slot as usize)
-                .map(|a| a.ability_id)
+                .map(current_ability)
                 .unwrap_or(u16::MAX);
             let attacker_alive = battle
                 .side(attacker_side)
@@ -1967,7 +1978,7 @@ pub fn on_damaging_hit(
                     .side_mut(attacker_side)
                     .active_mon_mut(attacker_slot as usize)
                 {
-                    a.ability_id = rep;
+                    a.ability_override = rep;
                 }
             }
         }
@@ -1987,7 +1998,7 @@ pub fn on_damaging_hit(
     let attacker_ability_id = battle
         .side(attacker_side)
         .active_mon(attacker_slot as usize)
-        .map(|a| a.ability_id)
+        .map(|a| a.effective_ability_id())
         .unwrap_or(u16::MAX);
     // PS (a5df8274) returns before the roll when the target has Shield Dust
     // or Covert Cloak, and rolls even when the hit knocked the target out
@@ -2098,12 +2109,12 @@ pub fn on_damaging_hit(
         let attacker_id = battle
             .side(attacker_side)
             .active_mon(attacker_slot as usize)
-            .map(|a| a.ability_id)
+            .map(current_ability)
             .unwrap_or(u16::MAX);
         let target_id = battle
             .side(target_side)
             .active_mon(target_slot as usize)
-            .map(|m| m.ability_id)
+            .map(current_ability)
             .unwrap_or(u16::MAX);
         // Ability Shield on either side cancels the swap — PS gates the
         // swap on both `onSetAbility` (attacker) and `onCopyAbility`
@@ -2127,13 +2138,13 @@ pub fn on_damaging_hit(
                 .side_mut(attacker_side)
                 .active_mon_mut(attacker_slot as usize)
             {
-                a.ability_id = target_id;
+                a.ability_override = target_id;
             }
             if let Some(t) = battle
                 .side_mut(target_side)
                 .active_mon_mut(target_slot as usize)
             {
-                t.ability_id = attacker_id;
+                t.ability_override = attacker_id;
             }
         }
     }

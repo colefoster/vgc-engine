@@ -599,8 +599,9 @@ pub(crate) fn resort_remaining(
     resort_from(battle, order, after + 1, keys, ps)
 }
 
-/// [`resort_remaining`] from index `start`. With a PS rng it sorts with
-/// PS's own speedSort, shuffling tie groups as PS does.
+/// [`resort_remaining`] from index `start`. With an rng (PS or the keyed
+/// oracle) it sorts with PS's own speedSort, shuffling tie groups as PS
+/// does.
 pub(crate) fn resort_from(
     battle: &Battle,
     order: &mut ActionOrder,
@@ -634,9 +635,8 @@ pub(crate) fn resort_from(
         let speed_key = if trick_room { speed } else { -speed };
         out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
     }
-    #[cfg(feature = "ps-rng")]
     if let Some(rng) = ps {
-        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.ps_random_range("shuffle", a, b));
+        ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.speed_sort_draw(a, b));
         return n;
     }
     // Stable insertion sort (n <= 8, heap-free): ties keep queue order.
@@ -656,7 +656,6 @@ pub(crate) fn resort_from(
 /// shuffles the run with `random(i, end)` (sim/prng.ts shuffle). `keys`
 /// ascending = earlier. The swaps can reorder later tie groups before
 /// their own shuffle, so a stable sort would not reproduce PS's order.
-#[cfg(feature = "ps-rng")]
 pub(crate) fn ps_speed_sort<K: Ord + Copy, T: Copy>(keys: &mut [K], items: &mut [T], mut draw: impl FnMut(u32, u32) -> u32) {
     let n = keys.len().min(items.len());
     let mut sorted = 0;
@@ -811,8 +810,12 @@ pub(crate) fn action_order_keyed(
     // replaces the old injective RNG nonce) and never heap-allocates.
     moves[..n_move].sort_unstable_by_key(|t| (t.0, t.1, t.2, t.3));
     // THEN break genuine ties with a PS-faithful Fisher-Yates shuffle that
-    // draws RNG only when ≥2 actions share the full sort key.
-    shuffle_tie_groups(&mut moves[..n_move], rng);
+    // draws RNG only when ≥2 actions share the full sort key. The keyed
+    // oracle instead replays PS's own commitChoices sort
+    // (`Battle::keyed_commit_sort`) and the re-sort before the first move.
+    if !rng.is_oracle_keyed() {
+        shuffle_tie_groups(&mut moves[..n_move], rng);
+    }
     record_turn_keys(battle, &moves[..n_move], keys);
     let mut out = ActionOrder::new();
     for s in &switches[..n_switch] {

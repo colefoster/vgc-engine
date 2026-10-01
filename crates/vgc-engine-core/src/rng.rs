@@ -570,6 +570,24 @@ impl Rng {
         crate::ps_rng::PsRng::from_seed_str(seed).map(Self::Ps)
     }
 
+    /// True for the keyed-oracle variant (the conformance harness).
+    #[inline(always)]
+    pub fn is_oracle_keyed(&self) -> bool {
+        matches!(self, Rng::OracleKeyed(_))
+    }
+
+    /// One Fisher-Yates step of PS `speedSort`'s tie shuffle: `random(a, b)`
+    /// (sim/prng.ts shuffle). Under `ps-rng` it is PS's own draw; the keyed
+    /// oracle hands back PS's recorded offset (`Tiebreak(j - a)`).
+    pub fn speed_sort_draw(&mut self, a: u32, b: u32) -> u32 {
+        #[cfg(feature = "ps-rng")]
+        if self.is_ps() {
+            return self.ps_random_range("shuffle", a, b);
+        }
+        let span = b.saturating_sub(a).max(1) as u64;
+        a + (self.tiebreak_shuffle() % span) as u32
+    }
+
     /// True for the Showdown-compatible variant. Always false without the
     /// `ps-rng` feature, so gated call sites compile away.
     #[inline(always)]
