@@ -11514,8 +11514,8 @@ self.trigger_emergency_exits();
             }
         }
 
-        // Struggle recoil — PS `sim/battle-actions.ts:992` `struggleRecoil`:
-        //   recoilDamage = clampIntRange(trunc(pokemon.maxhp / 4), 1)
+        // Struggle recoil — PS `sim/battle-actions.ts:1381` `struggleRecoil`:
+        //   recoilDamage = clampIntRange(Math.round(pokemon.baseMaxhp / 4), 1)
         //   this.battle.directDamage(recoilDamage, pokemon, pokemon, 'strugglerecoil')
         // The user loses 1/4 of its MAX HP (not damage-dealt). The @pkmn/dex
         // dump strips the `struggleRecoil` flag, so Struggle's `recoil_num` is
@@ -11525,7 +11525,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
         if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                let recoil = (a.stats.hp / 4).max(1);
+                let recoil = ((a.stats.hp + 2) / 4).max(1);
                 a.current_hp = a.current_hp.saturating_sub(recoil);
                 if a.current_hp == 0 {
                     a.fainted = true;
@@ -37408,12 +37408,36 @@ mod tests {
             b.p2.team[0].current_hp < foe_hp_before,
             "Struggle dealt damage to the foe",
         );
-        let expected_recoil = (user_maxhp / 4).max(1);
+        let expected_recoil = ((user_maxhp + 2) / 4).max(1);
         assert_eq!(
             b.p1.team[0].current_hp,
             user_maxhp - expected_recoil,
             "Struggle recoil is 1/4 of the user's max HP",
         );
+    }
+
+    #[test]
+    fn struggle_recoil_rounds_quarter_max_hp() {
+        // PS sim/battle-actions.ts:1381 applyRecoilDamage:
+        // clampIntRange(Math.round(baseMaxhp / 4), 1): 202 HP -> 51 (50.5).
+        // Study 6d4e9037cb (Incineroar, 202 HP, 202 -> 151).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"careful","moves":["fakeout","flareblitz","knockoff","partingshot"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["amnesia","bodyslam","crunch","rest"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].stats.hp = 202;
+        b.p1.team[0].current_hp = 202;
+        for pp in b.p1.team[0].pp.iter_mut() {
+            *pp = 0;
+        }
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: crate::choice::STRUGGLE_MOVE_SLOT, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+        );
+        assert_eq!(b.p1.team[0].current_hp, 151);
     }
 
     #[test]
