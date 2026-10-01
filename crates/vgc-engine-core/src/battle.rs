@@ -5591,8 +5591,14 @@ self.trigger_emergency_exits();
         //    path below dominates ~6× at the bench's random-picker mix;
         //    outlining keeps the icache compact. Byte-identical behavior.
         if m.category == 2 {
+            // A single-target status move resolves its target like an attack:
+            // getTarget's retarget, or a fainted ally kept as the target (the
+            // move then fails), then RedirectTarget.
+            let Some(target) = self.status_move_final_target(actor_side, actor_slot, move_id, &attacker, m, target) else {
+                return;
+            };
             let before = self.status_effect_snapshot();
-            let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m).is_some();
+            let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m, target).is_some();
             self.resolve_status_move_branch(
                 actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
             );
@@ -8056,7 +8062,7 @@ self.trigger_emergency_exits();
         }
         // Magic Bounce — PS data/abilities.ts:2392 magicbounce.
         if m.is_reflectable {
-            if let Some((b_side, b_slot)) = self.find_magic_bounce_target(actor_side, m) {
+            if let Some((b_side, b_slot)) = self.find_magic_bounce_target(actor_side, m, target) {
                 self.resolve_status_move_inner(
                     b_side,
                     b_slot,
@@ -10229,6 +10235,36 @@ self.trigger_emergency_exits();
     /// reads the new forme's stats — see the Stance Change arm below.
     ///
     /// Deterministic — no RNG draws.
+    /// A single-target status move's target after PS runMove's getTarget
+    /// (sim/battle.ts:2437-2487) and useMoveInner's RedirectTarget: a fainted
+    /// chosen foe is replaced, a fainted chosen ally stays the target (the
+    /// move fails: `None`), Follow Me / Rage Powder / Lightning Rod redirect.
+    /// Other target types pass through unchanged.
+    fn status_move_final_target(
+        &self,
+        actor_side: SideRef,
+        actor_slot: u8,
+        move_id: u16,
+        attacker: &Pokemon,
+        m: &data::MoveDef,
+        target: Option<Target>,
+    ) -> Option<Option<Target>> {
+        if !matches!(m.target, 0 | 4 | 10) || self.format().active_count() < 2 {
+            return Some(target);
+        }
+        if let Some(t) = target {
+            if t.side == actor_side && t.slot != actor_slot {
+                let alive = self.side(t.side).active_mon(t.slot as usize).is_some_and(|a| a.is_alive());
+                return alive.then_some(Some(t));
+            }
+        }
+        Some(
+            self.final_single_target(actor_side, actor_slot, move_id, attacker, m, target)
+                .map(|(side, slot)| Target { side, slot })
+                .or(target),
+        )
+    }
+
     /// The foe a single-target move will actually hit: PS runMove's getTarget
     /// retargets a move aimed at a fainted foe (sim/battle.ts:2437), and
     /// useMoveInner applies redirection (Follow Me, Rage Powder, Lightning
@@ -11753,6 +11789,7 @@ self.trigger_emergency_exits();
         &self,
         actor_side: SideRef,
         m: &data::MoveDef,
+        target: Option<Target>,
     ) -> Option<(SideRef, u8)> {
         let opp = actor_side.opposing();
         let eligible = |slot: u8| -> bool {
@@ -11765,7 +11802,11 @@ self.trigger_emergency_exits();
         match m.target {
             // Single-target opposing: only the resolved target slot bounces.
             0 | 4 | 10 => {
-                let (_, tslot) = self.resolve_status_target(opp)?;
+                let tslot = match target {
+                    Some(t) if t.side == opp => t.slot,
+                    Some(_) => return None,
+                    None => self.resolve_status_target(opp)?.1,
+                };
                 if eligible(tslot) {
                     Some((opp, tslot))
                 } else {

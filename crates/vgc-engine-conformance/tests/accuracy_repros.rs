@@ -355,3 +355,16 @@ fn a_traced_inner_focus_blocks_intimidate() {
 fn an_entrained_water_bubble_applies_in_the_damage_calc() {
     assert_matches_ps("study-5111885ee2-entrained-water-bubble");
 }
+
+/// Study battle 53a95d56c8: Follow Me redirects Parting Shot.
+#[test]
+fn follow_me_redirects_parting_shot() {
+    assert_matches_ps("study-53a95d56c8-follow-me-parting-shot");
+}
+
+/// Study battle bc20b85092: Hypnosis aimed at the foe beside a Magic Bounce
+/// holder is not reflected.
+#[test]
+fn magic_bounce_ignores_a_move_aimed_at_its_partner() {
+    assert_matches_ps("study-bc20b85092-magic-bounce-chosen-target");
+}

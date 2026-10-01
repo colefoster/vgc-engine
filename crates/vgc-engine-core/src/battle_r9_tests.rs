@@ -205,3 +205,35 @@ fn a_skill_swapped_soundproof_blocks_sound_moves() {
     assert!(b.p1.team[1].current_hp < b.p1.team[1].stats.hp, "Hyper Voice should hit Snorlax");
     assert_eq!(b.p1.team[0].current_hp, before, "Soundproof (swapped in) blocks Hyper Voice");
 }
+
+// ---- Single-target status moves resolve their target like attacks ----
+//
+// runMove's getTarget retargets a fainted foe (sim/battle.ts:2437) or keeps
+// a fainted ally (the move then fails), and useMoveInner's RedirectTarget
+// (Follow Me / Rage Powder, data/moves.ts followme onFoeRedirectTarget)
+// applies to status moves too. Magic Bounce reflects only the move aimed at
+// its holder (data/abilities.ts magicbounce onTryHit).
+
+#[test]
+fn follow_me_redirects_a_status_move() {
+    let mut b = doubles(
+        r#"[{"species":"indeedeef","level":50,"ability":"owntempo","moves":["followme"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"arbok","level":50,"ability":"intimidate","moves":["glare"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].status, crate::pokemon::Status::Paralysis, "Glare redirected to Follow Me's user");
+    assert_eq!(b.p1.team[1].status, crate::pokemon::Status::None);
+}
+
+#[test]
+fn magic_bounce_reflects_only_the_move_aimed_at_its_holder() {
+    let mut b = doubles(
+        r#"[{"species":"arbok","level":50,"ability":"intimidate","moves":["glare"]},{"species":"snorlax","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"hatterene","level":50,"ability":"magicbounce","moves":["splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert_eq!(b.p2.team[1].status, crate::pokemon::Status::Paralysis, "Glare at Chansey lands");
+    assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None, "nothing bounced back");
+}
