@@ -1406,6 +1406,17 @@ pub(crate) fn calculate_damage_with_bp(
         bp_mod = chain_modify(bp_mod, 5325, 4096);
     }
 
+    // Normal Gem — PS data/items.ts:4324 normalgem: a Normal damaging move
+    // uses the Gem (onSourceTryPrimaryHit) and the gem condition's
+    // onBasePower (priority 14, data/conditions.ts:463) is ×5325/4096. The
+    // caller consumes it.
+    if move_type == 0
+        && attacker.effective_item_id() == data::item_id::NORMALGEM
+        && attacker.effective_ability_id() != data::ability_id::KLUTZ
+    {
+        bp_mod = chain_modify(bp_mod, 5325, 4096);
+    }
+
     // Helping Hand — ×1.5 BP on the recipient's next damaging move.
     // PS data/moves.ts:helpinghand condition `onBasePower` priority 10:
     // `chainModify(this.effectState.multiplier)` (multiplier = 1.5).

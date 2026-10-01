@@ -391,3 +391,25 @@ fn charge_raises_spd_and_doubles_the_next_electric_move() {
     assert!(charged * 2 > plain * 3, "x2 ({charged}) vs ({plain})");
     assert!(!left, "used up by Thunderbolt");
 }
+
+// ---- Normal Gem ----
+
+#[test]
+fn normal_gem_boosts_and_is_used_up() {
+    // PS data/items.ts:4324 normalgem onSourceTryPrimaryHit: a Normal
+    // damaging move uses the Gem; the gem condition's onBasePower is
+    // chainModify([5325, 4096]) (data/conditions.ts:463).
+    let run = |item: &str| {
+        let mut b = singles(
+            &format!(r#"[{{"species":"staraptor","level":50,"ability":"intimidate","item":"{item}","moves":["doubleedge"]}}]"#),
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"],"evs":{"hp":252,"def":252}}]"#,
+            5,
+        );
+        let hp = b.p2.team[0].current_hp;
+        b.step(&[mv(0, 0, foe())], &[mv(0, 0, None)]);
+        ((hp - b.p2.team[0].current_hp) as u32, b.p1.team[0].item_id)
+    };
+    let ((gem, left), (plain, _)) = (run("normalgem"), run("lightball"));
+    assert_eq!(left, u16::MAX, "Gem used");
+    assert!(gem * 100 > plain * 120, "x1.3 ({gem}) vs ({plain})");
+}

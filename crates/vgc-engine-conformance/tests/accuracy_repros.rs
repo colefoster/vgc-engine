@@ -246,3 +246,10 @@ fn bug_bite_eats_the_targets_berry() {
 fn charge_raises_special_defense() {
     assert_matches_ps("study-7dd9b58cae-charge");
 }
+
+/// Study battle 45afe9c9b0: Staraptor's Double-Edge uses its Normal Gem
+/// (data/items.ts:4324; x5325/4096 BP, data/conditions.ts:463).
+#[test]
+fn normal_gem_is_used_by_a_normal_move() {
+    assert_matches_ps("study-45afe9c9b0-normal-gem");
+}

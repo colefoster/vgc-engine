@@ -7145,6 +7145,22 @@ self.trigger_emergency_exits();
                 champions: self.champions,
                 ..DamageContext::default()
             });
+            // Normal Gem — used at the first hit (onSourceTryPrimaryHit,
+            // data/items.ts:4324); the damage calc reads the move-start
+            // snapshot, so every target of the move gets the boost.
+            if berry_move_type == 0 && damaging {
+                let used = self.side_mut(actor_side).active_mon_mut(actor_slot as usize).is_some_and(|a| {
+                    let holds = a.effective_item_id() == data::item_id::NORMALGEM
+                        && a.effective_ability_id() != data::ability_id::KLUTZ;
+                    if holds {
+                        a.consume_item();
+                    }
+                    holds
+                });
+                if used {
+                    crate::ability::on_item_consumed(self, actor_side, actor_slot);
+                }
+            }
             let inputs = crate::damage::DamageInputs {
                 crit, is_spread, is_doubles,
                 weather: self.effective_weather_for_pair(actor_side, actor_slot, tside, tslot),
