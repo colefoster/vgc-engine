@@ -1,0 +1,22 @@
+{
+  "name": "trace-copies-ability-shield-target",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Porygon2\nAbility: Trace\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Lanturn @ Ability Shield\nAbility: Volt Absorb\nLevel: 50\n- Thunderbolt"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}
