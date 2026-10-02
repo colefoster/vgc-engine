@@ -2014,3 +2014,79 @@ This is one structural fix within Champions Encore's immediate re-queue.
   workspace Clippy, core `ps-rng` Clippy, residual audit and diff check
   pass. The existing expanded `ps-rng` workspace unnecessary collect is
   still deferred. Historical corpus results are unchanged.
+
+## Harness fix: Champions goldens read `EVs:` as Stat Points
+
+This is a golden-harness fix, not an engine mechanic.
+
+- **Bug.** The golden loader built Champions teams with
+  `TeamBuilder::from_showdown_text_in(.., true)`, which only applies
+  Champions PP; the export's `EVs:` were taken as ordinary EVs and its IVs
+  as given. PS reads them as Stat Points and ignores IVs, so for example
+  Rillaboom with 32 Speed points was 137 Speed in PS and 109 in the engine.
+- **PS** (`a5df8274e85b0889bf2a9b3422a08b39732374fc`):
+  - `data/mods/champions/scripts.ts:10-39` `statModify`: without Level
+    Clause Mod (standard VGC has none), HP = base + SP + 75 and the other
+    stats floor((base + SP + 20) * nature), ignoring IVs and level.
+  - `sim/pokemon.ts:384-400`: the EV field holds the points.
+  - `sim/pokemon.ts:1398-1410`: stats are computed from it.
+  - Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Stat_point>.
+- **Fix** (`vgc-engine-golden/src/lib.rs`).
+  - The loader now uses a private `load_golden_team`. For Champions it
+    parses the export and checks the team size (empty, more than 6) as
+    before. It converts each point value to EV `8 * SP - 4` (0 for 0) with
+    IV 31, which reproduces PS's formula at level 50. It builds the mon at
+    level 50 with Champions PP (`build_member_in`), then restores the
+    export's level.
+  - A value above 32 is an error, not a wrap.
+  - Standard formats go through `TeamBuilder::from_showdown_text_in(..,
+    false)` unchanged. The generic `TeamBuilder` / `build_member_in` and
+    the conformance loader are untouched.
+- **Evidence (root).** Four new PS goldens. `champions-stat-points-lead-order`
+  failed before the fix (PS 175/175 vs engine 172/175). The
+  `stat-points-champions-neutral` and `-special` goldens cover point values
+  1 / 32 / 0, nature rounding and ignored IV 0; `stat-points-standard-control`
+  checks that the standard meaning is unchanged. Root's stat-only PS probe
+  values are the unit tests' expectations.
+- **Tests** (`stat_point_tests`):
+  - PS-probed stats and Champions PP for Rillaboom (Adamant, 1/32/1/32,
+    IV 0: `[176, 194, 111, 72, 90, 137]`, Tackle 20) and Pikachu (Modest,
+    32/1/32/1, IV 0: `[142, 67, 61, 112, 71, 110]`, Thunder Shock 20).
+  - The same export in a standard format: `[160, 147, 95, 58, 75, 94]`,
+    PP 56. The generic `TeamBuilder(.., true)` keeps that ordinary-EV
+    meaning, with PP 20.
+  - Zero points and ignored IVs: base + 75 / base + 20.
+  - A level-5 export keeps level 5 with level-50 stats.
+  - An error for 33 points, and the Empty / TooMany(7) errors are kept.
+- **Limits.**
+  - Level Clause Mod's branch (IV 31 + max(2SP - 1, 0) at the given level)
+    isn't modelled.
+  - A non-50 mon's mid-battle forme / Mega stat recompute uses its stored
+    level with the converted spread, so it doesn't follow PS's level-free
+    formula. Legal Champions VGC teams are level 50, where it's exact.
+  - Point totals and other legality aren't validated.
+- **Fixture boundary (root).** The first special-stat fixture had two
+  equal-Speed Pikachu leads. Its accepted PS capture starts with a
+  `BattleQueue.insertChoice` Range(1), bound 2, which the legacy flat
+  OraclePartial constructor does not consume. That event blocks later
+  accuracy/crit/damage events, and Static can consume it as an unrelated
+  ability roll. Removing Static alone did not repair the draw alignment.
+  Both accepted failed pairs and logs are preserved in the task artifacts.
+  The final special-stat golden uses Lightning Rod / Water Gun and an
+  unequal-Speed Eevee partner, so it isolates stat loading. This does not
+  fix the separate flat-replay start-draw gap.
+- **Verification (root):** six focused stat-loading compatibility tests
+  pass. The three initially failing Champions pairs (including the
+  confounded first special fixture) and standard control were accepted
+  by pinned, guarded PS. All four final pairs and every older fixture
+  pass both golden gates. The clean red/green loader proof is the restored
+  lead-order and neutral-stat golden; the final quiet special fixture is
+  additional coverage. Full workspace excluding Python bindings:
+  default 1,529 passed; `ps-rng` 1,568 passed; zero failed and 32 ignored
+  each. Configured default workspace Clippy, residual audit and diff check
+  pass. Final owned-project compatibility checks: x-scraper 149 tests
+  plus in-memory cache/catalog probes; winrates 21 tests each on Python
+  3.9/3.13 plus 80 seeded cases /320 ranked lists with zero mismatches.
+  The golden crate release build is recorded in task artifacts.
+  Core, conformance, recorder, generic loaders and historical study results
+  are unchanged in this slice.

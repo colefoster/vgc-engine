@@ -1,0 +1,22 @@
+{
+  "name": "stat-points-champions-special",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Pikachu\nAbility: Lightning Rod\nLevel: 50\nEVs: 32 HP / 1 Def / 32 SpA / 1 SpD\nIVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\nModest Nature\n- Water Gun\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Miltank\nAbility: Sap Sipper\nLevel: 50\nEVs: 32 HP / 32 Def / 2 SpD\nCareful Nature\n- Tackle\n\nEevee\nAbility: Adaptability\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1",
+      "p2": "move 1 1, move 1"
+    }
+  ]
+}

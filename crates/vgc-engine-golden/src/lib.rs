@@ -263,6 +263,59 @@ pub fn run_golden(input_path: &Path, ps_path: &Path) -> Result<GoldenReport, Gol
     run_golden_in_memory(&input, &ps)
 }
 
+/// Build a golden side's team from its PS export. Standard formats: the
+/// export's EVs / IVs as is (`TeamBuilder::from_showdown_text_in`).
+///
+/// Champions formats: the export's `EVs:` values are Stat Points (0..=32),
+/// and PS ignores IVs. PS's Champions `statModify` (data/mods/champions/
+/// scripts.ts:10-39, a5df8274; no Level Clause in VGC) gives HP = base + SP
+/// + 75 and the others floor((base + SP + 20) * nature), at any level. That
+/// is the ordinary level-50 formula with IV 31 and EV `8 * SP - 4` (0 for 0
+/// SP), so each member is built that way at level 50 and then given back its
+/// own level. Champions PP comes from `build_member_in`. A value above 32 is
+/// an error, not wrapped.
+///
+/// Errors keep `TeamLoadError`'s Debug text (`Empty`, `TooMany(n)`, ...).
+fn load_golden_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
+    if !champions {
+        return TeamBuilder::from_showdown_text_in(text, false).map_err(|e| format!("{e:?}"));
+    }
+    let mut members = vgc_engine_core::parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
+    if members.is_empty() {
+        return Err(format!("{:?}", vgc_engine_core::TeamLoadError::Empty));
+    }
+    if members.len() > 6 {
+        return Err(format!("{:?}", vgc_engine_core::TeamLoadError::TooMany(members.len())));
+    }
+    let ev = |species: &str, sp: u8| -> Result<u8, String> {
+        match sp {
+            0 => Ok(0),
+            1..=32 => Ok((8 * sp as u16 - 4) as u8),
+            _ => Err(format!("{species}: Champions stat point value {sp} is out of range (0-32)")),
+        }
+    };
+    members
+        .iter_mut()
+        .map(|m| {
+            let sp = m.evs;
+            m.evs = vgc_engine_core::StatSpread {
+                hp: ev(&m.species, sp.hp)?,
+                atk: ev(&m.species, sp.atk)?,
+                def: ev(&m.species, sp.def)?,
+                spa: ev(&m.species, sp.spa)?,
+                spd: ev(&m.species, sp.spd)?,
+                spe: ev(&m.species, sp.spe)?,
+            };
+            m.ivs = vgc_engine_core::StatSpread::MAX_IV;
+            let level = m.level;
+            m.level = 50;
+            let mut mon = vgc_engine_core::build_member_in(m, true).map_err(|e| format!("{e:?}"))?;
+            mon.level = level;
+            Ok(mon)
+        })
+        .collect()
+}
+
 /// In-memory variant — useful for unit tests that don't want to touch disk.
 pub fn run_golden_in_memory(
     input: &GoldenInput,
@@ -270,10 +323,10 @@ pub fn run_golden_in_memory(
 ) -> Result<GoldenReport, GoldenError> {
     let format = parse_format(&input.format)?;
     let champions = vgc_engine_core::format_rules::is_champions_format(&input.format);
-    let mut p1_team = TeamBuilder::from_showdown_text_in(&input.p1.team, champions)
-        .map_err(|e| GoldenError::TeamParse(format!("p1: {e:?}")))?;
-    let mut p2_team = TeamBuilder::from_showdown_text_in(&input.p2.team, champions)
-        .map_err(|e| GoldenError::TeamParse(format!("p2: {e:?}")))?;
+    let mut p1_team = load_golden_team(&input.p1.team, champions)
+        .map_err(|e| GoldenError::TeamParse(format!("p1: {e}")))?;
+    let mut p2_team = load_golden_team(&input.p2.team, champions)
+        .map_err(|e| GoldenError::TeamParse(format!("p2: {e}")))?;
 
     TeamBuilder::apply_pp_overlay(&mut p1_team, &input.pp_overrides)
         .map_err(|e| GoldenError::TeamParse(format!("p1 overlay: {e}")))?;
@@ -1553,5 +1606,75 @@ mod corpus_tests {
             "no slot-comparisons made",
         );
         assert!(score.turns_run > 0, "no turns stepped");
+    }
+}
+
+#[cfg(test)]
+mod stat_point_tests {
+    //! Golden team loading: Champions `EVs:` are Stat Points. Expected stats
+    //! are root's PS a5df8274 `new Battle` stat probe (p1 only), not derived
+    //! from the loader.
+    use super::*;
+
+    const RILLA: &str = "Rillaboom\nAbility: Grassy Surge\nLevel: 50\nEVs: 1 HP / 32 Atk / 1 Def / 32 Spe\nAdamant Nature\nIVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\n- Tackle";
+    const PIKA: &str = "Pikachu\nAbility: Static\nLevel: 50\nEVs: 32 HP / 1 Def / 32 SpA / 1 SpD\nModest Nature\nIVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\n- Thunder Shock";
+
+    fn stats(m: &Pokemon) -> [u16; 6] {
+        [m.stats.hp, m.stats.atk, m.stats.def, m.stats.spa, m.stats.spd, m.stats.spe]
+    }
+
+    #[test]
+    fn champions_stat_points_match_ps() {
+        let r = &load_golden_team(RILLA, true).unwrap()[0];
+        assert_eq!(stats(r), [176, 194, 111, 72, 90, 137]);
+        assert_eq!(r.pp[0], 20, "Champions Tackle PP");
+        assert_eq!(r.level, 50);
+        let p = &load_golden_team(PIKA, true).unwrap()[0];
+        assert_eq!(stats(p), [142, 67, 61, 112, 71, 110]);
+        assert_eq!(p.pp[0], 20, "Champions Thunder Shock PP");
+    }
+
+    #[test]
+    fn standard_exports_keep_ordinary_evs_and_ivs() {
+        let r = &load_golden_team(RILLA, false).unwrap()[0];
+        assert_eq!(stats(r), [160, 147, 95, 58, 75, 94]);
+        assert_eq!(r.pp[0], 56, "standard Tackle PP (35 + PP Ups)");
+    }
+
+    #[test]
+    fn generic_team_builder_keeps_its_ev_meaning() {
+        // `TeamBuilder::from_showdown_text_in(.., true)` stays the ordinary-EV
+        // build with Champions PP (other callers pass real EVs).
+        let r = &TeamBuilder::from_showdown_text_in(RILLA, true).unwrap()[0];
+        assert_eq!(stats(r), [160, 147, 95, 58, 75, 94]);
+        assert_eq!(r.pp[0], 20);
+    }
+
+    #[test]
+    fn champions_zero_points_and_ignored_ivs() {
+        // No EVs: base + 75 / base + 20 (neutral nature), IVs ignored.
+        let bare = "Pikachu\nAbility: Static\nLevel: 50\nSerious Nature\nIVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\n- Thunder Shock";
+        let p = &load_golden_team(bare, true).unwrap()[0];
+        assert_eq!(stats(p), [35 + 75, 55 + 20, 40 + 20, 50 + 20, 50 + 20, 90 + 20]);
+    }
+
+    #[test]
+    fn champions_level_is_kept_and_stats_use_the_level_50_formula() {
+        // PS's Champions statModify ignores the level (no Level Clause in VGC).
+        let lvl5 = RILLA.replacen("Level: 50", "Level: 5", 1);
+        let r = &load_golden_team(&lvl5, true).unwrap()[0];
+        assert_eq!(r.level, 5);
+        assert_eq!(stats(r), [176, 194, 111, 72, 90, 137]);
+    }
+
+    #[test]
+    fn champions_out_of_range_points_error_and_team_size_checks_stay() {
+        let bad = RILLA.replacen("32 Atk", "33 Atk", 1);
+        let e = load_golden_team(&bad, true).unwrap_err();
+        assert!(e.contains("33") && e.contains("out of range"), "{e}");
+        assert!(load_golden_team("", true).unwrap_err().contains("Empty"));
+        let seven = [PIKA; 7].join("\n\n");
+        assert!(load_golden_team(&seven, true).unwrap_err().contains("TooMany(7)"));
+        assert!(load_golden_team(&seven, false).unwrap_err().contains("TooMany(7)"));
     }
 }
