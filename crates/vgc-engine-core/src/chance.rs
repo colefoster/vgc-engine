@@ -497,6 +497,150 @@ mod tests {
         assert!(frontier.is_empty());
     }
 
+    /// Spike-only parity (docs/pr-e2-status.md "Spike-only parity test"):
+    /// for every one of the 16 buckets, `branch_confusion_self_hit`'s
+    /// actor HP / faint result must equal a real `step()` pinned to that
+    /// bucket via OraclePartial (`PercentRoll(1)` → self-hit gate,
+    /// `DamageRoll(bucket)` → the PR-F2 `ConfusionSelfHit` yield).
+    ///
+    /// Asserts only the weaker HP/faint application contract. Turn
+    /// counter, RNG state, and the confusion countdown legitimately
+    /// differ between the spike (no step) and the real path, so no
+    /// canonical-hash comparison. This is NOT full frontier parity.
+    #[test]
+    fn branch_confusion_self_hit_matches_pinned_step_all_buckets() {
+        use crate::pokemon::{Volatile, VolatileKind};
+        use crate::rng::RngEvent;
+
+        // Quiet fixture: no items, no weather/terrain/hazards, opponent
+        // Passes, so the only mover is the confused P1 actor (no
+        // speed-tie draw ahead of the confusion gate) and nothing else
+        // touches HP this turn.
+        const QUIET: &str = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"adamant","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+
+        // `hp`: None keeps full HP. Base RNG is OraclePartial pinned to
+        // `bucket`; the spike draws no RNG, so the same base serves both.
+        fn base(bucket: u8, hp: Option<u16>, atk_boost: i8, def_boost: i8) -> Battle {
+            let rng = Rng::oracle_partial(
+                vec![RngEvent::PercentRoll(1), RngEvent::DamageRoll(bucket)],
+                0,
+            );
+            let mut b = Battle::with_rng(
+                BattleConfig { format: Format::Singles, seed: 0 },
+                rng,
+                TeamBuilder::from_json(QUIET).unwrap(),
+                TeamBuilder::from_json(QUIET).unwrap(),
+            );
+            let m = b.side_mut(SideRef::P1).active_mon_mut(0).unwrap();
+            // Confusion / boosts / current_hp are not ResidualIndex-tracked.
+            let _ = m.volatiles.add(Volatile {
+                kind: VolatileKind::Confusion,
+                turns_remaining: 0,
+                payload: 4,
+            });
+            m.boosts[0] = atk_boost;
+            m.boosts[1] = def_boost;
+            if let Some(hp) = hp {
+                m.current_hp = hp;
+            }
+            b
+        }
+
+        fn actor(b: &Battle) -> &crate::pokemon::Pokemon {
+            b.side(SideRef::P1).active_mon(0).unwrap()
+        }
+
+        /// Runs all 16 buckets for one configuration; returns the
+        /// (hp, fainted) the two paths agreed on, per bucket.
+        fn check(label: &str, hp: Option<u16>, atk_boost: i8, def_boost: i8) -> [(u16, bool); 16] {
+            let mut agreed = [(0u16, false); 16];
+            for bucket in 0u8..16 {
+                let b = base(bucket, hp, atk_boost, def_boost);
+                let h_before = b.canonical_hash();
+                let hp_before = actor(&b).current_hp;
+                let opp_hp_before = b.side(SideRef::P2).active_mon(0).unwrap().current_hp;
+
+                let spike = b.branch_confusion_self_hit(SideRef::P1, 0);
+                assert_eq!(spike.len(), 16, "{label}");
+                let (sb, p) = &spike[bucket as usize];
+                assert!((p - 1.0 / 16.0).abs() < 1e-12, "{label} b{bucket}: prob {p}");
+
+                let mut real = b.clone();
+                real.step(
+                    &[Choice::Move {
+                        actor_slot: 0,
+                        move_slot: 0,
+                        target: Some(Target { side: SideRef::P2, slot: 0 }),
+                    }],
+                    &[Choice::Pass { actor_slot: 0 }],
+                );
+                assert_eq!(b.canonical_hash(), h_before, "{label} b{bucket}: base mutated");
+
+                // The real step must have consumed exactly the two pinned
+                // events — otherwise it did not take the pinned bucket.
+                assert_eq!(
+                    real.oracle_pops(),
+                    Some((2, 2)),
+                    "{label} b{bucket}: pinned gate + damage roll not both consumed"
+                );
+                let (ra, sa) = (actor(&real), actor(sb));
+                assert!(ra.current_hp < hp_before, "{label} b{bucket}: real path took no self-hit");
+
+                // The parity contract.
+                assert_eq!(sa.current_hp, ra.current_hp, "{label} b{bucket}: HP mismatch");
+                assert_eq!(sa.fainted, ra.fainted, "{label} b{bucket}: faint mismatch");
+                assert_eq!(ra.fainted, ra.current_hp == 0, "{label} b{bucket}: real faint flag");
+
+                // Unrelated state the spike must leave alone (where the
+                // real path also leaves it alone).
+                for (path, bt, m) in [("spike", sb, sa), ("real", &real, ra)] {
+                    assert_eq!(m.boosts[0], atk_boost, "{label} b{bucket} {path}: atk stage");
+                    assert_eq!(m.boosts[1], def_boost, "{label} b{bucket} {path}: def stage");
+                    assert_eq!(
+                        bt.side(SideRef::P2).active_mon(0).unwrap().current_hp,
+                        opp_hp_before,
+                        "{label} b{bucket} {path}: opponent HP touched"
+                    );
+                }
+                // The spike applies damage only: no turn advance, no
+                // confusion tick (the real path ticks 4 → 3).
+                assert_eq!(sb.turn(), b.turn(), "{label} b{bucket}: spike advanced turn");
+                assert_eq!(sa.volatiles.get(VolatileKind::Confusion).unwrap().payload, 4);
+                assert_eq!(ra.volatiles.get(VolatileKind::Confusion).unwrap().payload, 3);
+
+                agreed[bucket as usize] = (ra.current_hp, ra.fainted);
+            }
+            agreed
+        }
+
+        let full = check("full", None, 0, 0);
+        let max_hp = actor(&base(0, None, 0, 0)).current_hp;
+        assert!(full.iter().all(|&(_, f)| !f), "full HP must survive a self-hit");
+        // Distinct rolls really are distinct outcomes here (else the
+        // per-bucket comparison would be vacuous).
+        assert!(full[0].0 > full[15].0, "bucket 0 must deal less than bucket 15");
+
+        // Near-KO: HP = the max-roll damage, so bucket 15 lands exactly
+        // on 0 while bucket 0 leaves the actor standing. Derived from the
+        // full-HP run, not a copy of the formula.
+        let max_dmg = max_hp - full[15].0;
+        let near = check("near-ko", Some(max_dmg), 0, 0);
+        assert!(near[15].1 && near[15].0 == 0, "bucket 15 must KO at hp={max_dmg}");
+        assert!(!near[0].1, "bucket 0 must not KO at hp={max_dmg}");
+
+        // Saturation: 1 HP — every bucket overkills and clamps to 0.
+        let one = check("one-hp", Some(1), 0, 0);
+        assert!(one.iter().all(|&(hp, f)| hp == 0 && f), "1 HP must faint on every bucket");
+
+        // Nonzero Atk/Def stages feed the formula on both paths.
+        let up = check("atk+2/def-1", None, 2, -1);
+        let down = check("atk-1/def+3", None, -1, 3);
+        assert!(up[15].0 < full[15].0, "+Atk/-Def must raise self-hit damage");
+        assert!(down[15].0 > full[15].0, "-Atk/+Def must lower self-hit damage");
+    }
+
     /// Parity test: step_chance must produce the same frontier the
     /// solver's enumerate_outcomes does. This is the load-bearing
     /// contract — when native branching lands in a future PR, this
