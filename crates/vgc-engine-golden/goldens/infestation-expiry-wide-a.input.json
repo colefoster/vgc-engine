@@ -1,0 +1,42 @@
+{
+  "name": "infestation-expiry-wide-a",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    101,
+    202,
+    303,
+    404
+  ],
+  "p1": {
+    "team": "Toxapex\nAbility: Merciless\nLevel: 50\n- Infestation\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax\nAbility: Immunity\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

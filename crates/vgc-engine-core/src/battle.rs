@@ -9492,9 +9492,10 @@ self.trigger_emergency_exits();
         // Partial-trap volatile (Whirlpool / Wrap / Bind / Fire Spin /
         // Sand Tomb / Magma Storm / Infestation / Clamp / Snap Trap /
         // Thunder Cage). PS data/conditions.ts:partiallytrapped —
-        // attached to the target after the initial hit; lasts
-        // `random(5, 7)` turns (5 or 6); 1/8 max HP chip per turn at
-        // residual order 13. Single-target moves; we apply to the
+        // attached to the target after the initial hit with a
+        // `random(5, 7)` timer (5 or 6); 1/8 max HP chip at residual
+        // order 13 on every turn but the one the timer runs out, so 4 or
+        // 5 chips (`eot_partial_trap`). Single-target moves; we apply to the
         // first alive opposing slot the engine actually dealt damage
         // to (mirrors PS's "applied to the hit target").
         if any_damage_dealt > 0
@@ -9514,7 +9515,7 @@ self.trigger_emergency_exits();
                     t.is_alive() && !t.volatiles.has(crate::pokemon::VolatileKind::PartialTrap)
                 });
                 if trappable {
-                    let dur = 5 + self.rng.range(2) as u32; // 5 or 6
+                    let dur = 5 + self.rng.range(2) as u32; // timer 5 or 6
                     let src_team = self.side(actor_side).active[actor_slot as usize] as u32;
                     let payload = dur
                         | ((actor_side as u8 as u32) << 8)
@@ -13916,17 +13917,17 @@ self.trigger_emergency_exits();
     }
 
     /// EOT sub-phase `partial_trap`. Extracted from
-    /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
-    /// pre-F3 inline version; the section's own PS-citation comments
-    /// remain at the top of the body. No RNG draws are added or
-    /// removed; behavior is byte-identical.
+    /// `resolve_end_of_turn` in PR-F3; since accuracy round 10 the
+    /// expiry tick ends the trap before (instead of after) the chip. No
+    /// RNG draws.
     fn eot_partial_trap(&mut self) {
-        // 13. Partial-trap residual. PS data/conditions.ts:partiallytrapped
-        //     onResidualOrder 13. Chip holder 1/8 max HP; decrement
-        //     payload counter; remove volatile when it hits 0. Magic
-        //     Guard blocks the chip but the duration still ticks
-        //     (PS: `damage` returns 0 under MG but the volatile
-        //     persists until its own duration expires).
+        // 13. Partial-trap residual. PS data/conditions.ts:222-247
+        //     partiallytrapped, onResidualOrder 13. The residual loop
+        //     (sim/battle.ts:515-522) decrements the duration FIRST and, at
+        //     0, ends the volatile without running onResidual: a counter at
+        //     1 expires with no chip. Otherwise chip 1/8 max HP and tick the
+        //     payload counter, so a 5 / 6 timer chips 4 / 5 times. Magic
+        //     Guard blocks the chip but the duration still ticks.
         // PR-EOT1: hoist `active_count`.
         let n = self.format().active_count() as u8;
         // PR-EOT2: skip if no active mon is partial-trapped.
@@ -13956,6 +13957,13 @@ self.trigger_emergency_exits();
                 if chip == 0 {
                     continue;
                 }
+                // sim/battle.ts:515-522: the timer runs out before onResidual.
+                if expires {
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        m.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
+                    }
+                    continue;
+                }
                 // PS data/conditions.ts:238: the trap ends silently, with no
                 // chip, once its source has left the field or fainted.
                 let src_side = if src & 0xFF == 0 { SideRef::P1 } else { SideRef::P2 };
@@ -13977,12 +13985,7 @@ self.trigger_emergency_exits();
                             m.fainted = true;
                         }
                     }
-                    if expires {
-                        m.volatiles.remove(crate::pokemon::VolatileKind::PartialTrap);
-                    } else if let Some(pos) = m
-                        .volatiles
-                        .position(crate::pokemon::VolatileKind::PartialTrap)
-                    {
+                    if let Some(pos) = m.volatiles.position(crate::pokemon::VolatileKind::PartialTrap) {
                         let v = &mut m.volatiles.items[pos];
                         let remaining = (v.payload & 0xFF).saturating_sub(1);
                         v.payload = (v.payload & !0xFF) | remaining;
@@ -23631,8 +23634,8 @@ mod tests {
     #[test]
     fn whirlpool_traps_and_chips_target_per_turn() {
         // PS data/conditions.ts:partiallytrapped — Whirlpool /
-        // Wrap / Bind etc. attach this volatile; 1/8 max HP per
-        // turn for 5-6 turns.
+        // Wrap / Bind etc. attach this volatile with a 5-6 turn timer;
+        // 1/8 max HP per turn, 4-5 chips.
         let p1_json = r#"[
             {"species":"milotic","level":50,"ability":"marvelscale","item":"","nature":"calm","moves":["whirlpool","scald","recover","icebeam"]}
         ]"#;

@@ -414,3 +414,102 @@ fn status_moves_cannot_miss_a_glaive_rush_user() {
         assert!(matches!(b.p2.team[0].status, Status::Sleep), "seed {seed}");
     }
 }
+
+// ---- Partial trap: the timer ends before the chip ----
+//
+// data/conditions.ts:222-247 partiallytrapped: durationCallback random(5, 7),
+// onResidualOrder 13. sim/battle.ts:515-522 runs the residual by decrementing
+// the condition's duration FIRST; at 0 it ends the condition and skips its
+// onResidual. So a timer of 5 / 6 chips 4 / 5 times (turns 1..timer-1) and
+// the expiry turn deals nothing. Bulbapedia:
+// <https://bulbapedia.bulbagarden.net/wiki/Infestation_(move)> (4-5 turns).
+
+const TRAP_TURNS: usize = 8;
+
+/// Toxapex Infestations p2a on turn 1, then everyone Splashes. Returns the
+/// trap timer (the counter left after turn 1, plus the one turn-1 tick),
+/// p2a's HP after each turn, and whether it was still trapped.
+fn infestation_run(target: &str, seed: u64) -> (usize, [u16; TRAP_TURNS], [bool; TRAP_TURNS]) {
+    let mut b = doubles(
+        r#"[{"species":"toxapex","level":50,"moves":["infestation","splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        &format!(r#"[{target},{{"species":"blissey","level":50,"moves":["splash"]}}]"#),
+        seed,
+    );
+    let (mut hp, mut trapped) = ([0u16; TRAP_TURNS], [false; TRAP_TURNS]);
+    let mut timer = 0;
+    for turn in 0..TRAP_TURNS {
+        let p1_move = if turn == 0 { mv(0, 0, Some(t(SideRef::P2, 0))) } else { mv(0, 1, None) };
+        b.step(&[p1_move, mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+        let foe = &b.p2.team[0];
+        hp[turn] = foe.current_hp;
+        let v = foe.volatiles.get(crate::pokemon::VolatileKind::PartialTrap);
+        trapped[turn] = v.is_some();
+        if turn == 0 {
+            timer = v.expect("Infestation traps p2a").payload as usize & 0xFF;
+            timer += 1;
+        }
+    }
+    (timer, hp, trapped)
+}
+
+#[test]
+fn infestation_chips_one_turn_less_than_its_timer() {
+    let snorlax = r#"{"species":"snorlax","level":50,"ability":"immunity","moves":["splash"]}"#;
+    let mut seen = [false; 2];
+    for seed in 0..24 {
+        let (timer, hp, trapped) = infestation_run(snorlax, seed);
+        assert!((5..=6).contains(&timer), "seed {seed}: timer {timer}");
+        seen[timer - 5] = true;
+        // Turn 1 (index 0) chips with the hit; turns 2..timer-1 chip alone.
+        let chip = hp[0] - hp[1];
+        assert!(chip > 0, "seed {seed}: no turn-2 chip");
+        for turn in 1..timer - 1 {
+            assert_eq!(hp[turn - 1] - hp[turn], chip, "seed {seed}: turn {} chip", turn + 1);
+            assert!(trapped[turn], "seed {seed}: freed early on turn {}", turn + 1);
+        }
+        // The expiry turn ends the trap with no chip; nothing after.
+        let expiry = timer - 1;
+        assert!(!trapped[expiry], "seed {seed}: still trapped after turn {timer}");
+        for turn in expiry..TRAP_TURNS {
+            assert_eq!(hp[turn], hp[expiry - 1], "seed {seed}: chip on turn {} (timer {timer})", turn + 1);
+        }
+    }
+    assert_eq!(seen, [true, true], "both timers exercised");
+}
+
+#[test]
+fn partial_trap_under_magic_guard_still_expires_on_time() {
+    // Magic Guard stops the chip, not the timer.
+    let clefable = r#"{"species":"clefable","level":50,"ability":"magicguard","moves":["splash"]}"#;
+    let mut seen = [false; 2];
+    for seed in 0..24 {
+        let (timer, hp, trapped) = infestation_run(clefable, seed);
+        assert!((5..=6).contains(&timer), "seed {seed}: timer {timer}");
+        seen[timer - 5] = true;
+        assert!(hp.iter().all(|&h| h == hp[0]), "seed {seed}: Magic Guard took a chip: {hp:?}");
+        for (turn, &on) in trapped.iter().enumerate() {
+            assert_eq!(on, turn + 1 < timer, "seed {seed}: trapped after turn {} (timer {timer})", turn + 1);
+        }
+    }
+    assert_eq!(seen, [true, true], "both timers exercised");
+}
+
+#[test]
+fn partial_trap_ends_without_a_chip_when_its_source_faints() {
+    // data/conditions.ts partiallytrapped onResidual: a fainted source
+    // removes the volatile and deals nothing. Blissey's Seismic Toss KOs a
+    // 1-HP Toxapex on turn 2 (no bench: nobody replaces it).
+    let mut b = doubles(
+        r#"[{"species":"toxapex","level":50,"moves":["infestation","splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"immunity","moves":["splash"]},{"species":"blissey","level":50,"moves":["seismictoss","splash"]}]"#,
+        1,
+    );
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 1, None)]);
+    assert!(b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+    b.p1.team[0].current_hp = 1;
+    let before = b.p2.team[0].current_hp;
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, Some(t(SideRef::P1, 0)))]);
+    assert!(b.p1.team[0].fainted, "Seismic Toss should KO Toxapex");
+    assert_eq!(b.p2.team[0].current_hp, before, "no chip once Toxapex fainted");
+    assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
+}
