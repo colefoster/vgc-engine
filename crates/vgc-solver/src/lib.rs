@@ -212,6 +212,7 @@ fn decision_ord(d: RngDecision) -> u8 {
         RngDecision::Range => 4,
         RngDecision::Tiebreak => 5,
         RngDecision::Ability => 6,
+        RngDecision::Item => 7,
     }
 }
 

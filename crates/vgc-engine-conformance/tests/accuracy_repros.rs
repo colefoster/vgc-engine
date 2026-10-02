@@ -11,6 +11,34 @@ use std::path::PathBuf;
 
 use vgc_engine_conformance::accuracy::{replay_keyed, AccBattle};
 
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-quickclaw-jobs.jsonl`.
+/// Quick Claw's queue-time roll belongs to its holder and item; ordinary
+/// Encore's forced Tackle target pick belongs to the forced mover and move.
+/// Both were previously recorded under stale/null context. The distinct
+/// true/false Claw outcomes and random foe picks make these state checks
+/// sensitive to the missing item/target keys, not only the draw count.
+#[test]
+fn quick_claw_and_encore_target_keys_replay_without_fallback() {
+    for name in [
+        "keyed-encore-control-same-both-02",
+        "keyed-encore-control-standard-claw-02",
+        "keyed-encore-control-standard-claw-03",
+    ] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert_eq!(rep.matched_turns, 2, "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.turns_compared, 2, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+        assert_eq!(rep.leftover_upto, 0, "{name}: {:?}", rep.leftover_keys);
+        assert_eq!(rep.repaired, 0, "{name}: no repair aliases");
+    }
+}
+
 fn assert_matches_ps(name: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tools/accuracy/repros/battles")

@@ -311,7 +311,8 @@ pub(crate) fn quick_fractional_roll(battle: &Battle, side: SideRef, actor_slot: 
     if m.item_id == data::item_id::QUICKCLAW
         && !(status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT)
     {
-        return rng.range(5) == 0;
+        let holder = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+        return rng.item_chance(battle.turn() + 1, holder, data::item_id::QUICKCLAW, 1, 5);
     }
     false
 }

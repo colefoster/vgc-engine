@@ -95,8 +95,8 @@ function captureSite() {
 
 // --- decision classification (THE CRUX) ----------------------------------
 //
-// Map a single Battle.random / Battle.randomChance draw to one of the six
-// conformance-key decision categories, using the SEMANTIC call site first
+// Map a single Battle.random / Battle.randomChance draw to a
+// conformance-key decision category, using the SEMANTIC call site first
 // and the call signature as a tiebreaker. Returns null for draws we do NOT
 // want to record as a keyed decision (none currently; kept for future
 // filtering, e.g. team-gen draws before the battle starts).
@@ -184,12 +184,23 @@ function patchRng(draws) {
     return { turn: battle.turn, actor: slotRef(holder), target: null, move: null, ability: eff.id, decision: 'ability', value };
   };
 
+  // Quick Claw rolls while choices are committed, before activePokemon and
+  // activeMove identify the queued action. The item handler's effect state
+  // still identifies its holder (sim/pokemon.ts:426; sim/battle.ts:901).
+  const quickClawEnvelope = function (battle, site, value) {
+    if (!/onFractionalPriority \(data\/items\./.test(site || '')) return null;
+    const eff = battle.effect;
+    const holder = battle.effectState && battle.effectState.target;
+    if (!eff || eff.effectType !== 'Item' || eff.id !== 'quickclaw' || !holder) return null;
+    return { turn: battle.turn, actor: slotRef(holder), target: null, move: null, item: eff.id, decision: 'item', value };
+  };
+
   Battle.prototype.random = function (m, n) {
     const v = origRandom.call(this, m, n);
     const site = captureSite();
     const decision = classifyDraw(false, { m, n }, site);
     // value: damage 0..15 raw; secondary raw 0..99; range raw int; tiebreak raw.
-    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, false));
+    draws.push(abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, false));
     return v;
   };
 
@@ -198,7 +209,7 @@ function patchRng(draws) {
     const site = captureSite();
     const decision = classifyDraw(true, { num: numerator, denom: denominator }, site);
     // randomChance only exposes the BOOL (crit + accuracy + ability procs).
-    draws.push(abilityEnvelope(this, site, v) || envelope(this, decision, v, true));
+    draws.push(abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, true));
     return v;
   };
 
@@ -237,22 +248,16 @@ function patchRng(draws) {
     }
   };
 
-  // Champions Encore's re-queued move (data/mods/champions/moves.ts:307-339):
-  // onStart calls `queue.changeAction(target, {choice: 'move', moveid})` with
-  // no target, and BattleQueue.resolveAction (sim/battle-queue.ts:268-275)
-  // picks one with `getRandomTarget(action.pokemon, action.move)`
-  // (sim/battle.ts:2490-2522) — while activePokemon / activeMove are still
-  // the Encore user and Encore. Key that roll to the Encored mon and its
-  // forced move, with no target (the target is what it decides). Only this
-  // call is relabelled; the queue's insertion tie roll in insertChoice stays
-  // on Encore's context.
+  // getRandomTarget receives the actual mover and move (sim/battle.ts:
+  // 2490-2522). This matters both during Champions Encore's queue rewrite
+  // (sim/battle-queue.ts:268-275, while the active context is Encore's user)
+  // and when ordinary Encore changes a move in BattleActions.runMove (while
+  // the active context is still the preceding action). Attribute only draws
+  // inside the target picker to those arguments; insertion-tie draws outside
+  // it retain their existing context.
   Battle.prototype.getRandomTarget = function (pokemon, move) {
-    const eff = this.effect;
-    const st = this.effectState;
     const moveId = typeof move === 'string' ? move : (move && move.id);
-    const encored = eff && eff.effectType === 'Condition' && eff.id === 'encore' &&
-      st && st.target === pokemon && !!moveId && st.move === moveId;
-    if (!encored) return origGetRandomTarget.call(this, pokemon, move);
+    if (!pokemon || !moveId) return origGetRandomTarget.call(this, pokemon, move);
     const prev = scoped;
     scoped = { actor: slotRef(pokemon), target: null, move: moveId };
     try {

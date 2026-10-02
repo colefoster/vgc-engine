@@ -196,6 +196,9 @@ pub struct DrawRecord {
     /// (`actor` is then its holder). See docs/conformance-key-contract.md.
     #[serde(default)]
     pub ability: Option<String>,
+    /// For `decision: "item"`: the holder's item that made the draw.
+    #[serde(default)]
+    pub item: Option<String>,
     pub decision: String,
     pub value: serde_json::Value,
     /// True when accuracy/secondary `value` is a pass/fail bool rather than
@@ -284,6 +287,7 @@ fn decision_of(s: &str) -> Option<RngDecision> {
         "range" => RngDecision::Range,
         "tiebreak" => RngDecision::Tiebreak,
         "ability" => RngDecision::Ability,
+        "item" => RngDecision::Item,
         _ => return None,
     })
 }
@@ -331,10 +335,10 @@ pub fn event_for_draw(d: &DrawRecord) -> Option<RngEvent> {
             }
         }
         "tiebreak" => Some(RngEvent::Tiebreak(d.value.as_u64()?)),
-        // Ability roll: a `randomChance` bool is stored as Range(0) pass /
-        // Range(u32::MAX) fail, which `Rng::ability_chance`'s `v < num`
-        // reads correctly for any `num`; a `random(n)` keeps its value.
-        "ability" => match d.value.as_bool() {
+        // Ability/item roll: a `randomChance` bool is stored as Range(0)
+        // pass / Range(u32::MAX) fail, which the holder-scoped keyed draw's
+        // `v < num` reads correctly; a `random(n)` keeps its value.
+        "ability" | "item" => match d.value.as_bool() {
             Some(pass) => Some(RngEvent::Range(if pass { 0 } else { u32::MAX })),
             None => Some(RngEvent::Range(u32::try_from(d.value.as_u64()?).ok()?)),
         },
@@ -388,6 +392,17 @@ pub(crate) fn build_table_from<'a>(
                         continue;
                     }
                 }
+            } else if decision == RngDecision::Item {
+                match d.item.as_deref().and_then(item_id_of) {
+                    Some(id) => id,
+                    None => {
+                        let slug = d.item.clone().unwrap_or_default();
+                        if !unresolved.iter().any(|u| *u == slug) {
+                            unresolved.push(slug);
+                        }
+                        continue;
+                    }
+                }
             } else { match d.move_slug.as_deref() {
                 Some(slug) => match move_id_of(slug) {
                     Some(id) => id,
@@ -400,8 +415,8 @@ pub(crate) fn build_table_from<'a>(
                 },
                 None => 0,
             } };
-            // Ability rolls carry no target (NO_SLOT) by contract.
-            let target = if decision == RngDecision::Ability { NO_SLOT } else { target };
+            // Holder-scoped ability/item rolls carry no target by contract.
+            let target = if matches!(decision, RngDecision::Ability | RngDecision::Item) { NO_SLOT } else { target };
             let key = RngKey {
                 turn: d.turn,
                 actor,
@@ -420,6 +435,13 @@ fn ability_id_of(slug: &str) -> Option<u16> {
     data::ABILITIES
         .iter()
         .position(|a| a.slug == slug)
+        .and_then(|i| u16::try_from(i).ok())
+}
+
+fn item_id_of(slug: &str) -> Option<u16> {
+    data::ITEMS
+        .iter()
+        .position(|item| item.slug == slug)
         .and_then(|i| u16::try_from(i).ok())
 }
 
@@ -811,6 +833,7 @@ mod tests {
             target: Some("p2a".into()),
             move_slug: Some("crunch".into()),
             ability: None,
+            item: None,
             decision: decision.into(),
             value,
             raw_is_bool,
@@ -832,6 +855,26 @@ mod tests {
             move_id: data::ABILITIES.iter().position(|a| a.slug == "flamebody").unwrap() as u16,
             decision: RngDecision::Ability,
         };
+        assert_eq!(table.get(&key).map(|q| q[0]), Some(RngEvent::Range(0)));
+        d.value = serde_json::json!(false);
+        let (table, _) = build_table_from([&d].into_iter());
+        assert_eq!(table.get(&key).map(|q| q[0]), Some(RngEvent::Range(u32::MAX)));
+    }
+
+    #[test]
+    fn quick_claw_roll_is_keyed_by_holder_and_item() {
+        let mut d = draw("item", serde_json::json!(true), true);
+        d.actor = Some("p2a".into());
+        d.item = Some("quickclaw".into());
+        let key = RngKey {
+            turn: 1,
+            actor: 2,
+            target: NO_SLOT,
+            move_id: data::item_id::QUICKCLAW,
+            decision: RngDecision::Item,
+        };
+        let (table, unresolved) = build_table_from([&d].into_iter());
+        assert!(unresolved.is_empty());
         assert_eq!(table.get(&key).map(|q| q[0]), Some(RngEvent::Range(0)));
         d.value = serde_json::json!(false);
         let (table, _) = build_table_from([&d].into_iter());
@@ -963,6 +1006,7 @@ mod tests {
             target: Some("p2a".into()),
             move_slug: Some("crunch".into()),
             ability: None,
+            item: None,
             decision: decision.into(),
             value,
             raw_is_bool: false,

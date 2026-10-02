@@ -20,11 +20,10 @@ RngKey { turn: u32, actor: SlotRef, target: SlotRef, move_id: u16, decision: Rng
 - **actor / target** — `SlotRef = side*2 + slot`: `p1a=0, p1b=1, p2a=2, p2b=3`.
   `0xFF` (NO_SLOT) = self-target / field / unattributable. PS protocol refs
   (`p1a`, `p2b`, …) map directly; the engine encodes `side*2+slot`.
-- **move_id** — the engine's **numeric** `data::move_id::*`. The engine keys on
-  the id it already holds in scope (no slug lookup in the draw path). The PS
-  driver records the **slug** (`this.activeMove.id`, e.g. `"earthquake"`); the
-  **runner** translates slug→numeric id when building the table. A slug with no
-  engine id ⇒ that event is dropped with a logged warning (not silently).
+- **move_id** — the engine's numeric `data::move_id::*` for move draws,
+  `data::ability_id::*` for ability draws, or `data::item_id::*` for item
+  draws. The PS driver records the corresponding slug; the runner translates
+  it to the numeric id. An unresolved slug is dropped with a logged warning.
 - **decision** — see below. Crit/Damage are implied by the engine draw method;
   Accuracy vs Secondary (both `percent_1_100` on the engine) are disambiguated
   by `set_decision()` in the battle.
@@ -44,6 +43,7 @@ secondary differently across move kinds. The driver maps PS call-site → decisi
 | Range      | misc `random(n)` (duration/multihit)       | `range(n)`                    | `Range(0..n)`        |
 | Tiebreak   | `speedSort` `random()` (no args)           | `next_u64`                    | `Tiebreak(u64)`      |
 | Ability    | a `data/abilities` handler's own `random` / `randomChance` (Static, Flame Body, Poison Point / Touch, Effect Spore, Cute Charm, Cursed Body, Toxic Chain, Shed Skin, Healer, Quick Draw) | `ability_chance` / `ability_random` | `Range(v)`; a bool is `Range(0)` pass / `Range(u32::MAX)` fail |
+| Item       | Quick Claw's `data/items.ts` `onFractionalPriority` `randomChance(1,5)` | `item_chance` | `Range(0)` pass / `Range(u32::MAX)` fail |
 
 ### Ability rolls are keyed by their holder
 
@@ -72,6 +72,27 @@ RngKey { turn, actor: holder slot, target: NO_SLOT, move_id: engine ability id, 
   `v < num` for the popped `v`; `Rng::ability_random` returns `v`. Both leave
   the move context untouched. On other RNG variants they draw PS's shape:
   `random(den)`.
+
+### Quick Claw is keyed by its holder and item
+
+Quick Claw rolls during `BattleQueue.resolveAction`, before the queued move
+becomes the active move. Thus the active move/actor is stale or empty. The
+driver recognizes the `data/items` `onFractionalPriority` handler, whose
+`battle.effectState.target` is the item holder (PS `sim/pokemon.ts:426`,
+`sim/battle.ts:901`). Its event is
+`{turn, actor: holder, target: null, move: null, item: "quickclaw", decision: "item", value: bool}`.
+The runner keys it as `(turn, holder, NO_SLOT, item_id::QUICKCLAW, Item)`;
+the engine's `item_chance` requests the same key and leaves the move context
+untouched. This is distinct from a move's generic `Range` draw. Captures made
+before this item envelope was added need to be recaptured for keyed replay.
+
+`Battle.getRandomTarget(pokemon, move)` receives the actual mover and move
+even when ordinary Encore resolves the target later in `BattleActions.runMove`
+or Champions Encore resolves it during a queue rewrite. The driver scopes
+only draws made inside this call to `(pokemon, move, NO_SLOT, Range)`; the
+target is unknown until the draw completes. Queue insertion draws outside
+the call retain their own context (PS `sim/battle-queue.ts:268-275`,
+`sim/battle.ts:2490-2522`).
 
 ### Two representation flips the RUNNER must apply (not the engine, not the driver)
 
