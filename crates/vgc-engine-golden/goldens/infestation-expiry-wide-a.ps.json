@@ -1,0 +1,281 @@
+{
+  "ok": true,
+  "name": "infestation-expiry-wide-a",
+  "seed": [
+    101,
+    202,
+    303,
+    404
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 6,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Toxapex",
+      "hp": 125,
+      "max": 125
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Infestation",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 230,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 201,
+      "max": 235,
+      "from": "move: Infestation"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 172,
+      "max": 235,
+      "from": "move: Infestation"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 143,
+      "max": 235,
+      "from": "move: Infestation"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 114,
+      "max": 235,
+      "from": "move: Infestation"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 14,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 0,
+      "bound": 2,
+      "site": "Battle.durationCallback (data/conditions.js:247)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1790918085\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Toxapex, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p2|Snorlax, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1790918085\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Toxapex|Toxapex, L50, F|125/125\n|switch|p1b: Chansey|Chansey, L50, F|325/325\n|switch|p2a: Snorlax|Snorlax, L50, F|235/235\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|turn|1|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Infestation|p2a: Snorlax\n|-damage|p2a: Snorlax|230/235\n|-activate|p2a: Snorlax|move: Infestation|[of] p1a: Toxapex\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|-damage|p2a: Snorlax|201/235|[from] move: Infestation|[partiallytrapped]\n|upkeep\n|turn|2|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Splash|p1a: Toxapex\n|-nothing\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|-damage|p2a: Snorlax|172/235|[from] move: Infestation|[partiallytrapped]\n|upkeep\n|turn|3|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Splash|p1a: Toxapex\n|-nothing\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|-damage|p2a: Snorlax|143/235|[from] move: Infestation|[partiallytrapped]\n|upkeep\n|turn|4|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Splash|p1a: Toxapex\n|-nothing\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|-damage|p2a: Snorlax|114/235|[from] move: Infestation|[partiallytrapped]\n|upkeep\n|turn|5|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Splash|p1a: Toxapex\n|-nothing\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|-end|p2a: Snorlax|Infestation|[partiallytrapped]\n|upkeep\n|turn|6|\n|t:|1790918085\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p1a: Toxapex|Splash|p1a: Toxapex\n|-nothing\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|upkeep\n|turn|7"
+}
