@@ -631,6 +631,12 @@ pub struct Battle {
     /// (`keyed_commit_sort`), applied before the first re-sort.
     #[serde(skip)]
     keyed_commit_moves: ([(u8, u8); 4], u8),
+    /// `ps-rng` / keyed oracle: this turn's voluntary switches in the order
+    /// PS's commitChoices queue.sort left them (tie shuffle included), as
+    /// (side, slot); taken by `apply_pre_turn_switches` so it does not sort
+    /// or draw again. `None` when no commit sort ran.
+    #[serde(skip)]
+    commit_switch_order: Option<([(u8, u8); 4], u8)>,
     /// `ps-rng` only: this turn's Mega Evolutions in commit-sort order.
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
@@ -773,6 +779,7 @@ impl Battle {
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             keyed_commit_moves: ([(0, 0); 4], 0),
+            commit_switch_order: None,
             #[cfg(feature = "ps-rng")]
             ps_commit_megas: ([(0, 0); 4], 0),
         };
@@ -2867,7 +2874,7 @@ self.trigger_emergency_exits();
         // priority and Speed. Speed is the cached value commitChoices just
         // refreshed, before any switch or Mega Evolution this turn.
         let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
-        // (side, slot, kind: 0 other, 1 move, 2 megaEvo)
+        // (side, slot, kind: 0 other, 1 move, 2 megaEvo, 3 switch)
         let mut items = [(SideRef::P1, 0u8, 0u8); 12];
         let mut k = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
@@ -2891,7 +2898,7 @@ self.trigger_emergency_exits();
                 match *c {
                     Choice::Switch { .. } => {
                         moved[slot.min(1)] = true;
-                        push((103, 0, 0, -spe), 0);
+                        push((103, 0, 0, -spe), 3);
                     }
                     Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
                         moved[slot.min(1)] = true;
@@ -2933,10 +2940,12 @@ self.trigger_emergency_exits();
         crate::order::ps_speed_sort(&mut keys[..k], &mut items[..k], |a, b| self.rng.ps_random_range("shuffle", a, b));
         let mut moves = ([(0u8, 0u8); 4], 0u8);
         let mut megas = ([(0u8, 0u8); 4], 0u8);
+        let mut switches = ([(0u8, 0u8); 4], 0u8);
         for &(side, slot, kind) in &items[..k] {
             let list = match kind {
                 1 => &mut moves,
                 2 => &mut megas,
+                3 => &mut switches,
                 _ => continue,
             };
             if (list.1 as usize) < 4 {
@@ -2946,6 +2955,7 @@ self.trigger_emergency_exits();
         }
         self.ps_commit_moves = moves;
         self.ps_commit_megas = megas;
+        self.commit_switch_order = Some(switches);
         // beforeTurn action: eachEvent('BeforeTurn') + the post-action
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
@@ -3057,7 +3067,8 @@ self.trigger_emergency_exits();
     fn keyed_commit_sort(&mut self, p1: &[Choice], p2: &[Choice]) {
         let trick_room = self.trick_room_turns > 0;
         let mut keys = [(0i64, 0i64, 0i64, 0i64); 12];
-        let mut items = [(SideRef::P1, 0u8, false); 12];
+        // (side, slot, kind: 0 other, 1 move, 3 switch)
+        let mut items = [(SideRef::P1, 0u8, 0u8); 12];
         let mut k = 0;
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let mut seen = [false; 2];
@@ -3071,19 +3082,19 @@ self.trigger_emergency_exits();
                 seen[slot.min(1)] = true;
                 let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather, self.terrain) as i64;
                 let spe = if trick_room { 10000 - raw } else { raw };
-                let mut push = |key: (i64, i64, i64, i64), is_move: bool| {
+                let mut push = |key: (i64, i64, i64, i64), kind: u8| {
                     if k < keys.len() {
                         keys[k] = key;
-                        items[k] = (side, slot as u8, is_move);
+                        items[k] = (side, slot as u8, kind);
                         k += 1;
                     }
                 };
                 match c {
-                    Choice::Switch { .. } => push((103, 0, 0, -spe), false),
+                    Choice::Switch { .. } => push((103, 0, 0, -spe), 3),
                     Choice::Move { move_slot, .. } | Choice::Terastallize { move_slot, .. } | Choice::MegaEvolve { move_slot, .. } => {
                         match c {
-                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), false),
-                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), false),
+                            Choice::Terastallize { .. } => push((106, 0, 0, -spe), 0),
+                            Choice::MegaEvolve { .. } => push((104, 0, 0, -spe), 0),
                             _ => {}
                         }
                         let pri = crate::order::state_priority(self, side, slot as u8, move_slot) as i64;
@@ -3106,7 +3117,7 @@ self.trigger_emergency_exits();
                         } else {
                             0
                         };
-                        push((200, -pri, -frac, -spe), true);
+                        push((200, -pri, -frac, -spe), 1);
                     }
                     Choice::Pass { .. } => {}
                 }
@@ -3116,13 +3127,20 @@ self.trigger_emergency_exits();
         crate::order::ps_speed_sort(&mut keys[..k], &mut items[..k], |a, b| rng.speed_sort_draw(a, b));
         self.rng = rng;
         let mut moves = ([(0u8, 0u8); 4], 0u8);
-        for &(side, slot, is_move) in &items[..k] {
-            if is_move && (moves.1 as usize) < 4 {
-                moves.0[moves.1 as usize] = (side as u8, slot);
-                moves.1 += 1;
+        let mut switches = ([(0u8, 0u8); 4], 0u8);
+        for &(side, slot, kind) in &items[..k] {
+            let list = match kind {
+                1 => &mut moves,
+                3 => &mut switches,
+                _ => continue,
+            };
+            if (list.1 as usize) < 4 {
+                list.0[list.1 as usize] = (side as u8, slot);
+                list.1 += 1;
             }
         }
         self.keyed_commit_moves = moves;
+        self.commit_switch_order = Some(switches);
     }
 
     /// What PS does between an executed move action and the next action
@@ -4001,15 +4019,42 @@ self.trigger_emergency_exits();
                 }
             }
         }
-        // Fastest leaving mon first (in-place, heap-free — AGENTS.md #4);
-        // slowest first under Trick Room (PS sim/pokemon.ts getActionSpeed
-        // `speed = 10000 - speed` applies to switch actions too).
-        // PS breaks Speed ties at random, which we do not model; the unstable
-        // sort leaves ties in an unspecified order.
-        if self.trick_room_turns > 0 {
-            acts[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        // Switch actions (order 103) run by the LEAVING mon's Speed — fastest
+        // first, slowest under Trick Room (sim/pokemon.ts getActionSpeed
+        // `10000 - speed`) — with Speed ties shuffled by commitChoices'
+        // speedSort (sim/battle.ts:404 comparePriority, :429 speedSort). The
+        // incoming mon's Speed plays no part. When a commit sort already ran
+        // (`ps-rng`, keyed oracle) its order, tie shuffle included, is reused
+        // as is: no second sort, no second draw. Otherwise sort here, ties
+        // through the same speedSort shuffle (heap-free, AGENTS.md #4).
+        if let Some((order, len)) = self.commit_switch_order.take() {
+            let mut sorted = acts;
+            let mut m = 0usize;
+            let mut used = [false; 4];
+            for &(s, slot) in &order[..len as usize] {
+                if let Some(i) = (0..n).find(|&i| !used[i] && acts[i].1 as u8 == s && acts[i].2 == slot) {
+                    used[i] = true;
+                    sorted[m] = acts[i];
+                    m += 1;
+                }
+            }
+            // Anything the commit sort skipped keeps its choice order.
+            for i in 0..n {
+                if !used[i] {
+                    sorted[m] = acts[i];
+                    m += 1;
+                }
+            }
+            acts = sorted;
         } else {
-            acts[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            let tr = self.trick_room_turns > 0;
+            let mut keys = [0i64; 4];
+            for i in 0..n {
+                keys[i] = if tr { acts[i].0 as i64 } else { -(acts[i].0 as i64) };
+            }
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::order::ps_speed_sort(&mut keys[..n], &mut acts[..n], |a, b| rng.speed_sort_draw(a, b));
+            self.rng = rng;
         }
         for &(_, side, actor_slot, team_index) in &acts[..n] {
             let opp_choices = match side {
