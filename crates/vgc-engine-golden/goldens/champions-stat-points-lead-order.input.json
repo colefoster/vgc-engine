@@ -1,0 +1,22 @@
+{
+  "name": "champions-stat-points-lead-order",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Indeedee\nAbility: Psychic Surge\nLevel: 50\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\nEVs: 10 Spe\n- Splash\n- Quick Attack\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Rillaboom\nAbility: Grassy Surge\nLevel: 50\nEVs: 32 Spe\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1, move 2 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

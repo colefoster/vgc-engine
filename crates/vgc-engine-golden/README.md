@@ -12,7 +12,13 @@ Engine RNG is pinned to PS's recorded draw stream via
 ## How a golden test runs
 
 1. `goldens/<name>.input.json` declares the scripted battle (teams in
-   Showdown export text + PRNG seed + per-turn actions).
+   Showdown export text + PRNG seed + per-turn actions). In a Champions
+   format the export's `EVs:` values are Stat Points (0-32) and IVs are
+   ignored, as in PS's Champions `statModify`. The loader builds each mon
+   as level 50 with IV 31 and EV `8 * SP - 4`, keeps its own level, and
+   rejects values above 32. This covers the standard Champions formula;
+   Level Clause Mod and non-50 mid-battle forme stat recomputation remain
+   unsupported. Generic engine team builders still take ordinary EVs.
 2. `goldens/<name>.ps.json` is the PS-recorded ground truth produced
    by `tools/ps-golden-driver/`: a protocol event log (with raw HP)
    plus the captured PS RNG draws.
