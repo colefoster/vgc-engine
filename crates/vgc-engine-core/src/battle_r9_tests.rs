@@ -174,6 +174,106 @@ fn a_traced_ability_is_lost_on_switch_out() {
     assert_eq!(b.p1.team[2].effective_ability_id(), data::ability_id::TRACE);
 }
 
+// ---- Trace copies from a foe holding Ability Shield ----
+//
+// Ability Shield (data/items.ts:2-17) only has onSetAbility, which blocks a
+// change to the HOLDER's ability; it has no onCopyAbility. Trace
+// (data/abilities.ts:5136-5145) filters candidates on the noTrace / noability
+// flags only, samples one and calls `pokemon.setAbility(ability, target)`,
+// whose SetAbility event runs on the Trace user (sim/pokemon.ts:1915-1931).
+// So a shielded foe stays a candidate; a shielded Trace user copies nothing
+// (`ability_shield_blocks_trace_on_user` in battle.rs).
+
+const TRACE_SHIELD_P1: &str = r#"[{"species":"porygon2","level":50,"ability":"trace","moves":["splash"]},{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+const TRACE_SHIELD_P2: &str = r#"[{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]},{"species":"lanturn","level":50,"ability":"voltabsorb","item":"abilityshield","moves":["splash"]}]"#;
+
+#[test]
+fn trace_copies_a_shielded_lone_foe_and_uses_it() {
+    // Singles: Porygon2 traces Volt Absorb off the shielded Lanturn, so
+    // Lanturn's Thunderbolt is absorbed (no damage, no paralysis).
+    for seed in 0..8 {
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Singles, seed },
+            TeamBuilder::from_json(r#"[{"species":"porygon2","level":50,"ability":"trace","moves":["splash"]}]"#).unwrap(),
+            TeamBuilder::from_json(r#"[{"species":"lanturn","level":50,"ability":"voltabsorb","item":"abilityshield","moves":["thunderbolt"]}]"#).unwrap(),
+        );
+        assert_eq!(b.p1.team[0].effective_ability_id(), data::ability_id::VOLTABSORB, "seed {seed}");
+        b.step(&[mv(0, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+        let porygon = &b.p1.team[0];
+        assert_eq!(porygon.current_hp, porygon.stats.hp, "seed {seed}: Thunderbolt should be absorbed");
+        assert_eq!(porygon.status, crate::pokemon::Status::None, "seed {seed}");
+        // The shield stays on its holder and its own ability is untouched.
+        assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::VOLTABSORB);
+    }
+}
+
+#[test]
+fn trace_keeps_a_shielded_foe_in_the_sample() {
+    // Doubles, two candidates: Miltank (p2a, Sap Sipper) and the shielded
+    // Lanturn (p2b, Volt Absorb). The keyed pick (turn 1, holder p1a, Trace,
+    // Ability) selects either one and is consumed.
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 1, actor: 0, target: NO_SLOT, move_id: data::ability_id::TRACE, decision: RngDecision::Ability };
+    for (pick, want) in [(0, data::ability_id::SAPSIPPER), (1, data::ability_id::VOLTABSORB)] {
+        let mut table = std::collections::HashMap::new();
+        table.insert(key, std::collections::VecDeque::from([RngEvent::Range(pick)]));
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Doubles, seed: 0 },
+            Rng::oracle_keyed(table, 0),
+            TeamBuilder::from_json(TRACE_SHIELD_P1).unwrap(),
+            TeamBuilder::from_json(TRACE_SHIELD_P2).unwrap(),
+        );
+        assert_eq!(b.p1.team[0].effective_ability_id(), want, "pick {pick}");
+        assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "pick {pick}: not consumed");
+        let misses = b.rng_mut().take_miss_log().unwrap();
+        assert!(misses.iter().all(|m| m.key.move_id != data::ability_id::TRACE || m.key.decision != RngDecision::Ability));
+    }
+}
+
+#[test]
+fn trace_draws_over_both_candidates_with_a_shielded_foe() {
+    // The chance enumeration's recording pass sees one Trace draw over two
+    // outcomes (the shielded foe included).
+    use crate::rng::{DrawSpace, Rng, RngDecision};
+    let mut b = Battle::with_rng(
+        BattleConfig { format: Format::Doubles, seed: 0 },
+        Rng::recording(7),
+        TeamBuilder::from_json(TRACE_SHIELD_P1).unwrap(),
+        TeamBuilder::from_json(TRACE_SHIELD_P2).unwrap(),
+    );
+    let log = b.rng_mut().take_recording_log().unwrap();
+    let traces: Vec<_> = log
+        .iter()
+        .filter(|d| d.key.move_id == data::ability_id::TRACE && d.key.decision == RngDecision::Ability)
+        .collect();
+    assert_eq!(traces.len(), 1, "{log:?}");
+    assert_eq!((traces[0].key.turn, traces[0].key.actor), (1, 0));
+    assert_eq!(traces[0].space, DrawSpace::UniformRange(2));
+}
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_trace_samples_a_shielded_foe() {
+    // PS `this.sample(possibleTargets)` over both foes: one `random(0, 2)`
+    // draw, and its result picks the copied ability.
+    for seed in 1..=8 {
+        let mut rng = crate::rng::Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(
+            BattleConfig { format: Format::Doubles, seed: 0 },
+            rng,
+            TeamBuilder::from_json(TRACE_SHIELD_P1).unwrap(),
+            TeamBuilder::from_json(TRACE_SHIELD_P2).unwrap(),
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let samples: Vec<_> = trace.iter().filter(|d| d.op == "sample").collect();
+        assert_eq!(samples.len(), 1, "seed {seed}: {trace:?}");
+        assert_eq!((samples[0].a, samples[0].b), (0, 2), "seed {seed}");
+        let want = [data::ability_id::SAPSIPPER, data::ability_id::VOLTABSORB][samples[0].result as usize];
+        assert_eq!(b.p1.team[0].effective_ability_id(), want, "seed {seed}");
+    }
+}
+
 #[test]
 fn a_mummy_ability_is_lost_on_switch_out() {
     let mut b = doubles(

@@ -64,19 +64,16 @@ pub(crate) fn has_rock_head(mon: &crate::pokemon::Pokemon) -> bool {
     mon.ability_id == data::ability_id::ROCKHEAD
 }
 
-/// Ability Shield — PS `data/items.ts:abilityshield` registers a fleet of
-/// `onSetAbility` / `onCopyAbility` / `onSuppressAbility` / `onTryBoost?`
-/// handlers that all early-return when the holder carries it. Net effect:
-/// the holder's ability cannot be changed, suppressed, copied off, or
-/// replaced by Trace / Skill Swap / Worry Seed / Gastro Acid / Mummy /
-/// Lingering Aroma / Wandering Spirit / etc. Stays equipped (NOT
-/// consumed); persists across the battle once held.
+/// Ability Shield — PS `data/items.ts:abilityshield` (a5df8274,
+/// data/items.ts:2-17) protects the HOLDER's own ability: its
+/// `onSetAbility` returns null when something would change the holder's
+/// ability (a Trace user's own Trace, Mummy / Lingering Aroma, Skill Swap,
+/// Worry Seed, ...). It has no `onCopyAbility`, so Trace may still copy
+/// FROM a shielded foe. Stays equipped (NOT consumed).
 ///
-/// We expose this as a single helper read from every ability-change site
-/// — Trace's source AND target, Mummy/Lingering Aroma's attacker side,
-/// Wandering Spirit's swap, and Imposter's caster. Symmetric reads keep
-/// PS's semantics: if either party in a swap holds the shield, the swap
-/// is cancelled.
+/// Read at every ability-change site for the mon whose ability would
+/// change — the Trace user, Mummy/Lingering Aroma's attacker, both sides
+/// of Wandering Spirit's swap, and Imposter's caster.
 ///
 /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Ability_Shield>.
 pub(crate) fn has_ability_shield(mon: &crate::pokemon::Pokemon) -> bool {
@@ -680,7 +677,9 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
     if ability_id == data::ability_id::TRACE {
         // Ability Shield on the Trace user blocks the change to its own
-        // ability — PS `onSetAbility` returns false.
+        // ability — PS `onSetAbility` (data/items.ts:2-17) returns null for
+        // the holder, and setAbility runs SetAbility on the Trace user
+        // (sim/pokemon.ts:1915-1931).
         let user_shielded = battle
             .side(side)
             .active_mon(slot as usize)
@@ -696,13 +695,10 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     _ => continue,
                 };
                 if candidate == u16::MAX || candidate == data::ability_id::TRACE { continue; }
-                // Ability Shield on the target blocks Trace from copying
-                // off it — PS `onCopyAbility` returns false on the target.
-                let target_shielded = battle
-                    .side(opp)
-                    .active_mon(s as usize)
-                    .is_some_and(has_ability_shield);
-                if target_shielded { continue; }
+                // A foe's Ability Shield doesn't stop Trace copying from it:
+                // the shield has no onCopyAbility (data/items.ts:2-17), and
+                // Trace's filter is only noTrace / noability
+                // (data/abilities.ts:5136-5145).
                 if n_cands < cands.len() {
                     cands[n_cands] = candidate;
                     n_cands += 1;
