@@ -160,7 +160,13 @@ pub enum PsRngEvent {
     Crit { value: bool },
     DamageRoll { value: u8 },
     PercentRoll { value: bool, threshold: u8 },
-    Range { value: u32, bound: u32 },
+    Range {
+        value: u32,
+        bound: u32,
+        /// PS call site. Older fixtures omit it and retain legacy lowering.
+        #[serde(default)]
+        site: Option<String>,
+    },
     Tiebreak { value: String },
     Chance { value: bool, num: u32, denom: u32 },
 }
@@ -652,7 +658,20 @@ pub(crate) fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
                 };
                 out.push(RngEvent::PercentRoll(v));
             }
-            PsRngEvent::Range { value, bound } => {
+            PsRngEvent::Range {
+                value,
+                bound,
+                ref site,
+            } => {
+                // PS's flat driver also sees BattleQueue.insertChoice draws
+                // used only to position internal runSwitch actions
+                // (sim/battle-queue.ts:369-402). OraclePartial does not
+                // reproduce that queue. Keeping the event shifts every later
+                // move draw and can even let an unrelated ability consume it.
+                // Site-less legacy fixtures keep their established behavior.
+                if site.as_deref().is_some_and(|s| s.contains("BattleQueue.insertChoice")) {
+                    continue;
+                }
                 if bound == 16 {
                     // Same mirror-image translation as PsRngEvent::DamageRoll above.
                     out.push(RngEvent::DamageRoll(15u8.saturating_sub((value as u8).min(15))));
@@ -1310,7 +1329,7 @@ mod tests {
         // Same mirror-image translation applies to Range events with bound=16
         // (which the driver records when it can't statically tell the call was
         // for a damage roll).
-        let evs = vec![PsRngEvent::Range { value: 13, bound: 16 }];
+        let evs = vec![PsRngEvent::Range { value: 13, bound: 16, site: None }];
         let out = lower_rng_events(&evs);
         assert!(matches!(out[0], RngEvent::DamageRoll(2)));
     }
@@ -1676,5 +1695,94 @@ mod stat_point_tests {
         let seven = [PIKA; 7].join("\n\n");
         assert!(load_golden_team(&seven, true).unwrap_err().contains("TooMany(7)"));
         assert!(load_golden_team(&seven, false).unwrap_err().contains("TooMany(7)"));
+    }
+
+    #[test]
+    fn flat_golden_ignores_battle_start_insert_choice_draw() {
+        // Accepted PS a5df8274 fixture. The equal-Speed Pikachu leads make
+        // BattleQueue.insertChoice draw random(0, 2) before turn 1. That draw
+        // orders PS's internal start queue; the engine constructor does not
+        // mirror that queue and must not feed it to Tackle's accuracy/damage.
+        let input = GoldenInput {
+            decision_phases: false,
+            pp_overrides: Default::default(),
+            name: Some("flat-start-insert-choice".into()),
+            format: "gen9championsvgc2026regmc".into(),
+            seed: [1, 2, 3, 4],
+            p1: GoldenSide {
+                team: concat!(
+                    "Pikachu\nAbility: Lightning Rod\nLevel: 50\n",
+                    "EVs: 32 HP / 1 Def / 32 SpA / 1 SpD\n",
+                    "IVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\n",
+                    "Modest Nature\n- Water Gun\n\n",
+                    "Snorlax\nAbility: Thick Fat\nLevel: 50\n- Splash",
+                )
+                .into(),
+            },
+            p2: GoldenSide {
+                team: concat!(
+                    "Miltank\nAbility: Sap Sipper\nLevel: 50\n",
+                    "EVs: 32 HP / 32 Def / 2 SpD\nCareful Nature\n- Tackle\n\n",
+                    "Pikachu\nAbility: Static\nLevel: 50\n- Splash",
+                )
+                .into(),
+            },
+            turns: vec![GoldenTurn {
+                p1_followups: vec![],
+                p2_followups: vec![],
+                p1: serde_json::json!("move 1 1, move 1"),
+                p2: serde_json::json!("move 1 1, move 1"),
+            }],
+            random_play: false,
+            max_turns: None,
+        };
+        let snapshot = |turn, actor: &str, hp, max| PsEvent {
+            turn,
+            kind: if turn == 0 { "switch" } else { "damage" }.into(),
+            actor: Some(actor.into()),
+            hp: Some(hp),
+            max: Some(max),
+            from: None,
+            status: None,
+            stat: None,
+            amount: None,
+            species: None,
+            name: None,
+            target: None,
+            source: None,
+        };
+        let ps = PsOutput {
+            ok: true,
+            events: vec![
+                snapshot(0, "p1a", 142, 142),
+                snapshot(0, "p1b", 235, 235),
+                snapshot(0, "p2a", 202, 202),
+                snapshot(0, "p2b", 110, 110),
+                snapshot(1, "p1a", 100, 142),
+                snapshot(1, "p2a", 182, 202),
+            ],
+            rng: vec![
+                PsRngEvent::Range {
+                    value: 1,
+                    bound: 2,
+                    site: Some("BattleQueue.insertChoice (sim/battle-queue.js:286)".into()),
+                },
+                PsRngEvent::PercentRoll {
+                    value: true,
+                    threshold: 100,
+                },
+                PsRngEvent::Crit { value: false },
+                PsRngEvent::DamageRoll { value: 5 },
+                PsRngEvent::PercentRoll {
+                    value: true,
+                    threshold: 100,
+                },
+                PsRngEvent::Crit { value: false },
+                PsRngEvent::DamageRoll { value: 4 },
+            ],
+        };
+        let report = run_golden_in_memory(&input, &ps).unwrap();
+        assert!(report.is_ok(), "{:?}", report.diverged);
+        assert_eq!(report.matched, 2);
     }
 }
