@@ -59,6 +59,10 @@ for (const C of [SodiumRNG, Gen5RNG]) {
 
 // Frames that are PRNG plumbing rather than the semantic call site.
 const WRAPPER = /PRNG\.|prng\.js|Battle\.random |Battle\.randomChance|Battle\.sample|Battle\.random$/;
+// The keyed recorder's own getRandomTarget wrapper (conformance-driver.js
+// patchRng), not PS's Battle.getRandomTarget.
+const isRecorderFrame = (f) =>
+  f.fn === 'Battle.getRandomTarget' && /\/ps-golden-driver\/conformance-driver\.js:\d+$/.test(f.loc);
 
 function frames() {
   const raw = (new Error().stack || '').split('\n').slice(2);
@@ -83,7 +87,7 @@ PRNG.prototype.random = function (from, to) {
       const m = /^PRNG\.(\w+)$/.exec(f.fn);
       if (m && m[1] !== 'random') op = m[1];
     }
-    const sem = fr.filter((f) => !WRAPPER.test(f.fn + ' ') && !/prng\.js/.test(f.loc));
+    const sem = fr.filter((f) => !WRAPPER.test(f.fn + ' ') && !/prng\.js/.test(f.loc) && !isRecorderFrame(f));
     const site = sem.slice(0, 6).map((f) => `${f.fn}@${f.loc.replace(/^sim\//, '').replace(/^data\//, 'data/')}`);
     RAW.push({
       seq: RAW.length,

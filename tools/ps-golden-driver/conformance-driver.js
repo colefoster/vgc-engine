@@ -142,8 +142,14 @@ function slotRef(p) {
 function patchRng(draws) {
   const origRandom = Battle.prototype.random;
   const origRandomChance = Battle.prototype.randomChance;
+  const origGetRandomTarget = Battle.prototype.getRandomTarget;
+
+  // Context for draws made while a forced move's target is resolved outside
+  // that move's own execution (see getRandomTarget below), else null.
+  let scoped = null;
 
   const envelope = function (battle, decision, value, rawIsBool) {
+    if (scoped) return { turn: battle.turn, ...scoped, decision, value };
     const move = battle.activeMove ? (battle.activeMove.id || null) : null;
     const actor = slotRef(battle.activePokemon);
     // target: the resolved target slot, but null for self-target / field.
@@ -231,9 +237,35 @@ function patchRng(draws) {
     }
   };
 
+  // Champions Encore's re-queued move (data/mods/champions/moves.ts:307-339):
+  // onStart calls `queue.changeAction(target, {choice: 'move', moveid})` with
+  // no target, and BattleQueue.resolveAction (sim/battle-queue.ts:268-275)
+  // picks one with `getRandomTarget(action.pokemon, action.move)`
+  // (sim/battle.ts:2490-2522) — while activePokemon / activeMove are still
+  // the Encore user and Encore. Key that roll to the Encored mon and its
+  // forced move, with no target (the target is what it decides). Only this
+  // call is relabelled; the queue's insertion tie roll in insertChoice stays
+  // on Encore's context.
+  Battle.prototype.getRandomTarget = function (pokemon, move) {
+    const eff = this.effect;
+    const st = this.effectState;
+    const moveId = typeof move === 'string' ? move : (move && move.id);
+    const encored = eff && eff.effectType === 'Condition' && eff.id === 'encore' &&
+      st && st.target === pokemon && !!moveId && st.move === moveId;
+    if (!encored) return origGetRandomTarget.call(this, pokemon, move);
+    const prev = scoped;
+    scoped = { actor: slotRef(pokemon), target: null, move: moveId };
+    try {
+      return origGetRandomTarget.call(this, pokemon, move);
+    } finally {
+      scoped = prev;
+    }
+  };
+
   return () => {
     Battle.prototype.random = origRandom;
     Battle.prototype.randomChance = origRandomChance;
+    Battle.prototype.getRandomTarget = origGetRandomTarget;
     BattleActions.prototype.secondaries = origSecondaries;
   };
 }

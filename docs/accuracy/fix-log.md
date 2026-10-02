@@ -1574,3 +1574,72 @@ Bind, Fire Spin, Sand Tomb, Magma Storm, Clamp, Snap Trap, Thunder Cage).
   32 ignored in each mode, including both stored golden gates. Clippy's
   configured allocation guards, the residual-index audit and diff check
   pass. This is bounded fixture evidence, not a whole-corpus rescore.
+
+## Harness fix: Champions Encore's retarget roll is keyed to the Encored mon
+
+This is a recorder (keyed-context) fix, not an engine or simulator change.
+It covers the "Champions Encore's retarget draw" harness item in round 10.
+
+- **Bug.** On PS `a5df8274e85b0889bf2a9b3422a08b39732374fc`, Champions
+  Encore's onStart (`data/mods/champions/moves.ts:307-339`) replaces the
+  target's queued move with the Encored one through
+  `queue.changeAction(target, {choice: 'move', moveid})`, with no target.
+  `BattleQueue.resolveAction` (`sim/battle-queue.ts:268-275`) then calls
+  `battle.getRandomTarget(action.pokemon, action.move)`
+  (`sim/battle.ts:2490-2522`, `side.randomFoe()` in doubles). The recorder
+  keyed every draw on `activePokemon` / `activeMove`, which are still the
+  Encore user and Encore, so this roll was recorded as
+  `p1a → p2a, encore, range` instead of belonging to the Encored mon's
+  move.
+- **Fix** (`conformance-driver.js` `patchRng`).
+  - `Battle.prototype.getRandomTarget` is wrapped. It relabels a call only
+    when all three hold: the current effect is the `encore` Condition, its
+    holder (`effectState.target`) is the `pokemon` argument, and the move
+    argument is the forced move (`effectState.move`).
+  - For that call only, draws are keyed `actor = holder, target = null,
+    move = forced move`. The previous context is restored in `finally`,
+    and teardown restores the prototype.
+  - Encore's accuracy roll and `insertChoice`'s insertion tie roll keep
+    Encore's context, and ordinary target picks are unchanged.
+  - No draws, raw trace, queue order or ability / sample classification
+    change. `ps-battle.js` leaves the wrapper's own frame (function
+    `Battle.getRandomTarget` in `conformance-driver.js`) out of a raw
+    draw's semantic sites. Without that, the frame pushed Encore's
+    `onStart` out of the six recorded sites. PS's own
+    `Battle.getRandomTarget` frame is kept.
+- **Evidence (root probe).** Four synthetic Champions doubles jobs
+  (sodium seeds 1-4, two turns) where Prankster Whimsicott Encores a
+  Snorlax that Tackled on turn 1 and queued Splash on turn 2. During the
+  call, `effect` = Encore Condition, `effectState` = `{move: 'tackle',
+  target: p2a}` and `activePokemon` = p1a. Seed 1's roll returns p1b.
+  Before the fix, the keyed replay missed one range draw in all four jobs
+  and had one state failure (seed 3).
+- **Tests** (`tools/accuracy/encore-context.test.js`, on real PS via
+  `PS_DIST`): equivalent in-repo jobs for seeds 1-4.
+  - Turn 2 has exactly one `p2a / null / tackle` range draw. Its value
+    equals the raw trace's single `getRandomTarget` draw and picks the foe
+    PS's `|move|` line shows was hit; both foes occur across the seeds.
+  - That raw draw's sites are exactly PS's stack, from `Side.randomFoe`
+    through `Battle.onStart` in `data/mods/champions/moves.js`, with no
+    recorder frame. Before the frame filter, the wrapper's frame took the
+    place of `onStart`.
+  - Encore keeps its accuracy roll and exactly one range draw (the
+    insertion tie).
+  - Turn 1's chosen-target Tackle keeps its normal context, and there are
+    no PS errors.
+  - A second test checks that the patched prototypes are restored and that
+    a throw inside the wrapped call doesn't leak its context.
+  - Before the fix, the first test found no `p2a / tackle` draw (both
+    turn-2 range draws were labelled `p1a / encore`) and the second found
+    `getRandomTarget` unpatched. Both pass now, and the switch-order and
+    turn-limit suites still pass.
+- **Not fixed.** The engine's seeded (`ps-rng`) replay still diverges at
+  the retarget's timing: PS draws `random(2)` where the engine shuffles
+  `(2, 4)`. This fix doesn't change that. Root regenerated the four jobs:
+  keyed replay matches 8/8 played turns with no missing draws and 38
+  existing repair aliases. Seeded replay still has first draw divergence
+  in all four cases (5/8 state matches).
+- **Root preservation check.** Before/after PS raw draws, including their
+  semantic stack sites, turn states and choices are identical. Protocol
+  logs differ only in wall-clock `|t:|` entries. Exactly one keyed Range
+  envelope changes per job; its value and the other draws are unchanged.
