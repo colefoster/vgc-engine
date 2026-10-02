@@ -1,0 +1,26 @@
+{
+  "name": "champions-encore-rerolls-claw-damage",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Whimsicott\nAbility: Prankster\nLevel: 50\n- Encore\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Charm\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax @ Quick Claw\nAbility: Thick Fat\nLevel: 50\n- Tackle\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 1 1, move 1"
+    },
+    {
+      "p1": "move 1 1, move 1 1",
+      "p2": "move 2, move 1"
+    }
+  ]
+}

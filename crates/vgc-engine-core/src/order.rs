@@ -316,6 +316,41 @@ pub(crate) fn quick_fractional_roll(battle: &Battle, side: SideRef, actor_slot: 
     false
 }
 
+/// The fractional-priority sub-bucket of `side`/`actor_slot` using move
+/// `mid` (`u16::MAX` = none): -1 first in its bracket, 0, +1 last.
+/// `quick` is whether Quick Draw / Quick Claw fired for this move
+/// ([`quick_fractional_roll`]).
+///   Custap Berry (data/items.ts custapberry) at <= 1/4 HP, edible (an
+///   opposing Unnerve blocks it; `battle.rs:consume_fractional_pri_items`
+///   gates identically): -1. Lagging Tail / Full Incense: +1. Quick Draw /
+///   Quick Claw (+0.1): -1, over those. Mycelium Might on a Status move
+///   (data/abilities.ts myceliummight, -0.1): +1, over everything (Quick
+///   Draw never fires on a Status move).
+/// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>,
+/// <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>,
+/// <https://bulbapedia.bulbagarden.net/wiki/Mycelium_Might_(Ability)>.
+pub(crate) fn fractional_key(battle: &Battle, side: SideRef, actor_slot: u8, mid: u16, quick: bool) -> i8 {
+    let Some(m) = battle.side(side).active_mon(actor_slot as usize) else { return 0 };
+    let status = mid == u16::MAX || data::MOVES[mid as usize].category == 2;
+    if status && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT {
+        return 1;
+    }
+    if quick {
+        return -1;
+    }
+    if m.item_id == data::item_id::CUSTAPBERRY
+        && m.current_hp > 0
+        && m.current_hp * 4 <= m.stats.hp
+        && crate::item::can_eat_berry(battle, side, m.item_id)
+    {
+        -1
+    } else if m.item_id == data::item_id::LAGGINGTAIL || m.item_id == data::item_id::FULLINCENSE {
+        1
+    } else {
+        0
+    }
+}
+
 /// Compute the [`MoveEntry`] sort key for one queued move/terastallize.
 ///
 /// Draws NO speed-tie RNG (that now happens once per genuine tie group in
@@ -413,22 +448,8 @@ fn schedule_move(
             //   <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>
             //   <https://bulbapedia.bulbagarden.net/wiki/Lagging_Tail>
             //   <https://bulbapedia.bulbagarden.net/wiki/Full_Incense>
-            let frac = if m.item_id == data::item_id::CUSTAPBERRY
-                && m.current_hp > 0
-                && m.current_hp * 4 <= m.stats.hp
-                // Opposing Unnerve suppresses Custap's priority bump (the
-                // berry can't be eaten). The consume site in
-                // `battle.rs:consume_fractional_pri_items` gates identically.
-                && crate::item::can_eat_berry(battle, side, m.item_id)
-            {
-                -1i8
-            } else if m.item_id == data::item_id::LAGGINGTAIL
-                || m.item_id == data::item_id::FULLINCENSE
-            {
-                1i8
-            } else {
-                0i8
-            };
+            // Fractional priority (Custap Berry, Lagging Tail / Full
+            // Incense, Mycelium Might): `fractional_key`.
             // Quick Draw, then Quick Claw: PS's FractionalPriority handlers
             // (onFractionalPriorityPriority -1 and -2, so Quick Draw runs
             // first). Each returns 0.1, which we model as the "first in
@@ -445,21 +466,7 @@ fn schedule_move(
                 Some(q) => q[side as usize][(actor_slot as usize).min(1)],
                 None => quick_fractional_roll(battle, side, actor_slot, mid, rng),
             };
-            let frac = if quick { -1i8 } else { frac };
-            // Mycelium Might — PS `data/abilities.ts:myceliummight`. A Status
-            // move used by a Mycelium Might holder always moves LAST within
-            // its priority bracket (`-0.1` fractional priority → our `+1`
-            // "last in bracket" sub-bucket). Mutually exclusive with Quick
-            // Draw above (that fires only on non-Status moves). The companion
-            // ignore-ability half lives in `battle.rs`. Toedscruel signature.
-            // <https://bulbapedia.bulbagarden.net/wiki/Mycelium_Might_(Ability)>.
-            let frac = if category == 2
-                && m.effective_ability_id() == data::ability_id::MYCELIUMMIGHT
-            {
-                1i8
-            } else {
-                frac
-            };
+            let frac = fractional_key(battle, side, actor_slot, mid, quick);
             (pri_after_item, frac, effective_speed(m, tailwind, battle.weather, battle.terrain) as i64)
         }
         None => (0, 0, 0),

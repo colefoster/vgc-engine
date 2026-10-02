@@ -1,0 +1,195 @@
+{
+  "ok": true,
+  "name": "champions-encore-rerolls-claw-damage",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Whimsicott",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 105,
+      "max": 135,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Encore",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Charm",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 89,
+      "max": 135,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 5,
+      "site": "Battle.onFractionalPriority (data/items.js:4993)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 5,
+      "site": "Battle.onFractionalPriority (data/items.js:4993)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 5,
+      "site": "Battle.onFractionalPriority (data/items.js:4993)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1790926353\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Whimsicott, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Snorlax, L50, F|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1790926353\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Whimsicott|Whimsicott, L50, M|135/135\n|switch|p1b: Pikachu|Pikachu, L50, F|110/110\n|switch|p2a: Snorlax|Snorlax, L50, F|235/235\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|turn|1|\n|t:|1790926353\n|move|p1a: Whimsicott|Splash|p1a: Whimsicott\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Whimsicott\n|-damage|p1a: Whimsicott|105/135\n|\n|upkeep\n|turn|2|\n|t:|1790926353\n|move|p1a: Whimsicott|Encore|p2a: Snorlax\n|-start|p2a: Snorlax|Encore\n|move|p1b: Pikachu|Charm|p2a: Snorlax\n|-unboost|p2a: Snorlax|atk|2\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Whimsicott\n|-damage|p1a: Whimsicott|89/135\n|\n|upkeep\n|turn|3"
+}
