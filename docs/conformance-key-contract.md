@@ -150,6 +150,7 @@ conformance harness. Owner-approved (rounds 9 and 10); SplitMix battles
 |---|---|---|
 | PS's commitChoices `queue.sort()` replayed with PS's recorded tie offsets | `Battle::keyed_commit_sort`, `turn_prologue` | the offsets index PS's action list (switches, Megas, Tera, moves), not the engine's move list |
 | no `shuffle_tie_groups` in the initial order | `order::action_order_keyed` | the commit order above replaces it |
+| pre-turn manual switches run in that commit order (tie shuffle included), with no second sort or draw | `Battle::apply_pre_turn_switches` via `commit_switch_order` (also set by the `ps-rng` commit emulation) | other rngs sort by the leaving mon's Speed and shuffle exact ties with `speed_sort_draw` |
 | PS's tie shuffles replayed in every gen-8+ re-sort | `after_move_action` → `order::resort_remaining` with the keyed rng | SplitMix keeps tied moves in queue order |
 | full-paralysis and infatuation gates drawn under context `u16::MAX - 4` | `battle.rs` paralysis / Attract gates | the harness parks these pass/fail bools apart from the move's range draws (Dire Claw shares the key) |
 

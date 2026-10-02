@@ -803,3 +803,102 @@ fn ps_rng_champions_encore_draws_target_then_insertion_at_once() {
     assert_eq!((ins.op, ins.a, ins.b), ("insert_choice", 1, 3), "{trace:?}");
     assert_eq!(trace.iter().filter(|d| d.op == "insert_choice").count(), 1);
 }
+
+// ---- Pre-turn manual switches run in the leaving mon's Speed order ----
+//
+// Switch actions are order 103 sorted by comparePriority (sim/battle.ts:404)
+// on the LEAVING mon's Speed (Trick Room flips it), ties shuffled by
+// commitChoices' speedSort (:429). The incoming mon's Speed plays no part.
+// Both sides swap a Chansey for a terrain setter: whoever switches in last
+// sets the terrain that stays.
+
+fn switch_battle(rng: crate::rng::Rng, p1_lead: &str, p2_lead: &str) -> Battle {
+    let p1 = format!(r#"[{p1_lead},{{"species":"pikachu","level":50,"ability":"static","moves":["splash","quickattack"]}},{{"species":"indeedee","level":50,"ability":"psychicsurge","moves":["splash"]}}]"#);
+    let p2 = format!(r#"[{p2_lead},{{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}},{{"species":"rillaboom","level":50,"ability":"grassysurge","moves":["splash"]}}]"#);
+    let mut b = Battle::with_rng(
+        BattleConfig { format: Format::Doubles, seed: 0 },
+        rng,
+        TeamBuilder::from_json(&p1).unwrap(),
+        TeamBuilder::from_json(&p2).unwrap(),
+    );
+    b.set_format_id(CHAMPIONS_ID);
+    b
+}
+
+const SW_CHANSEY: &str = r#"{"species":"chansey","level":50,"ability":"naturalcure","moves":["splash"]}"#;
+
+fn switch_turn(b: &mut Battle) {
+    b.step(
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)],
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, mv(1, 0, None)],
+    );
+}
+
+#[test]
+fn switch_order_tied_outgoing_speed_goes_either_way() {
+    // Both Chanseys tie: the order is a coin flip, not the incoming Speed.
+    let mut seen = [false; 2];
+    for seed in 0..40 {
+        let mut b = switch_battle(crate::rng::Rng::Splitmix(seed), SW_CHANSEY, SW_CHANSEY);
+        switch_turn(&mut b);
+        match b.terrain {
+            crate::terrain::Terrain::Grassy => seen[0] = true,
+            crate::terrain::Terrain::Psychic => seen[1] = true,
+            other => panic!("seed {seed}: {other:?}"),
+        }
+    }
+    assert_eq!(seen, [true, true], "both tie outcomes");
+}
+
+#[test]
+fn switch_order_follows_the_leaving_mons_speed() {
+    // p1's leaving Jolteon outspeeds p2's Chansey: p1 switches first, so
+    // Rillaboom enters last (Grassy). Trick Room reverses it (Psychic).
+    let jolteon = r#"{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["splash"]}"#;
+    for seed in 0..10 {
+        for (tr, want) in [(false, crate::terrain::Terrain::Grassy), (true, crate::terrain::Terrain::Psychic)] {
+            let mut b = switch_battle(crate::rng::Rng::Splitmix(seed), jolteon, SW_CHANSEY);
+            if tr {
+                b.trick_room_turns = 5;
+            }
+            switch_turn(&mut b);
+            assert_eq!(b.terrain, want, "seed {seed} trick room {tr}");
+        }
+    }
+}
+
+#[test]
+fn switch_order_keyed_commit_tie_is_not_drawn_again() {
+    // Keyed oracle: commitChoices' sort draws the one switch tie; the
+    // switch executor reuses that order and draws nothing.
+    let mut b = switch_battle(crate::rng::Rng::oracle_keyed(Default::default(), 3), SW_CHANSEY, SW_CHANSEY);
+    let _ = b.rng_mut().take_miss_log();
+    switch_turn(&mut b);
+    let misses = b.rng_mut().take_miss_log().unwrap();
+    let ties = misses.iter().filter(|m| m.key.decision == crate::rng::RngDecision::Tiebreak).count();
+    assert_eq!(ties, 1, "{misses:?}");
+    assert!(matches!(b.terrain, crate::terrain::Terrain::Grassy | crate::terrain::Terrain::Psychic));
+}
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn switch_order_ps_rng_follows_the_commit_shuffle() {
+    // commitChoices' speedSort: both switches (order 103, Speed tie) lead
+    // the queue, shuffled by one random(0, 2). Draw 0 keeps p1 first
+    // (Rillaboom last: Grassy); 1 swaps them (Psychic).
+    let mut seen = [false; 2];
+    for seed in 1..=8u32 {
+        let mut rng = crate::rng::Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = switch_battle(rng, SW_CHANSEY, SW_CHANSEY);
+        let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+        switch_turn(&mut b);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let commit = trace.iter().find(|d| d.op == "shuffle").expect("commit shuffle");
+        assert_eq!((commit.a, commit.b), (0, 2), "seed {seed}: {trace:?}");
+        let want = if commit.result == 0 { crate::terrain::Terrain::Grassy } else { crate::terrain::Terrain::Psychic };
+        assert_eq!(b.terrain, want, "seed {seed}: draw {}", commit.result);
+        seen[commit.result as usize] = true;
+    }
+    assert_eq!(seen, [true, true], "both tie outcomes across seeds");
+}

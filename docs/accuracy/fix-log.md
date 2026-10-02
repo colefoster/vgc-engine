@@ -1767,3 +1767,89 @@ replacement. Standard gen 9 Encore is unchanged.
   pass, with 0 failures and 32 ignored each, including both stored golden
   gates. Release build, configured clippy guards, residual-index audit and
   diff check pass. The historical study corpus was not rescored.
+
+## Mechanics fix: pre-turn manual switch order on Speed ties
+
+This is one structural fix: the order of voluntary start-of-turn switches.
+Lead abilities, faint replacements and Encore are not touched.
+
+- **Bug.** `apply_pre_turn_switches` sorted switches by the leaving mon's
+  Speed with an unstable sort, so ties came out in an arbitrary fixed order.
+  The `ps-rng` and keyed commit sorts already ranked the switch actions,
+  with PS's tie shuffle, but kept only the move order.
+- **PS** (`a5df8274e85b0889bf2a9b3422a08b39732374fc`):
+  - Switch actions are order 103 (`sim/battle-queue.ts`).
+  - commitChoices' `queue.sort()` / `speedSort` (`sim/battle.ts:429`)
+    orders them by comparePriority (`:404`) on the leaving mon's action
+    Speed, flipped under Trick Room, and shuffles exact ties.
+  - `switchIn` / `runSwitch` (`sim/battle-actions.ts`) then run them in
+    that order. The incoming mon's Speed plays no part.
+  - Bulbapedia, <https://bulbapedia.bulbagarden.net/wiki/Switching>: the
+    leaving Pokémon's Speed sets the order of manual switches.
+- **Evidence (root).** 12 manual-switch jobs on PS: both leaving Chanseys
+  tie at 70 Speed, and the incoming Indeedee / Rillaboom have Speeds
+  115/115, 147/105 and 115/137. 9 diverged on state. On sodium seed 1, PS
+  switches Rillaboom in before Indeedee (Psychic Terrain), where the engine
+  did the opposite (Grassy). There were no missing keyed draws, and no
+  first draw divergence in the seeded cases with unequal incoming Speeds,
+  so the engine was dropping PS's order rather than mis-consuming RNG.
+- **Fix** (`battle.rs`).
+  - Both commit sorts record the switch actions' sorted order in a fixed
+    `commit_switch_order: Option<([(u8, u8); 4], u8)>`, which
+    `apply_pre_turn_switches` takes and follows with no new sort or draw.
+  - Without a commit sort (Splitmix, Recording, plain oracles) it sorts by
+    the leaving mon's Speed with `ps_speed_sort`, shuffling exact ties
+    through `speed_sort_draw`, the same speedSort machinery.
+  - Only the existing classification is kept: a later switch for a slot
+    that already moved is still treated as a mid-turn pick. No new filter
+    for invalid or out-of-range switch choices was added; those are still
+    handled downstream in `do_switch`. Move, Mega and Tera ordering is
+    unchanged. No heap, no `unsafe`.
+- **RNG.** `ps-rng` and the keyed oracle draw nothing new. Splitmix and
+  Recording now draw one tie shuffle when leaving Speeds are exactly equal.
+- **Tests** (`battle_r10_tests.rs`, `switch_order_*`):
+  - A Splitmix tie gives both terrains across seeds. The old unstable
+    sort drew nothing, so it should give one fixed order, but that wasn't
+    run.
+  - A faster leaving Jolteon switches first (Grassy), and Trick Room
+    reverses it (Psychic), every seed.
+  - Keyed: exactly one Tiebreak draw (the commit sort's), none from the
+    executor.
+  - `ps-rng` (sodium seeds 1-8): the commit `shuffle(0, 2)` decides the
+    terrain, and both outcomes occur.
+  - Root ran them after the change: 3 default and 4 `ps-rng` tests pass.
+    They were written after the fix, so they carry no before-fix red of
+    their own.
+- **Red evidence** is root's actual-PS conformance, not these tests: on
+  gen5 seeds 1 and 5, PS has 175 HP where the old engine had 172. Before
+  the fix, 9 of 12 manual-switch jobs diverged, while the other 8
+  outgoing-Speed / Trick Room controls matched 16/16. After the fix, all
+  24 manual-switch cases match 32/32 turns in keyed and seeded replay:
+  no missing draws, errors or first draw divergences. Keyed replay uses
+  24 existing repair aliases; seeded replay uses none.
+- **Golden.** A tied-Speed golden can't pin the switch tie. The PS golden
+  driver patches only `Battle.random`, and `PRNG.shuffle` (which speedSort
+  uses) bypasses it, so the `.ps.json` records no Tiebreak entries and the
+  engine's fallback can't reproduce PS's shuffle. The first tied input
+  failed on that (PS 175 vs engine 172); root archived it and removed it.
+  The exact RNG proof for ties comes from the keyed and seeded conformance
+  runs. In its place,
+  `crates/vgc-engine-golden/goldens/switch-order-speed-terrain.input.json`
+  (Champions, seed `[1,2,3,4]`) is an unequal-Speed smoke control, not a
+  red regression. P1's leaving Chansey has 10 Speed EVs (80 vs P2's 70),
+  so P1 switches to Indeedee first and P2's Rillaboom enters last,
+  leaving Grassy Terrain, and Pikachu's Quick Attack on p2a deals damage.
+  Root generated its `.ps.json` with the pinned offline PS oracle:
+  `ok: true`, no errors, Rillaboom ends at 164/175 HP.
+- **Limits.** Lead-order ties (the 4/8 lead cases) are a separate issue
+  and remain unfixed. The ps-rng speed key is the cached PS Speed, the
+  keyed one the engine's effective Speed, as for moves. No native `chance`
+  test of the switch tie was added.
+- **Verification (root):** full workspace excluding Python bindings:
+  default 1,514 passed; `ps-rng` 1,552 passed; 0 failed and 32 ignored
+  each, including both golden gates. Release accuracy build, default
+  workspace configured clippy guards, core `ps-rng` clippy, residual-index
+  audit and diff check pass. Expanding the workspace clippy run to
+  `ps-rng` exposes a pre-existing unnecessary collect in
+  `crates/vgc-engine-conformance/src/accuracy.rs:915`; it is outside this
+  switch-order change. Historical corpus results remain unchanged.
