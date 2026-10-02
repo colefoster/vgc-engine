@@ -1408,3 +1408,48 @@ fix.
   The quiet Palafin fixture also matches 2/2 turns with no missing or
   leftover draws and no repairs. The full study corpus has not been
   regenerated or rescored.
+
+## Scorer fix: the last turn before a `--max-turns` cutoff is compared in full
+
+This is a validation gap in the scorer, not an engine fix. It follows from
+the cutoff fix above.
+
+- **Gap.** `drive()` (`accuracy.rs`) compares only faints on the last
+  recorded state turn whenever `_meta.ended` is set. That is meant for a
+  battle PS ended mid-turn, where the engine still runs the turn's
+  residuals. A bounded run also sets `ended` (the forced `|tie`), and since
+  the cutoff fix it records only turns 1..N. So the fully played turn N was
+  compared on faints alone, and HP, ability, status, item, boost, species,
+  field and side differences there went unreported. The bounded-output
+  counts in the section above (7 repros, 14/14; Palafin, 2/2) were scored
+  that way, so turn 2 was compared on faints only. They need a re-run.
+- **Evidence.** The parent ran 24 synthetic one-turn Trace jobs on PS
+  `a5df8274…` with sodium seeds `…01`-`…08`. The 8 Ability Shield jobs
+  scored 1/1 matched. Copies with only `ended` set to false showed
+  turn 1 / p1a / ability: engine `sapsipper` vs PS `voltabsorb` on seeds
+  1, 2, 4, 5, 6 and 8. That diagnostic used edited metadata. The
+  unmodified outputs were re-run under this fix: the same six ability
+  divergences are now reported. The Trace difference is not fixed here.
+- **Boundary.** `Meta` now reads the optional `_meta.lastTurn` (the last
+  `|turn|` marker PS printed, already written by `ps-battle.js`). Let S be
+  the last recorded state turn. The faint-only comparison applies to S
+  only when `ended` is set and either `lastTurn` ≤ S (a natural win or tie
+  on S) or `lastTurn` is absent (older captures, previous reading). A
+  cutoff has `lastTurn = N + 1 > S = N`, so every recorded turn gets the
+  full diff. Not-ended battles are unchanged, as are the RNG tables,
+  repair, report schema and replay. Old captures that still contain the
+  unplayed cap turn have `lastTurn = S`, so they keep the faint-only
+  comparison on that turn. `accuracy_repros.rs` already drops that turn,
+  which leaves the stored goldens' real last turn compared in full; all
+  61 still pass.
+- **Tests.** `crates/vgc-engine-conformance/tests/accuracy_terminal.rs`
+  uses turn 1 of the `recoil-uncapped-on-ko` capture with `ended` set
+  and one expected value corrupted, replayed through `replay_keyed`:
+  - `lastTurn = 2`: a wrong HP, ability or boost is reported on turn 1.
+    Before the fix, the wrong HP went undetected.
+  - `lastTurn = 1` (natural end) and no marker (older captures): those
+    corruptions are still ignored, and a wrong faint is still reported.
+- The corpus has not been rescored.
+- The previous 8 bounded fixtures were rechecked under this full comparison:
+  all 16 played state snapshots still match, with no missing draws or errors.
+  Their existing leftover-draw / choice-repair heuristics still apply.

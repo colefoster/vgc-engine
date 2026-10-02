@@ -54,6 +54,11 @@ pub struct Meta {
     pub ok: bool,
     #[serde(default)]
     pub ended: bool,
+    /// The last `|turn|N` marker PS printed. A `--max-turns` cutoff ends
+    /// (forced `|tie`) at the marker after the last played turn; absent in
+    /// older captures.
+    #[serde(rename = "lastTurn", default)]
+    pub last_turn: Option<u32>,
     #[serde(default)]
     pub errors: Vec<String>,
     #[serde(default)]
@@ -360,11 +365,15 @@ fn drive(
     let mut ended = false;
     // PS stops the moment a side has nothing left; the engine finishes the
     // turn (residuals, end-of-turn heals, field timers) before reporting the
-    // winner. On that terminal turn only who fainted is comparable.
-    let terminal = if acc.meta.ended {
-        acc.turns.iter().filter(|t| t.has_state).map(|t| t.base.turn).max()
-    } else {
-        None
+    // winner. On that terminal turn only who fainted is comparable. A
+    // `--max-turns` cutoff also ends the battle, but at the next turn's
+    // marker (`lastTurn` past every recorded turn): the last recorded turn
+    // was fully played and gets the full diff. No marker: legacy reading.
+    let last_state = acc.turns.iter().filter(|t| t.has_state).map(|t| t.base.turn).max();
+    let terminal = match (acc.meta.ended, last_state, acc.meta.last_turn) {
+        (true, Some(s), Some(marker)) if marker > s => None,
+        (true, s, _) => s,
+        (false, _, _) => None,
     };
     let res = (|| {
         for t in &acc.turns {
