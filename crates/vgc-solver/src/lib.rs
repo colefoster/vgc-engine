@@ -96,6 +96,22 @@ pub fn reset_auto_lossy_engaged_count() {
     AUTO_LOSSY_ENGAGED_COUNT.store(0, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread mirror of [`AUTO_LOSSY_ENGAGED_COUNT`]. The global
+    /// sums every test thread in the binary, so unit tests asserting on their
+    /// own calls read this instead.
+    static AUTO_LOSSY_ENGAGED_THIS_THREAD: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[inline]
+fn note_auto_lossy_engaged() {
+    AUTO_LOSSY_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+    #[cfg(test)]
+    AUTO_LOSSY_ENGAGED_THIS_THREAD.with(|c| c.set(c.get() + 1));
+}
+
 /// Process-global telemetry for the mutual-focus defender-joint tensor.
 /// `ENGAGED` counts cells where a coupled defender was present AND the gate
 /// proved independence (tensor fired); `COUPLED_SEEN` counts cells where a
@@ -416,7 +432,7 @@ pub fn enumerate_outcomes_bounded(
             }
             if tensor > threshold as u64 {
                 effective_opts.lossy_damage_3bucket = true;
-                AUTO_LOSSY_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+                note_auto_lossy_engaged();
             }
         }
     }
@@ -989,7 +1005,7 @@ fn tensor_enumerate(
             }
             if tensor > threshold as u64 {
                 effective_opts.lossy_damage_3bucket = true;
-                AUTO_LOSSY_ENGAGED_COUNT.fetch_add(1, Ordering::Relaxed);
+                note_auto_lossy_engaged();
             }
         }
     }
@@ -2274,10 +2290,21 @@ mod tests {
         (b, move_choice(2), switch_choice(1))
     }
 
-    /// Serialize the four PR-L tests so their reads of the process-global
-    /// [`AUTO_LOSSY_ENGAGED_COUNT`] don't race against each other. The
-    /// rest of the suite never sets `auto_lossy_damage_threshold`, so it
-    /// can't perturb the counter — only these four can.
+    /// Engagements made by enumerate calls on the current thread. Other
+    /// tests in this binary (any `SolverConfig::default()` solve) also bump
+    /// the process-global counter, so PR-L assertions read this instead.
+    fn thread_engaged() -> u64 {
+        AUTO_LOSSY_ENGAGED_THIS_THREAD.with(|c| c.get())
+    }
+
+    fn reset_thread_engaged() {
+        AUTO_LOSSY_ENGAGED_THIS_THREAD.with(|c| c.set(0));
+    }
+
+    /// Serialize the PR-L tests. Their assertions use the per-thread count;
+    /// the lock keeps the global reset in
+    /// `auto_lossy_observation_ignores_other_threads` from racing another
+    /// PR-L test.
     fn pr_l_test_lock() -> std::sync::MutexGuard<'static, ()> {
         use std::sync::{Mutex, OnceLock};
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2290,7 +2317,7 @@ mod tests {
     fn auto_lossy_off_preserves_full_lossless() {
         let _g = pr_l_test_lock();
         let (b, p1, p2) = big_tensor_battle_and_choices();
-        reset_auto_lossy_engaged_count();
+        reset_thread_engaged();
         let baseline = enumerate_outcomes_with(
             &b, &[p1], &[p2], 7,
             EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None },
@@ -2306,22 +2333,59 @@ mod tests {
             assert!((a.prob - c.prob).abs() < 1e-12);
         }
         assert_eq!(
-            auto_lossy_engaged_count(),
+            thread_engaged(),
             0,
             "auto_lossy_damage_threshold = None must never engage",
         );
+    }
+
+    /// Regression for the parallel-suite race: an unlocked test elsewhere in
+    /// this binary (`recursive::tests::singles_joint_policy_is_length_one`,
+    /// via `SolverConfig::default()`'s `Some(1_000)`) engages auto-lossy on
+    /// its own thread. Barriers force that engagement between the lossless
+    /// body's reset and its `== 0` assertion.
+    #[test]
+    fn auto_lossy_observation_ignores_other_threads() {
+        use std::sync::{Arc, Barrier};
+        let _g = pr_l_test_lock();
+        let after_reset = Arc::new(Barrier::new(2));
+        let after_engage = Arc::new(Barrier::new(2));
+        let (ra, ea) = (Arc::clone(&after_reset), Arc::clone(&after_engage));
+        let lossless = std::thread::spawn(move || {
+            let (b, p1, p2) = big_tensor_battle_and_choices();
+            reset_auto_lossy_engaged_count();
+            reset_thread_engaged();
+            let _ = enumerate_outcomes_with(&b, &[p1], &[p2], 7, EnumerateOpts::default());
+            ra.wait();
+            ea.wait();
+            (thread_engaged(), auto_lossy_engaged_count())
+        });
+        let engaging = std::thread::spawn(move || {
+            let (b, p1, p2) = big_tensor_battle_and_choices();
+            after_reset.wait();
+            let _ = enumerate_outcomes_with(
+                &b, &[p1], &[p2], 7,
+                EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: Some(25) },
+            );
+            after_engage.wait();
+        });
+        engaging.join().unwrap();
+        let (observed, global) = lossless.join().unwrap();
+        assert_eq!(observed, 0, "lossless thread saw another thread's engagement");
+        // The public counter stays process-global: it saw the other thread.
+        assert!(global >= 1, "global counter missed a cross-thread engagement");
     }
 
     #[test]
     fn auto_lossy_engages_above_threshold() {
         let _g = pr_l_test_lock();
         let (b, p1, p2) = big_tensor_battle_and_choices();
-        reset_auto_lossy_engaged_count();
+        reset_thread_engaged();
         let auto = enumerate_outcomes_with(
             &b, &[p1], &[p2], 7,
             EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: Some(25) },
         );
-        let engaged = auto_lossy_engaged_count();
+        let engaged = thread_engaged();
         assert!(
             engaged >= 1,
             "expected auto-lossy to engage on a >25-combo cell, got engaged={engaged}",
@@ -2350,7 +2414,7 @@ mod tests {
         // below 10_000.
         let _g = pr_l_test_lock();
         let b = fixture();
-        reset_auto_lossy_engaged_count();
+        reset_thread_engaged();
         let baseline = enumerate_outcomes_with(
             &b, &[switch_choice(1)], &[switch_choice(1)], 17,
             EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: None },
@@ -2360,7 +2424,7 @@ mod tests {
             EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: Some(10_000) },
         );
         assert_eq!(
-            auto_lossy_engaged_count(),
+            thread_engaged(),
             0,
             "switch/switch tensor is small; auto-lossy must NOT engage",
         );
@@ -2381,7 +2445,7 @@ mod tests {
         use crate::recursive::{endgame_solve, SolverConfig};
         let _g = pr_l_test_lock();
         let b = fixture();
-        reset_auto_lossy_engaged_count();
+        reset_thread_engaged();
         let cfg_default = SolverConfig {
             max_depth: 1,
             node_budget: 10_000,
@@ -2402,7 +2466,7 @@ mod tests {
             (v_default - v_off).abs() < 1e-9,
             "smoke-fixture Nash value diverged: default={v_default} off={v_off} \
              (cells should be under threshold; engaged={})",
-            auto_lossy_engaged_count(),
+            thread_engaged(),
         );
     }
 
@@ -2462,12 +2526,12 @@ mod tests {
         ];
         let mut counts = Vec::with_capacity(thresholds.len());
         for &thr in thresholds {
-            reset_auto_lossy_engaged_count();
+            reset_thread_engaged();
             let _ = enumerate_outcomes_with(
                 &b, &[p1], &[p2], 7,
                 EnumerateOpts { lossy_damage_3bucket: false, auto_lossy_damage_threshold: thr },
             );
-            counts.push(auto_lossy_engaged_count());
+            counts.push(thread_engaged());
         }
         // Monotone non-decreasing across the descending-threshold sweep.
         for w in counts.windows(2) {
