@@ -80,6 +80,10 @@ pub enum RngDecision {
     /// HOLDER: `actor` = holder slot, `target` = `NO_SLOT`, `move_id` = the
     /// engine ability id — see [`Rng::ability_chance`].
     Ability,
+    /// An item's own roll, keyed by its holder and engine item id. This is
+    /// distinct from a move's Range draw even when the item fires while the
+    /// move queue is being built (Quick Claw).
+    Item,
 }
 
 /// The semantic key under which a randomized outcome is recorded and
@@ -92,10 +96,9 @@ pub struct RngKey {
     pub turn: u32,
     pub actor: SlotRef,
     pub target: SlotRef,
-    /// Engine numeric move id (`data::move_id::*`). The conformance runner
-    /// maps PS move slugs to this id when building the table, so the engine
-    /// can key on the id it already has in scope — no slug lookup in the
-    /// draw path.
+    /// Engine numeric move, ability, or item id, selected by `decision`.
+    /// The conformance runner maps PS slugs to ids when building the table;
+    /// no slug lookup occurs in the draw path.
     pub move_id: u16,
     pub decision: RngDecision,
 }
@@ -794,6 +797,7 @@ impl Rng {
                 RngDecision::Range => "range",
                 RngDecision::Tiebreak => "tiebreak",
                 RngDecision::Ability => "ability",
+                RngDecision::Item => "item",
             }),
             _ => {}
         }
@@ -1109,7 +1113,7 @@ impl Rng {
         if let Rng::Ps(p) = self {
             return p.random_chance("chance", num, den);
         }
-        self.ability_draw(turn, holder, ability, den) < num
+        self.effect_draw(turn, holder, ability, RngDecision::Ability, den) < num
     }
 
     /// PS `random(n)` rolled by an ability handler (Effect Spore's
@@ -1120,13 +1124,25 @@ impl Rng {
         if let Rng::Ps(p) = self {
             return p.random_n("range", n);
         }
-        self.ability_draw(turn, holder, ability, n)
+        self.effect_draw(turn, holder, ability, RngDecision::Ability, n)
     }
 
-    /// Shared body: a `random(den)` value. Recorded bool gates come back as
+    /// PS item handler's `randomChance`, keyed by holder + item instead of
+    /// whichever move context preceded the queue's FractionalPriority event.
+    /// Other RNG variants still draw the same `randomChance(num, den)` gate.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
+    pub fn item_chance(&mut self, turn: u32, holder: SlotRef, item: u16, num: u32, den: u32) -> bool {
+        #[cfg(feature = "ps-rng")]
+        if let Rng::Ps(p) = self {
+            return p.random_chance("chance", num, den);
+        }
+        self.effect_draw(turn, holder, item, RngDecision::Item, den) < num
+    }
+
+    /// Shared ability/item body: a `random(den)` value. Recorded bool gates come back as
     /// `Range(0)` (pass) / `Range(u32::MAX)` (fail) and compare correctly
     /// against any `num`.
-    fn ability_draw(&mut self, turn: u32, holder: SlotRef, ability: u16, den: u32) -> u32 {
+    fn effect_draw(&mut self, turn: u32, holder: SlotRef, effect: u16, decision: RngDecision, den: u32) -> u32 {
         let den = den.max(1);
         match self {
             Rng::Splitmix(_) | Rng::PsGen5(_) => self.range(den),
@@ -1144,12 +1160,12 @@ impl Rng {
             }
             Rng::OracleKeyed(k) => {
                 let saved = (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move);
-                (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move) = (turn, holder, NO_SLOT, ability);
-                let v = match k.take(RngDecision::Ability) {
+                (k.ctx_turn, k.ctx_actor, k.ctx_target, k.ctx_move) = (turn, holder, NO_SLOT, effect);
+                let v = match k.take(decision) {
                     Some(RngEvent::Range(v)) => v,
                     _ => {
                         let v = (k.fallback() as u32) % den;
-                        k.record_miss(RngDecision::Ability, DrawSpace::UniformRange(den), RngEvent::Range(v));
+                        k.record_miss(decision, DrawSpace::UniformRange(den), RngEvent::Range(v));
                         v
                     }
                 };
@@ -1158,9 +1174,9 @@ impl Rng {
             }
             Rng::Recording(r) => {
                 let saved = (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move);
-                (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move) = (turn, holder, NO_SLOT, ability);
+                (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move) = (turn, holder, NO_SLOT, effect);
                 let v = (r.step() as u32) % den;
-                r.push(RngDecision::Ability, DrawSpace::UniformRange(den), RngEvent::Range(v));
+                r.push(decision, DrawSpace::UniformRange(den), RngEvent::Range(v));
                 (r.ctx_turn, r.ctx_actor, r.ctx_target, r.ctx_move) = saved;
                 v
             }
