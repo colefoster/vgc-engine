@@ -386,6 +386,15 @@ pub struct Battle {
     /// PS `data/moves.ts:afteryou` (`queue.prioritizeAction`) / `quash`
     /// (`action.order = 201`).
     pub(crate) pending_queue_reorder: Option<(SideRef, u8, bool)>,
+    /// Transient Champions Encore re-queue (data/mods/champions/moves.ts:
+    /// 307-339 `queue.changeAction`), set when Encore lands on a mon that
+    /// still has a different move queued and applied to the unprocessed
+    /// tail by `finalize_move_resolution`: `(side, slot, encored move slot,
+    /// its target, insertion index or 255 = keep the queue position)`. The
+    /// target and the `insertChoice` tie are drawn when it is set. Always
+    /// `None` between actions; a plain Copy field — no heap.
+    #[serde(skip)]
+    pub(crate) encore_requeue: Option<(SideRef, u8, u8, Option<Target>, u8)>,
     /// This turn's fixed per-slot sort keys (Quick Claw, fractional
     /// priority, After You / Quash) for the gen-8+ re-sort. Rebuilt with
     /// every turn's queue.
@@ -717,6 +726,7 @@ impl Battle {
             magic_room_turns: 0,
             wonder_room_turns: 0,
             pending_queue_reorder: None,
+            encore_requeue: None,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
             queued_move_slot: [[255; 2]; 2],
@@ -3418,6 +3428,7 @@ self.trigger_emergency_exits();
         // `cancelMove`.
         let mut queue = ActionQueue::default();
         self.queued_move_slot = [[255; 2]; 2];
+        self.encore_requeue = None;
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
@@ -11772,6 +11783,59 @@ self.trigger_emergency_exits();
             // the gen-8+ re-sort keeps (sim/battle-queue.ts:290).
             self.turn_keys.bias[rside as usize][(rslot as usize).min(1)] = if to_front { -1 } else { 1 };
         }
+        // Champions Encore re-queued the target's action
+        // (`champions_encore_requeue`): it now uses the Encored move at the
+        // target drawn then, keeping its Tera / Mega form and its fixed sort
+        // keys (Encore passes `order: action.order`). Under `ps-rng` it also
+        // moves to insertChoice's index in the queue PS sees (the cancelled
+        // actions of replaced / Pursuit-consumed mons left out).
+        if let Some((rs, rslot, enc, new_target, insert)) = self.encore_requeue.take() {
+            let gone = |b: &Self, a: &ScheduledAction| {
+                let (si, sl) = (a.side as usize, (a.actor_slot as usize).min(1));
+                b.replaced_mid_turn[si][sl] || b.pursuit_consumed[si][sl]
+            };
+            let tail = &mut order.as_mut_slice()[idx + 1..];
+            let found = tail.iter().position(|a| {
+                a.side == rs
+                    && a.actor_slot == rslot
+                    && matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+            });
+            if let Some(p) = found {
+                if let Choice::Move { move_slot, target, .. }
+                | Choice::Terastallize { move_slot, target, .. }
+                | Choice::MegaEvolve { move_slot, target, .. } = &mut tail[p].choice
+                {
+                    *move_slot = enc;
+                    *target = new_target;
+                }
+                let (si, sl) = (rs as usize, (rslot as usize).min(1));
+                self.queued_move_slot[si][sl] = enc;
+                let mid = self.side(rs).active_mon(rslot as usize).and_then(|m| m.moves.get(enc as usize).copied());
+                if let Some(mid) = mid.filter(|&id| id != u16::MAX) {
+                    let kind = if self.moves()[mid as usize].category == 2 { ActionKind::StatusMove } else { ActionKind::DamagingMove };
+                    pending_kind[si][sl] = kind.as_byte();
+                }
+                if insert != 255 {
+                    let mut seen = 0u8;
+                    let mut dest = tail.len();
+                    for (j, a) in tail.iter().enumerate() {
+                        if j == p || gone(self, a) {
+                            continue;
+                        }
+                        if seen == insert {
+                            dest = j;
+                            break;
+                        }
+                        seen += 1;
+                    }
+                    if dest > p {
+                        tail[p..dest].rotate_left(1);
+                    } else if dest < p {
+                        tail[dest..=p].rotate_right(1);
+                    }
+                }
+            }
+        }
         // Ally Switch swapped `sw_side`'s two active slots mid-turn. PS
         // binds a queued action to its Pokémon but its target to a
         // location (`targetLoc`, resolved by getTarget -> getAtLoc at
@@ -12618,6 +12682,9 @@ self.trigger_emergency_exits();
     /// move's priority (ordering already ran), at a `getRandomTarget` pick
     /// (sim/battle.ts:2490): the user for self / ally-side / field moves,
     /// else a `sample` over the living foes (the only foe in singles).
+    /// Standard gen 9 only in practice: Champions Encore already re-queued
+    /// the encored move when it landed (`champions_encore_requeue`), so the
+    /// slots match here and nothing is drawn twice.
     fn encore_override(&mut self, side: SideRef, slot: u8, move_slot: u8, target: Option<Target>) -> (u8, Option<Target>) {
         let Some(m) = self.side(side).active_mon(slot as usize) else { return (move_slot, target) };
         let enc = m.encored_move_slot();
@@ -12630,10 +12697,101 @@ self.trigger_emergency_exits();
         if mid == u16::MAX {
             return (move_slot, target);
         }
+        (enc, self.random_target_for(side, slot, mid))
+    }
+
+    /// Champions Encore's `queue.changeAction` (data/mods/champions/moves.ts:
+    /// 307-339; sim/battle-queue.ts:301-305): the target's queued move is
+    /// replaced by the Encored one (`enc`) at once. resolveAction picks its
+    /// target here (sim/battle-queue.ts:268-275), keyed to the target and the
+    /// forced move; under `ps-rng`, insertChoice (:369-402) then draws its
+    /// insertion index among queued actions that tie the new one. The
+    /// rewrite itself is applied to the unprocessed queue by
+    /// `finalize_move_resolution`, so the gen-8+ re-sort that follows orders
+    /// it by the forced move's own priority. The Encore user's draw context
+    /// is restored afterwards.
+    fn champions_encore_requeue(
+        &mut self,
+        (user_side, user_slot): (SideRef, u8),
+        user_move: u16,
+        (ts, tslot): (SideRef, u8),
+        enc: u8,
+        #[cfg_attr(not(feature = "ps-rng"), allow(unused_variables))] pending_kind: &[[u8; 2]; 2],
+    ) {
+        let Some(mid) = self.side(ts).active_mon(tslot as usize).and_then(|t| t.moves.get(enc as usize).copied()) else { return };
+        if mid == u16::MAX {
+            return;
+        }
+        let target = self.random_target_for(ts, tslot, mid);
+        #[allow(unused_mut)]
+        let mut insert = 255u8;
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            // insertChoice: the queue (target's action cancelled) is sorted,
+            // so the first / last tie index are the counts of actions ahead
+            // of / tied with the new one; `random(first, last + 1)` on a tie.
+            let keys = self.turn_keys;
+            let new_key = crate::order::queued_move_key(self, ts, tslot, enc, &keys);
+            let (mut before, mut tied) = (0u32, 0u32);
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count().min(2) {
+                    let (si, sl) = (side as usize, slot);
+                    if (side == ts && slot == tslot as usize)
+                        || !matches!(pending_kind[si][sl], 1 | 2)
+                        || self.replaced_mid_turn[si][sl]
+                        || self.pursuit_consumed[si][sl]
+                    {
+                        continue;
+                    }
+                    let key = crate::order::queued_move_key(self, side, slot as u8, self.queued_move_slot[si][sl], &keys);
+                    match key.cmp(&new_key) {
+                        std::cmp::Ordering::Less => before += 1,
+                        std::cmp::Ordering::Equal => tied += 1,
+                        std::cmp::Ordering::Greater => {}
+                    }
+                }
+            }
+            insert = if tied == 0 {
+                before as u8
+            } else {
+                self.rng.ps_random_range("insert_choice", before, before + tied + 1) as u8
+            };
+        }
+        let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+        self.rng.set_move_context(self.turn + 1, sref(user_side) + user_slot, user_move, sref(ts) + tslot);
+        self.encore_requeue = Some((ts, tslot, enc, target, insert));
+    }
+
+    /// PS `getRandomTarget` (sim/battle.ts:2490-2522) for `side`/`slot`'s
+    /// move `mid`, keyed to that mon and move with no target: the user for
+    /// self / ally-side / field moves (no draw), the living adjacent ally for
+    /// adjacentAlly moves (`sample` of one; nothing in singles or without
+    /// one), else a `sample` over the living foes (no draw in singles).
+    fn random_target_for(&mut self, side: SideRef, slot: u8, mid: u16) -> Option<Target> {
         let n_active = self.format().active_count();
         let tcode = self.moves()[mid as usize].target;
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
-            return (enc, None);
+            return None;
+        }
+        let actor_ref = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
+        // adjacentAlly (code 2, sim/battle.ts:2503-2508): a sample over the
+        // living adjacent allies; none in Singles or without one (no draw).
+        if tcode == 2 {
+            let ally = slot ^ 1;
+            if n_active == 1 || !self.side(side).active_mon(ally as usize).is_some_and(|p| p.is_alive()) {
+                return None;
+            }
+            self.rng.set_move_context(self.turn + 1, actor_ref, mid, crate::rng::NO_SLOT);
+            self.rng.set_decision(RngDecision::Range);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                let _ = self.rng.ps_random_range("random_target", 0, 1);
+            } else {
+                let _ = self.rng.range(1);
+            }
+            #[cfg(not(feature = "ps-rng"))]
+            let _ = self.rng.range(1);
+            return Some(Target { side, slot: ally });
         }
         let foe = side.opposing();
         let mut alive = [0u8; 2];
@@ -12645,9 +12803,8 @@ self.trigger_emergency_exits();
             }
         }
         if n == 0 || n_active == 1 {
-            return (enc, Some(Target { side: foe, slot: 0 }));
+            return Some(Target { side: foe, slot: 0 });
         }
-        let actor_ref = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
         self.rng.set_move_context(self.turn + 1, actor_ref, mid, crate::rng::NO_SLOT);
         self.rng.set_decision(RngDecision::Range);
         #[cfg(feature = "ps-rng")]
@@ -12658,7 +12815,7 @@ self.trigger_emergency_exits();
         };
         #[cfg(not(feature = "ps-rng"))]
         let pick = self.rng.range(n as u32) as usize;
-        (enc, Some(Target { side: foe, slot: alive[pick.min(n - 1)] }))
+        Some(Target { side: foe, slot: alive[pick.min(n - 1)] })
     }
 
     /// Phazing force-switch: drag `slot` on `side` off the field and pull in
@@ -15417,6 +15574,19 @@ self.trigger_emergency_exits();
                 let dur = if k != 1 && k != 2 { 4 } else { 3 };
                 if let Some(t) = self.side_mut(ts).active_mon_mut(tslot as usize) {
                     t.set_encore(dur, last);
+                }
+                // Champions: a different queued move (Struggle included)
+                // becomes the Encored one now, unless a Mental Herb will cure
+                // it (data/mods/champions/moves.ts:307-339, the check at :326).
+                if self.champions && dur == 3 {
+                    let queued = self.queued_move_slot[ts as usize][(tslot as usize).min(1)];
+                    let herb = self
+                        .side(ts)
+                        .active_mon(tslot as usize)
+                        .is_some_and(|t| t.effective_item_id() == data::item_id::MENTALHERB);
+                    if queued != last && !herb {
+                        self.champions_encore_requeue((actor_side, actor_slot), move_id, (ts, tslot), last, pending_kind);
+                    }
                 }
                 // Mental Herb cures Encore (PS onUpdate).
                 crate::item::try_consume_mental_herb(self, ts, tslot);

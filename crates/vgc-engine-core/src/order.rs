@@ -635,14 +635,7 @@ pub(crate) fn resort_from(
             out[k] = (i8::MAX, k as i32, 0, 0);
             continue;
         }
-        let pri = state_priority(battle, a.side, a.actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
-        let speed = battle
-            .side(a.side)
-            .active_mon(a.actor_slot as usize)
-            .map(|m| effective_speed(m, battle.side(a.side).conditions.tailwind_turns > 0, battle.weather, battle.terrain) as i64)
-            .unwrap_or(0);
-        let speed_key = if trick_room { speed } else { -speed };
-        out[k] = (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key);
+        out[k] = queued_move_key_tr(battle, a.side, a.actor_slot, move_slot, keys, trick_room);
     }
     if let Some(rng) = ps {
         ps_speed_sort(&mut out[..n], &mut s[start..], |a, b| rng.speed_sort_draw(a, b));
@@ -658,6 +651,27 @@ pub(crate) fn resort_from(
         }
     }
     n
+}
+
+/// A queued move's key in the gen-8+ re-sort (ascending = acts earlier):
+/// PS comparePriority's (order, priority, fractional priority, Speed)
+/// (sim/battle.ts:404), with priority refreshed from state as getActionSpeed
+/// does.
+#[cfg(feature = "ps-rng")]
+pub(crate) fn queued_move_key(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8, keys: &TurnKeys) -> (i8, i32, i8, i64) {
+    queued_move_key_tr(battle, side, actor_slot, move_slot, keys, battle.trick_room_turns > 0)
+}
+
+fn queued_move_key_tr(battle: &Battle, side: SideRef, actor_slot: u8, move_slot: u8, keys: &TurnKeys, trick_room: bool) -> (i8, i32, i8, i64) {
+    let (si, sl) = (side as usize, (actor_slot as usize).min(1));
+    let pri = state_priority(battle, side, actor_slot, move_slot) + keys.qc_bump[si][sl] as i32;
+    let speed = battle
+        .side(side)
+        .active_mon(actor_slot as usize)
+        .map(|m| effective_speed(m, battle.side(side).conditions.tailwind_turns > 0, battle.weather, battle.terrain) as i64)
+        .unwrap_or(0);
+    let speed_key = if trick_room { speed } else { -speed };
+    (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key)
 }
 
 /// PS `Battle.speedSort` (sim/battle.ts:429-461): a selection sort that
