@@ -1946,3 +1946,71 @@ at battle start. Replacements and manual switches are not touched.
   core `ps-rng` clippy, residual-index audit and diff check pass. The
   pre-existing workspace `ps-rng` unnecessary collect remains deferred.
   Historical corpus results are unchanged.
+
+## Mechanics fix: Champions Encore's re-queue reruns Quick Draw / Quick Claw
+
+This is one structural fix within Champions Encore's immediate re-queue.
+
+- **Bug.** The re-queued action kept the fractional priority rolled for the
+  old queued move. PS re-resolves the action and rolls again for the forced
+  move, before it picks that move's target.
+- **PS** (`a5df8274e85b0889bf2a9b3422a08b39732374fc`):
+  - `data/mods/champions/moves.ts:307-339`: Encore's `changeAction` passes
+    only `moveid` and `order`.
+  - `sim/battle-queue.ts:301-305` / `:369-402`: `changeAction` ->
+    `insertChoice` -> `resolveAction`, which reruns
+    `runEvent('FractionalPriority')` (`:249`) before the missing-target
+    `getRandomTarget` (`:268-275`).
+  - Quick Draw (`data/abilities.ts:3735-3746`, 3/10 on non-Status moves)
+    runs before Quick Claw (`data/items.ts:4989-4998`, 1/5 when the relayed
+    priority is <= 0, not for a Mycelium Might holder's Status move). A
+    Quick Draw success skips the Quick Claw roll.
+- **Fix.**
+  - `champions_encore_requeue` calls `order::quick_fractional_roll` for the
+    forced move first. Quick Draw is keyed to its holder; Quick Claw's
+    `range(5)` stays on the Encore user's draw context.
+  - It then recomputes the slot's `turn_keys.frac` from that result with
+    the new shared `order::fractional_key` (Custap / Lagging Tail / Full
+    Incense / Quick / Mycelium Might, the same precedence `schedule_move`
+    uses, which now calls it too). The old roll is dropped even when the
+    forced move is a Status move that rolls nothing.
+  - Draw order: Quick Draw -> Quick Claw (if Quick Draw didn't fire) ->
+    target pick -> `insertChoice` tie (`ps-rng`) -> re-sort, both of the
+    last two on the refreshed key.
+  - No reroll when there is no re-queue: same queued move, Mental Herb,
+    target already acted, standard gen 9. No heap, no `unsafe`, no new
+    chance-frontier kinds.
+- **Evidence (root).** Two golden pairs failed on HP before the fix:
+  `champions-encore-rerolls-claw-damage` (PS 89/135 and 110/110, engine
+  105 and 80) and `champions-encore-rerolls-draw-damage` (PS 96/135,
+  engine 105). Root's 40 quiet captures: seeded 59/80 turns with 32 first
+  draw divergences at the requeue (PS `randomChance` vs the engine's
+  target pick); keyed 73/80 state.
+- **Tests.** The four Phase A reds in `battle_r10_tests.rs`
+  `encore_fractional_*`: the Quick Claw reroll right before the target
+  draw, the Quick Draw reroll for a forced damaging move, the dropped
+  Quick Draw key for a forced Status move, and Quick Draw success skipping
+  Quick Claw. Plus the guard (no reroll without a re-queue).
+- **Limits.** Only Quick Draw / Quick Claw are rerolled. Custap Berry was
+  eligible at commit is consumed (`consume_fractional_pri_items`).
+  Newly eligible Custap consumption during the re-queue and other
+  one-shot fractional effects remain unmodelled. So the full FractionalPriority event isn't shown equivalent.
+  The keyed oracle still has legacy Quick Claw miss noise (no item key),
+  which was left as is. There is no new typed `ps-rng` trace unit test;
+  the actual seeded captures provide the normalized draw-trace proof.
+- **Verification (root):** all 40 authored reroll cases match 80/80 turns
+  in keyed and seeded replay. Including 24 controls, seeded replay matches
+  128/128 turns across 64 cases, with zero missing draws, repair aliases,
+  errors or normalized first draw divergences. Keyed replay matches
+  125/128 turns; its three control HP divergences are identical before
+  and after this fix. It has 72 missing draws, 34 repair aliases and 70
+  leftovers through the compared turns; strict key equivalence is not
+  claimed. The prior 71 lead/manual-switch/Encore captures still match
+  90/90 turns in both modes (keyed: 221 repair aliases, eight leftovers,
+  no missing draws). Full workspace excluding Python bindings: default
+  1,523 passed; `ps-rng` 1,562 passed; zero failed and 32 ignored each,
+  including both golden gates. Focused Encore: 22 tests pass with
+  `ps-rng`, 20 with `chance`. Release accuracy build, configured default
+  workspace Clippy, core `ps-rng` Clippy, residual audit and diff check
+  pass. The existing expanded `ps-rng` workspace unnecessary collect is
+  still deferred. Historical corpus results are unchanged.

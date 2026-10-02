@@ -998,3 +998,150 @@ fn lead_switch_in_ps_rng_follows_the_run_switch_shuffle() {
     }
     assert_eq!(seen, [true, true], "both tie outcomes across seeds");
 }
+
+// ---- Champions Encore's re-queue reruns FractionalPriority ----
+//
+// changeAction -> insertChoice -> resolveAction (sim/battle-queue.ts:301-305,
+// :369-402) recomputes `fractionalPriority` with runEvent('FractionalPriority')
+// (:249) for the NEW move, before its missing target is drawn (:268-275).
+// Encore passes only moveid / order (data/mods/champions/moves.ts:307-339),
+// so the old roll is dropped. Quick Draw (data/abilities.ts:3735-3746, 3/10,
+// damaging moves, runs first) skips Quick Claw (data/items.ts:4989-4998,
+// 1/5, priority <= 0, not a Mycelium Might status move) when it fires
+// (`order::quick_fractional_roll`). PHASE A: written before the fix.
+
+/// `ENC_P2` with p2a Snorlax's ability / item replaced.
+fn encore_fractional_p2(ability: &str, item: &str) -> String {
+    ENC_P2.replacen(
+        r#""ability":"thickfat","#,
+        &format!(r#""ability":"{ability}","item":"{item}","#),
+        1,
+    )
+}
+
+/// Turn 1: p2a Snorlax uses move slot `t1`; turn 2 it queues `t2` while
+/// Whimsicott Encores it and Pikachu Tackles Miltank. Returns turn 2's
+/// recorded draws (taken after turn 1, so battle-start draws are out).
+fn encore_fractional_log(
+    rng: crate::rng::Rng,
+    champions: bool,
+    p2: &str,
+    t1: u8,
+    t2: u8,
+) -> (Battle, Vec<crate::rng::RecordedDraw>) {
+    let mut b = encore_battle(rng, champions, ENC_P1, p2);
+    let tgt = |slot: u8| if slot == 0 { Some(t(SideRef::P1, 1)) } else { None };
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, t1, tgt(t1)), mv(1, 0, None)]);
+    let _ = b.rng_mut().take_recording_log();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 1)))], &[mv(0, t2, tgt(t2)), mv(1, 0, None)]);
+    let log = b.rng_mut().take_recording_log().unwrap_or_default();
+    (b, log)
+}
+
+fn quick_claw_draws(log: &[crate::rng::RecordedDraw]) -> Vec<usize> {
+    log.iter().enumerate().filter(|(_, d)| d.space == crate::rng::DrawSpace::UniformRange(5)).map(|(i, _)| i).collect()
+}
+
+fn quick_draw_draws(log: &[crate::rng::RecordedDraw]) -> Vec<usize> {
+    log.iter()
+        .enumerate()
+        .filter(|(_, d)| d.key.decision == crate::rng::RngDecision::Ability && d.key.move_id == data::ability_id::QUICKDRAW)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn encore_fractional_quick_claw_rerolls_before_the_target_pick() {
+    // Queued Splash -> forced Tackle: the commit roll, then a new 1/5 roll
+    // right before the forced Tackle's target draw.
+    for seed in [3u64, 11, 29] {
+        let (_, log) = encore_fractional_log(crate::rng::Rng::recording(seed), true, &encore_fractional_p2("thickfat", "quickclaw"), 0, 1);
+        let claws = quick_claw_draws(&log);
+        let picks = retarget_draws(&log);
+        assert_eq!(picks.len(), 1, "seed {seed}: {log:?}");
+        assert_eq!(claws.len(), 2, "seed {seed}: commit roll + requeue reroll: {log:?}");
+        assert_eq!(claws[1] + 1, picks[0], "seed {seed}: reroll immediately before the target draw: {log:?}");
+        assert_eq!(log[picks[0]].space, crate::rng::DrawSpace::UniformRange(2));
+    }
+}
+
+#[test]
+fn encore_fractional_quick_draw_rolls_for_the_forced_damaging_move() {
+    // Queued Splash (status: no Quick Draw roll at commit) -> forced Tackle:
+    // exactly one new Quick Draw roll, right before the target draw.
+    let (_, log) = encore_fractional_log(crate::rng::Rng::recording(7), true, &encore_fractional_p2("quickdraw", ""), 0, 1);
+    let draws = quick_draw_draws(&log);
+    let picks = retarget_draws(&log);
+    assert_eq!(picks.len(), 1, "{log:?}");
+    assert_eq!(draws.len(), 1, "{log:?}");
+    assert_eq!(draws[0] + 1, picks[0], "Quick Draw roll right before the target draw: {log:?}");
+}
+
+#[test]
+fn encore_fractional_forced_status_move_drops_the_old_quick_draw() {
+    // Turn 1 Splash, turn 2 queued Tackle (Quick Draw rolls at commit and,
+    // keyed here, fires) -> forced Splash: no reroll (status move), and the
+    // cached +0.1 from the old roll is gone.
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 2, actor: 2, target: NO_SLOT, move_id: data::ability_id::QUICKDRAW, decision: RngDecision::Ability };
+    let keyed = || {
+        let mut table = std::collections::HashMap::new();
+        table.insert(key, std::collections::VecDeque::from([RngEvent::Range(0)]));
+        Rng::oracle_keyed(table, 5)
+    };
+    let p2 = encore_fractional_p2("quickdraw", "");
+    // Control (standard gen 9 keeps the action): the commit roll fired and
+    // the cached fractional key survives the step.
+    let (b, _) = encore_fractional_log(keyed(), false, &p2, 1, 0);
+    assert_ne!(b.turn_keys.frac[1][0], 0, "control: commit Quick Draw fired");
+    let (mut b, _) = encore_fractional_log(keyed(), true, &p2, 1, 0);
+    assert!(b.p2.team[0].encore_turns() > 0, "Encore landed");
+    assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "commit roll consumed");
+    let misses = b.rng_mut().take_miss_log().unwrap();
+    assert!(!misses.iter().any(|m| m.key.move_id == data::ability_id::QUICKDRAW), "no reroll for a status move: {misses:?}");
+    assert_eq!(b.turn_keys.frac[1][0], 0, "old Quick Draw fractional priority dropped");
+}
+
+#[test]
+fn encore_fractional_quick_draw_success_skips_quick_claw() {
+    // Quick Draw + Quick Claw, queued Splash -> forced Tackle. Commit: Quick
+    // Claw only (Quick Draw ignores status moves). Requeue: Quick Draw first;
+    // when it fires Quick Claw is not rolled, otherwise it is.
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 2, actor: 2, target: NO_SLOT, move_id: data::ability_id::QUICKDRAW, decision: RngDecision::Ability };
+    let p2 = encore_fractional_p2("quickdraw", "quickclaw");
+    for (v, claws) in [(0u32, 1usize), (9, 2)] {
+        let mut table = std::collections::HashMap::new();
+        table.insert(key, std::collections::VecDeque::from([RngEvent::Range(v)]));
+        let (mut b, _) = encore_fractional_log(Rng::oracle_keyed(table, 5), true, &p2, 0, 1);
+        assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "Quick Draw {v}: requeue roll consumed");
+        let misses = b.rng_mut().take_miss_log().unwrap();
+        let n = misses.iter().filter(|m| m.space == crate::rng::DrawSpace::UniformRange(5)).count();
+        assert_eq!(n, claws, "Quick Draw {v}: Quick Claw rolls: {misses:?}");
+    }
+}
+
+#[test]
+fn encore_fractional_no_reroll_without_a_requeue() {
+    // Only the commit roll in each case below: no requeue happens.
+    let claw = encore_fractional_p2("thickfat", "quickclaw");
+    // Standard gen 9 (onOverrideAction at execution, no resolveAction).
+    let (_, log) = encore_fractional_log(crate::rng::Rng::recording(3), false, &claw, 0, 1);
+    assert_eq!(quick_claw_draws(&log).len(), 1, "standard gen 9: {log:?}");
+    // Same queued move as the Encored one.
+    let (_, log) = encore_fractional_log(crate::rng::Rng::recording(3), true, &claw, 0, 0);
+    assert_eq!(quick_claw_draws(&log).len(), 1, "same move: {log:?}");
+    // Mental Herb: no requeue, and no fractional item / ability at all.
+    let herb = ENC_P2.replacen(r#""ability":"thickfat","#, r#""ability":"thickfat","item":"mentalherb","#, 1);
+    let (_, log) = encore_fractional_log(crate::rng::Rng::recording(3), true, &herb, 0, 1);
+    assert!(quick_claw_draws(&log).is_empty() && quick_draw_draws(&log).is_empty(), "Mental Herb: {log:?}");
+    // Target already acted (slow Encore user): its action is gone.
+    let slow = r#"[{"species":"shuckle","level":50,"ability":"sturdy","moves":["encore","splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#;
+    let fast = r#"[{"species":"pikachu","level":50,"ability":"static","item":"quickclaw","moves":["tackle","splash"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+    let mut b = encore_battle(crate::rng::Rng::recording(3), true, slow, fast);
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().take_recording_log();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    let log = b.rng_mut().take_recording_log().unwrap();
+    assert_eq!(quick_claw_draws(&log).len(), 1, "already acted: {log:?}");
+}

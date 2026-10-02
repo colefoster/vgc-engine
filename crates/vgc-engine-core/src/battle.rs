@@ -12807,6 +12807,21 @@ self.trigger_emergency_exits();
         if mid == u16::MAX {
             return;
         }
+        // resolveAction reruns FractionalPriority for the new move
+        // (sim/battle-queue.ts:249) before picking its target (:268-275);
+        // Encore passes no fractional priority, so the commit roll is
+        // dropped. Quick Draw then Quick Claw (`order::quick_fractional_roll`;
+        // Quick Claw on the Encore user's draw context, as at the PS site),
+        // and the slot's fractional key is recomputed for the forced move,
+        // so insertChoice and the re-sort below use it.
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        let quick = crate::order::quick_fractional_roll(self, ts, tslot, mid, &mut rng);
+        self.rng = rng;
+        let (si, sl) = (ts as usize, (tslot as usize).min(1));
+        if let Some(q) = self.quick_frac.as_mut() {
+            q[si][sl] = quick;
+        }
+        self.turn_keys.frac[si][sl] = crate::order::fractional_key(self, ts, tslot, mid, quick);
         let target = self.random_target_for(ts, tslot, mid);
         #[allow(unused_mut)]
         let mut insert = 255u8;
