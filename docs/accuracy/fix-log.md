@@ -1336,3 +1336,36 @@ only. Commit messages say which.
 | Transform, Parental Bond | 1285 | 11712/11725 | 1151 | 10938/11085 |
 | Shield Dust, Harvest | 1286 | 11721/11733 | 1157 | 10985/11126 |
 | Healer order, sure-hit status (`3d1c44c`) | **1288 (99.2%)** | **11735/11745** | **1164 (89.5%)** | **11023/11157** |
+
+## Harness fix: switch targets remapped by PS object, not species
+
+This is a harness bug, not an engine bug. It covers the "Palafin and
+Palafin-Hero on one team" item above.
+
+- **Cause.** `ps-battle.js` turned PS's `switch N` (current side order)
+  into the engine's original-order index by `names.indexOf(baseKey(...))`.
+  That relied on Species Clause making base species unique. Reconstructed
+  and scripted jobs can break that rule (Palafin + Palafin-Hero), so both
+  members collapsed onto the first one.
+- **Reproduction.** The parent ran this on official PS `a5df8274e85b0889bf2a9b3422a08b39732374fc`,
+  built from `smogon/pokemon-showdown`, with a tiny synthetic Champions
+  doubles job. P1 = [Palafin, Palafin-Hero, Snorlax, Chansey]. On turn 1,
+  `move 1, switch 3` swaps Hero (slot b) for Snorlax. On turn 2, the same
+  command brings Hero back from PS index 3. PS accepted every choice with
+  no errors, and turn 2 ended with p1b = `palafinhero`. The recorded engine
+  choice was `move 1, switch 1` instead of `move 1, switch 2`. The keyed
+  replay's first divergence was turn 2 / p1b species (engine `palafin` vs
+  PS `palafinhero`), not RNG-sensitive.
+- **Fix.** The new `tools/accuracy/switch-order.js` captures each side's PS
+  Pokemon objects right after `>player`, before team preview can reorder
+  them. It maps `switch N` to the original index of the object
+  `side.pokemon[N-1]` by identity. All three call sites use it: the main
+  choice, mid-turn / replacement, and the invalid-choice retry. Each target
+  is checked against the request's ident/details, so a stale order throws
+  instead of mapping wrong. PS commands, output schema and RNG are
+  unchanged. Intent-driven picks (`switchTo`) still choose by species.
+- **Tests.** `tools/accuracy/switch-order.test.js` runs an equivalent in-repo
+  fixture on real PS (`PS_DIST`) and pure identity cases (identical
+  nicknames, forme / Transform changes, invalid targets). The PS case
+  failed on the old mapper with `move 1, switch 1` and passes now. The
+  corpus has not been rescored.

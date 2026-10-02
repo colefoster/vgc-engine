@@ -34,6 +34,8 @@ const path = require('path');
 const PS_PATH = process.env.PS_DIST || '/tmp/pokemon-showdown-research/dist/sim';
 process.env.PS_DIST = PS_PATH;
 const conf = require(path.join(__dirname, '..', 'ps-golden-driver', 'conformance-driver.js'));
+// PS `switch N` (current side order) -> engine `switch N` (original order).
+const { captureRoster, toEngineCmd } = require('./switch-order.js');
 const ps = require(PS_PATH);
 const { BattleStream, Teams, getPlayerStreams, Dex } = ps;
 const { PRNG, SodiumRNG, Gen5RNG } = require(PS_PATH + '/prng');
@@ -119,13 +121,6 @@ function speciesKey(details) {
   // folded to their base forme.
   const sp = Dex.species.get((details || '').split(', ')[0]);
   return toID(sp.isMega ? sp.baseSpecies : sp.name);
-}
-
-// Identity for team-order mapping: the base species (Species Clause makes it
-// unique per team) — robust to cosmetic / battle formes in `details`.
-function baseKey(details) {
-  const sp = Dex.species.get((details || '').split(', ')[0]);
-  return toID(sp.baseSpecies || sp.name);
 }
 
 function makePicker(sideId, intents, rand, stats) {
@@ -246,21 +241,6 @@ function makePicker(sideId, intents, rand, stats) {
   };
 }
 
-// PS numbers `switch N` by the side's CURRENT pokemon order, which PS
-// reorders on every switch; the engine keeps the original team order and an
-// active-slot map. Rewrite each switch target to its 1-based index in the
-// original team so the engine can replay it verbatim.
-function toEngineCmd(cmd, req, names) {
-  return cmd.split(', ').map((part) => {
-    const m = /^switch (\d+)$/.exec(part);
-    if (!m) return part;
-    const p = req.side.pokemon[parseInt(m[1], 10) - 1];
-    const idx = p ? names.indexOf(baseKey(p.details)) : -1;
-    if (idx < 0) throw new Error(`cannot map ${part} to the original team`);
-    return `switch ${idx + 1}`;
-  }).join(', ');
-}
-
 function installForcing(job, on) {
   if (!on || !job.force || !job.force[1]) return () => {};
   const uses = job.force[1];
@@ -321,8 +301,13 @@ async function runBattle(job, maxTurns) {
     p2: makePicker('p2', job.intents, mulberry32(seedNum * 1597334677 + 7), stats),
   };
 
-  // Original team order by base species (Species Clause makes it unique).
-  const names = { p1: team1.map((s) => baseKey(s.species)), p2: team2.map((s) => baseKey(s.species)) };
+  // Each side's PS Pokemon objects in original team order (switch-order.js),
+  // captured right after `>player`.
+  const rosters = {};
+  const engineCmd = (sideId, cmd, req) => {
+    const side = stream.battle.sides[sideId === 'p1' ? 0 : 1];
+    return toEngineCmd(cmd, req, side.pokemon, rosters[sideId]);
+  };
   // FORCE_LOG=1: on turn 1, make PS's crit / accuracy / secondary outcomes
   // match what the real log showed (job.force from recon.js). Installed
   // below the keyed recorder so the recorded outcome is the forced one; the
@@ -407,7 +392,7 @@ async function runBattle(job, maxTurns) {
           const turn = stream.battle.turn;
           const cmd = pickers[sideId](lastReq, -1, lastPhase);
           const last = choiceLog.findLastIndex((c) => c.side === sideId);
-          if (last >= 0) { choiceLog[last].cmd = cmd; choiceLog[last].eng = toEngineCmd(cmd, lastReq, names[sideId]); }
+          if (last >= 0) { choiceLog[last].cmd = cmd; choiceLog[last].eng = engineCmd(sideId, cmd, lastReq); }
           s.write(cmd);
           void turn;
         }
@@ -432,7 +417,7 @@ async function runBattle(job, maxTurns) {
       const cmd = scripted || pickers[sideId](req, turn, phase);
       lastReq = req;
       lastPhase = phase;
-      choiceLog.push({ side: sideId, turn, phase, cmd, eng: toEngineCmd(cmd, req, names[sideId]) });
+      choiceLog.push({ side: sideId, turn, phase, cmd, eng: engineCmd(sideId, cmd, req) });
       s.write(cmd);
     }
   }
@@ -445,7 +430,9 @@ async function runBattle(job, maxTurns) {
     CUR = stream.battle;
     battleRef = stream.battle;
     sides.omniscient.write('>player p1 ' + JSON.stringify({ name: 'P1', team: Teams.pack(team1) }));
+    rosters.p1 = captureRoster(stream.battle.sides[0]);
     sides.omniscient.write('>player p2 ' + JSON.stringify({ name: 'P2', team: Teams.pack(team2) }));
+    rosters.p2 = captureRoster(stream.battle.sides[1]);
     const timeout = new Promise((res) => setTimeout(() => res('timeout'), 20000));
     const r = await Promise.race([Promise.all([d1, d2]), timeout]);
     if (r === 'timeout') errors.push('timeout');
