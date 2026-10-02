@@ -1369,3 +1369,42 @@ Palafin-Hero on one team" item above.
   nicknames, forme / Transform changes, invalid targets). The PS case
   failed on the old mapper with `move 1, switch 1` and passes now. The
   corpus has not been rescored.
+
+## Harness fix: a finite `--max-turns` recorded one unplayed turn
+
+This is a harness bug, not an engine bug. It is separate from the Palafin
+fix.
+
+- **Cause.** When `|turn|N+1` appears (N = `maxTurns`), the omniscient
+  drain writes `>forcetie`. Before this fix, both `driveSide`s had already
+  logged their turn N+1 main choices. PS ended the battle with `|tie`
+  before playing them, but assembly still emitted turn N+1. That turn
+  carried those commands and a state snapshot from before any of its
+  actions. The keyed replay then ran the unplayed moves and reported
+  turn N+1 HP / faint divergences and missing draws.
+- **Reproduction.** The parent ran the 7 `repros/repros.jsonl` jobs on
+  official PS `a5df8274…` with `--max-turns 2`. PS accepted every choice
+  with no errors. The native outputs had turns 1-3 and 17/21 turns
+  matched. All 4 state divergences were on turn 3, and 6 jobs had missing
+  draws from that turn. Copies clipped to turns ≤ 2 matched all 14/14
+  state snapshots with no missing draws, so no engine defect was shown.
+  Some existing repros still use leftover-draw and choice-repair heuristics;
+  this is not strict RNG-trace equivalence.
+- **Fix.** `driveSide` now leaves a request unanswered when its turn is
+  past `maxTurns`, so PS ties at the turn marker and nothing of that turn
+  runs or is recorded. Assembly also drops turns past `maxTurns`.
+  End-of-turn replacements still carry the old turn number and are kept.
+  With no bound (undefined / Infinity), the cutoff never applies, as
+  before. `_meta.lastTurn` still reports the cutoff marker (N+1); it is
+  not a played turn.
+- **Tests.** `tools/accuracy/turn-limit.test.js` runs on real PS
+  (`PS_DIST`). With limits 1 and 2, the protocol shows exactly N played
+  turns and then `|tie`. The output has turns 1..N with their commands
+  and exact end HP (Seismic Toss, 50 per turn), and no errors. Before the
+  fix, the output had N+1 turns. Two more cases cover a battle that ends
+  naturally on turn 1, with limits 1 and 3; its final turn is kept. Fresh,
+  unmodified outputs for the 7 repros now contain exactly turns 1-2:
+  14/14 state snapshots match, with no missing draws or PS/engine errors.
+  The quiet Palafin fixture also matches 2/2 turns with no missing or
+  leftover draws and no repairs. The full study corpus has not been
+  regenerated or rescored.

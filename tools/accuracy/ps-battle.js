@@ -410,6 +410,11 @@ async function runBattle(job, maxTurns) {
       }
       const b = stream.battle;
       const turn = b.turn;
+      // Past maxTurns the omniscient drain answers `|turn|N` with
+      // `>forcetie`; leave the request unanswered so that turn is neither
+      // played nor recorded. (End-of-turn replacements still carry the old
+      // turn number.)
+      if (turn > maxTurns) continue;
       let phase = 'main';
       if (req.forceSwitch) phase = b.queue.list.some((a) => a.choice === 'residual') ? 'mid' : 'rep';
       // A job may script exact commands: script[turn][side] (main phase).
@@ -457,7 +462,9 @@ async function runBattle(job, maxTurns) {
   const rawBy = byTurn(raw);
   const turnNums = new Set();
   for (const c of choiceLog) turnNums.add(c.turn);
-  const turns = [...turnNums].filter((t) => t > 0).sort((a, b) => a - b).map((t) => {
+  // `!(t > maxTurns)`: same bound as the forcetie (none when maxTurns is
+  // undefined / Infinity). `_meta.lastTurn` can still be the cutoff marker.
+  const turns = [...turnNums].filter((t) => t > 0 && !(t > maxTurns)).sort((a, b) => a - b).map((t) => {
     const ch = { p1: [], p2: [] }, mid = { p1: [], p2: [] }, rep = { p1: [], p2: [] };
     for (const c of choiceLog) {
       if (c.turn !== t) continue;
