@@ -1853,3 +1853,96 @@ Lead abilities, faint replacements and Encore are not touched.
   `ps-rng` exposes a pre-existing unnecessary collect in
   `crates/vgc-engine-conformance/src/accuracy.rs:915`; it is outside this
   switch-order change. Historical corpus results remain unchanged.
+
+## Mechanics fix: battle-start lead SwitchIn order on Speed ties
+
+This is one structural fix: the order the leads' SwitchIn handlers run in
+at battle start. Replacements and manual switches are not touched.
+
+- **Bug.** The engine fired the leads' abilities and items in a stable
+  Speed sort, so tied leads always ran p1 first. Under `ps-rng`, the
+  runSwitch tie shuffle was drawn (`ps_active_ties(true, ..)`) but its
+  permutation was dropped. Root's typed reds: native Splitmix always gave
+  Grassy, and seeded seed 3 drew 2 (Psychic) but got Grassy. Root's
+  original 4 actual lead-tie fixtures matched 0/4 in both modes, and 16
+  extra quiet same-side / three-way fixtures matched 10/16.
+- **PS** (`a5df8274e85b0889bf2a9b3422a08b39732374fc`):
+  - `sim/battle-actions.ts:175-184`: runSwitch runs `speedSort(allActive)`
+    and sets each mon's `speedOrder`.
+  - `sim/battle.ts:1007-1012`: resolvePriority subtracts that rank fraction
+    from each SwitchIn handler's Speed, so the handlers draw no tie of their
+    own.
+  - `sim/battle.ts:1018-1033`: getCallback maps ability / item `onStart`
+    to SwitchIn.
+- **Fix.**
+  - `Battle::lead_switch_in_order` sorts the active mons (p1a, p1b, p2a,
+    p2b) fastest first with `order::ps_speed_sort`, PS's selection sort
+    whose swaps come before each tie group's shuffle. Its ties draw:
+    - `ps-rng`: PS's own `shuffle`, in place of the old discarded
+      `ps_active_ties(true, ..)` call, with the same draw count and args;
+    - keyed oracle: the start key `{turn 0, NO_SLOT, NO_SLOT, u16::MAX,
+      Tiebreak}`, with the context reset to its initial value afterwards;
+    - other rngs: `speed_sort_draw`'s Tiebreak (Recording logs it as the
+      existing Tiebreak draw space).
+  - The constructor runs the leads' abilities, then their items, in that
+    order. White Herb deferral and the weather / terrain cache are
+    unchanged. Fixed arrays, no heap, no `unsafe`.
+  - `accuracy.rs`'s private `start_switch_tiebreaks` recovers the keyed
+    values from `start_raw`, using only shuffles whose caller is
+    `BattleActions.runSwitch` (not team preview's `BattleQueue.sort` or the
+    `eachEvent` Updates). Every Fisher-Yates draw of that one sort is
+    recovered (a four-way tie has three), as offsets `j - i` in draw order
+    under the start key.
+- **Default RNG stream change.** Native battles whose leads tie on Speed
+  now draw at construction, which shifts every later draw. In root's full
+  default run before this follow-up, one existing test failed
+  (`mat_block_fails_when_not_first_turn_out`). Its two quiet Snorlaxes now
+  tie and draw, which moved a crit, so turn 1's Moonblast could KO Garchomp
+  before its turn-2 Dragon Claw. That test now uses Splash on turn 1 (only
+  to advance Flutter Mane's turn count) and asserts Garchomp is untouched.
+  The seed and the Mat Block / Dragon Claw assertions are unchanged.
+- **Tests.**
+  - `battle_r10_tests.rs` `lead_switch_in_*`: Splitmix reaches both
+    terrains; the unequal-Speed control keeps the slower setter's terrain;
+    keyed start Tiebreak 0 / 1 gives Grassy / Psychic, consumed with no
+    Tiebreak misses; `ps-rng` follows runSwitch's `shuffle(1, 3)`.
+  - The typed fixture is Indeedee-F vs Rillaboom at 105 Speed (no EVs), not
+    the captures' Indeedee 115 / Rillaboom +10.
+  - `accuracy.rs` `start_tiebreak_tests`: only runSwitch shuffles are
+    recovered among the start shuffles, including all three draws of a
+    four-way tie, with the right offsets. Its raw draws are hand-built in
+    `ps-battle.js`'s site format, not copied from a capture.
+- **Golden.** `goldens/lead-order-speed-terrain` is an unequal-Speed smoke
+  test with no EV lines: Indeedee 115, Pikachu 120, Rillaboom 105, Snorlax
+  35. Rillaboom is the slowest setter, so Grassy Terrain is set last and
+  Pikachu's Quick Attack on Rillaboom deals damage. The first version gave
+  Rillaboom `EVs: 32 Spe`, but the golden loader's
+  `from_showdown_text_in(.., champions = true)` sets PP only and doesn't map
+  Champions stat points to EVs (`team.rs`), unlike the conformance
+  `build_engine_team` (`lib.rs`). So PS had 137 Speed and the engine 109.
+  That loader gap is the next candidate fix; it isn't fixed here. Root
+  archived the old pair and regenerated the `.ps.json` with the pinned,
+  guarded offline PS oracle: `ok: true`, no errors, Rillaboom ends at
+  162/175 HP. No tied golden:
+  the golden driver doesn't see `PRNG.shuffle`.
+- **Replay.** Root replayed all 36 actual lead captures: the original
+  12 (seeds 1-8
+  `[G,P,P,G,P,G,G,P]`), 8 same-side, 8 three-way (three leads at 115 and
+  Tapu Bulu at 105; these were first labelled four-way) and 8 verified
+  four-way (all 115, Tapu Bulu with 20 EVs, PS draws `(0, 4)`, `(1, 4)`,
+  `(2, 4)`). Before the fix, the verified four-way cases were 3/8 clean.
+  After: 36/36 turns match in keyed and seeded replay, with no missing
+  draws, errors or normalized first draw divergences. Keyed replay uses
+  149 existing repair aliases; this is not strict key equivalence.
+- **Limits.** Native Recording logs the leads' tie draws, but the
+  constructor is outside the chance frontier (an existing limit). This
+  fix does not claim full SwitchIn handler priority equivalence.
+- **Verification (root):** full workspace excluding Python bindings:
+  default 1,518 passed; `ps-rng` 1,557 passed; 0 failed and 32 ignored
+  each, including both golden gates. All 60 lead/manual-switch captures
+  match 68/68 turns in both modes; 173 keyed repair aliases remain.
+  The prior 11 Encore captures still match 22/22 turns in both modes.
+  Release accuracy build, default workspace configured clippy guards,
+  core `ps-rng` clippy, residual-index audit and diff check pass. The
+  pre-existing workspace `ps-rng` unnecessary collect remains deferred.
+  Historical corpus results are unchanged.

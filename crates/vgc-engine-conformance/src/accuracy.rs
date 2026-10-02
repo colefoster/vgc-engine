@@ -465,6 +465,28 @@ fn add_queue_tiebreaks(table: &mut HashMap<RngKey, VecDeque<RngEvent>>, acc: &Ac
     }
 }
 
+/// Battle start: the tie shuffle of PS runSwitch's `speedSort(allActive)`
+/// (sim/battle-actions.ts:175-184), which orders the leads' SwitchIn
+/// handlers. Every Fisher-Yates draw of that one sort counts (a three-way
+/// tie draws twice, a four-way tie three times), but only `start_raw`
+/// shuffles whose next frame is `BattleActions.runSwitch`: not team
+/// preview's `BattleQueue.sort` or the `eachEvent` Updates. Offsets `j - i`
+/// as for the queue sort, in draw order, keyed to the engine's start key
+/// `tie_key(0)` (`Battle::lead_switch_in_order`).
+fn start_switch_tiebreaks(start_raw: &[RawDraw]) -> Vec<RngEvent> {
+    start_raw
+        .iter()
+        .filter(|d| d.op == "shuffle" && d.site.get(1).is_some_and(|s| s.starts_with("BattleActions.runSwitch@")))
+        .map(|d| RngEvent::Tiebreak((d.result - d.a).max(0.0) as u64))
+        .collect()
+}
+
+fn add_start_tiebreaks(table: &mut HashMap<RngKey, VecDeque<RngEvent>>, acc: &AccBattle) {
+    for ev in start_switch_tiebreaks(&acc.start_raw) {
+        table.entry(tie_key(0)).or_default().push_back(ev);
+    }
+}
+
 /// The keyed envelopes, with PS's two-argument `random(m, n)` draws made
 /// offsets from `m`. The envelope stores the result itself, while the
 /// engine draws `range(n - m)` and adds `m` (confusion's `random(2, 6)`,
@@ -639,6 +661,7 @@ fn repaired_table(
     let draws = offset_two_arg_draws(acc);
     let (mut table, _unresolved) = build_table_from(draws.iter());
     add_queue_tiebreaks(&mut table, acc);
+    add_start_tiebreaks(&mut table, acc);
     add_condition_samples(&mut table, acc);
     add_ability_samples(&mut table, acc);
     park_bool_gates(&mut table, acc);
@@ -1187,4 +1210,43 @@ pub fn turn1_state(acc: &AccBattle) -> Result<Vec<(String, u16)>, String> {
         out.push((toks[i].clone(), max));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod start_tiebreak_tests {
+    use super::*;
+
+    fn shuffle(seq: u32, a: f64, b: f64, result: f64, caller: &str) -> RawDraw {
+        RawDraw {
+            seq,
+            turn: 0,
+            op: "shuffle".into(),
+            a,
+            b,
+            raw: 0,
+            result,
+            site: vec!["Battle.speedSort@battle.js:443".into(), caller.into()],
+        }
+    }
+
+    #[test]
+    fn only_the_run_switch_shuffle_is_recovered_as_an_offset() {
+        // Team preview's queue.sort and the start Update's eachEvent also
+        // shuffle ties at battle start; only runSwitch orders the leads.
+        let start_raw = [
+            shuffle(4, 0.0, 2.0, 1.0, "BattleQueue.sort@battle-queue.js:120"),
+            shuffle(6, 1.0, 3.0, 2.0, "BattleActions.runSwitch@battle-actions.js:178"),
+            shuffle(7, 0.0, 2.0, 1.0, "Battle.eachEvent@battle.js:500"),
+        ];
+        assert_eq!(start_switch_tiebreaks(&start_raw), [RngEvent::Tiebreak(1)]);
+        // random(1, 3) = 1 keeps the order: offset 0.
+        let keep = [shuffle(6, 1.0, 3.0, 1.0, "BattleActions.runSwitch@battle-actions.js:178")];
+        assert_eq!(start_switch_tiebreaks(&keep), [RngEvent::Tiebreak(0)]);
+        assert!(start_switch_tiebreaks(&[]).is_empty());
+        // A four-way tie: one runSwitch sort, three draws, all recovered in
+        // order (random(0, 4) = 2, random(1, 4) = 1, random(2, 4) = 3).
+        let rs = "BattleActions.runSwitch@battle-actions.js:178";
+        let four = [shuffle(6, 0.0, 4.0, 2.0, rs), shuffle(7, 1.0, 4.0, 1.0, rs), shuffle(8, 2.0, 4.0, 3.0, rs)];
+        assert_eq!(start_switch_tiebreaks(&four), [RngEvent::Tiebreak(2), RngEvent::Tiebreak(0), RngEvent::Tiebreak(1)]);
+    }
 }

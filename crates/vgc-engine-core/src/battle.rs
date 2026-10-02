@@ -785,6 +785,8 @@ impl Battle {
         };
         // Battle-start sendouts trigger on-switch-in abilities (Intimidate,
         // Drizzle, Sand Stream, etc.), in Speed order (below).
+        #[allow(unused_mut)]
+        let mut lead_order: Option<([(SideRef, u8); 4], usize)> = None;
         #[cfg(feature = "ps-rng")]
         if b.rng.is_ps() {
             // The Pokemon constructor's clearVolatile -> setSpecies caches
@@ -794,9 +796,8 @@ impl Battle {
                     b.ps_speed_cache[side as usize][i] = b.side(side).team[i].stats.spe as i64;
                 }
             }
-            b.ps_start_draws();
+            lead_order = Some(b.ps_start_draws());
         }
-        let n = b.format().active_count() as u8;
         if !switch_ins {
             // Field-wide suppression is state, not a switch-in effect.
             crate::ability::recompute_neutralizing_gas(&mut b);
@@ -806,30 +807,18 @@ impl Battle {
             // SwitchIn handlers run in Speed order, abilities (priority 0)
             // before the items' negative-priority handlers
             // (sim/battle-actions.ts:172-184; data/items.ts onSwitchInPriority),
-            // as in `apply_replacement_switches`.
-            let mut leads: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
-            let mut k = 0usize;
-            for side in [SideRef::P1, SideRef::P2] {
-                for slot in 0..n {
-                    if k < leads.len() {
-                        let tw = b.side(side).conditions.tailwind_turns > 0;
-                        let spe = b
-                            .side(side)
-                            .active_mon(slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, b.weather, b.terrain))
-                            .unwrap_or(0);
-                        leads[k] = (spe, side, slot);
-                        k += 1;
-                    }
-                }
-            }
-            leads[..k].sort_by(|a, c| c.0.cmp(&a.0));
+            // as in `apply_replacement_switches`. The order is runSwitch's
+            // speedSort, ties shuffled (`lead_switch_in_order`).
+            let (leads, k) = match lead_order {
+                Some(o) => o,
+                None => b.lead_switch_in_order(),
+            };
             b.defer_white_herb = true;
-            for &(_, side, slot) in &leads[..k] {
+            for &(side, slot) in &leads[..k] {
                 crate::ability::on_switch_in(&mut b, side, slot);
             }
             b.defer_white_herb = false;
-            for &(_, side, slot) in &leads[..k] {
+            for &(side, slot) in &leads[..k] {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
         }
@@ -2703,9 +2692,10 @@ self.trigger_emergency_exits();
     /// `insertChoice`, which draws `random(first, last + 1)` when the new
     /// action ties an already-queued one on Speed (sim/battle-queue.ts
     /// insertChoice). The batched `runSwitch` then speed-sorts every active
-    /// Pokemon, and the action ends with `eachEvent('Update')`.
+    /// Pokemon, and the action ends with `eachEvent('Update')`. Returns that
+    /// runSwitch order, which the leads' SwitchIn handlers follow.
     #[cfg(feature = "ps-rng")]
-    fn ps_start_draws(&mut self) {
+    fn ps_start_draws(&mut self) -> ([(SideRef, u8); 4], usize) {
         // Team preview's commitChoices -> queue.sort(): one `team` action
         // per brought mon, priority -index, Speed getActionSpeed (no field
         // yet), so team slot i of each side ties when their Speeds match
@@ -2744,8 +2734,58 @@ self.trigger_emergency_exits();
                 len += 1;
             }
         }
-        self.ps_active_ties(true, "shuffle");
+        // runSwitch's speedSort(allActive) (sim/battle-actions.ts:175-184),
+        // keeping the permutation: the same draws `ps_active_ties(true, ..)`
+        // makes, on PS's own selection sort (its swaps before the shuffle).
+        let order = self.lead_switch_in_order();
         self.ps_field_seen = Some((self.weather, self.terrain));
+        order
+    }
+
+    /// Battle start: the order the leads' SwitchIn handlers run in, PS
+    /// runSwitch's `speedSort(allActive)` (sim/battle-actions.ts:175-184;
+    /// resolvePriority's speedOrder, sim/battle.ts:1007-1012, so no further
+    /// tie draw among the handlers). Active Pokemon in p1a, p1b, p2a, p2b
+    /// order, sorted fastest first by `order::ps_speed_sort` (PS's selection
+    /// sort, swaps before each tie group's shuffle). Ties draw:
+    /// `ps-rng` PS's own `shuffle`; the keyed oracle the start key
+    /// (turn 0, no actor / target, move `u16::MAX`, Tiebreak; see
+    /// docs/conformance-key-contract.md), after which its context is reset;
+    /// other rngs `speed_sort_draw`'s Tiebreak.
+    fn lead_switch_in_order(&mut self) -> ([(SideRef, u8); 4], usize) {
+        let n_active = self.format().active_count();
+        let mut keys = [0i64; 4];
+        let mut items = [(SideRef::P1, 0u8); 4];
+        let mut n = 0usize;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active.min(2) {
+                let Some(m) = self.side(side).active_mon(slot) else { continue };
+                #[cfg(feature = "ps-rng")]
+                let spe = if self.rng.is_ps() { self.ps_speed(side, slot) } else { None };
+                #[cfg(not(feature = "ps-rng"))]
+                let spe: Option<i64> = None;
+                let spe = spe.unwrap_or_else(|| {
+                    let tw = self.side(side).conditions.tailwind_turns > 0;
+                    crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64
+                });
+                if n < keys.len() {
+                    keys[n] = -spe;
+                    items[n] = (side, slot as u8);
+                    n += 1;
+                }
+            }
+        }
+        let keyed = self.rng.is_oracle_keyed();
+        if keyed {
+            self.rng.set_move_context(0, crate::rng::NO_SLOT, u16::MAX, crate::rng::NO_SLOT);
+        }
+        let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+        crate::order::ps_speed_sort(&mut keys[..n], &mut items[..n], |a, b| rng.speed_sort_draw(a, b));
+        self.rng = rng;
+        if keyed {
+            self.rng.set_move_context(0, crate::rng::NO_SLOT, 0, crate::rng::NO_SLOT);
+        }
+        (items, n)
     }
 
     /// `ps-rng` only: the draws PS makes while resolving submitted choices,
@@ -35031,7 +35071,7 @@ mod tests {
         // turns_active becomes 1, then Mat Block fails and the incoming
         // damaging move lands.
         let p1_json = r#"[
-            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["matblock","moonblast","shadowball","dazzlinggleam"]},
+            {"species":"fluttermane","level":50,"ability":"protosynthesis","item":"","nature":"timid","moves":["matblock","splash","shadowball","dazzlinggleam"]},
             {"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["rest","sleeptalk","crunch","bodyslam"]}
         ]"#;
         let p2_json = r#"[
@@ -35041,10 +35081,11 @@ mod tests {
         let p1 = TeamBuilder::from_json(p1_json).unwrap();
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2); // re-tuned after speed-tie RNG realignment PR (seed where Dragon Claw lands once Mat Block fails)
-        // Turn 1: harmless moves to advance turns_active.
+        // Turn 1: Splash only advances turns_active / the move-action count,
+        // with no damage roll that could KO Garchomp before turn 2.
         b.step(
             &[
-                Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }, // Moonblast
+                Choice::Move { actor_slot: 0, move_slot: 1, target: None }, // Splash
                 Choice::Pass { actor_slot: 1 },
             ],
             &[
@@ -35053,6 +35094,8 @@ mod tests {
             ],
         );
         assert_eq!(b.p1.team[0].turns_active, 1, "Flutter Mane out 1 turn");
+        let chomp = &b.p2.team[0];
+        assert!(chomp.is_alive() && chomp.current_hp == chomp.stats.hp, "turn 1 left Garchomp untouched");
         let lax_hp = b.p1.team[1].current_hp;
         // Turn 2: Mat Block should FAIL (not first turn) → Dragon Claw lands.
         b.step(

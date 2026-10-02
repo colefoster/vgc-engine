@@ -902,3 +902,99 @@ fn switch_order_ps_rng_follows_the_commit_shuffle() {
     }
     assert_eq!(seen, [true, true], "both tie outcomes across seeds");
 }
+
+// ---- Battle start: the leads' SwitchIn handlers follow runSwitch's sort ----
+//
+// sim/battle-actions.ts:175-184 runSwitch speed-sorts every active mon (tie
+// shuffled by speedSort, sim/battle.ts:429) and fires their SwitchIn handlers
+// in that order (resolvePriority's speedOrder, :1007-1012, so the handlers
+// draw no further tie). Tied surge setters: whoever the shuffle puts last
+// sets the terrain that stays. PHASE A: written before the fix.
+
+// p1a Indeedee-F (Psychic Surge) and p2a Rillaboom (Grassy Surge) share base
+// Speed 85 (tied); p1b Pikachu is faster, p2b Snorlax slower.
+fn lead_tie_team(ps_text_p1: &str, ps_text_p2: &str, rng: crate::rng::Rng) -> Battle {
+    Battle::with_rng(
+        BattleConfig { format: Format::Doubles, seed: 0 },
+        rng,
+        TeamBuilder::from_showdown_text_in(ps_text_p1, true).unwrap(),
+        TeamBuilder::from_showdown_text_in(ps_text_p2, true).unwrap(),
+    )
+}
+
+const LEAD_P1: &str = "Indeedee-F\nAbility: Psychic Surge\nLevel: 50\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Splash\n- Quick Attack\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash";
+const LEAD_P2: &str = "Rillaboom\nAbility: Grassy Surge\nLevel: 50\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash";
+
+#[test]
+fn lead_switch_in_tie_reaches_both_terrains() {
+    // Native Splitmix: the tied leads' order is a coin flip.
+    let mut seen = [false; 2];
+    for seed in 0..40 {
+        let b = lead_tie_team(LEAD_P1, LEAD_P2, crate::rng::Rng::Splitmix(seed));
+        assert_eq!(b.p1.team[0].stats.spe, b.p2.team[0].stats.spe, "fixture: surge setters tie");
+        match b.terrain {
+            crate::terrain::Terrain::Grassy => seen[0] = true,
+            crate::terrain::Terrain::Psychic => seen[1] = true,
+            other => panic!("seed {seed}: {other:?}"),
+        }
+    }
+    assert_eq!(seen, [true, true], "both tie outcomes");
+}
+
+#[test]
+fn lead_switch_in_follows_the_faster_setter() {
+    // Unequal Speed: the slower setter's surge goes last and stays.
+    let fast_rilla = LEAD_P2.replacen("Level: 50\n", "Level: 50\nEVs: 32 Spe\n", 1);
+    let fast_indeedee = LEAD_P1.replacen("Level: 50\n", "Level: 50\nEVs: 32 Spe\n", 1);
+    for seed in 0..10 {
+        let b = lead_tie_team(LEAD_P1, &fast_rilla, crate::rng::Rng::Splitmix(seed));
+        assert_eq!(b.terrain, crate::terrain::Terrain::Psychic, "seed {seed}: faster Rillaboom, slower Indeedee last");
+        let b = lead_tie_team(&fast_indeedee, LEAD_P2, crate::rng::Rng::Splitmix(seed));
+        assert_eq!(b.terrain, crate::terrain::Terrain::Grassy, "seed {seed}: faster Indeedee, slower Rillaboom last");
+    }
+}
+
+#[test]
+fn lead_switch_in_keyed_start_tiebreak_picks_the_order() {
+    // Keyed oracle: the leads' runSwitch tie takes PS's offset from the start
+    // key (turn 0, no actor / target, move u16::MAX, Tiebreak). After the
+    // selection sort puts Pikachu first, the Indeedee-F / Rillaboom tie sits
+    // at 1..3: offset 0 keeps Indeedee-F first (Grassy), 1 swaps (Psychic).
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 0, actor: NO_SLOT, target: NO_SLOT, move_id: u16::MAX, decision: RngDecision::Tiebreak };
+    for (v, want) in [(0u64, crate::terrain::Terrain::Grassy), (1, crate::terrain::Terrain::Psychic)] {
+        let mut table = std::collections::HashMap::new();
+        table.insert(key, std::collections::VecDeque::from([RngEvent::Tiebreak(v)]));
+        let mut b = lead_tie_team(LEAD_P1, LEAD_P2, Rng::oracle_keyed(table, 9));
+        assert_eq!(b.terrain, want, "offset {v}");
+        assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "offset {v}: not consumed");
+        let misses = b.rng_mut().take_miss_log().unwrap();
+        assert!(!misses.iter().any(|m| m.key.decision == RngDecision::Tiebreak), "offset {v}: extra tie draw {misses:?}");
+    }
+}
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn lead_switch_in_ps_rng_follows_the_run_switch_shuffle() {
+    // runSwitch's sort over [p1a Indeedee-F, p1b Pikachu, p2a Rillaboom,
+    // p2b Snorlax]: Pikachu first, then the Indeedee-F / Rillaboom tie at
+    // positions 1..3, shuffled by one random(1, 3). 1 keeps Indeedee-F ahead
+    // (Rillaboom last: Grassy); 2 swaps them (Psychic). Team preview's own
+    // tie shuffle (team slot 0: random(0, 2)) comes earlier and does not
+    // order the abilities.
+    let mut seen = [false; 2];
+    for seed in 1..=8u32 {
+        let mut rng = crate::rng::Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = lead_tie_team(LEAD_P1, LEAD_P2, rng);
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let run_switch = trace
+            .iter()
+            .find(|d| d.op == "shuffle" && d.a == 1 && d.b == 3)
+            .unwrap_or_else(|| panic!("seed {seed}: no runSwitch tie draw: {trace:?}"));
+        let want = if run_switch.result == 1 { crate::terrain::Terrain::Grassy } else { crate::terrain::Terrain::Psychic };
+        assert_eq!(b.terrain, want, "seed {seed}: runSwitch draw {}", run_switch.result);
+        seen[(run_switch.result - 1) as usize] = true;
+    }
+    assert_eq!(seen, [true, true], "both tie outcomes across seeds");
+}
