@@ -1,0 +1,26 @@
+{
+  "name": "champions-encore-quick-guard-priority",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Whimsicott\nAbility: Prankster\nLevel: 50\n- Encore\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Quick Attack\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Conkeldurr\nAbility: Guts\nLevel: 50\n- Quick Guard\n- Splash\n\nMiltank\nAbility: Sap Sipper\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 1 1, move 1 1",
+      "p2": "move 2, move 1"
+    }
+  ]
+}

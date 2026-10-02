@@ -1,0 +1,127 @@
+{
+  "ok": true,
+  "name": "champions-encore-targets-adjacent-ally",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Whimsicott",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Alcremie",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Aromatic Mist",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p2b",
+      "stat": "spd",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Encore",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Aromatic Mist",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "boost",
+      "actor": "p2b",
+      "stat": "spd",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1790920993\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Whimsicott, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Alcremie, L50, F|\n|poke|p2|Snorlax, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1790920993\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Whimsicott|Whimsicott, L50, M|135/135\n|switch|p1b: Chansey|Chansey, L50, F|325/325\n|switch|p2a: Alcremie|Alcremie, L50, F|140/140\n|switch|p2b: Snorlax|Snorlax, L50, F|235/235\n|turn|1|\n|t:|1790920993\n|move|p1a: Whimsicott|Splash|p1a: Whimsicott\n|-nothing\n|move|p2a: Alcremie|Aromatic Mist|p2b: Snorlax\n|-boost|p2b: Snorlax|spd|1\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1790920993\n|move|p1a: Whimsicott|Encore|p2a: Alcremie\n|-start|p2a: Alcremie|Encore\n|move|p2a: Alcremie|Aromatic Mist|p2b: Snorlax\n|-boost|p2b: Snorlax|spd|1\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|3"
+}

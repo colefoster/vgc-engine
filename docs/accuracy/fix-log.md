@@ -1643,3 +1643,127 @@ It covers the "Champions Encore's retarget draw" harness item in round 10.
   semantic stack sites, turn states and choices are identical. Protocol
   logs differ only in wall-clock `|t:|` entries. Exactly one keyed Range
   envelope changes per job; its value and the other draws are unchanged.
+
+## Mechanics fix: Champions Encore replaces the queued action at once
+
+This is one Encore mechanic: Champions' immediate queued-action
+replacement. Standard gen 9 Encore is unchanged.
+
+- **Bug.** In Champions, when Encore lands on a mon that still has a
+  different move queued, PS re-queues the Encored move immediately, with its
+  own priority and a target picked then. The engine kept the old queued move
+  and swapped in the Encored one only when the mon acted (standard gen 9's
+  `onOverrideAction`), at the old move's place in the order, with the target
+  drawn at that point.
+- **PS** (`a5df8274e85b0889bf2a9b3422a08b39732374fc`):
+  - `data/mods/champions/moves.ts:307-339` Encore `onStart`: if the target
+    has a queued action whose move differs from the Encored one, and it
+    holds no Mental Herb, `queue.changeAction(target, {choice: 'move',
+    moveid, order: action.order})` (no target).
+  - `sim/battle-queue.ts:301-305` `changeAction` cancels the action and
+    calls `insertChoice` (`:369-402`). `insertChoice` resolves the action
+    first: a missing target comes from `getRandomTarget` (`:268-275`,
+    `sim/battle.ts:2490-2522`). It then draws `random(first, last + 1)`
+    for the insertion index when the new action ties queued ones.
+  - The gen-8+ re-sort after Encore's action (`getActionSpeed`,
+    `sim/battle.ts:2619-2654`) orders it by the forced move's own priority.
+  - Bulbapedia agrees for Champions:
+    <https://bulbapedia.bulbagarden.net/wiki/Encore_(move)#Pok%C3%A9mon_Champions>.
+- **Fix** (`battle.rs`, Champions only, gated as PS at
+  `data/mods/champions/moves.ts:326`: a queued move other than the Encored
+  one, Struggle included, and no Mental Herb).
+  - When Encore lands, `champions_encore_requeue` draws the forced move's
+    target. It uses the same `getRandomTarget` code and key as before
+    (holder, forced move, no target; now `random_target_for`, shared with
+    `encore_override`).
+  - Under `ps-rng` it also draws the `insertChoice` tie index. The queue is
+    sorted, so that is the count of queued actions ahead of the new one plus
+    a `random(first, last + 1)` on a tie, using the re-sort's keys
+    (`order::queued_move_key`).
+  - It then restores the Encore user's draw context and leaves a Copy
+    request (`encore_requeue`).
+  - `finalize_move_resolution` applies the request to the unprocessed queue.
+    The target's choice becomes the Encored slot and drawn target; its
+    Tera / Mega form and fixed sort keys (Encore keeps `order`) stay.
+    `queued_move_slot` and `pending_kind` are updated, so Upper Hand and
+    Sucker Punch see the forced move. Under `ps-rng` the action also moves
+    to the insertion index.
+  - The existing post-move re-sort then uses the forced move's priority.
+    `encore_override` finds the slots equal and draws nothing more.
+- **State and allocations.** The request is a Copy `Option`, set and taken
+  within one action's `process_one_action`, and also cleared when each
+  turn's queue is built. It is `None` between steps, so there is nothing to
+  hash or carry through chance yields. No heap, no `unsafe`, no
+  residual-index fields.
+- **adjacentAlly forced moves.** `random_target_for` follows PS
+  `getRandomTarget` for adjacentAlly (target code 2, `sim/battle.ts:2503-2508`):
+  the user's living adjacent ally, drawn as `random(1)`, and no draw in
+  Singles or without a living ally. Before, it sampled the foes. Standard
+  gen 9's `encore_override` shares the helper, so its Encored adjacentAlly
+  moves change the same way. As for a single living foe, the one-outcome
+  draw consumes a raw draw (Splitmix, `ps-rng`) but is neither recorded nor
+  keyed, so PS's recorded `random(1)` stays an unconsumed keyed entry.
+- **RNG.** No new decision kinds. The target pick keeps its key but is drawn
+  when Encore lands, so in the default stream it moves ahead of any draws
+  made between Encore and the target's action. `ps-rng` gains PS's
+  `insertChoice` tie draw.
+- **Evidence (root).**
+  - Golden `champions-encore-quick-guard-priority` (Champions, seed
+    `[1,2,3,4]`): Conkeldurr Quick Guards on turn 1. On turn 2 it queues
+    Splash and is Encored, and Pikachu uses Quick Attack on it. PS: the
+    forced Quick Guard (+3) goes first and blocks it (180/180). The engine
+    had 168/180. It failed `corpus_zero_divergences` before the fix and
+    passes now.
+  - Four seeded Encore jobs (sodium 1-4): PS draws `getRandomTarget`
+    during Encore's `onStart`, where the engine drew a re-sort shuffle.
+- **Tests** (`battle_r10_tests.rs`):
+  - Champions forced Quick Guard blocks Quick Attack (seeds 1-4), while the
+    standard gen 9 control takes the hit.
+  - Recording: exactly one `UniformRange(2)` target draw for the forced
+    Tackle, before the next actor's draws in Champions and after them in
+    standard gen 9.
+  - Keyed `Range(0)` / `Range(1)`: the forced Tackle hits p1a / p1b, and
+    the outcome is consumed once.
+  - `ps-rng`: one `random_target` before the next actor's draws; with a
+    Speed tie behind a faster mon, `insert_choice(1, 3)` right after it,
+    and none without a tie.
+  - Guards: Mental Herb (no re-queue, Encore cured, Splash stands), same
+    queued move (no draw, chosen target kept), target already acted
+    (duration 4).
+  - Before the fix, the Quick Guard test (168 HP), the Recording timing
+    test and the `ps-rng` test failed; the keyed and guard tests already
+    passed. All pass in default, `ps-rng` and `chance` builds, existing
+    Encore tests included.
+  - Queued Struggle (added after root review): Rillaboom, whose only move
+    Fake Out is unselectable after its first action, takes Struggle from
+    `legal_choices` and is Encored into Fake Out, which fails. Whimsicott
+    takes no damage and there is no recoil. With the old Struggle exclusion
+    Whimsicott fell to 82 HP; root's PS fixture keeps it at 112.
+  - adjacentAlly (added after root review): an Encored Aromatic Mist hits
+    the partner with no foe sample, and `ps-rng` draws exactly
+    `random_target(0, 1)`. With the partner fainted, or in Singles, there
+    is no draw. Before, the engine drew a 2-way foe sample (`UniformRange(2)`,
+    `random_target(0, 2)`).
+  - Root's goldens `champions-encore-replaces-queued-struggle` and
+    `champions-encore-targets-adjacent-ally` already passed the first patch,
+    so they're smoke coverage only. The golden loader doesn't lower a forced
+    Struggle from `move 1`, and the golden scorer doesn't check draw bounds.
+- **Limits.**
+  - PS's re-resolution also re-runs FractionalPriority (`:246`, a Quick
+    Claw / Quick Draw roll); the engine keeps the turn's fractional keys and
+    draws nothing.
+  - The insertion compares the engine's current keys, not PS's stored
+    action values.
+  - Under the keyed oracle, PS's insertion tie draw stays unconsumed and
+    the action keeps its queue position.
+- **Root final verification.** Eleven unmodified actual PS fixtures (four
+  fixed-seed retargets, the priority case, four boundary controls and the
+  newly queued Struggle / adjacentAlly cases) match 22/22 played turns in
+  both modes. Seeded `ps-rng` replay has no normalized first draw
+  divergence, missing draws, repairs or errors. Keyed replay has no missing
+  draws or errors, but retains 48 existing repair aliases and eight leftover
+  draws; strict keyed trace equivalence is not claimed.
+  Full workspace excluding Python: 1511 default / 1548 `ps-rng` tests
+  pass, with 0 failures and 32 ignored each, including both stored golden
+  gates. Release build, configured clippy guards, residual-index audit and
+  diff check pass. The historical study corpus was not rescored.

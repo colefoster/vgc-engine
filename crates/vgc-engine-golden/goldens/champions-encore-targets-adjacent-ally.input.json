@@ -1,0 +1,26 @@
+{
+  "name": "champions-encore-targets-adjacent-ally",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Whimsicott\nAbility: Prankster\nLevel: 50\n- Encore\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Alcremie\nAbility: Sweet Veil\nLevel: 50\n- Aromatic Mist\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 1",
+      "p2": "move 1 -2, move 1"
+    },
+    {
+      "p1": "move 1 1, move 1",
+      "p2": "move 2, move 1"
+    }
+  ]
+}

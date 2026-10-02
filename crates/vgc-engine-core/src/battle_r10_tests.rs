@@ -513,3 +513,293 @@ fn partial_trap_ends_without_a_chip_when_its_source_faints() {
     assert_eq!(b.p2.team[0].current_hp, before, "no chip once Toxapex fainted");
     assert!(!b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::PartialTrap));
 }
+
+// ---- Champions Encore replaces the queued action at once ----
+//
+// data/mods/champions/moves.ts:307-339 encore onStart: when the target still
+// has a queued move other than the Encored one (and holds no Mental Herb),
+// `queue.changeAction` re-queues the Encored move (sim/battle-queue.ts:
+// 301-305 -> insertChoice :369-402). resolveAction picks its target there
+// (:268-275 getRandomTarget, sim/battle.ts:2490-2522), and the gen-8+
+// re-sort orders it by its own priority. Standard gen 9 keeps the old
+// onOverrideAction at execution (`encore_hits_its_chosen_target_and_
+// overrides_that_turns_move` in battle.rs). Bulbapedia:
+// <https://bulbapedia.bulbagarden.net/wiki/Encore_(move)#Pok%C3%A9mon_Champions>.
+
+const CHAMPIONS_ID: &str = "gen9championsvgc2026regmc";
+
+fn encore_battle(rng: crate::rng::Rng, champions: bool, p1: &str, p2: &str) -> Battle {
+    let mut b = Battle::with_rng(
+        BattleConfig { format: Format::Doubles, seed: 0 },
+        rng,
+        TeamBuilder::from_json(p1).unwrap(),
+        TeamBuilder::from_json(p2).unwrap(),
+    );
+    b.set_format_id(if champions { CHAMPIONS_ID } else { "gen9doublescustomgame" });
+    b
+}
+
+#[test]
+fn champions_encore_forced_quick_guard_uses_its_own_priority() {
+    // Turn 1 Conkeldurr Quick Guards; turn 2 it queues Splash and is Encored.
+    // Champions: the forced Quick Guard (+3) goes up before Pikachu's Quick
+    // Attack (+1) and blocks it. Standard gen 9: it keeps Splash's 0 and the
+    // Quick Attack lands first.
+    let p1 = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]},{"species":"pikachu","level":50,"ability":"static","moves":["quickattack","splash"]}]"#;
+    let p2 = r#"[{"species":"conkeldurr","level":50,"ability":"guts","moves":["quickguard","splash"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+    for champions in [true, false] {
+        for seed in 1..5 {
+            let mut b = encore_battle(crate::rng::Rng::Splitmix(seed), champions, p1, p2);
+            b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+            b.step(
+                &[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 0)))],
+                &[mv(0, 1, None), mv(1, 0, None)],
+            );
+            let conk = &b.p2.team[0];
+            assert!(conk.encore_turns() > 0, "champions={champions} seed {seed}: Encore landed");
+            assert_eq!(conk.current_hp == conk.stats.hp, champions, "champions={champions} seed {seed}: hp {}", conk.current_hp);
+            assert!(b.encore_requeue.is_none(), "no request outlives the step");
+        }
+    }
+}
+
+// Turn 1 p2a Snorlax Tackles p1b; turn 2 Whimsicott Encores it while it
+// queued Splash and Pikachu (p1b, faster than Snorlax) Tackles Miltank.
+const ENC_P1: &str = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]},{"species":"pikachu","level":50,"ability":"static","moves":["tackle","splash"]}]"#;
+const ENC_P2: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["tackle","splash"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+
+/// Turn-2 recorded draws keyed to p2a's Tackle with no target: its
+/// getRandomTarget pick.
+fn retarget_draws(log: &[crate::rng::RecordedDraw]) -> Vec<usize> {
+    use crate::rng::{RngDecision, NO_SLOT};
+    log.iter()
+        .enumerate()
+        .filter(|(_, d)| d.key.actor == 2 && d.key.target == NO_SLOT && d.key.move_id == data::move_id::TACKLE && d.key.decision == RngDecision::Range)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn champions_encore_draws_the_forced_target_when_it_lands() {
+    // Champions: one target draw, at Encore application, before Pikachu's
+    // move. Standard gen 9: the same one draw, at Snorlax's execution.
+    for champions in [true, false] {
+        let mut b = encore_battle(crate::rng::Rng::recording(11), champions, ENC_P1, ENC_P2);
+        b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+        let _ = b.rng_mut().take_recording_log();
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 1)))], &[mv(0, 1, None), mv(1, 0, None)]);
+        let log = b.rng_mut().take_recording_log().unwrap();
+        let picks = retarget_draws(&log);
+        assert_eq!(picks.len(), 1, "champions={champions}: {log:?}");
+        assert_eq!(log[picks[0]].space, crate::rng::DrawSpace::UniformRange(2));
+        let pikachu = log.iter().position(|d| d.key.actor == 1).expect("Pikachu's Tackle draws");
+        assert_eq!(picks[0] < pikachu, champions, "champions={champions}: pick {} vs Pikachu {pikachu}", picks[0]);
+    }
+}
+
+#[test]
+fn champions_encore_forced_move_hits_the_drawn_foe() {
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 2, actor: 2, target: NO_SLOT, move_id: data::move_id::TACKLE, decision: RngDecision::Range };
+    for pick in [0u32, 1] {
+        let mut table = std::collections::HashMap::new();
+        table.insert(key, std::collections::VecDeque::from([RngEvent::Range(pick)]));
+        let mut b = encore_battle(Rng::oracle_keyed(table, 5), true, ENC_P1, ENC_P2);
+        b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+        let before = [b.p1.team[0].current_hp, b.p1.team[1].current_hp];
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 1)))], &[mv(0, 1, None), mv(1, 0, None)]);
+        let hit = [b.p1.team[0].current_hp < before[0], b.p1.team[1].current_hp < before[1]];
+        assert_eq!(hit, [pick == 0, pick == 1], "pick {pick}");
+        assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "pick {pick}: not consumed");
+        let misses = b.rng_mut().take_miss_log().unwrap();
+        assert!(misses.iter().all(|m| m.key != key), "pick {pick}: drawn twice");
+    }
+}
+
+#[test]
+fn champions_encore_requeue_guards_draw_nothing() {
+    let none = |b: &mut Battle| retarget_draws(&b.rng_mut().take_recording_log().unwrap()).is_empty();
+    // Mental Herb: no re-queue; the herb cures Encore and Splash stands.
+    let herb = ENC_P2.replacen(r#""ability":"thickfat","#, r#""ability":"thickfat","item":"mentalherb","#, 1);
+    let mut b = encore_battle(crate::rng::Rng::recording(3), true, ENC_P1, &herb);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().take_recording_log();
+    let before = [b.p1.team[0].current_hp, b.p1.team[1].current_hp];
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 1, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    assert!(none(&mut b), "Mental Herb: no target draw");
+    assert_eq!(b.p2.team[0].encore_turns(), 0);
+    assert_eq!([b.p1.team[0].current_hp, b.p1.team[1].current_hp], before, "Splash, not Tackle");
+
+    // Same queued move: nothing changes; the chosen target stands.
+    let mut b = encore_battle(crate::rng::Rng::recording(3), true, ENC_P1, ENC_P2);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().take_recording_log();
+    let before = b.p1.team[1].current_hp;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    assert!(none(&mut b), "same move: no target draw");
+    assert!(b.p1.team[1].current_hp < before, "Tackle hit its chosen target");
+
+    // Target already acted (slow Encore user): duration 4, no re-queue.
+    let slow = r#"[{"species":"shuckle","level":50,"ability":"sturdy","moves":["encore","splash"]},{"species":"chansey","level":50,"moves":["splash"]}]"#;
+    let fast = r#"[{"species":"pikachu","level":50,"ability":"static","moves":["tackle","splash"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+    let mut b = encore_battle(crate::rng::Rng::recording(3), true, slow, fast);
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().take_recording_log();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    let log = b.rng_mut().take_recording_log().unwrap();
+    assert!(!log.iter().any(|d| d.key.actor == 2 && d.key.target == crate::rng::NO_SLOT && d.key.move_id == data::move_id::TACKLE));
+    assert_eq!(b.p2.team[0].encore_turns(), 3, "4 turns, one spent");
+}
+
+#[test]
+fn champions_encore_replaces_a_queued_struggle() {
+    // data/mods/champions/moves.ts:326 only skips the same move and Mental
+    // Herb. Rillaboom's only move is Fake Out, unselectable after its first
+    // action (data/mods/champions/moves.ts:352), so turn 2 it must Struggle;
+    // Encore turns that back into Fake Out, which then fails (not its first
+    // action): no damage to Whimsicott, no Struggle recoil.
+    let p1 = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]},{"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"rillaboom","level":50,"ability":"overgrow","moves":["fakeout"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+    for seed in 1..5 {
+        let mut b = encore_battle(crate::rng::Rng::Splitmix(seed), true, p1, p2);
+        b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+        let whimsicott = b.p1.team[0].current_hp;
+        assert!(whimsicott < b.p1.team[0].stats.hp, "seed {seed}: turn-1 Fake Out hit");
+        let lc = b.legal_choices(SideRef::P2, 0);
+        assert!(!lc.is_empty(), "seed {seed}");
+        assert!(
+            lc.iter().all(|c| matches!(c, Choice::Move { move_slot: crate::choice::STRUGGLE_MOVE_SLOT, .. })),
+            "seed {seed}: only Struggle, got {lc:?}"
+        );
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[lc[0], mv(1, 0, None)]);
+        let rilla = &b.p2.team[0];
+        assert!(rilla.encore_turns() > 0, "seed {seed}: Encore landed");
+        assert_eq!(rilla.encored_move_slot(), 0);
+        assert_eq!(b.p1.team[0].current_hp, whimsicott, "seed {seed}: no Struggle damage");
+        assert_eq!(rilla.current_hp, rilla.stats.hp, "seed {seed}: no Struggle recoil");
+        assert_eq!(rilla.last_used_move_slot, 0, "seed {seed}: last move is still Fake Out");
+    }
+}
+
+// An Encored adjacentAlly move (target code 2): getRandomTarget samples the
+// user's living adjacent allies (sim/battle.ts:2503-2508), not its foes; no
+// draw in Singles or without a living ally.
+const MIST_P1: &str = r#"[{"species":"alcremie","level":50,"ability":"sweetveil","moves":["aromaticmist","splash"]},{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+const MIST_P2: &str = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]},{"species":"chansey","level":50,"ability":"naturalcure","moves":["splash"]}]"#;
+
+/// Turn-2 recorded draws keyed to p1a's Aromatic Mist with no target.
+fn mist_target_draws(log: &[crate::rng::RecordedDraw]) -> Vec<crate::rng::DrawSpace> {
+    log.iter()
+        .filter(|d| d.key.actor == 0 && d.key.target == crate::rng::NO_SLOT && d.key.move_id == data::move_id::AROMATICMIST && d.key.decision == crate::rng::RngDecision::Range)
+        .map(|d| d.space)
+        .collect()
+}
+
+#[test]
+fn encore_forced_adjacent_ally_move_samples_the_ally() {
+    for champions in [true, false] {
+        let mut b = encore_battle(crate::rng::Rng::recording(7), champions, MIST_P1, MIST_P2);
+        b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+        assert_eq!(b.p1.team[1].boosts[3], 1, "turn-1 Aromatic Mist on the partner");
+        let _ = b.rng_mut().take_recording_log();
+        b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+        let log = b.rng_mut().take_recording_log().unwrap();
+        assert!(b.p1.team[0].encore_turns() > 0, "champions={champions}: Encore landed");
+        // The pick is a one-outcome `random(1)` (seen in the ps-rng trace
+        // below); a one-outcome draw is never recorded, so no foe sample
+        // (`UniformRange(2)`) may show up here.
+        assert_eq!(mist_target_draws(&log), [], "champions={champions}");
+        assert_eq!(b.p1.team[1].boosts[3], 2, "champions={champions}: forced Aromatic Mist on the partner");
+    }
+}
+
+#[test]
+fn encore_forced_adjacent_ally_move_draws_nothing_without_an_ally() {
+    // Partner fainted (doubles, nobody to replace it).
+    let mut b = encore_battle(crate::rng::Rng::recording(7), true, MIST_P1, MIST_P2);
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    b.p1.team[1].current_hp = 0;
+    b.p1.team[1].fainted = true;
+    let _ = b.rng_mut().take_recording_log();
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    let log = b.rng_mut().take_recording_log().unwrap();
+    assert!(b.p1.team[0].encore_turns() > 0, "Encore landed");
+    assert!(mist_target_draws(&log).is_empty(), "{log:?}");
+
+    // Singles: getRandomTarget's adjacentAlly branch returns no target.
+    let mut b = Battle::with_rng(
+        BattleConfig { format: Format::Singles, seed: 0 },
+        crate::rng::Rng::recording(7),
+        TeamBuilder::from_json(r#"[{"species":"alcremie","level":50,"ability":"sweetveil","moves":["aromaticmist","splash"]}]"#).unwrap(),
+        TeamBuilder::from_json(r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]}]"#).unwrap(),
+    );
+    b.set_format_id(CHAMPIONS_ID);
+    b.p1.team[0].last_used_move_slot = 0;
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0)))]);
+    let log = b.rng_mut().take_recording_log().unwrap();
+    assert!(b.p1.team[0].encore_turns() > 0, "Encore landed");
+    assert!(mist_target_draws(&log).is_empty(), "{log:?}");
+}
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_encore_forced_adjacent_ally_move_draws_random_1() {
+    let mut rng = crate::rng::Rng::ps("sodium,00000000000000000000000000000001").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = encore_battle(rng, true, MIST_P1, MIST_P2);
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    let picks: Vec<(u32, u32)> = trace.iter().filter(|d| d.op == "random_target").map(|d| (d.a, d.b)).collect();
+    assert_eq!(picks, [(0, 1)], "{trace:?}");
+    assert_eq!(b.p1.team[1].boosts[3], 2, "forced Aromatic Mist on the partner");
+
+    // Partner fainted: no living adjacent ally, no draw.
+    let mut rng = crate::rng::Rng::ps("sodium,00000000000000000000000000000001").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = encore_battle(rng, true, MIST_P1, MIST_P2);
+    b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    b.p1.team[1].current_hp = 0;
+    b.p1.team[1].fainted = true;
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    assert!(b.p1.team[0].encore_turns() > 0, "Encore landed");
+    assert!(!trace.iter().any(|d| d.op == "random_target"), "{trace:?}");
+}
+
+#[cfg(feature = "ps-rng")]
+#[test]
+fn ps_rng_champions_encore_draws_target_then_insertion_at_once() {
+    // The target pick is drawn when Encore lands, before Pikachu's move.
+    let mut rng = crate::rng::Rng::ps("sodium,00000000000000000000000000000001").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = encore_battle(rng, true, ENC_P1, ENC_P2);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 1)))], &[mv(0, 1, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    let picks: Vec<usize> = trace.iter().enumerate().filter(|(_, d)| d.op == "random_target").map(|(i, _)| i).collect();
+    assert_eq!(picks.len(), 1, "{trace:?}");
+    let pikachu = trace.iter().position(|d| d.actor == 1).expect("Pikachu's draws");
+    assert!(picks[0] < pikachu, "pick {} vs Pikachu {pikachu}", picks[0]);
+    // No queued action ties the forced Tackle: no insertion draw.
+    assert!(!trace.iter().any(|d| d.op == "insert_choice"), "{trace:?}");
+
+    // p1b Snorlax ties p2a's forced Tackle (same Speed, priority 0) behind
+    // the faster Miltank: insertChoice draws random(1, 3) right after the
+    // target pick.
+    let tie_p1 = r#"[{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]},{"species":"snorlax","level":50,"ability":"thickfat","moves":["tackle","splash"]}]"#;
+    let mut rng = crate::rng::Rng::ps("sodium,00000000000000000000000000000001").unwrap();
+    rng.ps_mut().unwrap().enable_trace();
+    let mut b = encore_battle(rng, true, tie_p1, ENC_P2);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+    let _ = b.rng_mut().ps_mut().unwrap().take_trace();
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 1, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+    let pick = trace.iter().position(|d| d.op == "random_target").expect("target pick");
+    let ins = &trace[pick + 1];
+    assert_eq!((ins.op, ins.a, ins.b), ("insert_choice", 1, 3), "{trace:?}");
+    assert_eq!(trace.iter().filter(|d| d.op == "insert_choice").count(), 1);
+}
