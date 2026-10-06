@@ -716,11 +716,15 @@ pub(crate) fn diff_turn(b: &Battle, turn: &TurnRecord) -> Result<Option<Divergen
 /// of `ev_to_sp`), since `floor((8·sp−4)/4) = max(2·sp−1, 0)`. So a Champions
 /// team (SP notation, what PS gets) must have its stat values converted before
 /// the engine builds it. Non-Champions formats pass values through unchanged.
-fn sp_to_ev(sp: u8) -> u8 {
-    if sp == 0 {
-        0
-    } else {
-        (8 * sp as u16 - 4) as u8
+///
+/// More than 32 points in a stat is an error (PS a5df8274
+/// sim/team-validator.ts:1313-1318), not a wrap: `8·33 − 4 = 260` would
+/// otherwise truncate to 4 EVs.
+fn sp_to_ev(species: &str, sp: u8) -> Result<u8, String> {
+    match sp {
+        0 => Ok(0),
+        1..=32 => Ok((8 * sp as u16 - 4) as u8),
+        _ => Err(format!("{species}: Champions stat point value {sp} is out of range (0-32)")),
     }
 }
 
@@ -731,12 +735,13 @@ pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokem
     let mut members = parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
     if champions {
         for m in &mut members {
-            m.evs.hp = sp_to_ev(m.evs.hp);
-            m.evs.atk = sp_to_ev(m.evs.atk);
-            m.evs.def = sp_to_ev(m.evs.def);
-            m.evs.spa = sp_to_ev(m.evs.spa);
-            m.evs.spd = sp_to_ev(m.evs.spd);
-            m.evs.spe = sp_to_ev(m.evs.spe);
+            let s = &m.species;
+            m.evs.hp = sp_to_ev(s, m.evs.hp)?;
+            m.evs.atk = sp_to_ev(s, m.evs.atk)?;
+            m.evs.def = sp_to_ev(s, m.evs.def)?;
+            m.evs.spa = sp_to_ev(s, m.evs.spa)?;
+            m.evs.spd = sp_to_ev(s, m.evs.spd)?;
+            m.evs.spe = sp_to_ev(s, m.evs.spe)?;
         }
     }
     members
@@ -1139,5 +1144,65 @@ mod tests {
         };
         let d = diff_turn(&b, &boost).unwrap().expect("boosts diverge");
         assert_eq!((d.slot.as_str(), d.field), ("p1a", "boosts"));
+    }
+
+    const CHAMPIONS: &str = "gen9championsvgc2026regmc";
+    const RILLA_SP: &str = "Rillaboom\nAbility: Grassy Surge\nLevel: 50\nEVs: 1 HP / 32 Atk / 1 Def / 32 Spe\nAdamant Nature\n- Tackle";
+
+    fn stats(m: &Pokemon) -> [u16; 6] {
+        let s = &m.stats;
+        [s.hp, s.atk, s.def, s.spa, s.spd, s.spe]
+    }
+
+    #[test]
+    fn champions_stat_points_0_1_32_match_ps() {
+        // PS a5df8274 data/mods/champions/scripts.ts:24-38 (no Level Clause):
+        // HP = base + SP + 75, others floor((base + SP + 20) * nature).
+        // Same PS-probed values as the golden loader's stat_point_tests.
+        let team = build_engine_team(RILLA_SP, true).unwrap();
+        assert_eq!(stats(&team[0]), [176, 194, 111, 72, 90, 137]);
+    }
+
+    #[test]
+    fn standard_format_evs_pass_through_unchanged() {
+        let text = "Rillaboom\nAbility: Grassy Surge\nLevel: 50\nEVs: 4 HP / 252 Atk / 33 Spe\nAdamant Nature\n- Tackle";
+        let team = build_engine_team(text, false).unwrap();
+        let control = TeamBuilder::from_showdown_text_in(text, false).unwrap();
+        assert_eq!(stats(&team[0]), stats(&control[0]));
+    }
+
+    #[test]
+    fn champions_stat_points_above_32_are_rejected() {
+        // PS a5df8274 sim/team-validator.ts:1313-1318: more than 32 Stat
+        // Points in a stat is invalid. 33 used to wrap to 4 EVs (8*33-4 = 260).
+        for sp in [33u16, 255] {
+            let text = RILLA_SP.replace("32 Spe", &format!("{sp} Spe"));
+            let err = build_engine_team(&text, true).unwrap_err();
+            assert!(err.contains("Rillaboom") && err.contains(&format!("{sp}")) && err.contains("0-32"), "{err}");
+        }
+    }
+
+    #[test]
+    fn invalid_stat_points_reach_replay_callers() {
+        let bad = RILLA_SP.replace("32 Spe", "33 Spe");
+        let battle = PsBattle {
+            format: CHAMPIONS.into(),
+            seed: vec![],
+            p1team: RILLA_SP.into(),
+            p2team: bad.clone(),
+            turns: vec![],
+        };
+        let err = replay(&battle).unwrap_err();
+        assert!(err.starts_with("p2 team: ") && err.contains("33"), "{err}");
+
+        let acc: accuracy::AccBattle = serde_json::from_value(serde_json::json!({
+            "format": CHAMPIONS, "p1team": bad, "p2team": RILLA_SP, "turns": [],
+        }))
+        .unwrap();
+        let rep = accuracy::replay_keyed(&acc);
+        let err = rep.engine_error.expect("team error reported");
+        assert!(err.contains("33") && err.contains("0-32"), "{err}");
+        assert!(accuracy::turn1_state(&acc).unwrap_err().contains("33"));
+        assert!(accuracy::dump_keyed(&acc).contains("33"));
     }
 }
