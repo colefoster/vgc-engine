@@ -27,7 +27,7 @@ work order.
 
 > **Finish-line checklist (2026-10-06):** see
 > [`docs/finish-line-2026-10-06.md`](finish-line-2026-10-06.md) for the Gen 9
-> doubles / Champions milestones, evidence status and open product decisions.
+> doubles milestones (including Champions), evidence status and open decisions.
 > It does not change the phase gates below. The current phase is still Phase 2.
 
 ---
