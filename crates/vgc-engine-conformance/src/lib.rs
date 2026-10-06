@@ -730,11 +730,15 @@ fn sp_to_ev(species: &str, sp: u8) -> Result<u8, String> {
 
 /// Build an engine team from PS-export text. For Champions formats the parsed
 /// `evs` are Stat Points and are converted to EVs (see [`sp_to_ev`]) before the
-/// stats are computed.
+/// stats are computed, and supplied IVs are replaced by 31: PS's Champions
+/// `statModify` (data/mods/champions/scripts.ts:24-28, a5df8274) never reads
+/// them. The conversion is exact at level 50 only; other levels and Level
+/// Clause Mod aren't modelled.
 pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokemon>, String> {
     let mut members = parse_showdown_export(text).map_err(|e| format!("{e:?}"))?;
     if champions {
         for m in &mut members {
+            m.ivs = vgc_engine_core::StatSpread::MAX_IV;
             let s = &m.species;
             m.evs.hp = sp_to_ev(s, m.evs.hp)?;
             m.evs.atk = sp_to_ev(s, m.evs.atk)?;
@@ -1161,6 +1165,30 @@ mod tests {
         // Same PS-probed values as the golden loader's stat_point_tests.
         let team = build_engine_team(RILLA_SP, true).unwrap();
         assert_eq!(stats(&team[0]), [176, 194, 111, 72, 90, 137]);
+    }
+
+    #[test]
+    fn champions_ignores_supplied_ivs_at_level_50() {
+        // PS a5df8274 data/mods/champions/scripts.ts:24-28 never reads
+        // set.ivs (and team-validator.ts:1166-1168 requires them all 31), so
+        // an IV 0 export has the same stats as IV 31. Golden loader values.
+        for ivs in ["0", "31"] {
+            let line = format!("IVs: {ivs} HP / {ivs} Atk / {ivs} Def / {ivs} SpA / {ivs} SpD / {ivs} Spe\n- Tackle");
+            let team = build_engine_team(&RILLA_SP.replace("- Tackle", &line), true).unwrap();
+            assert_eq!(stats(&team[0]), [176, 194, 111, 72, 90, 137], "IVs {ivs}");
+            assert_eq!(team[0].pp[0], 20, "IVs {ivs}: Champions Tackle PP");
+            assert_eq!(team[0].level, 50);
+        }
+    }
+
+    #[test]
+    fn standard_format_keeps_supplied_ivs() {
+        // The same export read as ordinary gen 9 EVs with IV 0 (golden
+        // loader's standard control), with +3 PP Ups.
+        let text = RILLA_SP.replace("- Tackle", "IVs: 0 HP / 0 Atk / 0 Def / 0 SpA / 0 SpD / 0 Spe\n- Tackle");
+        let team = build_engine_team(&text, false).unwrap();
+        assert_eq!(stats(&team[0]), [160, 147, 95, 58, 75, 94]);
+        assert_eq!(team[0].pp[0], 56);
     }
 
     #[test]
