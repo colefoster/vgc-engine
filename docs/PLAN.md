@@ -25,6 +25,11 @@ work order.
 > "No Tera yet" line is therefore stale. Phase numbering tracks the gate, not
 > per-mechanic completion.
 
+> **Finish-line checklist (2026-10-06):** see
+> [`docs/finish-line-2026-10-06.md`](finish-line-2026-10-06.md) for the Gen 9
+> doubles / Champions milestones, evidence status and open product decisions.
+> It does not change the phase gates below. The current phase is still Phase 2.
+
 ---
 
 ## Phase 0 — Scaffold (DONE 2026-06-15)
