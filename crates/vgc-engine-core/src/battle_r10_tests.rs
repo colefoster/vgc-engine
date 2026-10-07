@@ -1145,3 +1145,117 @@ fn encore_fractional_no_reroll_without_a_requeue() {
     let log = b.rng_mut().take_recording_log().unwrap();
     assert_eq!(quick_claw_draws(&log).len(), 1, "already acted: {log:?}");
 }
+
+// Custap Berry (data/items.ts:1243-1256) is eaten inside that same
+// FractionalPriority run when the relayed priority is still <= 0 and the
+// holder is at <= 1/4 HP. A holder pushed under 1/4 between the commit and
+// the Encore re-queue eats it there. Bulbapedia:
+// <https://bulbapedia.bulbagarden.net/wiki/Custap_Berry>.
+
+// Annihilape (90) Seismic Tosses p2a Snorlax (a flat 50 at level 50; its
+// Ghost typing also makes it immune to Snorlax's Tackle), then Clefable
+// (60) Encores it; Snorlax (30) is last.
+const CUSTAP_P1: &str = r#"[{"species":"annihilape","level":50,"ability":"defiant","moves":["seismictoss","splash"]},{"species":"clefable","level":50,"ability":"magicguard","moves":["encore","splash"]}]"#;
+const CUSTAP_P2: &str = r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"custapberry","moves":["tackle","splash"]},{"species":"miltank","level":50,"ability":"sapsipper","moves":["splash"]}]"#;
+const CUSTAP_HP_ABOVE_QUARTER: u16 = 20;
+
+/// Turn 1 Snorlax Tackles Annihilape (immune); its HP is then set to
+/// `CUSTAP_HP_ABOVE_QUARTER` above a quarter, so Custap is not eligible at
+/// turn 2's commit. Turn 2 Annihilape Seismic Tosses it under a quarter
+/// and Clefable Encores it (or Splashes) while it queues `t2`.
+fn custap_encore_battle(rng: crate::rng::Rng, champions: bool, p2: &str, t2: u8, encore: bool) -> Battle {
+    let mut b = encore_battle(rng, champions, CUSTAP_P1, p2);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    assert_eq!(b.p1.team[0].current_hp, b.p1.team[0].stats.hp, "precondition: Tackle can't touch Annihilape");
+    let max = b.p2.team[0].stats.hp;
+    let hp = max / 4 + CUSTAP_HP_ABOVE_QUARTER;
+    assert!(hp * 4 > max && hp <= max / 4 + 50 && hp > 50, "precondition: Toss moves {hp}/{max} under a quarter without a KO");
+    b.p2.team[0].current_hp = hp;
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "precondition: holds Custap");
+    let tgt = if t2 == 0 { Some(t(SideRef::P1, 0)) } else { None };
+    let p1b = if encore { mv(1, 0, Some(t(SideRef::P2, 0))) } else { mv(1, 1, None) };
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), p1b], &[mv(0, t2, tgt), mv(1, 0, None)]);
+    let lax = &b.p2.team[0];
+    assert_eq!(lax.current_hp, hp - 50, "precondition: Seismic Toss landed and nothing else hit");
+    assert!(lax.current_hp * 4 <= max, "precondition: under a quarter after the Toss");
+    assert_eq!(lax.encore_turns() > 0, encore, "precondition: Encore landed iff used");
+    b
+}
+
+#[test]
+fn encore_fractional_eats_a_newly_eligible_custap_berry() {
+    for seed in 1..5 {
+        let mut b = custap_encore_battle(crate::rng::Rng::Splitmix(seed), true, CUSTAP_P2, 1, true);
+        let lax = &b.p2.team[0];
+        assert_eq!(lax.item_id, u16::MAX, "seed {seed}: Custap eaten at the re-queue");
+        assert_eq!(lax.consumed_item, data::item_id::CUSTAPBERRY, "seed {seed}");
+        // Turn 3: with no berry left, Annihilape's Seismic Toss KOs Snorlax
+        // before its Encored Tackle can hit Clefable.
+        let clefable = b.p1.team[1].current_hp;
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)]);
+        assert!(b.p2.team[0].fainted, "seed {seed}: Seismic Toss KO");
+        assert_eq!(b.p1.team[1].current_hp, clefable, "seed {seed}: Snorlax never moved");
+    }
+}
+
+#[test]
+fn encore_fractional_custap_guards() {
+    // Standard gen 9 (no re-queue): the berry waits for the next commit.
+    let b = custap_encore_battle(crate::rng::Rng::Splitmix(1), false, CUSTAP_P2, 1, true);
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "standard gen 9 keeps it");
+    // No Encore: the hit alone does not eat it mid-turn.
+    let b = custap_encore_battle(crate::rng::Rng::Splitmix(1), true, CUSTAP_P2, 1, false);
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "no re-queue keeps it");
+    // Same queued move as the Encored one: no re-queue.
+    let b = custap_encore_battle(crate::rng::Rng::Splitmix(1), true, CUSTAP_P2, 0, true);
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "same move keeps it");
+    // Already eaten at the commit (under a quarter from the start): the
+    // re-queue sees no berry and drops the commit's +0.1. Prankster Encore
+    // (+1) lands before Snorlax's Custap-boosted priority-0 action, so a
+    // queued action is still there to re-queue.
+    let prankster = r#"[{"species":"annihilape","level":50,"ability":"defiant","moves":["seismictoss","splash"]},{"species":"whimsicott","level":50,"ability":"prankster","moves":["encore","splash"]}]"#;
+    let commit_eaten = |encore: bool| {
+        let mut b = encore_battle(crate::rng::Rng::Splitmix(1), true, prankster, CUSTAP_P2);
+        b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+        b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 4;
+        let p1b = if encore { mv(1, 0, Some(t(SideRef::P2, 0))) } else { mv(1, 1, None) };
+        b.step(&[mv(0, 1, None), p1b], &[mv(0, 1, None), mv(1, 0, None)]);
+        assert_eq!(b.p2.team[0].consumed_item, data::item_id::CUSTAPBERRY, "encore={encore}: eaten at the commit");
+        assert_eq!(b.p2.team[0].encore_turns() > 0, encore, "encore={encore}: Encore landed iff used");
+        b.turn_keys.frac[1][0]
+    };
+    assert_eq!(commit_eaten(false), -1, "control: the commit Custap +0.1 survives without a re-queue");
+    assert_eq!(commit_eaten(true), 0, "re-queue drops the commit +0.1");
+    // An opposing Unnerve blocks the eat (TryEatItem) at the re-queue too.
+    let unnerve = CUSTAP_P1.replacen("defiant", "unnerve", 1);
+    let mut b = encore_battle(crate::rng::Rng::Splitmix(1), true, &unnerve, CUSTAP_P2);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 4 + CUSTAP_HP_ABOVE_QUARTER;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None), mv(1, 0, None)]);
+    assert!(b.p2.team[0].encore_turns() > 0, "Unnerve: Encore landed");
+    assert!(b.p2.team[0].current_hp * 4 <= b.p2.team[0].stats.hp, "Unnerve: under a quarter");
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "Unnerve keeps it");
+    assert_eq!(b.turn_keys.frac[1][0], 0, "Unnerve: no +0.1");
+    // Mycelium Might forced into a Status move: Custap returns before the
+    // eat. Turn 1 Splash, turn 2 queued Tackle -> forced Splash.
+    let mycelium = CUSTAP_P2.replacen("thickfat", "myceliummight", 1);
+    let mut b = encore_battle(crate::rng::Rng::Splitmix(1), true, CUSTAP_P1, &mycelium);
+    b.step(&[mv(0, 1, None), mv(1, 1, None)], &[mv(0, 1, None), mv(1, 0, None)]);
+    b.p2.team[0].current_hp = b.p2.team[0].stats.hp / 4 + CUSTAP_HP_ABOVE_QUARTER;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)]);
+    assert!(b.p2.team[0].encore_turns() > 0, "Mycelium Might: Encore landed");
+    assert_eq!(b.p2.team[0].encored_move_slot(), 1, "Mycelium Might: Encored into Splash");
+    assert!(b.p2.team[0].current_hp * 4 <= b.p2.team[0].stats.hp, "Mycelium Might: under a quarter");
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "Mycelium Might Status move keeps it");
+    assert_eq!(b.turn_keys.frac[1][0], 1, "Mycelium Might: -0.1 bucket");
+    // Quick Draw fires first at the re-queue: the relayed 0.1 fails
+    // Custap's `priority <= 0`, so the berry stays.
+    use crate::rng::{Rng, RngDecision, RngEvent, RngKey, NO_SLOT};
+    let key = RngKey { turn: 2, actor: 2, target: NO_SLOT, move_id: data::ability_id::QUICKDRAW, decision: RngDecision::Ability };
+    let mut table = std::collections::HashMap::new();
+    table.insert(key, std::collections::VecDeque::from([RngEvent::Range(0)]));
+    let draw = CUSTAP_P2.replacen("thickfat", "quickdraw", 1);
+    let b = custap_encore_battle(Rng::oracle_keyed(table, 5), true, &draw, 1, true);
+    assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "precondition: re-queue Quick Draw roll consumed");
+    assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "Quick Draw fired first");
+}

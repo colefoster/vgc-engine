@@ -1,0 +1,285 @@
+{
+  "ok": true,
+  "name": "champions-encore-eats-custap",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 5,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Annihilape",
+      "hp": 185,
+      "max": 185
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Clefable",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 185,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 135,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "immune",
+      "actor": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 85,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "immune",
+      "actor": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 35,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Encore",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "immune",
+      "actor": "p1a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 5,
+      "kind": "faint",
+      "actor": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791331047\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Annihilape, L50, M|\n|poke|p1|Clefable, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Snorlax, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791331047\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Annihilape|Annihilape, L50, M|185/185\n|switch|p1b: Clefable|Clefable, L50, F|170/170\n|switch|p2a: Snorlax|Snorlax, L50, F|235/235\n|switch|p2b: Miltank|Miltank, L50, F|170/170\n|turn|1|\n|t:|1791331047\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Annihilape|Seismic Toss|p2a: Snorlax\n|-damage|p2a: Snorlax|185/235\n|move|p1b: Clefable|Splash|p1b: Clefable\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Annihilape\n|-immune|p1a: Annihilape\n|\n|upkeep\n|turn|2|\n|t:|1791331047\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Annihilape|Seismic Toss|p2a: Snorlax\n|-damage|p2a: Snorlax|135/235\n|move|p1b: Clefable|Splash|p1b: Clefable\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Annihilape\n|-immune|p1a: Annihilape\n|\n|upkeep\n|turn|3|\n|t:|1791331047\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Annihilape|Seismic Toss|p2a: Snorlax\n|-damage|p2a: Snorlax|85/235\n|move|p1b: Clefable|Splash|p1b: Clefable\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Annihilape\n|-immune|p1a: Annihilape\n|\n|upkeep\n|turn|4|\n|t:|1791331047\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Annihilape|Seismic Toss|p2a: Snorlax\n|-damage|p2a: Snorlax|35/235\n|move|p1b: Clefable|Encore|p2a: Snorlax\n|-start|p2a: Snorlax|Encore\n|-enditem|p2a: Snorlax|Custap Berry|[eat]\n|-activate|p2a: Snorlax|item: Custap Berry|[consumed]\n|move|p2a: Snorlax|Tackle|p1a: Annihilape\n|-immune|p1a: Annihilape\n|\n|upkeep\n|turn|5|\n|t:|1791331047\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Annihilape|Seismic Toss|p2a: Snorlax\n|-damage|p2a: Snorlax|0 fnt\n|faint|p2a: Snorlax\n|move|p1b: Clefable|Splash|p1b: Clefable\n|-nothing\n|\n|upkeep"
+}

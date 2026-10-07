@@ -12821,7 +12821,18 @@ self.trigger_emergency_exits();
         if let Some(q) = self.quick_frac.as_mut() {
             q[si][sl] = quick;
         }
-        self.turn_keys.frac[si][sl] = crate::order::fractional_key(self, ts, tslot, mid, quick);
+        let frac = crate::order::fractional_key(self, ts, tslot, mid, quick);
+        self.turn_keys.frac[si][sl] = frac;
+        // Custap Berry is eaten in this same run (data/items.ts:1243-1256),
+        // so a holder pushed under 1/4 HP since the commit loses it here, as
+        // `consume_fractional_pri_items` does at the commit.
+        if frac == -1 && !quick {
+            if let Some(m) = self.side_mut(ts).active_mon_mut(tslot as usize) {
+                if m.item_id == data::item_id::CUSTAPBERRY {
+                    m.consume_item();
+                }
+            }
+        }
         let target = self.random_target_for(ts, tslot, mid);
         #[allow(unused_mut)]
         let mut insert = 255u8;
