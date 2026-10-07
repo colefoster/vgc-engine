@@ -43,8 +43,23 @@ the manager run. Do not re-record them.
   `tera_faint_*` tests in battle.rs, plus
   `step_chance_tera_faint_clears_tera_only_on_fainted_branches` in chance.rs)
   cover it.
-- Keyed and seeded replay counts for these captures are measured separately
-  and not recorded here.
+## Engine replay of the normal captures (manager-measured, at 1b5ed70)
+
+- Both captures match all 3 state turns (1 + 2) in both keyed and seeded
+  modes. Neither mode had an engine error, a PS error, a missing draw or a
+  repair.
+- Seeded: every count is zero, and there is no first-draw divergence.
+- Keyed: **each** capture has 1 leftover draw:
+  `t1 / Secondary / flamethrower / p1b>p2b`. The keyed run is not
+  leftover-free.
+- `tera-faint-resist-and-ko`, the job with a bench, had 1 choice fallback
+  for its replacement switch; `tera-faint-partner-lives` had none.
+- The existing seeded fixture of the same KO already covers the engine
+  outcome. `ps-state.jsonl` is the direct state reference for the flag.
+- Worker-wide at the same point:
+  - workspace tests: 1603 default / 1646 seeded / 1313 chance, 0 failed
+    (32 ignored in the workspace runs, 2 in the chance run);
+  - 500-battle allocation probe: complete, 9887 steps, 0 cap, 0 alloc.
 
 ```sh
 export PS_DIST=<pinned a5df8274 build>/dist/sim
