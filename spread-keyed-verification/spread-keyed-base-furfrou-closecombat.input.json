@@ -1,0 +1,27 @@
+{
+  "name": "spread-keyed-base-furfrou-closecombat",
+  "rng_mode": "keyed",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Furfrou\nAbility: Fur Coat\nLevel: 50\nEVs: 252 HP / 252 Def\nImpish Nature\n- Double-Edge\n- Protect"
+  },
+  "p2": {
+    "team": "Lucario\nAbility: Inner Focus\nLevel: 50\nHardy Nature\n- Close Combat\n- Aura Sphere"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    },
+    {
+      "p1": "move 1",
+      "p2": "move 2"
+    }
+  ]
+}

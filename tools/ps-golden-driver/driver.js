@@ -495,6 +495,13 @@ async function runJob(job) {
 
   const randomPlay = !!job.random_play;
   const maxTurns = job.max_turns || 30;
+  // `rng_mode: "keyed"` (opt-in) also records each draw's PS provenance
+  // (conformance-driver.js patchRng: turn / actor / target / move /
+  // decision from PS's active context and per-target callback arguments,
+  // plus the call site and arguments) as `keyed`. `rng` / `events` / `log`
+  // are produced exactly as in the default flat mode.
+  const rngMode = job.rng_mode === undefined ? 'flat' : job.rng_mode;
+  if (rngMode !== 'flat' && rngMode !== 'keyed') throw new Error(`unknown rng_mode: ${JSON.stringify(job.rng_mode)}`);
 
   const p1Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p1), ...(t.p1_followups || [])]);
   const p2Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p2), ...(t.p2_followups || [])]);
@@ -512,6 +519,11 @@ async function runJob(job) {
 
   const rng = [];
   const restore = patchRng(rng);
+  // Installed over the flat patch, so it is restored first (finally below).
+  const keyed = rngMode === 'keyed' ? [] : null;
+  const restoreKeyed = keyed
+    ? require('./conformance-driver.js').patchRng(keyed, { site: true, secondaryContext: true })
+    : null;
   const sideErrors = [];
 
   const stream = new BattleStream();
@@ -586,12 +598,13 @@ async function runJob(job) {
       new Promise((res) => setTimeout(res, 2_000)),
     ]);
   } finally {
+    if (restoreKeyed) restoreKeyed();
     restore();
   }
 
   const log = logChunks.join('');
   const events = parseLog(log);
-  return {
+  const out = {
     ok: sideErrors.length === 0,
     name: job.name || null,
     seed,
@@ -603,6 +616,8 @@ async function runJob(job) {
     errors: sideErrors,
     log,
   };
+  if (keyed) out.keyed = keyed;
+  return out;
 }
 
 // --- Batch mode ----------------------------------------------------------
