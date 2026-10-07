@@ -1314,7 +1314,7 @@ impl Battle {
     /// `isPermanent`), so `clearVolatile`'s `setSpecies(baseSpecies)`
     /// (sim/pokemon.ts:1559) restores the set species when it leaves the
     /// field: on switch-out (`do_switch`) and on fainting
-    /// (`shields_down_faint_cleanup`). A transformed mon reverts its own
+    /// (`faint_forme_cleanup`). A transformed mon reverts its own
     /// Transform instead.
     fn shields_down_leave_field(&mut self, side: SideRef, slot: u8) {
         let core = match self.side(side).active_mon(slot as usize) {
@@ -1335,14 +1335,71 @@ impl Battle {
     /// PS faintMessages runs `clearVolatile(false)` on each fainted mon
     /// (sim/battle.ts:2563) after every action, after the pre-move phase and
     /// after the residuals, whether or not anything replaces it. Run the
-    /// Minior-Meteor part of that at the same boundaries: a fainted active
-    /// Meteor returns to its own core colour (and its stats).
-    fn shields_down_faint_cleanup(&mut self) {
+    /// non-permanent forme part of that at the same boundaries: a fainted
+    /// Minior-Meteor returns to its own core colour, a fainted Morpeko to
+    /// its set forme.
+    fn faint_forme_cleanup(&mut self) {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
                     self.shields_down_leave_field(side, slot);
+                    self.hunger_switch_leave_field(side, slot, true);
                 }
+            }
+        }
+    }
+
+    /// Hunger Switch's onResidual (PS a5df8274 data/abilities.ts:1896-1902,
+    /// order 29): Morpeko toggles Full Belly <-> Hangry unless
+    /// Terastallized. The ability has `notransform` (inert while
+    /// transformed, sim/pokemon.ts:862) and no `cantsuppress` (the
+    /// effective-ability read honours Neutralizing Gas / Gastro Acid);
+    /// residuals skip a fainted mon. No RNG.
+    fn hunger_switch_update(&mut self, side: SideRef, slot: u8) {
+        use data::species_id::{MORPEKO, MORPEKOHANGRY};
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if m.effective_ability_id() != data::ability_id::HUNGERSWITCH
+            || m.transform_base.is_some()
+            || !m.is_alive()
+            || m.terastallized
+            || !crate::pokemon::is_morpeko(m.species_id)
+        {
+            return;
+        }
+        let target = if m.species_id == MORPEKO { MORPEKOHANGRY } else { MORPEKO };
+        self.set_forme(side, slot, target, true);
+        // formeChange -> setSpecies caches the raw Speed (sim/pokemon.ts:1418).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_reset_speed(side, slot as usize);
+        }
+    }
+
+    /// The Hunger Switch forme is non-permanent: clearVolatile's
+    /// setSpecies(baseSpecies) (sim/pokemon.ts:1559) returns Morpeko to its
+    /// set forme on switch-out and on fainting. Terastallizing makes the
+    /// current forme its base (formeRegression, sim/battle-actions.ts:
+    /// 1959-1964), so a Terastallized Morpeko keeps its forme when it
+    /// switches out, until faintMessages restores the set species
+    /// (sim/battle.ts:2558-2563). A transformed mon reverts its own
+    /// Transform instead; a legacy snapshot with no set species keeps its
+    /// forme (`Pokemon::morpeko_origin`).
+    fn hunger_switch_leave_field(&mut self, side: SideRef, slot: u8, fainting: bool) {
+        let origin = match self.side(side).active_mon(slot as usize) {
+            Some(m)
+                if crate::pokemon::is_morpeko(m.species_id)
+                    && m.transform_base.is_none()
+                    && (fainting || !m.terastallized) =>
+            {
+                m.morpeko_origin().filter(|&o| o != m.species_id)
+            }
+            _ => None,
+        };
+        if let Some(origin) = origin {
+            self.set_forme(side, slot, origin, true);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_reset_speed(side, slot as usize);
             }
         }
     }
@@ -2193,7 +2250,7 @@ impl Battle {
                     }
                     self.white_herb_after_move();
                     // runAction's faintMessages (sim/battle.ts:2835), before its Update.
-                    self.shields_down_faint_cleanup();
+                    self.faint_forme_cleanup();
                     self.run_pending_drags();
 self.trigger_emergency_exits();
                     // runAction's Update comes before a switch request
@@ -2228,7 +2285,7 @@ self.trigger_emergency_exits();
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.white_herb_after_move();
-                self.shields_down_faint_cleanup();
+                self.faint_forme_cleanup();
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
                 #[cfg(feature = "ps-rng")]
@@ -3454,7 +3511,7 @@ self.trigger_emergency_exits();
         let megas = self.mega_order(p1_choices, p2_choices);
         self.apply_pre_turn_switches(p1_choices, p2_choices);
         // The switch actions' faintMessages (a Pursuit KO).
-        self.shields_down_faint_cleanup();
+        self.faint_forme_cleanup();
 
         // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
         //     between switch resolution and move ordering. Transforming
@@ -4533,6 +4590,7 @@ self.trigger_emergency_exits();
             {
                 crate::ability::on_switch_out(self, side, actor_slot);
                 self.shields_down_leave_field(side, actor_slot);
+                self.hunger_switch_leave_field(side, actor_slot, false);
             }
         }
         let gravity_active = self.gravity_turns > 0;
@@ -6340,6 +6398,14 @@ self.trigger_emergency_exits();
                 return;
             }
         }
+        // Aura Wheel — PS data/moves.ts:792-800 onTry: fails unless the
+        // user's species is Morpeko or Morpeko-Hangry (a Transformed copy
+        // of one qualifies).
+        if move_id == data::move_id::AURAWHEEL
+            && !self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| crate::pokemon::is_morpeko(a.species_id))
+        {
+            return;
+        }
 
         // Variable-BP moves carry `basePower: 0` in PS and compute the
         // real BP in damage.rs via per-slug branches. They must NOT bail
@@ -7067,8 +7133,14 @@ self.trigger_emergency_exits();
             // (+1 Spe), Volt Absorb (heal 1/4 max HP), Lightning Rod
             // (deferred; needs redirect). PS handlers all `onTryHit`
             // return null on Electric-type moves and apply their effect.
-            // Electric type code = 3. Mold Breaker honored.
-            if m.type_ == 3 {
+            // Electric type code = 3. Mold Breaker honored. Aura Wheel's
+            // onModifyType runs first (Dark as Morpeko-Hangry).
+            let absorb_type = if move_id == data::move_id::AURAWHEEL {
+                crate::damage::aura_wheel_type(&attacker)
+            } else {
+                m.type_
+            };
+            if absorb_type == 3 {
                 let def_ability = defender.effective_ability_id();
                 if !attacker_breaks_mold {
                     match def_ability {
@@ -9843,8 +9915,16 @@ self.trigger_emergency_exits();
         // removes the volatile once the holder fires an Electric move
         // (the ×2 BP was already read in calculate_damage). Electric
         // type index = 3. Status Electric moves clear it after the status
-        // branch in resolve_move_with_pending.
-        if m.type_ == 3 {
+        // branch in resolve_move_with_pending. A Hangry Aura Wheel is Dark
+        // (data/moves.ts:801-807), so it keeps the charge.
+        let fired_electric = if move_id == data::move_id::AURAWHEEL {
+            self.side(actor_side)
+                .active_mon(actor_slot as usize)
+                .is_some_and(|a| crate::damage::aura_wheel_type(a) == 3)
+        } else {
+            m.type_ == 3
+        };
+        if fired_electric {
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.set_charged(false);
             }
@@ -10152,7 +10232,14 @@ self.trigger_emergency_exits();
             && matches!(m.target, 0 | 4 | 10)
             && targets.len() == 1
         {
-            let want_ability = match m.type_ {
+            // Aura Wheel's onModifyType (Dark as Morpeko-Hangry) runs
+            // before the RedirectTarget event reads `move.type`.
+            let redirect_type = if move_id == data::move_id::AURAWHEEL {
+                crate::damage::aura_wheel_type(attacker)
+            } else {
+                m.type_
+            };
+            let want_ability = match redirect_type {
                 3 => Some(data::ability_id::LIGHTNINGROD),
                 2 => Some(data::ability_id::STORMDRAIN),
                 _ => None,
@@ -13779,14 +13866,16 @@ self.trigger_emergency_exits();
         self.eot_perish_song();
         self.eot_late_item_residual();
         self.eot_ability_residual();
-        // 29. Shields Down (data/abilities.ts:4253-4265 onResidualOrder 29).
+        // 29. Shields Down (data/abilities.ts:4253-4265) and Hunger Switch
+        // (:1896-1902), both onResidualOrder 29.
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 self.shields_down_update(side, slot);
+                self.hunger_switch_update(side, slot);
             }
         }
         // The residual action's faintMessages, before its Update.
-        self.shields_down_faint_cleanup();
+        self.faint_forme_cleanup();
         // Attract `onUpdate` sweep — lift infatuation on any mon whose
         // source has left the field via switch / faint this turn (PS
         // data/moves.ts:706 attract onUpdate). No RNG.
@@ -21870,6 +21959,281 @@ mod tests {
         assert_eq!(yellow.p1.team[0].species_id, green.p1.team[0].species_id, "both Meteor");
         assert_ne!(yellow.canonical_hash(), green.canonical_hash(), "different future colours");
         assert_eq!(yellow.canonical_hash(), with_colour("minioryellow").canonical_hash());
+    }
+
+    // Hunger Switch (PS a5df8274 data/abilities.ts:1896-1907): at residual
+    // order 29 Morpeko toggles Full Belly <-> Hangry unless Terastallized.
+    // Flags: `notransform` (inert while transformed, sim/pokemon.ts:862),
+    // no `cantsuppress` (Neutralizing Gas / Gastro Acid stop it). The forme
+    // is non-permanent: clearVolatile's setSpecies(baseSpecies)
+    // (sim/pokemon.ts:1559) resets it on switch-out and faint, except that
+    // Terastallizing as Hangry makes Hangry the base (formeRegression,
+    // sim/battle-actions.ts:1959-1964) until faintMessages restores the set
+    // species (sim/battle.ts:2558-2563).
+    // Aura Wheel (data/moves.ts:775-810): fails unless the user's
+    // baseSpecies is Morpeko; Dark as Morpeko-Hangry, else Electric; 100%
+    // self +1 Spe.
+    const MORPEKO: &str = r#"{"species":"morpeko","gender":"M","level":50,"ability":"hungerswitch","nature":"hardy","moves":["aurawheel","splash","protect","rest"],"teratype":"dark"}"#;
+
+    fn species_slug(m: &crate::pokemon::Pokemon) -> &'static str {
+        data::SPECIES[m.species_id as usize].slug
+    }
+
+    fn morpeko_singles(bench: bool, foe: &str) -> Battle {
+        let p1 = if bench { format!("[{MORPEKO},{SPLASH_AUDINO}]") } else { format!("[{MORPEKO}]") };
+        let p1 = TeamBuilder::from_json(&p1).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{foe}]")).unwrap();
+        Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2)
+    }
+
+    /// One turn: each side uses the given move slot, aimed at the foe's slot 0.
+    fn morpeko_turn(b: &mut Battle, p1_move: u8, p2_move: u8) {
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: p1_move, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: p2_move, target: Some(t(SideRef::P1, 0)) }],
+        );
+    }
+
+    #[test]
+    fn hunger_switch_toggles_at_each_end_of_turn() {
+        let mut b = morpeko_singles(false, SPLASH_AUDINO);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpeko");
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            morpeko_turn(&mut b, 1, 0); // both Splash
+            seen.push(species_slug(&b.p1.team[0]));
+        }
+        assert_eq!(seen, ["morpekohangry", "morpeko", "morpekohangry"]);
+    }
+
+    #[test]
+    fn hunger_switch_is_stopped_by_neutralizing_gas() {
+        // No `cantsuppress` flag: an active Neutralizing Gas holder suppresses it.
+        let gas = r#"{"species":"weezinggalar","gender":"M","level":50,"ability":"neutralizinggas","nature":"hardy","moves":["splash"]}"#;
+        let mut b = morpeko_singles(false, gas);
+        morpeko_turn(&mut b, 1, 0);
+        morpeko_turn(&mut b, 1, 0);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpeko", "suppressed: no toggle");
+        // Control without the gas: the same turns toggle twice (back to Full Belly)
+        // after first going Hangry.
+        let mut c = morpeko_singles(false, SPLASH_AUDINO);
+        morpeko_turn(&mut c, 1, 0);
+        assert_eq!(species_slug(&c.p1.team[0]), "morpekohangry");
+    }
+
+    #[test]
+    fn hunger_switch_copied_by_transform_does_not_toggle() {
+        // Imposter copies Morpeko (species + Hunger Switch); `notransform`
+        // keeps the copy inert, while the real Morpeko keeps toggling.
+        let ditto = r#"{"species":"ditto","level":50,"ability":"imposter","nature":"hardy","moves":["transform"]}"#;
+        let mut b = morpeko_singles(false, ditto);
+        let d = &b.p2.team[0];
+        assert!(d.transform_base.is_some() && species_slug(d) == "morpeko", "Imposter copied Morpeko");
+        morpeko_turn(&mut b, 1, 1); // both Splash (Ditto's copied slot 1)
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry", "the real one toggles");
+        assert_eq!(species_slug(&b.p2.team[0]), "morpeko", "the copy doesn't");
+    }
+
+    #[test]
+    fn hunger_switch_forme_resets_on_switch_out_and_faint() {
+        let mut b = morpeko_singles(true, SPLASH_AUDINO);
+        morpeko_turn(&mut b, 1, 0);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let benched = b.p1.team.iter().find(|m| species_slug(m).starts_with("morpeko")).unwrap();
+        assert_eq!(species_slug(benched), "morpeko", "switch-out resets to Full Belly");
+        // Faint: Hangry at 1 HP, KO'd by Seismic Toss (doubles, no replacement).
+        let p1 = TeamBuilder::from_json(&format!("[{MORPEKO},{SPLASH_AUDINO}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!(r#"[
+            {{"species":"furret","gender":"M","level":50,"ability":"keeneye","nature":"hardy","moves":["seismictoss","splash"]}},
+            {SPLASH_AUDINO}
+        ]"#)).unwrap();
+        let mut d = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let splash = |slot| Choice::Move { actor_slot: slot, move_slot: 1, target: None };
+        let foe_splash = |slot| Choice::Move { actor_slot: slot, move_slot: if slot == 0 { 1 } else { 0 }, target: None };
+        d.step(&[splash(0), Choice::Move { actor_slot: 1, move_slot: 0, target: None }], &[foe_splash(0), foe_splash(1)]);
+        assert_eq!(species_slug(&d.p1.team[0]), "morpekohangry");
+        d.p1.team[0].current_hp = 1;
+        d.step(
+            &[splash(0), Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, foe_splash(1)],
+        );
+        assert!(d.p1.team[0].fainted);
+        assert_eq!(species_slug(&d.p1.team[0]), "morpeko", "faint resets to Full Belly");
+    }
+
+    #[test]
+    fn hunger_switch_terastallized_hangry_stays_until_it_faints() {
+        let mut b = morpeko_singles(true, SPLASH_AUDINO);
+        morpeko_turn(&mut b, 1, 0); // -> Hangry
+        b.step(&[Choice::Terastallize { actor_slot: 0, move_slot: 1, target: None }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        assert!(b.p1.team[0].terastallized);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry", "Terastallized: no toggle");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let benched = b.p1.team.iter().find(|m| species_slug(m).starts_with("morpeko")).unwrap();
+        assert_eq!(species_slug(benched), "morpekohangry", "formeRegression: Hangry is its base now");
+        // Back in (still Hangry, still no toggle), then a residual poison KO:
+        // faintMessages restores the set species (sim/battle.ts:2558-2563).
+        let idx = b.p1.team.iter().position(|m| species_slug(m).starts_with("morpeko")).unwrap();
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: idx as u8 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        assert_eq!(species_slug(b.p1.active_mon(0).unwrap()), "morpekohangry", "re-entry keeps Hangry");
+        let m = b.p1.active_mon_mut(0).unwrap();
+        m.current_hp = 1;
+        m.status = crate::pokemon::Status::Poison;
+        b.sync_status_dot_bit(SideRef::P1, 0);
+        morpeko_turn(&mut b, 1, 0);
+        let m = &b.p1.team[idx];
+        assert!(m.fainted, "poison KO while Terastallized");
+        assert_eq!(species_slug(m), "morpeko", "faint restores the set forme");
+    }
+
+    #[test]
+    fn hunger_switch_direct_hangry_set_switches_back_in_hangry() {
+        // PS capture hunger-switch-direct-hangry-set: a Morpeko-Hangry set
+        // toggles to Full Belly, then switches back in as Hangry (its
+        // baseSpecies is the set forme).
+        let p1 = TeamBuilder::from_json(&format!("[{},{SPLASH_AUDINO}]", MORPEKO.replace("\"morpeko\"", "\"morpekohangry\""))).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry");
+        morpeko_turn(&mut b, 1, 0);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpeko", "toggled to Full Belly");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let benched = b.p1.team.iter().find(|m| species_slug(m).starts_with("morpeko")).unwrap();
+        assert_eq!(species_slug(benched), "morpekohangry", "back to its set forme");
+    }
+
+    #[test]
+    fn hunger_switch_legacy_unknown_origin_keeps_its_forme() {
+        // Documented limit: a snapshot saved before `set_species_id` has no
+        // set forme, so a Hangry Morpeko switching out keeps Hangry instead
+        // of guessing Full Belly.
+        let mut b = morpeko_singles(true, SPLASH_AUDINO);
+        morpeko_turn(&mut b, 1, 0);
+        let mut old = legacy_snapshot(&b);
+        assert_eq!(old.p1.team[0].set_species_id, u16::MAX);
+        old.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let benched = old.p1.team.iter().find(|m| species_slug(m).starts_with("morpeko")).unwrap();
+        assert_eq!(species_slug(benched), "morpekohangry", "unknown origin: no guess");
+    }
+
+    #[test]
+    fn canonical_hash_keys_morpeko_by_its_set_forme() {
+        // Two benched Full Belly Morpeko, one from a Morpeko set and one
+        // from a Morpeko-Hangry set: equal now, different on their next
+        // switch-out. Bench order alone must not change the hash.
+        let build = |sets: [&str; 2]| {
+            let mons: Vec<String> = sets.iter().map(|s| MORPEKO.replace("\"morpeko\"", &format!("\"{s}\""))).collect();
+            let p1 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO},{},{}]", mons[0], mons[1])).unwrap();
+            let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+            for i in 1..3 {
+                b.p1.team[i].species_id = data::species_id::MORPEKO; // AUDIT-OK: benched fixture mon
+            }
+            b
+        };
+        let mixed = build(["morpeko", "morpekohangry"]);
+        let mut swapped = mixed.clone();
+        swapped.p1.team.swap(1, 2);
+        assert_eq!(mixed.canonical_hash(), swapped.canonical_hash(), "bench permutation");
+        assert_ne!(mixed.canonical_hash(), build(["morpeko", "morpeko"]).canonical_hash(), "set forme matters");
+    }
+
+    #[test]
+    fn aura_wheel_fails_for_a_non_morpeko_user() {
+        // Audino with Aura Wheel (fixture moveset): onTry fails, no damage,
+        // no Speed boost.
+        let user = r#"{"species":"audino","gender":"F","level":50,"ability":"klutz","nature":"hardy","moves":["aurawheel","splash"]}"#;
+        let p1 = TeamBuilder::from_json(&format!("[{user}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        morpeko_turn(&mut b, 0, 0);
+        assert_eq!(b.p2.team[0].current_hp, b.p2.team[0].stats.hp, "no damage");
+        assert_eq!(b.p1.team[0].boosts[4], 0, "no Speed boost");
+    }
+
+    /// Morpeko (forced to `forme` before the turn) uses Aura Wheel on `foe`.
+    fn aura_wheel_into(forme: &str, foe: &str) -> Battle {
+        let mut b = morpeko_singles(false, foe);
+        b.set_forme(SideRef::P1, 0, data::SPECIES.iter().position(|s| s.slug == forme).unwrap() as u16, true);
+        morpeko_turn(&mut b, 0, 0);
+        b
+    }
+
+    #[test]
+    fn aura_wheel_is_dark_as_hangry_and_electric_as_full_belly() {
+        // Ground-type Excadrill: immune to Electric, hit by Dark. The 100%
+        // self +1 Spe lands only when the move connects.
+        let excadrill = r#"{"species":"excadrill","gender":"M","level":50,"ability":"sandrush","nature":"hardy","moves":["splash"]}"#;
+        let full = aura_wheel_into("morpeko", excadrill);
+        assert_eq!(full.p2.team[0].current_hp, full.p2.team[0].stats.hp, "Electric: Ground immune");
+        let hangry = aura_wheel_into("morpekohangry", excadrill);
+        assert!(hangry.p2.team[0].current_hp < hangry.p2.team[0].stats.hp, "Dark: hits Ground");
+        assert_eq!(hangry.p1.team[0].boosts[4], 1, "self +1 Spe");
+    }
+
+    #[test]
+    fn hangry_aura_wheel_does_not_trigger_cell_battery() {
+        // PS data/items.ts cellbattery onDamagingHit: `move.type === 'Electric'`
+        // after onModifyType. Only the Full Belly (Electric) Aura Wheel uses
+        // the target's Cell Battery for +1 Atk.
+        let snorlax = r#"{"species":"snorlax","gender":"M","level":50,"ability":"thickfat","item":"cellbattery","nature":"hardy","moves":["splash"],"evs":{"hp":252,"def":252}}"#;
+        let full = aura_wheel_into("morpeko", snorlax);
+        let t = &full.p2.team[0];
+        assert!(t.current_hp < t.stats.hp, "Electric Aura Wheel hits");
+        assert_eq!((t.item_id, t.boosts[0]), (u16::MAX, 1), "Electric: Cell Battery used, +1 Atk");
+        let hangry = aura_wheel_into("morpekohangry", snorlax);
+        let t = &hangry.p2.team[0];
+        assert!(t.current_hp < t.stats.hp, "Dark Aura Wheel hits");
+        assert_eq!((t.item_id, t.boosts[0]), (data::item_id::CELLBATTERY, 0), "Dark: Cell Battery kept");
+    }
+
+    #[test]
+    fn charge_is_kept_by_a_hangry_aura_wheel_and_used_by_an_electric_one() {
+        // PS data/conditions.ts charge onAfterMove removes it after an
+        // Electric move only (post-onModifyType type).
+        let snorlax = r#"{"species":"snorlax","gender":"M","level":50,"ability":"thickfat","nature":"hardy","moves":["splash"],"evs":{"hp":252,"def":252}}"#;
+        let run = |forme: &str| {
+            let mut b = morpeko_singles(false, snorlax);
+            b.set_forme(SideRef::P1, 0, data::SPECIES.iter().position(|s| s.slug == forme).unwrap() as u16, true);
+            b.p1.team[0].set_charged(true);
+            morpeko_turn(&mut b, 0, 0);
+            b
+        };
+        let full = run("morpeko");
+        assert!(!full.p1.team[0].is_charged(), "Electric Aura Wheel uses the charge");
+        let hangry = run("morpekohangry");
+        assert!(hangry.p1.team[0].is_charged(), "Dark Aura Wheel keeps it");
+        assert!(hangry.p2.team[0].current_hp < hangry.p2.team[0].stats.hp);
+    }
+
+    #[test]
+    fn hangry_aura_wheel_is_not_absorbed_or_redirected_as_electric() {
+        // Volt Absorb Lanturn absorbs an Electric Aura Wheel only.
+        let lanturn = r#"{"species":"lanturn","gender":"M","level":50,"ability":"voltabsorb","nature":"hardy","moves":["splash"]}"#;
+        let full = aura_wheel_into("morpeko", lanturn);
+        assert_eq!(full.p2.team[0].current_hp, full.p2.team[0].stats.hp, "Electric: absorbed");
+        let hangry = aura_wheel_into("morpekohangry", lanturn);
+        assert!(hangry.p2.team[0].current_hp < hangry.p2.team[0].stats.hp, "Dark: not absorbed");
+        // Lightning Rod Raichu redirects an Electric Aura Wheel aimed at its partner only.
+        let raichu = r#"{"species":"raichu","gender":"M","level":50,"ability":"lightningrod","nature":"hardy","moves":["splash"]}"#;
+        let run = |forme: &str| {
+            let p1 = TeamBuilder::from_json(&format!("[{MORPEKO},{SPLASH_AUDINO}]")).unwrap();
+            let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO},{raichu}]")).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+            b.set_forme(SideRef::P1, 0, data::SPECIES.iter().position(|s| s.slug == forme).unwrap() as u16, true);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            );
+            b
+        };
+        let full = run("morpeko");
+        assert_eq!(full.p2.team[0].current_hp, full.p2.team[0].stats.hp, "Electric: redirected away from Audino");
+        assert_eq!(full.p2.team[1].boosts[2], 1, "Lightning Rod +1 SpA");
+        let hangry = run("morpekohangry");
+        assert!(hangry.p2.team[0].current_hp < hangry.p2.team[0].stats.hp, "Dark: hits Audino");
+        assert_eq!(hangry.p2.team[1].boosts[2], 0, "Dark: no Lightning Rod");
     }
 
     #[test]

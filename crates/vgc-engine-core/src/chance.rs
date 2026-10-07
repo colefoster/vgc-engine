@@ -806,6 +806,36 @@ mod tests {
         assert!(meteor > 0.0 && core > 0.0, "both formes reachable: meteor {meteor}, core {core}");
     }
 
+    /// Hunger Switch + Aura Wheel (data/abilities.ts:1896-1907,
+    /// data/moves.ts:775-810): a Hangry Morpeko's Aura Wheel is Dark, so it
+    /// hits a Ground-type Excadrill on every branch (an Electric one would be
+    /// immune), the 100% self +1 Spe lands on every branch, and residual
+    /// order 29 turns it back to Full Belly on every branch.
+    #[test]
+    fn step_chance_hangry_aura_wheel_is_dark_and_toggles_on_every_branch() {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"morpeko","gender":"M","level":50,"ability":"hungerswitch","nature":"hardy","moves":["aurawheel","splash","protect","rest"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"excadrill","gender":"M","level":50,"ability":"sandrush","nature":"hardy","moves":["splash"],"evs":{"hp":252,"def":252}}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let hangry = crate::data::SPECIES.iter().position(|s| s.slug == "morpekohangry").unwrap() as u16;
+        b.set_forme(SideRef::P1, 0, hangry, true);
+        let wheel = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P2, slot: 0 }) }];
+        let splash = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let f = b.step_chance(&wheel, &splash, 6);
+        assert_eq!(f.unmatched_total, 0);
+        let total: f64 = f.outcomes.iter().map(|o| o.prob).sum();
+        assert!((total - 1.0).abs() < 1e-9, "Σ prob = {total}");
+        for o in &f.outcomes {
+            let (m, t) = (o.battle.side(SideRef::P1).active_mon(0).unwrap(), o.battle.side(SideRef::P2).active_mon(0).unwrap());
+            assert!(t.current_hp < t.stats.hp, "Dark Aura Wheel hits Ground: p={}", o.prob);
+            assert_eq!(m.boosts[4], 1, "self +1 Spe: p={}", o.prob);
+            assert_eq!(crate::data::SPECIES[m.species_id as usize].slug, "morpeko", "toggled back: p={}", o.prob);
+        }
+    }
+
     /// Parity test: step_chance must produce the same frontier the
     /// solver's enumerate_outcomes does. This is the load-bearing
     /// contract — when native branching lands in a future PR, this

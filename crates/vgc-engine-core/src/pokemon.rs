@@ -584,6 +584,11 @@ pub(crate) fn is_minior_core(species_id: u16) -> bool {
         && data::SPECIES.get(species_id as usize).is_some_and(|s| s.slug.starts_with("minior"))
 }
 
+/// Morpeko or Morpeko-Hangry (PS `species.baseSpecies === 'Morpeko'`).
+pub(crate) fn is_morpeko(species_id: u16) -> bool {
+    species_id == data::species_id::MORPEKO || species_id == data::species_id::MORPEKOHANGRY
+}
+
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pokemon {
@@ -1362,6 +1367,15 @@ impl Pokemon {
     /// rather than inventing one (no snapshot migration).
     pub fn minior_core_species(&self) -> Option<u16> {
         [self.set_species_id, self.species_id].into_iter().find(|&id| is_minior_core(id))
+    }
+
+    /// The forme a Morpeko's non-permanent Hunger Switch change returns to:
+    /// its set species (PS `baseSpecies`), which may itself be
+    /// Morpeko-Hangry — a captured direct Hangry set switches back in as
+    /// Hangry. `None` for a legacy snapshot with no recorded set species:
+    /// the current forme is kept rather than guessed.
+    pub fn morpeko_origin(&self) -> Option<u16> {
+        is_morpeko(self.set_species_id).then_some(self.set_species_id)
     }
 
     /// Undo Transform / Imposter (PS clearVolatile on switch-out:
