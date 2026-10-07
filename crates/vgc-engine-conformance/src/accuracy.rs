@@ -339,6 +339,42 @@ pub struct DrawDiv {
     pub engine_kind: String,
 }
 
+/// The brought-team size PS printed for `side` (`"p1"` / `"p2"`):
+/// `|teamsize|<side>|<n>` at `start` (sim/battle.ts:2670-2674), after the
+/// `team` actions rebuilt `side.pokemon` from the picks (sim/side.ts:
+/// 1031-1095, sim/battle.ts:2750-2757). `None` when absent or malformed.
+fn brought_team_size(log: &str, side: &str) -> Option<usize> {
+    log.lines().find_map(|l| {
+        let mut f = l.strip_prefix("|teamsize|")?.split('|');
+        if f.next()? != side {
+            return None;
+        }
+        f.next()?.trim().parse().ok()
+    })
+}
+
+/// Team preview: cut each side to the mons PS brought. PS constructs every
+/// exported mon at `>player` (sim/side.ts:241-246, :302-309), so this runs
+/// after `Battle::with_rng` and the construction-time gender draws still
+/// walk the whole export. Keeping the export's FIRST `n` mons assumes the
+/// identity pick (`team 123...`) that `ps-battle.js` / `ps-dist.js` send;
+/// it also keeps every original 1-based switch index valid (`ps_order` is
+/// still the identity before turn 1). A size below the active slot count,
+/// or at or above the export's, leaves the team as is. Not covered: an
+/// Illusion lead's disguise, chosen at construction from the full export.
+fn apply_team_preview(b: &mut Battle, log: &str) {
+    for (side, tag) in [(SideRef::P1, "p1"), (SideRef::P2, "p2")] {
+        let Some(n) = brought_team_size(log, tag) else { continue };
+        let s = match side {
+            SideRef::P1 => &mut b.p1,
+            SideRef::P2 => &mut b.p2,
+        };
+        if n >= s.format.active_count() && n < s.team.len() {
+            s.team.truncate(n);
+        }
+    }
+}
+
 /// Drive the engine through every recorded turn. `on_turn` runs before each
 /// step (e.g. to label the draw trace).
 fn drive(
@@ -358,6 +394,7 @@ fn drive(
         }
     };
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
+    apply_team_preview(&mut b, &acc.meta.log);
     b.decision_phases = true;
     b.set_format_id(&acc.format);
     let mut matched = 0u32;
@@ -1083,6 +1120,7 @@ pub fn dump_keyed(acc: &AccBattle) -> String {
         (Err(e), _) | (_, Err(e)) => return format!("team error: {e}"),
     };
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, rng, p1, p2);
+    apply_team_preview(&mut b, &acc.meta.log);
     b.decision_phases = true;
     b.set_format_id(&acc.format);
     for t in &acc.turns {
@@ -1181,6 +1219,7 @@ pub fn distribution(acc: &AccBattle, k: u32, seed0: u64) -> Result<Vec<HashMap<S
     for i in 0..k {
         let seed = seed0 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         let mut b = Battle::with_rng(BattleConfig { format, seed }, Rng::new(seed), p1.clone(), p2.clone());
+        apply_team_preview(&mut b, &acc.meta.log);
         b.decision_phases = true;
         b.set_format_id(&acc.format);
         b.step(&p1c, &p2c);
@@ -1201,6 +1240,7 @@ pub fn turn1_state(acc: &AccBattle) -> Result<Vec<(String, u16)>, String> {
     let p1 = build_engine_team(&acc.p1team, champions)?;
     let p2 = build_engine_team(&acc.p2team, champions)?;
     let mut b = Battle::with_rng(BattleConfig { format, seed: 0 }, Rng::oracle_keyed(table, 0xC0FFEE), p1, p2);
+    apply_team_preview(&mut b, &acc.meta.log);
     b.decision_phases = true;
     b.set_format_id(&acc.format);
     let t = acc.turns.first().ok_or("no turns")?;
@@ -1252,5 +1292,61 @@ mod start_tiebreak_tests {
         let rs = "BattleActions.runSwitch@battle-actions.js:178";
         let four = [shuffle(6, 0.0, 4.0, 2.0, rs), shuffle(7, 1.0, 4.0, 1.0, rs), shuffle(8, 2.0, 4.0, 3.0, rs)];
         assert_eq!(start_switch_tiebreaks(&four), [RngEvent::Tiebreak(2), RngEvent::Tiebreak(0), RngEvent::Tiebreak(1)]);
+    }
+}
+
+#[cfg(test)]
+mod team_preview_tests {
+    use super::*;
+
+    const MON: &str = "Snorlax\nAbility: Thick Fat\nLevel: 50\n- Tackle";
+
+    fn battle(format: Format, n: usize) -> Battle {
+        let text = vec![MON; n].join("\n\n");
+        let team = || crate::build_engine_team(&text, false).unwrap();
+        Battle::with_rng(BattleConfig { format, seed: 0 }, Rng::new(1), team(), team())
+    }
+
+    fn sizes(b: &Battle) -> (usize, usize) {
+        (b.p1.team.len(), b.p2.team.len())
+    }
+
+    #[test]
+    fn team_size_line_is_read_per_side() {
+        let log = "|gen|9\n|teamsize|p1|4\n|teamsize|p2|3\n|start\n";
+        assert_eq!(brought_team_size(log, "p1"), Some(4));
+        assert_eq!(brought_team_size(log, "p2"), Some(3));
+        assert_eq!(brought_team_size(log, "p3"), None);
+        assert_eq!(brought_team_size("", "p1"), None);
+        for bad in ["|teamsize|p1|", "|teamsize|p1|four", "|teamsize|p1|-1", "|teamsize|p1", "|teamsize|"] {
+            assert_eq!(brought_team_size(bad, "p1"), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn brought_size_cuts_doubles_and_singles() {
+        let mut b = battle(Format::Doubles, 6);
+        apply_team_preview(&mut b, "|teamsize|p1|4\n|teamsize|p2|4\n");
+        assert_eq!(sizes(&b), (4, 4));
+        assert_eq!(b.p1.random_switch_candidates().collect::<Vec<_>>(), [2, 3], "bench is the brought 3rd/4th");
+        let mut b = battle(Format::Singles, 6);
+        apply_team_preview(&mut b, "|teamsize|p1|3\n|teamsize|p2|1\n");
+        assert_eq!(sizes(&b), (3, 1));
+    }
+
+    #[test]
+    fn unsupported_sizes_leave_the_team() {
+        for log in ["", "|teamsize|p1|6\n|teamsize|p2|6\n", "|teamsize|p1|9\n|teamsize|p2|9\n", "|teamsize|p1|x\n|teamsize|p2|\n"] {
+            let mut b = battle(Format::Doubles, 6);
+            apply_team_preview(&mut b, log);
+            assert_eq!(sizes(&b), (6, 6), "{log:?}");
+        }
+        // Below the active slot count (doubles: 2) or zero: unchanged.
+        let mut b = battle(Format::Doubles, 6);
+        apply_team_preview(&mut b, "|teamsize|p1|1\n|teamsize|p2|0\n");
+        assert_eq!(sizes(&b), (6, 6));
+        let mut b = battle(Format::Singles, 6);
+        apply_team_preview(&mut b, "|teamsize|p1|0\n");
+        assert_eq!(sizes(&b), (6, 6));
     }
 }

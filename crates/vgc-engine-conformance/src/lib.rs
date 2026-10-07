@@ -757,6 +757,9 @@ pub(crate) fn build_engine_team(text: &str, champions: bool) -> Result<Vec<Pokem
 /// Replay a PS-driven battle into the engine under keyed-outcome injection and
 /// diff per-turn state. Stops reporting at the first divergence (downstream
 /// cascades are noise — see the design doc's first-divergence isolation).
+/// Plays the full exported teams: `PsBattle` records no brought-team size,
+/// so bring-N team preview is not modelled here (see
+/// `accuracy::apply_team_preview`).
 pub fn replay(battle: &PsBattle) -> Result<BattleReport, String> {
     let champions = vgc_engine_core::format_rules::is_champions_format(&battle.format);
     let p1 = build_engine_team(&battle.p1team, champions).map_err(|e| format!("p1 team: {e}"))?;
