@@ -30,6 +30,11 @@ work order.
 > doubles milestones (including Champions), evidence status and open decisions.
 > It does not change the phase gates below. The current phase is still Phase 2.
 
+> **Supporting docs backlog (2026-10-07):** see
+> [`docs/reach-backlog-2026-10-07.md`](reach-backlog-2026-10-07.md) for planned
+> quickstarts, a coverage/accuracy matrix, benchmarks and writeups. Planning
+> only; it is not a gate change.
+
 ---
 
 ## Phase 0 — Scaffold (DONE 2026-06-15)
