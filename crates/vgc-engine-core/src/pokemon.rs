@@ -589,6 +589,14 @@ pub(crate) fn is_morpeko(species_id: u16) -> bool {
     species_id == data::species_id::MORPEKO || species_id == data::species_id::MORPEKOHANGRY
 }
 
+/// Cramorant, Cramorant-Gulping or Cramorant-Gorging.
+pub(crate) fn is_cramorant(species_id: u16) -> bool {
+    matches!(
+        species_id,
+        data::species_id::CRAMORANT | data::species_id::CRAMORANTGULPING | data::species_id::CRAMORANTGORGING
+    )
+}
+
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pokemon {
@@ -1393,6 +1401,14 @@ impl Pokemon {
     /// the current forme is kept rather than guessed.
     pub fn morpeko_origin(&self) -> Option<u16> {
         is_morpeko(self.set_species_id).then_some(self.set_species_id)
+    }
+
+    /// The forme a Cramorant's non-permanent Gulp Missile change returns to:
+    /// its set species (PS `baseSpecies`, sim/pokemon.ts:322), which may
+    /// itself be a loaded forme. `None` for a legacy snapshot with no recorded
+    /// set species: the current forme is kept rather than guessed.
+    pub fn cramorant_origin(&self) -> Option<u16> {
+        is_cramorant(self.set_species_id).then_some(self.set_species_id)
     }
 
     /// Undo Transform / Imposter (PS clearVolatile on switch-out:

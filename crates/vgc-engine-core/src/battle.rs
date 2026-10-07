@@ -1331,6 +1331,7 @@ impl Battle {
                 if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
                     self.shields_down_leave_field(side, slot);
                     self.hunger_switch_leave_field(side, slot, true);
+                    self.gulp_missile_leave_field(side, slot);
                 }
             }
             for i in 0..self.side(side).team.len() {
@@ -1412,6 +1413,60 @@ impl Battle {
             if self.rng.is_ps() {
                 self.ps_reset_speed(side, slot as usize);
             }
+        }
+    }
+
+    /// Gulp Missile's load (PS a5df8274 data/abilities.ts:1759-1764
+    /// onSourceTryPrimaryHit for Surf; data/moves.ts:3763-3766 Dive's
+    /// charge-turn onTryMove): a base Cramorant holding the ability becomes
+    /// Cramorant-Gorging at `hp <= maxhp / 2`, else Cramorant-Gulping. The
+    /// ability has `notransform` (a transformed copy's is ignored,
+    /// sim/pokemon.ts:862) and `cantsuppress`. No RNG.
+    pub(crate) fn gulp_missile_load(&mut self, side: SideRef, slot: u8) {
+        use data::species_id::{CRAMORANT, CRAMORANTGORGING, CRAMORANTGULPING};
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if m.effective_ability_id() != data::ability_id::GULPMISSILE
+            || m.transform_base.is_some()
+            || m.species_id != CRAMORANT
+        {
+            return;
+        }
+        let forme = if 2 * m.current_hp as u32 <= m.stats.hp as u32 { CRAMORANTGORGING } else { CRAMORANTGULPING };
+        self.gulp_missile_set_forme(side, slot, forme);
+    }
+
+    /// A loaded Cramorant (Gulping / Gorging), not transformed.
+    pub(crate) fn gulp_missile_loaded(m: &crate::pokemon::Pokemon) -> bool {
+        matches!(m.species_id, data::species_id::CRAMORANTGULPING | data::species_id::CRAMORANTGORGING)
+            && m.transform_base.is_none()
+    }
+
+    /// formeChange for Gulp Missile; setSpecies caches the raw Speed
+    /// (sim/pokemon.ts:1418).
+    pub(crate) fn gulp_missile_set_forme(&mut self, side: SideRef, slot: u8, forme: u16) {
+        self.set_forme(side, slot, forme, true);
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_reset_speed(side, slot as usize);
+        }
+    }
+
+    /// The Gulp Missile forme is non-permanent: clearVolatile's
+    /// setSpecies(baseSpecies) (sim/pokemon.ts:1559) returns a Cramorant to
+    /// its set species (sim/pokemon.ts:322) on switch-out and on fainting,
+    /// whatever forme it is in, so a direct Gulping set that responded and
+    /// reverted comes back Gulping. A transformed mon reverts its own
+    /// Transform instead; a legacy snapshot with no recorded Cramorant set
+    /// species keeps its forme.
+    fn gulp_missile_leave_field(&mut self, side: SideRef, slot: u8) {
+        let origin = match self.side(side).active_mon(slot as usize) {
+            Some(m) if crate::pokemon::is_cramorant(m.species_id) && m.transform_base.is_none() => {
+                m.cramorant_origin().filter(|&o| o != m.species_id)
+            }
+            _ => None,
+        };
+        if let Some(origin) = origin {
+            self.gulp_missile_set_forme(side, slot, origin);
         }
     }
 
@@ -4605,6 +4660,7 @@ self.trigger_emergency_exits();
                 crate::ability::on_switch_out(self, side, actor_slot);
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
+                self.gulp_missile_leave_field(side, actor_slot);
             }
         }
         let gravity_active = self.gravity_turns > 0;
@@ -7486,6 +7542,13 @@ self.trigger_emergency_exits();
             }
             if matches!(move_id, data::move_id::FEINT | data::move_id::PHANTOMFORCE) {
                 self.break_protect(tside, tslot);
+            }
+            // Gulp Missile's onSourceTryPrimaryHit (data/abilities.ts:1759-1764):
+            // Surf loads the user once it gets past Protect, immunities and
+            // accuracy, before the damage (a second spread target sees a
+            // loaded forme and does nothing).
+            if move_id == data::move_id::SURF {
+                self.gulp_missile_load(actor_side, actor_slot);
             }
 
             // Fixed-damage value (computed once the attacker / defender
@@ -10886,6 +10949,11 @@ self.trigger_emergency_exits();
                 }
                 skip_pp_deduct = true;
             } else {
+                // Dive's onTryMove loads Gulp Missile on the initial charge
+                // only, before the ChargeMove event (data/moves.ts:3760-3767).
+                if move_id == data::move_id::DIVE {
+                    self.gulp_missile_load(actor_side, actor_slot);
+                }
                 // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
                 // applied turn 1 only per PS), no damage.
                 let extra = pressure_extra_pp(self, actor_side, m, target);

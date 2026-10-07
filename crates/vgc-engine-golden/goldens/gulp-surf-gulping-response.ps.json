@@ -1,0 +1,126 @@
+{
+  "ok": true,
+  "name": "gulp-surf-gulping-response",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Cramorant",
+      "hp": 177,
+      "max": 177
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 236,
+      "max": 236
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Surf",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 193,
+      "max": 236,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 134,
+      "max": 177,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 134,
+      "max": 236,
+      "from": "ability: Gulp Missile"
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "def",
+      "amount": 1
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791355195\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Cramorant, L50, M|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791355195\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Cramorant|Cramorant, L50, M|177/177\n|switch|p2a: Snorlax|Snorlax, L50, M|236/236\n|turn|1|\n|t:|1791355195\n|move|p1a: Cramorant|Surf|p2a: Snorlax\n|-formechange|p1a: Cramorant|Cramorant-Gulping|\n|-damage|p2a: Snorlax|193/236\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1791355195\n|move|p1a: Cramorant|Splash|p1a: Cramorant\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Cramorant\n|-damage|p1a: Cramorant|134/177\n|-damage|p2a: Snorlax|134/236|[from] ability: Gulp Missile|[of] p1a: Cramorant\n|-unboost|p2a: Snorlax|def|1\n|-formechange|p1a: Cramorant|Cramorant|\n|\n|upkeep\n|turn|3"
+}

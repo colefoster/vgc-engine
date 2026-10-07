@@ -1706,6 +1706,56 @@ pub fn on_damaging_hit(
             }
         }
     }
+    // Gulp Missile — PS a5df8274 data/abilities.ts:1746-1757 onDamagingHit:
+    //   if (!source.hp || !source.isActive || target.isSemiInvulnerable()) return;
+    //   if (loaded) { damage(source.baseMaxhp / 4); Gulping: boost def -1,
+    //   Gorging: source.trySetStatus('par'); target.formeChange('cramorant') }
+    // Any damaging move, contact or not; it also fires on the hit that KOs
+    // the holder (before faintMessages). The ability is `cantsuppress` and
+    // `notransform`: a transformed copy's is inert. The damage is an
+    // ordinary indirect hit, so Magic Guard blocks it. No RNG.
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Gulp_Missile_(Ability)>.
+    if ability_id == data::ability_id::GULPMISSILE {
+        let holder = battle.side(target_side).active_mon(target_slot as usize);
+        let loaded = holder.is_some_and(|m| Battle::gulp_missile_loaded(m) && m.semi_invuln == 0);
+        let gorging = holder.is_some_and(|m| m.species_id == data::species_id::CRAMORANTGORGING);
+        let source_live = battle.side(attacker_side).active_mon(attacker_slot as usize).is_some_and(|a| a.is_alive());
+        if loaded && source_live {
+            if let Some(a) = battle.side_mut(attacker_side).active_mon_mut(attacker_slot as usize) {
+                if !has_magic_guard(a) {
+                    let dmg = (a.stats.hp / 4).max(1);
+                    a.current_hp = a.current_hp.saturating_sub(dmg);
+                    if a.current_hp == 0 {
+                        a.fainted = true;
+                    }
+                }
+            }
+            let source = battle.side(attacker_side).active_mon(attacker_slot as usize);
+            if source.is_some_and(|a| a.is_alive()) {
+                if gorging {
+                    // The holder is the status source (trySetStatus('par',
+                    // target)), so the attacker's Synchronize reflects onto it.
+                    battle.try_set_status_from_src(
+                        attacker_side,
+                        attacker_slot,
+                        crate::pokemon::Status::Paralysis,
+                        target_side,
+                        target_slot,
+                    );
+                } else if !source.is_some_and(|a| blocks_opposing_stat_drop_for(a, 1)) {
+                    let before = source.map_or(0, |a| a.boosts[1]);
+                    battle.apply_boosts(attacker_side, attacker_slot, &[(1, -1)], target_side, target_slot);
+                    let after = battle.side(attacker_side).active_mon(attacker_slot as usize).map_or(0, |a| a.boosts[1]);
+                    if after < before {
+                        react_to_opposing_stat_drop(battle, attacker_side, attacker_slot);
+                        crate::item::try_consume_white_herb(battle, attacker_side, attacker_slot);
+                    }
+                }
+            }
+            battle.gulp_missile_set_forme(target_side, target_slot, data::species_id::CRAMORANT);
+        }
+    }
+
     // Rough Skin (Garchomp/Carvanha) and Iron Barbs (Ferrothorn): 1/8
     // max HP recoil to any contact attacker. PS handlers are functionally
     // identical — `checkMoveMakesContact(move, source, target, true)` gate

@@ -437,15 +437,23 @@ fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8, u16) {
 }
 
 /// The forme a non-permanent forme change returns to, where it differs
-/// between otherwise-equal states: Shields Down's Minior core colour, and
+/// between otherwise-equal states: Shields Down's Minior core colour,
 /// Hunger Switch's Morpeko set forme (a direct Morpeko-Hangry set switches
-/// back in Hangry). u16::MAX for none or a legacy unknown origin, and for
-/// every other species.
+/// back in Hangry), and Gulp Missile's Cramorant set forme (a direct
+/// Gulping set switches back in Gulping). u16::MAX for none, a legacy
+/// unknown origin or a transformed mon, and for every other species. Adding
+/// the Cramorant arm changed the absolute hash of every state holding a
+/// non-transformed Cramorant forme with a recorded Cramorant set species;
+/// other states hash as before.
 fn forme_origin_key(p: &Pokemon) -> u16 {
     if p.species_id == crate::data::species_id::MINIORMETEOR || crate::pokemon::is_minior_core(p.species_id) {
         p.minior_core_species().unwrap_or(u16::MAX)
     } else if crate::pokemon::is_morpeko(p.species_id) {
         p.morpeko_origin().unwrap_or(u16::MAX)
+    } else if crate::pokemon::is_cramorant(p.species_id) && p.transform_base.is_none() {
+        // A transformed mon (a Cramorant set included) reverts its Transform
+        // instead, so it has no Gulp origin.
+        p.cramorant_origin().unwrap_or(u16::MAX)
     } else {
         u16::MAX
     }

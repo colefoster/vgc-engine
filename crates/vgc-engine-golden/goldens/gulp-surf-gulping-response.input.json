@@ -1,0 +1,26 @@
+{
+  "name": "gulp-surf-gulping-response",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Cramorant (M)\nAbility: Gulp Missile\nLevel: 50\nEVs: 252 HP / 4 SpD\nHardy Nature\n- Surf\n- Dive\n- Splash\n- Protect"
+  },
+  "p2": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nEVs: 4 HP\nHardy Nature\n- Tackle\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 2"
+    },
+    {
+      "p1": "move 3",
+      "p2": "move 1"
+    }
+  ]
+}
