@@ -2239,8 +2239,9 @@ This is a conformance harness fix. There is no engine change.
   **0 step allocations**. It is random-choice throughput, not the matched
   speed gate.
 - **Bounded controls:** both keyed and seeded match 64/64 cases (128/128
-  turns) and 8/8 cases (40/40 turns), all with zeros. Unchanged from the
-  baseline.
+  turns) and 8/8 cases (40/40 turns), all with zeros. Only the 64 Quick
+  Claw controls are unchanged from the baseline. The 8 Custap seeds are new
+  with `cf5188c` and failed before it.
 - **Logs:** `task/vgc-evidence/integrated-final-*` and
   `final-wheel-provenance.json`.
 
@@ -2253,7 +2254,11 @@ legal PS fallback policy, and there were zero engine/PS errors.
 
 **Keyed and seeded disagree by about 2×. Read both.**
 
-| set | cases | keyed state-clean | strict (zero missing) | keyed turns | **seeded clean** | seeded turns |
+"Turns" counts prefix agreement only: the scorer stops at the first
+divergence, so it is not accuracy over all captured turns. The
+`a1484ea` re-score is below.
+
+| set | cases | keyed state-clean | strict (zero missing) | keyed prefix turns | **seeded clean** | seeded turns |
 |---|---|---|---|---|---|---|
 | development (offset 50 × 10) | 1000 | **849 (84.9%)** | 804 (80.4%) | 11707/11858 (98.7%) | **426 (42.6%)** | 7841/8415 |
 | ↳ natural / capped | 908 / 92 | 770 / 79 | | | 393 / 33 | |
@@ -2269,8 +2274,7 @@ legal PS fallback policy, and there were zero engine/PS errors.
 - **Development set.**
   - **It is development data.** It exposed and validated the replay fix;
     it is not a holdout.
-  - Its 100 directed pairings are 50 mirrored unordered matchups × 10
-    replicas.
+  - It is 50 unordered matchups × 2 directions × 10 replicas = 1000.
   - 1000 distinct seeds are not 1000 independent teams or matchups.
   - The automatic 149-mechanics / 2-RNG taxonomy is **not a verified
     root-cause census**.
@@ -2336,6 +2340,8 @@ Each signature is a single case. The triage didn't measure how many of the
 unchanged in task evidence.
 
 ### 1. White Herb timing: existing mechanic defect, STRONGLY SUPPORTED (highest priority)
+
+**Status update:** fixed and verified in `a1484ea` (see below).
 
 **PS behaviour**
 - White Herb has no `onUpdate`. It triggers through:
@@ -2438,3 +2444,594 @@ unchanged in task evidence.
   `2ebdc92f225836db`, and print the alias key.
 - **Diagnosis acceptance:** find the first turn-5 event where Skarmory's
   HP or item differs. No fix until that's known.
+
+## Harness fix: golden secondary `Range(100)` maps to a one-based PercentRoll (`43e8535`)
+
+- **What changed.** The golden harness lowers the PS secondary-effect
+  `Range(100)` draw site to a one-based PercentRoll.
+- **Guard.** Boundary tests keep other sites and legacy sites unchanged.
+- **Scope.** This is a separate harness commit from the White Herb
+  mechanism change below.
+
+## Mechanics fix: White Herb runs after the whole move (`a1484ea`)
+
+- **Fix.** White Herb now clears after the whole move, for every active
+  holder, instead of after each stat drop. This follows PS
+  `onAnyAfterMove` (`data/items.ts:7699-7701`); see the triage above.
+- **Red** (actual development repro):
+  - Def/Spe (−1, +2) vs PS (0, +1);
+  - p2b HP 99 vs PS 116.
+- **Green:** the repro passes.
+- **New goldens:** actual pinned-PS two-turn goldens for standard and
+  Champions (HP 118, then 80). Their expectations were not changed.
+- **Also covered:**
+  - Double Kick's second hit uses the lowered Def;
+  - the native chance resume-flag lifecycle (16 buckets);
+  - the frontier probabilities sum to 1, plus sampled states.
+- **Unchanged:** switch, Mega and end-of-turn code.
+- **Limits** (in the commit): sweeps cancelled before `useMove`, and the
+  flag after a JSON mid-yield.
+
+## Test-only lint (`5a19219`, `49a5604`)
+
+- `5a19219` counts Gorilla Tactics' pre-lock choices without a Vec.
+- `49a5604` checks solver membership assertions without a Vec.
+- Both are `cfg(test)` only. The all-target Clippy guard exposed these
+  pre-existing issues. The broader Clippy guard now passes, though other
+  warnings remain.
+
+## Verification at `a1484ea` (production behaviour frozen)
+
+- default workspace: **1552** / 0 / 32;
+- `ps-rng`: **1592** / 0 / 32;
+- `chance`: White Herb 9 pass, Encore 24 pass;
+- Node regressions: 11/11, 0 skipped;
+- residual audit and `git diff --check`: pass.
+- **Python:** wheel extracted, not installed, no sibling writes. Bindings 27
+  + read-only consumer 4 = 31 pass.
+- **Extension SHA-256:**
+  `c7da86728f4cf0d7892c1ec838ea0fff2374131b577d3810523d0f4444885c33`.
+- **Allocation probe:** 500 completed, 9929 steps, 0 capped, 0 step
+  allocations.
+- No separate aggregate at `49a5604` is recorded here. Later heads were
+  verified as listed in the sections below; the final aggregate is still
+  pending.
+- The `a1484ea` wheel, extension and Python results, and the `9f66758`
+  extension, timings and study scores above, are **HISTORICAL**.
+
+## Synthetic studies at frozen `a1484ea`: diagnostic, not a passed gate
+
+All turn ratios here are **prefix agreement**. The scorer stops at the
+first divergence, so unplayed suffixes and load failures are excluded.
+Natural-win terminal turns compare fainted flags only. No confidence
+intervals are given.
+
+**Earlier sets, re-scored**
+
+- **Development (1000):**
+  - keyed: 860 state-clean (was 849), CLI zero-missing 814 (was 804),
+    prefix turns 11818/11958 (was 11707/11858);
+  - keyed missing draws 88, repairs 4862, leftovers 35500;
+  - seeded: 428 clean (was 426), prefix turns 7873/8445, 622 normalized
+    first-draw divergences (was 624).
+- **Reused-team (300):** byte-identical to `9f66758` in both modes.
+  - keyed: 255 state-clean, CLI 247, 3645/3690;
+  - seeded: 142 clean, 2436/2594, 172 first-draw divergences.
+- Both remain correlated reused-team diagnostics. The development set
+  exposed the fixes, so it is not a holdout.
+
+**New-team validation (500 standard Reg I + 500 Champions Reg M-B)**
+
+*Design*
+- The sampler was declared in advance, and the engine was not tuned
+  against this set.
+- Teams: 100 new legal six-mon teams per format:
+  - from PS curated random-doubles proposals, checked by the target
+    TeamValidator;
+  - rule natures, generator spreads and explicit genders;
+  - each side brings its first 4.
+- Matchups: 100 directed offset-37 matchups × 5 seeds per format.
+- Teams SHA-256
+  `0eff7f3f09aa7e078393b684b1c4437cee6bda714f8fc797c7cfa40642cc8944`; jobs
+  SHA-256 `2c8d322ee1e595c28954e3e8b0a054e7d8b0ab73a0e7f3296ff17e229955026e`.
+- Overlap with the old pool: no exact set or team overlap; 8 loose
+  Champions set overlaps.
+- **This is not 1000 independent teams:** it is 200 teams, each appearing
+  10 times.
+
+*Capture*
+- 1000 complete files: 975 natural wins and 25 capped at 20 turns.
+- 976 are PS-ok. 24 cases carry 26 recoverable invalid-choice warnings (a
+  lead Imposter Ditto, uncertain trapping).
+- The PS-ok labels were reviewed after the aggregate outcomes had been
+  seen. The raw 1000 are primary.
+
+*Results*
+
+| slice | keyed clean | CLI | keyed prefix turns | seeded clean | seeded prefix turns | first-draw divergences |
+|---|---|---|---|---|---|---|
+| raw 1000 | 518 (51.8%) | 499 | 6155/6567 | 292 (29.2%) | 4228/4866 | 733 |
+| PS-ok 976 | 506 | 487 | 6011/6411 | 283 | 4138/4761 | 717 |
+| standard 500 | 115 (23.0%) | 109 | 1486/1831 | 61 (12.2%) | 1062/1461 | 448 |
+| Champions 500 | 403 (80.6%) | 390 | 4669/4736 | 231 (46.2%) | 3166/3405 | 285 |
+
+- **Natural / capped:**
+  - keyed: standard 113/483 and 2/17; Champions 397/492 and 6/8;
+  - seeded: standard 60/483 and 1/17; Champions 228/492 and 3/8.
+- **Load failures (70):** `UnknownSpecies` for Florges-Yellow 30,
+  Florges-White 20, Florges-Orange 10, Furfrou-Heart 10.
+- **Keyed first-divergence fields (raw):** hp 284, species 51, boosts 46,
+  status 18, item 5, ability 4, fainted 3, weather 1.
+- **No census yet.** The 412 keyed state failures have no automatic census.
+- **Source-confirmed causes from representative triage:**
+  - **Tera timing.** PS transforms at queue order 106, before all moves.
+    Core transforms only when the user's move resolves, so slower, flinched
+    or KO'd Tera users take damage in their original type. Four
+    independently reviewed first-turn examples fit the multiplier
+    direction; this is not an exact damage census.
+  - **Shields Down (Minior)** is missing. Two examples show the forme gap.
+  - Status since: the Tera fix (`9b65c61`) and Shields Down (`e22eb40`) are
+    on main; generic cosmetic-forme loading is pending A's scoped commit.
+    See the sections below.
+- **Immutable dated baseline.** Any post-fix re-run of this set is a
+  DEVELOPMENT diagnostic, not validation of the new source.
+- **Against the suggested D1 thresholds:** both fail. 51.8% keyed clean is
+  below 80%, and 93.7% prefix turns is below 95%.
+
+## Diagnostic: consumer rollout benchmark at frozen `a1484ea` (`consumer-rollout-white.json`)
+
+- **Heads:** source `a1484ea`, harness `3a11739`, new wheel.
+- **Workload:** the same quiet 5-step synthetic 2v2 through the read-only
+  `RolloutOracle._one_rollout`.
+- **Fidelity:** 32/32.
+- **Samples:** 1 warmup, then 5 × 32.
+- **Timing:**
+  - engine median 162.297 µs (min 156.680, max 165.366, IQR 5.792);
+  - PS wall median 2274.272 µs (min 2188.125, max 2556.345, IQR 134.320);
+  - ratio **14.013×** on wall time, 13.823× on internal time.
+- **Excluded:** startup, imports, base initialization.
+- **Included:** per-rollout reseed, serialization, policy and Python
+  crossings. PS wall time includes one pipe/JSON round trip per batch.
+- **Limits:** the RNG streams differ and the outcome doesn't depend on RNG.
+  No unrestricted, end-to-end, model or production-speed claim.
+- **Status:** a historical diagnostic. It is not the Phase 4 gate, there is
+  no verified production replacement and no integration PR.
+- The `9f66758` run (13.862×) is HISTORICAL.
+
+# Integration after `a1484ea` (2026-10-07)
+
+Main is `8284775`. Each worker's checks were run on that worker's own
+source head, named below; they were not all re-measured on `8284775`. The
+one aggregate measured on integrated main so far is the seeded workspace
+at `8284775`: **1644 passed, 0 failed, 32 ignored**. The full final
+aggregate, a fresh Python wheel and consumer tests, and a fresh benchmark
+are **pending** until the remaining source commits land.
+
+## Mechanics fix: Terastallize before any move (`9b65c61`, tests `b6bcc45`)
+
+- **Bug.** PS changes the user's type at queue order 106, before every
+  move. The engine changed it only when the Tera user's own move resolved,
+  so a slower, flinched or knocked-out Tera user took that turn's damage in
+  its original type.
+- **Worker verification (its head):** default 1557, seeded 1597 passed, 0
+  failed.
+- **Independent seeded references** (one turn each): a faster knockout /
+  resistance case, a flinch case, and an exact Speed tie. All three are
+  state- and draw-clean in seeded mode; the tie contains 17 genuine in-turn
+  shuffles.
+- **Keyed limits that remain:** the knockout case leaves one Flamethrower
+  secondary roll unconsumed; the tied case needs 3 repair aliases.
+
+## Harness fix: flat selfDrops roll (`82be9d6`, golden `92a4719`)
+
+- The flat golden lowering skips the bound-100 `Range` at the
+  `BattleActions.selfDrops` site (PS draws it before an optional
+  `self.chance`, sim/battle-actions.ts:1324-1329). Site-less and other
+  ranges are unchanged.
+- The base Furfrou golden (`cosmetic-furfrou-base-fur-coat-v2`) passes with
+  its PS oracle unchanged. A `self.chance` drop would need the roll; the
+  engine does not model one.
+
+## Harness fix: Fickle Beam's keyed power gate (`33f99a4`)
+
+- `park_bool_gates` no longer parks Fickle Beam's bool gate, which
+  `Rng::chance_keyed` reads directly; parked, the repair pass inverted it.
+  Harness-only.
+- **Evidence:** 4 fixed independent two-turn captures (standard and
+  Champions); 2 are installed fixtures. 4/4 cases and 8/8 turns are clean
+  with zero misses, repairs and leftovers in both modes. The original
+  15-turn development case is state-clean in both modes; keyed still has 2
+  repairs and 28 leftovers from other mechanisms, seeded is all zero.
+- **Worker verification:** 1568 default / 1610 seeded passed, 0 failed, 32
+  ignored.
+
+## Mechanics fix: Shields Down (`e22eb40`; worker head `22b224a`)
+
+- Minior is Meteor Form above half HP and its Core below. Five meaningful
+  reds came first, then later Rest, faint and bench-order hash reds.
+- **Worker verification (`22b224a`):** default 1578 / seeded 1620 passed, 0
+  failed, 32 ignored; core chance + `ps-rng` 1290 passed, 2 ignored; a
+  four-turn actual comparator is state- and draw-clean in keyed and seeded
+  modes; three actual goldens including Rest; Clippy guards, residual
+  audit, strict golden gates; allocation probe 500 battles / 9887 steps / 0
+  capped / 0 step allocations.
+- **Notes:** a new `set_species_id` scalar with a serde default (MAX) for
+  legacy states; the original Minior colour is kept; a legacy Meteor without
+  an origin stays Meteor; the canonical hash schema changed, so absolute
+  hash values changed. Future-colour bench sorting is covered.
+
+## Harness: opt-in keyed golden mode (`776d387`, main `8284775`)
+
+- `"rng_mode": "keyed"` records each draw's actual PS provenance (turn,
+  actor, per-target target, move, decision, call site, op and arguments)
+  and replays it under `Rng::OracleKeyed`. No core change, no new step
+  allocation, no repair pass, no fallback. An engine draw without a
+  recorded outcome (`keyed_unmatched`) or an unconsumed PS draw
+  (`keyed_leftover`) fails both strict gates, except the selfDrops roll of
+  the 13 moves the engine drops unconditionally, judged by actual site, op
+  and arguments.
+- **Captures:** three fixed actual pinned-PS goldens (base Florges, base
+  Furfrou Close Combat, p1 Protect / Flying immunity / Blizzard miss). Their
+  primary `rng` / `events` / `log` equal flag-off runs apart from `|t:|`
+  timestamps. The miss fixture is candidate 2, chosen by a PS-only rule
+  declared before any engine run. A default `ps-battle.js` four-turn capture
+  re-recorded with the new driver equals the old one apart from timestamps.
+- **Red -> green:** the first validation reds, then two malformed-value /
+  call-signature reds. Focused tests 16/16; workspace 1584 default / 1626
+  seeded passed, 0 failed, 32 ignored; strict gates, Clippy, audit, Node 11
+  pass / 0 skipped, allocation probe all green.
+- **Limits:** the legacy flat spread-order gap is **unfixed**. The
+  `random(m, n)` normalization is acceptance-tested only; none of the three
+  captures has a two-argument draw.
+
+## Development diagnostic: Tera-only rescoring (`9b65c61`)
+
+The same new-team set scored at `a1484ea`, re-run with only the Tera fix
+added. **This set has already been inspected,** so this is a development
+diagnostic, not new untouched validation and not gate acceptance. Raw input
+and capture hashes are unchanged, and the `a1484ea` result stays the dated
+baseline. Turn ratios remain prefix-only.
+
+| slice | keyed clean | seeded clean |
+|---|---|---|
+| all 1000 | 642 (baseline 518) | 367 (baseline 292) |
+| standard 500 | 239 (115) | 136 (61) |
+| Champions 500 | 403 (403) | 231 (231) |
+
+Champions is semantically unchanged; its seeded output differs only in
+source line numbers.
+
+## Status as of `8284775` (superseded below)
+
+The first two items were integrated later (see the next section).
+
+- **Cosmetic formes (A):** worker checks: 8 API
+  tests; default 1612 / seeded 1655 passed, 32 ignored; strict goldens,
+  conformance guards, lint, audit, zero step allocations. Aliases come only
+  from actual rowless cosmetic formes; an exact own row wins; unknown and
+  functional families stay strict; the canonical base species drives calc,
+  Reg M-C rules, learnsets and the species clause. The original Florges V2
+  primary outcomes are identical after keyed metadata was added (no seed,
+  team, action or expected-HP change); Heart Furfrou stays a flat V2
+  golden. This should remove all 70 known loader errors in the reused
+  development input, **but that score has not been re-run.**
+- **Hunger Switch / Aura Wheel (B):** nine genuine pre-implementation
+  failures; five bounded offline references (Aura Wheel cycle, Lightning
+  Rod, Tera Hangry, switch reset, direct-Hangry set). The direct-Hangry
+  reference shows the set forme matters on switch reversion, so the state
+  hash must carry it.
+- **Cramorant:** a confirmed first-species divergence candidate in the
+  development set (11 cases).
+
+# Integration through `0080c7f` (2026-10-07)
+
+Main is `0080c7f0b0594a167a833231b6c5b68872058fb5`. Each worker's counts
+below are from its own head. The manager's measured aggregate on
+`0080c7f` follows in "Verification at `0080c7f`".
+
+## Loader: cosmetic formes (`d46e0c7`; worker head `b100200`)
+
+- Aliases come only from actual rowless cosmetic formes in the data; an
+  exact own row wins; unknown and functional forme families stay strict.
+  The canonical base species is used by calc, Reg M-C rules, learnsets and
+  the species clause.
+- **Worker verification:** 8 API tests; default 1612 / seeded 1655 passed,
+  0 failed, 32 ignored; both strict golden gates, lint, audit, allocation
+  probe 0 step allocations.
+- The original Florges V2 golden's primary outcomes are unchanged after its
+  keyed metadata was added (no seed, team, action or expected-HP change).
+  Heart Furfrou stays a flat V2 golden.
+- The 70 old loader errors are addressed by the aliases, **but the 1000-case
+  input has not been re-scored with them.**
+
+## Mechanics fix: Hunger Switch and Aura Wheel (`988c71b`; worker head `9306010`)
+
+- Morpeko toggles Full Belly / Hangry at end of turn; Aura Wheel's type
+  follows the forme. A Morpeko set directly as Hangry keeps that origin
+  across switches, and the origin is hashed: the canonical 44th field is now
+  `forme_origin` for both Minior and Morpeko, so absolute hashes changed.
+- **Worker verification:** default 1594 / seeded 1637 / chance 1304
+  passed, 0 failed, 32 ignored (2 in chance); both strict gates, lint,
+  audit, allocation probe 500 battles / 9887 steps / 0 step allocations.
+  Four actual golden pairs and two full-info fixtures.
+- **Manager keyed diagnostic at `988c71b`:** the 2 fixed full-info cases,
+  7/7 turns, zero missing draws, repairs, leftovers and errors; seeded
+  already all zero. A diagnostic re-use only; the original study is
+  unchanged.
+
+## Mechanics fix: Terastallization ends when the holder faints (`668857b`; worker head `1b5ed70`; measured note `0080c7f` from `1d962ee`)
+
+- **Reds:** 5 ordinary + 1 chance before the fix; a live control stayed
+  green.
+- **Fix:** a fainted team member's Tera state is cleared, including a
+  benched Pursuit victim and a replacement that faints to hazards. A
+  Morpeko's origin forme is restored before the clear. A spent or live
+  benched Tera is kept, and a revived mon gets its base typing back.
+- The existing core knockout test is now a same-seed no-Tera survival
+  control, not an assertion about the retained flag.
+- **Worker verification:** default 1603 / seeded 1646 / chance 1313
+  passed, 0 failed, 32 ignored (2 in chance); both strict gates, lint,
+  audit, allocation probe 500 / 9887 / 0 step allocations.
+- **Captures:** two actual standard three-turn captures, state-clean in both
+  modes. Seeded is all zero; keyed leaves one Flamethrower secondary
+  leftover in each, with no misses or repairs. The first capture has one
+  replacement-choice fallback.
+- **Direct plain PS probe** (two jobs, three observations; committed as
+  `tools/accuracy/tera-faint-verification/ps-state.jsonl`): the fainted
+  Slowbro's Tera flag is null, the live Snorlax stays Steel, and
+  `canTerastallize` is null for all. PS's side object has no Tera field, so
+  the permit can only be observed per mon. HP-only goldens can't observe the
+  flag; the dedicated core tests and the plain probe do.
+- **Confirmed separate gap, not fixed:** with Pursuit on a switching
+  target, the engine still completes the victim's switch, while PS Gen 5+
+  cancels it. The flag cleanup doesn't touch this.
+
+## In progress at `0080c7f` (superseded below)
+
+- **Gulp Missile / Cramorant (A, worker head `396ed29`, merged `142f2f5`):**
+  9 genuine failures and 3 guards confirmed on the current base; four
+  actual fixed goldens and one full-info fixture were frozen before the fix
+  (five clean, no errors, no unintended faints).
+
+# Verification at `0080c7f` (2026-10-07, measured snapshot)
+
+Measured by the manager on main `0080c7f`. Evidence files are prefixed
+`reset-final-0080c7f-*` in the manager's task evidence. This is a snapshot
+of that head; any later fix needs a new integrated aggregate.
+
+## Checks
+
+- default workspace: **1637** passed, 0 failed, 32 ignored;
+- `ps-rng` workspace: **1681** passed, 0 failed, 32 ignored;
+- core `chance` + `ps-rng`: 1321 passed, 0 failed, 2 ignored;
+- both strict golden gates, the required all-target seeded Clippy guards,
+  residual audit and diff check: pass;
+- Node regressions: 11 pass, 0 failed, 0 skipped;
+- **Python:** a fresh offline wheel, extracted and not installed: 31 tests
+  pass (the bindings plus mimikyu's read-only consumer tests). Extension
+  SHA-256 `61b590d033c5d53b74033edfe48d802a852b27917c0f8a01c2b40fa8a895ab50`;
+- allocation probe: 500 battles completed, 9887 steps, 0 capped, **0 step
+  allocations**;
+- bounded controls: the unchanged 72 Quick Claw / Custap cases, 168 turns in
+  each mode, with zero state, draw and error counts.
+
+## The original 1000-case study, re-used (DEVELOPMENT DIAGNOSTIC)
+
+The immutable new-team set first scored at `a1484ea`, re-scored on
+`0080c7f`. It has been inspected repeatedly, so this is a development
+diagnostic, **not untouched validation and not gate acceptance.** The teams
+and matchups are the same correlated sample; input and capture hashes are
+unchanged; the original inputs, captures and `a1484ea` outputs are
+untouched. The raw 1000 are primary.
+
+| slice | keyed state-clean | seeded state-clean |
+|---|---|---|
+| all 1000 (raw, primary) | **723** (`a1484ea`: 518) | **425** (`a1484ea`: 292) |
+| standard Reg I 500 | 294 | 172 |
+| Champions Reg M-B 500 | 429 | 253 |
+| PS-ok 976 (post-hoc sensitivity, not a predeclared exclusion) | 709 | 415 |
+
+- **Loader:** all 70 cosmetic-forme loader errors are gone; there are no
+  engine loader errors.
+- **Keyed accounting:** 694 cases are state-clean with zero missing draws.
+  Across all cases there are 130 missing draws, 3134 repair aliases and
+  26686 leftover labels.
+- **Seeded:** 392 cases are fully state- and draw-clean; 608 have a
+  normalized first-draw divergence.
+- **Prefix turns:** keyed 8445/8722, seeded 5935/6510, out of 10755 captured
+  turns. The scorer stops at the first divergence, so these are prefix
+  counts only; **no whole-corpus turn percentage is claimed.**
+- Natural-win terminal turns still compare fainted flags only.
+
+## Consumer benchmark (quiet workload)
+
+- Run with the manager's other builds and replays idle; 32/32 fidelity; 1
+  warmup + 5 × 32.
+- Engine median **135.790375 µs**, PS wall median **1832.259125 µs**: ratio
+  **13.4932915901×** on wall time.
+- The real consumer `RolloutOracle._one_rollout` is called read-only, but the
+  workload is synthetic and its outcome doesn't depend on RNG. Startup and
+  imports are excluded. **Not a production replacement and not the Phase 4
+  end-to-end gate.**
+
+## Gates
+
+The original Phase 2, 3 and 4 gates remain binding and unmet; D1 and D2 are
+not adopted. The full real replay corpus and production authorization are
+not available, and that still blocks acceptance.
+
+## Open after `0080c7f` (superseded by the `7c00268` section below)
+
+- **Gulp Missile / Cramorant (A), unmerged draft at the time.** 16 core and 4
+  conformance tests pass, but both strict golden gates fail on Surf into a
+  Diving target (PS 151 HP vs engine 164).
+  - Additional actual PS captures confirm a second failure in both modes:
+    Gorging's Synchronize status reflection (turn 3: the holder has no
+    status, PS has it paralyzed); seeded mode is missing the
+    reflected-paralysis draw.
+  - White Herb + Close Combat is green in both modes; the existing deferred
+    helper is correct, and the initial concern was rejected.
+  - A is now working tests-first on Dive's damage multiplier, Synchronize,
+    and an origin/hash question. A separate Dive commit is planned before
+    the Gulp commit. **Neither fix exists on main yet.**
+- **Tera-on-faint extra synthetic pair: blocked.** Installing
+  `tools/accuracy/tera-faint-verification/tera-faint-live-partner.input.json`
+  as `crates/vgc-engine-golden/goldens/tera-faint-live-partner.input.json`
+  (B's exact `cp -n`) requires manual approval for path safety, and the
+  parent forbids retrying or rerouting it without specific approval. The PS
+  output and README exist uncommitted; the destination input is absent, so
+  no new golden is claimed under AGENTS rule 2. The integrated direct-state
+  probe and the original knockout golden remain verified, with their
+  stated limits.
+- **Pursuit switch cancel:** confirmed, not fixed (see above).
+
+# Final source verification at `7c00268` (2026-10-07)
+
+Main is `7c00268dd994c0dc3434cacefa2d2139c7bc3b9b`. The checks below were
+measured by the manager on that head itself, not taken from a worker. The
+`0080c7f` and `a1484ea` figures above are historical.
+
+## Mechanics fix: Surf and Whirlpool into Dive (`eb12423`; worker head `d3a6816`)
+
+- A target underwater from Dive takes double damage from Surf and Whirlpool.
+  The ×2 is applied in ModifyDamage, not as base power.
+- Found while working on Gulp Missile and fixed as its own commit.
+- **Evidence:** public tests that don't involve Gulp Missile, and an
+  independent actual fixed golden (Golduck 187 -> 157). The intermediate
+  main's default and seeded full workspaces and native chance tests passed.
+
+## Mechanics fix: Gulp Missile (`7c00268`; worker head `afeb271`)
+
+- **Behaviour:** Cramorant loads Gulping / Gorging on Surf or Dive; when hit,
+  it deals a quarter of the attacker's max HP and lowers Defense (Gulping)
+  or paralyzes (Gorging), then reverts. Guards cover the cases where it must
+  not trigger.
+- The paralysis uses the canonical status-source path at the attacker's
+  exact slot, so Synchronize reflects it correctly (singles and p1b). The
+  White Herb deferred control passes. Switching and fainting restore the
+  original set forme, including a direct-Gulping switch after the response.
+- **Red -> green:** the strengthened tests first proved that two states
+  have different futures before asserting their hashes differ. Two genuine
+  origin/hash collisions and a direct-set switch case were red, then green.
+- **Hash:** the existing 44th field `forme_origin` and the bench sort were
+  extended; no new schema field. Absolute Cramorant hashes changed.
+- **Evidence:** 22 public tests including chance; 4 original actual golden
+  pairs; the original full-info three-turn capture and its conformance
+  check. The production and test tree equals the reviewed worker source.
+- **Extra review captures, not installed:** the Synchronize and White Herb
+  review captures were not installed, because the worker's Read of the
+  manager's job file returned EPERM and the manager did not retry or
+  reroute it. The manager's independent replays of those unchanged
+  captures: both cases, 5 turns, state-clean; seeded all zero; keyed has 1
+  repair (Synchronize) and 1 existing selfDrops leftover (White Herb), 0
+  missing. **The keyed review evidence is not all zero.** The actual
+  Synchronize holder is p1a at turn 3; the public doubles regression
+  independently checks p1b.
+
+## Checks at `7c00268`
+
+- default workspace: **1666** passed, 0 failed, 32 ignored;
+- `ps-rng` workspace: **1711** passed, 0 failed, 32 ignored;
+- core `chance` + `ps-rng`, including both new public test files: **1347**
+  passed, 0 failed, 2 ignored;
+- both default-on strict golden gates, lint guards, residual audit and
+  `git diff --check`: pass;
+- Node regressions: 11 pass, 0 skipped;
+- **Python:** a fresh offline wheel, extracted and not installed: **31
+  tests in total, 27 bindings + 4 read-only consumer tests**. Extension
+  SHA-256 `7e0541fb8788ac2c9bc95798b2325f8b6a78122eab6dfe69861286d2a2bfbe9a`;
+- allocation probe: 500 battles, 9887 steps, 0 capped, **0 step
+  allocations**;
+- the 72 unchanged bounded controls: 168 turns, with zero state, draw,
+  missing, repair, leftover and error counts in **both** modes;
+- all 6 installed references keep their fixed input bytes.
+- Manager evidence: `reset-final-7c00268-verification-summary.json`,
+  `-checks.json`, `-wheel-provenance.json`, `-controls-summary.json`, and
+  `0910-installed-oracle-input-equality.json`.
+
+## The original 1000-case study, re-used at `7c00268` (DEVELOPMENT DIAGNOSTIC)
+
+The same immutable, repeatedly inspected synthetic set: 200 teams, 100
+directed pairings per format × 5 replicas, so each team appears 10 times.
+975 natural wins and 25 capped at 20 turns; 24 cases carry 26 recoverable
+choice warnings. All job, team and capture hashes are unchanged before and
+after. The `a1484ea` baseline (518 keyed / 292 seeded) is unchanged. The
+raw 1000 are primary. **Not untouched validation, no whole-corpus turn
+percentage, and no new acceptance gate.**
+
+| slice | keyed state-clean | seeded state-clean |
+|---|---|---|
+| all 1000 (raw, primary) | **731** (`0080c7f`: 723; `a1484ea`: 518) | **431** (`0080c7f`: 425; `a1484ea`: 292) |
+| standard Reg I 500 | 302 | 178 |
+| Champions Reg M-B 500 | 429 | 253 |
+| PS-ok 976 (post-hoc sensitivity, not a predeclared exclusion) | 717 | 421 |
+
+- **From `0080c7f` to `7c00268`:** keyed 8 cases became state-clean and 0
+  stopped being clean; seeded 6 gained, 0 lost.
+- **Errors:** 0 engine and loader errors.
+- **Keyed accounting:** 702 cases are state-clean with zero missing draws.
+  Overall there are 133 missing draws, 3170 repairs and 26976 leftovers
+  (event counts, not distinct labels). No case is all-zero in keyed mode.
+- **Seeded:** 396 cases are fully state- and draw-clean; 604 have a
+  first-draw divergence.
+- **Prefix turns:** keyed 8526/8795, seeded 6010/6579, of 10755 captured
+  turns. The prefixes stop at the first divergence; terminal turns keep the
+  faint-only comparison.
+- Manager evidence: `reset-final-7c00268-development-summary.json`,
+  `-commands.json`, `0910-development-case-transitions.json`.
+
+## Quiet consumer diagnostic at `7c00268`
+
+- Run with the manager's builds and replays idle; 32/32 fidelity; 1 warmup
+  + 5 × 32.
+- Engine median **141.75521875 µs**, PS wall median **1929.1484375 µs**:
+  wall ratio **13.6090117493×**.
+- The same fixed five-step, RNG-independent synthetic 2v2; startup and
+  imports excluded; mimikyu's `RolloutOracle._one_rollout` called
+  read-only.
+- The consumer repo HEAD observed was `d058a722e41aefd2650f4b5a92369253572cfbcc`;
+  the oracle file SHA-256 `438a875e…b879` is unchanged; no sibling edits.
+- The benchmark script doesn't verify its engine-source argument itself;
+  the manager's separate build, head and extension receipts establish the
+  source.
+- **Not the Phase 4 production end-to-end gate and not a replacement.** The
+  `0080c7f` and `a1484ea` benchmark figures are historical.
+- Manager evidence: `reset-final-7c00268-consumer-rollout-quiet.json`.
+
+## Gates and blockers at `7c00268`
+
+- **Binding and unmet:**
+  - Phase 2: the real mimikyu 1000-replay differential (≥80% turns overall,
+    ≥95% on implemented mechanics);
+  - Phase 3: ≥95% on the full real ≥10k-battle corpus, plus Tera and
+    Champions;
+  - Phase 4: a production replacement PR plus a measured ≥10× wall-clock
+    speedup.
+- D1 and D2 are not adopted. The full real corpus and its historical source
+  are missing, and a live production replacement is out of scope. The quiet
+  diagnostic doesn't pass any of these.
+- **AGENTS rule 2:** the existing strict gates are green, and the Dive and
+  Gulp Missile golden requirements are covered. **The rule is not fulfilled
+  for the earlier Tera-on-faint fix,** because its extra actual pair is
+  still blocked.
+- **Still visible:** long-tail seeded and keyed gaps, the legacy flat
+  spread-order limitation, and the confirmed Pursuit switch-cancellation
+  gap. No root-cause census is claimed.
+
+## Stopped operations (not retried, not rerouted)
+
+These are local worker restrictions, not a rejection by an automatic
+review. The manager records them in `DENIED-OPERATIONS-0910.md`.
+
+- **B, worktree `codex-8322f9e9`:** `cp -n
+  tools/accuracy/tera-faint-verification/tera-faint-live-partner.input.json
+  crates/vgc-engine-golden/goldens/tera-faint-live-partner.input.json` was
+  refused: "cp with flags requires manual approval to ensure path safety".
+  The destination is still absent. The parent forbids a retry or reroute
+  without approval, and none was given.
+- **C (this worktree):** the earlier cross-worktree `git -C` refusal stays
+  stopped and was not redone.
+- **A:** reading
+  `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence/reset-gulp-review-jobs.jsonl`
+  failed with "EPERM: operation not permitted"; the worker stopped and did
+  not reroute the payload inline.
