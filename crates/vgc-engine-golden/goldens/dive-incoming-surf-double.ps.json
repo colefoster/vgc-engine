@@ -1,0 +1,78 @@
+{
+  "ok": true,
+  "name": "dive-incoming-surf-double",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Golduck",
+      "hp": 187,
+      "max": 187
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 236,
+      "max": 236
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Dive",
+      "target": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Surf",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 157,
+      "max": 187,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791364813\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Golduck, L50, M|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791364813\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Golduck|Golduck, L50, M|187/187\n|switch|p2a: Snorlax|Snorlax, L50, M|236/236\n|turn|1|\n|t:|1791364813\n|move|p1a: Golduck|Dive||[still]\n|-prepare|p1a: Golduck|Dive\n|move|p2a: Snorlax|Surf|p1a: Golduck\n|-resisted|p1a: Golduck\n|-damage|p1a: Golduck|157/187\n|\n|upkeep\n|turn|2"
+}
