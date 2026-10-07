@@ -669,7 +669,14 @@ pub(crate) fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
                 // reproduce that queue. Keeping the event shifts every later
                 // move draw and can even let an unrelated ability consume it.
                 // Site-less legacy fixtures keep their established behavior.
-                if site.as_deref().is_some_and(|s| s.contains("BattleQueue.insertChoice")) {
+                // Likewise selfDrops' random(100) for a `self.boosts` move
+                // (sim/battle-actions.ts:1324-1329): the engine's
+                // self_stat_drops moves are all unconditional and draw it
+                // only under real PS RNG. A `self.chance` drop would need the
+                // roll, but the engine does not model one.
+                if site.as_deref().is_some_and(|s| {
+                    s.contains("BattleQueue.insertChoice") || (bound == 100 && s.contains("BattleActions.selfDrops"))
+                }) {
                     continue;
                 }
                 if bound == 16 {
@@ -1361,6 +1368,31 @@ mod tests {
         let legacy = PsRngEvent::Range { value: 6, bound: 100, site: None };
         let out = lower_rng_events(&[other, legacy]);
         assert!(matches!(out[..], [RngEvent::Range(6), RngEvent::Range(6)]), "{out:?}");
+    }
+
+    #[test]
+    fn lower_rng_drops_the_self_drop_roll() {
+        // PS selfDrops draws random(100) for every `self.boosts` move
+        // (sim/battle-actions.ts:1324-1329) before checking an optional
+        // `self.chance`. The engine's self_stat_drops moves are all
+        // unconditional and draw it only under real PS RNG, so the flat queue
+        // must not hold it: Close Combat's roll (turn 1 of the Furfrou goldens)
+        // otherwise blocked every later draw. Neighbouring draws are kept.
+        let site = |s: &str| Some(s.to_string());
+        let evs = [
+            PsRngEvent::Crit { value: false },
+            PsRngEvent::Range { value: 77, bound: 100, site: site("BattleActions.selfDrops (sim/battle-actions.js:1122)") },
+            PsRngEvent::PercentRoll { value: true, threshold: 100 },
+        ];
+        let out = lower_rng_events(&evs);
+        assert!(matches!(out[..], [RngEvent::Crit(false), RngEvent::PercentRoll(100)]), "{out:?}");
+        // Same value and bound at another site, site-less, or another bound at
+        // that site: unchanged.
+        let other = PsRngEvent::Range { value: 77, bound: 100, site: site("Battle.onResidual (data/abilities.js:1)") };
+        let legacy = PsRngEvent::Range { value: 77, bound: 100, site: None };
+        let bound = PsRngEvent::Range { value: 1, bound: 2, site: site("BattleActions.selfDrops (sim/battle-actions.js:1122)") };
+        let out = lower_rng_events(&[other, legacy, bound]);
+        assert!(matches!(out[..], [RngEvent::Range(77), RngEvent::Range(77), RngEvent::Range(1)]), "{out:?}");
     }
 
     #[test]
