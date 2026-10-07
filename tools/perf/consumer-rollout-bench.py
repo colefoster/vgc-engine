@@ -69,9 +69,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--node", default="node", help="node executable")
     p.add_argument("--node-arg", action="append", default=[],
                    help="extra node argument, e.g. --node-arg=--require=<offline guard> (repeatable)")
-    p.add_argument("--rollouts", type=int, help="rollouts per batch (overrides workload; max 32 by default)")
-    p.add_argument("--timed-batches", type=int, help="timed batches (overrides workload)")
-    p.add_argument("--warmup-batches", type=int, help="warmup batches (overrides workload)")
+    p.add_argument("--rollouts", type=int, help="rollouts per batch, 1-32 (overrides workload)")
+    p.add_argument("--timed-batches", type=int, help="timed batches, 1-5 (overrides workload)")
+    p.add_argument("--warmup-batches", type=int, help="warmup batches, 0-1 (overrides workload)")
+    p.add_argument("--engine-source-head",
+                   help="vgc-engine commit the wheel was built from, as stated by the caller; "
+                        "recorded as provided, not verified")
     p.add_argument("--out", help="also write the JSON report here")
     return p.parse_args()
 
@@ -107,10 +110,78 @@ def ps_seed(seed: int) -> str:
 
 
 def load_oracle(path: str):
-    spec = importlib.util.spec_from_file_location("rollout_oracle_ro", path)
+    name = "rollout_oracle_ro"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot import rollout oracle from {path}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # dataclasses resolves annotations through sys.modules[cls.__module__]
+    # (Python 3.9 dataclasses._is_type), so register before executing.
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        del sys.modules[name]
+        raise
     return mod
+
+
+MAX_ROLLOUTS, MAX_TIMED, MAX_WARMUP, MAX_TURNS = 32, 5, 1, 8
+
+
+def bounded(name: str, v, lo: int, hi: int) -> int:
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise SystemExit(f"{name} must be an integer in [{lo}, {hi}], got {v!r}")
+    return v
+
+
+def validate_workload(w: dict, n: int) -> None:
+    """Reject workloads outside what the matched comparison supports: a
+    Champions doubles 2v2 with no bench, literal level 50, zero Stat Points
+    (no evs/ivs/item keys, since both sides build them as zero / 31 / none)
+    and explicit per-slot actions that name a real move slot."""
+    def fail(msg: str):
+        raise SystemExit(f"workload: {msg}")
+
+    if not isinstance(w.get("format"), str) or not w["format"].startswith("gen9champions"):
+        fail(f"format must be a gen9champions* id, got {w.get('format')!r}")
+    bounded("workload own_side", w.get("own_side"), 0, 1)
+    bounded("workload init_seed", w.get("init_seed"), 0, _U64)
+    bounded("workload seed0", w.get("seed0"), 0, _U64 - (n - 1))
+    for side in ("p1", "p2"):
+        team = w.get(side)
+        if not isinstance(team, list) or len(team) != 2:
+            fail(f"{side} must list exactly 2 sets (doubles, no bench)")
+        for i, s in enumerate(team):
+            where = f"{side}[{i}]"
+            if not isinstance(s, dict):
+                fail(f"{where} must be an object")
+            extra = set(s) - {"species", "gender", "ability", "nature", "level", "moves"}
+            if extra:
+                fail(f"{where} has unsupported keys {sorted(extra)} (zero Stat Points, no items)")
+            for k in ("species", "ability", "nature"):
+                if not isinstance(s.get(k), str) or not s[k]:
+                    fail(f"{where}.{k} must be a non-empty string")
+            if s.get("level") != 50:
+                fail(f"{where}.level must be 50")
+            if s.get("gender") not in (None, "M", "F", "N"):
+                fail(f"{where}.gender must be M, F or N")
+            mv = s.get("moves")
+            if not isinstance(mv, list) or not 1 <= len(mv) <= 4 or not all(isinstance(m, str) and m for m in mv):
+                fail(f"{where}.moves must list 1-4 move names")
+    for key, side in (("joint_action", w["own_side"]), ("opp_reply", 1 - w["own_side"])):
+        acts = w.get(key)
+        team = w["p1" if side == 0 else "p2"]
+        if not isinstance(acts, list) or len(acts) != 2:
+            fail(f"{key} must give exactly 2 slot actions")
+        for slot, act in enumerate(acts):
+            if not isinstance(act, dict) or set(act) != {"move", "target"}:
+                fail(f"{key}[{slot}] must be {{'move': int, 'target': null | [kind, slot]}}")
+            bounded(f"workload {key}[{slot}].move", act["move"], 0, len(team[slot]["moves"]) - 1)
+            t = act["target"]
+            if t is not None and (not isinstance(t, list) or len(t) != 2 or t[0] not in ("foe", "ally")
+                                  or isinstance(t[1], bool) or t[1] not in (0, 1)):
+                fail(f"{key}[{slot}].target must be null or ['foe'|'ally', 0|1], got {t!r}")
 
 
 def engine_team(sets: list) -> str:
@@ -214,14 +285,21 @@ def main() -> int:
         sys.path.insert(0, d)
     import vgc_engine as ve  # noqa: E402  (path set above)
 
-    oracle_mod = load_oracle(a.oracle)
     with open(a.workload) as f:
         w = json.load(f)
-    n = a.rollouts or w["rollouts_per_batch"]
-    timed = a.timed_batches or w["timed_batches"]
-    warm = a.warmup_batches if a.warmup_batches is not None else w["warmup_batches"]
+    if not isinstance(w, dict):
+        raise SystemExit("workload must be a JSON object")
+    n = bounded("rollouts", a.rollouts if a.rollouts is not None else w.get("rollouts_per_batch"),
+                1, MAX_ROLLOUTS)
+    timed = bounded("timed batches", a.timed_batches if a.timed_batches is not None else w.get("timed_batches"),
+                    1, MAX_TIMED)
+    warm = bounded("warmup batches",
+                   a.warmup_batches if a.warmup_batches is not None else w.get("warmup_batches"),
+                   0, MAX_WARMUP)
+    max_turns = bounded("max_turns", w.get("max_turns"), 1, MAX_TURNS)
+    validate_workload(w, n)
     own = w["own_side"]
-    max_turns = w["max_turns"]
+    oracle_mod = load_oracle(a.oracle)
     seeds = [w["seed0"] + i for i in range(n)]
     ps_dist = a.ps_dist or os.path.join(a.ps_path, "dist", "sim")
 
@@ -306,6 +384,8 @@ def main() -> int:
     finally:
         ps.close()
 
+    ext = getattr(ve, "vgc_engine", None)
+    ext_file = getattr(ext, "__file__", None)
     per = lambda xs: [x / n / 1e3 for x in xs]  # µs per rollout
     eng_d, wall_d, int_d = dist(per(eng_ns)), dist(per(ps_wall_ns)), dist(per(ps_int_ns))
     speedup = None
@@ -328,9 +408,17 @@ def main() -> int:
                    "workload": w},
         "provenance": {
             "python": sys.version, "platform": platform.platform(),
-            "vgc_engine_file": getattr(ve, "__file__", None),
+            # The package __init__ only re-exports the compiled extension
+            # (`from .vgc_engine import *`); hash both, the extension is what ran.
+            "vgc_engine_package_file": getattr(ve, "__file__", None),
+            "vgc_engine_package_sha256": sha256(getattr(ve, "__file__", "") or ""),
+            "vgc_engine_extension_file": ext_file,
+            "vgc_engine_extension_sha256": sha256(ext_file) if ext_file else None,
             "vgc_engine_version": getattr(ve, "__version__", None),
-            "vgc_engine_sha256": sha256(getattr(ve, "__file__", "") or ""),
+            # Caller-stated build source, not checked against the binary; the
+            # harness_head below is this script's checkout, not the wheel's.
+            "engine_source_head_provided": a.engine_source_head,
+            "engine_source_head_verified": False,
             "oracle_path": a.oracle, "oracle_sha256": sha256(a.oracle),
             "mimikyu_head": git_head(os.path.dirname(a.oracle)),
             "ps_path": a.ps_path, "ps_head": git_head(a.ps_path), "ps_dist": ps_dist,
