@@ -333,10 +333,8 @@ mod tests {
         assert!(approx(sol.value, 3.0, 1e-6), "value = {}", sol.value);
         assert!(sol.iterations <= 4, "iter = {}", sol.iterations);
         // Final equilibrium support is row 1, col 0.
-        let row_actions: Vec<usize> = sol.row_strategy.iter().map(|x| x.0).collect();
-        assert!(row_actions.contains(&1));
-        let col_actions: Vec<usize> = sol.col_strategy.iter().map(|x| x.0).collect();
-        assert!(col_actions.contains(&0));
+        assert!(sol.row_strategy.iter().any(|x| x.0 == 1));
+        assert!(sol.col_strategy.iter().any(|x| x.0 == 0));
     }
 
     #[test]
@@ -376,8 +374,7 @@ mod tests {
         let sol = double_oracle(&mut g, &[0], &[0]).unwrap();
         assert!(approx(sol.value, 1.0, 1e-6), "value = {}", sol.value);
         // Col equilibrium concentrates on col 1.
-        let col_actions: Vec<usize> = sol.col_strategy.iter().map(|x| x.0).collect();
-        assert!(col_actions.contains(&1));
+        assert!(sol.col_strategy.iter().any(|x| x.0 == 1));
     }
 
     #[test]
