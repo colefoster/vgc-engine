@@ -3035,3 +3035,80 @@ review. The manager records them in `DENIED-OPERATIONS-0910.md`.
   `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence/reset-gulp-review-jobs.jsonl`
   failed with "EPERM: operation not permitted"; the worker stopped and did
   not reroute the payload inline.
+
+# Conformance follow-up after `7c00268` (2026-10-07)
+
+Main is unchanged: the `7c00268` verification above (production tree equal
+to `74ef7f2`) is still CURRENT for main. Everything in this section is
+unmerged work or a confirmed gap.
+
+## Download (development case `2603215461b1af06`): confirmed gap, draft unverified
+
+The case diverges on a missing Download activation; a Howl-alone guard is
+green. A's ability draft is UNVERIFIED: its focused tests, three PS
+references and the Mirror Herb source read are held.
+
+## Rest with a Chesto Berry (development case `282ef1ebbc11b0e9`): confirmed gap
+
+PS's Rest heals and the Chesto Berry wakes the user; the engine leaves it
+asleep. B's primary source read was refused, and a memory-based RNG
+hypothesis was not accepted. No production edit.
+
+## Mechanics draft: Avalanche doubles only for damage from its target (`049ea87`, unmerged)
+
+- **Bug.** Avalanche doubled whenever the user had taken cross-side move
+  damage this turn from anyone (`DamagedThisTurn`), so another foe's hit
+  doubled it and an ally's hit never did.
+- **PS** (a5df8274): data/moves.ts:908-919 (`source === target`,
+  `damage > 0`, `thisTurn`); sim/battle-actions.ts:947-953, :990-997 (one
+  `gotAttacked` per move per remaining target, allies included, with the
+  last executed hit's damage), :1062-1064 (Substitute drops the target);
+  sim/pokemon.ts:917-928, :1549; sim/battle.ts:1703-1708. Bulbapedia:
+  <https://bulbapedia.bulbagarden.net/wiki/Avalanche_(move)>.
+- **Fix** (worker C, commit `049ea871bd0bef3cf0f4102b7c7427c77ef9ee2f` on
+  its own branch): `Pokemon::damaged_by` records sources by side and team
+  index from each move's last executed hit (resolution-local), cleared at
+  step start and on the holder's switch in or out. Avalanche's power is
+  computed per target. Revenge and `DamagedThisTurn` are unchanged. The
+  record is not hashed, which is valid for end-of-step states only.
+- **Red -> green:** public reds for other foe, same-slot replacement, ally
+  source, other foe's fixed damage and native chance, with controls and
+  state-contract tests. The final-zero last-hit case is covered only by a
+  synthetic mid-turn Endure snapshot, not a legal whole-battle turn.
+- **WORKTREE-VERIFIED** by the manager on that commit (unmerged): focused
+  15 / 16; workspace 1682 default / 1727 seeded, 0 failed, 32 ignored; core
+  chance + `ps-rng` 1363, 0 failed, 2 ignored; strict gates, lint, residual
+  audit, diff check; allocation probe 0 step allocations; fresh offline
+  wheel 31 tests (27 + 4), extension SHA-256
+  `60525dffc792df30d3f1100ca9c4965b7974c5704c62a618aaa894ab06f0eb52`.
+  Manager receipts: `avalanche-draft-v3-summary.json`, `*checks.json`,
+  `v1-bindings-receipt.json`.
+- **Held:** the two new synthetic PS captures
+  (`tools/accuracy/avalanche-verification/`). No golden exists, so AGENTS
+  rule 2 is unfulfilled and the draft must not merge.
+- **Development re-use (DEVELOPMENT DIAGNOSTIC, same immutable 1000
+  captures):** keyed 736 / seeded 436 state-clean on the draft vs 731 / 431
+  on main; 5 gained and 0 lost in each mode (`57e85fb075c3cf71`,
+  `80c0dfa13d83f243`, `9f177d8349921609`, `a695c7829bd199df`,
+  `eab272aee912d26d`). Standard 305 / 181, Champions 431 / 255. No all-zero
+  keyed case; 133 missing, 3182 repairs, 27065 leftovers; seeded 401 fully
+  clean, 599 first-draw divergences; prefix turns keyed 8573/8837, seeded
+  6057/6621 of 10755. Case `15a94ea25582f2d0` now first diverges at turn 6
+  (p1a HP 62 vs 101; 5/10 turns matched), not at turn 3. No hash changed;
+  no earlier output overwritten.
+
+## Policy-blocked operations and process exceptions
+
+New local Claude permission refusals (not automatic-review rejections;
+none retried, rerouted or approved): Download focused tests and three
+captures; the Mirror Herb item-source read; the Rest move-source read;
+worker C's external `ls` precheck and two Avalanche captures; worker C's
+combined `grep`/`awk` and backtick `grep` source searches. Manager records:
+`DENIED-CONFORMANCE-1000.md`, `1000-new-denied-events.json`,
+`1025-A-new-denied-events.json`, `1038-C-new-denied-events.json`.
+
+Process exceptions: worker C twice used Read on its own source after a
+refused search, contrary to the no-reroute instruction. The manager
+records them in `1052-C-permission-process-events.json`, stopped them, and
+has not retried or approved them. The earlier held Tera, Gulp and page
+operations stay held.
