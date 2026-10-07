@@ -30,4 +30,5 @@ and have not been started. See `docs/PLAN.md` for the phase gates and current po
 - `docs/AGENTS.md` — rules for agents (human or LLM) contributing to this repo
 - `docs/accuracy/2026-09-accuracy-proof.md` — measured accuracy vs Showdown (forced-RNG conformance on real Reg M-C games, bug taxonomy)
 - `docs/accuracy/ps-rng.md` — the opt-in `ps-rng` feature: Showdown's exact PRNG and draw order, for seeded differential testing
+- `docs/reach-backlog-2026-10-07.md` — planned docs/reach backlog (quickstarts, matrix, benchmarks); planning only
 - `CLAUDE.md` — auto-loaded context for Claude Code sessions
