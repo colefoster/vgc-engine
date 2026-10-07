@@ -2090,3 +2090,104 @@ This is a golden-harness fix, not an engine mechanic.
   The golden crate release build is recorded in task artifacts.
   Core, conformance, recorder, generic loaders and historical study results
   are unchanged in this slice.
+
+# Finish-line integration (2026-10-06)
+
+Four fixes and one diagnostic benchmark landed after `c415f661`, plus the
+re-verification. The status checklist is `docs/finish-line-2026-10-06.md`.
+Starting baseline: default 1532 passed, `ps-rng` 1571 passed, zero failed
+and 32 ignored in each. Engine source is `cf5188ca`; harness `main` is
+`f816c48`. All red/green and verification runs were done by the manager.
+Logs are in `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence`.
+The Round 10 and earlier results above are unchanged.
+
+## Harness fix: conformance loader rejects Stat Points above 32 (`a47779b`)
+
+- **Bug.** `build_engine_team` mapped each point value to `8 * SP - 4` EVs
+  and truncated it to u8, so 33 points silently became 4 EVs.
+- **PS:** `data/mods/champions/scripts.ts:10-39`;
+  `sim/team-validator.ts:1313-1318`.
+- **Fix.** Values above 32 are an error, and the replay entry points pass
+  it on.
+- **Tests:** red 17 pass / 2 fail, green 84 pass. They cover PS-probed
+  stats for 0/1/32 points, rejection of 33 and 255, and propagation of the
+  error.
+
+## Harness fix: conformance loader ignores supplied Champions IVs (`a195bb4`)
+
+- **Bug.** The loader passed exported IVs through, but PS's Champions
+  `statModify` doesn't read them.
+- **Example:** Rillaboom with IV 0 built as `[160,177,95,58,75,121]`; PS
+  gives `[176,194,111,72,90,137]`.
+- **Fix.** Champions members get IV 31 before the point conversion.
+  Standard formats keep supplied IVs.
+- **Tests:** red 20 pass / 1 fail, full loader green 86 pass.
+- **Limits.** Exact at level 50 only. Level Clause Mod, non-50 recompute
+  and Stat Point totals are not modelled.
+
+## Guard fix: no intermediate Vec in `first_draw_divergence` (`a2be61e`)
+
+The expanded `ps-rng` workspace Clippy guard
+(`-D clippy::needless_collect -D clippy::box_default`) reported
+`accuracy.rs:938`. That guard now passes. It was the deferred item in the
+sections above.
+
+## Mechanics fix: Custap Berry newly eligible at the Champions Encore re-queue (`cf5188c`)
+
+- **Bug.** A holder pushed to 1/4 HP or less between the commit and the
+  re-queue got Custap's -1 fractional key but kept the berry, so the berry
+  fired again later.
+- **PS** (`a5df8274`): `data/items.ts:1243-1256`;
+  `sim/battle-queue.ts:249,301-305`;
+  `data/mods/champions/moves.ts:307-339`.
+- **Red:**
+  - unit test: 6 pass / 1 fail (held item 84 vs 65535);
+  - new PS golden `champions-encore-eats-custap`: turn 5, p1b HP engine
+    134/170 vs PS 170/170.
+- **Green:** 7 pass, and both golden gates pass.
+- **Invalid evidence:** an earlier Night Shade vs Normal red draft was
+  invalid and is not evidence.
+- **Guards:** standard Gen 9, no Encore, same move, commit-consumed
+  priority, Quick Draw, Unnerve, Mycelium Might.
+- **Limits, unchanged:** the global Gluttony threshold, Quick Draw
+  consumption at commit, and berry-eat hooks. Full FractionalPriority
+  equivalence is not claimed.
+
+## Verification at `cf5188c`
+
+- default workspace: 1540 / 0 / 32;
+- `ps-rng`: 1579 / 0 / 32;
+- `chance` Encore: 22 / 0;
+- expanded `ps-rng` Clippy: passes;
+- residual audit and `git diff --check`: pass;
+- `perf_bench`: 0 step allocations over 64 battles / 1284 steps;
+- offline wheel extracted to task evidence (not installed): pytest 27 pass.
+
+Bounded recaptures against PS `a5df8274`:
+- 64 Quick Claw / reroll controls (2-turn cap) and 8 Custap seeds (5-turn
+  cap);
+- keyed and seeded both match 64/64 cases (128/128 turns) and 8/8 cases
+  (40/40 turns);
+- zero missing draws, repairs, leftovers, errors or first-draw
+  divergences.
+
+## Diagnostic: consumer rollout benchmark (`5883fac`, `f816c48`)
+
+- **Harness:** `tools/perf/consumer-rollout-bench.py`. It times mimikyu's
+  `RolloutOracle._one_rollout` (read-only) against steady-state PS on a
+  synthetic 2v2: Seismic Toss vs Splash, max 8 turns, 1 warmup + 5 × 32.
+- **Fidelity:** 32/32.
+- **Timing:** engine median 171.319 µs, PS wall median 2332.359 µs,
+  ratio 13.614× (internal 13.569×).
+- **Provenance:** engine `cf5188ca`, extension SHA-256 `71b5d437…`,
+  harness `f816c48`.
+- **Status:** diagnostic only, pending D2. It is not a Phase 4 gate pass.
+
+## In progress
+
+Worker A is fixing a conformance harness bug. Each team exports six mons
+and PS brings the first four, but the engine loads all six. Prospective
+diagnostic `f3946a404862f219` shows it: the engine waits on a replacement
+that doesn't exist and swallows the next turn. The prospective 1000-battle
+diagnostic (pre-fix keyed state-clean 91/1000) is to be re-scored after
+that fix.
