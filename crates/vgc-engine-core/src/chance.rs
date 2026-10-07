@@ -677,6 +677,79 @@ mod tests {
         }
     }
 
+    /// Tera before moves (sim/battle-queue.ts:188, :230-235): the slower
+    /// Tera Steel Snorlax takes the faster Ice Shard as a Steel type on
+    /// every branch, and every branch spent the side's permit.
+    ///
+    /// The canonical hash keeps HP only as coarse threshold buckets
+    /// (canonical_hash.rs `hp_bucket_coarse`), so frontier branches are
+    /// distinct only where damage crosses a bucket. Snorlax starts at
+    /// `max/2 + resisted max roll`: the resisted roll range then straddles
+    /// the 1/2 boundary, while a neutral (un-Tera'd) hit stays below it.
+    /// The roll range is measured on a pinned already-Tera'd hit, not
+    /// assumed.
+    #[test]
+    fn step_chance_tera_applies_before_a_faster_hit_on_every_branch() {
+        use crate::rng::RngEvent;
+        let p1 = || TeamBuilder::from_json(r#"[
+            {"species":"snorlax","gender":"M","level":50,"ability":"immunity","nature":"relaxed","moves":["splash","bodyslam","rest","protect"],"evs":{"hp":4},"teratype":"steel"}
+        ]"#).unwrap();
+        let p2 = || TeamBuilder::from_json(r#"[
+            {"species":"weavile","gender":"M","level":50,"ability":"pressure","nature":"jolly","moves":["iceshard","fakeout","protect","nightslash"],"evs":{"atk":252,"hp":4}}
+        ]"#).unwrap();
+        let hit = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P1, slot: 0 }) }];
+        let tera = [Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }];
+        let plain = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        // `pre_tera`: already Terastallized before the turn. `hp`: start HP.
+        let build = |rng: Rng, pre_tera: bool, hp: Option<u16>| {
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1(), p2());
+            let m = b.side_mut(SideRef::P1).active_mon_mut(0).unwrap();
+            m.terastallized = pre_tera; // AUDIT-OK: fixture, no residual field
+            if let Some(hp) = hp {
+                m.current_hp = hp;
+            }
+            b.side_mut(SideRef::P1).conditions.tera_used = pre_tera;
+            b
+        };
+        // Resisted damage at the min (0) and max (15) roll, no crit.
+        let pinned_damage = |roll: u8| {
+            let rng = Rng::oracle_partial(vec![RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(roll)], 0);
+            let mut b = build(rng, true, None);
+            let full = b.side(SideRef::P1).active_mon(0).unwrap().stats.hp;
+            b.step(&plain, &hit);
+            full - b.side(SideRef::P1).active_mon(0).unwrap().current_hp
+        };
+        let (dmin, dmax) = (pinned_damage(0), pinned_damage(15));
+        assert!(0 < dmin && dmin < dmax, "resisted roll range {dmin}..{dmax}");
+        let full = build(Rng::Splitmix(0), false, None).side(SideRef::P1).active_mon(0).unwrap().stats.hp;
+        let start = full / 2 + dmax; // max roll lands on max/2 (bucket 4); min roll above it (bucket 5)
+
+        // P(Snorlax still above half HP) over the frontier.
+        let above_half = |f: &ChanceFrontier| -> f64 {
+            f.outcomes.iter().filter(|o| {
+                let m = o.battle.side(SideRef::P1).active_mon(0).unwrap();
+                2 * m.current_hp > m.stats.hp
+            }).map(|o| o.prob).sum()
+        };
+        let teraed = build(Rng::Splitmix(0), false, Some(start)).step_chance(&tera, &hit, 2);
+        let already = build(Rng::Splitmix(0), true, Some(start)).step_chance(&plain, &hit, 2);
+        let normal = build(Rng::Splitmix(0), false, Some(start)).step_chance(&plain, &hit, 2);
+        for f in [&teraed, &already, &normal] {
+            assert_eq!(f.unmatched_total, 0);
+            let total: f64 = f.outcomes.iter().map(|o| o.prob).sum();
+            assert!((total - 1.0).abs() < 1e-9, "Σ prob = {total}");
+        }
+        assert!(teraed.outcomes.len() > 1, "resisted rolls straddle 1/2: distinct states");
+        for o in &teraed.outcomes {
+            let s = o.battle.side(SideRef::P1);
+            assert!(s.active_mon(0).unwrap().terastallized && s.conditions.tera_used, "p={}", o.prob);
+        }
+        let (pt, pa, pn) = (above_half(&teraed), above_half(&already), above_half(&normal));
+        assert!(0.0 < pt && pt < 1.0, "some resisted rolls stay above half: {pt}");
+        assert!((pt - pa).abs() < 1e-9, "Tera'd this turn {pt} vs already Tera'd {pa}");
+        assert_eq!(pn, 0.0, "a neutral hit never leaves Snorlax above half");
+    }
+
     /// Parity test: step_chance must produce the same frontier the
     /// solver's enumerate_outcomes does. This is the load-bearing
     /// contract — when native branching lands in a future PR, this

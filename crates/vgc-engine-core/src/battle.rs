@@ -3358,6 +3358,13 @@ self.trigger_emergency_exits();
         //     `apply_megas` is a no-op for sides with no `MegaEvolve` choice.
         self.apply_megas(megas);
 
+        // 1b'. Terastallization — PS `terastallize` action, order 106
+        //      (sim/battle-queue.ts:188, :230-235), after switches and Mega
+        //      Evolution and before every move, so the user's Tera type
+        //      applies to hits it takes before its own move, and even if it
+        //      is flinched or knocked out before moving.
+        self.apply_teras(p1_choices, p2_choices);
+
         // 1c. Beak Blast's priorityChargeCallback — PS order-107
         //     `priorityChargeMove` action (sim/battle-queue.ts:242,
         //     sim/battle.ts:2739), after switches and Mega Evolution, before
@@ -3957,6 +3964,39 @@ self.trigger_emergency_exits();
             #[cfg(feature = "ps-rng")]
             if self.rng.is_ps() {
                 self.ps_active_ties(false, "shuffle");
+            }
+        }
+    }
+
+    /// Run this turn's `Terastallize` declarations before any move (PS
+    /// order-106 `terastallize` action, sim/battle.ts:2727-2729 ->
+    /// sim/battle-actions.ts:1931-1967, which has no fainted / active
+    /// check). Each side Terastallizes at most once (`tera_used`, the
+    /// permit `tera_allowed = false` presets); a side's first Terastallize
+    /// choice for a slot takes it. The state change is the same whichever
+    /// side goes first, so the Speed order between the two doesn't matter
+    /// here. Under `ps-rng` each action ends with runAction's
+    /// `eachEvent('Update')` (sim/battle.ts:2860-2861), as Mega Evolution.
+    fn apply_teras(&mut self, p1: &[Choice], p2: &[Choice]) {
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                // A later choice for a slot is a mid-turn pick.
+                if std::mem::replace(&mut seen[slot], true) {
+                    continue;
+                }
+                let Choice::Terastallize { actor_slot, .. } = *c else { continue };
+                if self.side(side).conditions.tera_used {
+                    continue;
+                }
+                let Some(m) = self.side_mut(side).active_mon_mut(actor_slot as usize) else { continue };
+                m.terastallized = true;
+                self.side_mut(side).conditions.tera_used = true;
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_active_ties(false, "shuffle");
+                }
             }
         }
     }
@@ -5526,12 +5566,11 @@ self.trigger_emergency_exits();
             _ => return,
         };
         let actor_side = action.side;
-        // Process the Terastallize component before the move resolves so
-        // STAB / type chart reads see the Tera type. Gated by
-        // `Side::tera_used` — at most one Terastallize per side per
-        // battle. If already used, the Tera component silently no-ops
-        // and the move proceeds normally. PS:
-        // `sim/side.ts:Side.canTerastallize`.
+        // A turn's Terastallize choices already ran before any move
+        // (`apply_teras`), which spent the permit, so this is a no-op then.
+        // It only acts for a Terastallize action reached without that pass.
+        // Gated by `Side::tera_used` — at most one Terastallize per side per
+        // battle. PS: `sim/side.ts:Side.canTerastallize`.
         if tera {
             let tera_used = self.side(actor_side).conditions.tera_used;
             if !tera_used {
@@ -21277,6 +21316,116 @@ mod tests {
         let (types, n) = b.p1.team[0].effective_types();
         assert_eq!(n, 1);
         assert_eq!(types[0], 1);
+    }
+
+    // Tera before moves: PS queues a Terastallize choice as its own
+    // `terastallize` action, order 106 (sim/battle-queue.ts:188, :230-235),
+    // after switches (103) and Mega Evolution (104) and before every move
+    // (200). It runs even if the user is flinched or knocked out before its
+    // move (sim/battle.ts:2727-2729 runs no fainted / active check).
+    const TERA_SNORLAX: &str = r#"{"species":"snorlax","gender":"M","level":50,"ability":"immunity","nature":"relaxed","moves":["splash","bodyslam","rest","protect"],"evs":{"hp":4},"teratype":"steel"}"#;
+    const TERA_SLOWBRO: &str = r#"{"species":"slowbro","gender":"M","level":50,"ability":"owntempo","nature":"hardy","moves":["splash","scald","rest","protect"],"evs":{"hp":4},"teratype":"grass"}"#;
+    const ICE_WEAVILE: &str = r#"{"species":"weavile","gender":"M","level":50,"ability":"pressure","nature":"jolly","moves":["iceshard","fakeout","protect","nightslash"],"evs":{"atk":252,"hp":4}}"#;
+    const FIRE_CHANDELURE: &str = r#"{"species":"chandelure","gender":"M","level":50,"ability":"flashfire","nature":"modest","moves":["flamethrower","protect","shadowball","energyball"],"evs":{"spa":252,"hp":4}}"#;
+
+    fn tera_doubles(p1: [&str; 2], p2: [&str; 2], seed: u64) -> Battle {
+        let p1 = TeamBuilder::from_json(&format!("[{},{}]", p1[0], p1[1])).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{},{}]", p2[0], p2[1])).unwrap();
+        Battle::new(BattleConfig { format: Format::Doubles, seed }, p1, p2)
+    }
+
+    fn tera_snorlax_hit_by(p2_move_slot: u8, tera: bool, pre_tera: bool) -> Battle {
+        let mut b = tera_doubles([TERA_SNORLAX, FIRE_CHANDELURE], [ICE_WEAVILE, TERA_SLOWBRO], 3);
+        if pre_tera {
+            b.p1.team[0].terastallized = true; // AUDIT-OK: fixture, no residual field
+            b.p1.conditions.tera_used = true;
+        }
+        let snorlax = if tera {
+            Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }
+        } else {
+            Choice::Move { actor_slot: 0, move_slot: 0, target: None }
+        };
+        b.step(
+            &[snorlax, Choice::Move { actor_slot: 1, move_slot: 1, target: None }],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: p2_move_slot, target: Some(t(SideRef::P1, 0)) },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        b
+    }
+
+    #[test]
+    fn tera_lands_before_a_faster_foes_hit() {
+        // Slower Snorlax (Tera Steel) is hit by a faster Ice Shard (+1
+        // priority): Steel resists it, so the hit must deal exactly what it
+        // deals to a Snorlax already Terastallized, and less than to a
+        // Normal-type one. Same seed; Tera draws nothing.
+        let teraed = tera_snorlax_hit_by(0, true, false);
+        let already = tera_snorlax_hit_by(0, false, true);
+        let normal = tera_snorlax_hit_by(0, false, false);
+        let hp = |b: &Battle| b.p1.team[0].current_hp;
+        assert!(teraed.p1.team[0].terastallized && teraed.p1.conditions.tera_used);
+        assert_eq!(hp(&teraed), hp(&already), "Ice Shard saw the Steel type");
+        assert!(hp(&teraed) > hp(&normal), "resisted hit deals less than neutral");
+    }
+
+    #[test]
+    fn tera_happens_even_when_the_user_flinches() {
+        // Fake Out (faster, Normal) flinches Snorlax, which never moves; its
+        // Tera still happened first, so Fake Out was resisted by Steel.
+        let teraed = tera_snorlax_hit_by(1, true, false);
+        let already = tera_snorlax_hit_by(1, false, true);
+        assert!(teraed.p1.team[0].terastallized, "Tera ran before the flinch");
+        assert!(teraed.p1.conditions.tera_used);
+        assert_eq!(teraed.p1.team[0].current_hp, already.p1.team[0].current_hp);
+    }
+
+    #[test]
+    fn tera_happens_even_when_the_user_is_knocked_out_first() {
+        // Slowbro (Water/Psychic, Tera Grass) is slower than Chandelure:
+        // after Tera, Flamethrower is super effective and KOs it before its
+        // own move. As Water/Psychic it would resist and survive.
+        let mut b = tera_doubles([TERA_SNORLAX, FIRE_CHANDELURE], [ICE_WEAVILE, TERA_SLOWBRO], 5);
+        b.step(
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+            ],
+            &[
+                Choice::Move { actor_slot: 0, move_slot: 2, target: None },
+                Choice::Terastallize { actor_slot: 1, move_slot: 0, target: None },
+            ],
+        );
+        let s = &b.p2.team[1];
+        assert!(s.terastallized && b.p2.conditions.tera_used, "Tera consumed before the KO");
+        assert!(s.fainted, "super-effective Flamethrower KOs Tera Grass Slowbro (hp {})", s.current_hp);
+        assert_eq!(s.move_actions, 0, "KO'd before acting");
+    }
+
+    #[test]
+    fn pre_move_tera_keeps_the_one_per_side_permit() {
+        // Both p1 actives ask to Terastallize: only one does. A side whose
+        // permit is already spent (or banned: `tera_allowed = false` presets
+        // it) gets no Tera.
+        let mut b = tera_doubles([TERA_SNORLAX, TERA_SLOWBRO], [ICE_WEAVILE, FIRE_CHANDELURE], 1);
+        b.step(
+            &[
+                Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None },
+                Choice::Terastallize { actor_slot: 1, move_slot: 0, target: None },
+            ],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let n = b.p1.team[..2].iter().filter(|m| m.terastallized).count();
+        assert_eq!(n, 1, "one Terastallization per side");
+
+        let mut spent = tera_snorlax_hit_by(0, false, false);
+        spent.p1.conditions.tera_used = true;
+        spent.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        assert!(!spent.p1.team[0].terastallized, "spent permit: no Tera");
     }
 
     #[test]

@@ -1,0 +1,22 @@
+{
+  "name": "tera-before-moves-flinch",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Snorlax (M)\nAbility: Immunity\nLevel: 50\nTera Type: Steel\nEVs: 4 HP\nRelaxed Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Weavile (M)\nAbility: Pressure\nLevel: 50\nTera Type: Dark\nEVs: 4 HP / 252 Atk\nJolly Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Fake Out\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 terastallize, move 1",
+      "p2": "move 1 1, move 1"
+    }
+  ]
+}
