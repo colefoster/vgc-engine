@@ -2182,12 +2182,259 @@ Bounded recaptures against PS `a5df8274`:
 - **Provenance:** engine `cf5188ca`, extension SHA-256 `71b5d437…`,
   harness `f816c48`.
 - **Status:** diagnostic only, pending D2. It is not a Phase 4 gate pass.
+  This run is superseded by the final-source run below.
 
-## In progress
+## Harness fix: accuracy replays play only PS's brought team (`c8772c3`, `9f66758`)
 
-Worker A is fixing a conformance harness bug. Each team exports six mons
-and PS brings the first four, but the engine loads all six. Prospective
-diagnostic `f3946a404862f219` shows it: the engine waits on a replacement
-that doesn't exist and swallows the next turn. The prospective 1000-battle
-diagnostic (pre-fix keyed state-clean 91/1000) is to be re-scored after
-that fix.
+This is a conformance harness fix. There is no engine change.
+
+- **Bug.** In bring-N formats, PS plays only the picked mons, but accuracy
+  replays built the engine team from the full export.
+- **Example:** synthetic Reg M-B case `f3946a404862f219`.
+  - Turn 3 KOs p2's fourth brought mon.
+  - The engine still had the unbrought Flareon and Metagross on the bench.
+    It waited for a replacement PS never asked for and spent turn 4's
+    choices on it.
+  - Result: turn-4 p1a HP 133 (engine) vs 170 (PS).
+  - **This is not a Moonlight or Discharge mechanic defect.**
+- **PS** (`a5df8274`): `sim/side.ts:241-246,302-309,1031-1095`;
+  `sim/battle.ts:2670-2674,2750-2757`; `tools/accuracy/ps-battle.js:411-412`.
+- **Fix.** `apply_team_preview` reads `|teamsize|pN|n` and cuts each side
+  to its first n mons **after** `Battle::with_rng`. That keeps every
+  construction-time gender draw for the full export. It applies in
+  accuracy `drive` (keyed and seeded), `dump_keyed`, `distribution` and
+  `turn1_state`.
+- **Limits:**
+  - identity pick order only; reordered preview picks aren't supported;
+  - an Illusion lead's disguise is still initialized from the full export;
+  - legacy `PsBattle` replay has no team-size metadata and keeps full
+    teams.
+- **Red** (real capture
+  `tools/accuracy/repros/battles/regmb-bring-four-f3946a404862f219.json`,
+  semantically identical to the original PS capture):
+  - default 1 pass / 2 fail;
+  - seeded 1 pass / 3 fail;
+  - every failure is turn-4 p1a HP 133 vs 170.
+- **Green:** default 3/3, seeded 4/4, full conformance 93 pass.
+- **`9f66758`** pins the known leftover label
+  `t4/Range/discharge/p2b>-` ×4. The relevant turn-4 Accuracy, Crit,
+  Damage and Secondary keys are consumed. State 4/4 and seeded normalized
+  draw alignment are still required by the test.
+
+## Final verification at `9f66758`
+
+- default workspace: **1546** / 0 / 32;
+- `ps-rng`: **1586** / 0 / 32;
+- `chance` Encore: 22 / 0;
+- required expanded seeded Clippy guards: pass;
+- residual audit and `git diff --check`: pass;
+- Node regressions: 11/11, 0 skipped.
+- **Python:** offline release wheel rebuilt at `9f66758`, extracted to
+  `evidence/python-final`. Bindings 27 pass; read-only consumer tests
+  4 pass.
+- **Extension:** SHA-256
+  `71b5d437015a41a5d4191981633ce7f5bde6df75d462384a7db6666a772ac1b2`,
+  unchanged because the core and py sources didn't change after `cf5188c`.
+- **Allocation probe:** 500 battles, 9929 steps, 500 completed, 0 capped,
+  **0 step allocations**. It is random-choice throughput, not the matched
+  speed gate.
+- **Bounded controls:** both keyed and seeded match 64/64 cases (128/128
+  turns) and 8/8 cases (40/40 turns), all with zeros. Unchanged from the
+  baseline.
+- **Logs:** `task/vgc-evidence/integrated-final-*` and
+  `final-wheel-provenance.json`.
+
+## Synthetic Reg M-B studies at `9f66758`: diagnostic, not gate acceptance
+
+The team pool is 100 old, legal synthetic Reg M-B teams (all 100 validate in
+pinned PS), from `mimikyu/data/generated_teams/regmb_random_100.txt`
+(SHA-256 `ccc9a752…2f08`). Battles cap at 20 turns, choices use a random
+legal PS fallback policy, and there were zero engine/PS errors.
+
+**Keyed and seeded disagree by about 2×. Read both.**
+
+| set | cases | keyed state-clean | strict (zero missing) | keyed turns | **seeded clean** | seeded turns |
+|---|---|---|---|---|---|---|
+| development (offset 50 × 10) | 1000 | **849 (84.9%)** | 804 (80.4%) | 11707/11858 (98.7%) | **426 (42.6%)** | 7841/8415 |
+| ↳ natural / capped | 908 / 92 | 770 / 79 | | | 393 / 33 | |
+| reused-team new-seed (offset 37 × 3) | 300 | **255 (85.0%)** | 247 (82.3%) | 3645/3690 (98.8%) | **142 (47.3%)** | 2436/2594 |
+| ↳ natural / capped | 271 / 29 | 230 / 25 | | | 134 / 8 | |
+
+- **Other counts:**
+  - development: keyed missing draws 87, repair aliases 4849, leftover
+    labels 35190, 151 state divergences; seeded 624 normalized first-draw
+    divergences;
+  - validation: keyed missing draws 22, repair aliases 1341, leftover
+    labels 10827; seeded 172 first-draw divergences.
+- **Development set.**
+  - **It is development data.** It exposed and validated the replay fix;
+    it is not a holdout.
+  - Its 100 directed pairings are 50 mirrored unordered matchups × 10
+    replicas.
+  - 1000 distinct seeds are not 1000 independent teams or matchups.
+  - The automatic 149-mechanics / 2-RNG taxonomy is **not a verified
+    root-cause census**.
+- **Validation set.**
+  - Code was frozen at `9f66758` before generation and capture, and no
+    source was tuned against it.
+  - It has 100 different unordered matchups, with no pair, seed or ID
+    overlap with the development set.
+  - Each team appears 6 times, so it is **correlated reused-team
+    validation, not an independent-team holdout**.
+  - Inputs SHA-256:
+    `c59f8ecee58ae280b4ce0119816749852a136623d3b208c442960b1fe3725dbc`.
+- **What follows from this:**
+  - No confidence intervals are given, because they would assume
+    independence.
+  - The keyed point estimates exceed the suggested (not adopted) D1
+    thresholds.
+  - Neither acceptance of this data as a gate sample nor general
+    dependability follows from that.
+
+## Diagnostic: final consumer rollout benchmark (`consumer-rollout-final-source.json`)
+
+- **Heads:** implementation and harness `9f66758`; rebuilt release wheel.
+- **What it times:** the real `RolloutOracle._one_rollout` vs a long-lived
+  guarded PS, on a **quiet 5-step synthetic 2v2**:
+  - Annihilape and Chansey use Seismic Toss vs Snorlax and Miltank using
+    Splash;
+  - level 50, zero Stat Points, fixed matching policy, same initial joint
+    action.
+- **Fidelity:** all 32 seeds match on initial HP, choices, 5 steps, final
+  HP and `p1_win`.
+- **Included:** per-rollout serialize, reseed and deserialize; policy
+  cost; Python/Rust crossings.
+- **Excluded:** imports, process startup, base-team initialization.
+- **PS wall vs internal:** wall time includes one pipe/JSON response per
+  batch; internal time excludes it.
+- **RNG:** the SplitMix and PS streams differ even though the seeds come
+  from the same integer. The outcome doesn't depend on RNG, so this is
+  **not an RNG-fidelity proof.**
+- **Samples:** 1 discarded warmup batch of 32, then 5 timed batches of 32.
+- **Timing:**
+  - engine median **164.704 µs** (min 156.790, max 171.771, IQR 1.422);
+  - PS wall median **2283.150 µs** (min 2224.785, max 2643.684, IQR
+    149.923); PS internal median 2274.603 µs;
+  - ratio **13.862×** on wall time, **13.810×** on internal time.
+- **Machine:** Apple M4 Pro (14 logical CPUs, 24 GiB), macOS 26.4.1 arm64,
+  no CPU pinning.
+- **Software:** Rust 1.99.0 release with default features (`ps-rng` off);
+  Python 3.9.6; Node 26.10.0; PS `a5df8274`.
+- **Consumer source:** SHA-256 `438a875e…b879`, unchanged; mimikyu HEAD
+  measured at `23e5b47512e898d5d2fdd852b765f17835a49c16`.
+- **Status:** a diagnostic through the T1 referee path. It does not measure
+  unrestricted end-to-end or model-inference speed. D2 is pending, and there
+  is no verified production PS replacement or new integration PR.
+
+## Residual triage: White Herb, Hunger Switch, Fickle Beam (read-only)
+
+This is a read-only Claude triage of three development-set residual
+signatures. No live reproduction was run. Sources: PS `a5df8274`, which
+has no Champions-mod override for any of the three, and engine `9f66758`.
+Each signature is a single case. The triage didn't measure how many of the
+151 state divergences these three account for. The raw report is kept
+unchanged in task evidence.
+
+### 1. White Herb timing: existing mechanic defect, STRONGLY SUPPORTED (highest priority)
+
+**PS behaviour**
+- White Herb has no `onUpdate`. It triggers through:
+  - `onStart` (`data/items.ts:7679-7691`)
+  - `onAnySwitchIn` (7692-7695)
+  - `onAnyAfterMega` (7696-7698)
+  - **`onAnyAfterMove`** (7699-7701)
+  - `onResidual` at order 29 (7702-7705)
+- So all of a move's drops land first, and the herb clears whatever is
+  still negative after the move (`sim/battle-actions.ts:311-312`).
+- Champions applies secondaries (`data/mods/champions/scripts.ts:388`)
+  before `DamagingHit` (410/418). Weak Armor is −1 Def / +2 Spe
+  (`data/abilities.ts:5448-5453`).
+- In this battle: Bulldoze makes Spe −1. Weak Armor then makes Def −1 and
+  Spe +1. After the move the herb clears Def to 0. Low Kick deals 35
+  (151 → 116), matching the log.
+
+**Engine behaviour**
+- `try_consume_white_herb` (`item.rs:1453`) runs right after each drop:
+  - `battle.rs:14429` (`after_foe_drop`)
+  - Weak Armor at `ability.rs:1410-1415`
+  - about ten other sites
+- The engine comments cite `onUpdate`.
+- The only deferral is the switch-in flag `defer_white_herb`.
+
+**Evidence**
+- Engine HP is 99 against PS 116, so Low Kick did 52 instead of 35.
+- With the same keyed roll, 52 = ⌊35 × 1.5⌋, exactly a −1 Def multiplier.
+- Not traced: which call site handles Bulldoze's secondary Spe drop.
+
+**Follow-up**
+- Clear the herb after any mon's move, after switch-in, after Mega and at
+  residual 29, instead of after each drop.
+- **Reproducer:** Armarouge (Weak Armor, White Herb) is hit by Bulldoze,
+  then by a physical hit in the same turn.
+- **Acceptance:**
+  - after Bulldoze: Def 0, Spe +1, item consumed
+  - after Low Kick: HP 116, Def −1, Spe +3
+  - battle `a043d9085e0108a2` matches on turn 1
+  - the existing White Herb tests stay green
+- **Risk:** this is a cross-cutting timing change. Land it alone.
+
+### 2. Hunger Switch (Morpeko): missing mechanic, CONFIRMED
+
+**PS behaviour**
+- `onResidualOrder: 29` toggles Morpeko ↔ Morpeko-Hangry every end of
+  turn, skipped when Terastallized (`data/abilities.ts:1896-1902`).
+
+**Engine behaviour**
+- `HUNGERSWITCH` appears only in the residual ordering table
+  (`battle.rs:2479-2480`) and in an ability-flag list.
+- There is no forme-change handler or `morpekohangry` reference anywhere
+  in core.
+
+**Impact**
+- The turn-1 species mismatch is cosmetic, because the formes have
+  identical stats.
+- Downstream it isn't. Aura Wheel is Dark as Hangry and Electric otherwise
+  (`data/moves.ts:801-807`). The engine models only its +1 Spe
+  (`battle.rs:18701`), so it is always Electric.
+- So Hangry Aura Wheel should go from neutral to **super-effective** on
+  Ghost, and from neutral to **resisted** on Dark (pinned PS Dex). The
+  engine misses both.
+- Unchecked: Aura Wheel's Morpeko-only `onTry`.
+
+**Follow-up**
+- Add the order-29, Tera-gated toggle and the forme-dependent Aura Wheel
+  type.
+- **Reproducer:** Morpeko stays in for 2 turns.
+- **Acceptance:**
+  - species is `morpekohangry` after turn 1 and `morpeko` after turn 2
+  - Hangry Aura Wheel is Dark-typed
+  - battle `d069abdcc2040847` matches on turn 1
+- **Priority:** narrow (one species), but certain.
+
+### 3. Fickle Beam turn-5 HP: UNRESOLVED
+
+**What is known**
+- Turns 1–4 matched. Turn 5 has no unmatched draws.
+- The keyed Fickle gate looks correct:
+  - PS `randomChance(3,10)` (`data/moves.ts:5227-5232`) was recorded as
+    raw `random(10)` = 9;
+  - the loader encodes `Range(0)` (`vgc-engine-conformance/src/lib.rs:324-336`);
+  - `chance_keyed` returns false (`rng.rs:1079-1080`);
+  - the engine gate is at `battle.rs:7649-7661`.
+- Caveat: `repaired: 1`, and the aliased key isn't identified.
+
+**Arithmetic**
+- PS dealt 46 to Skarmory: 85 → 39, then burn to 29.
+- For the engine to reach 0, Skarmory must enter Fickle Beam at ≤ 46 HP,
+  or the power must be doubled. Undoubled, the engine maximum is 55.
+
+**Unproven candidates**
+- (a) The Sitrus Berry wasn't eaten after Poltergeist (PS: 42 → 85).
+- (b) Poltergeist hit harder in the engine.
+- (c) The unidentified repair alias touched turn 5.
+
+**Follow-up**
+- Dump engine HP and item after each turn-5 event for battle
+  `2ebdc92f225836db`, and print the alias key.
+- **Diagnosis acceptance:** find the first turn-5 event where Skarmory's
+  HP or item differs. No fix until that's known.
