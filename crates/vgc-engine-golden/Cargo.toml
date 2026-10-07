@@ -10,6 +10,9 @@ description = "Synthetic golden-master differential harness — replays a script
 [dependencies]
 vgc-engine-core = { workspace = true, features = ["chance"] }
 vgc-engine-data = { workspace = true }
+# Keyed golden mode reuses the conformance key contract (build_table,
+# event_for_draw). Conformance depends only on core and data: no cycle.
+vgc-engine-conformance = { path = "../vgc-engine-conformance" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

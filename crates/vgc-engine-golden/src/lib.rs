@@ -62,8 +62,31 @@ use vgc_engine_data as data;
 // Input / PS-output JSON schemas (mirrors tools/ps-golden-driver/driver.js)
 // ---------------------------------------------------------------------------
 
+/// How the engine's RNG is fed from the PS capture.
+///
+/// * `Flat` (default, every legacy golden): PS's draws in PS call order
+///   through `Rng::OraclePartial`. Known limitation, not fixed by keyed mode:
+///   PS rolls a spread move's accuracy for every target before any target's
+///   crit/damage and walks the user's ally first (sim/battle-actions.ts
+///   trySpreadMoveHit; sim/pokemon.ts:809-813), while the engine resolves
+///   target by target, foes first, so flat replay of a multi-target accuracy
+///   move hands the wrong draw kinds to the wrong targets.
+/// * `Keyed`: each draw's recorded PS provenance (`PsOutput::keyed`) is
+///   looked up per (turn, actor, target, move, decision) through the
+///   conformance key contract under `Rng::OracleKeyed`. Strict: see
+///   [`keyed_strict_divergences`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RngMode {
+    #[default]
+    Flat,
+    Keyed,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GoldenInput {
+    #[serde(default)]
+    pub rng_mode: RngMode,
     #[serde(default)]
     pub decision_phases: bool,
     /// Synthetic per-move data overlay shared with the reference driver.
@@ -118,6 +141,25 @@ pub struct PsOutput {
     pub ok: bool,
     pub events: Vec<PsEvent>,
     pub rng: Vec<PsRngEvent>,
+    /// Keyed-mode provenance (driver.js `rng_mode: "keyed"`); read only when
+    /// the input selects [`RngMode::Keyed`].
+    #[serde(default)]
+    pub keyed: Option<Vec<KeyedDraw>>,
+}
+
+/// One PS draw with its provenance, as recorded by conformance-driver.js
+/// `patchRng(.., { site: true, secondaryContext: true })`: the conformance
+/// envelope plus the PS call site and the call's own arguments.
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyedDraw {
+    #[serde(flatten)]
+    pub draw: vgc_engine_conformance::DrawRecord,
+    /// PS call site, `"Fn (path)"`.
+    pub site: String,
+    /// `random` or `randomChance`.
+    pub op: String,
+    /// The call's arguments as passed to PS.
+    pub args: Vec<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -228,6 +270,8 @@ pub enum GoldenError {
     TeamParse(String),
     BadAction(String),
     BadFormat(String),
+    /// Keyed mode: missing or malformed provenance.
+    Keyed(String),
 }
 
 impl std::fmt::Display for GoldenError {
@@ -239,6 +283,7 @@ impl std::fmt::Display for GoldenError {
             GoldenError::TeamParse(s) => write!(f, "team parse: {s}"),
             GoldenError::BadAction(s) => write!(f, "bad action: {s}"),
             GoldenError::BadFormat(s) => write!(f, "bad format: {s}"),
+            GoldenError::Keyed(s) => write!(f, "keyed: {s}"),
         }
     }
 }
@@ -361,12 +406,21 @@ pub fn run_golden_in_memory(
 
     // Seed the engine RNG from PS's recorded draws. Splitmix fallback
     // uses seed[0] so unmapped engine-only draws are still deterministic.
-    let events = lower_rng_events(&ps.rng);
     let fallback_seed = u64::from(input.seed[0])
         | (u64::from(input.seed[1]) << 16)
         | (u64::from(input.seed[2]) << 32)
         | (u64::from(input.seed[3]) << 48);
-    let rng = Rng::oracle_partial(events, fallback_seed);
+    let keyed = match input.rng_mode {
+        RngMode::Flat => None,
+        RngMode::Keyed => {
+            let draws = ps.keyed.as_deref().ok_or_else(|| GoldenError::Keyed("no `keyed` draws in the PS capture".into()))?;
+            Some(KeyedSet::new(draws)?)
+        }
+    };
+    let rng = match &keyed {
+        None => Rng::oracle_partial(lower_rng_events(&ps.rng), fallback_seed),
+        Some(k) => Rng::oracle_keyed(k.table.clone(), fallback_seed),
+    };
 
     let cfg = BattleConfig { format, seed: fallback_seed };
     let mut battle = Battle::with_rng(cfg, rng, p1_team, p2_team);
@@ -428,7 +482,209 @@ pub fn run_golden_in_memory(
         }
     }
 
+    if let Some(k) = &keyed {
+        report.diverged.extend(keyed_strict_divergences(k, &mut battle));
+    }
+
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Keyed mode
+// ---------------------------------------------------------------------------
+
+/// Decisions of the conformance key contract (docs/conformance-key-contract.md).
+const KEYED_DECISIONS: [&str; 8] = ["accuracy", "crit", "damage", "secondary", "range", "tiebreak", "ability", "item"];
+
+/// Moves whose stat drop the engine applies unconditionally without a draw
+/// (`self_stat_drops` in vgc-engine-core battle.rs; no `self.chance`). PS
+/// still rolls `random(100)` in `BattleActions.selfDrops` for them
+/// (sim/battle-actions.ts:1324-1329, a5df8274), so that one recorded roll is
+/// the only PS-only draw keyed mode accepts. This list must track the core
+/// table: a move added there as an unconditional drop needs adding here (its
+/// keyed golden otherwise fails strictly on the leftover roll), and a move
+/// removed there must leave here.
+const UNCONDITIONAL_SELF_DROP_MOVES: [&str; 13] = [
+    "makeitrain", "closecombat", "headlongrush", "armorcannon", "dracometeor", "overheat", "leafstorm",
+    "psychoboost", "fleurcannon", "superpower", "vcreate", "hammerarm", "icehammer",
+];
+
+/// Validated keyed draws, each with its conformance key, and the oracle table.
+#[derive(Debug)]
+struct KeyedSet {
+    draws: Vec<(KeyedDraw, vgc_engine_core::rng::RngKey)>,
+    table: std::collections::HashMap<vgc_engine_core::rng::RngKey, std::collections::VecDeque<RngEvent>>,
+}
+
+impl KeyedSet {
+    /// Every draw must resolve to exactly one key-contract entry; anything
+    /// the contract would drop or default (unknown decision, value shape,
+    /// slot, move, ability or item) is an error.
+    fn new(draws: &[KeyedDraw]) -> Result<Self, GoldenError> {
+        use vgc_engine_conformance::{build_table, event_for_draw, parse_slot_ref, PsBattle, SideChoices, TurnRecord};
+        let bad = |i: usize, why: String| GoldenError::Keyed(format!("draw {i}: {why}"));
+        let table_of = |recs: Vec<vgc_engine_conformance::DrawRecord>| {
+            let mut turns: Vec<TurnRecord> = Vec::new();
+            for r in recs {
+                match turns.last_mut() {
+                    Some(t) if t.turn == r.turn => t.draws.push(r),
+                    _ => turns.push(TurnRecord {
+                        turn: r.turn,
+                        choices: SideChoices { p1: Vec::new(), p2: Vec::new() },
+                        draws: vec![r],
+                        state: Default::default(),
+                        field: None,
+                        sides: None,
+                    }),
+                }
+            }
+            build_table(&PsBattle { format: String::new(), seed: Vec::new(), p1team: String::new(), p2team: String::new(), turns })
+        };
+        let mut out = Vec::with_capacity(draws.len());
+        let mut lowered = Vec::with_capacity(draws.len());
+        for (i, k) in draws.iter().enumerate() {
+            let d = &k.draw;
+            if !KEYED_DECISIONS.contains(&d.decision.as_str()) {
+                return Err(bad(i, format!("unknown decision {:?}", d.decision)));
+            }
+            if k.op != "random" && k.op != "randomChance" {
+                return Err(bad(i, format!("unknown op {:?}", k.op)));
+            }
+            for (what, slot) in [("actor", &d.actor), ("target", &d.target)] {
+                if let Some(s) = slot {
+                    if parse_slot_ref(s).is_none() {
+                        return Err(bad(i, format!("unknown {what} {s:?}")));
+                    }
+                }
+            }
+            // Checked before `event_for_draw`, which clamps / flips values.
+            let d = &check_call(k).map_err(|why| bad(i, why))?;
+            if event_for_draw(d).is_none() {
+                return Err(bad(i, format!("value {} does not fit decision {:?}", d.value, d.decision)));
+            }
+            let (one, unresolved) = table_of(vec![d.clone()]);
+            if !unresolved.is_empty() {
+                return Err(bad(i, format!("unresolved {unresolved:?}")));
+            }
+            let key = match one.keys().collect::<Vec<_>>()[..] {
+                [key] => *key,
+                _ => return Err(bad(i, "does not map to one key".into())),
+            };
+            out.push((k.clone(), key));
+            lowered.push(d.clone());
+        }
+        let (table, _) = table_of(lowered);
+        Ok(Self { draws: out, table })
+    }
+}
+
+/// Check one recorded draw against its own call (`op` / `args`) and return
+/// the record the key contract should see.
+///
+/// * `random(n)`: an integer value in `0..n`. `random(m, n)`: an integer in
+///   `m..n`, lowered to the offset `value - m`, since the engine draws
+///   `range(n - m)` and adds `m` (the accuracy harness's
+///   `offset_two_arg_draws`). `random()` (no arguments): `tiebreak` only.
+/// * `randomChance(num, den)`: `0 <= num <= den`, `den > 0`, a bool value.
+/// * The decision must fit the call: `crit` from randomChance; `accuracy`
+///   from randomChance(n, 100); `damage` from random(16); `secondary` from
+///   random(100) or randomChance(n, 100); `range` / `ability` / `item` from
+///   either; `tiebreak` from random. Accuracy and secondary records must
+///   state `raw_is_bool` as their op implies.
+fn check_call(k: &KeyedDraw) -> Result<vgc_engine_conformance::DrawRecord, String> {
+    let d = &k.draw;
+    let a = &k.args;
+    if a.iter().any(|x| !x.is_finite() || x.fract() != 0.0 || *x < 0.0) {
+        return Err(format!("non-integer arguments {a:?}"));
+    }
+    let int_value = || d.value.as_u64().ok_or_else(|| format!("{} value {} is not an integer", k.op, d.value));
+    let mut out = d.clone();
+    let chance = match (k.op.as_str(), a.as_slice()) {
+        ("random", []) => {
+            if d.decision != "tiebreak" {
+                return Err(format!("random() for decision {:?}", d.decision));
+            }
+            false
+        }
+        ("random", [n]) => {
+            if *n < 1.0 || int_value()? as f64 >= *n {
+                return Err(format!("random({n}) value {} out of range", d.value));
+            }
+            false
+        }
+        ("random", [m, n]) => {
+            let v = int_value()? as f64;
+            if m >= n || v < *m || v >= *n {
+                return Err(format!("random({m}, {n}) value {} out of range", d.value));
+            }
+            out.value = serde_json::json!((v - m) as u64);
+            false
+        }
+        ("randomChance", [num, den]) => {
+            if *den < 1.0 || num > den {
+                return Err(format!("randomChance({num}, {den}) is not a probability"));
+            }
+            if !d.value.is_boolean() {
+                return Err(format!("randomChance value {} is not a bool", d.value));
+            }
+            true
+        }
+        _ => return Err(format!("bad call {}({a:?})", k.op)),
+    };
+    let fits = match d.decision.as_str() {
+        "crit" => chance,
+        "accuracy" => chance && a[1] == 100.0,
+        "damage" => !chance && a.as_slice() == [16.0],
+        "secondary" => if chance { a[1] == 100.0 } else { a.as_slice() == [100.0] },
+        "tiebreak" => !chance,
+        _ => true,
+    };
+    if !fits {
+        return Err(format!("{} from {}({a:?})", d.decision, k.op));
+    }
+    if matches!(d.decision.as_str(), "accuracy" | "secondary") && d.raw_is_bool != chance {
+        return Err(format!("raw_is_bool {} for {}", d.raw_is_bool, k.op));
+    }
+    Ok(out)
+}
+
+/// `BattleActions.selfDrops`' `random(100)` for a move the engine drops
+/// unconditionally without a draw. Judged from the recorded call itself:
+/// site function, operation, argument and the move.
+fn is_unconditional_self_drop_roll(k: &KeyedDraw) -> bool {
+    k.site.split(" (").next() == Some("BattleActions.selfDrops")
+        && k.op == "random"
+        && k.args == [100.0]
+        && k.draw.decision == "secondary"
+        && k.draw.move_slug.as_deref().is_some_and(|m| UNCONDITIONAL_SELF_DROP_MOVES.contains(&m))
+}
+
+/// Strict keyed checks, reported as divergences so both golden gates see
+/// them even when every HP matches:
+/// * `keyed_unmatched`: the engine made a draw PS recorded no outcome for;
+/// * `keyed_leftover`: PS recorded an outcome the engine never consumed,
+///   unless it is an unconditional selfDrops roll
+///   ([`is_unconditional_self_drop_roll`]).
+fn keyed_strict_divergences(k: &KeyedSet, battle: &mut Battle) -> Vec<Divergence> {
+    let mut out = Vec::new();
+    let div = |turn: u32, kind: &str, note: String| Divergence { turn, kind: kind.into(), ps: None, engine: None, note };
+    for m in battle.rng_mut().take_miss_log().unwrap_or_default() {
+        out.push(div(m.key.turn, "keyed_unmatched", format!("{:?}", m.key)));
+    }
+    let mut left = battle.rng().keyed_leftovers().unwrap_or_default();
+    // HashMap order: sort so reports are reproducible.
+    left.sort_by_key(|(key, _)| (key.turn, format!("{key:?}")));
+    for (key, n) in left {
+        // Lookups pop from the front, so the last `n` draws under a key are
+        // the unconsumed ones.
+        let same: Vec<&KeyedDraw> = k.draws.iter().filter(|(_, kk)| *kk == key).map(|(d, _)| d).collect();
+        for d in &same[same.len().saturating_sub(n)..] {
+            if !is_unconditional_self_drop_roll(d) {
+                out.push(div(key.turn, "keyed_leftover", format!("{key:?} {} {:?}", d.site, d.draw.value)));
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1765,6 +2021,7 @@ mod stat_point_tests {
         // orders PS's internal start queue; the engine constructor does not
         // mirror that queue and must not feed it to Tackle's accuracy/damage.
         let input = GoldenInput {
+            rng_mode: RngMode::Flat,
             decision_phases: false,
             pp_overrides: Default::default(),
             name: Some("flat-start-insert-choice".into()),
@@ -1814,6 +2071,7 @@ mod stat_point_tests {
         };
         let ps = PsOutput {
             ok: true,
+            keyed: None,
             events: vec![
                 snapshot(0, "p1a", 142, 142),
                 snapshot(0, "p1b", 235, 235),

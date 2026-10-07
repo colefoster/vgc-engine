@@ -1,0 +1,27 @@
+{
+  "name": "spread-keyed-base-florges",
+  "rng_mode": "keyed",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Florges\nAbility: Flower Veil\nLevel: 50\nEVs: 252 HP / 252 Def\nBold Nature\n- Draining Kiss\n- Protect\n\nFlorges\nAbility: Symbiosis\nLevel: 50\nEVs: 252 HP / 252 SpD / 4 Spe\nCalm Nature\n- Disarming Voice\n- Protect"
+  },
+  "p2": {
+    "team": "Garchomp\nAbility: Rough Skin\nLevel: 50\nHardy Nature\n- Dragon Claw\n- Earthquake\n\nSlowbro\nAbility: Oblivious\nLevel: 50\nEVs: 252 HP / 252 SpD\nCalm Nature\n- Psychic\n- Protect"
+  },
+  "turns": [
+    {
+      "p1": "move 1 2, move 1",
+      "p2": "move 1 1, move 1 2"
+    },
+    {
+      "p1": "move 1 2, move 1",
+      "p2": "move 2, move 1 1"
+    }
+  ]
+}

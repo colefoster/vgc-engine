@@ -139,7 +139,17 @@ function slotRef(p) {
 
 // Patch Battle.random / Battle.randomChance to push a full semantic envelope
 // per draw. `draws` accumulates {turn, actor, target, move, decision, value, ...}.
-function patchRng(draws) {
+//
+// `opts` (optional; the default keeps the existing recorder unchanged):
+//   site               add the PS call site (`captureSite`) and the call's own
+//                      signature (`op`: random | randomChance, `args`) to each
+//                      envelope.
+//   secondaryContext   record a spread move's secondary rolls against the
+//                      target PS passes to `secondaries()`, by calling PS's
+//                      own `secondaries` once per target inside a recorder
+//                      scope, instead of the default per-target mirror below.
+//                      PS state (including `activeTarget`) is not touched.
+function patchRng(draws, opts = {}) {
   const origRandom = Battle.prototype.random;
   const origRandomChance = Battle.prototype.randomChance;
   const origGetRandomTarget = Battle.prototype.getRandomTarget;
@@ -149,7 +159,11 @@ function patchRng(draws) {
   let scoped = null;
 
   const envelope = function (battle, decision, value, rawIsBool) {
-    if (scoped) return { turn: battle.turn, ...scoped, decision, value };
+    if (scoped) {
+      const ev = { turn: battle.turn, ...scoped, decision, value };
+      if (decision === 'accuracy' || decision === 'secondary') ev.raw_is_bool = !!rawIsBool;
+      return ev;
+    }
     const move = battle.activeMove ? (battle.activeMove.id || null) : null;
     const actor = slotRef(battle.activePokemon);
     // target: the resolved target slot, but null for self-target / field.
@@ -195,12 +209,23 @@ function patchRng(draws) {
     return { turn: battle.turn, actor: slotRef(holder), target: null, move: null, item: eff.id, decision: 'item', value };
   };
 
+  // `opts.site`: the call site and the call's own arguments, as recorded.
+  const withCall = function (ev, site, op, args) {
+    if (opts.site) {
+      ev.site = site;
+      ev.op = op;
+      ev.args = args.filter((a) => a !== undefined);
+    }
+    return ev;
+  };
+
   Battle.prototype.random = function (m, n) {
     const v = origRandom.call(this, m, n);
     const site = captureSite();
     const decision = classifyDraw(false, { m, n }, site);
     // value: damage 0..15 raw; secondary raw 0..99; range raw int; tiebreak raw.
-    draws.push(abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, false));
+    const ev = abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, false);
+    draws.push(withCall(ev, site, 'random', [m, n]));
     return v;
   };
 
@@ -209,7 +234,8 @@ function patchRng(draws) {
     const site = captureSite();
     const decision = classifyDraw(true, { num: numerator, denom: denominator }, site);
     // randomChance only exposes the BOOL (crit + accuracy + ability procs).
-    draws.push(abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, true));
+    const ev = abilityEnvelope(this, site, v) || quickClawEnvelope(this, site, v) || envelope(this, decision, v, true);
+    draws.push(withCall(ev, site, 'randomChance', [numerator, denominator]));
     return v;
   };
 
@@ -229,7 +255,27 @@ function patchRng(draws) {
   // body mirrors the PS source exactly (gen-9 path: no <=8 overflow); the
   // only addition is the `activeTarget` assignment.
   const origSecondaries = BattleActions.prototype.secondaries;
-  BattleActions.prototype.secondaries = function (targets, source, move, moveData, isSelf) {
+  // `opts.secondaryContext`: PS's own `secondaries` (sim/battle-actions.ts:
+  // 1336-1355, a5df8274) runs an independent loop body per target, so
+  // calling it once per target with `[target]` is the same PS work. Only
+  // the recorder's scope changes: draws inside are attributed to that call's
+  // `source` / `target` / `move` arguments. Ability and Quick Claw envelopes
+  // still take precedence; nested scopes are saved and restored.
+  if (opts.secondaryContext) {
+    BattleActions.prototype.secondaries = function (targets, source, move, moveData, isSelf) {
+      if (!moveData.secondaries) return origSecondaries.call(this, targets, source, move, moveData, isSelf);
+      for (const target of targets) {
+        if (target === false) continue;
+        const prev = scoped;
+        scoped = { actor: slotRef(source), target: target === source ? null : slotRef(target), move: move.id };
+        try {
+          origSecondaries.call(this, [target], source, move, moveData, isSelf);
+        } finally {
+          scoped = prev;
+        }
+      }
+    };
+  } else BattleActions.prototype.secondaries = function (targets, source, move, moveData, isSelf) {
     if (!moveData.secondaries) return;
     for (const target of targets) {
       if (target === false) continue;
