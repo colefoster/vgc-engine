@@ -327,6 +327,12 @@ pub struct Battle {
     /// ability handler (Intimidate, priority 0) has run.
     #[serde(skip)]
     defer_white_herb: bool,
+    /// Set while a move action runs: White Herb restores on onAnyAfterMove
+    /// (data/items.ts:7699-7701; it has no onUpdate at a5df8274), i.e. once
+    /// the whole move is over (sim/battle-actions.ts:311-312), so every drop
+    /// in the move lands first. Cleared by [`Battle::white_herb_after_move`].
+    #[serde(skip)]
+    white_herb_move_defer: bool,
     /// The current move hit a Disguise (no damage dealt, but PS's
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
     #[serde(skip)]
@@ -721,6 +727,7 @@ impl Battle {
             decision_phases: false,
             champions: false,
             defer_white_herb: false,
+            white_herb_move_defer: false,
             disguise_hit_this_move: false,
             status_sure_hit: false,
             multi_targeted_defenders: 0,
@@ -2083,6 +2090,7 @@ impl Battle {
                         };
                         return StepProgress::ChanceYield { pending, key, space };
                     }
+                    self.white_herb_after_move();
                     self.run_pending_drags();
 self.trigger_emergency_exits();
                     // runAction's Update comes before a switch request
@@ -2116,6 +2124,7 @@ self.trigger_emergency_exits();
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
+                self.white_herb_after_move();
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
                 #[cfg(feature = "ps-rng")]
@@ -3570,6 +3579,7 @@ self.trigger_emergency_exits();
         if self.replaced_mid_turn[action.side as usize][(action.actor_slot as usize).min(1)] {
             return;
         }
+        self.white_herb_move_defer = true;
         self.snapshot_hp_before_action(action.side, action.actor_slot, action.choice);
         // PS `Battle.queue.willAct()` (sim/battle-queue.ts:310): true
         // iff any action ordered AFTER the current one this turn is a
@@ -4348,7 +4358,9 @@ self.trigger_emergency_exits();
             // incoming hits this turn). Full-enumerate; always correct.
             let saved_couple = self.multi_targeted_defenders;
             self.multi_targeted_defenders = 0b1111;
+            self.white_herb_move_defer = true;
             self.resolve_move_with_pending(action, &[[0u8; 2]; 2], false);
+            self.white_herb_after_move();
             self.multi_targeted_defenders = saved_couple;
             self.pursuit_intercepting = false;
         }
@@ -14409,7 +14421,23 @@ self.trigger_emergency_exits();
     /// ignores, data/items.ts:1712) and White Herb, which restores what is
     /// still negative. Returns how many stats fell.
     pub(crate) fn white_herb_deferred(&self) -> bool {
-        self.defer_white_herb
+        self.defer_white_herb || self.white_herb_move_defer
+    }
+
+    /// White Herb's onAnyAfterMove (PS data/items.ts:7699-7701, run by
+    /// runMove's `runEvent('AfterMove')`, sim/battle-actions.ts:311-312):
+    /// after a move action, every active holder restores the negative
+    /// stages it still has. Before the forced switches the move set up.
+    fn white_herb_after_move(&mut self) {
+        if !self.white_herb_move_defer {
+            return;
+        }
+        self.white_herb_move_defer = false;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                crate::item::try_consume_white_herb(self, side, slot);
+            }
+        }
     }
 
     pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
@@ -29327,6 +29355,136 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].boosts[2], 0, "White Herb restored SpA after Overheat");
         assert_eq!(b.p1.team[0].item_id, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_waits_for_every_drop_in_the_move() {
+        // PS a5df8274 data/items.ts:7679-7705: White Herb restores on
+        // onAnyAfterMove (no onUpdate), so it sees the boosts after the
+        // whole move. Bulldoze's 100% Spe drop (secondary,
+        // data/mods/champions/scripts.ts:388 / sim/battle-actions.ts:1099)
+        // lands before Weak Armor's -1 Def / +2 Spe (DamagingHit, :410 /
+        // :1121): Spe ends +1, Def -1 is restored, the herb is used.
+        // Development case a043d9085e0108a2.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bulldoze","rest","protect","crunch"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"armarouge","level":50,"ability":"weakarmor","item":"whiteherb","nature":"careful","moves":["protect","armorcannon","trickroom","psyshock"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        let m = &b.p2.team[0];
+        assert!(m.current_hp < m.stats.hp, "Bulldoze hit");
+        assert_eq!((m.boosts[1], m.boosts[4]), (0, 1), "Def restored, Spe -1 +2");
+        assert_eq!(m.item_id, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_waits_for_every_hit_of_a_multi_hit_move() {
+        // Weak Armor fires on each hit of Double Kick; White Herb only
+        // restores after the move (data/items.ts:7699-7701), so hit 2 lands
+        // on Def -1 exactly as it would with no herb at all. Same seed and
+        // the herb draws nothing, so the damage must equal the itemless
+        // control's. A herb eaten after hit 1 would leave hit 2 at Def 0.
+        let run = |item: &str| {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","nature":"adamant","moves":["doublekick","rest","protect","crunch"],"evs":{"atk":252}}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(&format!(r#"[
+                {{"species":"armarouge","level":50,"ability":"weakarmor","item":"{item}","nature":"careful","moves":["protect","armorcannon","trickroom","psyshock"]}}
+            ]"#)).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+                &[Choice::Pass { actor_slot: 0 }],
+            );
+            let m = b.p2.team[0].clone();
+            (m.stats.hp - m.current_hp, m.boosts[1], m.boosts[4], m.item_id)
+        };
+        let (herb_dmg, herb_def, herb_spe, herb_item) = run("whiteherb");
+        let (ctrl_dmg, ctrl_def, ctrl_spe, _) = run("");
+        assert_eq!((ctrl_def, ctrl_spe), (-2, 4), "control: Weak Armor on both hits");
+        assert!(ctrl_dmg > 0);
+        assert_eq!(herb_dmg, ctrl_dmg, "hit 2 used the lowered Def");
+        assert_eq!((herb_def, herb_spe), (0, 4), "herb restores Def -2 after the move");
+        assert_eq!(herb_item, u16::MAX, "White Herb consumed");
+    }
+
+    #[test]
+    fn white_herb_after_move_survives_a_resumed_chance_yield() {
+        // Lifecycle guard for the move-scoped deferral across the native
+        // ConfusionSelfHit yield. The faster holder hits itself in
+        // confusion (no stat change, so no herb expectation there), then
+        // Bulldoze drops it. The resumed ResolveYield tail must clear the
+        // deferral before Bulldoze starts; resolving the yield from outside
+        // (`StepCursor::resolve_yield`) must reach the same state as
+        // `step()` drawing that bucket, with the herb run after Bulldoze.
+        // State parity per bucket only, not a frontier probability check.
+        use crate::pokemon::{Volatile, VolatileKind};
+        use crate::rng::RngEvent;
+        use crate::step_machine::{StepCursor, StepProgress};
+        let base = |events: Vec<RngEvent>| {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bulldoze","rest","protect","crunch"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"armarouge","level":50,"ability":"weakarmor","item":"whiteherb","nature":"careful","moves":["psyshock","armorcannon","trickroom","protect"]}
+            ]"#).unwrap();
+            let mut b = Battle::with_rng(
+                BattleConfig { format: Format::Singles, seed: 0 },
+                Rng::oracle_partial(events, 0),
+                p1,
+                p2,
+            );
+            let m = b.side_mut(SideRef::P2).active_mon_mut(0).unwrap();
+            // Confusion is not ResidualIndex-tracked.
+            let _ = m.volatiles.add(Volatile { kind: VolatileKind::Confusion, turns_remaining: 0, payload: 4 });
+            b
+        };
+        let p1c = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let p2c = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P1, slot: 0 }) }];
+        let mut hps = Vec::new();
+        for bucket in 0u8..16 {
+            let mut pinned = base(vec![RngEvent::PercentRoll(1), RngEvent::DamageRoll(bucket)]);
+            pinned.step(&p1c, &p2c);
+
+            let mut resumed = base(vec![RngEvent::PercentRoll(1)]);
+            let mut cursor = StepCursor::start(&p1c, &p2c);
+            let mut yields = 0;
+            loop {
+                match resumed.step_one(&mut cursor) {
+                    StepProgress::Continue => {}
+                    StepProgress::Done(_) => break,
+                    StepProgress::ChanceYield { .. } => {
+                        yields += 1;
+                        // The deferral set for the yielding action is still
+                        // pending; the ResolveYield tail must clear it before
+                        // the next action (Bulldoze) runs and sets it again.
+                        assert!(resumed.white_herb_move_defer, "b{bucket}: set for the yielding action");
+                        cursor.resolve_yield(RngEvent::DamageRoll(bucket));
+                        assert!(matches!(resumed.step_one(&mut cursor), StepProgress::Continue));
+                        assert!(
+                            matches!(cursor.phase(), crate::step_machine::StepPhase::ActionLoop { idx: 1, .. }),
+                            "b{bucket}: resumed tail ran, next action not started"
+                        );
+                        assert!(!resumed.white_herb_move_defer, "b{bucket}: resume tail cleared the deferral");
+                        assert_eq!(resumed.p2.team[0].item_id, data::item_id::WHITEHERB, "b{bucket}: no drop yet, herb kept");
+                    }
+                }
+            }
+            assert_eq!(yields, 1, "b{bucket}: the self-hit yields once");
+            assert_eq!(resumed.canonical_hash(), pinned.canonical_hash(), "b{bucket}");
+            assert!(!resumed.white_herb_move_defer, "b{bucket}: deferral cleared");
+            let m = &resumed.p2.team[0];
+            assert_eq!((m.boosts[1], m.boosts[4]), (0, 1), "b{bucket}: herb ran after Bulldoze");
+            assert_eq!(m.item_id, u16::MAX, "b{bucket}");
+            hps.push(m.current_hp);
+        }
+        assert!(hps[0] > hps[15], "buckets give distinct self-hit damage: {hps:?}");
     }
 
     #[test]

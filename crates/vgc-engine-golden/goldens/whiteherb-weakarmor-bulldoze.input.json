@@ -1,0 +1,26 @@
+{
+  "name": "whiteherb-weakarmor-bulldoze",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Bulldoze\n\nSkarmory (F)\nAbility: Keen Eye\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Armarouge (M) @ White Herb\nAbility: Weak Armor\nLevel: 50\nHardy Nature\n- Splash\n\nCorviknight (M)\nAbility: Unnerve\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1, move 1"
+    },
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}

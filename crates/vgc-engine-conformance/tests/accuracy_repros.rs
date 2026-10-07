@@ -496,3 +496,15 @@ fn multi_hit_stops_when_its_user_faints() {
 fn lum_berry_cures_swagger_confusion() {
     assert_matches_ps("study-59e92f3ccd-lum-berry-confusion");
 }
+
+/// Development case a043d9085e0108a2 (Reg M-B, PS a5df8274, manager
+/// capture; turns 2-9 dropped, every other field as captured). Bulldoze
+/// lowers Armarouge's Spe, then its Weak Armor gives -1 Def / +2 Spe; White
+/// Herb runs once the move is over (data/items.ts:7699-7701 onAnyAfterMove,
+/// no onUpdate) and restores only the Def. Low Kick then deals 35 (151 ->
+/// 116), and its own Weak Armor leaves Def -1 / Spe +3. Eating the herb on
+/// the Spe drop left Def -1 for Low Kick: 52 damage, 99 HP.
+#[test]
+fn white_herb_restores_after_the_whole_move() {
+    assert_matches_ps("study-a043d9085e-white-herb-after-move");
+}

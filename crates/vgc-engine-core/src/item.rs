@@ -1014,17 +1014,12 @@ pub fn on_damaging_hit(
 /// Currently a no-op stub so callers wire correctly. Per-item arms
 /// land additively.
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
-    // White Herb — PS `data/items.ts:whiteherb`
-    //   onUpdate(pokemon) {
-    //     let activate = false;
-    //     for (let i in pokemon.boosts) {
-    //       if (pokemon.boosts[i] < 0) { activate = true; pokemon.boosts[i] = 0; }
-    //     }
-    //     if (activate && pokemon.useItem()) { ... }
-    //   }
-    // PS runs this on every Update event (not just switch-in) — for the
-    // engine we land it on switch-in and after each stat-drop site
-    // (see `try_consume_white_herb` below). Bulbapedia:
+    // White Herb — PS `data/items.ts:7658-7712` (a5df8274): onStart restores
+    // every negative stage and uses the item; it reruns on onAnySwitchIn
+    // (priority -2), onAnyAfterMega, onAnyAfterMove and onResidual (order
+    // 29). There is no onUpdate. Drop sites call `try_consume_white_herb`,
+    // which waits for the end of a running move action
+    // (`Battle::white_herb_after_move`). Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/White_Herb>.
     try_consume_white_herb(battle, side, slot);
     // Mental Herb cleans up Encore / Taunt / etc carried across a switch.
@@ -1198,8 +1193,8 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
 /// Run the White Herb check on a single active mon. If holder has
 /// `whiteherb` AND any of `boosts[0..7]` is negative, zero those entries
 /// and consume the item (sentinel `u16::MAX`). Idempotent if no negative
-/// stages are present. Should be called immediately AFTER any code path
-/// that lowers `boosts[i]`.
+/// stages are present. Called after code paths that lower `boosts[i]`;
+/// a no-op while a switch-in batch or a move action defers it.
 /// Mental Herb — PS `data/items.ts:mentalherb`
 ///   onUpdate(pokemon) {
 ///     for (const ailment of ['attract','taunt','encore','torment','disable','healblock']) {
