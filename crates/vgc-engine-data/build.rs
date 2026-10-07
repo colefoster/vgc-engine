@@ -354,6 +354,11 @@ struct SpeciesJson {
     /// species' learnset; cosmetic/battle formes likewise share the base pool.
     #[serde(default, rename = "baseSpecies")]
     base_species: Option<String>,
+    /// PS `cosmeticFormes`: forme names with no Pokedex entry of their own,
+    /// which PS builds as copies of this species (sim/dex-species.ts
+    /// 452-481). Feeds `COSMETIC_FORMES`. The dump writes `null` when absent.
+    #[serde(default, rename = "cosmeticFormes")]
+    cosmetic_formes: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1032,6 +1037,37 @@ fn main() {
     writeln!(f).unwrap();
     emit_id_module(&mut f, "species_id", &species_consts);
 
+    // --- Cosmetic formes: PS `cosmeticFormes` (data/pokedex.ts, e.g. Florges
+    // :12619, Furfrou :12684) with no entry of their own are copies of their
+    // base species (sim/dex-species.ts:452-481), so each maps to the base's
+    // row. PS's id for one is toID(forme name), which drops non-ASCII marks
+    // the same way for the base name, so the id is the base key plus the
+    // slugged suffix (Flabébé-Blue -> flabebeblue). Only emitted
+    // bases count; a forme with its own row keeps it.
+    let mut cosmetic: BTreeMap<String, usize> = BTreeMap::new();
+    for (slug, s) in &species_keep {
+        let Some(&base) = species_slug_to_idx.get(*slug) else { continue };
+        for forme in s.cosmetic_formes.iter().flatten() {
+            let id = match forme.strip_prefix(s.name.as_str()).and_then(|r| r.strip_prefix('-')) {
+                Some(suffix) => format!("{slug}{}", slugify(suffix)),
+                None => slugify(forme),
+            };
+            if species_slug_to_idx.contains_key(&id) {
+                continue;
+            }
+            if let Some(prev) = cosmetic.insert(id.clone(), base) {
+                assert_eq!(prev, base, "cosmetic forme {id} listed under two bases");
+            }
+        }
+    }
+    writeln!(f, "/// PS cosmetic forme id -> base species row, sorted by id. See build.rs.").unwrap();
+    writeln!(f, "pub const COSMETIC_FORMES: &[(&str, u16)] = &[").unwrap();
+    for (id, base) in &cosmetic {
+        writeln!(f, "    ({}, {}),", rust_str_lit(id), base).unwrap();
+    }
+    writeln!(f, "];").unwrap();
+    writeln!(f).unwrap();
+
     // --- Learnsets: per-species pool of legal move ids, pre-merged at build
     // time with the pre-evolution chain (`prevo`) and base-forme (`baseSpecies`)
     // learnsets so the runtime check (`species_can_learn`) is a single binary
@@ -1171,7 +1207,8 @@ fn main() {
     writeln!(f, "pub fn move_by_slug(s: &str) -> Option<&'static MoveDef> {{ MOVES.iter().find(|m| m.slug == s) }}").unwrap();
     writeln!(f, "pub fn ability_by_slug(s: &str) -> Option<&'static AbilityDef> {{ ABILITIES.iter().find(|a| a.slug == s) }}").unwrap();
     writeln!(f, "pub fn item_by_slug(s: &str) -> Option<&'static ItemDef> {{ ITEMS.iter().find(|i| i.slug == s) }}").unwrap();
-    writeln!(f, "pub fn species_by_slug(s: &str) -> Option<&'static SpeciesDef> {{ SPECIES.iter().find(|s2| s2.slug == s) }}").unwrap();
+    // An exact row wins; a rowless PS cosmetic forme id is its base's row.
+    writeln!(f, "pub fn species_by_slug(s: &str) -> Option<&'static SpeciesDef> {{ SPECIES.iter().find(|s2| s2.slug == s).or_else(|| cosmetic_base(s).map(|i| &SPECIES[i as usize])) }}").unwrap();
 
     // Suppress unused-warning for slugify in tests:
     let _ = slugify("x");

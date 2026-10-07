@@ -243,7 +243,10 @@ fn diff_full(b: &Battle, t: &AccTurn) -> Result<Option<Divergence>, String> {
         let Some(ps_sp) = exp.species.as_deref() else { continue };
         let Some((side, slot)) = decode_slot_ref(slot_ref) else { continue };
         let eng = species_slug(b, side, slot).unwrap_or("none");
-        if eng != ps_sp && !exp.fainted {
+        // PS keeps a cosmetic forme's own id (florgesyellow) in state; the
+        // engine loads it as its base row. Equal only for that exact pair.
+        let cosmetic = b.side(side).active_mon(slot).is_some_and(|m| data::cosmetic_base(ps_sp) == Some(m.species_id));
+        if eng != ps_sp && !cosmetic && !exp.fainted {
             return Ok(Some(Divergence {
                 turn: t.base.turn,
                 slot: slot_ref.clone(),

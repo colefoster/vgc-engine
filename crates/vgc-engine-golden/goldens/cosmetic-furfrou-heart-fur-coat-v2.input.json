@@ -1,0 +1,26 @@
+{
+  "name": "cosmetic-furfrou-heart-fur-coat-v2",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Furfrou (Furfrou-Heart)\nAbility: Fur Coat\nLevel: 50\nEVs: 252 HP / 252 Def\nImpish Nature\n- Double-Edge\n- Protect"
+  },
+  "p2": {
+    "team": "Lucario\nAbility: Inner Focus\nLevel: 50\nHardy Nature\n- Close Combat\n- Aura Sphere"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    },
+    {
+      "p1": "move 1",
+      "p2": "move 2"
+    }
+  ]
+}

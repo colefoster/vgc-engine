@@ -104,6 +104,8 @@ fn lookup_species(name: &str) -> Result<u16, TeamLoadError> {
         .iter()
         .position(|s| s.slug == slug)
         .map(|i| i as u16)
+        // A PS cosmetic forme is its base species (data::cosmetic_base).
+        .or_else(|| data::cosmetic_base(&slug))
         .ok_or_else(|| TeamLoadError::UnknownSpecies(name.to_string()))
 }
 
@@ -490,6 +492,139 @@ mod gender_tests {
         let battle = Battle::new(cfg, p1, p2);
         assert_eq!(battle.p1.team[0].gender, data::Gender::Male);
         assert_eq!(battle.p2.team[0].gender, data::Gender::Male);
+    }
+}
+
+#[cfg(test)]
+mod cosmetic_forme_tests {
+    //! PS cosmetic formes with no Pokedex entry of their own resolve to their
+    //! base species with its data copied unchanged (sim/dex-species.ts
+    //! 452-481: `...species` spread, `isCosmeticForme: true`). Florges
+    //! (data/pokedex.ts:12619) and Furfrou (:12684) list theirs in
+    //! `cosmeticFormes`. Bulbapedia:
+    //! <https://bulbapedia.bulbagarden.net/wiki/Florges_(Pok%C3%A9mon)#Forms>,
+    //! <https://bulbapedia.bulbagarden.net/wiki/Furfrou_(Pok%C3%A9mon)#Forms>.
+    use super::*;
+
+    const FLORGES: [&str; 4] = ["Florges-Blue", "Florges-Orange", "Florges-White", "Florges-Yellow"];
+    const FURFROU: [&str; 9] = [
+        "Furfrou-Dandy", "Furfrou-Debutante", "Furfrou-Diamond", "Furfrou-Heart", "Furfrou-Kabuki",
+        "Furfrou-La Reine", "Furfrou-Matron", "Furfrou-Pharaoh", "Furfrou-Star",
+    ];
+
+    fn one(species: &str, ability: &str, mv: &str) -> Result<Vec<Pokemon>, TeamLoadError> {
+        TeamBuilder::from_json(&format!(r#"[{{"species":"{species}","ability":"{ability}","moves":["{mv}"]}}]"#))
+    }
+
+    #[test]
+    fn cosmetic_formes_load_as_their_base_species() {
+        for (base, ability, mv, formes) in
+            [("Florges", "flowerveil", "moonblast", &FLORGES[..]), ("Furfrou", "furcoat", "bodyslam", &FURFROU[..])]
+        {
+            let b = &one(base, ability, mv).expect(base)[0];
+            for forme in formes {
+                let m = &one(forme, ability, mv).unwrap_or_else(|e| panic!("{forme}: {e}"))[0];
+                assert_eq!(m.species_id, b.species_id, "{forme} is {base}");
+                assert_eq!(m.stats, b.stats, "{forme} stats");
+                assert_eq!(m.effective_types(), b.effective_types(), "{forme} types");
+                assert_eq!(m.ability_id, b.ability_id, "{forme} ability");
+            }
+        }
+        // Showdown export shape the PS driver writes: nickname, then species.
+        let t = TeamBuilder::from_showdown_text("Florges (Florges-Yellow) @ Leftovers\nAbility: Flower Veil\n- Moonblast\n")
+            .expect("export with a cosmetic forme");
+        assert_eq!(t[0].species_id, one("Florges", "flowerveil", "moonblast").unwrap()[0].species_id);
+    }
+
+    #[test]
+    fn functional_formes_stay_distinct() {
+        for (forme, base, ability, mv) in [
+            ("Rotom-Wash", "Rotom", "levitate", "thunderbolt"),
+            ("Ogerpon-Wellspring", "Ogerpon", "waterabsorb", "ivycudgel"),
+            ("Tauros-Paldea-Aqua", "Tauros", "intimidate", "wavecrash"),
+        ] {
+            let f = &one(forme, ability, mv).unwrap_or_else(|e| panic!("{forme}: {e}"))[0];
+            let b = &one(base, ability, mv).expect(base)[0];
+            assert_ne!(f.species_id, b.species_id, "{forme} keeps its own row");
+            assert_eq!(data::SPECIES[f.species_id as usize].slug, slugify(forme));
+        }
+    }
+
+    /// Every PS `cosmeticFormes` family with a kept base (data/pokedex.ts
+    /// :4222-16777; the Pokestar families at :20846-21052 are `Pokestar` rows
+    /// the table drops). Names as PS spells them, Flabébé decomposed
+    /// (:12551). Split by the local dex dump: `rowless` formes have no entry
+    /// of their own and fold into the base; `own` formes do have one, which
+    /// wins unfolded (Burmy-Sandy is row 149, Burmy 148) with the base's stats
+    /// (Minior's cores included; only functional Minior-Meteor differs).
+    struct Family {
+        base: &'static str,
+        rowless: &'static [&'static str],
+        own: &'static [&'static str],
+    }
+    const FAMILIES: &[Family] = &[
+        Family { base: "Unown", rowless: &["Unown-B", "Unown-Z", "Unown-Exclamation", "Unown-Question"], own: &[] },
+        Family { base: "Burmy", rowless: &[], own: &["Burmy-Sandy", "Burmy-Trash"] },
+        Family { base: "Shellos", rowless: &[], own: &["Shellos-East"] },
+        Family { base: "Gastrodon", rowless: &[], own: &["Gastrodon-East"] },
+        Family { base: "Deerling", rowless: &[], own: &["Deerling-Summer", "Deerling-Autumn", "Deerling-Winter"] },
+        Family { base: "Sawsbuck", rowless: &["Sawsbuck-Summer", "Sawsbuck-Autumn", "Sawsbuck-Winter"], own: &[] },
+        Family {
+            base: "Vivillon",
+            rowless: &[],
+            own: &["Vivillon-Archipelago", "Vivillon-High Plains", "Vivillon-Icy Snow", "Vivillon-Tundra"],
+        },
+        Family {
+            base: "Flabe\u{301}be\u{301}",
+            rowless: &["Flabe\u{301}be\u{301}-Blue", "Flabe\u{301}be\u{301}-Orange", "Flabe\u{301}be\u{301}-White", "Flabe\u{301}be\u{301}-Yellow"],
+            own: &[],
+        },
+        Family { base: "Floette", rowless: &["Floette-Blue", "Floette-Orange", "Floette-White", "Floette-Yellow"], own: &[] },
+        Family { base: "Florges", rowless: &FLORGES, own: &[] },
+        Family { base: "Furfrou", rowless: &FURFROU, own: &[] },
+        Family {
+            base: "Minior",
+            rowless: &[],
+            own: &["Minior-Orange", "Minior-Yellow", "Minior-Green", "Minior-Blue", "Minior-Indigo", "Minior-Violet"],
+        },
+        Family {
+            base: "Alcremie",
+            rowless: &["Alcremie-Salted-Cream"],
+            own: &["Alcremie-Ruby-Cream", "Alcremie-Caramel-Swirl", "Alcremie-Rainbow-Swirl"],
+        },
+    ];
+
+    #[test]
+    fn every_cosmetic_family_with_a_kept_base_resolves_to_it() {
+        let id = |name: &str| lookup_species(name);
+        for fam in FAMILIES {
+            let b = id(fam.base).unwrap_or_else(|e| panic!("{}: {e}", fam.base));
+            for forme in fam.rowless {
+                assert_eq!(id(forme).unwrap_or_else(|e| panic!("{forme}: {e}")), b, "{forme} is {}", fam.base);
+                assert_eq!(data::cosmetic_base(&slugify(forme)), Some(b), "{forme} table entry");
+            }
+            for forme in fam.own {
+                let i = id(forme).unwrap_or_else(|e| panic!("{forme}: {e}"));
+                assert_ne!(i, b, "{forme} keeps its own row");
+                assert_eq!(data::SPECIES[i as usize].slug, slugify(forme), "{forme} keeps its own row");
+                assert_eq!(data::cosmetic_base(&slugify(forme)), None, "{forme} not in the cosmetic table");
+                assert_eq!(data::SPECIES[i as usize].base_stats, data::SPECIES[b as usize].base_stats, "{forme} stats");
+            }
+        }
+        // Functional formes are never in the table.
+        for f in ["rotomwash", "ogerponwellspring", "miniormeteor", "charizardmegax", "taurospaldeaaqua"] {
+            assert_eq!(data::cosmetic_base(f), None, "{f}");
+        }
+    }
+
+    #[test]
+    fn unknown_formes_are_still_rejected() {
+        for bad in ["Florges-Purple", "Furfrou-Spiky", "Rotom-Plasma", "Florgesyellowx", "Pokestar Giant-2"] {
+            assert!(
+                matches!(one(bad, "flowerveil", "moonblast"), Err(TeamLoadError::UnknownSpecies(_))),
+                "{bad} must stay unknown"
+            );
+        }
     }
 }
 

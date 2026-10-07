@@ -1,0 +1,219 @@
+{
+  "ok": true,
+  "name": "cosmetic-furfrou-heart-fur-coat-v2",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Furfrou-Heart",
+      "hp": 182,
+      "max": 182
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Lucario",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Double-Edge",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 106,
+      "max": 145,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 169,
+      "max": 182,
+      "from": "Recoil"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Close Combat",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 89,
+      "max": 182,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "def",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "spd",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Double-Edge",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 41,
+      "max": 145,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 68,
+      "max": 182,
+      "from": "Recoil"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Aura Sphere",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "supereffective",
+      "actor": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "win",
+      "winner": "P2"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 77,
+      "bound": 100,
+      "site": "BattleActions.selfDrops (sim/battle-actions.js:1122)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791346593\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Furfrou-Heart, L50, M|\n|poke|p2|Lucario, L50, F|\n|teampreview|\n|t:|1791346593\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Furfrou|Furfrou-Heart, L50, M|182/182\n|switch|p2a: Lucario|Lucario, L50, F|145/145\n|turn|1|\n|t:|1791346593\n|move|p1a: Furfrou|Double-Edge|p2a: Lucario\n|-resisted|p2a: Lucario\n|-damage|p2a: Lucario|106/145\n|-damage|p1a: Furfrou|169/182|[from] Recoil\n|move|p2a: Lucario|Close Combat|p1a: Furfrou\n|-supereffective|p1a: Furfrou\n|-damage|p1a: Furfrou|89/182\n|-unboost|p2a: Lucario|def|1\n|-unboost|p2a: Lucario|spd|1\n|\n|upkeep\n|turn|2|\n|t:|1791346593\n|move|p1a: Furfrou|Double-Edge|p2a: Lucario\n|-resisted|p2a: Lucario\n|-damage|p2a: Lucario|41/145\n|-damage|p1a: Furfrou|68/182|[from] Recoil\n|move|p2a: Lucario|Aura Sphere|p1a: Furfrou\n|-supereffective|p1a: Furfrou\n|-damage|p1a: Furfrou|0 fnt\n|faint|p1a: Furfrou\n|\n|win|P2"
+}

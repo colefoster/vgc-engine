@@ -508,3 +508,37 @@ fn lum_berry_cures_swagger_confusion() {
 fn white_herb_restores_after_the_whole_move() {
     assert_matches_ps("study-a043d9085e-white-herb-after-move");
 }
+
+fn cosmetic_fixture() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/accuracy/repros/battles/cosmetic-florges-doubles-v2-01.json");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Florges-Orange / Florges-White are PS cosmetic formes
+/// (data/pokedex.ts:12619): built as copies of Florges
+/// (sim/dex-species.ts:452-481), while PS state keeps their own ids
+/// (`florgesorange`). The engine loads them as Florges and the species check
+/// accepts exactly that pair. Both scripted turns are compared in full
+/// (`lastTurn` 3 is the `--max-turns 2` marker after turn 2).
+#[test]
+fn cosmetic_formes_load_as_their_base_and_match_ps() {
+    let acc: AccBattle = serde_json::from_str(&cosmetic_fixture()).expect("battle json");
+    let rep = replay_keyed(&acc);
+    assert!(rep.engine_error.is_none(), "engine error {:?}", rep.engine_error);
+    assert!(rep.divergence.is_none(), "diverges from PS: {:?}", rep.divergence);
+    assert_eq!((rep.turns_compared, rep.matched_turns), (2, 2));
+}
+
+/// The cosmetic species check is exact for everything else: another
+/// family's cosmetic forme, a functional forme or an unknown id still diverges.
+#[test]
+fn species_check_stays_exact_outside_the_loaded_base() {
+    let text = cosmetic_fixture();
+    for wrong in ["floetteorange", "florgesmega", "florgespurple"] {
+        let mut v: serde_json::Value = serde_json::from_str(&text).expect("battle json");
+        v["turns"][0]["state"]["p1a"]["species"] = wrong.into();
+        let acc: AccBattle = serde_json::from_value(v).expect("AccBattle");
+        let d = replay_keyed(&acc).divergence.unwrap_or_else(|| panic!("{wrong} accepted as Florges"));
+        assert_eq!((d.turn, d.slot.as_str(), d.field.as_str(), d.ps.as_str()), (1, "p1a", "species", wrong));
+    }
+}

@@ -231,8 +231,9 @@ impl std::error::Error for CalcError {}
 /// table → unique `slugify` prefix match. Errors on unknown / ambiguous.
 pub fn resolve_species(input: &str) -> Result<String, CalcError> {
     let slug = slugify(input);
-    if data::species_by_slug(&slug).is_some() {
-        return Ok(slug);
+    // The row's own slug: a cosmetic forme's canonical species is its base.
+    if let Some(sp) = data::species_by_slug(&slug) {
+        return Ok(sp.slug.to_string());
     }
     if let Some((_, canon)) = aliases::SPECIES.iter().find(|(k, _)| *k == slug) {
         return Ok((*canon).to_string());
@@ -1648,6 +1649,52 @@ mod tests {
         // Exact slug passes through.
         assert_eq!(resolve_species("Iron Hands").unwrap(), "ironhands");
         assert_eq!(resolve_species("Flutter Mane").unwrap(), "fluttermane");
+    }
+
+    #[test]
+    fn cosmetic_formes_resolve_to_their_canonical_base() {
+        // PS cosmetic formes (data/pokedex.ts cosmeticFormes, e.g. Florges
+        // :12619, Furfrou :12684, Flabébé :12551 decomposed) are copies of
+        // their base (sim/dex-species.ts:452-481): the canonical slug is the
+        // base's.
+        for (forme, base) in [
+            ("Florges-Yellow", "florges"),
+            ("Florges-White", "florges"),
+            ("Furfrou-Heart", "furfrou"),
+            ("Furfrou-La Reine", "furfrou"),
+            ("Alcremie-Salted-Cream", "alcremie"),
+            ("Sawsbuck-Winter", "sawsbuck"),
+            ("Flabe\u{301}be\u{301}-Blue", "flabebe"),
+        ] {
+            assert_eq!(resolve_species(forme).unwrap(), base, "{forme}");
+        }
+        // Formes with a dex row of their own (local dump: Vivillon-High Plains,
+        // Alcremie-Ruby-Swirl, Burmy-Sandy, Minior-Orange) and functional formes
+        // stay themselves; unknowns stay unknown.
+        for own in [
+            "Vivillon-High Plains",
+            "Alcremie-Ruby-Swirl",
+            "Burmy-Sandy",
+            "Minior-Orange",
+            "Rotom-Wash",
+            "Ogerpon-Wellspring",
+            "Floette-Eternal",
+        ] {
+            assert_eq!(resolve_species(own).unwrap(), slugify(own), "{own}");
+        }
+        assert!(matches!(resolve_species("Florges-Purple"), Err(CalcError::UnknownSpecies(_))));
+        // The same damage as the base, as attacker and as defender (Fur Coat
+        // halving Close Combat included).
+        let q = |s: &str| QuickMon::parse(s).unwrap();
+        let rolls = |a: &str, d: &str, m: &str| calc_default(&q(a), &q(d), m).unwrap().rolls;
+        assert_eq!(
+            rolls("Florges-Yellow / Modest / 252 SpA", "Furfrou-Heart / Fur Coat / 252 HP", "Moonblast"),
+            rolls("Florges / Modest / 252 SpA", "Furfrou / Fur Coat / 252 HP", "Moonblast"),
+        );
+        assert_eq!(
+            rolls("Lucario / Adamant / 252 Atk", "Furfrou-Heart / Fur Coat / 252 HP / 252 Def", "Close Combat"),
+            rolls("Lucario / Adamant / 252 Atk", "Furfrou / Fur Coat / 252 HP / 252 Def", "Close Combat"),
+        );
     }
 
     #[test]
