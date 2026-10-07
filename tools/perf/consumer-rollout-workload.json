@@ -1,0 +1,28 @@
+{
+  "name": "quiet-2v2-seismic-toss",
+  "description": "Synthetic Champions doubles 2v2: Annihilape/Chansey Seismic Toss (fixed 50 damage at level 50) vs Snorlax/Miltank Splash. No bench, items, status, random damage or contact-triggered abilities; unique Speeds (Miltank 120 > Annihilape 110 > Chansey 70 > Snorlax 50 with 0 Stat Points). Expected: P1 wins on step 5.",
+  "format": "gen9championsvgc2026regmc",
+  "init_seed": 1,
+  "p1": [
+    {"species": "Annihilape", "gender": "M", "ability": "Inner Focus", "nature": "Hardy", "level": 50, "moves": ["Seismic Toss"]},
+    {"species": "Chansey", "gender": "F", "ability": "Natural Cure", "nature": "Hardy", "level": 50, "moves": ["Seismic Toss"]}
+  ],
+  "p2": [
+    {"species": "Snorlax", "gender": "M", "ability": "Thick Fat", "nature": "Hardy", "level": 50, "moves": ["Splash"]},
+    {"species": "Miltank", "gender": "F", "ability": "Thick Fat", "nature": "Hardy", "level": 50, "moves": ["Splash"]}
+  ],
+  "own_side": 0,
+  "joint_action": [
+    {"move": 0, "target": ["foe", 0]},
+    {"move": 0, "target": ["foe", 1]}
+  ],
+  "opp_reply": [
+    {"move": 0, "target": null},
+    {"move": 0, "target": null}
+  ],
+  "max_turns": 8,
+  "rollouts_per_batch": 32,
+  "warmup_batches": 1,
+  "timed_batches": 5,
+  "seed0": 0
+}
