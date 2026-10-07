@@ -750,6 +750,62 @@ mod tests {
         assert_eq!(pn, 0.0, "a neutral hit never leaves Snorlax above half");
     }
 
+    /// Shields Down at residual order 29 (data/abilities.ts:4253-4265):
+    /// each frontier branch ends as Minior-Meteor iff its HP is above half,
+    /// else as its own core colour (`pokemon.set.species`). Minior starts at
+    /// `half + max roll` of a measured Brick Break, so the roll range
+    /// straddles half and both formes are reachable, with probabilities
+    /// summing to 1.
+    #[test]
+    fn step_chance_shields_down_forme_follows_hp_on_every_branch() {
+        use crate::rng::RngEvent;
+        let p1 = || TeamBuilder::from_json(r#"[
+            {"species":"minioryellow","level":50,"ability":"shieldsdown","nature":"hardy","moves":["splash","rockslide","protect","acrobatics"],"evs":{"hp":4}}
+        ]"#).unwrap();
+        let p2 = || TeamBuilder::from_json(r#"[
+            {"species":"snorlax","gender":"M","level":50,"ability":"immunity","nature":"adamant","moves":["brickbreak","splash","rest","protect"],"evs":{"atk":252,"hp":4}}
+        ]"#).unwrap();
+        let splash = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let hit = [Choice::Move { actor_slot: 0, move_slot: 0, target: Some(Target { side: SideRef::P1, slot: 0 }) }];
+        let build = |rng: Rng, hp: Option<u16>| {
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1(), p2());
+            if let Some(hp) = hp {
+                b.side_mut(SideRef::P1).active_mon_mut(0).unwrap().current_hp = hp;
+            }
+            b
+        };
+        let slug = |b: &Battle| crate::data::SPECIES[b.side(SideRef::P1).active_mon(0).unwrap().species_id as usize].slug;
+        let pinned_damage = |roll: u8| {
+            let rng = Rng::oracle_partial(vec![RngEvent::PercentRoll(1), RngEvent::Crit(false), RngEvent::DamageRoll(roll)], 0);
+            let mut b = build(rng, None);
+            let full = b.side(SideRef::P1).active_mon(0).unwrap().stats.hp;
+            b.step(&splash, &hit);
+            full - b.side(SideRef::P1).active_mon(0).unwrap().current_hp
+        };
+        let (dmin, dmax) = (pinned_damage(0), pinned_damage(15));
+        assert!(0 < dmin && dmin < dmax, "roll range {dmin}..{dmax}");
+        let base = build(Rng::Splitmix(0), None);
+        let half = base.side(SideRef::P1).active_mon(0).unwrap().stats.hp / 2;
+        assert_eq!(slug(&base), "miniormeteor", "full-HP lead starts as Meteor");
+        let f = build(Rng::Splitmix(0), Some(half + dmax)).step_chance(&splash, &hit, 4);
+        assert_eq!(f.unmatched_total, 0);
+        let total: f64 = f.outcomes.iter().map(|o| o.prob).sum();
+        assert!((total - 1.0).abs() < 1e-9, "Σ prob = {total}");
+        let (mut meteor, mut core) = (0.0, 0.0);
+        for o in &f.outcomes {
+            let m = o.battle.side(SideRef::P1).active_mon(0).unwrap();
+            let s = slug(&o.battle);
+            if m.current_hp > half {
+                assert_eq!(s, "miniormeteor", "hp {} > {half}: p={}", m.current_hp, o.prob);
+                meteor += o.prob;
+            } else {
+                assert_eq!(s, "minioryellow", "hp {} <= {half}: own colour, p={}", m.current_hp, o.prob);
+                core += o.prob;
+            }
+        }
+        assert!(meteor > 0.0 && core > 0.0, "both formes reachable: meteor {meteor}, core {core}");
+    }
+
     /// Parity test: step_chance must produce the same frontier the
     /// solver's enumerate_outcomes does. This is the load-bearing
     /// contract — when native branching lands in a future PR, this

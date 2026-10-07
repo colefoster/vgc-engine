@@ -1,0 +1,30 @@
+{
+  "name": "shields-down-meteor-rest",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Minior-Yellow\nAbility: Shields Down\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Rest\n\nAudino (F)\nAbility: Klutz\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Furret (M)\nAbility: Keen Eye\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Seismic Toss\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1 1, move 1"
+    },
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1 1, move 1"
+    },
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1 1, move 1"
+    }
+  ]
+}
