@@ -1360,6 +1360,23 @@ impl Pokemon {
         self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
     }
 
+    /// Swap species in place, for active or benched mons alike; see
+    /// `Battle::set_forme` for what is kept. With `recompute_stats` the five
+    /// non-HP stats follow the new species' base stats.
+    pub fn change_forme(&mut self, new_species_id: u16, recompute_stats: bool) {
+        if recompute_stats {
+            let species = &data::SPECIES[new_species_id as usize];
+            let stats = compute_stats(species, self.level, &self.ivs, &self.evs, nature_by_id(self.nature_id));
+            self.stats.atk = stats.atk;
+            self.stats.def = stats.def;
+            self.stats.spa = stats.spa;
+            self.stats.spd = stats.spd;
+            self.stats.spe = stats.spe;
+        }
+        self.species_id = new_species_id;
+        self.sync_can_mega_evolve();
+    }
+
     /// The core colour Shields Down returns this Minior to: its
     /// `set_species_id`. A legacy snapshot (unknown origin) falls back to the
     /// current species while that is still a core colour. `None` for a

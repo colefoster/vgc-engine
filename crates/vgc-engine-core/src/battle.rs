@@ -1234,33 +1234,13 @@ impl Battle {
         new_species_id: u16,
         recompute_stats: bool,
     ) {
-        let recomputed = if recompute_stats {
-            self.side(side).active_mon(slot as usize).map(|m| {
-                let species = &data::SPECIES[new_species_id as usize];
-                let nature = crate::pokemon::nature_by_id(m.nature_id);
-                crate::pokemon::compute_stats(species, m.level, &m.ivs, &m.evs, nature)
-            })
-        } else {
-            None
-        };
         if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-            m.species_id = new_species_id;
-            // PR-LC2: species changed → recompute `can_mega_evolve`.
-            // Covers Mega Evolution itself (post-mega, the mega forme
-            // no longer matches its stone), Stance Change, Mimikyu
-            // Disguise bust, Transform/Imposter (via `transform_into`),
-            // and every other forme-change site that routes through
-            // `set_forme`.
-            m.sync_can_mega_evolve();
-            if let Some(stats) = recomputed {
-                // Preserve HP stat (max HP) and current_hp; update the 5
-                // battle stats from the recomputed spread.
-                m.stats.atk = stats.atk;
-                m.stats.def = stats.def;
-                m.stats.spa = stats.spa;
-                m.stats.spd = stats.spd;
-                m.stats.spe = stats.spe;
-            }
+            // PR-LC2: `change_forme` recomputes `can_mega_evolve`. Covers
+            // Mega Evolution itself (post-mega, the mega forme no longer
+            // matches its stone), Stance Change, Mimikyu Disguise bust,
+            // Transform/Imposter (via `transform_into`), and every other
+            // forme-change site that routes through `set_forme`.
+            m.change_forme(new_species_id, recompute_stats);
         }
     }
 
@@ -1338,6 +1318,13 @@ impl Battle {
     /// non-permanent forme part of that at the same boundaries: a fainted
     /// Minior-Meteor returns to its own core colour, a fainted Morpeko to
     /// its set forme.
+    ///
+    /// faintMessages also ends Terastallization (sim/battle.ts:2568
+    /// `delete pokemon.terastallized`), after restoring a formeRegression
+    /// origin (:2558-2562) and clearVolatile; the side's one-Tera permit
+    /// stays spent. That part sweeps the whole team: the engine still
+    /// completes a Pursuit victim's switch (PS gen 5+ cancels it), leaving it
+    /// fainted on the bench.
     fn faint_forme_cleanup(&mut self) {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
@@ -1345,6 +1332,30 @@ impl Battle {
                     self.shields_down_leave_field(side, slot);
                     self.hunger_switch_leave_field(side, slot, true);
                 }
+            }
+            for i in 0..self.side(side).team.len() {
+                let m = &mut self.side_mut(side).team[i];
+                if !(m.fainted && m.terastallized) {
+                    continue;
+                }
+                // formeRegression is set only for a Tera'd Morpeko
+                // (sim/battle-actions.ts:1959-1964); an active one was
+                // restored above, a benched one is restored here.
+                let origin = if crate::pokemon::is_morpeko(m.species_id) && m.transform_base.is_none() {
+                    m.morpeko_origin().filter(|&o| o != m.species_id)
+                } else {
+                    None
+                };
+                if let Some(origin) = origin {
+                    m.change_forme(origin, true);
+                    // setSpecies caches the raw Speed (sim/pokemon.ts:1418).
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() && i < 6 {
+                        let spe = self.side(side).team[i].stats.spe as i64;
+                        self.ps_speed_cache[side as usize][i] = spe;
+                    }
+                }
+                self.side_mut(side).team[i].terastallized = false;
             }
         }
     }
@@ -2210,6 +2221,9 @@ impl Battle {
                     cursor.phase = StepPhase::Done(StepResult::Ended { winner: w });
                 } else if self.decision_phases && self.needs_replacements() {
                     self.apply_replacement_switches(p1, p2);
+                    // The replacement switch actions' faintMessages: a mon
+                    // can faint to hazards on entry.
+                    self.faint_forme_cleanup();
                     self.sync_weather_terrain_cache();
                     self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
                         (true, true) => Some(None),
@@ -21608,22 +21622,36 @@ mod tests {
     fn tera_happens_even_when_the_user_is_knocked_out_first() {
         // Slowbro (Water/Psychic, Tera Grass) is slower than Chandelure:
         // after Tera, Flamethrower is super effective and KOs it before its
-        // own move. As Water/Psychic it would resist and survive.
-        let mut b = tera_doubles([TERA_SNORLAX, FIRE_CHANDELURE], [ICE_WEAVILE, TERA_SLOWBRO], 5);
-        b.step(
-            &[
-                Choice::Move { actor_slot: 0, move_slot: 0, target: None },
-                Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
-            ],
-            &[
-                Choice::Move { actor_slot: 0, move_slot: 2, target: None },
-                Choice::Terastallize { actor_slot: 1, move_slot: 0, target: None },
-            ],
-        );
+        // own move. As Water/Psychic it would resist and survive (same-seed
+        // control). Fainting then ends its Tera (sim/battle.ts:2568) while
+        // the permit stays spent.
+        let run = |tera: bool| {
+            let mut b = tera_doubles([TERA_SNORLAX, FIRE_CHANDELURE], [ICE_WEAVILE, TERA_SLOWBRO], 5);
+            let slowbro = if tera {
+                Choice::Terastallize { actor_slot: 1, move_slot: 0, target: None }
+            } else {
+                Choice::Move { actor_slot: 1, move_slot: 0, target: None }
+            };
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P2, 1)) },
+                ],
+                &[Choice::Move { actor_slot: 0, move_slot: 2, target: None }, slowbro],
+            );
+            b
+        };
+        let b = run(true);
         let s = &b.p2.team[1];
-        assert!(s.terastallized && b.p2.conditions.tera_used, "Tera consumed before the KO");
+        assert!(b.p2.conditions.tera_used, "Tera consumed before the KO");
         assert!(s.fainted, "super-effective Flamethrower KOs Tera Grass Slowbro (hp {})", s.current_hp);
         assert_eq!(s.move_actions, 0, "KO'd before acting");
+        assert!(!s.terastallized, "faintMessages deletes terastallized");
+        let c = run(false);
+        let s = &c.p2.team[1];
+        assert!(!c.p2.conditions.tera_used && !s.terastallized, "control: no Tera");
+        assert!(!s.fainted && s.current_hp < s.stats.hp, "control: resisted Flamethrower hits, Slowbro survives");
+        assert_eq!(s.move_actions, 1, "control: Slowbro acts");
     }
 
     #[test]
@@ -21649,6 +21677,213 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
         );
         assert!(!spent.p1.team[0].terastallized, "spent permit: no Tera");
+    }
+
+    // Tera ends at faint: PS a5df8274 faintMessages (sim/battle.ts:2558-2574)
+    // restores a formeRegression origin, runs clearVolatile(false), marks the
+    // mon fainted and at :2568 `delete pokemon.terastallized`. The side's
+    // one-Tera permit (`side.terastallized`-equivalent `tera_used`) stays
+    // spent. A live Tera holder keeps its Tera, including across switch-out.
+    // https://bulbapedia.bulbagarden.net/wiki/Terastal_phenomenon
+    const SEISMIC_FURRET: &str = r#"{"species":"furret","gender":"M","level":50,"ability":"keeneye","nature":"hardy","moves":["seismictoss","splash"]}"#;
+
+    fn assert_base_types(m: &crate::pokemon::Pokemon, what: &str) {
+        let s = m.species();
+        assert_eq!(m.effective_types(), (s.types, s.num_types), "{what}: base typing");
+    }
+
+    fn assert_tera_types(m: &crate::pokemon::Pokemon, what: &str) {
+        assert_eq!(m.effective_types(), ([m.tera_type, 0], 1), "{what}: Tera typing");
+    }
+
+    #[test]
+    fn tera_faint_clears_an_ordinary_holders_tera_but_not_the_permit() {
+        // Snorlax Terastallizes (order 106, before moves), then the faster
+        // Furret's Seismic Toss KOs it at 1 HP. No replacement in doubles.
+        let mut b = tera_doubles([TERA_SNORLAX, SPLASH_AUDINO], [SEISMIC_FURRET, SPLASH_AUDINO], 1);
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+        );
+        let m = &b.p1.team[0];
+        assert!(m.fainted, "Seismic Toss KOs it");
+        assert_eq!(m.move_actions, 0, "KO'd before its own move: the Tera came first");
+        assert!(b.p1.conditions.tera_used, "the permit stays spent");
+        assert!(!m.terastallized, "faintMessages deletes terastallized");
+        assert_base_types(m, "fainted");
+        assert_eq!(species_slug(m), "snorlax");
+    }
+
+    #[test]
+    fn tera_live_holder_keeps_its_tera_on_the_field_and_across_switch_out() {
+        // Control: same turn without the KO, then a switch-out and back in.
+        let p1 = TeamBuilder::from_json(&format!("[{TERA_SNORLAX},{SPLASH_AUDINO},{FIRE_CHANDELURE}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SEISMIC_FURRET},{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        let foe = [Choice::Move { actor_slot: 0, move_slot: 1, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }];
+        b.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            &foe,
+        );
+        assert!(b.p1.team[0].terastallized && b.p1.conditions.tera_used);
+        assert_tera_types(&b.p1.team[0], "live");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }], &foe);
+        let i = b.p1.team.iter().position(|m| species_slug(m) == "snorlax").unwrap();
+        assert!(!b.p1.active.contains(&(i as u8)), "Snorlax is benched");
+        assert!(b.p1.team[i].terastallized, "Tera persists on the bench");
+        assert_tera_types(&b.p1.team[i], "benched");
+    }
+
+    #[test]
+    fn tera_faint_clears_a_tera_hangry_morpekos_tera_and_forme() {
+        // Hangry at residual, then Terastallize (formeRegression keeps
+        // Hangry) and a Seismic Toss KO before it moves: faintMessages
+        // restores the set forme and deletes terastallized.
+        let mut b = morpeko_singles(true, SEISMIC_FURRET);
+        morpeko_turn(&mut b, 1, 1); // both Splash -> Hangry
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry");
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 1, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let m = &b.p1.team[0];
+        assert!(m.fainted, "Seismic Toss KOs it");
+        assert!(b.p1.conditions.tera_used, "the permit stays spent");
+        assert_eq!(species_slug(m), "morpeko", "faint restores the set forme");
+        assert!(!m.terastallized, "faintMessages deletes terastallized");
+        assert_base_types(m, "fainted");
+    }
+
+    #[test]
+    fn tera_faint_revived_former_holder_returns_without_tera() {
+        // Snorlax Terastallizes and is KO'd; Pawmot's Revival Blessing
+        // (data/moves.ts:15110, sim/battle.ts:2781-2797) brings it back. It
+        // returns as a Normal type and the spent permit offers no Tera.
+        let p1 = TeamBuilder::from_json(&format!(r#"[{TERA_SNORLAX},{{"species":"pawmot","level":50,"moves":["revivalblessing","splash"]}}]"#)).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SEISMIC_FURRET}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.p1.team[0].current_hp = 1;
+        let foe_splash = [Choice::Move { actor_slot: 0, move_slot: 1, target: None }];
+        b.step(
+            &[Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert!(b.p1.team[0].fainted && b.p1.conditions.tera_used, "Tera'd, then KO'd");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[]);
+        assert_eq!(b.p1.active[0], 1, "Pawmot replaced it");
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Switch { actor_slot: 0, team_index: 0 }],
+            &foe_splash,
+        );
+        let m = &b.p1.team[0];
+        assert!(m.is_alive() && m.current_hp == m.stats.hp / 2, "revived at half HP");
+        assert!(!m.terastallized, "revived without Tera");
+        assert_base_types(m, "revived");
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 0 }], &foe_splash);
+        assert_eq!(b.p1.active[0], 0, "Snorlax back in");
+        assert!(!b.p1.team[0].terastallized);
+        assert_base_types(&b.p1.team[0], "back in");
+        let lc = b.legal_choices(SideRef::P1, 0);
+        assert!(!lc.iter().any(|c| matches!(c, Choice::Terastallize { .. })), "permit spent: no Tera offered");
+    }
+
+    #[test]
+    fn tera_faint_pursuit_ko_of_a_switching_holder_clears_its_tera() {
+        // A Terastallized Snorlax (fixture) at 1 HP switches out; Pursuit
+        // intercepts and KOs it (beforeSwitchOut). Whichever slot it ends up
+        // in, faintMessages has deleted its Tera.
+        let p1 = TeamBuilder::from_json(r#"[{"species":"weavile","level":50,"ability":"pressure","nature":"adamant","moves":["pursuit","iceshard","protect","swordsdance"],"evs":{"atk":252,"spe":252}}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{TERA_SNORLAX},{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        b.p2.team[0].terastallized = true; // AUDIT-OK: fixture, Tera'd on an earlier turn
+        b.p2.conditions.tera_used = true;
+        b.p2.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        let m = &b.p2.team[0];
+        assert!(m.fainted, "Pursuit KOs the switcher");
+        assert!(b.p2.conditions.tera_used, "the permit stays spent");
+        assert!(!m.terastallized, "faintMessages deletes terastallized");
+        assert_base_types(m, "fainted");
+    }
+
+    #[test]
+    fn tera_faint_hazard_ko_of_a_replacement_clears_its_tera() {
+        // A Terastallized Snorlax (fixture, 1 HP, benched) replaces a fainted
+        // lead into Stealth Rock and faints on entry, after the end-of-turn
+        // faint boundaries have already run.
+        let p1 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO},{TERA_SNORLAX},{FIRE_CHANDELURE}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.p1.team[0].current_hp = 0;
+        b.p1.team[0].fainted = true;
+        b.p1.team[1].terastallized = true; // AUDIT-OK: fixture, Tera'd on an earlier turn
+        b.p1.conditions.tera_used = true;
+        b.p1.team[1].current_hp = 1;
+        b.p1.conditions.stealth_rock = true;
+        assert!(b.needs_replacements());
+        b.step(&[Choice::Switch { actor_slot: 0, team_index: 1 }], &[Choice::Pass { actor_slot: 0 }]);
+        let m = &b.p1.team[1];
+        assert!(m.fainted, "Stealth Rock KOs the replacement");
+        assert!(b.p1.conditions.tera_used, "the permit stays spent");
+        assert!(!m.terastallized, "faintMessages deletes terastallized");
+        assert_base_types(m, "fainted");
+    }
+
+    #[test]
+    fn tera_faint_benched_pursuit_victim_restores_the_tera_hangry_origin() {
+        // Tera as Hangry makes Hangry its base (formeRegression), so the
+        // switch-out keeps Hangry; a Pursuit KO on the way out must still
+        // restore the set forme (sim/battle.ts:2558-2562) before ending Tera,
+        // wherever the fainted mon ends up.
+        let weavile = r#"{"species":"weavile","gender":"M","level":50,"ability":"pressure","nature":"adamant","moves":["pursuit","splash"],"evs":{"atk":252,"spe":252}}"#;
+        let mut b = morpeko_singles(true, weavile);
+        morpeko_turn(&mut b, 1, 1); // both Splash -> Hangry
+        b.step(&[Choice::Terastallize { actor_slot: 0, move_slot: 1, target: None }], &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }]);
+        assert!(b.p1.team[0].terastallized);
+        assert_eq!(species_slug(&b.p1.team[0]), "morpekohangry");
+        b.p1.team[0].current_hp = 1;
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 1 }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let m = &b.p1.team[0];
+        assert!(m.fainted, "Pursuit KOs the switcher");
+        assert!(b.p1.conditions.tera_used, "the permit stays spent");
+        assert_eq!(species_slug(m), "morpeko", "set forme restored");
+        assert!(!m.terastallized, "faintMessages deletes terastallized");
+        assert_base_types(m, "fainted");
+        assert_eq!(m.stats.spe, crate::pokemon::compute_stats(m.species(), m.level, &m.ivs, &m.evs, crate::pokemon::nature_by_id(m.nature_id)).spe);
+    }
+
+    #[test]
+    fn canonical_hash_ignores_how_a_fainted_mon_lost_its_tera() {
+        // After the fix a fainted former Tera holder is the same state as a
+        // fainted mon that never Terastallized, given the same spent permit.
+        let ko = |tera: bool| {
+            let mut b = tera_doubles([TERA_SNORLAX, SPLASH_AUDINO], [SEISMIC_FURRET, SPLASH_AUDINO], 1);
+            b.p1.team[0].current_hp = 1;
+            b.p1.conditions.tera_used = true;
+            let snorlax = if tera {
+                b.p1.conditions.tera_used = false;
+                Choice::Terastallize { actor_slot: 0, move_slot: 0, target: None }
+            } else {
+                Choice::Move { actor_slot: 0, move_slot: 0, target: None }
+            };
+            b.step(
+                &[snorlax, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            );
+            assert!(b.p1.team[0].fainted && b.p1.conditions.tera_used);
+            b
+        };
+        assert_eq!(ko(true).canonical_hash(), ko(false).canonical_hash());
     }
 
     // Shields Down (PS a5df8274 data/abilities.ts:4239-4280): on switch-in
