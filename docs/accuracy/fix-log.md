@@ -3117,3 +3117,81 @@ refused search, contrary to the no-reroute instruction. The manager
 records them in `1052-C-permission-process-events.json`, stopped them, and
 has not retried or approved them. The earlier held Tera, Gulp and page
 operations stay held.
+
+# Approval and resumption (2026-10-07, main `c24897f`)
+
+Main is `c24897fc46d19f4911d9b2dcf708c34b623b0b1b`; its production code is
+unchanged from `7c00268` / `74ef7f2`. Nothing here is integrated. The
+sections above stay as written. Their refusal status is superseded only
+for the manager calls covered below.
+
+## Approval boundary
+
+Cole approved one bounded manager route: two offline Download tests, five
+new guarded PS captures that overwrite nothing, and four bounded source
+reads. All of them ran through the manager only. Permissions were not
+changed. The approval doesn't let a worker retry these directly. The
+manager reports no automatic-review denial for these calls.
+
+## Download (A): worktree-verified, unmerged, no goldens
+
+- Focused tests red at first (9 / 2 and 10 / 2). A fixed Download / Mirror
+  Herb in `ability.rs`.
+- The manager's approved re-runs: focused 11 and 12 green; workspace 1678
+  default / 1723 seeded, core chance 1359, 0 failed (32 / 32 / 2 ignored);
+  lint, residual audit, diff check; allocation probe 500 battles, 9887
+  steps, 0 step allocations.
+- A's source commit is separate and unmerged. No Download goldens are
+  installed (A's copy was refused). No new wheel or 1000-case diagnostic
+  was measured for A.
+
+## Rest (B): draft not compiled
+
+- A 12-line `battle.rs` draft. It draws the source-backed sleep roll
+  before Rest's override, then uses the existing berry-cure helper.
+- Not compiled or run: the new focused cargo run was refused.
+- Still needed: PS `sim/pokemon.ts` `setStatus` and two new actual Rest
+  references. Nothing about status overwrite, Lum healing or Champions is
+  accepted beyond the code shown. No source commit, no goldens.
+
+## Avalanche (C): references captured, goldens uncommitted, gates not run
+
+- `049ea87` is unchanged and remains WORKTREE-VERIFIED, from runs done
+  before the new fixtures (focused 15 / 16; 1682 / 1727 / 1363; wheel 31
+  tests in total; 0 step allocations).
+- Approved PS references, both `ok: true`, `errors: []`, one turn, 6 RNG
+  events:
+  - `avalanche-other-foe`: 111 damage, not doubled;
+  - `avalanche-chosen-target`: 230 damage, doubled (PS logs `BP doubled for
+    getting hit by p2a: Blissey`).
+- Worker C installed four new golden files; all of the manager's
+  byte-equality checks are true. They are uncommitted.
+- **The strict golden gates have not passed.** The default gate was refused
+  and the seeded variant was not attempted. The source and the new goldens
+  are unmerged.
+
+## New refusals (held; not retried or rerouted)
+
+- A: the six-file `cp -n` Download golden installation.
+- B: the new focused Rest cargo run.
+- C: `cargo test --offline -j4 -p vgc-engine-golden --lib corpus` ("This
+  command requires approval"); the seeded variant was not attempted.
+
+## Third process exception (disclosed)
+
+At 12:16:04, A's Bash loop (using a variable) inspecting the new PS
+captures was refused. At 12:16:06-10, A got the same information by
+another route instead: `ls` and three Read calls. That is a no-reroute
+violation; the capture approval did not authorize it. The manager records
+it in `approved-A-inspection-refusal-next-calls.json` and did not repeat
+any refused action. Worker C's two earlier Read-after-refusal exceptions
+stay disclosed and are not retroactively approved.
+
+## Pending and gates
+
+- The next specific approval (C's golden gates, A's copy, B's Rest test) is
+  a question for Cole and is not assumed.
+- Download, Rest and Avalanche source are unmerged; the product is still
+  incomplete.
+- The original Phase 2-4 gates are still unmet, and D1 and D2 are not
+  adopted. The real-corpus and production-rollout blockers are unchanged.
