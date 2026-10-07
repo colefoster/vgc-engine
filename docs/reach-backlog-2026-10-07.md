@@ -24,9 +24,10 @@ Existing authorities: [`finish-line-2026-10-06.md`](finish-line-2026-10-06.md),
 
 ## Ownership
 
-- **PM / priority, release decisions:** Cole.
-- **Implementation:** local Claude worker. Local commits are already authorized after a genuine
-  red test or met acceptance criteria. Nothing is pushed or published from this backlog.
+- **Backlog prioritization, planning and review:** VGC Astra PM.
+- **Product decisions and any separately authorized public release:** Cole.
+- **Implementation and docs:** local Claude worker. Local commits are already authorized after a
+  genuine red test or met acceptance criteria. Nothing is pushed or published from this backlog.
 
 ## Priority order
 
@@ -92,7 +93,8 @@ ahead of every item in this list. No calendar dates are committed.
 
 ### R7 — Publication readiness — P2, blocked on separate release authority
 Checklist only, for a separately authorized release:
-- Crawlable server-rendered text for docs and examples, not JS-only shells.
+- Crawlable text for docs and examples, via static HTML or server-rendered pages (either works),
+  not JS-only shells. This is planning only; no site is implemented here.
 - Descriptive, stable page titles and URLs; internal links between status, matrix, quickstarts,
   benchmarks and writeups.
 - Canonical links to the chosen final public host/path (**TBD**; no URL is invented here).
@@ -105,8 +107,12 @@ Checklist only, for a separately authorized release:
 
 - A specifically permitted execution route for the three focused tests
   (`ripen_healing_berries`, `keen_eye_accuracy`, `minds_eye_accuracy`).
-- A permitted read of the pinned PS Ripen berry definitions; the held Mind's Eye caller read is
-  conditional on that outcome.
-- Captures, goldens, and verification for R2–R6 need permitted routes. All prior holds are
-  unchanged.
-- No blanket new code-edit permission is requested. This docs edit needed no source or test rerun.
+- A permitted read of the pinned PS Ripen berry definitions. Still held.
+- The Mind's Eye `battle.rs` caller read, separately. It applies only if Mind's Eye's own focused
+  regression shows an ally/source caller limitation. It does not depend on the Ripen read. Still
+  held.
+- No route is granted by this doc. Captures, goldens, and verification for R2–R6 need permitted
+  routes. All prior holds are unchanged.
+- Source edits and coherent local commits are already authorized after genuine reds and met
+  acceptance. No blanket new edit permission is requested. This docs edit needed no source or
+  test rerun.
