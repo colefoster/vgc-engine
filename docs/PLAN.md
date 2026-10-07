@@ -35,6 +35,11 @@ work order.
 > quickstarts, a coverage/accuracy matrix, benchmarks and writeups. Planning
 > only; it is not a gate change.
 
+> **Target regressions (2026-10-07):** see
+> [`docs/target-regressions-2026-10-07.md`](target-regressions-2026-10-07.md)
+> for the pre-fix Ripen / Keen Eye / Mind's Eye baseline and next fix owners.
+> Not a gate change.
+
 ---
 
 ## Phase 0 — Scaffold (DONE 2026-06-15)
