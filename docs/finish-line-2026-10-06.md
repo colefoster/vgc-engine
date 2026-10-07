@@ -273,7 +273,10 @@ the 72 controls) still describes main. Nothing below is integrated.
   authorized scope.
 
 **New policy-blocked operations (local Claude permission refusals, not
-automatic-review rejections; none retried or approved):** Download focused
+automatic-review rejections).** These refused actions remain held; the
+manager has not retried, rerouted or approved them. The exception is worker
+C's two historical inspection reroutes, disclosed in the next paragraph.
+Refused actions: Download focused
 tests and three captures; the Mirror Herb item-source read; the Rest
 move-source read; C's external `ls` precheck and two Avalanche captures;
 C's combined `grep`/`awk` and backtick `grep` source searches. Manager

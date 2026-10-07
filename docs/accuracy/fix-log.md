@@ -3094,13 +3094,18 @@ hypothesis was not accepted. No production edit.
   keyed case; 133 missing, 3182 repairs, 27065 leftovers; seeded 401 fully
   clean, 599 first-draw divergences; prefix turns keyed 8573/8837, seeded
   6057/6621 of 10755. Case `15a94ea25582f2d0` now first diverges at turn 6
-  (p1a HP 62 vs 101; 5/10 turns matched), not at turn 3. No hash changed;
-  no earlier output overwritten.
+  (p1a HP 62 vs 101; 5/10 turns matched), not at turn 3. The original
+  input, team, job and capture file hashes were unchanged, and no earlier
+  evidence output was overwritten. (Engine canonical battle hashes are not
+  claimed unchanged; corrected HP outcomes change them.)
 
 ## Policy-blocked operations and process exceptions
 
-New local Claude permission refusals (not automatic-review rejections;
-none retried, rerouted or approved): Download focused tests and three
+New local Claude permission refusals (not automatic-review rejections).
+The captures and the other refused actions below remain held; the manager
+has not retried, rerouted or approved them. Worker C's two historical
+inspection exceptions are disclosed in the next paragraph. Refused
+actions: Download focused tests and three
 captures; the Mirror Herb item-source read; the Rest move-source read;
 worker C's external `ls` precheck and two Avalanche captures; worker C's
 combined `grep`/`awk` and backtick `grep` source searches. Manager records:
