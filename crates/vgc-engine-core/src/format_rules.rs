@@ -411,14 +411,16 @@ pub fn verify_team(team: &[TeamMember], rules: &FormatRules) -> Result<(), Vec<V
         if let Some(json) = rules.availability_json {
             let availability: serde_json::Value = serde_json::from_str(json).expect("checked-in format overlay");
             let allowed = |field: &str, value: &str| availability[field].as_array().unwrap().iter().any(|x| x.as_str() == Some(value));
-            if !allowed("species", &slugify(&m.species)) {
+            // The resolved row's slug: a rowless cosmetic forme is its base.
+            let species_slug = species_def.map_or_else(|| slugify(&m.species), |sp| sp.slug.to_string());
+            if !allowed("species", &species_slug) {
                 push(&mut v, Rule::BannedSpecies, format!("{} is unavailable in {}", m.species, rules.name));
             }
             if let Some(item) = m.item.as_deref().filter(|x| !x.is_empty()) {
                 if !allowed("items", &slugify(item)) { push(&mut v, Rule::UnknownItem, format!("{} is unavailable in {}", item, rules.name)); }
             }
             for mv in &m.moves {
-                let learnset = &availability["learnsets"][slugify(&m.species)];
+                let learnset = &availability["learnsets"][species_slug.as_str()];
                 if !learnset.as_array().is_some_and(|xs| xs.iter().any(|x| x.as_str() == Some(&slugify(mv)))) {
                     push(&mut v, Rule::MoveLegality, format!("cannot learn {} in {}", mv, rules.name));
                 }
@@ -989,6 +991,59 @@ Level: 50
         let team = verify_showdown_text(paste, &REG_M_B).expect("legal paste");
         assert_eq!(team.len(), 4);
     }
+
+    // PS cosmetic formes (data/pokedex.ts `cosmeticFormes`, Florges :12619)
+    // are copies of their base species (sim/dex-species.ts:452-481), so every
+    // verifier rule must treat them as the base: allow-list, ability,
+    // learnset and Species Clause.
+
+    /// `legal_team()` with Talonflame (set 2) replaced by a Florges set.
+    fn with_florges(species: &str, moves: &[&str]) -> Vec<TeamMember> {
+        let mut team = legal_team();
+        let mut f = base(species);
+        f.ability = Some("Flower Veil".into());
+        f.item = Some("Leftovers".into());
+        f.moves = moves.iter().map(|m| m.to_string()).collect();
+        team[1] = f;
+        team
+    }
+
+    fn verdict(team: &[TeamMember], rules: &FormatRules) -> Vec<(Option<usize>, Rule)> {
+        match verify_team(team, rules) {
+            Ok(()) => vec![],
+            Err(v) => v.iter().map(|x| (x.member, x.rule)).collect(),
+        }
+    }
+
+    #[test]
+    fn cosmetic_formes_verify_exactly_like_their_base() {
+        // A learnable set and one with an unlearnable move (Earthquake).
+        for rules in [&REG_M_B, &REG_M_C] {
+            for moves in [&["Moonblast", "Protect"][..], &["Moonblast", "Earthquake"][..]] {
+                let want = verdict(&with_florges("Florges", moves), rules);
+                assert!(!want.iter().any(|(_, r)| *r == Rule::UnknownSpecies), "{}: base resolves", rules.id);
+                for forme in ["Florges-Blue", "Florges-Orange", "Florges-White", "Florges-Yellow"] {
+                    assert_eq!(verdict(&with_florges(forme, moves), rules), want, "{} {forme} {moves:?}", rules.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn species_clause_sees_through_cosmetic_formes() {
+        // Dragonite (set 4) replaced by a second Florges with its own item.
+        let second = |species: &str| {
+            let mut team = with_florges("Florges", &["Moonblast"]);
+            let mut f = base(species);
+            f.ability = Some("Flower Veil".into());
+            f.item = Some("Mystic Water".into());
+            f.moves = vec!["Moonblast".into()];
+            team[3] = f;
+            verdict(&team, &REG_M_B)
+        };
+        assert!(second("Florges").contains(&(Some(3), Rule::SpeciesClause)), "control: two Florges");
+        assert_eq!(second("Florges-Yellow"), second("Florges"), "a cosmetic forme is the same species");
+    }
 }
 
 #[cfg(test)]
@@ -1008,5 +1063,28 @@ mod regmc_tests {
         assert!(violations("Qwilfish-Hisui", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
         assert!(!violations("Floette-Eternal", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
         assert!(violations("Floette", &REG_M_C).iter().any(|v| v.rule == Rule::BannedSpecies));
+    }
+
+    #[test]
+    fn cosmetic_formes_share_their_base_form_restriction() {
+        // data/pokedex.ts cosmeticFormes: Floette :12570, Furfrou :12684,
+        // Florges :12619. Reg M-C bans base Floette but not Floette-Eternal.
+        let rules = |s: &str| violations(s, &REG_M_C).iter().map(|v| v.rule).collect::<Vec<_>>();
+        for (base, formes) in [
+            ("Floette", &["Floette-Blue", "Floette-Orange", "Floette-White", "Floette-Yellow"][..]),
+            ("Furfrou", &["Furfrou-Heart", "Furfrou-La Reine"][..]),
+            ("Florges", &["Florges-White"][..]),
+        ] {
+            let want = rules(base);
+            assert!(!want.contains(&Rule::UnknownSpecies), "{base} resolves");
+            for f in formes {
+                assert_eq!(rules(f), want, "{f} is {base}");
+            }
+        }
+        // A functional forme keeps its own verdict; unknown names stay unknown.
+        assert_ne!(rules("Floette-Eternal"), rules("Floette-Blue"));
+        for bad in ["Florges-Purple", "Floette-Gold", "Pokestar Giant-2"] {
+            assert!(rules(bad).contains(&Rule::UnknownSpecies), "{bad}");
+        }
     }
 }

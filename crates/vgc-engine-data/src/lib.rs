@@ -125,6 +125,13 @@ pub fn is_inert_item(slug: &str) -> bool {
     INERT_ITEMS.binary_search(&slug).is_ok()
 }
 
+/// The base species row a PS cosmetic forme id (e.g. `florgesyellow`)
+/// resolves to, if it is one with no row of its own ([`COSMETIC_FORMES`]).
+/// Functional formes and unknown ids return `None`.
+pub fn cosmetic_base(id: &str) -> Option<u16> {
+    COSMETIC_FORMES.binary_search_by(|(k, _)| (*k).cmp(id)).ok().map(|i| COSMETIC_FORMES[i].1)
+}
+
 /// True iff the species (by `species_id` table index) can legally learn the
 /// move (by `move_id` table index).
 ///
@@ -152,6 +159,20 @@ pub fn species_can_learn(species_id: u16, move_id: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cosmetic_table_is_sorted_and_never_shadows_a_row() {
+        assert!(COSMETIC_FORMES.windows(2).all(|w| w[0].0 < w[1].0), "sorted, unique");
+        assert!(!COSMETIC_FORMES.is_empty());
+        for (id, base) in COSMETIC_FORMES {
+            assert!(SPECIES.iter().all(|s| s.slug != *id), "{id} has its own row");
+            let b = &SPECIES[*base as usize];
+            assert!(id.starts_with(b.slug) && id.len() > b.slug.len(), "{id} is a {} forme", b.slug);
+            assert_eq!(cosmetic_base(id), Some(*base));
+        }
+        assert_eq!(cosmetic_base("florges"), None);
+        assert_eq!(cosmetic_base(""), None);
+    }
 
     #[test]
     fn type_chart_is_full() {
