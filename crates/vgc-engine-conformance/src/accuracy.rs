@@ -935,10 +935,14 @@ pub fn first_draw_divergence(
     acc: &AccBattle,
     eng: &[vgc_engine_core::ps_rng::PsDraw],
 ) -> Option<DrawDiv> {
-    let ps: Vec<&RawDraw> = acc.start_raw.iter().chain(acc.turns.iter().flat_map(|t| t.raw.iter())).collect();
     // Only compare within the turns the engine actually played.
     let last_turn = acc.turns.iter().filter(|t| t.has_state).map(|t| t.base.turn).max().unwrap_or(0);
-    let ps: Vec<&RawDraw> = ps.into_iter().filter(|d| d.turn <= last_turn).collect();
+    let ps: Vec<&RawDraw> = acc
+        .start_raw
+        .iter()
+        .chain(acc.turns.iter().flat_map(|t| t.raw.iter()))
+        .filter(|d| d.turn <= last_turn)
+        .collect();
     let n = ps.len().max(eng.len());
     let mut turn_start: HashMap<u32, usize> = HashMap::new();
     for i in 0..n {
