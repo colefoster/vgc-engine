@@ -572,10 +572,28 @@ impl VolatileSet {
     }
 }
 
+/// Serde default for [`Pokemon::set_species_id`] in snapshots saved before
+/// the field existed.
+fn unknown_set_species() -> u16 {
+    u16::MAX
+}
+
+/// A Minior core colour (Minior / -Orange / -Yellow / ...), not Meteor.
+pub(crate) fn is_minior_core(species_id: u16) -> bool {
+    species_id != data::species_id::MINIORMETEOR
+        && data::SPECIES.get(species_id as usize).is_some_and(|s| s.slug.starts_with("minior"))
+}
+
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pokemon {
     pub species_id: u16,
+    /// The species the set was built as (PS `pokemon.set.species`), which
+    /// Shields Down returns Minior-Meteor to (data/abilities.ts:4249,
+    /// :4262) — Minior's own core colour. `u16::MAX` = unknown: a
+    /// snapshot saved before this field existed.
+    #[serde(default = "unknown_set_species")]
+    pub set_species_id: u16,
     pub level: u8,
     /// This individual's gender. Resolved at team build via PS precedence
     /// (explicit set gender → species fixed gender → ratio'd). For a
@@ -998,6 +1016,7 @@ impl Pokemon {
         Pokemon {
             // ---- identity (from params) ----
             species_id,
+            set_species_id: species_id,
             level,
             gender,
             moves,
@@ -1334,6 +1353,15 @@ impl Pokemon {
     #[inline]
     pub fn sync_can_mega_evolve(&mut self) {
         self.can_mega_evolve = data::mega_stone_for(self.item_id, self.species_id).is_some();
+    }
+
+    /// The core colour Shields Down returns this Minior to: its
+    /// `set_species_id`. A legacy snapshot (unknown origin) falls back to the
+    /// current species while that is still a core colour. `None` for a
+    /// legacy Minior-Meteor whose colour was never recorded: it stays Meteor
+    /// rather than inventing one (no snapshot migration).
+    pub fn minior_core_species(&self) -> Option<u16> {
+        [self.set_species_id, self.species_id].into_iter().find(|&id| is_minior_core(id))
     }
 
     /// Undo Transform / Imposter (PS clearVolatile on switch-out:

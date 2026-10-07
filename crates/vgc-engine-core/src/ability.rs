@@ -488,6 +488,12 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     if ability_id == data::ability_id::FORECAST {
         battle.refresh_forecast_formes();
     }
+    // Shields Down onStart (data/abilities.ts:4240-4252). Its
+    // `onSwitchInPriority: -1` puts it after every priority-0 ability in a
+    // batched SwitchIn, which runs it after the batch instead.
+    if ability_id == data::ability_id::SHIELDSDOWN && !battle.in_switch_in_batch() {
+        battle.shields_down_update(side, slot);
+    }
     // Weather-setting abilities. Gen 9: 5-turn duration; weather rocks
     // (Damp/Heat/Smooth/Icy Rock) extend to 8 when the setter holds the
     // matching rock.

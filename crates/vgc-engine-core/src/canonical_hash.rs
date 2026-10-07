@@ -196,8 +196,11 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 43)?;
+        let mut s = ser.serialize_struct("Pokemon", 44)?;
         s.serialize_field("species_id", &p.species_id)?;
+        // Minior's future core colour (`minior_core_key`). A legacy core
+        // Minior that still knows its colour hashes like a fresh one.
+        s.serialize_field("minior_core", &minior_core_key(p))?;
         s.serialize_field("level", &p.level)?;
         s.serialize_field("gender", &(p.gender as u8))?;
         s.serialize_field("moves", &p.moves)?;
@@ -413,7 +416,7 @@ struct CanonicalBattleView<'a> {
 /// Sort key for canonical bench ordering. Tuple covers identity and
 /// in-game-significant runtime state so two distinct bench mons can't
 /// collide, while genuinely interchangeable duplicates do.
-fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8) {
+fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8, u16) {
     (
         p.species_id,
         p.item_id,
@@ -426,7 +429,22 @@ fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8) {
         // matter for game state (faint count, terminal check) but should
         // group together for stable ordering.
         u8::from(p.fainted),
+        // Hashed below; as a key too, so two benched Minior-Meteor that
+        // differ only in their future colour sort the same either way.
+        minior_core_key(p),
     )
+}
+
+/// Shields Down returns Minior-Meteor to its set colour, so two Meteor
+/// states with different colours have different futures. The future core
+/// (or u16::MAX: none, or a legacy unknown origin) for Minior only; every
+/// other species gets the constant.
+fn minior_core_key(p: &Pokemon) -> u16 {
+    if p.species_id == crate::data::species_id::MINIORMETEOR || crate::pokemon::is_minior_core(p.species_id) {
+        p.minior_core_species().unwrap_or(u16::MAX)
+    } else {
+        u16::MAX
+    }
 }
 
 fn canonical_side<'a>(side: &'a Side) -> CanonicalSideView<'a> {

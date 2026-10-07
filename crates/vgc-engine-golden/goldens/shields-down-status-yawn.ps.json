@@ -1,0 +1,206 @@
+{
+  "ok": true,
+  "name": "shields-down-status-yawn",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 4,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Snorlax",
+      "hp": 236,
+      "max": 236
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Furret",
+      "hp": 161,
+      "max": 161
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Minior-Yellow",
+      "hp": 136,
+      "max": 136
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Audino",
+      "hp": 179,
+      "max": 179
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Yawn",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Glare",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Super Fang",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 68,
+      "max": 136,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Yawn",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "status",
+      "actor": "p2a",
+      "status": "slp",
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 90,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Range",
+      "value": 2,
+      "bound": 3,
+      "site": "Battle.onStart (data/conditions.js:80)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791347886\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Snorlax, L50, M|\n|poke|p1|Furret, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Minior-Yellow, L50|\n|poke|p2|Audino, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1791347886\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Snorlax|Snorlax, L50, M|236/236\n|switch|p1b: Furret|Furret, L50, M|161/161\n|switch|p2a: Minior|Minior-Yellow, L50|136/136\n|switch|p2b: Audino|Audino, L50, F|179/179\n|debug|End handler suppressed by Embargo, Klutz or Magic Room\n|-formechange|p2a: Minior|Minior-Meteor||[from] ability: Shields Down\n|turn|1|\n|t:|1791347886\n|move|p1b: Furret|Yawn|p2a: Minior\n|-immune|p2a: Minior|[from] ability: Shields Down\n|debug|add volatile [yawn] interrupted\n|debug|move failed because it did nothing\n|move|p2a: Minior|Splash|p2a: Minior\n|-nothing\n|move|p2b: Audino|Splash|p2b: Audino\n|-nothing\n|move|p1a: Snorlax|Glare|p2a: Minior\n|-immune|p2a: Minior|[from] ability: Shields Down\n|debug|set status [par] interrupted\n|debug|move failed because it did nothing\n|\n|upkeep\n|turn|2|\n|t:|1791347886\n|move|p1b: Furret|Splash|p1b: Furret\n|-nothing\n|move|p2a: Minior|Splash|p2a: Minior\n|-nothing\n|move|p2b: Audino|Splash|p2b: Audino\n|-nothing\n|move|p1a: Snorlax|Super Fang|p2a: Minior\n|-damage|p2a: Minior|68/136\n|\n|-formechange|p2a: Minior|Minior-Yellow||[from] ability: Shields Down\n|upkeep\n|turn|3|\n|t:|1791347886\n|move|p2a: Minior|Splash|p2a: Minior\n|-nothing\n|move|p1b: Furret|Yawn|p2a: Minior\n|-start|p2a: Minior|move: Yawn|[of] p1b: Furret\n|move|p2b: Audino|Splash|p2b: Audino\n|-nothing\n|move|p1a: Snorlax|Splash|p1a: Snorlax\n|-nothing\n|\n|upkeep\n|turn|4|\n|t:|1791347886\n|move|p2a: Minior|Splash|p2a: Minior\n|-nothing\n|move|p1b: Furret|Splash|p1b: Furret\n|-nothing\n|move|p2b: Audino|Splash|p2b: Audino\n|-nothing\n|move|p1a: Snorlax|Splash|p1a: Snorlax\n|-nothing\n|\n|-end|p2a: Minior|move: Yawn|[silent]\n|-status|p2a: Minior|slp\n|upkeep\n|turn|5"
+}

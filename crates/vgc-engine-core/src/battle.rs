@@ -825,6 +825,10 @@ impl Battle {
                 crate::ability::on_switch_in(&mut b, side, slot);
             }
             b.defer_white_herb = false;
+            // Shields Down: onSwitchInPriority -1, after the abilities.
+            for &(side, slot) in &leads[..k] {
+                b.shields_down_update(side, slot);
+            }
             for &(side, slot) in &leads[..k] {
                 crate::item::on_switch_in(&mut b, side, slot);
             }
@@ -1258,6 +1262,103 @@ impl Battle {
                 m.stats.spe = stats.spe;
             }
         }
+    }
+
+    /// Shields Down's onStart / onResidual (PS a5df8274
+    /// data/abilities.ts:4241-4265): a Minior that isn't transformed becomes
+    /// Minior-Meteor while `hp > maxhp / 2`, and otherwise returns to its
+    /// own core colour (`pokemon.set.species`, `Pokemon::minior_core_species`).
+    /// A legacy Meteor with no recorded colour stays Meteor. Stats follow
+    /// the forme (`set_forme` recomputes them; max HP is kept). No RNG.
+    pub(crate) fn shields_down_update(&mut self, side: SideRef, slot: u8) {
+        use data::species_id::MINIORMETEOR;
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        if m.effective_ability_id() != data::ability_id::SHIELDSDOWN
+            || m.transform_base.is_some()
+            || !m.is_alive()
+            || !(m.species_id == MINIORMETEOR || crate::pokemon::is_minior_core(m.species_id))
+        {
+            return;
+        }
+        let target = if 2 * m.current_hp as u32 > m.stats.hp as u32 {
+            if m.species_id == MINIORMETEOR {
+                return;
+            }
+            MINIORMETEOR
+        } else {
+            if m.species_id != MINIORMETEOR {
+                return;
+            }
+            match m.minior_core_species() {
+                Some(core) => core,
+                None => return,
+            }
+        };
+        // A snapshot without the set species still knows its colour while
+        // it is a core: keep it before entering Meteor.
+        if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+            if m.set_species_id == u16::MAX && crate::pokemon::is_minior_core(m.species_id) {
+                m.set_species_id = m.species_id;
+            }
+        }
+        self.set_forme(side, slot, target, true);
+        // formeChange -> setSpecies caches the new raw Speed
+        // (sim/pokemon.ts:1418), as for Mega Evolution.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_reset_speed(side, slot as usize);
+        }
+    }
+
+    /// Minior-Meteor is a non-permanent forme (`formeChange` without
+    /// `isPermanent`), so `clearVolatile`'s `setSpecies(baseSpecies)`
+    /// (sim/pokemon.ts:1559) restores the set species when it leaves the
+    /// field: on switch-out (`do_switch`) and on fainting
+    /// (`shields_down_faint_cleanup`). A transformed mon reverts its own
+    /// Transform instead.
+    fn shields_down_leave_field(&mut self, side: SideRef, slot: u8) {
+        let core = match self.side(side).active_mon(slot as usize) {
+            Some(m) if m.species_id == data::species_id::MINIORMETEOR && m.transform_base.is_none() => {
+                m.minior_core_species()
+            }
+            _ => None,
+        };
+        if let Some(core) = core {
+            self.set_forme(side, slot, core, true);
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() {
+                self.ps_reset_speed(side, slot as usize);
+            }
+        }
+    }
+
+    /// PS faintMessages runs `clearVolatile(false)` on each fainted mon
+    /// (sim/battle.ts:2563) after every action, after the pre-move phase and
+    /// after the residuals, whether or not anything replaces it. Run the
+    /// Minior-Meteor part of that at the same boundaries: a fainted active
+    /// Meteor returns to its own core colour (and its stats).
+    fn shields_down_faint_cleanup(&mut self) {
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
+                    self.shields_down_leave_field(side, slot);
+                }
+            }
+        }
+    }
+
+    /// Shields Down's status / Yawn immunity (data/abilities.ts:4266-4278):
+    /// a holder in Minior-Meteor forme that isn't transformed.
+    pub(crate) fn shields_down_shielded(m: &crate::pokemon::Pokemon) -> bool {
+        m.species_id == data::species_id::MINIORMETEOR
+            && m.transform_base.is_none()
+            && m.effective_ability_id() == data::ability_id::SHIELDSDOWN
+    }
+
+    /// Set while a batched SwitchIn runs its priority-0 ability handlers;
+    /// Shields Down (`onSwitchInPriority: -1`) and White Herb (-2) wait.
+    pub(crate) fn in_switch_in_batch(&self) -> bool {
+        self.defer_white_herb
     }
 
     /// Shared Transform primitive — copies the target's species, ability, and
@@ -2091,6 +2192,8 @@ impl Battle {
                         return StepProgress::ChanceYield { pending, key, space };
                     }
                     self.white_herb_after_move();
+                    // runAction's faintMessages (sim/battle.ts:2835), before its Update.
+                    self.shields_down_faint_cleanup();
                     self.run_pending_drags();
 self.trigger_emergency_exits();
                     // runAction's Update comes before a switch request
@@ -2125,6 +2228,7 @@ self.trigger_emergency_exits();
                 // returns: `finalize_move_resolution`, then `idx += 1`.
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.white_herb_after_move();
+                self.shields_down_faint_cleanup();
                 self.run_pending_drags();
                 self.trigger_emergency_exits();
                 #[cfg(feature = "ps-rng")]
@@ -3349,6 +3453,8 @@ self.trigger_emergency_exits();
         }
         let megas = self.mega_order(p1_choices, p2_choices);
         self.apply_pre_turn_switches(p1_choices, p2_choices);
+        // The switch actions' faintMessages (a Pursuit KO).
+        self.shields_down_faint_cleanup();
 
         // 1b. Mega Evolution resolves here — PS `order: 104`, in the gap
         //     between switch resolution and move ordering. Transforming
@@ -4287,6 +4393,10 @@ self.trigger_emergency_exits();
             crate::ability::on_switch_in(self, side, slot);
         }
         self.defer_white_herb = false;
+        // Shields Down: onSwitchInPriority -1, after the abilities.
+        for &(_, side, slot) in &entered[..n] {
+            self.shields_down_update(side, slot);
+        }
         // White Herb's onAnySwitchIn also fires for a holder already in.
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
@@ -4422,6 +4532,7 @@ self.trigger_emergency_exits();
                 && s_view.team[team_index as usize].is_alive()
             {
                 crate::ability::on_switch_out(self, side, actor_slot);
+                self.shields_down_leave_field(side, actor_slot);
             }
         }
         let gravity_active = self.gravity_turns > 0;
@@ -13296,7 +13407,11 @@ self.trigger_emergency_exits();
                 // sleep routes through this same gate). Not breakable.
                 let leaf_guard_blocks =
                     ab == data::ability_id::LEAFGUARD && leaf_guard_sun;
-                let ability_status_block = purifying_salt_blocks || leaf_guard_blocks || match status {
+                // Shields Down — data/abilities.ts:4266-4272 onSetStatus
+                // returns false for every status while the holder is
+                // Minior-Meteor and not transformed.
+                let shields_down_blocks = Self::shields_down_shielded(m);
+                let ability_status_block = purifying_salt_blocks || leaf_guard_blocks || shields_down_blocks || match status {
                     // Thermal Exchange: data/abilities.ts:5002 onSetStatus.
                     Status::Burn => ab == data::ability_id::WATERBUBBLE
                         || ab == data::ability_id::WATERVEIL
@@ -13664,6 +13779,14 @@ self.trigger_emergency_exits();
         self.eot_perish_song();
         self.eot_late_item_residual();
         self.eot_ability_residual();
+        // 29. Shields Down (data/abilities.ts:4253-4265 onResidualOrder 29).
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() as u8 {
+                self.shields_down_update(side, slot);
+            }
+        }
+        // The residual action's faintMessages, before its Update.
+        self.shields_down_faint_cleanup();
         // Attract `onUpdate` sweep — lift infatuation on any mon whose
         // source has left the field via switch / faint this turn (PS
         // data/moves.ts:706 attract onUpdate). No RNG.
@@ -16455,10 +16578,13 @@ self.trigger_emergency_exits();
                     return;
                 }
                 if let Some((opp, slot)) = opp_target {
+                    // Shields Down's onTryAddVolatile blocks Yawn on an
+                    // untransformed Minior-Meteor (data/abilities.ts:4273-4278).
                     let appliable = self.side(opp).active_mon(slot as usize).is_some_and(|t| {
                         t.is_alive()
                             && matches!(t.status, Status::None)
                             && !t.volatiles.has(crate::pokemon::VolatileKind::Yawn)
+                            && !Self::shields_down_shielded(t)
                     });
                     if appliable {
                         let source_payload = ((actor_side as u8 as u32) << 8) | actor_slot as u32;
@@ -17228,17 +17354,25 @@ self.trigger_emergency_exits();
                 //
                 // PS source: data/moves.ts:14963.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Rest_(move)>
-                let (already_slp, full_hp, ability, grounded) =
+                let (already_slp, full_hp, ability, grounded, shielded) =
                     match self.side(actor_side).active_mon(actor_slot as usize) {
                         Some(a) if a.is_alive() => (
                             matches!(a.status, Status::Sleep),
                             a.current_hp >= a.stats.hp,
                             a.effective_ability_slug(),
                             a.is_grounded(),
+                            Self::shields_down_shielded(a),
                         ),
                         _ => return,
                     };
                 if already_slp || full_hp {
+                    return;
+                }
+                // onHit's setStatus('slp') fails on an untransformed
+                // Minior-Meteor (Shields Down onSetStatus,
+                // data/abilities.ts:4266-4272), and Rest returns before its
+                // heal (data/moves.ts:14984-14985).
+                if shielded {
                     return;
                 }
                 if matches!(ability, "insomnia" | "vitalspirit" | "comatose") {
@@ -21426,6 +21560,316 @@ mod tests {
             &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
         );
         assert!(!spent.p1.team[0].terastallized, "spent permit: no Tera");
+    }
+
+    // Shields Down (PS a5df8274 data/abilities.ts:4239-4280): on switch-in
+    // (onStart, priority -1) and at residual order 29, Minior above half
+    // HP becomes Minior-Meteor and at or below half returns to
+    // `pokemon.set.species` — its own core colour. Meteor is immune to
+    // every status (onSetStatus) and to Yawn (onTryAddVolatile). Meteor
+    // stats: data/pokedex.ts:14951-14958 (60/60/100/60/100/60) vs the core
+    // 60/100/60/100/60/120 (:14889-14895). EVs 4 HP give 136 max HP, so
+    // half is exactly 68.
+    const MINIOR_YELLOW: &str = r#"{"species":"minioryellow","level":50,"ability":"shieldsdown","nature":"hardy","moves":["splash","rockslide","protect","acrobatics"],"evs":{"hp":4}}"#;
+    const SPLASH_AUDINO: &str = r#"{"species":"audino","gender":"F","level":50,"ability":"klutz","nature":"hardy","moves":["splash","glare","yawn","healpulse"]}"#;
+
+    fn minior_id(slug: &str) -> u16 {
+        data::SPECIES.iter().position(|s| s.slug == slug).unwrap() as u16
+    }
+
+    fn minior_stats(m: &crate::pokemon::Pokemon, slug: &str) -> crate::pokemon::FinalStats {
+        let nature = crate::pokemon::nature_by_id(m.nature_id);
+        crate::pokemon::compute_stats(&data::SPECIES[minior_id(slug) as usize], m.level, &m.ivs, &m.evs, nature)
+    }
+
+    fn assert_minior_forme(m: &crate::pokemon::Pokemon, slug: &str, what: &str) {
+        assert_eq!(data::SPECIES[m.species_id as usize].slug, slug, "{what}: species");
+        let s = minior_stats(m, slug);
+        assert_eq!(
+            [m.stats.atk, m.stats.def, m.stats.spa, m.stats.spd, m.stats.spe],
+            [s.atk, s.def, s.spa, s.spd, s.spe],
+            "{what}: {slug} stats"
+        );
+    }
+
+    fn minior_singles(bench: bool) -> Battle {
+        let p1 = if bench { format!("[{MINIOR_YELLOW},{SPLASH_AUDINO}]") } else { format!("[{MINIOR_YELLOW}]") };
+        let p1 = TeamBuilder::from_json(&p1).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2)
+    }
+
+    fn splash_turn(b: &mut Battle, p2_move: u8) {
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: p2_move, target: Some(t(SideRef::P1, 0)) }],
+        );
+    }
+
+    #[test]
+    fn shields_down_lead_above_half_is_meteor_with_meteor_stats() {
+        let b = minior_singles(false);
+        let m = &b.p1.team[0];
+        assert_eq!((m.current_hp, m.stats.hp), (136, 136));
+        assert_minior_forme(m, "miniormeteor", "full-HP lead");
+    }
+
+    #[test]
+    fn shields_down_reverts_to_its_own_colour_at_half_and_back_above() {
+        let mut b = minior_singles(false);
+        b.p1.team[0].current_hp = 68; // exactly half: not `hp > maxhp / 2`
+        splash_turn(&mut b, 0);
+        assert_minior_forme(&b.p1.team[0], "minioryellow", "at half HP after residual");
+        b.p1.team[0].current_hp = 69;
+        splash_turn(&mut b, 0);
+        assert_minior_forme(&b.p1.team[0], "miniormeteor", "healed above half");
+        assert_eq!(b.p1.team[0].stats.hp, 136, "max HP unchanged");
+    }
+
+    #[test]
+    fn shields_down_meteor_blocks_status_and_yawn_but_the_core_does_not() {
+        let mut b = minior_singles(false);
+        splash_turn(&mut b, 1); // Glare
+        assert_eq!(b.p1.team[0].status, crate::pokemon::Status::None, "Meteor: no paralysis");
+        splash_turn(&mut b, 2); // Yawn
+        assert!(b.p1.team[0].volatiles.get(crate::pokemon::VolatileKind::Yawn).is_none(), "Meteor: no Yawn");
+        b.p1.team[0].current_hp = 68;
+        splash_turn(&mut b, 0); // residual: back to the core
+        assert_minior_forme(&b.p1.team[0], "minioryellow", "core");
+        splash_turn(&mut b, 1); // Glare on the core
+        assert_eq!(b.p1.team[0].status, crate::pokemon::Status::Paralysis, "core: Glare paralyzes");
+    }
+
+    #[test]
+    fn shields_down_switch_out_restores_the_core_and_switch_in_rechecks() {
+        let mut b = minior_singles(true);
+        assert_minior_forme(&b.p1.team[0], "miniormeteor", "lead");
+        let sw = |b: &mut Battle, team_index: u8| {
+            b.step(&[Choice::Switch { actor_slot: 0, team_index }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        };
+        sw(&mut b, 1);
+        let minior = b.p1.team.iter().find(|m| data::SPECIES[m.species_id as usize].slug.starts_with("minior")).unwrap();
+        assert_minior_forme(minior, "minioryellow", "benched (non-permanent forme)");
+        let bench = b.p1.team.iter().position(|m| std::ptr::eq(m, minior)).unwrap() as u8;
+        sw(&mut b, bench);
+        assert_minior_forme(b.p1.active_mon(0).unwrap(), "miniormeteor", "back in at full HP");
+    }
+
+    #[test]
+    fn shields_down_copied_by_transform_gives_no_status_or_yawn_immunity() {
+        // Imposter Ditto copies Minior-Meteor (species and Shields Down),
+        // but Shields Down's onSetStatus / onTryAddVolatile skip a
+        // transformed holder (data/abilities.ts:4267, :4274), and its
+        // onResidual skips it too (:4255).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"minioryellow","level":50,"ability":"shieldsdown","nature":"hardy","moves":["splash","glare","yawn","protect"],"evs":{"hp":4}}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(&format!(r#"[{SPLASH_AUDINO},
+            {{"species":"ditto","level":50,"ability":"imposter","nature":"hardy","moves":["transform"]}}
+        ]"#)).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let splash = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        b.step(&splash, &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
+        let ditto = b.p2.active_mon(0).unwrap();
+        assert!(ditto.transform_base.is_some(), "Imposter transformed");
+        assert_eq!(data::SPECIES[ditto.species_id as usize].slug, "miniormeteor");
+        let at_ditto = |move_slot| [Choice::Move { actor_slot: 0, move_slot, target: Some(t(SideRef::P2, 0)) }];
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        b.step(&at_ditto(2), &pass); // Yawn
+        assert!(b.p2.active_mon(0).unwrap().volatiles.has(crate::pokemon::VolatileKind::Yawn), "copied Meteor: Yawn lands");
+        b.step(&at_ditto(1), &pass); // Glare
+        let ditto = b.p2.active_mon(0).unwrap();
+        assert_eq!(ditto.status, crate::pokemon::Status::Paralysis, "copied Meteor: Glare paralyzes");
+        assert_eq!(data::SPECIES[ditto.species_id as usize].slug, "miniormeteor", "no forme change while transformed");
+    }
+
+    /// Reload `b` as a snapshot saved before `Pokemon::set_species_id`
+    /// existed (the field removed from the JSON).
+    fn legacy_snapshot(b: &Battle) -> Battle {
+        fn strip(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    m.remove("set_species_id");
+                    m.values_mut().for_each(strip);
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        let mut v = serde_json::to_value(b).unwrap();
+        strip(&mut v);
+        let mut old: Battle = serde_json::from_value(v).unwrap();
+        old.rehydrate_caches();
+        old
+    }
+
+    #[test]
+    fn shields_down_set_species_survives_a_snapshot_roundtrip() {
+        let b = minior_singles(false);
+        assert_minior_forme(&b.p1.team[0], "miniormeteor", "lead");
+        let r: Battle = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(r.p1.team[0].set_species_id, minior_id("minioryellow"));
+        assert_eq!(r.canonical_hash(), b.canonical_hash());
+        let mut r = r;
+        r.p1.team[0].current_hp = 68;
+        splash_turn(&mut r, 0);
+        assert_minior_forme(&r.p1.team[0], "minioryellow", "restored after a reload");
+    }
+
+    #[test]
+    fn shields_down_legacy_core_snapshot_recovers_its_colour() {
+        // A pre-field snapshot taken while Minior shows its core keeps that
+        // colour: it is recorded on entering Meteor and restored after.
+        let mut b = minior_singles(false);
+        b.p1.team[0].current_hp = 68;
+        splash_turn(&mut b, 0);
+        let mut old = legacy_snapshot(&b);
+        assert_eq!(old.p1.team[0].set_species_id, u16::MAX, "legacy: origin unknown");
+        assert_eq!(old.canonical_hash(), b.canonical_hash(), "same future, same hash");
+        old.p1.team[0].current_hp = 136;
+        splash_turn(&mut old, 0);
+        assert_minior_forme(&old.p1.team[0], "miniormeteor", "legacy core above half");
+        old.p1.team[0].current_hp = 68;
+        splash_turn(&mut old, 0);
+        assert_minior_forme(&old.p1.team[0], "minioryellow", "legacy core colour recovered");
+    }
+
+    #[test]
+    fn shields_down_legacy_meteor_with_unknown_origin_stays_meteor() {
+        // Documented limit: a pre-field snapshot taken in Meteor forme has
+        // lost its colour, so it stays Meteor deterministically instead of
+        // inventing one (no snapshot migration). Its hash differs from the
+        // known-colour state, whose future differs.
+        let b = minior_singles(false);
+        let mut old = legacy_snapshot(&b);
+        assert_ne!(old.canonical_hash(), b.canonical_hash());
+        old.p1.team[0].current_hp = 68;
+        splash_turn(&mut old, 0);
+        assert_minior_forme(&old.p1.team[0], "miniormeteor", "unknown origin: stays Meteor");
+    }
+
+    const REST_MINIOR: &str = r#"{"species":"minioryellow","level":50,"ability":"shieldsdown","nature":"hardy","moves":["splash","rest","glare","yawn"],"evs":{"hp":4}}"#;
+
+    #[test]
+    fn shields_down_meteor_rest_fails_without_sleep_or_heal() {
+        // PS data/moves.ts:14983-14988 rest onHit: `setStatus('slp')` first;
+        // Shields Down's onSetStatus returns false for Minior-Meteor
+        // (data/abilities.ts:4266-4272), so Rest returns before healing.
+        let p1 = TeamBuilder::from_json(&format!("[{REST_MINIOR}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.p1.team[0].current_hp = 100; // Meteor (> 68), not full HP
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 1, target: None }], &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }]);
+        let m = &b.p1.team[0];
+        assert_eq!(m.status, crate::pokemon::Status::None, "Meteor: Rest can't put it to sleep");
+        assert_eq!(m.current_hp, 100, "Meteor: no heal when the sleep fails");
+        assert_minior_forme(m, "miniormeteor", "still Meteor");
+    }
+
+    #[test]
+    fn shields_down_copied_meteor_rest_still_sleeps_and_heals() {
+        // Control: a transformed holder isn't shielded (data/abilities.ts:4267).
+        let p1 = TeamBuilder::from_json(&format!("[{REST_MINIOR}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!(r#"[{SPLASH_AUDINO},
+            {{"species":"ditto","level":50,"ability":"imposter","nature":"hardy","moves":["transform"]}}
+        ]"#)).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let splash = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        b.step(&splash, &[Choice::Switch { actor_slot: 0, team_index: 1 }]);
+        let full = b.p2.active_mon(0).unwrap().stats.hp;
+        b.p2.active_mon_mut(0).unwrap().current_hp = full - 20;
+        b.step(&splash, &[Choice::Move { actor_slot: 0, move_slot: 1, target: None }]); // copied Rest
+        let ditto = b.p2.active_mon(0).unwrap();
+        assert!(ditto.transform_base.is_some());
+        assert_eq!(ditto.status, crate::pokemon::Status::Sleep, "copied Meteor: Rest sleeps");
+        assert_eq!(ditto.current_hp, full, "copied Meteor: Rest heals");
+    }
+
+    /// p1 = Audino (active) plus two benched Minior-Meteor that differ only
+    /// in their set colour (`colours`).
+    fn two_benched_meteors(colours: [&str; 2]) -> Battle {
+        let p1 = TeamBuilder::from_json(&format!(
+            "[{SPLASH_AUDINO},{},{}]",
+            MINIOR_YELLOW.replace("minioryellow", colours[0]),
+            MINIOR_YELLOW.replace("minioryellow", colours[1])
+        ))
+        .unwrap();
+        let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        for i in 1..3 {
+            let stats = minior_stats(&b.p1.team[i], "miniormeteor");
+            let m = &mut b.p1.team[i]; // AUDIT-OK: benched fixture mon, no residual field
+            m.species_id = minior_id("miniormeteor");
+            m.stats = crate::pokemon::FinalStats { hp: m.stats.hp, ..stats };
+        }
+        b
+    }
+
+    #[test]
+    fn canonical_hash_bench_order_ignores_benched_meteor_origins() {
+        // Two benched Meteor mons identical but for their future colour:
+        // swapping only their bench positions is the same state.
+        let b = two_benched_meteors(["minioryellow", "miniorgreen"]);
+        let mut swapped = b.clone();
+        swapped.p1.team.swap(1, 2);
+        assert_eq!(swapped.p1.active[0], 0, "only the bench moved");
+        assert_eq!(b.canonical_hash(), swapped.canonical_hash(), "bench permutation");
+        // ... while the future colours still matter.
+        assert_ne!(b.canonical_hash(), two_benched_meteors(["minioryellow", "minioryellow"]).canonical_hash());
+    }
+
+    #[test]
+    fn shields_down_faint_restores_the_core_without_a_replacement() {
+        // PS faintMessages runs clearVolatile (sim/battle.ts:2563), which
+        // ends with setSpecies(baseSpecies) (sim/pokemon.ts:1559): a fainted
+        // Minior-Meteor is its own core colour again even when nothing
+        // replaces it (here: no bench, the partner stays in).
+        let p1 = TeamBuilder::from_json(&format!("[{MINIOR_YELLOW},{SPLASH_AUDINO}]")).unwrap();
+        let p2 = TeamBuilder::from_json(&format!(r#"[
+            {{"species":"furret","gender":"M","level":50,"ability":"keeneye","nature":"hardy","moves":["seismictoss","splash"]}},
+            {SPLASH_AUDINO}
+        ]"#)).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 1 }, p1, p2);
+        assert_minior_forme(&b.p1.team[0], "miniormeteor", "lead");
+        b.p1.team[0].current_hp = 1;
+        let splash = |slot| Choice::Move { actor_slot: slot, move_slot: 0, target: None };
+        b.step(
+            &[splash(0), splash(1)],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, splash(1)],
+        );
+        let m = &b.p1.team[0];
+        assert!(m.fainted, "Seismic Toss KOs it");
+        assert_minior_forme(m, "minioryellow", "fainted: back to its core");
+    }
+
+    #[test]
+    fn shields_down_residual_faint_restores_the_core() {
+        // A poison it carried from its core forme KOs a 1-HP Meteor at
+        // residual order 9, before Shields Down's order 29 (which skips a
+        // fainted mon); the residual action's faintMessages then restores
+        // its colour.
+        let mut b = minior_singles(false);
+        assert_minior_forme(&b.p1.team[0], "miniormeteor", "lead");
+        b.p1.team[0].current_hp = 1;
+        b.p1.team[0].status = crate::pokemon::Status::Poison;
+        b.sync_status_dot_bit(SideRef::P1, 0);
+        splash_turn(&mut b, 0);
+        let m = &b.p1.team[0];
+        assert!(m.fainted, "poison KO at end of turn");
+        assert_minior_forme(m, "minioryellow", "residual faint: back to its core");
+    }
+
+    #[test]
+    fn canonical_hash_separates_meteor_states_by_future_colour() {
+        let with_colour = |slug: &str| {
+            let p1 = TeamBuilder::from_json(&format!("[{}]", MINIOR_YELLOW.replace("minioryellow", slug))).unwrap();
+            let p2 = TeamBuilder::from_json(&format!("[{SPLASH_AUDINO}]")).unwrap();
+            Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2)
+        };
+        let (yellow, green) = (with_colour("minioryellow"), with_colour("miniorgreen"));
+        assert_eq!(yellow.p1.team[0].species_id, green.p1.team[0].species_id, "both Meteor");
+        assert_ne!(yellow.canonical_hash(), green.canonical_hash(), "different future colours");
+        assert_eq!(yellow.canonical_hash(), with_colour("minioryellow").canonical_hash());
     }
 
     #[test]
