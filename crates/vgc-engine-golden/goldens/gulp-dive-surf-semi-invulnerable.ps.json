@@ -1,0 +1,78 @@
+{
+  "ok": true,
+  "name": "gulp-dive-surf-semi-invulnerable",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Cramorant",
+      "hp": 177,
+      "max": 177
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 236,
+      "max": 236
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Dive",
+      "target": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Surf",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 151,
+      "max": 177,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791355175\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Cramorant, L50, M|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791355175\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Cramorant|Cramorant, L50, M|177/177\n|switch|p2a: Snorlax|Snorlax, L50, M|236/236\n|turn|1|\n|t:|1791355175\n|move|p1a: Cramorant|Dive||[still]\n|-formechange|p1a: Cramorant|Cramorant-Gulping|\n|-prepare|p1a: Cramorant|Dive\n|move|p2a: Snorlax|Surf|p1a: Cramorant\n|-resisted|p1a: Cramorant\n|-damage|p1a: Cramorant|151/177\n|\n|upkeep\n|turn|2"
+}

@@ -1,0 +1,154 @@
+{
+  "ok": true,
+  "name": "gulp-superfang-half-gorging-response",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Cramorant",
+      "hp": 176,
+      "max": 176
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 236,
+      "max": 236
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Super Fang",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 88,
+      "max": 176,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Surf",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 188,
+      "max": 236,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Tackle",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 48,
+      "max": 176,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 129,
+      "max": 236,
+      "from": "ability: Gulp Missile"
+    },
+    {
+      "turn": 3,
+      "kind": "status",
+      "actor": "p2a",
+      "status": "par",
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 90,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791355185\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Cramorant, L50, M|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791355185\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Cramorant|Cramorant, L50, M|176/176\n|switch|p2a: Snorlax|Snorlax, L50, M|236/236\n|turn|1|\n|t:|1791355185\n|move|p1a: Cramorant|Splash|p1a: Cramorant\n|-nothing\n|move|p2a: Snorlax|Super Fang|p1a: Cramorant\n|-damage|p1a: Cramorant|88/176\n|\n|upkeep\n|turn|2|\n|t:|1791355185\n|move|p1a: Cramorant|Surf|p2a: Snorlax\n|-formechange|p1a: Cramorant|Cramorant-Gorging|\n|-damage|p2a: Snorlax|188/236\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1791355185\n|move|p1a: Cramorant|Splash|p1a: Cramorant\n|-nothing\n|move|p2a: Snorlax|Tackle|p1a: Cramorant\n|-damage|p1a: Cramorant|48/176\n|-damage|p2a: Snorlax|129/236|[from] ability: Gulp Missile|[of] p1a: Cramorant\n|-status|p2a: Snorlax|par\n|-formechange|p1a: Cramorant|Cramorant|\n|\n|upkeep\n|turn|4"
+}
