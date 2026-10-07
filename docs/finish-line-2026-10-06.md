@@ -1,185 +1,246 @@
-# Finish line: Gen 9 doubles minimum viable simulator (2026-10-06)
+# Finish line: Gen 9 doubles minimum viable simulator
 
-This is the finish-line checklist for PLAN Phases 1–4.
+Started 2026-10-06; updated 2026-10-07 for main `7c00268`. This is the
+finish-line checklist for PLAN Phases 1–4.
+
 - **Scope (fixed):** standard Gen 9 doubles, including Tera, and the
   Champions overlay (Reg M: Tera banned, Mega legal).
 - **Deferred:** earlier generations (Phase 5+).
 
-**Status: M1–M3 bounded work is done. The product finish line is NOT
-accepted or complete.**
-- The original phase gates remain binding.
-- D1 and D2 are pending Cole.
-- None of this evidence is a claim that the simulator is dependable in
-  general. The phase number follows whatever gates are agreed.
+**Status: NOT complete.** The original Phase 2, 3 and 4 gates are binding
+and **not met**. Passing tests show the tested behaviour only, not that
+every core requirement is implemented.
 
-## Evidence labels and heads
+Concrete blockers to the original gates:
+- the full real replay corpus (and its historical source) for the Phase 2/3
+  turn-agreement gates is not available, so those gates can't be run;
+- no production rollout path replaces PS and no production integration PR
+  exists; a live production replacement is out of the current authorized
+  scope;
+- known mechanic gaps remain (listed below).
+
+The alternative accuracy gate (D1) and consumer-path question (D2) are
+open options for Cole. **They are not adopted, and grounded fixes don't
+wait on them.**
+
+Per-change detail lives in `docs/accuracy/fix-log.md`, from the section
+"Finish-line integration (2026-10-06)" onward; the current receipt is the
+section "Final source verification at `7c00268`".
+
+## Evidence labels
 
 | label | meaning |
 |---|---|
-| **CURRENT** | Measured at the final implementation `9f66758a44f2ed79f021628223637d435094a6c5` (code frozen). |
-| **HISTORICAL** | From an earlier commit or round; not re-run. |
-| **DIAGNOSTIC** | Measured, but not an adopted gate or acceptance sample. |
-| **PENDING** | Waiting on a decision from Cole. |
+| **CURRENT** | Measured by the manager on main `7c00268dd994c0dc3434cacefa2d2139c7bc3b9b`. |
+| **INTEGRATED** | On main `7c00268`. |
+| **WORKER-VERIFIED** | Checked by the worker on its own source head (named). |
+| **HISTORICAL** | Measured on an earlier head (`0080c7f`, `8284775`, `a1484ea`, `49a5604`, `9f66758`, …). Not current. |
+| **DEVELOPMENT DIAGNOSTIC** | Measured on an already-inspected sample. Not validation, not gate acceptance. |
+| **BLOCKED** | Stopped by a refused operation; not retried or rerouted. |
 
-- PS oracle pinned at `a5df8274e85b0889bf2a9b3422a08b39732374fc`, run under
-  the offline guard.
-- Evidence logs are in
-  `/Users/cole/Documents/Codex/2026-10-06/task/vgc-evidence`.
-- Per-fix detail is in `docs/accuracy/fix-log.md`, section "Finish-line
-  integration (2026-10-06)".
+## Original gates (binding)
 
-## Original requirements (binding) vs suggested gate (not adopted)
-
-| source | original requirement |
-|---|---|
-| PLAN Phase 2 | 1000-replay differential vs PS: ≥80% turn agreement on the mimikyu corpus, ≥95% on battles using only implemented mechanics |
-| PLAN Phase 3 | ≥95% turn agreement on the full mimikyu replay corpus (≥10k battles); Tera; Champions overlay |
-| PLAN Phase 4 | a mimikyu integration PR where vgc-engine replaces PS in at least one rollout path, **and** a measured ≥10× wall-clock speedup |
-| AGENTS 2 & 4 | golden gates green on mechanic PRs; `step()` heap-free |
-
-**Suggested D1 replacement. NOT ADOPTED.**
-- ≥95% keyed per-turn match and ≥80% state-clean battles;
-- on a declared full-info sample of at least 1,000 battles;
-- zero divergences on committed deterministic regressions.
-
-## M0. Starting baseline (`c415f661`). Done
-
-- default workspace 1532 passed; `ps-rng` 1571 passed; 0 failed and 32
-  ignored in each.
-- Node regressions 11/11 offline, 0 skipped.
-- **HISTORICAL:** Round 10 at `3d1c44c` — forced-RNG clean 1288/1298
-  (99.2%), keyed per-turn 11735/11745 (99.9%), seeded clean 1164/1300
-  (89.5%). The 1298/1300 study is unavailable locally, and these numbers
-  are unchanged.
-
-## M1. Narrow fixes with red/green tests. Done
-
-| commit | fix | red → green |
+| source | requirement | status |
 |---|---|---|
-| `a47779b` | Conformance loader rejects Stat Points >32 | 17 pass / 2 fail → 84 pass |
-| `a195bb4` | Conformance loader ignores supplied Champions IVs (exact at level 50) | 20 pass / 1 fail → 86 pass |
-| `a2be61e` | Removes the intermediate Vec in `first_draw_divergence` | expanded `ps-rng` Clippy guard now passes |
-| `cf5188c` | Eats a newly eligible Custap Berry at the Champions Encore re-queue | 6 pass / 1 fail; PS golden turn 5: engine 134/170 vs PS 170/170 → 7 pass plus both golden gates |
-| `c8772c3`, `9f66758` | Accuracy replays play only PS's brought team; the cut happens after `Battle::with_rng` | real capture `f3946a404862f219`: default 1/2 fail, seeded 1/3 fail (turn-4 HP 133 vs 170) → default 3/3, seeded 4/4, conformance 93 pass |
+| PLAN Phase 2 | real mimikyu 1000-replay differential vs PS: ≥80% turn agreement overall, ≥95% on battles using only implemented mechanics | **not met** (real corpus not available) |
+| PLAN Phase 3 | ≥95% turn agreement on the full real mimikyu corpus (≥10k battles); Tera; Champions overlay | **not met** |
+| PLAN Phase 4 | a mimikyu integration PR where vgc-engine replaces PS in a production rollout path, **and** a measured ≥10× wall-clock speedup | **not met** (the quiet diagnostic below doesn't pass it) |
+| AGENTS rule 2 | a PS golden for every mechanic PR; golden gates green | strict gates **green** at `7c00268`; the Dive and Gulp Missile goldens are in place. **Not fulfilled for the earlier Tera-on-faint fix:** its extra actual golden pair is BLOCKED (see below). |
+| AGENTS rule 4 | `step()` heap-free | allocation probe 0 step allocations at `7c00268` |
 
-Limits still open:
-- **Custap:** Gluttony threshold, Quick Draw consumption at commit,
-  berry-eat hooks. No full FractionalPriority equivalence.
-- **Stat Points:** Level Clause Mod, non-50 recompute, point totals.
-- **Replay cut:** identity pick order only; the Illusion lead is chosen
-  from the full export; legacy `PsBattle` keeps full teams.
+## Milestones
 
-## M2. Final verification at `9f66758`. CURRENT
-
-| check | result |
-|---|---|
-| default workspace (`--exclude vgc-engine-py`) | **1546** / 0 / 32 |
-| `ps-rng` workspace | **1586** / 0 / 32 |
-| `chance` Encore | 22 / 0 |
-| expanded seeded Clippy guards; residual audit; `git diff --check` | pass |
-| Node regressions | 11/11, 0 skipped |
-| Python (offline wheel, extracted to `evidence/python-final`, not installed) | bindings 27 pass; read-only consumer 4 pass |
-| extension SHA-256 | `71b5d437…ac1b2`, unchanged since `cf5188c` |
-| allocation probe | 500 battles, 9929 steps, 0 capped, **0 step allocations**. Random-choice throughput, not the speed gate. |
-
-## M3. Bounded differential. CURRENT, closed
-
-- 64/64 cases (128/128 turns) and 8/8 cases (40/40 turns), in **both**
-  keyed and seeded modes.
-- Missing draws, repairs, leftovers, errors and first-draw divergences are
-  all zero. Unchanged from the baseline.
-
-## Synthetic Reg M-B studies at `9f66758`. DIAGNOSTIC
-
-Both sets reuse 100 old, legal synthetic Reg M-B teams. Battles cap at 20
-turns and use a random legal fallback policy. There were zero engine/PS
-errors. **Keyed and seeded disagree by about 2×:**
-
-| set | cases (natural / capped) | keyed state-clean (natural / capped) | keyed turns | **seeded clean** (natural / capped) |
-|---|---|---|---|---|
-| development (offset 50 × 10) | 1000 (908 / 92) | **849 = 84.9%** (770 / 79); strict 804 | 98.7% | **426 = 42.6%** (393 / 33) |
-| reused-team new-seed (offset 37 × 3) | 300 (271 / 29) | **255 = 85.0%** (230 / 25); strict 247 | 98.8% | **142 = 47.3%** (134 / 8) |
-
-- **Development set.** It exposed and validated the replay fix, so it is
-  **not a holdout**. It is 50 mirrored matchups × 10 replicas, which means
-  its 1000 seeds are not 1000 independent battles. 151 state divergences
-  remain. The automatic taxonomy is not a root-cause census.
-- **Validation set.** Code was frozen before it was generated. It has 100
-  new matchups and no overlap with the development set. But every team
-  appears 6 times, so it is **correlated reused-team validation, not an
-  independent holdout**.
-- **What follows.** No confidence intervals are given. The keyed point
-  estimates exceed the suggested D1 thresholds, but that doesn't make
-  these sets an accepted gate sample, and it doesn't show the simulator is
-  dependable.
-
-## Residual issues (read-only triage, no live reproduction)
-
-| issue | confidence | evidence |
+| # | milestone | status |
 |---|---|---|
-| **White Herb timing**: the engine clears after each drop; PS clears after the move (`onAnyAfterMove`) | **STRONGLY SUPPORTED** existing defect | source, plus exact arithmetic: 52 = ⌊35 × 1.5⌋ in battle `a043d9085e0108a2` |
-| **Hunger Switch** (Morpeko) missing, so Aura Wheel never turns Dark | **CONFIRMED** missing mechanic | no forme handler in core; battle `d069abdcc2040847` |
-| **Fickle Beam turn-5 HP** (`2ebdc92f225836db`) | **UNRESOLVED** | keyed gate looks correct; candidates are Sitrus, Poltergeist or a repair alias |
+| M0 | starting baseline at `c415f661` (1532 default / 1571 seeded) | done, HISTORICAL |
+| M1 | narrow fixes through White Herb (`a47779b` … `a1484ea`) | done, HISTORICAL evidence in the fix log |
+| M2 | verification at `a1484ea` | done, HISTORICAL |
+| M3 | bounded controls (64 Quick Claw + 8 Custap) | CURRENT: unchanged at `7c00268`, all zero in both modes |
+| M4 | Tera before moves (`9b65c61`, tests `b6bcc45`) | INTEGRATED |
+| M5 | flat selfDrops lowering (`82be9d6`, golden `92a4719`) | INTEGRATED |
+| M6 | Fickle Beam keyed gate (`33f99a4`) | INTEGRATED |
+| M7 | Shields Down (`e22eb40`) | INTEGRATED |
+| M8 | opt-in keyed golden mode (`8284775`) | INTEGRATED |
+| M9 | cosmetic-forme loading (`d46e0c7`) | INTEGRATED |
+| M10 | Hunger Switch / Aura Wheel (`988c71b`) | INTEGRATED |
+| M11 | Terastallization ends on faint (`668857b`) | INTEGRATED; its extra golden pair BLOCKED |
+| M12 | Surf / Whirlpool into Dive (`eb12423`) | INTEGRATED |
+| M13 | Gulp Missile (`7c00268`) | INTEGRATED |
+| M14 | aggregate at `0080c7f` | done, HISTORICAL snapshot |
+| M15 | final source verification at `7c00268` | CURRENT (below) |
 
-How many of the 151 divergences these three explain is unmeasured.
+## Final source verification at `7c00268` (CURRENT)
 
-**Follow-up checklist, in priority order.** No implementation is requested
-here.
-1. [ ] **White Herb:** move the clear to after-move, switch-in, after-Mega
-   and residual 29.
-   - Repro: Armarouge (Weak Armor) hit by Bulldoze, then Low Kick.
-   - Accept: Def 0 / Spe +1 after Bulldoze; HP 116 after Low Kick; existing
-     White Herb tests stay green.
-   - Land it alone.
-2. [ ] **Hunger Switch:** add the order-29, Tera-gated toggle and
-   forme-dependent Aura Wheel. Hangry Aura Wheel goes from neutral to
-   super-effective on Ghost and from neutral to resisted on Dark.
-   - Accept: species alternates over 2 turns; battle `d069abdcc2040847`
-     matches on turn 1.
-3. [ ] **Fickle Beam:** dump turn-5 HP and item per event, plus the repair
-   alias key, and find the first event that differs. No fix before that.
-4. [ ] After each fix, re-score both synthetic sets and report keyed and
-   seeded side by side.
+Measured by the manager on main `7c00268` itself, not by a worker.
 
-## M4. Consumer rollout. PENDING (D2)
+- default workspace **1666**, seeded **1711** passed, 0 failed, 32 ignored;
+- core `chance` + `ps-rng`, including both new public test files: **1347**
+  passed, 0 failed, 2 ignored;
+- both default-on strict golden gates, lint guards, residual audit and diff
+  check pass; Node regressions 11 pass, 0 skipped;
+- fresh offline wheel (extracted, not installed): **31 tests in total, 27
+  bindings + 4 read-only consumer tests**; extension SHA-256
+  `7e0541fb…2bfbe9a`;
+- allocation probe: 500 battles, 9887 steps, 0 capped, **0 step
+  allocations**;
+- the 72 unchanged bounded controls: 168 turns with zero state, draw,
+  missing, repair, leftover and error counts in both modes;
+- all 6 installed references keep their fixed input bytes.
 
-- **Path:** mimikyu `RolloutOracle._one_rollout`
-  (`ml/vgc_model/inference/rollout_oracle.py`).
-  - committed in `28f74bc6b`, extended in `a10b3701a`;
-  - source SHA-256 `438a875e…b879`, unchanged;
-  - mimikyu HEAD measured at `23e5b475…`.
-- **CURRENT:** 4 consumer tests pass against the final wheel. mimikyu was
-  read-only.
-- This is a **T1 referee / action-audit path**, not a verified production
-  replacement of PS. No integration PR was made or pushed.
+Any later fix needs a new integrated aggregate.
 
-## M5. ≥10× wall-clock. DIAGNOSTIC (D2)
+## Integrated work since `a1484ea`
 
-- **Source:** `consumer-rollout-final-source.json`. Implementation and
-  harness are both `9f66758`, with the wheel rebuilt.
-- **Workload:** a quiet 5-step synthetic 2v2 (Seismic Toss vs Splash, zero
-  Stat Points, level 50).
-- **Fidelity:** 32/32.
-- **Included:** reseed, serialize and policy cost; Python/Rust crossings.
-- **Excluded:** startup and imports.
-- **Samples:** 1 warmup, then 5 batches of 32.
-- **Timing:**
-  - engine median **164.704 µs** (min 156.790, max 171.771, IQR 1.422);
-  - PS wall median **2283.150 µs** (min 2224.785, max 2643.684, IQR
-    149.923);
-  - ratio **13.862×** on wall time, **13.810×** on internal time.
-- **Machine:** Apple M4 Pro, macOS 26.4.1, Rust 1.99.0, Node 26.10.0, no
-  CPU pinning.
-- **Limits:**
-  - the outcome doesn't depend on RNG;
-  - the workload is not damage-heavy;
-  - it doesn't measure end-to-end or model-inference speed.
+The counts in this section come from each named worker head. The combined
+result is covered by the `7c00268` verification above.
 
-## Decisions for Cole
+- **Tera before moves (`9b65c61`, `b6bcc45`).** PS types the user at queue
+  order 106, before every move. WORKER-VERIFIED 1557 / 1597. Three
+  independent one-turn seeded references are state- and draw-clean (the tie
+  has 17 genuine in-turn shuffles). Keyed limits: the knockout case leaves
+  one Flamethrower secondary unconsumed; the tie needs 3 repair aliases.
+- **Flat selfDrops (`82be9d6`, `92a4719`).** The flat lowering skips
+  selfDrops' bound-100 roll; the base Furfrou golden passes unchanged.
+- **Fickle Beam keyed gate (`33f99a4`).** Harness-only. 4 fixed independent
+  captures, 4/4 cases and 8/8 turns clean in both modes; the original
+  15-turn case is state-clean in both modes (keyed keeps 2 repairs and 28
+  leftovers from other mechanisms). WORKER-VERIFIED 1568 / 1610.
+- **Shields Down (`e22eb40`; worker `22b224a`).** WORKER-VERIFIED 1578 /
+  1620; core chance + `ps-rng` 1290; a four-turn comparator clean in both
+  modes; three actual goldens. The canonical hash schema changed.
+- **Keyed golden mode (`776d387` → `8284775`).** Opt-in, actual per-target
+  PS provenance, strict unmatched/leftover accounting, no repair or
+  fallback, no core change. WORKER-VERIFIED 16/16 focused, 1584 / 1626.
+  **The legacy flat spread-order gap is unfixed**; the two-argument
+  `random` normalization is acceptance-tested only.
+- **Cosmetic formes (`d46e0c7`; worker `b100200`).** Aliases only for actual
+  rowless cosmetic formes; exact rows win; unknown and functional families
+  stay strict. WORKER-VERIFIED 1612 / 1655. The 70 old loader errors are
+  gone in the development re-use.
+- **Hunger Switch / Aura Wheel (`988c71b`; worker `9306010`).**
+  WORKER-VERIFIED 1594 / 1637 / chance 1304. A direct-Hangry origin is kept
+  and hashed (field 44 `forme_origin`; absolute hashes changed).
+- **Terastallization ends on faint (`668857b`; worker `1b5ed70`).** A
+  fainted mon's Tera state is cleared; Morpeko's origin is restored first;
+  a spent or live benched Tera is kept. WORKER-VERIFIED 1603 / 1646 /
+  chance 1313. Two actual three-turn captures are state-clean in both modes
+  (keyed: one Flamethrower secondary leftover each). A plain PS probe
+  (`tools/accuracy/tera-faint-verification/ps-state.jsonl`) observes the
+  per-mon Tera flag. **The extra synthetic golden pair is BLOCKED** (see
+  "Stopped operations").
+- **Surf / Whirlpool into Dive (`eb12423`; worker `d3a6816`).** ×2 damage in
+  ModifyDamage, not base power. Public non-Gulp tests and an independent
+  actual fixed golden (Golduck 187 -> 157); the intermediate main's full
+  default and seeded workspaces and native chance passed.
+- **Gulp Missile (`7c00268`; worker `afeb271`).** Loading, quarter damage,
+  Defense drop or paralysis, revert and guards; the paralysis uses the
+  canonical status source at the attacker's exact slot (Synchronize in
+  singles and p1b); switch and faint restore the original set forme. Two
+  genuine origin/hash collisions and a direct-set switch case went red, then
+  green; field 44 and the bench sort were extended (Cramorant hashes
+  changed). 22 public tests including chance, 4 original actual golden
+  pairs, the full-info three-turn capture and conformance.
+  - The extra Synchronize and White Herb review captures are **not
+    installed** (a worker Read returned EPERM; not retried). The manager's
+    replays of them: 2 cases, 5 turns, state-clean; seeded all zero; keyed 1
+    repair (Synchronize) and 1 existing selfDrops leftover (White Herb), 0
+    missing. **Not all zero in keyed mode.**
 
-1. **D1. Accuracy gate.** Keep the original replay-corpus gates, or adopt a
-   keyed replacement. If you adopt one, name its corpus (independent or
-   reused teams) and its thresholds.
-2. **D2. Consumer path and workload.** Does `RolloutOracle._one_rollout`
-   plus the quiet M5 workload satisfy Phase 4's "replaces PS in a rollout
-   path" and ≥10×? If not, which path and workload should?
+## Known gaps
+
+| gap | status |
+|---|---|
+| Legacy flat golden spread order (accuracy for all targets first, ally first) | **unfixed, known limitation**; keyed mode is the opt-in alternative |
+| Pursuit on a switching target: the engine completes the switch; PS Gen 5+ cancels it | **confirmed, not fixed** |
+| Tera keyed limits: one Flamethrower secondary leftover (before-moves knockout case, both Tera-on-faint captures), 3 repair aliases in a tie | open |
+| Gulp Missile review captures: 1 keyed repair (Synchronize), 1 selfDrops leftover (White Herb) | open, captures not installed |
+| Long-tail seeded and keyed gaps (the development re-use below has no all-zero keyed case) | open; no root-cause census |
+
+**Optional features (not finish-line):** native per-site chance branching,
+earlier generations, a C ABI, WASM.
+
+## Studies
+
+All turn figures are **prefix counts** (the scorer stops at the first
+divergence; natural-win terminal turns compare fainted flags only). The
+samples are correlated, so no confidence intervals are given, and **no
+whole-corpus turn percentage is claimed.**
+
+- **The new-team set at `a1484ea` — immutable dated baseline.** 1000 cases
+  from 200 synthetic teams (100 directed pairings per format × 5 replicas,
+  so each team appears 10 times); 975 natural wins, 25 capped; 24 cases with
+  26 recoverable choice warnings. Keyed 518 / seeded 292 state-clean.
+  Inputs, captures and outputs are untouched.
+- **Re-use at `7c00268` — DEVELOPMENT DIAGNOSTIC (current).** The same
+  repeatedly inspected set; all job, team and capture hashes unchanged.
+  The raw 1000 are primary.
+  - keyed **731**, seeded **431** state-clean (`0080c7f`: 723 / 425;
+    `a1484ea`: 518 / 292); from `0080c7f`, keyed 8 gained and 0 lost,
+    seeded 6 gained and 0 lost;
+  - standard Reg I: keyed 302 / seeded 178 of 500; Champions Reg M-B: keyed
+    429 / seeded 253 of 500;
+  - post-hoc PS-ok sensitivity (not a predeclared exclusion): keyed 717 /
+    seeded 421 of 976;
+  - 0 engine and loader errors;
+  - keyed: 702 state-clean with zero missing draws; overall 133 missing
+    draws, 3170 repairs, 26976 leftovers (event counts); no all-zero keyed
+    case;
+  - seeded: 396 fully state- and draw-clean, 604 with a first-draw
+    divergence;
+  - prefix turns: keyed 8526/8795, seeded 6010/6579, of 10755 captured
+    turns.
+  - **Not untouched validation and not a new acceptance gate.**
+- **HISTORICAL:** the Tera-only rescoring at `9b65c61` (642 / 367), the
+  `0080c7f` re-use (723 / 425), and the development (1000) and reused-team
+  (300) sets last scored at `a1484ea`.
+
+## Performance and consumer
+
+- **Quiet diagnostic at `7c00268` (CURRENT).** Manager builds and replays
+  idle; 32/32 fidelity; 1 warmup + 5 × 32. Engine median **141.75521875
+  µs**, PS wall median **1929.1484375 µs**: **13.6090117493×** wall time.
+  - The same fixed five-step, RNG-independent synthetic 2v2; startup and
+    imports excluded; mimikyu's `RolloutOracle._one_rollout` called
+    read-only (consumer HEAD observed `d058a722`, oracle file SHA-256
+    unchanged, no sibling edits).
+  - The benchmark script doesn't verify its engine-source argument; the
+    manager's separate build, head and extension receipts establish it.
+  - **Not the Phase 4 production end-to-end gate and not a replacement.**
+- **HISTORICAL:** 13.493× at `0080c7f`, 14.013× at `a1484ea`, and the
+  earlier wheels and metrics.
+
+## Stopped operations (BLOCKED; not retried, not rerouted)
+
+These are local worker restrictions, not a rejection by an automatic
+review. The manager records them in `DENIED-OPERATIONS-0910.md`.
+
+- **B (worktree `codex-8322f9e9`):** `cp -n
+  tools/accuracy/tera-faint-verification/tera-faint-live-partner.input.json
+  crates/vgc-engine-golden/goldens/tera-faint-live-partner.input.json` was
+  refused ("cp with flags requires manual approval to ensure path safety").
+  The destination is still absent. No approval has been given for a retry
+  or reroute. This is why AGENTS rule 2 is not fulfilled for Tera-on-faint.
+- **C (this worktree):** the earlier cross-worktree `git -C` refusal stays
+  stopped and was not redone.
+- **A:** a Read of the manager's `reset-gulp-review-jobs.jsonl` failed with
+  EPERM; the worker stopped without rerouting the payload. This is why the
+  Gulp review captures are not installed.
+
+## Next steps
+
+1. Decide whether to approve the blocked Tera-on-faint golden copy, so
+   AGENTS rule 2 can be fulfilled for that fix.
+2. Continue the mechanic long tail (Pursuit's switch cancel is the next
+   confirmed gap), each fix with a PS golden and a new integrated
+   aggregate.
+3. Keep the original gates' blockers visible: the full real replay corpus
+   and a live production rollout replacement PR are not available within
+   the current authorized scope.
+
+## Open options for Cole (not adopted)
+
+- **D1.** An alternative accuracy gate, for example keyed conformance on a
+  declared corpus. The original replay-corpus gates stay binding unless Cole
+  changes them.
+- **D2.** Whether an existing consumer path and workload would count for
+  Phase 4.
