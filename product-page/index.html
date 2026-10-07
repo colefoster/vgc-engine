@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vgc-engine — a doubles battle simulator built to be branched</title>
+<meta name="description" content="vgc-engine is a pre-alpha, data-oriented Rust battle simulator for Gen 9 doubles, with Python bindings, cloneable state and chance-frontier enumeration for search and ML developers.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header" id="top">
+  <div class="wrap header-row">
+    <a class="brand" href="#top" aria-label="vgc-engine, back to top">
+      <img src="assets/mark.svg" alt="" width="28" height="28">
+      <span>vgc-engine</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+      <span class="nav-toggle-bars" aria-hidden="true"></span>
+      <span class="nav-toggle-label">Menu</span>
+    </button>
+    <nav id="site-nav" class="site-nav" aria-label="Primary">
+      <ul>
+        <li><a href="#who">Who it's for</a></li>
+        <li><a href="#engine">Engine</a></li>
+        <li><a href="#frontier">Frontier demo</a></li>
+        <li><a href="#quickstart">Quickstart</a></li>
+        <li><a href="#evidence">Evidence</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<section class="hero" aria-labelledby="hero-title">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="status-pill"><span class="dot" aria-hidden="true"></span> Pre-alpha · Gen 9 doubles · accuracy gates still open</p>
+      <h1 id="hero-title">A doubles battle simulator <em>built to be branched.</em></h1>
+      <p class="lede">vgc-engine is a from-scratch Pokémon battle simulator in Rust, designed for the people writing search and learning code: MCTS rollouts, endgame solvers, self-play data. Fixed-size state, a heap-free <code>step()</code>, cheap clones and a Python module you can import.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#quickstart">Read the quickstart</a>
+        <a class="btn btn-ghost" href="downloads/vgc-engine-spec-sheet.md" download>Download the spec sheet <span class="file-tag">.md</span></a>
+      </div>
+      <p class="hero-note">Pokémon Showdown is the compatibility oracle. vgc-engine is not yet a drop-in replacement for it. <a href="#evidence">See where it stands.</a></p>
+    </div>
+
+    <figure class="hero-figure" aria-labelledby="hero-fig-cap">
+      <svg class="hero-svg" viewBox="0 0 520 420" role="img" aria-labelledby="hero-svg-title hero-svg-desc">
+        <title id="hero-svg-title">One joint action fanning out into a chance frontier</title>
+        <desc id="hero-svg-desc">Illustration: a doubles field with two slots per side. One joint action leads to a branch point, which fans out into several weighted next states.</desc>
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M20 0H0V20" fill="none" class="grid-line"/>
+          </pattern>
+        </defs>
+        <rect width="520" height="420" fill="url(#grid)" class="grid-bg"/>
+        <!-- field -->
+        <g class="field">
+          <rect x="24" y="96" width="176" height="228" rx="14" class="field-box"/>
+          <line x1="24" y1="210" x2="200" y2="210" class="field-mid"/>
+          <g class="slot slot-b"><circle cx="76" cy="150" r="22"/><text x="76" y="155">B1</text></g>
+          <g class="slot slot-b"><circle cx="148" cy="150" r="22"/><text x="148" y="155">B2</text></g>
+          <g class="slot slot-a"><circle cx="76" cy="270" r="22"/><text x="76" y="275">A1</text></g>
+          <g class="slot slot-a"><circle cx="148" cy="270" r="22"/><text x="148" y="275">A2</text></g>
+          <text x="112" y="84" class="cap">turn n · state 0x…</text>
+        </g>
+        <!-- joint action -->
+        <path d="M200 210 C 236 210, 246 210, 270 210" class="edge edge-main"/>
+        <g class="node-root"><circle cx="282" cy="210" r="12"/><text x="282" y="244" class="cap">step()</text></g>
+        <!-- frontier branches -->
+        <g class="branches">
+          <path d="M294 210 C 340 210, 360 70, 420 70"  class="edge e1"/>
+          <path d="M294 210 C 340 210, 360 140, 420 140" class="edge e2"/>
+          <path d="M294 210 C 340 210, 360 210, 420 210" class="edge e3"/>
+          <path d="M294 210 C 340 210, 360 280, 420 280" class="edge e4"/>
+          <path d="M294 210 C 340 210, 360 350, 420 350" class="edge e5"/>
+        </g>
+        <g class="leaves">
+          <g class="leaf l1"><rect x="420" y="56" width="80" height="28" rx="6"/><rect x="420" y="56" width="58" height="28" rx="6" class="leaf-fill"/><text x="430" y="75">p .58</text></g>
+          <g class="leaf l2"><rect x="420" y="126" width="80" height="28" rx="6"/><rect x="420" y="126" width="22" height="28" rx="6" class="leaf-fill"/><text x="430" y="145">p .22</text></g>
+          <g class="leaf l3"><rect x="420" y="196" width="80" height="28" rx="6"/><rect x="420" y="196" width="10" height="28" rx="5" class="leaf-fill"/><text x="436" y="215">p .10</text></g>
+          <g class="leaf l4"><rect x="420" y="266" width="80" height="28" rx="6"/><rect x="420" y="266" width="6" height="28" rx="3" class="leaf-fill"/><text x="436" y="285">p .06</text></g>
+          <g class="leaf l5"><rect x="420" y="336" width="80" height="28" rx="6"/><rect x="420" y="336" width="4" height="28" rx="2" class="leaf-fill"/><text x="436" y="355">p .04</text></g>
+        </g>
+        <text x="460" y="396" class="cap">Σp = 1</text>
+      </svg>
+      <figcaption id="hero-fig-cap">Illustrative diagram, synthetic probabilities. One joint action, one frontier of weighted next states.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- WHO -->
+<section class="band" id="who" aria-labelledby="who-title">
+  <div class="wrap">
+    <p class="kicker">01 · Who it's for</p>
+    <h2 id="who-title">For developers who need to play out a turn thousands of times.</h2>
+    <p class="section-lede">Pokémon Showdown is the reference simulator, but it is JavaScript, event-driven and allocation-heavy. That is fine for a ladder. It is a bottleneck when a search tree wants to clone a battle, try every joint action and step each branch. vgc-engine is written for that loop.</p>
+
+    <div class="who-grid">
+      <article class="who-card">
+        <h3>Search &amp; planning</h3>
+        <p>Clone a battle, enumerate legal choices per slot, step each joint action, keep the best. <code>Battle</code> has no interior sharing, so a copy is a full independent state.</p>
+      </article>
+      <article class="who-card">
+        <h3>ML pipelines</h3>
+        <p>A <code>pyo3</code> module, <code>vgc_engine</code>, plugs into Python training and evaluation code. State round-trips through compact bytes or inspectable JSON.</p>
+      </article>
+      <article class="who-card">
+        <h3>Game-theory &amp; endgames</h3>
+        <p>The <code>vgc-solver</code> crate enumerates outcome frontiers and solves small endgames, returning mixed policies for both sides with provenance and node counts.</p>
+      </article>
+      <article class="who-card">
+        <h3>Mechanics &amp; tooling</h3>
+        <p>A <code>vgc</code> CLI for damage, speed and EV questions, team legality checks for the Champions regulations, and a differential harness against Showdown.</p>
+      </article>
+    </div>
+
+    <aside class="not-this" aria-label="What vgc-engine is not">
+      <h3>What it is not</h3>
+      <ul>
+        <li><strong>Not a bot.</strong> It doesn't play, ladder or make decisions. It simulates the turns your code chooses.</li>
+        <li><strong>Not a cartridge emulator.</strong> Bit-exact reproduction of in-game RNG quirks is a non-goal.</li>
+        <li><strong>Not outside competitive battling.</strong> No overworld, breeding or contests.</li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
+<!-- ENGINE -->
+<section class="band band-ink" id="engine" aria-labelledby="engine-title">
+  <div class="wrap">
+    <p class="kicker">02 · Inside the engine</p>
+    <h2 id="engine-title">Data-oriented from the battle struct up.</h2>
+    <p class="section-lede">The design takes its discipline from <code>pkmn/engine</code> and its answers from Pokémon Showdown, then aims both at modern doubles.</p>
+
+    <ol class="spec-list">
+      <li>
+        <span class="spec-num" aria-hidden="true">A</span>
+        <div>
+          <h3>Fixed-size state, heap-free step</h3>
+          <p>Battle state is a plain fixed-size struct. Handles, not pointers: <code>MonId</code>, <code>MoveId</code>, <code>SideRef</code>. The project rule is no heap allocation inside <code>step()</code>, and an allocation probe over 500 battles reports <strong>0 step allocations</strong> at the final implementation.</p>
+        </div>
+      </li>
+      <li>
+        <span class="spec-num" aria-hidden="true">B</span>
+        <div>
+          <h3>Tables generated at build time</h3>
+          <p><code>build.rs</code> turns <code>@pkmn/dex</code> JSON into Rust source for species, moves, items, abilities and the type chart. Champions is a data overlay, not a fork of the code.</p>
+        </div>
+      </li>
+      <li>
+        <span class="spec-num" aria-hidden="true">C</span>
+        <div>
+          <h3>Doubles as a first-class format</h3>
+          <p>Slot targeting, spread-move damage, redirection, the Protect family, weather, terrain, screens, Tailwind and Trick Room live in shared modules. Format is orthogonal to generation.</p>
+        </div>
+      </li>
+      <li>
+        <span class="spec-num" aria-hidden="true">D</span>
+        <div>
+          <h3>Two Gen 9 doubles rule sets</h3>
+          <p>Standard Gen 9 doubles with Terastallization, and the Champions overlay (Reg M-B, Reg M-C) with Mega Evolution, Stat Points and Champions move data, selected by format id.</p>
+        </div>
+      </li>
+      <li>
+        <span class="spec-num" aria-hidden="true">E</span>
+        <div>
+          <h3>Chance frontiers on demand</h3>
+          <p>Behind the <code>chance</code> feature, <code>Battle::step_chance()</code> returns every possible next state of one turn with its prior. Today it wraps a record-and-replay pass. Native per-site branching is planned.</p>
+        </div>
+      </li>
+      <li>
+        <span class="spec-num" aria-hidden="true">F</span>
+        <div>
+          <h3>Showdown's own PRNG, opt-in</h3>
+          <p>The <code>ps-rng</code> feature adds a bit-exact port of Showdown's PRNG with its draw order and a per-draw trace, for seeded differential testing. Off by default, and absent from default builds.</p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- FRONTIER DEMO -->
+<section class="band" id="frontier" aria-labelledby="frontier-title">
+  <div class="wrap">
+    <p class="kicker">03 · How a frontier is built</p>
+    <h2 id="frontier-title">Watch one turn become a probability distribution.</h2>
+    <p class="section-lede">This is how <code>vgc-solver</code> enumerates outcomes, replayed on a <strong>toy model</strong> in your browser. Pick a joint action and step through the four passes.</p>
+
+    <div class="demo" id="demo">
+      <p class="demo-banner" role="note"><strong>Illustrative.</strong> Synthetic HP, damage and accuracy values computed by a small script on this page. Nothing here runs or reports on the engine.</p>
+
+      <div class="demo-grid">
+        <div class="demo-controls">
+          <fieldset>
+            <legend>Side A's joint action</legend>
+            <label class="radio"><input type="radio" name="action" value="single" checked> <span><strong>Strike B1</strong><small>single target · 90% acc</small></span></label>
+            <label class="radio"><input type="radio" name="action" value="spread"> <span><strong>Spread move</strong><small>hits B1 and B2 · ×0.75 · 90% acc</small></span></label>
+            <label class="radio"><input type="radio" name="action" value="protect"> <span><strong>Spread into Protect</strong><small>B1 protects · only B2 is hit</small></span></label>
+          </fieldset>
+          <fieldset>
+            <legend>Target state</legend>
+            <label class="radio"><input type="radio" name="hp" value="healthy" checked> <span><strong>Both healthy</strong><small>B1 100 HP · B2 100 HP</small></span></label>
+            <label class="radio"><input type="radio" name="hp" value="low"> <span><strong>B1 weakened</strong><small>B1 38 HP · KO rolls collapse</small></span></label>
+          </fieldset>
+        </div>
+
+        <div class="demo-stage">
+          <ol class="passes" role="tablist" aria-label="Enumeration passes">
+            <li role="presentation"><button role="tab" id="pass-tab-0" aria-controls="pass-panel" aria-selected="true" tabindex="0" data-pass="0"><span>1</span>Record</button></li>
+            <li role="presentation"><button role="tab" id="pass-tab-1" aria-controls="pass-panel" aria-selected="false" tabindex="-1" data-pass="1"><span>2</span>Cross</button></li>
+            <li role="presentation"><button role="tab" id="pass-tab-2" aria-controls="pass-panel" aria-selected="false" tabindex="-1" data-pass="2"><span>3</span>Replay</button></li>
+            <li role="presentation"><button role="tab" id="pass-tab-3" aria-controls="pass-panel" aria-selected="false" tabindex="-1" data-pass="3"><span>4</span>Dedup</button></li>
+          </ol>
+          <div id="pass-panel" class="pass-panel" role="tabpanel" aria-labelledby="pass-tab-0" tabindex="0">
+            <h3 class="pass-title" id="pass-title">Record pass</h3>
+            <p class="pass-text" id="pass-text">Loading the toy model…</p>
+            <div class="pass-visual" id="pass-visual" aria-hidden="true"></div>
+            <dl class="pass-stats" id="pass-stats"></dl>
+          </div>
+          <div class="pass-nav">
+            <button type="button" class="btn btn-small btn-ghost" id="pass-prev">← Previous pass</button>
+            <button type="button" class="btn btn-small btn-primary" id="pass-next">Next pass →</button>
+          </div>
+          <p class="sr-only" aria-live="polite" id="demo-live"></p>
+        </div>
+      </div>
+
+      <noscript><p class="demo-noscript">The interactive toy needs JavaScript. In words: the engine steps once with a recording RNG, expands every draw site it visited into all possible outcomes, replays each combination, then merges identical resulting states and sums their probabilities.</p></noscript>
+    </div>
+    <p class="fine">The four passes match the documented v1 algorithm in <code>vgc-solver</code>: record the visited draw sites, take the cross product of their outcomes, replay each cell with a keyed RNG, and merge by canonical state hash. The toy keeps three site kinds per hit (accuracy, crit, 16 damage rolls). Real turns have more.</p>
+  </div>
+</section>
+
+<!-- QUICKSTART -->
+<section class="band band-paper2" id="quickstart" aria-labelledby="qs-title">
+  <div class="wrap">
+    <p class="kicker">04 · Quickstart</p>
+    <h2 id="qs-title">From a team list to a branched turn.</h2>
+    <p class="section-lede">These snippets use the Python and CLI surfaces as they exist in the source today. The Python API is still wire-level: choices are plain tuples and will become proper objects later.</p>
+
+    <div class="tabs" id="code-tabs">
+      <div class="tablist" role="tablist" aria-label="Code examples">
+        <button role="tab" id="tab-py" aria-controls="panel-py" aria-selected="true" tabindex="0">Python: step &amp; branch</button>
+        <button role="tab" id="tab-solve" aria-controls="panel-solve" aria-selected="false" tabindex="-1">Python: solve &amp; verify</button>
+        <button role="tab" id="tab-cli" aria-controls="panel-cli" aria-selected="false" tabindex="-1">Rust &amp; CLI</button>
+      </div>
+
+      <div class="tabpanel" id="panel-py" role="tabpanel" aria-labelledby="tab-py" tabindex="0">
+        <button type="button" class="copy" data-copy="code-py">Copy</button>
+<pre><code id="code-py"><span class="c"># Build the wheel from crates/vgc-engine-py with maturin, then:</span>
+import json, vgc_engine
+
+team = json.dumps([
+    {<span class="s">"species"</span>: <span class="s">"rillaboom"</span>, <span class="s">"moves"</span>: [<span class="s">"protect"</span>]},
+] * 2)
+
+b = vgc_engine.Battle.from_teams(team, team,
+        format=<span class="s">"gen9doublescustomgame"</span>, seed=<span class="n">7</span>)
+
+<span class="c"># Choices are (kind, actor_slot, move_or_team_idx, target_side, target_slot)</span>
+p1 = [b.legal_choices(<span class="n">0</span>, s)[<span class="n">0</span>] for s in (<span class="n">0</span>, <span class="n">1</span>)]
+p2 = [b.legal_choices(<span class="n">1</span>, s)[<span class="n">0</span>] for s in (<span class="n">0</span>, <span class="n">1</span>)]
+
+branch = b.clone()                  <span class="c"># independent copy, no shared state</span>
+result = branch.step_move(p1, p2)   <span class="c"># "continue" | "p1_win" | "p2_win" | "tie"</span>
+
+snapshot = branch.to_bytes()        <span class="c"># compact; to_json() for inspection</span>
+again = vgc_engine.Battle.from_bytes(snapshot)</code></pre>
+      </div>
+
+      <div class="tabpanel" id="panel-solve" role="tabpanel" aria-labelledby="tab-solve" tabindex="0" hidden>
+        <button type="button" class="copy" data-copy="code-solve">Copy</button>
+<pre><code id="code-solve">import vgc_engine
+
+<span class="c"># Exact endgame search with an HP-ratio leaf; returns mixed policies.</span>
+sol = vgc_engine.solve_endgame_exact(b, max_depth=<span class="n">4</span>, node_budget=<span class="n">100_000</span>)
+sol[<span class="s">"value"</span>], sol[<span class="s">"provenance"</span>], sol[<span class="s">"nodes_visited"</span>]
+row_action = sol[<span class="s">"row_joint_policy"</span>][<span class="n">0</span>][<span class="n">0</span>]   <span class="c"># an executable joint choice</span>
+
+<span class="c"># Or plug in your own batched leaf evaluator (a model, a heuristic…)</span>
+sol = vgc_engine.solve_endgame(b, lambda obs: [<span class="n">0.0</span>] * len(obs))
+
+<span class="c"># Champions team legality from a Showdown export</span>
+problems = vgc_engine.parse_and_verify(paste_text, format=<span class="s">"regmb"</span>)
+assert problems == []
+
+<span class="c"># Quick damage range</span>
+r = vgc_engine.calc(<span class="s">"chomp"</span>, <span class="s">"lando"</span>, <span class="s">"eq"</span>)
+r[<span class="s">"min"</span>], r[<span class="s">"max"</span>]</code></pre>
+      </div>
+
+      <div class="tabpanel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli" tabindex="0" hidden>
+        <button type="button" class="copy" data-copy="code-cli">Copy</button>
+<pre><code id="code-cli"><span class="c"># Test the default workspace (the pyo3 crate builds separately)</span>
+cargo test --workspace --exclude vgc-engine-py
+
+<span class="c"># The `vgc` fast-calc front end: terse specs and aliases</span>
+cargo run --release -p vgc-engine-cli --bin vgc -- calc chomp lando eq
+cargo run --release -p vgc-engine-cli --bin vgc -- survives chomp lando eq
+cargo run --release -p vgc-engine-cli --bin vgc -- outspeeds chomp lando
+
+<span class="c"># Opt-in instrumentation lives behind Cargo features</span>
+cargo test -p vgc-engine-core --features chance
+cargo test -p vgc-engine-core --features ps-rng</code></pre>
+      </div>
+      <p class="sr-only" aria-live="polite" id="copy-live"></p>
+    </div>
+
+    <div class="cta-strip">
+      <p>Want this offline, with build steps and the API at a glance?</p>
+      <a class="btn btn-primary" href="downloads/vgc-engine-quickstart.md" download>Download the quickstart <span class="file-tag">.md</span></a>
+    </div>
+  </div>
+</section>
+
+<!-- USE CASES -->
+<section class="band" id="uses" aria-labelledby="uses-title">
+  <div class="wrap">
+    <p class="kicker">05 · What you can do with it today</p>
+    <h2 id="uses-title">Six concrete jobs, each mapped to a real surface.</h2>
+    <div class="use-table" role="list">
+      <div class="use-row" role="listitem"><h3>Rollouts for MCTS</h3><p>Clone, step joint actions, read HP and terminal results.</p><code>Battle.clone · step_move · legal_choices</code></div>
+      <div class="use-row" role="listitem"><h3>Chance-aware search</h3><p>Enumerate every next state of a turn with its prior, deduplicated.</p><code>step_chance · vgc-solver</code></div>
+      <div class="use-row" role="listitem"><h3>Small endgames</h3><p>Solve for mixed policies with depth, node and chance budgets.</p><code>solve_endgame_exact · solve_endgame</code></div>
+      <div class="use-row" role="listitem"><h3>Snapshots &amp; datasets</h3><p>Persist states mid-game and restore them elsewhere.</p><code>to_bytes · from_bytes · to_json</code></div>
+      <div class="use-row" role="listitem"><h3>Team legality</h3><p>Check a Showdown export against Champions Reg M-B or Reg M-C rules.</p><code>parse_and_verify</code></div>
+      <div class="use-row" role="listitem"><h3>Damage &amp; speed questions</h3><p>Ranges, survival, speed tiers, best move, matchups, EV thresholds.</p><code>vgc calc · survives · outspeeds · ko-evs</code></div>
+    </div>
+  </div>
+</section>
+
+<!-- EVIDENCE -->
+<section class="band band-ink" id="evidence" aria-labelledby="ev-title">
+  <div class="wrap">
+    <p class="kicker">06 · Evidence ledger</p>
+    <h2 id="ev-title">What has been measured, and what hasn't passed yet.</h2>
+    <p class="section-lede">The project labels every number by how current it is. This page keeps those labels. The headline: <strong>the engine is not finished and the finish line is not met. The original phase gates remain binding; any revised accuracy gate or sampling protocol is still an open decision.</strong></p>
+
+    <div class="ledger">
+      <div class="ledger-col">
+        <h3><span class="tag tag-current">Current</span> Final implementation, 2026-10-06</h3>
+        <ul class="ledger-list">
+          <li><span class="big">1,546</span><span>default-workspace tests pass, 0 fail (32 ignored)</span></li>
+          <li><span class="big">1,586</span><span>tests pass with the <code>ps-rng</code> feature, 0 fail</span></li>
+          <li><span class="big">0</span><span>step allocations in an allocation probe (500 battles, none capped)</span></li>
+          <li><span class="big">72/72</span><span>bounded Quick Claw and Custap control cases match Showdown, keyed and seeded</span></li>
+          <li><span class="big">27</span><span>Python binding tests pass against a freshly built wheel</span></li>
+        </ul>
+      </div>
+      <div class="ledger-col">
+        <h3><span class="tag tag-diag">Diagnostic</span> Not an accepted gate sample</h3>
+        <ul class="ledger-list">
+          <li><span class="big">~2×</span><span>gap between keyed and seeded comparison modes on synthetic Reg M-B studies: 84.9% vs 42.6% state-clean battles on a 1,000-case development set. The samples reuse teams, so they are <strong>not an independent holdout or an accepted gate sample.</strong></span></li>
+          <li><span class="big">3</span><span>open residual issues triaged: White Herb timing, Hunger Switch missing, one unresolved HP divergence.</span></li>
+          <li><span class="big">—</span><span>Speed claims are withheld. The one consumer benchmark is a single synthetic workload awaiting acceptance.</span></li>
+        </ul>
+        <h3 class="mt"><span class="tag tag-hist">Historical</span> 2026-09 accuracy study</h3>
+        <p class="ledger-p">With every random outcome forced to match Showdown, most remaining divergences on real-game Reg M-C battles were deterministic mechanics bugs, not RNG. The PRNG port itself was bit-exact. That finding set the current fix-one-mechanic-at-a-time workflow.</p>
+      </div>
+    </div>
+
+    <div class="gates" aria-labelledby="gates-title">
+      <h3 id="gates-title">Phase gates</h3>
+      <table>
+        <caption class="sr-only">Phase gate status</caption>
+        <thead><tr><th scope="col">Phase</th><th scope="col">Gate</th><th scope="col">Status</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">1 · Skeleton</th><td>Workspace, codegen, Python import, corpus report</td><td><span class="tag tag-done">Done</span></td></tr>
+          <tr><th scope="row">2 · Top mechanics</th><td>1,000-replay differential vs Showdown, turn-agreement thresholds</td><td><span class="tag tag-open">Open</span></td></tr>
+          <tr><th scope="row">3 · Long tail</th><td>≥95% turn agreement on a ≥10k-battle corpus; Tera; Champions</td><td><span class="tag tag-open">Open</span></td></tr>
+          <tr><th scope="row">4 · Perf &amp; integration</th><td>Replace Showdown in one consumer rollout path, with a measured ≥10× speedup</td><td><span class="tag tag-wait">Awaiting decision</span></td></tr>
+        </tbody>
+      </table>
+      <p class="fine">Tera and the Champions overlay have landed ahead of the Phase 3 gate. Phase numbers follow gates, not individual features.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ROADMAP -->
+<section class="band" id="roadmap" aria-labelledby="rm-title">
+  <div class="wrap">
+    <p class="kicker">07 · Roadmap</p>
+    <h2 id="rm-title">Modern doubles first. Every other generation later.</h2>
+    <p class="section-lede">The long-term goal is one shared codebase across all generations and formats. Today, only Gen 9 doubles is being built.</p>
+
+    <div class="roadmap">
+      <section class="rm-col rm-now" aria-labelledby="rm-now">
+        <h3 id="rm-now">Implemented</h3>
+        <ul>
+          <li>Gen 9 doubles core: targeting, spread damage, redirection, Protect family, weather, terrain, screens, Tailwind, Trick Room</li>
+          <li>Terastallization</li>
+          <li>Champions overlay: Mega Evolution, Stat Points, Reg M-B / M-C rules</li>
+          <li>Python bindings: build, step, clone, snapshot, legal choices</li>
+          <li><code>chance</code> frontier (record/replay wrapper)</li>
+          <li><code>ps-rng</code> Showdown PRNG mode</li>
+          <li>Endgame solver, damage-calc CLI, golden &amp; conformance harnesses</li>
+        </ul>
+      </section>
+      <section class="rm-col rm-next" aria-labelledby="rm-next">
+        <h3 id="rm-next">In progress</h3>
+        <ul>
+          <li>Climbing the mechanic long tail found by the differential harness</li>
+          <li>Fixing the triaged residual issues one at a time, then re-scoring the synthetic studies</li>
+          <li>Deciding whether to revise the accuracy gate or sampling protocol, and which consumer rollout path counts</li>
+          <li>Agreeing a representative workload for the performance gate</li>
+        </ul>
+      </section>
+      <section class="rm-col rm-later" aria-labelledby="rm-later">
+        <h3 id="rm-later">Future</h3>
+        <ul>
+          <li>Native per-site chance branching with copy-on-write state</li>
+          <li>Earlier generations, newest first (Gen 8 → 1), as negative deltas on shared code</li>
+          <li>A stable C ABI</li>
+          <li>Possibly a WASM build for browser tools</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="band band-paper2" id="faq" aria-labelledby="faq-title">
+  <div class="wrap narrow">
+    <p class="kicker">08 · Straight answers</p>
+    <h2 id="faq-title">Questions worth asking first.</h2>
+    <details>
+      <summary>Is it accurate enough to replace Showdown?</summary>
+      <p>Not yet. Targeted comparisons and scripted golden battles are green, but synthetic studies still show state divergences, the keyed and seeded comparison modes disagree, and the finish line is not met. Any revised accuracy gate or sampling protocol is still an open decision. Treat Showdown as ground truth and vgc-engine as a fast approximation under active correction.</p>
+    </details>
+    <details>
+      <summary>How much faster is it?</summary>
+      <p>The design targets order-of-magnitude speedups for rollouts, and that is what the Phase 4 gate will measure. No speedup is claimed here until a representative workload is agreed and re-measured.</p>
+    </details>
+    <details>
+      <summary>Which generations and formats work?</summary>
+      <p>Gen 9 doubles: the standard Tera-legal rules and the Champions overlay. Earlier generations have not been started. Singles exists as a format value, but doubles is the target.</p>
+    </details>
+    <details>
+      <summary>Can I make it match Showdown's random numbers?</summary>
+      <p>Yes, for testing. Build with <code>ps-rng</code> and seed a battle with a Showdown seed string. Draw order is aligned at the call sites the engine can mirror, with a trace of every draw.</p>
+    </details>
+    <details>
+      <summary>What's the license?</summary>
+      <p>MIT or Apache-2.0, at your option.</p>
+    </details>
+  </div>
+</section>
+
+<!-- CLOSING CTA -->
+<section class="closing" aria-labelledby="close-title">
+  <div class="wrap closing-inner">
+    <h2 id="close-title">Branch a turn. Check it against Showdown. Repeat.</h2>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="downloads/vgc-engine-quickstart.md" download>Download the quickstart</a>
+      <a class="btn btn-ghost" href="downloads/vgc-engine-spec-sheet.md" download>Download the spec sheet</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-row">
+    <p><strong>vgc-engine</strong> · pre-alpha · MIT OR Apache-2.0</p>
+    <p class="fine">Pokémon is a trademark of Nintendo, Creatures and GAME FREAK. vgc-engine is an independent project, not affiliated with them or with Pokémon Showdown. Demo and diagrams on this page use synthetic data.</p>
+    <p><a href="#top">Back to top ↑</a></p>
+  </div>
+</footer>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>
