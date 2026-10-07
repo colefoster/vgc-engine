@@ -616,6 +616,14 @@ fn park_bool_gates(table: &mut Table, acc: &AccBattle) {
         let actor = d.actor.as_deref().and_then(crate::parse_slot_ref).unwrap_or(NO_SLOT);
         let target = d.target.as_deref().and_then(crate::parse_slot_ref).unwrap_or(NO_SLOT);
         let Some(mv) = d.move_slug.as_deref().and_then(|m| data::MOVES.iter().position(|x| x.slug == m)) else { continue };
+        // Fickle Beam's onBasePower gate is read by `Rng::chance_keyed`,
+        // which decodes the direct `Range(1)` pass / `Range(0)` fail as is.
+        // Parked, the repair pass would hand it a `range(n)` conversion
+        // (fail -> Range(n-1)) that `chance_keyed` reads inverted. Any new
+        // `chance_keyed` site must stay on its direct key the same way.
+        if mv as u16 == data::move_id::FICKLEBEAM {
+            continue;
+        }
         let key = RngKey { turn: d.turn, actor, target, move_id: mv as u16, decision: RngDecision::Range };
         let pass = d.value.as_bool().unwrap_or(false);
         if let Some(q) = table.get_mut(&key) {
@@ -1292,6 +1300,89 @@ mod start_tiebreak_tests {
         let rs = "BattleActions.runSwitch@battle-actions.js:178";
         let four = [shuffle(6, 0.0, 4.0, 2.0, rs), shuffle(7, 1.0, 4.0, 1.0, rs), shuffle(8, 2.0, 4.0, 3.0, rs)];
         assert_eq!(start_switch_tiebreaks(&four), [RngEvent::Tiebreak(2), RngEvent::Tiebreak(0), RngEvent::Tiebreak(1)]);
+    }
+}
+
+#[cfg(test)]
+mod bool_gate_tests {
+    use super::*;
+
+    /// A one-turn battle whose only draws are `draws` (actor p1a, target p2a).
+    fn battle(draws: &[(&str, serde_json::Value)]) -> AccBattle {
+        let draws: Vec<serde_json::Value> = draws
+            .iter()
+            .map(|(mv, value)| {
+                serde_json::json!({"turn": 1, "actor": "p1a", "target": "p2a", "move": mv, "decision": "range", "value": value})
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "format": "gen9doublescustomgame", "p1team": "", "p2team": "",
+            "turns": [{"turn": 1, "choices": {}, "draws": draws}],
+        }))
+        .expect("AccBattle")
+    }
+
+    /// The table `repaired_table` starts from: envelopes, then the parking.
+    fn parked(acc: &AccBattle) -> Table {
+        let (mut table, unresolved) = build_table_from(acc.turns.iter().flat_map(|t| t.base.draws.iter()));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
+        park_bool_gates(&mut table, acc);
+        table
+    }
+
+    fn key(move_id: u16) -> RngKey {
+        let actor = crate::parse_slot_ref("p1a").unwrap();
+        let target = crate::parse_slot_ref("p2a").unwrap();
+        RngKey { turn: 1, actor, target, move_id, decision: RngDecision::Range }
+    }
+
+    fn slug(s: &str) -> u16 {
+        data::MOVES.iter().position(|m| m.slug == s).unwrap() as u16
+    }
+
+    fn queue(table: &Table, k: RngKey) -> Vec<RngEvent> {
+        table.get(&k).map(|q| q.iter().copied().collect()).unwrap_or_default()
+    }
+
+    /// Fickle Beam's bools stay on their direct key in the encoding
+    /// `chance_keyed` decodes (`Range(1)` pass, `Range(0)` fail), in order,
+    /// and nothing is parked for the repair pass to convert.
+    #[test]
+    fn fickle_beam_gates_stay_on_the_direct_key() {
+        let t = parked(&battle(&[("ficklebeam", false.into()), ("ficklebeam", true.into())]));
+        assert_eq!(queue(&t, key(data::move_id::FICKLEBEAM)), [RngEvent::Range(0), RngEvent::Range(1)]);
+        assert!(queue(&t, key(BOOL_GATE)).is_empty());
+    }
+
+    /// Any other bool `range` gate is still moved to `BOOL_GATE` as
+    /// `Crit(pass)`, in order, leaving its direct key empty.
+    #[test]
+    fn other_bool_gates_are_still_parked() {
+        let t = parked(&battle(&[("protect", true.into()), ("protect", false.into())]));
+        assert!(queue(&t, key(slug("protect"))).is_empty());
+        assert_eq!(queue(&t, key(BOOL_GATE)), [RngEvent::Crit(true), RngEvent::Crit(false)]);
+    }
+
+    /// Numeric `range` draws are not gates and are never parked, Fickle Beam
+    /// or not.
+    #[test]
+    fn numeric_range_draws_are_not_parked() {
+        let t = parked(&battle(&[("protect", 3.into()), ("ficklebeam", 2.into())]));
+        assert_eq!(queue(&t, key(slug("protect"))), [RngEvent::Range(3)]);
+        assert_eq!(queue(&t, key(data::move_id::FICKLEBEAM)), [RngEvent::Range(2)]);
+        assert!(queue(&t, key(BOOL_GATE)).is_empty());
+    }
+
+    /// A parked gate still converts for the engine's own gates: `range(n)`
+    /// passes on 0, percent gates on a low roll.
+    #[test]
+    fn parked_gates_convert_for_range_and_percent_draws() {
+        let range4 = DrawSpace::UniformRange(4);
+        assert_eq!(convert(RngEvent::Crit(true), &range4), Some(RngEvent::Range(0)));
+        assert_eq!(convert(RngEvent::Crit(false), &range4), Some(RngEvent::Range(3)));
+        let pct = DrawSpace::UniformPercent { threshold: Some(30) };
+        assert_eq!(convert(RngEvent::Crit(true), &pct), Some(RngEvent::PercentRoll(1)));
+        assert_eq!(convert(RngEvent::Crit(false), &pct), Some(RngEvent::PercentRoll(100)));
     }
 }
 
