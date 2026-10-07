@@ -1,0 +1,22 @@
+{
+  "name": "dive-incoming-surf-double",
+  "format": "gen9customgame",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Golduck (M)\nAbility: Damp\nLevel: 50\nEVs: 252 HP / 4 SpD\nHardy Nature\n- Dive\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nEVs: 4 HP\nHardy Nature\n- Surf\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1",
+      "p2": "move 1"
+    }
+  ]
+}
