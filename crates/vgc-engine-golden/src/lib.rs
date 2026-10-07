@@ -675,6 +675,16 @@ pub(crate) fn lower_rng_events(events: &[PsRngEvent]) -> Vec<RngEvent> {
                 if bound == 16 {
                     // Same mirror-image translation as PsRngEvent::DamageRoll above.
                     out.push(RngEvent::DamageRoll(15u8.saturating_sub((value as u8).min(15))));
+                } else if bound == 100 && site.as_deref().is_some_and(|s| s.contains("BattleActions.secondaries")) {
+                    // A secondary's `random(100) < chance` roll
+                    // (sim/battle-actions.ts:1343-1347, a5df8274; the driver
+                    // logs the built `battle-actions.js:1139`). The engine draws
+                    // it as a percent roll (`roll <= chance`, roll 1..=100), so
+                    // +1 keeps the outcome, as the keyed loader does. As a
+                    // Range it never matched that draw and stayed at the head
+                    // of OraclePartial's queue, sending every later draw to
+                    // the fallback.
+                    out.push(RngEvent::PercentRoll((value.min(99) + 1) as u8));
                 } else {
                     out.push(RngEvent::Range(value));
                 }
@@ -1332,6 +1342,25 @@ mod tests {
         let evs = vec![PsRngEvent::Range { value: 13, bound: 16, site: None }];
         let out = lower_rng_events(&evs);
         assert!(matches!(out[0], RngEvent::DamageRoll(2)));
+    }
+
+    #[test]
+    fn lower_rng_secondary_range_becomes_percent_roll() {
+        // PS `random(100) < chance` at BattleActions.secondaries; engine
+        // `percent_1_100_t(chance) <= chance`. 6 -> 7 passes any chance
+        // above 6 and fails 6, exactly as PS. Other bound-100 ranges and
+        // site-less legacy events are untouched.
+        let sec = |value: u32| PsRngEvent::Range {
+            value,
+            bound: 100,
+            site: Some("BattleActions.secondaries (sim/battle-actions.js:1139)".into()),
+        };
+        let out = lower_rng_events(&[sec(6), sec(99), sec(0)]);
+        assert!(matches!(out[..], [RngEvent::PercentRoll(7), RngEvent::PercentRoll(100), RngEvent::PercentRoll(1)]), "{out:?}");
+        let other = PsRngEvent::Range { value: 6, bound: 100, site: Some("Battle.onResidual (data/abilities.js:1)".into()) };
+        let legacy = PsRngEvent::Range { value: 6, bound: 100, site: None };
+        let out = lower_rng_events(&[other, legacy]);
+        assert!(matches!(out[..], [RngEvent::Range(6), RngEvent::Range(6)]), "{out:?}");
     }
 
     #[test]
