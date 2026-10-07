@@ -68,11 +68,13 @@ fn keyed(v: Value) -> Replayed {
 fn assert_clean(rep: &Replayed, what: &str) {
     assert!(rep.divergence.is_none(), "{what}: {:?}", rep.divergence.as_ref().map(|d| (d.turn, &d.slot, &d.field, &d.engine, &d.ps)));
     assert_eq!((rep.turns_compared, rep.matched_turns), (4, 4), "{what}");
-    assert!(
-        !rep.leftover_keys.iter().any(|k| k.contains("discharge")),
-        "{what}: turn-4 Discharge outcomes unconsumed: {:?}",
-        rep.leftover_keys
-    );
+    // Turn 4's Discharge accuracy / crit / damage / secondary outcomes are
+    // all consumed. Its only leftovers are the four target-less `Range`
+    // draws PS makes for a spread move (raw seq 42-45, Side.randomFoe via
+    // getRandomTarget in resolveAction / getActionSpeed / runMove), which
+    // the engine never draws; turn 3, which matches, leaves the same four.
+    let t4: Vec<&str> = rep.leftover_keys.iter().map(String::as_str).filter(|k| k.starts_with("t4/")).collect();
+    assert_eq!(t4, ["t4/Range/discharge/p2b>- x4"], "{what}: turn-4 leftovers {:?}", rep.leftover_keys);
 }
 
 /// The full-team replay: turn 4 never runs, so Umbreon keeps turn 3's HP.
