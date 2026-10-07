@@ -1,0 +1,239 @@
+{
+  "ok": true,
+  "name": "champions-whiteherb-weakarmor-bulldoze",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Skarmory",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Armarouge",
+      "hp": 160,
+      "max": 160
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Corviknight",
+      "hp": 173,
+      "max": 173
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Bulldoze",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 118,
+      "max": 160,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "spe",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "def",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "spe",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Bulldoze",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "immune",
+      "actor": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "immune",
+      "actor": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 80,
+      "max": 160,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "spe",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "def",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "spe",
+      "amount": 2
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 3,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 6,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 47,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791334638\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Snorlax, L50, M|\n|poke|p1|Skarmory, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Armarouge, L50, M|\n|poke|p2|Corviknight, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791334638\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Snorlax|Snorlax, L50, M|235/235\n|switch|p1b: Skarmory|Skarmory, L50, F|140/140\n|switch|p2a: Armarouge|Armarouge, L50, M|160/160\n|switch|p2b: Corviknight|Corviknight, L50, M|173/173\n|-ability|p2b: Corviknight|Unnerve\n|turn|1|\n|t:|1791334638\n|move|p2a: Armarouge|Splash|p2a: Armarouge\n|-nothing\n|move|p1b: Skarmory|Splash|p1b: Skarmory\n|-nothing\n|move|p2b: Corviknight|Splash|p2b: Corviknight\n|-nothing\n|move|p1a: Snorlax|Bulldoze|p2b: Corviknight|[spread] p2a\n|-immune|p1b: Skarmory\n|-immune|p2b: Corviknight\n|-supereffective|p2a: Armarouge|1\n|-damage|p2a: Armarouge|118/160\n|-unboost|p2a: Armarouge|spe|1\n|-ability|p2a: Armarouge|Weak Armor|boost\n|-unboost|p2a: Armarouge|def|1\n|-boost|p2a: Armarouge|spe|2\n|-enditem|p2a: Armarouge|White Herb\n|-clearnegativeboost|p2a: Armarouge|[silent]\n|\n|upkeep\n|turn|2|\n|t:|1791334638\n|move|p2a: Armarouge|Splash|p2a: Armarouge\n|-nothing\n|move|p1b: Skarmory|Splash|p1b: Skarmory\n|-nothing\n|move|p2b: Corviknight|Splash|p2b: Corviknight\n|-nothing\n|move|p1a: Snorlax|Bulldoze|p2a: Armarouge|[spread] p2a\n|-immune|p1b: Skarmory\n|-immune|p2b: Corviknight\n|-supereffective|p2a: Armarouge|1\n|-damage|p2a: Armarouge|80/160\n|-unboost|p2a: Armarouge|spe|1\n|-ability|p2a: Armarouge|Weak Armor|boost\n|-unboost|p2a: Armarouge|def|1\n|-boost|p2a: Armarouge|spe|2\n|\n|upkeep\n|turn|3"
+}

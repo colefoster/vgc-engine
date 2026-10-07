@@ -641,6 +641,42 @@ mod tests {
         assert!(down[15].0 > full[15].0, "-Atk/+Def must lower self-hit damage");
     }
 
+    /// Bulldoze into Weak Armor + White Herb: every frontier branch (each
+    /// a keyed replay of `step()`) holds the herb until the move ends, so
+    /// Def is restored and Spe ends +1 (data/items.ts:7699-7701), and
+    /// every state a plain seeded `step()` reaches is on the frontier.
+    #[test]
+    fn step_chance_white_herb_waits_for_the_whole_move_on_every_branch() {
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"hardy","moves":["bulldoze","rest","protect","crunch"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"armarouge","level":50,"ability":"weakarmor","item":"whiteherb","nature":"careful","moves":["protect","armorcannon","trickroom","psyshock"]}
+        ]"#).unwrap();
+        let b = Battle::new(BattleConfig { format: Format::Singles, seed: 0 }, p1, p2);
+        let p1c = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        let p2c = [Choice::Pass { actor_slot: 0 }];
+        let frontier = b.step_chance(&p1c, &p2c, 3);
+        assert_eq!(frontier.unmatched_total, 0);
+        let total: f64 = frontier.outcomes.iter().map(|o| o.prob).sum();
+        assert!((total - 1.0).abs() < 1e-9, "Σ prob = {total}");
+        assert!(frontier.outcomes.len() > 1, "damage rolls must give distinct states");
+        let full = b.side(SideRef::P2).active_mon(0).unwrap().stats.hp;
+        for o in &frontier.outcomes {
+            let m = o.battle.side(SideRef::P2).active_mon(0).unwrap();
+            assert!(m.current_hp < full, "Bulldoze hit");
+            assert_eq!((m.boosts[1], m.boosts[4]), (0, 1), "p={}: herb after the move", o.prob);
+            assert_eq!(m.item_id, u16::MAX, "p={}: herb used", o.prob);
+        }
+        let hashes: std::collections::HashSet<u64> = frontier.outcomes.iter().map(|o| o.hash).collect();
+        for seed in 0..16u64 {
+            let mut s = b.clone();
+            s.set_rng(Rng::Splitmix(seed));
+            s.step(&p1c, &p2c);
+            assert!(hashes.contains(&s.canonical_hash()), "seed {seed}: sampled state not on the frontier");
+        }
+    }
+
     /// Parity test: step_chance must produce the same frontier the
     /// solver's enumerate_outcomes does. This is the load-bearing
     /// contract — when native branching lands in a future PR, this
