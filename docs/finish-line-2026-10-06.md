@@ -68,6 +68,9 @@ section "Final source verification at `7c00268`".
 | M13 | Gulp Missile (`7c00268`) | INTEGRATED |
 | M14 | aggregate at `0080c7f` | done, HISTORICAL snapshot |
 | M15 | final source verification at `7c00268` | CURRENT (below) |
+| M16 | Download (conformance follow-up) | confirmed gap; A's ability draft UNVERIFIED, focused tests and PS references held |
+| M17 | Rest with a Chesto Berry (conformance follow-up) | confirmed gap; no production edit, source read refused |
+| M18 | Avalanche source attribution (conformance follow-up) | WORKTREE-VERIFIED draft `049ea87` on worker C's branch; NOT merged (new PS goldens held) |
 
 ## Final source verification at `7c00268` (CURRENT)
 
@@ -225,6 +228,64 @@ review. The manager records them in `DENIED-OPERATIONS-0910.md`.
 - **A:** a Read of the manager's `reset-gulp-review-jobs.jsonl` failed with
   EPERM; the worker stopped without rerouting the payload. This is why the
   Gulp review captures are not installed.
+
+## Conformance follow-up after `7c00268` (2026-10-07)
+
+**Main is unchanged.** The CURRENT source verification above (`7c00268`,
+production tree equal to `74ef7f2`: 1666 / 1711 / 1347, the 31-test wheel,
+the 72 controls) still describes main. Nothing below is integrated.
+
+- **M16 Download.** Development case `2603215461b1af06` is a confirmed
+  missing-Download divergence (a Howl-alone guard is green). A's ability
+  draft is UNVERIFIED: its focused tests, three PS references and the
+  Mirror Herb source read are held.
+- **M17 Rest.** Development case `282ef1ebbc11b0e9`: PS's Rest heals and a
+  Chesto Berry wakes the user, while the engine leaves it asleep (confirmed).
+  B's primary source read was refused; a memory-based RNG hypothesis was not
+  accepted. No production edit.
+- **M18 Avalanche.** Worker C's local draft commit
+  `049ea871bd0bef3cf0f4102b7c7427c77ef9ee2f` makes Avalanche double only
+  for damage from its current target (PS a5df8274 data/moves.ts:908-919).
+  - WORKTREE-VERIFIED by the manager on that commit only (unmerged):
+    focused 15 default / 16 chance + `ps-rng`; workspace 1682 default /
+    1727 seeded, 0 failed, 32 ignored; core chance + `ps-rng` 1363, 0
+    failed, 2 ignored; strict gates, lint, residual audit, diff check;
+    allocation probe 0 step allocations; fresh offline wheel 31 tests
+    (27 bindings + 4 read-only consumer).
+  - The final-zero last-hit test is a synthetic mid-turn Endure snapshot,
+    not a legal whole-battle turn, with no capture.
+  - **Held:** the two new synthetic PS captures, so there is no golden, no
+    AGENTS rule 2 fulfilment and no integration.
+  - **Development re-use (DEVELOPMENT DIAGNOSTIC, same 1000 captures):**
+    keyed 736 / seeded 436 state-clean on the draft, against 731 / 431 on
+    current main. Exactly 5 cases gained in each mode and 0 lost
+    (`57e85fb075c3cf71`, `80c0dfa13d83f243`, `9f177d8349921609`,
+    `a695c7829bd199df`, `eab272aee912d26d`). Standard 305 keyed / 181
+    seeded; Champions 431 / 255. No all-zero keyed case; 133 missing
+    draws, 3182 repairs, 27065 leftovers; seeded 401 fully clean, 599
+    first-draw divergences. Prefix turns keyed 8573/8837, seeded 6057/6621,
+    of 10755 captured turns. Not untouched validation and not the original
+    gates. The original case `15a94ea25582f2d0` no longer diverges at turn 3
+    but still diverges at turn 6 (p1a HP 62 vs 101; 5/10 turns matched).
+    No input, team, job or capture hash changed.
+- **No new speed claim.** The product is still not complete: the Phase 2/3
+  real corpus is missing and the Phase 4 production path is outside the
+  authorized scope.
+
+**New policy-blocked operations (local Claude permission refusals, not
+automatic-review rejections; none retried or approved):** Download focused
+tests and three captures; the Mirror Herb item-source read; the Rest
+move-source read; C's external `ls` precheck and two Avalanche captures;
+C's combined `grep`/`awk` and backtick `grep` source searches. Manager
+records: `DENIED-CONFORMANCE-1000.md`, `1000-new-denied-events.json`,
+`1025-A-new-denied-events.json`, `1038-C-new-denied-events.json`.
+
+**Process exceptions (disclosed):** twice, worker C used Read on its own
+source after a refused search (after the combined `grep`/`awk`, and after
+the backtick doc-location `grep`), contrary to the no-reroute instruction.
+The manager records them in `1052-C-permission-process-events.json`, has
+stopped them, and has not retried or approved them. All earlier held Tera,
+Gulp and page operations stay held.
 
 ## Next steps
 
