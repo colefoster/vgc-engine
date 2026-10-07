@@ -198,9 +198,10 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         // calls — serde checks this in debug builds.
         let mut s = ser.serialize_struct("Pokemon", 44)?;
         s.serialize_field("species_id", &p.species_id)?;
-        // Minior's future core colour (`minior_core_key`). A legacy core
-        // Minior that still knows its colour hashes like a fresh one.
-        s.serialize_field("minior_core", &minior_core_key(p))?;
+        // The forme a non-permanent change returns to (`forme_origin_key`).
+        // A legacy core Minior that still knows its colour hashes like a
+        // fresh one.
+        s.serialize_field("forme_origin", &forme_origin_key(p))?;
         s.serialize_field("level", &p.level)?;
         s.serialize_field("gender", &(p.gender as u8))?;
         s.serialize_field("moves", &p.moves)?;
@@ -429,19 +430,22 @@ fn bench_sort_key(p: &Pokemon) -> (u16, u16, u16, u8, u16, u8, u8, u8, u16) {
         // matter for game state (faint count, terminal check) but should
         // group together for stable ordering.
         u8::from(p.fainted),
-        // Hashed below; as a key too, so two benched Minior-Meteor that
-        // differ only in their future colour sort the same either way.
-        minior_core_key(p),
+        // Hashed below; as a key too, so two benched mons that differ only
+        // in the forme they return to sort the same either way.
+        forme_origin_key(p),
     )
 }
 
-/// Shields Down returns Minior-Meteor to its set colour, so two Meteor
-/// states with different colours have different futures. The future core
-/// (or u16::MAX: none, or a legacy unknown origin) for Minior only; every
-/// other species gets the constant.
-fn minior_core_key(p: &Pokemon) -> u16 {
+/// The forme a non-permanent forme change returns to, where it differs
+/// between otherwise-equal states: Shields Down's Minior core colour, and
+/// Hunger Switch's Morpeko set forme (a direct Morpeko-Hangry set switches
+/// back in Hangry). u16::MAX for none or a legacy unknown origin, and for
+/// every other species.
+fn forme_origin_key(p: &Pokemon) -> u16 {
     if p.species_id == crate::data::species_id::MINIORMETEOR || crate::pokemon::is_minior_core(p.species_id) {
         p.minior_core_species().unwrap_or(u16::MAX)
+    } else if crate::pokemon::is_morpeko(p.species_id) {
+        p.morpeko_origin().unwrap_or(u16::MAX)
     } else {
         u16::MAX
     }

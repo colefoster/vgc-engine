@@ -753,6 +753,16 @@ pub fn move_type_in_ctx(
     t
 }
 
+/// Aura Wheel's type — PS data/moves.ts:801-807 `onModifyType`: Dark when
+/// the user is Morpeko-Hangry, Electric otherwise.
+pub fn aura_wheel_type(attacker: &Pokemon) -> u8 {
+    if attacker.species_id == data::species_id::MORPEKOHANGRY {
+        15 // Dark
+    } else {
+        3 // Electric
+    }
+}
+
 /// The weather a move reads for its own effects: PS sim/pokemon.ts:2193
 /// effectiveWeather reports 'sunnyday' during a Mega Sol user's move.
 fn mega_sol_weather(attacker: &Pokemon, weather: crate::weather::Weather) -> crate::weather::Weather {
@@ -814,6 +824,8 @@ fn base_move_type_in_ctx(
             "taurospaldeaaqua" => 2,   // Water
             _ => m.type_,
         }
+    } else if move_id == data::move_id::AURAWHEEL {
+        aura_wheel_type(attacker)
     } else {
         m.type_
     }
@@ -944,6 +956,8 @@ pub(crate) fn calculate_damage_with_bp(
             _ => m.type_,
         };
         (ty, m.base_power as u32)
+    } else if move_id == data::move_id::AURAWHEEL {
+        (aura_wheel_type(attacker), m.base_power as u32)
     } else if move_id == data::move_id::HARDPRESS {
         // PS data/moves.ts hardpress basePowerCallback:
         // floor(floor((100 * (100 * floor(hp * 4096 / maxhp)) + 2047) / 4096) / 100) || 1.

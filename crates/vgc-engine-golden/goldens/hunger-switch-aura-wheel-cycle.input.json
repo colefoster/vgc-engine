@@ -1,0 +1,16 @@
+{
+  "name": "hunger-switch-aura-wheel-cycle",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Morpeko (M)\nAbility: Hunger Switch\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Aura Wheel\n- Splash\n\nAudino (F)\nAbility: Klutz\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Palossand (M)\nAbility: Water Compaction\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nEVs: 4 HP\nHardy Nature\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nClefable (F)\nAbility: Magic Guard\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" }
+  ]
+}
