@@ -22235,9 +22235,9 @@ mod tests {
         let p2 = TeamBuilder::from_json(p2_json).unwrap();
         let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
         // Before any move: all four slots selectable.
-        let pre: Vec<_> = b.legal_choices(SideRef::P1, 0).into_iter()
-            .filter(|c| matches!(c, Choice::Move { .. })).collect();
-        assert!(pre.len() >= 2, "all moves selectable before first use");
+        let pre = b.legal_choices(SideRef::P1, 0).into_iter()
+            .filter(|c| matches!(c, Choice::Move { .. })).count();
+        assert!(pre >= 2, "all moves selectable before first use");
         // First move: Earthquake (slot 3).
         b.step(
             &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P2, 0)) }],
