@@ -503,8 +503,11 @@ async function runJob(job) {
   const rngMode = job.rng_mode === undefined ? 'flat' : job.rng_mode;
   if (rngMode !== 'flat' && rngMode !== 'keyed') throw new Error(`unknown rng_mode: ${JSON.stringify(job.rng_mode)}`);
 
-  const p1Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p1), ...(t.p1_followups || [])]);
-  const p2Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p2), ...(t.p2_followups || [])]);
+  // `pN_replace`: the post-faint replacement answer for that turn's
+  // forceSwitch request (consumed after the turn's own action/followups).
+  const replaceOf = (r) => (r === undefined || r === null ? [] : [normalizeTurnAction(r)]);
+  const p1Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p1), ...(t.p1_followups || []), ...replaceOf(t.p1_replace)]);
+  const p2Actions = randomPlay ? null : (job.turns || []).flatMap((t) => [normalizeTurnAction(t.p2), ...(t.p2_followups || []), ...replaceOf(t.p2_replace)]);
 
   // Side-distinct PRNG seeds: derived from seed[0] so the run is
   // reproducible from a single integer (matches team-gen.js convention).
