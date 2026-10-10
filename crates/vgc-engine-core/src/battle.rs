@@ -9396,6 +9396,18 @@ self.trigger_emergency_exits();
         // + order preserved (see method docs). PR-LC7: 13-arg
         // shuffle collapsed into `&PerHitInvariants` built once at
         // PerTargetContext construction.
+        // PS recomputes each hit against the target's live HP, so a
+        // full-HP modifier (Multiscale / Shadow Shield,
+        // data/abilities.ts:multiscale onSourceModifyDamage
+        // `target.hp >= target.maxhp`) only halves the first hit.
+        // `ctx.defender` is the pre-move snapshot; show the damage calc
+        // the current HP for later hits, then restore the snapshot.
+        let snap_hp = ctx.defender.current_hp;
+        if hit_idx >= 1 {
+            if let Some(d) = self.side(ctx.tside).active_mon(ctx.tslot as usize) {
+                ctx.defender.current_hp = d.current_hp;
+            }
+        }
         let mut dmg: u16 = self.compute_per_hit_damage(
             hit_idx,
             &ctx.attacker,
@@ -9403,6 +9415,7 @@ self.trigger_emergency_exits();
             &ctx.per_hit_inv,
             &mut ctx.pipeline,
         );
+        ctx.defender.current_hp = snap_hp;
         #[cfg(feature = "ps-rng")]
         if hit_idx >= 1 && ctx.per_hit_inv.fixed_dmg_snapshot.is_none() {
             self.ps_modify_damage_ties(ctx.actor_side, ctx.actor_slot as u8, ctx.tside, ctx.tslot);
