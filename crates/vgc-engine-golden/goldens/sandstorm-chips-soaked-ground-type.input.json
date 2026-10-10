@@ -1,0 +1,15 @@
+{
+  "name": "sandstorm-chips-soaked-ground-type",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Tyranitar (M)\nAbility: Sand Stream\nLevel: 50\nHardy Nature\n- Splash\n\nPolitoed (M)\nAbility: Damp\nLevel: 50\nHardy Nature\n- Soak"
+  },
+  "p2": {
+    "team": "Excadrill (M)\nAbility: Mold Breaker\nLevel: 50\nHardy Nature\n- Splash\n\nGarchomp (M)\nAbility: Rough Skin\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1 1", "p2": "move 1, move 1" },
+    { "p1": "move 1, move 1 2", "p2": "move 1, move 1" }
+  ]
+}

@@ -14297,11 +14297,11 @@ self.trigger_emergency_exits();
                                 {
                                     true
                                 } else {
-                                    let species = m.species();
-                                    (0..species.num_types as usize).any(|i| {
-                                        // Type codes: 12 Rock, 8 Ground, 16 Steel.
-                                        matches!(species.types[i], 12 | 8 | 16)
-                                    })
+                                    // Current types (Soak / Tera / Protean):
+                                    // runImmunity reads getTypes (sim/pokemon.ts).
+                                    let (types, n) = m.effective_types();
+                                    // Type codes: 12 Rock, 8 Ground, 16 Steel.
+                                    types[..n as usize].iter().any(|t| matches!(t, 12 | 8 | 16))
                                 }
                             }
                         }
