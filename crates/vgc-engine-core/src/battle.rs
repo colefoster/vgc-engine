@@ -6036,6 +6036,18 @@ self.trigger_emergency_exits();
             ),
             PreMoveOutcome::Abort
         ) {
+            // runMove's `MoveAborted` event (sim/battle-actions.ts runMove):
+            // twoturnmove `onMoveAborted` removes the charge volatile, and
+            // its onEnd the move's own (Fly / Dig semi-invulnerability)
+            // (data/conditions.ts:314-322). A mon frozen, asleep or fully
+            // paralysed on its release turn is no longer locked.
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.charging_turns > 0 {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                    a.semi_invuln = 0;
+                }
+            }
             return;
         }
         // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
