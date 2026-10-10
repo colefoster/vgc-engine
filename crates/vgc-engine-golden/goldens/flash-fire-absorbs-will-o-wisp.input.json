@@ -1,0 +1,15 @@
+{
+  "name": "flash-fire-absorbs-will-o-wisp",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Gengar (M)\nAbility: Cursed Body\nLevel: 50\nHardy Nature\n- Will-O-Wisp\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Arcanine (M)\nAbility: Flash Fire\nLevel: 50\nHardy Nature\n- Splash\n- Flamethrower\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 2, move 1", "p2": "move 2 2, move 1" }
+  ]
+}

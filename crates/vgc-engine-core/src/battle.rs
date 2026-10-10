@@ -9046,6 +9046,19 @@ self.trigger_emergency_exits();
                                 self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
                                 return;
                             }
+                            // Flash Fire onTryHit absorbs a Fire Status move
+                            // (Will-O-Wisp) and starts the flashfire boost
+                            // (data/abilities.ts flashfire).
+                            Some(data::ability_id::FLASHFIRE) if m.type_ == 1 => {
+                                if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                                    d.volatiles.add(crate::pokemon::Volatile {
+                                        kind: crate::pokemon::VolatileKind::FlashFire,
+                                        turns_remaining: 0,
+                                        payload: 0,
+                                    });
+                                }
+                                return;
+                            }
                             Some(data::ability_id::SOUNDPROOF) if m.is_sound => return,
                             Some(data::ability_id::OBLIVIOUS)
                                 if matches!(
