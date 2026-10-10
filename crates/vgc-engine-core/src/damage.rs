@@ -1200,6 +1200,11 @@ pub(crate) fn calculate_damage_with_bp(
         // basePowerCallback: `if (pokemon.moveLastTurnResult === false)
         // return move.basePower * 2`.
         (m.type_, (m.base_power as u32) * 2)
+    } else if move_id == data::move_id::LASHOUT && attacker.stats_lowered_this_turn {
+        // PS data/moves.ts:10057 lashout `onBasePower`: chainModify(2) when
+        // `source.statsLoweredThisTurn` — 75 → 150.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Lash_Out_(move)>.
+        (m.type_, (m.base_power as u32) * 2)
     } else if move_id == data::move_id::HEX && !matches!(defender.status, Status::None) {
         // PS data/moves.ts:hex `basePowerCallback` doubles BP
         // (65 → 130) when the target carries a non-volatile status.
