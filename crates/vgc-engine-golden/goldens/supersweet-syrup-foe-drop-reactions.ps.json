@@ -1,0 +1,181 @@
+{
+  "ok": true,
+  "name": "supersweet-syrup-foe-drop-reactions",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Kingambit",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Dragapult",
+      "hp": 163,
+      "max": 163
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Hydrapple",
+      "hp": 181,
+      "max": 181
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "evasion",
+      "amount": 1
+    },
+    {
+      "turn": 0,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Iron Head",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 64,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 82,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791638428\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Kingambit, L50, M|\n|poke|p1|Dragapult, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Hydrapple, L50, F|\n|poke|p2|Snorlax, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791638428\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Kingambit|Kingambit, L50, M|175/175\n|switch|p1b: Dragapult|Dragapult, L50, F|163/163\n|switch|p2a: Hydrapple|Hydrapple, L50, F|181/181\n|switch|p2b: Snorlax|Snorlax, L50, M|235/235\n|-ability|p2a: Hydrapple|Supersweet Syrup\n|-unboost|p1a: Kingambit|evasion|1\n|-ability|p1a: Kingambit|Defiant|boost\n|-boost|p1a: Kingambit|atk|2\n|-fail|p1b: Dragapult|unboost|[from] ability: Clear Body|[of] p1b: Dragapult\n|turn|1|\n|t:|1791638428\n|move|p1b: Dragapult|Splash|p1b: Dragapult\n|-nothing\n|move|p1a: Kingambit|Iron Head|p2b: Snorlax\n|-damage|p2b: Snorlax|64/235\n|move|p2a: Hydrapple|Splash|p2a: Hydrapple\n|-nothing\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|2",
+  "keyed": [
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2b",
+      "move": "ironhead",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2b",
+      "move": "ironhead",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2b",
+      "move": "ironhead",
+      "decision": "damage",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2b",
+      "move": "ironhead",
+      "decision": "secondary",
+      "value": 82,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    }
+  ]
+}
