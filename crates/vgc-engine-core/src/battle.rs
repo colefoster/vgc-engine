@@ -10189,19 +10189,8 @@ self.trigger_emergency_exits();
         //     Grass-type, holds Safety Goggles, or has Overcoat
         //     ability. Follow Me has no gate.
         //   - If two foes both used a redirect this turn (e.g. Indeedee
-        //     Follow Me + Amoonguss Rage Powder on the same side), the
-        //     first-to-resolve claims the target — PS does this via
-        //     queue order, and since the volatile carrier had to move
-        //     before the attacker's action could redirect, both
-        //     volatiles are present. Tie-break: prefer Rage Powder
-        //     (it has the powder bonus on Bug type and is the more
-        //     dedicated redirector in PS, and its `onFoeRedirectTarget`
-        //     runs first in queue order in practice as Amoonguss
-        //     typically outruns Indeedee here is irrelevant — the
-        //     volatile lookup is order-independent). Concretely we
-        //     iterate slot order on the foe side and pick the first
-        //     `redirecting_is_powder == true` carrier, falling back
-        //     to the first `redirecting_this_turn` carrier.
+        //     Follow Me + Amoonguss Rage Powder), the faster carrier wins
+        //     (see the selection below).
         //
         // `redirected` records whether this higher-priority Follow Me /
         // Rage Powder pass claimed the move. PS resolves redirection in a
@@ -10245,44 +10234,43 @@ self.trigger_emergency_exits();
             if orig_side != actor_side {
                 let opp = orig_side; // foe side relative to attacker
                 let n = self.format().active_count() as u8;
-                // Find a redirector. Prefer Rage Powder (powder) if both.
-                let mut redirector: Option<u8> = None;
-                let mut found_powder = false;
+                // Several carriers (Follow Me + Rage Powder): PS's
+                // priorityEvent sorts the equal-priority handlers by the
+                // holder's speed (compareRedirectOrder, sim/battle.ts:413;
+                // `10000 - spe` under Trick Room, sim/pokemon.ts:641) and the
+                // first to return a target wins (fastExit, sim/battle.ts:914).
+                // A Rage Powder the attacker is powder-immune to returns
+                // nothing and falls through to the next carrier.
+                let powder_immune = {
+                    let s = attacker.species();
+                    let grass_attacker = (0..s.num_types as usize).any(|i| s.types[i] == 4);
+                    grass_attacker
+                        || attacker.item_id == data::item_id::SAFETYGOGGLES
+                        || attacker.effective_ability_id() == data::ability_id::OVERCOAT
+                };
+                let tw = self.side(opp).conditions.tailwind_turns > 0;
+                let tr = self.trick_room_turns > 0;
+                let mut redirector: Option<(u8, i32)> = None;
                 for slot in 0..n {
-                    if let Some(p) = self.side(opp).active_mon(slot as usize) {
-                        if p.is_alive() && p.redirecting_this_turn() {
-                            if p.redirecting_is_powder() {
-                                redirector = Some(slot);
-                                found_powder = true;
-                                break;
-                            } else if redirector.is_none() {
-                                redirector = Some(slot);
-                            }
-                        }
+                    let Some(p) = self.side(opp).active_mon(slot as usize) else { continue };
+                    if !p.is_alive() || !p.redirecting_this_turn() {
+                        continue;
+                    }
+                    if p.redirecting_is_powder() && powder_immune {
+                        continue;
+                    }
+                    let spe = crate::order::effective_speed(p, tw, self.weather, self.terrain) as i32;
+                    let key = if tr { 10000 - spe } else { spe };
+                    if redirector.is_none_or(|(_, k)| key > k) {
+                        redirector = Some((slot, key));
                     }
                 }
-                if let Some(rslot) = redirector {
-                    // Don't redirect onto the original target itself
-                    // (would be a no-op, but also covers the case where
-                    // the attacker's chosen target IS the redirector).
+                if let Some((rslot, _)) = redirector {
+                    // Redirecting onto the original target itself is a
+                    // no-op (the attacker already chose the redirector).
                     if (opp, rslot) != targets[0] {
-                        // Powder gate (Rage Powder only).
-                        let mut blocked = false;
-                        if found_powder {
-                            let s = attacker.species();
-                            let grass_attacker =
-                                (0..s.num_types as usize).any(|i| s.types[i] == 4);
-                            if grass_attacker
-                                || attacker.item_id == data::item_id::SAFETYGOGGLES
-                                || attacker.effective_ability_id() == data::ability_id::OVERCOAT
-                            {
-                                blocked = true;
-                            }
-                        }
-                        if !blocked {
-                            targets = TargetBuf::single((opp, rslot));
-                            redirected = true;
-                        }
+                        targets = TargetBuf::single((opp, rslot));
+                        redirected = true;
                     }
                 }
             }
@@ -37363,10 +37351,11 @@ mod tests {
     }
 
     #[test]
-    fn rage_powder_beats_follow_me_when_both_up() {
+    fn faster_redirector_wins_when_both_up() {
         // If both redirectors are alive (Rage Powder slot 0, Follow Me
-        // slot 1), Rage Powder wins (powder carrier preferred). Attacker
-        // targets the *other* slot; should land on the Rage Powder user.
+        // slot 1), the faster carrier's handler runs first in PS's
+        // priorityEvent and wins (sim/battle.ts:413 compareRedirectOrder,
+        // :914 fastExit). Indeedee-F outspeeds Amoonguss, so Follow Me wins.
         let p1_json = r#"[
             {"species":"amoonguss","level":50,"ability":"regenerator","item":"","nature":"calm","moves":["ragepowder","gigadrain","spore","clearsmog"]},
             {"species":"indeedeef","level":50,"ability":"psychicsurge","item":"","nature":"calm","moves":["followme","psychic","dazzlinggleam","helpinghand"]}
@@ -37382,8 +37371,8 @@ mod tests {
         let indeedee_hp = b.p1.team[1].current_hp;
         // Snorlax Crunches Pikachu's intended target would be (P1, 0)
         // anyway; instead aim at neither — pick the partner of Amoonguss,
-        // which is the Indeedee slot. Both volatiles set, Rage Powder
-        // should claim the hit.
+        // which is the Indeedee slot. Both volatiles set; the faster
+        // Follow Me claims the hit.
         b.step(
             &[
                 Choice::Move { actor_slot: 0, move_slot: 0, target: None },
@@ -37394,13 +37383,13 @@ mod tests {
                 Choice::Pass { actor_slot: 1 },
             ],
         );
-        assert!(
-            b.p1.team[0].current_hp < amoonguss_hp,
-            "Amoonguss (Rage Powder) should be the redirect target when both are up"
-        );
         assert_eq!(
-            b.p1.team[1].current_hp, indeedee_hp,
-            "Indeedee (Follow Me) untouched — Rage Powder wins tie-break"
+            b.p1.team[0].current_hp, amoonguss_hp,
+            "Amoonguss (slower Rage Powder) untouched"
+        );
+        assert!(
+            b.p1.team[1].current_hp < indeedee_hp,
+            "Indeedee (faster Follow Me) takes the hit"
         );
     }
 
