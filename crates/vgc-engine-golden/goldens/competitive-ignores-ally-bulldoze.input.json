@@ -1,0 +1,16 @@
+{
+  "name": "competitive-ignores-ally-bulldoze",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Excadrill (M)\nAbility: Sand Force\nLevel: 50\nHardy Nature\n- Bulldoze\n- Splash\n\nMilotic (F)\nAbility: Competitive\nLevel: 50\nHardy Nature\n- Splash\n- Water Pulse"
+  },
+  "p2": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 2, move 2 1", "p2": "move 1, move 1" }
+  ]
+}

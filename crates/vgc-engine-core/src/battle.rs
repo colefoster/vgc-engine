@@ -14802,6 +14802,14 @@ self.trigger_emergency_exits();
     }
 
     pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
+        self.after_drop(side, slot, before, eject, true)
+    }
+
+    /// `after_foe_drop` for a drop whose source may be the target's ally:
+    /// Defiant / Competitive return on `target.isAlly(source)` (PS
+    /// data/abilities.ts defiant / competitive onAfterEachBoost), while
+    /// Eject Pack and White Herb react to any drop.
+    pub(crate) fn after_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool, foe_source: bool) -> usize {
         let lowered = self
             .side(side)
             .active_mon(slot as usize)
@@ -14809,8 +14817,10 @@ self.trigger_emergency_exits();
         if lowered == 0 {
             return 0;
         }
-        for _ in 0..lowered {
-            crate::ability::react_to_opposing_stat_drop(self, side, slot);
+        if foe_source {
+            for _ in 0..lowered {
+                crate::ability::react_to_opposing_stat_drop(self, side, slot);
+            }
         }
         if eject {
             let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
@@ -19436,7 +19446,9 @@ fn apply_secondary_effect(
                 battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
                 // Defiant / Competitive (onAfterEachBoost), Eject Pack, White
                 // Herb (e.g. Crunch's Def drop, Lumina Crash's SpD drop).
-                battle.after_foe_drop(target_side, target_slot, before, true);
+                // An ally's spread secondary (Bulldoze, Icy Wind) does not
+                // trigger Defiant / Competitive.
+                battle.after_drop(target_side, target_slot, before, true, attacker_side != target_side);
             }
         }
     }
