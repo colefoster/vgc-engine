@@ -1,0 +1,30 @@
+{
+  "name": "flash-fire-boost-is-spa-modifier",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Chandelure (M) @ Focus Sash\nAbility: Flash Fire\nLevel: 50\nEVs: 32 HP / 32 SpA / 2 SpD\nQuiet Nature\n- Heat Wave\n- Protect\n\nIndeedee-F @ Rocky Helmet\nAbility: Psychic Surge\nLevel: 50\nEVs: 32 HP / 32 SpA / 2 SpD\nQuiet Nature\n- Follow Me\n- Protect"
+  },
+  "p2": {
+    "team": "Farigiraf (M)\nAbility: Cud Chew\nLevel: 50\nEVs: 32 HP / 32 SpA / 2 SpD\nQuiet Nature\n- Protect\n- Psychic\n\nTorkoal (M)\nAbility: Shell Armor\nLevel: 50\nEVs: 32 HP / 32 SpA / 2 Def\nModest Nature\n- Flamethrower\n- Protect"
+  },
+  "turns": [
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 1, move 1 1"
+    },
+    {
+      "p1": "move 2, move 2",
+      "p2": "move 1, move 1 1"
+    },
+    {
+      "p1": "move 1, move 2",
+      "p2": "move 2 2, move 2"
+    }
+  ]
+}
