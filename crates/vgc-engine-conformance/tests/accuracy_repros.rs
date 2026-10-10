@@ -573,3 +573,24 @@ fn trace_sample_on_a_faint_replacement_is_keyed() {
         assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-freeze-thaw-jobs.jsonl`.
+/// Blizzard freezes a foe; next turn the frozen mon picks a spread move,
+/// whose getTarget draws PS records under the same (turn, actor, move)
+/// `range` key as Champions' thaw `randomChance(1, 4)`
+/// (data/mods/champions/conditions.ts frz onBeforeMove). The thaw gate
+/// must pair with the parked pass/fail bool, not pop a getTarget pick.
+#[test]
+fn freeze_thaw_roll_is_keyed_apart_from_the_moves_target_picks() {
+    for name in ["keyed-freeze-thaw-spread-14", "keyed-freeze-thaw-spread-27", "keyed-freeze-thaw-spread-101"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared > 0, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
