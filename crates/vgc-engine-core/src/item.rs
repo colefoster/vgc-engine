@@ -445,10 +445,13 @@ pub fn on_after_damage(
     // in PS doesn't apply here (those steal-and-eat off the holder, a
     // different path). The re-eat fires in `ability::on_residual`.
     if item_id != u16::MAX && data::ITEMS[item_id as usize].is_berry {
+        let in_residual = battle.in_residual;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if m.item_id == u16::MAX && m.ability_id == data::ability_id::CUDCHEW {
                 m.cud_chew_berry = item_id;
-                m.cud_chew_counter = 2;
+                // PS abilities.ts:748: eaten during residuals (empty queue)
+                // starts at 1, so the same turn's order-28 tick re-eats it.
+                m.cud_chew_counter = if in_residual { 1 } else { 2 };
             }
         }
     }

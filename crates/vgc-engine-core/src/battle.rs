@@ -337,6 +337,10 @@ pub struct Battle {
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
     #[serde(skip)]
     disguise_hit_this_move: bool,
+    /// Set while the residual action runs: PS's action queue is empty
+    /// then, which Cud Chew's onEatItem reads (`!this.queue.peek()`).
+    #[serde(skip)]
+    pub(crate) in_residual: bool,
     /// The status move being resolved cannot miss its target (Glaive Rush
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
     #[serde(skip)]
@@ -729,6 +733,7 @@ impl Battle {
             defer_white_herb: false,
             white_herb_move_defer: false,
             disguise_hit_this_move: false,
+            in_residual: false,
             status_sure_hit: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
@@ -3957,9 +3962,11 @@ self.trigger_emergency_exits();
                 self.ps_residual_ties();
             }
             let hp_before = self.active_hp_snapshot();
+            self.in_residual = true;
             self.resolve_end_of_turn();
             // PS: the residual action ends with eachEvent('Update').
             self.update_hp_berries();
+            self.in_residual = false;
             self.residual_emergency_exits(hp_before);
         }
         #[cfg(feature = "ps-rng")]
