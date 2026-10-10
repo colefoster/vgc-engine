@@ -594,3 +594,23 @@ fn freeze_thaw_roll_is_keyed_apart_from_the_moves_target_picks() {
         assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-sleep-drops-charge-jobs.jsonl`.
+/// Archaludon charges Electro Shot and is Spored. On the release turn it
+/// can't move (slp); runMove's MoveAborted runs twoturnmove
+/// `onMoveAborted`, which drops the charge (data/conditions.ts:320-322),
+/// so once awake it uses the Protect it chose instead of firing the shot.
+#[test]
+fn a_move_aborted_on_its_release_turn_drops_the_two_turn_charge() {
+    for name in ["keyed-sleep-drops-charge-1", "keyed-sleep-drops-charge-4"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 4, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
