@@ -9619,9 +9619,12 @@ self.trigger_emergency_exits();
         attacker: &Pokemon,
         crit: bool,
         hit_sub: bool,
-        effective_dmg: u16,
+        _effective_dmg: u16,
     ) {
-        if !hit_sub && effective_dmg > 0 {
+        // PS collects DamagingHit targets by `typeof damage[i] === 'number'`
+        // (data/mods/champions/scripts.ts:402, sim/battle-actions.ts:1113),
+        // so a hit capped to 0 (Endure at 1 HP) still fires it.
+        if !hit_sub {
             // PS fires onDamagingHit regardless of whether the
             // target survived (Rough Skin / Static / Flame Body
             // tick on a KO hit too). Individual ability arms in
