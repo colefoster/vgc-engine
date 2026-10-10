@@ -1259,3 +1259,39 @@ fn encore_fractional_custap_guards() {
     assert!(b.rng().keyed_leftovers().unwrap().iter().all(|(k, _)| *k != key), "precondition: re-queue Quick Draw roll consumed");
     assert_eq!(b.p2.team[0].item_id, data::item_id::CUSTAPBERRY, "Quick Draw fired first");
 }
+
+#[test]
+fn replacement_eats_sitrus_before_an_entering_unnerve_starts() {
+    // Faint replacements are instaswitches whose last eachEvent('Update')
+    // (sim/battle.ts:2861) runs before any runSwitch, so a Sitrus holder
+    // entering at <= 1/2 HP eats while the Unnerve that replaces alongside
+    // it has not started (data/abilities.ts:5258-5270 effectState.unnerved).
+    // Study B 858a90d936.
+    let mut b = Battle::new(
+        BattleConfig { format: Format::Doubles, seed: 1 },
+        TeamBuilder::from_json(r#"[
+            {"species":"pichu","level":1,"ability":"static","moves":["splash"]},
+            {"species":"chansey","level":50,"ability":"naturalcure","moves":["splash"]},
+            {"species":"pelipper","level":50,"ability":"keeneye","item":"sitrusberry","moves":["splash"]}
+        ]"#).unwrap(),
+        TeamBuilder::from_json(r#"[
+            {"species":"aerodactyl","level":100,"ability":"unnerve","moves":["finalgambit"]},
+            {"species":"tauros","level":100,"ability":"intimidate","moves":["splash"]},
+            {"species":"tyranitar","level":50,"ability":"unnerve","moves":["splash"]}
+        ]"#).unwrap(),
+    );
+    b.decision_phases = true;
+    let max = b.p1.team[2].stats.hp;
+    b.p1.team[2].current_hp = 35;
+    b.step(
+        &[mv(0, 0, None), mv(1, 0, None)],
+        &[mv(0, 0, Some(t(SideRef::P1, 0))), mv(1, 0, None)],
+    );
+    assert!(b.p1.team[0].fainted && b.p2.team[0].fainted, "Final Gambit KO'd both");
+    b.step(
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+        &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+    );
+    assert_eq!(b.p1.team[2].item_id, u16::MAX, "Sitrus eaten");
+    assert_eq!(b.p1.team[2].current_hp, 35 + max / 4);
+}
