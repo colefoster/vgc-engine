@@ -11266,13 +11266,17 @@ self.trigger_emergency_exits();
             // "target must be attacking" gate so `damage_only` reports the
             // damage Sucker Punch would deal (@smogon/calc parity) instead
             // of a spurious 0 against the synthetic forced-Splash defender.
+            // A target that must recharge also fails it (PS
+            // data/moves.ts:18408 `target.volatiles['mustrecharge']`).
+            let foe = actor_side.opposing();
+            let attacking = |s: usize| {
+                pending_kind[opp][s] == 1
+                    && !self.side(foe).active_mon(s).is_some_and(|t| t.must_recharge)
+            };
             let ok = self.force_move_gate_ok
                 || match self.final_single_target(actor_side, actor_slot, move_id, attacker, m, target) {
-                    Some((side, slot)) if side == actor_side.opposing() => {
-                        let s = slot as usize & 1;
-                        pending_kind[opp][s] == 1
-                    }
-                    _ => pending_kind[opp].iter().any(|&k| k == 1),
+                    Some((side, slot)) if side == foe => attacking(slot as usize & 1),
+                    _ => (0..pending_kind[opp].len()).any(attacking),
                 };
             if !ok {
                 let extra = pressure_extra_pp(self, actor_side, m, target);
