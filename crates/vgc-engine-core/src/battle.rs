@@ -8375,9 +8375,26 @@ self.trigger_emergency_exits();
                         ctx.defender.status = d.status;
                     }
                 }
+                let dealt_before = ctx.any_damage_dealt;
                 self.apply_single_hit(&mut ctx, hit_idx);
                 if ctx.target_fainted_this_hit {
                     break;
+                }
+                // A multi-hit use of a `self.boosts` move (Parental Bond
+                // Hammer Arm / Close Combat / Draco Meteor) drops the user
+                // after EVERY hit: PS selfDrops only sets `move.selfDropped`
+                // when `!move.multihit` (sim/battle-actions.ts:1329), and
+                // runs inside each hit's moveHit, so the next hit sees the
+                // drop. The last hit's drop is the post-move one below.
+                if hit_idx + 1 < ctx.hits && ctx.any_damage_dealt > dealt_before {
+                    if let Some(drops) = self_stat_drops(m.slug, self.champions) {
+                        #[cfg(feature = "ps-rng")]
+                        if self.rng.is_ps() {
+                            let _ = self.rng.ps_random_range("selfdrop", 0, 100);
+                        }
+                        self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
+                        crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+                    }
                 }
                 // The loop also ends once the user is knocked out (Rough
                 // Skin, Rocky Helmet): `if (!pokemon.hp && targets.length
