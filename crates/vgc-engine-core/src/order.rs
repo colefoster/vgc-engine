@@ -473,7 +473,7 @@ fn schedule_move(
                 None => quick_fractional_roll(battle, side, actor_slot, mid, rng),
             };
             let frac = fractional_key(battle, side, actor_slot, mid, quick);
-            (pri_after_item, frac, effective_speed(m, tailwind, battle.weather, battle.terrain) as i64)
+            (pri_after_item, frac, effective_speed(m, tailwind, battle.effective_weather(), battle.terrain) as i64)
         }
         None => (0, 0, 0),
     };
@@ -681,7 +681,7 @@ fn queued_move_key_tr(battle: &Battle, side: SideRef, actor_slot: u8, move_slot:
     let speed = battle
         .side(side)
         .active_mon(actor_slot as usize)
-        .map(|m| effective_speed(m, battle.side(side).conditions.tailwind_turns > 0, battle.weather, battle.terrain) as i64)
+        .map(|m| effective_speed(m, battle.side(side).conditions.tailwind_turns > 0, battle.effective_weather(), battle.terrain) as i64)
         .unwrap_or(0);
     let speed_key = if trick_room { speed } else { -speed };
     (keys.bias[si][sl], -pri, keys.frac[si][sl], speed_key)

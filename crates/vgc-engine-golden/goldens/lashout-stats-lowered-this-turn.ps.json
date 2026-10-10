@@ -1,0 +1,305 @@
+{
+  "ok": true,
+  "name": "lashout-stats-lowered-this-turn",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 4,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Whimsicott",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Hariyama",
+      "hp": 219,
+      "max": 219
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Lash Out",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 193,
+      "max": 219,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Charm",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Lash Out",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 168,
+      "max": 219,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Lash Out",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "resisted",
+      "actor": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 155,
+      "max": 219,
+      "from": null
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Charm",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Lash Out",
+      "target": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "resisted",
+      "actor": "p2b"
+    },
+    {
+      "turn": 4,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 138,
+      "max": 219,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 1,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 5,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637584\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Snorlax, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Audino, L50, F|\n|poke|p2|Whimsicott, L50, M|\n|poke|p2|Hariyama, L50, F|\n|poke|p2|Incineroar, L50, M|\n|poke|p2|Chansey, L50, F|\n|teampreview|\n|t:|1791637584\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Snorlax|Snorlax, L50, M|235/235\n|switch|p1b: Pikachu|Pikachu, L50, F|110/110\n|switch|p2a: Whimsicott|Whimsicott, L50, M|135/135\n|switch|p2b: Hariyama|Hariyama, L50, F|219/219\n|turn|1|\n|t:|1791637584\n|move|p2a: Whimsicott|Splash|p2a: Whimsicott\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Hariyama|Splash|p2b: Hariyama\n|-nothing\n|move|p1a: Snorlax|Lash Out|p2b: Hariyama\n|-resisted|p2b: Hariyama\n|-damage|p2b: Hariyama|193/219\n|\n|upkeep\n|turn|2|\n|t:|1791637584\n|move|p2a: Whimsicott|Charm|p1a: Snorlax\n|-unboost|p1a: Snorlax|atk|2\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Hariyama|Splash|p2b: Hariyama\n|-nothing\n|move|p1a: Snorlax|Lash Out|p2b: Hariyama\n|debug|lashout buff\n|-resisted|p2b: Hariyama\n|-damage|p2b: Hariyama|168/219\n|\n|upkeep\n|turn|3|\n|t:|1791637584\n|move|p2a: Whimsicott|Splash|p2a: Whimsicott\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Hariyama|Splash|p2b: Hariyama\n|-nothing\n|move|p1a: Snorlax|Lash Out|p2b: Hariyama\n|-resisted|p2b: Hariyama\n|-damage|p2b: Hariyama|155/219\n|\n|upkeep\n|turn|4|\n|t:|1791637584\n|move|p2a: Whimsicott|Charm|p1a: Snorlax\n|-unboost|p1a: Snorlax|atk|2\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Hariyama|Splash|p2b: Hariyama\n|-nothing\n|move|p1a: Snorlax|Lash Out|p2b: Hariyama\n|debug|lashout buff\n|-resisted|p2b: Hariyama\n|-damage|p2b: Hariyama|138/219\n|\n|upkeep\n|turn|5"
+}

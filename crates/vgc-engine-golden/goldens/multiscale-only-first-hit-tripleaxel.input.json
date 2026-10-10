@@ -1,0 +1,14 @@
+{
+  "name": "multiscale-only-first-hit-tripleaxel",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Tsareena (F)\nAbility: Leaf Guard\nLevel: 50\nHardy Nature\n- Triple Axel\n\nPikachu (F)\nAbility: Static\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Dragonite (M)\nAbility: Multiscale\nLevel: 50\nEVs: 32 HP / 32 Def\nBold Nature\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" }
+  ]
+}
