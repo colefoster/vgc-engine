@@ -318,6 +318,15 @@ fn moody_picks_are_keyed_to_the_holder() {
     assert_matches_ps("study-e57f4e89e3-moody");
 }
 
+/// Study battles 62f650b2e3 / 18fca8e4e3 (held-out sample B): Acupressure on
+/// an ally and on the user samples one non-maxed stat (PS `this.sample`,
+/// keyed as the move's Range draw) and raises it by 2.
+#[test]
+fn acupressure_boosts_a_sampled_stat() {
+    assert_matches_ps("study-62f650b2e3-acupressure-ally");
+    assert_matches_ps("study-18fca8e4e3-acupressure-self");
+}
+
 /// Study battle 047cc41478: the leads' Drizzle and Sand Stream fire in Speed
 /// order at battle start (runSwitch's speed-sorted SwitchIn), so the slower
 /// setter's weather is the one on the field.
