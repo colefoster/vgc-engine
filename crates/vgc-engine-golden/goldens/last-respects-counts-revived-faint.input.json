@@ -1,0 +1,16 @@
+{
+  "name": "last-respects-counts-revived-faint",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Basculegion (M)\nAbility: Adaptability\nLevel: 50\nHardy Nature\n- Last Respects\n\nWynaut (M)\nAbility: Shadow Tag\nLevel: 1\nHardy Nature\n- Splash\n\nPawmot (M)\nAbility: Volt Absorb\nLevel: 50\nHardy Nature\n- Revival Blessing\n- Splash"
+  },
+  "p2": {
+    "team": "Umbreon (M)\nAbility: Synchronize\nLevel: 50\nBold Nature\n- Seismic Toss\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1 2, move 1", "p1_replace": "pass, switch 3" },
+    { "p1": "move 1 1, move 1", "p2": "move 2, move 1", "p1_followups": ["switch 3"] },
+    { "p1": "move 1 1, move 2", "p2": "move 2, move 1" }
+  ]
+}
