@@ -11794,97 +11794,13 @@ self.trigger_emergency_exits();
         if self.force_move_gate_ok {
             return PreMoveOutcome::Proceed;
         }
-        // 1. Flinch check — flinched mons cannot move at all this turn.
-        //    PS: PP is NOT consumed on flinch (the move is replaced with
-        //    inaction). Source: PS sim/battle-actions.ts:runMove.
-        if attacker.flinched_this_turn() {
-            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
-            //   onFlinch(pokemon) { this.boost({spe: 1}); }
-            // When the holder is stopped by flinch it gains +1 Speed. PS
-            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
-            // (the same gate that returns inaction), so the boost lands as
-            // the holder is prevented from moving. We use the effective
-            // ability so Gastro Acid / Neutralizing Gas suppression applies.
-            // Self-boost (source == holder), so it bypasses Mist / Mirror
-            // Armor and can be raised normally up to the +6 stage cap.
-            // Lucario / Mega Mewtwo X signature. Bulbapedia:
-            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
-            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
-                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
-            }
-            return PreMoveOutcome::Abort;
-        }
-
-        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
-        // (priority 7): the disabled move cannot be used. Selection is
-        // already filtered in `legal_choices`, but a forced / locked
-        // dispatch (Encore, lock-in) could still route the disabled
-        // slot here. No PP is consumed (we return before the PP-spend
-        // site). PS `cant`.
-        //
-        // NOTE: this reads the ORIGINAL `move_slot` (pre lock-in override).
-        // The lock-in override happens AFTER this method returns; PS's
-        // disable check runs at `onBeforeMove` priority 7, before the
-        // lock-in move-id is substituted, so the original-slot comparison
-        // is the PS-correct behavior.
-        if attacker.disabled_move_slot() == move_slot {
-            return PreMoveOutcome::Abort;
-        }
-
-        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
-        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
-        // used while the lockout is up. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a sound move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
-        // sound moves are exempt in PS, but the gen-9 data dump strips
-        // Z/Max so the exemption is a no-op here.
-        if attacker.throat_chop_turns() > 0 && m.is_sound {
-            return PreMoveOutcome::Abort;
-        }
-
-        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
-        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
-        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
-        // while heal-blocked. Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a heal move here, so it fails. No PP is consumed
-        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
-        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
-        if attacker.heal_block_turns() > 0 && m.is_heal {
-            return PreMoveOutcome::Abort;
-        }
-
-        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
-        // (priority 5): a Status-category move cannot be used while taunted
-        // (Me First excepted). Selection is already filtered in
-        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
-        // could still route a status move here, so it fails. No PP is
-        // consumed (we return before the PP-spend site). PS `cant`.
-        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
-            return PreMoveOutcome::Abort;
-        }
-
-        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
-        //   if (pokemon.removeVolatile('truant')) return;
-        //   if (!pokemon.hp) return;
-        //   this.add('cant', pokemon, 'ability: Truant');
-        //   return false;
-        // Effect: holder uses move on turn N, loafs around on N+1,
-        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
-        // (init false on switch-in). When true, skip the move and
-        // flip to false. When false, allow the move and flip to true.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
-        if attacker.effective_ability_id() == data::ability_id::TRUANT {
-            let loafing_now = attacker.truant_loafing;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.truant_loafing = !loafing_now;
-            }
-            if loafing_now {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
+        // PS runs these as BeforeMove handlers in priority order
+        // (sim/battle.ts runEvent, highest first) and stops at the first
+        // `false`: slp / frz 10 (data/conditions.ts), Truant 9
+        // (data/abilities.ts), flinch 8, Disable 7, Throat Chop / Heal Block
+        // 6, Taunt 5, Imprison 4 (onFoeBeforeMove), confusion 3, Attract 2,
+        // par 1 (data/conditions.ts, data/moves.ts). So a frozen or asleep
+        // mon still rolls its thaw / ticks its sleep when it also flinched.
         // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
         //     decrement sleep_turns; wake up + continue when it hits 0;
         //     otherwise skip the move (no PP). `sleepUsable` moves like
@@ -11962,6 +11878,97 @@ self.trigger_emergency_exits();
             }
         }
 
+        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
+        //   if (pokemon.removeVolatile('truant')) return;
+        //   if (!pokemon.hp) return;
+        //   this.add('cant', pokemon, 'ability: Truant');
+        //   return false;
+        // Effect: holder uses move on turn N, loafs around on N+1,
+        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
+        // (init false on switch-in). When true, skip the move and
+        // flip to false. When false, allow the move and flip to true.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::TRUANT {
+            let loafing_now = attacker.truant_loafing;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.truant_loafing = !loafing_now;
+            }
+            if loafing_now {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1. Flinch check — flinched mons cannot move at all this turn.
+        //    PS: PP is NOT consumed on flinch (the move is replaced with
+        //    inaction). Source: PS sim/battle-actions.ts:runMove.
+        if attacker.flinched_this_turn() {
+            // Steadfast — PS `data/abilities.ts:steadfast` `onFlinch`:
+            //   onFlinch(pokemon) { this.boost({spe: 1}); }
+            // When the holder is stopped by flinch it gains +1 Speed. PS
+            // fires `onFlinch` from the flinch volatile's `onBeforeMove`
+            // (the same gate that returns inaction), so the boost lands as
+            // the holder is prevented from moving. We use the effective
+            // ability so Gastro Acid / Neutralizing Gas suppression applies.
+            // Self-boost (source == holder), so it bypasses Mist / Mirror
+            // Armor and can be raised normally up to the +6 stage cap.
+            // Lucario / Mega Mewtwo X signature. Bulbapedia:
+            // <https://bulbapedia.bulbagarden.net/wiki/Steadfast_(Ability)>.
+            if attacker.effective_ability_id() == data::ability_id::STEADFAST {
+                self.apply_boosts(actor_side, actor_slot, &[(4, 1)], actor_side, actor_slot);
+            }
+            return PreMoveOutcome::Abort;
+        }
+
+        // Disable — PS data/moves.ts:disable condition `onBeforeMove`
+        // (priority 7): the disabled move cannot be used. Selection is
+        // already filtered in `legal_choices`, but a forced / locked
+        // dispatch (Encore, lock-in) could still route the disabled
+        // slot here. No PP is consumed (we return before the PP-spend
+        // site). PS `cant`.
+        //
+        // NOTE: this reads the ORIGINAL `move_slot` (pre lock-in override).
+        // The lock-in override happens AFTER this method returns; PS's
+        // disable check runs at `onBeforeMove` priority 7, before the
+        // lock-in move-id is substituted, so the original-slot comparison
+        // is the PS-correct behavior.
+        if attacker.disabled_move_slot() == move_slot {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Throat Chop — PS data/moves.ts:throatchop condition `onBeforeMove`
+        // (priority 6) / `onModifyMove`: a sound-flagged move cannot be
+        // used while the lockout is up. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a sound move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`. Z/Max
+        // sound moves are exempt in PS, but the gen-9 data dump strips
+        // Z/Max so the exemption is a no-op here.
+        if attacker.throat_chop_turns() > 0 && m.is_sound {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Heal Block — PS Heal Block condition `data/moves.ts:healblock`
+        // `onBeforeMove` (priority 6) / `onModifyMove`: a heal-flagged move
+        // (`flags['heal']`: Recover, Roost, Rest, Wish, Synthesis, …) fails
+        // while heal-blocked. Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a heal move here, so it fails. No PP is consumed
+        // (we return before the PP-spend site). PS `cant`. Z/Max heal moves
+        // are exempt in PS, but the gen-9 dump strips Z/Max so it's a no-op.
+        if attacker.heal_block_turns() > 0 && m.is_heal {
+            return PreMoveOutcome::Abort;
+        }
+
+        // Taunt — PS data/moves.ts:taunt condition `onBeforeMove`
+        // (priority 5): a Status-category move cannot be used while taunted
+        // (Me First excepted). Selection is already filtered in
+        // `legal_choices`, but a forced / locked dispatch (Encore, lock-in)
+        // could still route a status move here, so it fails. No PP is
+        // consumed (we return before the PP-spend site). PS `cant`.
+        if attacker.taunt_turns() > 0 && m.category == 2 && move_id != data::move_id::MEFIRST {
+            return PreMoveOutcome::Abort;
+        }
+
         // Imprison — PS data/moves.ts:9512 imprison onFoeBeforeMove
         // (priority 4): a move the foe's imprisoner knows fails, no PP.
         if self.imprisoned(actor_side, move_id) {
@@ -11996,23 +12003,6 @@ self.trigger_emergency_exits();
             Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
             None => crate::rng::NO_SLOT,
         };
-        if matches!(attacker.status, Status::Paralysis) {
-            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
-            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
-            let denom = if self.champions { 8 } else { 4 };
-            // The keyed oracle holds this gate as a pass/fail bool, which the
-            // harness parks apart from the move's own range draws (Dire
-            // Claw's status pick shares the key). Draw it under a context
-            // no PS draw carries, so it pairs with the parked bool.
-            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
-            self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
-            let full = self.rng.range(denom) == 0;
-            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if full {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
         // 1d. Confusion onBeforeMove. See `try_confusion_self_hit` for
         //     the gate + damage draw + apply detail; PS draw sites and
         //     ordering are preserved verbatim there.
@@ -12053,6 +12043,25 @@ self.trigger_emergency_exits();
                 }
             }
         }
+
+        // Paralysis (priority 1) runs after confusion and Attract.
+        if matches!(attacker.status, Status::Paralysis) {
+            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
+            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
+            let denom = if self.champions { 8 } else { 4 };
+            // The keyed oracle holds this gate as a pass/fail bool, which the
+            // harness parks apart from the move's own range draws (Dire
+            // Claw's status pick shares the key). Draw it under a context
+            // no PS draw carries, so it pairs with the parked bool.
+            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
+            self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+            let full = self.rng.range(denom) == 0;
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if full {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
 
         PreMoveOutcome::Proceed
     }
