@@ -2693,6 +2693,12 @@ self.trigger_emergency_exits();
                     let vols = m.volatiles;
                     for v in &vols.items[..vols.len as usize] {
                         let order = match v.kind {
+                            // The engine keeps a Stall entry for a failed or
+                            // skipped stall move (counter 0, "used this
+                            // turn"); PS deletes the `stall` volatile when
+                            // the roll fails (data/moves.ts stall
+                            // onStallMove) and never adds it otherwise.
+                            V::Stall if v.payload & 0xFF == 0 => continue,
                             V::Taunt => 15, V::Disable => 17, V::Yawn => 23, V::HealBlock => 20,
                             V::Embargo => 21, V::LeechSeed => 8, V::Curse => 12, V::Nightmare => 11,
                             V::PerishSong => 24, V::Ingrain => 7, V::AquaRing => 6, V::MagnetRise => 18,
