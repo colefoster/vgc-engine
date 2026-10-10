@@ -3517,6 +3517,12 @@ self.trigger_emergency_exits();
         #[cfg(not(feature = "ps-rng"))]
         let ps = false;
         self.quick_frac = Some([[false; 2]; 2]);
+        // PS nextTurn clears usedItemThisTurn from turn 2 on (sim/battle.ts:1676-1677).
+        if self.turn != 0 {
+            for m in self.p1.team.iter_mut().chain(self.p2.team.iter_mut()) {
+                m.used_item_this_turn = false;
+            }
+        }
         if ps {
             #[cfg(feature = "ps-rng")]
             self.ps_resolve_action_draws(p1_choices, p2_choices);
@@ -4745,6 +4751,7 @@ self.trigger_emergency_exits();
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
             incoming.supreme_overlord_fallen = u8::MAX; // re-latched by its onStart
+            incoming.used_item_this_turn = false;
             incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
             incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
             incoming.moves_used = 0;

@@ -970,6 +970,12 @@ pub struct Pokemon {
     /// calc-API mon); the damage formula then reads the live count.
     #[serde(default = "supreme_overlord_unset")]
     pub supreme_overlord_fallen: u8,
+    /// PS `usedItemThisTurn` (sim/pokemon.ts:1803, :1844): set when the mon
+    /// uses up its own item; Pickup reads it. Cleared at the start of each
+    /// turn after the first (sim/battle.ts:1677) and on switch-out. Not
+    /// hashed: it is always reset before it can matter again.
+    #[serde(default)]
+    pub used_item_this_turn: bool,
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1103,6 +1109,7 @@ impl Pokemon {
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
             supreme_overlord_fallen: u8::MAX,
+            used_item_this_turn: false,
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,
@@ -1365,6 +1372,7 @@ impl Pokemon {
     #[inline]
     pub fn consume_item(&mut self) {
         self.consumed_item = self.item_id;
+        self.used_item_this_turn = true;
         self.item_id = u16::MAX;
         self.sync_can_mega_evolve();
     }
