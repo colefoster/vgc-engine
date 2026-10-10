@@ -1722,7 +1722,11 @@ impl Battle {
                             self.side_mut(source_side).active_mon_mut(source_slot as usize)
                         {
                             let stage = &mut s.boosts[idx as usize];
+                            let before = *stage;
                             *stage = (*stage + delta).clamp(-6, 6);
+                            if *stage != before {
+                                s.stats_lowered_this_turn = true;
+                            }
                         }
                     }
                 } else if delta > 0 {
@@ -1749,13 +1753,21 @@ impl Battle {
             return;
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            let mut changed = false;
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
                 let before = *stage;
                 *stage = (*stage + delta).clamp(-6, 6);
+                changed |= *stage != before;
                 if *stage > before {
                     m.stats_raised_this_turn = true;
                 }
+            }
+            // PS sim/battle.ts:2084-2086: on a successful boost (any stage
+            // moved), any negative entry in the boost table marks
+            // statsLoweredThisTurn.
+            if changed && deltas.iter().any(|&(_, d)| d < 0) {
+                m.stats_lowered_this_turn = true;
             }
         }
         self.mirror_to_opportunist(target_side, target_slot, deltas);
@@ -2280,6 +2292,15 @@ impl Battle {
                     // can faint to hazards on entry.
                     self.faint_forme_cleanup();
                     self.sync_weather_terrain_cache();
+                    // PS runs faint replacements before endTurn, whose
+                    // clear (sim/battle.ts:1679) wipes statsLoweredThisTurn
+                    // set by an entry Intimidate — it must not reach the
+                    // next turn's Lash Out.
+                    for side in [SideRef::P1, SideRef::P2] {
+                        for m in self.side_mut(side).team.iter_mut() {
+                            m.stats_lowered_this_turn = false;
+                        }
+                    }
                     self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
                         (true, true) => Some(None),
                         (true, false) => Some(Some(SideRef::P2)),
@@ -4123,6 +4144,7 @@ self.trigger_emergency_exits();
         for side in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(side).team.iter_mut() {
                 m.stats_raised_this_turn = false;
+                m.stats_lowered_this_turn = false;
             }
         }
         self.turn = self.turn.saturating_add(1);
@@ -19896,6 +19918,37 @@ mod tests {
         assert_eq!(b.p2.active_mon(0).unwrap().species().name, "Rillaboom");
         assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], -1, "replacement Rillaboom intimidated");
         assert_eq!(b.p2.active_mon(1).unwrap().boosts[0], -1, "Pikachu intimidated");
+    }
+
+    #[test]
+    fn replacement_intimidate_does_not_carry_stats_lowered_into_next_turn() {
+        // PS endTurn (sim/battle.ts:1679) clears statsLoweredThisTurn after
+        // the faint replacements ran, so a replacement Intimidate never
+        // doubles the foe's Lash Out on the following turn.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["lashout"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.decision_phases = true;
+        b.p1.team[0].current_hp = 0;
+        b.p1.team[0].fainted = true;
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let snorlax = b.p2.active_mon(0).unwrap();
+        assert_eq!(snorlax.boosts[0], -1, "replacement Incineroar intimidated");
+        assert!(!snorlax.stats_lowered_this_turn);
     }
 
     // ---- Delayed-effect subsystem: Wish / Future Sight / Doom Desire ----
