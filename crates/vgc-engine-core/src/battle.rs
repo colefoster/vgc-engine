@@ -2520,6 +2520,7 @@ self.trigger_emergency_exits();
     /// sim/prng.ts shuffle). Returns the permutation applied (`perm[k]` =
     /// original index now at `k`).
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_shuffle_ties(&mut self, keys: &[i64], op: &'static str) -> [u8; 8] {
         let n = keys.len().min(8);
         let mut perm = [0u8, 1, 2, 3, 4, 5, 6, 7];
@@ -2545,6 +2546,7 @@ self.trigger_emergency_exits();
     /// of them tie on Speed. PS runs `eachEvent('Update')` after every
     /// action (sim/battle.ts runAction, gen >= 5).
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
         let n_active = self.format().active_count();
         let mut keys = [0i64; 4];
@@ -2570,6 +2572,7 @@ self.trigger_emergency_exits();
     /// 0 HP but PS marks it `fainted` only in faintMessages after the loop
     /// (:550), so getAllActive still includes it, on its cached Speed.
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_hit_update(&mut self) {
         let mut keys = [0i64; 4];
         let mut n = 0;
@@ -13082,10 +13085,10 @@ self.trigger_emergency_exits();
         let flags = std::mem::take(&mut self.force_switch_flags);
         for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
             for slot in 0..self.format().active_count().min(2) {
-                if flags[si][slot]
-                    && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive())
-                    && self.can_be_dragged_out(side, slot as u8, false)
-                {
+                // Every flag setter already ran the DragOut check (with the
+                // phazer's Mold Breaker, which dragIn's rerun still sees
+                // through the active move).
+                if flags[si][slot] && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
                     self.force_switch_random(side, slot as u8);
                 }
             }
@@ -13301,6 +13304,9 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_reset_speed(side, slot as usize);
+            // runSwitch's speedSort(getAllActive(true)) before the SwitchIn
+            // handlers (sim/battle-actions.ts:174-178).
+            self.ps_active_ties(true, "shuffle");
         }
         self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
@@ -16369,7 +16375,10 @@ self.trigger_emergency_exits();
                 if !self.can_be_dragged_out(ts, tslot, breaks_mold) {
                     return;
                 }
-                self.force_switch_random(ts, tslot);
+                // The move only sets `forceSwitchFlag`; runAction drags the
+                // target in after the whole move, its hit loop's Updates
+                // included (sim/battle.ts:2821-2829 -> dragIn).
+                self.force_switch_flags[ts as usize][(tslot as usize).min(1)] = true;
             }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
