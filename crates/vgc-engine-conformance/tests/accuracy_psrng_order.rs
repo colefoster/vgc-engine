@@ -3,7 +3,7 @@
 //!
 //! Each file in `tools/accuracy/repros/battles/psrng-*.json` is captured by
 //! `tools/accuracy/ps-battle.js tools/accuracy/repros/psrng-order-jobs.jsonl
-//! <out> --max-turns 1` (PS `a5df8274`, Champions mod). The draw lists carry
+//! <out> --max-turns N` (PS `a5df8274`, Champions mod). The draw lists carry
 //! PS's own call stacks, so a missing, extra or reordered draw fails here.
 
 #![cfg(feature = "ps-rng")]
@@ -17,13 +17,8 @@ fn assert_seeded_matches_ps(name: &str) {
         .join("../../tools/accuracy/repros/battles")
         .join(format!("{name}.json"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let mut acc: AccBattle = serde_json::from_str(&text).expect("battle json");
+    let acc: AccBattle = serde_json::from_str(&text).expect("battle json");
     assert!(acc.meta.ok && acc.meta.errors.is_empty(), "{name}: PS errors {:?}", acc.meta.errors);
-    // `--max-turns` ends the battle with a forced `|tie` before the last
-    // recorded turn is played; the engine would still play it.
-    if acc.meta.log.trim_end().ends_with("|tie") && acc.turns.len() > 1 {
-        acc.turns.pop();
-    }
     let (rep, _) = replay_ps_rng(&acc);
     assert!(rep.engine_error.is_none(), "{name}: engine error {:?}", rep.engine_error);
     assert!(rep.turns_compared > 0, "{name}: no turns compared");
@@ -39,4 +34,15 @@ fn assert_seeded_matches_ps(name: &str) {
 fn roar_drags_after_the_hit_loop_and_sorts_in_run_switch() {
     assert_seeded_matches_ps("psrng-roar-drags-after-the-hit-loop-1");
     assert_seeded_matches_ps("psrng-roar-drags-after-the-hit-loop-3");
+}
+
+/// A Protect whose stall roll fails deletes PS's `stall` volatile
+/// (data/moves.ts stall `onStallMove`), so that turn's Residual handler
+/// sort (sim/battle.ts fieldEvent) has no entry for it. Turn 2 repeats
+/// Protect; the failed one used to add a tied handler and shift the
+/// shuffles.
+#[test]
+fn a_failed_protect_leaves_no_stall_residual_handler() {
+    assert_seeded_matches_ps("psrng-failed-protect-drops-stall-2");
+    assert_seeded_matches_ps("psrng-failed-protect-drops-stall-5");
 }
