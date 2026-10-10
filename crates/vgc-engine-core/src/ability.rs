@@ -482,6 +482,14 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) => m.effective_ability_id(),
         None => return,
     };
+    // Supreme Overlord onStart (data/abilities.ts:4731-4737) latches the
+    // fallen count; the base-power boost reads it, not the live count.
+    if ability_id == data::ability_id::SUPREMEOVERLORD {
+        let fallen = battle.side(side).total_fainted().min(5);
+        if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+            m.supreme_overlord_fallen = fallen;
+        }
+    }
     // Forecast — a Castform switching into existing weather adopts the
     // matching forme immediately (PS data/abilities.ts:forecast onStart /
     // onUpdate). Cheap no-op for every non-Forecast active.

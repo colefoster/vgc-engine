@@ -4727,6 +4727,7 @@ self.trigger_emergency_exits();
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.supreme_overlord_fallen = u8::MAX; // re-latched by its onStart
             incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
             incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
             incoming.moves_used = 0;
