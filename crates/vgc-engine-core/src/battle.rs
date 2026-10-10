@@ -4436,16 +4436,44 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             self.ps_update_speed_all();
         }
-        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
-        let mut n = 0usize;
+        // (side, slot, team index) in queue order.
+        let mut picks = [(SideRef::P1, 0u8, 0u8); 4];
+        let mut k = 0usize;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 if let Choice::Switch { actor_slot, team_index } = *c {
-                    if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
-                        entered[n] = (0, side, actor_slot);
-                        n += 1;
+                    if k < picks.len() {
+                        picks[k] = (side, actor_slot, team_index);
+                        k += 1;
                     }
                 }
+            }
+        }
+        // commitChoices' queue.sort() over the instaswitch actions (order 3),
+        // each keyed on the Speed of the mon it replaces (resolveAction ->
+        // getActionSpeed, sim/battle-queue.ts:93-174): a fainted one's bare
+        // stat. Ties shuffle, and the sorted queue sets the switch order.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && k > 1 {
+            let trick_room = self.trick_room_turns > 0;
+            let mut keys = [0i64; 4];
+            for (key, &(side, slot, _)) in keys.iter_mut().zip(&picks[..k]) {
+                let tw = self.side(side).conditions.tailwind_turns > 0;
+                let spe = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64)
+                    .unwrap_or(0);
+                *key = if trick_room { spe - 10000 } else { -spe };
+            }
+            crate::order::ps_speed_sort(&mut keys[..k], &mut picks[..k], |a, b| self.rng.ps_random_range("shuffle", a, b));
+        }
+        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
+        let mut n = 0usize;
+        for &(side, actor_slot, team_index) in &picks[..k] {
+            if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
+                entered[n] = (0, side, actor_slot);
+                n += 1;
             }
         }
         // A residual Emergency Exit with no pick queued: first bench mon,

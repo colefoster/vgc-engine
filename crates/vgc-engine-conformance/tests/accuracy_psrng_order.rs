@@ -46,3 +46,14 @@ fn a_failed_protect_leaves_no_stall_residual_handler() {
     assert_seeded_matches_ps("psrng-failed-protect-drops-stall-2");
     assert_seeded_matches_ps("psrng-failed-protect-drops-stall-5");
 }
+
+/// Both Whimsicott (equal Speed, Tailwind on both sides) faint to Flare
+/// Blitz. The replacement request's commitChoices sorts the two
+/// instaswitch actions on the fainted mons' bare Speed (resolveAction ->
+/// getActionSpeed; an inactive mon has no ModifySpe handlers), so they tie
+/// and PS shuffles them, and that order sets the switch-in order.
+#[test]
+fn tied_replacements_shuffle_in_the_switch_commit_sort() {
+    assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-2");
+    assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-3");
+}
