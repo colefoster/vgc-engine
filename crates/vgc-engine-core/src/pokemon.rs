@@ -597,6 +597,10 @@ pub(crate) fn is_cramorant(species_id: u16) -> bool {
     )
 }
 
+fn supreme_overlord_unset() -> u8 {
+    u8::MAX
+}
+
 /// One Pokémon. Phase 2 carries the minimum a damage calc needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pokemon {
@@ -960,6 +964,12 @@ pub struct Pokemon {
     /// reaches 0 (i.e. the end of the turn AFTER the one it was eaten on),
     /// mirroring PS `effectState.counter`.
     pub cud_chew_counter: u8,
+    /// Supreme Overlord's `effectState.fallen` (data/abilities.ts:4730-4738):
+    /// min(side.totalFainted, 5) latched at the ability's onStart, so allies
+    /// fainting later do not raise it. `u8::MAX` = never started (e.g. a
+    /// calc-API mon); the damage formula then reads the live count.
+    #[serde(default = "supreme_overlord_unset")]
+    pub supreme_overlord_fallen: u8,
     /// PS `moveThisTurnResult` (sim/pokemon.ts:230): the outcome of the
     /// move this mon used this turn. Moved to `move_last_turn_result` at
     /// the end of the turn; both clear on switch-in (sim/pokemon.ts:1545).
@@ -1092,6 +1102,7 @@ impl Pokemon {
             commanded: false,
             cud_chew_berry: u16::MAX,
             cud_chew_counter: 0,
+            supreme_overlord_fallen: u8::MAX,
             move_this_turn_result: MoveResult::None,
             move_last_turn_result: MoveResult::None,
             moves_used: 0,

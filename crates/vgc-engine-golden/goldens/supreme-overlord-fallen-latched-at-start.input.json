@@ -1,0 +1,14 @@
+{
+  "name": "supreme-overlord-fallen-latched-at-start",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Pichu\nAbility: Static\nLevel: 50\n- Final Gambit\n\nKingambit\nAbility: Supreme Overlord\nLevel: 50\n- Iron Head\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Jolteon\nAbility: Volt Absorb\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1 2", "p2": "move 1, move 1" }
+  ]
+}
