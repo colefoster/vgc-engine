@@ -13892,8 +13892,11 @@ self.trigger_emergency_exits();
         // (data/mods/champions/conditions.ts slp onStart): the same
         // `random(3)`, mapped 0/1/2 -> 2/3/3.
         let sleep_turns = if matches!(status, Status::Sleep) {
-            let r = self.rng.range(3) as u8;
-            if self.champions { [2, 3, 3][r as usize] } else { r + 2 }
+            if self.champions {
+                [2, 3, 3][self.rng.condition_sample(self.turn + 1, 3).min(2) as usize]
+            } else {
+                self.rng.range(3) as u8 + 2
+            }
         } else {
             0
         };
