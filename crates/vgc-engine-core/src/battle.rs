@@ -17331,16 +17331,26 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) { return; }
                 let mut dropped_any = false;
                 if let Some((opp, slot)) = opp_target {
-                    let blocked = self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
-                    // PS Clear Body / Clear Amulet: drop is vetoed. Parting
-                    // Shot's self-switch hinges on whether ANY boost call
-                    // returned a success; a fully-blocked target means no
-                    // switch fires (skip the dropped_any flip).
-                    if !blocked {
+                    // PS onTryBoost vetoes per stat: Clear Body / Clear
+                    // Amulet delete both, Hyper Cutter only the Atk drop
+                    // (data/abilities.ts hypercutter), so the SpA drop
+                    // still lands. Parting Shot's self-switch hinges on
+                    // whether ANY boost call returned a success; a
+                    // fully-blocked target means no switch fires.
+                    let mut drops = [(0u8, 0i8); 2];
+                    let mut k = 0usize;
+                    if let Some(t) = self.side(opp).active_mon(slot as usize) {
+                        for stat in [0u8, 2] {
+                            if !crate::ability::blocks_opposing_stat_drop_for(t, stat) {
+                                drops[k] = (stat, -1);
+                                k += 1;
+                            }
+                        }
+                    }
+                    if k > 0 {
                         // Opposing drop — source is the Parting Shot user.
                         let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
-                        self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
+                        self.apply_boosts(opp, slot, &drops[..k], actor_side, actor_slot);
                         // Eject Pack ignores Parting Shot (data/items.ts:1712).
                         self.after_foe_drop(opp, slot, before, false);
                         dropped_any = true;
@@ -17575,9 +17585,10 @@ self.trigger_emergency_exits();
                     }
                 }
                 // Drop target Atk by 1 (blocked by Clear Body / Clear
-                // Amulet / White Smoke / Full Metal Body).
+                // Amulet / White Smoke / Full Metal Body, and Hyper Cutter's
+                // Atk-only onTryBoost, data/abilities.ts hypercutter).
                 let blocked = self.side(opp).active_mon(ts as usize)
-                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
+                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 0));
                 if !blocked {
                     // Opposing drop — source is the Strength Sap user.
                     self.apply_boosts(opp, ts, &[(0, -1)], actor_side, actor_slot);

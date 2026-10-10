@@ -1,0 +1,16 @@
+{
+  "name": "hypercutter-partingshot-strengthsap",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Gliscor (M)\nAbility: Hyper Cutter\nLevel: 50\nHardy Nature\n- Tackle\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Incineroar (M)\nAbility: Blaze\nLevel: 50\nHardy Nature\n- Parting Shot\n- Splash\n\nWhimsicott (F)\nAbility: Prankster\nLevel: 50\nHardy Nature\n- Strength Sap\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1 1, move 1 1" },
+    { "p1": "move 1 1, move 1", "p2": "move 2, move 2" }
+  ]
+}
