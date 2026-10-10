@@ -78,3 +78,16 @@ fn speed_swap_ends_when_the_target_switches_out() {
     assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-1");
     assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-2");
 }
+
+/// Charizard charges Solar Beam at Gyarados; next turn Whimsicott Encores
+/// it. Its queued action is already the locked Solar Beam
+/// (sim/side.ts:675-688), so Champions Encore's onStart sees
+/// `action.moveid === move.id` and leaves it alone
+/// (data/mods/champions/moves.ts:328): no changeAction, no
+/// getRandomTarget, the beam keeps its stored target. The engine compared
+/// against the submitted move and re-queued it at a random foe.
+#[test]
+fn encore_leaves_a_locked_two_turn_move_queued() {
+    assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-1");
+    assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-3");
+}
