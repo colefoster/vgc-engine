@@ -5879,7 +5879,7 @@ self.trigger_emergency_exits();
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
                     | data::move_id::COUNTER | data::move_id::MIRRORCOAT
-                    | data::move_id::METALBURST
+                    | data::move_id::METALBURST | data::move_id::COMEUPPANCE
                     | data::move_id::FISSURE | data::move_id::HORNDRILL
                     | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD
             );
@@ -6427,7 +6427,7 @@ self.trigger_emergency_exits();
         // PS data/moves.ts: counter / mirrorcoat / metalburst.
         if matches!(
             move_id,
-            data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST
+            data::move_id::COUNTER | data::move_id::MIRRORCOAT | data::move_id::METALBURST | data::move_id::COMEUPPANCE
         ) {
             let ((src_side_byte, src_slot), dmg) = match move_id {
                 data::move_id::COUNTER => (attacker.last_phys_attacker, attacker.last_phys_damage),
@@ -6638,7 +6638,7 @@ self.trigger_emergency_exits();
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
                     | data::move_id::COUNTER | data::move_id::MIRRORCOAT
-                    | data::move_id::METALBURST
+                    | data::move_id::METALBURST | data::move_id::COMEUPPANCE
                     // Fling carries basePower 0 in PS; its real BP comes from
                     // the held item's `fling.basePower` in the damage calc.
                     | data::move_id::FLING
@@ -7176,7 +7176,7 @@ self.trigger_emergency_exits();
                     | data::move_id::SUPERFANG | data::move_id::RUINATION
                     | data::move_id::ENDEAVOR | data::move_id::FINALGAMBIT
                     | data::move_id::COUNTER | data::move_id::MIRRORCOAT
-                    | data::move_id::METALBURST
+                    | data::move_id::METALBURST | data::move_id::COMEUPPANCE
             );
             if is_fixed_damage {
                 // Type immunity (checked before the accuracy roll → no
@@ -7771,7 +7771,7 @@ self.trigger_emergency_exits();
                 // returns `(lastDamagedBy.damage * 1.5) || 1` for the most
                 // recent hit of EITHER category this turn. Scripted-target /
                 // fail gate above guarantees `last_damage_taken > 0` here.
-                data::move_id::METALBURST => {
+                data::move_id::METALBURST | data::move_id::COMEUPPANCE => {
                     Some(((attacker.last_damage_taken as u32 * 3 / 2).max(1)).min(u16::MAX as u32) as u16)
                 }
                 _ => None,
