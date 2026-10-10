@@ -9527,6 +9527,9 @@ self.trigger_emergency_exits();
         if !(!alive_post && effective_dmg > 0 && !hit_sub) {
             return;
         }
+        // Fell Stinger — onAfterMoveSecondarySelf: +3 Atk when the target
+        // fainted (data/moves.ts:5211-5212). After Moxie's AfterFaint.
+        let fell_stinger = ctx.move_id == data::move_id::FELLSTINGER;
         let attacker_ability = self
             .side(ctx.actor_side)
             .active_mon(ctx.actor_slot as usize)
@@ -9545,6 +9548,9 @@ self.trigger_emergency_exits();
                 self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(idx, 1)], ctx.actor_side, ctx.actor_slot);
             }
             _ => {}
+        }
+        if fell_stinger && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.is_alive()) {
+            self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 3)], ctx.actor_side, ctx.actor_slot);
         }
     }
 
