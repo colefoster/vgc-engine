@@ -16615,11 +16615,13 @@ self.trigger_emergency_exits();
                             t.ability_override = source_eff_id;
                         }
                         // PS `Battle.skillSwap` runs each gained ability's
-                        // `onStart`, source first, then target (Intimidate,
-                        // weather, terrain ...). on_start reads the EFFECTIVE
-                        // ability, so Neutralizing Gas suppression holds.
-                        crate::ability::on_start(self, actor_side, actor_slot);
+                        // `onStart`, TARGET first, then source
+                        // (sim/battle.ts:1342-1343), so when both gain a
+                        // terrain/weather setter the user's lands last.
+                        // on_start reads the EFFECTIVE ability, so
+                        // Neutralizing Gas suppression holds.
                         crate::ability::on_start(self, ts, tslot);
+                        crate::ability::on_start(self, actor_side, actor_slot);
                     }
                 }
             }
