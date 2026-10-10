@@ -13945,6 +13945,7 @@ self.trigger_emergency_exits();
         self.eot_grassy_terrain_heal();
         self.eot_cure_abilities();
         self.eot_item_residual();
+        self.eot_aqua_ring();
         self.eot_leech_seed();
         self.eot_status_dot();
         self.eot_curse();
@@ -14270,6 +14271,36 @@ self.trigger_emergency_exits();
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..n {
                 crate::item::on_residual(self, side, slot);
+            }
+        }
+    }
+
+    /// Aqua Ring residual — PS data/moves.ts:480-483 condition
+    /// `onResidualOrder: 6, onResidual: this.heal(pokemon.baseMaxhp / 16)`.
+    /// `heal` rounds a sub-1 amount up to 1 (sim/battle.ts heal); Big Root's
+    /// onTryHeal chainModify([5324, 4096]) covers `aquaring`
+    /// (data/items.ts bigroot); Heal Block's onTryHeal vetoes it.
+    fn eot_aqua_ring(&mut self) {
+        let n = self.format().active_count() as u8;
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::AquaRing) {
+            return;
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if !m.is_alive()
+                        || !m.volatiles.has(crate::pokemon::VolatileKind::AquaRing)
+                        || m.is_heal_blocked()
+                        || m.current_hp >= m.stats.hp
+                    {
+                        continue;
+                    }
+                    let mut heal = (m.stats.hp as u32 / 16).max(1);
+                    if m.effective_item_id() == data::item_id::BIGROOT {
+                        heal = (heal * 5324 + 2047) / 4096;
+                    }
+                    m.current_hp = (m.current_hp as u32 + heal).min(m.stats.hp as u32) as u16;
+                }
             }
         }
     }
@@ -17039,6 +17070,21 @@ self.trigger_emergency_exits();
                     if !a.volatiles.has(crate::pokemon::VolatileKind::Imprison) {
                         let _ = a.volatiles.add(crate::pokemon::Volatile {
                             kind: crate::pokemon::VolatileKind::Imprison,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
+            data::move_id::AQUARING => {
+                // Aqua Ring — PS data/moves.ts:466-489: `volatileStatus:
+                // 'aquaring'` (fails if already present); the condition heals
+                // baseMaxhp/16 at onResidualOrder 6 (`eot_aqua_ring`).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aqua_Ring_(move)>
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if !a.volatiles.has(crate::pokemon::VolatileKind::AquaRing) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::AquaRing,
                             turns_remaining: 0,
                             payload: 0,
                         });
