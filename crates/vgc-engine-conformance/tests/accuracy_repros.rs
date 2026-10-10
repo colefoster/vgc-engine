@@ -614,3 +614,24 @@ fn a_move_aborted_on_its_release_turn_drops_the_two_turn_charge() {
         assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-frozen-flinch-order-jobs.jsonl`.
+/// Blizzard freezes a foe, then Garchomp's Rock Slide flinches it. PS runs
+/// the BeforeMove handlers by priority (frz 10 before flinch 8,
+/// data/conditions.ts), so the frozen mon still ticks its Champions freeze
+/// counter and rolls its thaw before the flinch stops it; the engine
+/// checked flinch first and skipped both.
+#[test]
+fn a_flinched_frozen_mon_still_rolls_its_thaw() {
+    for name in ["keyed-frozen-flinch-order-3", "keyed-frozen-flinch-order-110", "keyed-frozen-flinch-order-125"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 3, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
