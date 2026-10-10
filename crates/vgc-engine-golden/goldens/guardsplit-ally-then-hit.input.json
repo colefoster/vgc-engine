@@ -1,0 +1,16 @@
+{
+  "name": "guardsplit-ally-then-hit",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Shuckle (M)\nAbility: Sturdy\nLevel: 50\nHardy Nature\n- Guard Split\n- Splash\n\nPikachu (F)\nAbility: Static\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Garchomp (M)\nAbility: Rough Skin\nLevel: 50\nHardy Nature\n- Iron Head\n- Psychic\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 -2, move 1", "p2": "move 3, move 1" },
+    { "p1": "move 2, move 1", "p2": "move 1 2, move 1" },
+    { "p1": "move 2, move 1", "p2": "move 2 2, move 1" }
+  ]
+}

@@ -1,0 +1,207 @@
+{
+  "ok": true,
+  "name": "guardsplit-ally-then-hit",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Shuckle",
+      "hp": 95,
+      "max": 95
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Guard Split",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Iron Head",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 93,
+      "max": 110,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Psychic",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 71,
+      "max": 110,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 84,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 3,
+      "denom": 10,
+      "site": "Battle.onDamagingHit (data/abilities.js:4496)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 12,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 82,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637047\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Shuckle, L50, M|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Garchomp, L50, M|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Audino, L50, F|\n|teampreview|\n|t:|1791637047\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Shuckle|Shuckle, L50, M|95/95\n|switch|p1b: Pikachu|Pikachu, L50, F|110/110\n|switch|p2a: Garchomp|Garchomp, L50, M|183/183\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|turn|1|\n|t:|1791637047\n|move|p2a: Garchomp|Splash|p2a: Garchomp\n|-nothing\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1a: Shuckle|Guard Split|p1b: Pikachu\n|-activate|p1a: Shuckle|move: Guard Split|[of] p1b: Pikachu\n|\n|upkeep\n|turn|2|\n|t:|1791637047\n|move|p2a: Garchomp|Iron Head|p1b: Pikachu\n|-resisted|p1b: Pikachu\n|-damage|p1b: Pikachu|93/110\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1a: Shuckle|Splash|p1a: Shuckle\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1791637047\n|move|p2a: Garchomp|Psychic|p1b: Pikachu\n|-damage|p1b: Pikachu|71/110\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1a: Shuckle|Splash|p1a: Shuckle\n|-nothing\n|\n|upkeep\n|turn|4"
+}

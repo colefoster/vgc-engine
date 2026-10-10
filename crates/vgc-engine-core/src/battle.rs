@@ -16280,6 +16280,50 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::GUARDSPLIT => {
+                // Guard Split — average raw `storedStats` Def and SpD of
+                // user and target (floored); both get the average. PS
+                // data/moves.ts:7958 onHit:
+                //   const newdef = Math.floor((target.storedStats.def + source.storedStats.def) / 2);
+                //   (same for spd)
+                // accuracy `true`; single-target `normal` (allies allowed).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Guard_Split_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                if tside == actor_side && tslot == actor_slot {
+                    return;
+                }
+                let user = self.side(actor_side).active_mon(actor_slot as usize).map(|m| m.stats);
+                let tgt = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| m.stats);
+                if let (Some(us), Some(ts)) = (user, tgt) {
+                    let def = ((us.def as u32 + ts.def as u32) / 2) as u16;
+                    let spd = ((us.spd as u32 + ts.spd as u32) / 2) as u16;
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.stats.def = def;
+                        a.stats.spd = spd;
+                    }
+                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        t.stats.def = def;
+                        t.stats.spd = spd;
+                    }
+                }
+            }
             data::move_id::BESTOW => {
                 // Bestow — give the user's held item to the target if (and
                 // only if) the target is itemless. PS data/moves.ts:1237
