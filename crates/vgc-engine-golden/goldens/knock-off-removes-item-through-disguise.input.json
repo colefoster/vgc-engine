@@ -1,0 +1,14 @@
+{
+  "name": "knock-off-removes-item-through-disguise",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Malamar\nAbility: Contrary\nLevel: 50\n- Knock Off"
+  },
+  "p2": {
+    "team": "Mimikyu @ Leftovers\nAbility: Disguise\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" }
+  ]
+}

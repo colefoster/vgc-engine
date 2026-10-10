@@ -1,0 +1,15 @@
+{
+  "name": "pickup-takes-eaten-sitrus",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Diggersby\nAbility: Pickup\nLevel: 100\n- Seismic Toss\n- Belly Drum"
+  },
+  "p2": {
+    "team": "Chansey @ Sitrus Berry\nAbility: Natural Cure\nLevel: 25\n- Splash\n- Seismic Toss"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 2", "p2": "move 2" }
+  ]
+}

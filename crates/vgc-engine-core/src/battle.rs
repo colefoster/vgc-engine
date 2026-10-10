@@ -337,6 +337,15 @@ pub struct Battle {
     /// moveResult is true, so Life Orb's AfterMoveSecondarySelf runs).
     #[serde(skip)]
     disguise_hit_this_move: bool,
+    /// Set while the residual action runs: PS's action queue is empty
+    /// then, which Cud Chew's onEatItem reads (`!this.queue.peek()`).
+    #[serde(skip)]
+    pub(crate) in_residual: bool,
+    /// Bit `side * 2 + slot` set while a just-entered replacement's
+    /// Unnerve has not started yet (PS abilities.ts:5258-5270: it blocks
+    /// berries only once onStart set `effectState.unnerved`).
+    #[serde(skip)]
+    pub(crate) unnerve_unstarted: u8,
     /// The status move being resolved cannot miss its target (Glaive Rush
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
     #[serde(skip)]
@@ -729,6 +738,8 @@ impl Battle {
             defer_white_herb: false,
             white_herb_move_defer: false,
             disguise_hit_this_move: false,
+            in_residual: false,
+            unnerve_unstarted: 0,
             status_sure_hit: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
@@ -3561,6 +3572,12 @@ self.trigger_emergency_exits();
         #[cfg(not(feature = "ps-rng"))]
         let ps = false;
         self.quick_frac = Some([[false; 2]; 2]);
+        // PS nextTurn clears usedItemThisTurn from turn 2 on (sim/battle.ts:1676-1677).
+        if self.turn != 0 {
+            for m in self.p1.team.iter_mut().chain(self.p2.team.iter_mut()) {
+                m.used_item_this_turn = false;
+            }
+        }
         if ps {
             #[cfg(feature = "ps-rng")]
             self.ps_resolve_action_draws(p1_choices, p2_choices);
@@ -4012,9 +4029,11 @@ self.trigger_emergency_exits();
                 self.ps_residual_ties();
             }
             let hp_before = self.active_hp_snapshot();
+            self.in_residual = true;
             self.resolve_end_of_turn();
             // PS: the residual action ends with eachEvent('Update').
             self.update_hp_berries();
+            self.in_residual = false;
             self.residual_emergency_exits(hp_before);
         }
         #[cfg(feature = "ps-rng")]
@@ -4593,6 +4612,17 @@ self.trigger_emergency_exits();
             self.ps_active_ties(false, "shuffle");
             self.ps_active_ties(true, "shuffle");
         }
+        // That last instaswitch's Update runs before any runSwitch, so HP
+        // berries eat while the entering Unnerve holders have not started.
+        for &(_, side, slot) in &entered[..n] {
+            self.unnerve_unstarted |= 1 << (side as u8 * 2 + slot);
+        }
+        for &(_, side, slot) in &entered[..n] {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::on_after_damage(self, side, slot, &mut rng);
+            self.rng = rng;
+        }
+        self.unnerve_unstarted = 0;
         for e in &mut entered[..n] {
             let tw = self.side(e.1).conditions.tailwind_turns > 0;
             e.0 = self
@@ -4818,6 +4848,8 @@ self.trigger_emergency_exits();
             incoming.commanded = false; // Commander (Dondozo) marker clears on switch-out.
             incoming.cud_chew_berry = u16::MAX; // Cud Chew re-eat schedule drops on switch-out.
             incoming.cud_chew_counter = 0;
+            incoming.supreme_overlord_fallen = u8::MAX; // re-latched by its onStart
+            incoming.used_item_this_turn = false;
             incoming.move_this_turn_result = crate::pokemon::MoveResult::None;
             incoming.move_last_turn_result = crate::pokemon::MoveResult::None;
             incoming.moves_used = 0;
@@ -9362,6 +9394,21 @@ self.trigger_emergency_exits();
         true
     }
 
+    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975):
+    /// Sticky Hold and a holder's own Mega Stone keep the item.
+    fn knock_off_take_item(&mut self, side: SideRef, slot: u8) {
+        let can_knock = self.side(side).active_mon(slot as usize)
+            .is_some_and(|m| m.is_alive()
+                && m.effective_ability_id() != data::ability_id::STICKYHOLD
+                && !m.holds_own_mega_stone());
+        if can_knock {
+            if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+                t.item_id = u16::MAX;
+                t.sync_can_mega_evolve();
+            }
+        }
+    }
+
     /// Move-specific post-damage side effects that don't fit the generic
     /// secondary / on-hit-reaction dispatch — currently Knock Off's
     /// item removal and Smack Down / Thousand Arrows' grounding
@@ -9562,6 +9609,12 @@ self.trigger_emergency_exits();
         let m = &ctx.move_def;
 
         if self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category) {
+            // A Disguise-blocked hit still runs the move's AfterHit: Knock
+            // Off takes the item (data/moves.ts:9975-9980; PS logs the
+            // -enditem before the Busted forme change).
+            if ctx.move_id == data::move_id::KNOCKOFF {
+                self.knock_off_take_item(ctx.tside, ctx.tslot);
+            }
             return;
         }
 
@@ -9691,16 +9744,7 @@ self.trigger_emergency_exits();
         // Knock Off's AfterHit takes the item after the DamagingHit
         // reactions (data/moves.ts knockoff onAfterHit).
         if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
-            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                .is_some_and(|m| m.is_alive()
-                    && m.effective_ability_id() != data::ability_id::STICKYHOLD
-                    && !m.holds_own_mega_stone());
-            if can_knock {
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    t.item_id = u16::MAX;
-                    t.sync_can_mega_evolve();
-                }
-            }
+            self.knock_off_take_item(ctx.tside, ctx.tslot);
         }
 
         // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
@@ -11432,13 +11476,17 @@ self.trigger_emergency_exits();
             // "target must be attacking" gate so `damage_only` reports the
             // damage Sucker Punch would deal (@smogon/calc parity) instead
             // of a spurious 0 against the synthetic forced-Splash defender.
+            // A target that must recharge also fails it (PS
+            // data/moves.ts:18408 `target.volatiles['mustrecharge']`).
+            let foe = actor_side.opposing();
+            let attacking = |s: usize| {
+                pending_kind[opp][s] == 1
+                    && !self.side(foe).active_mon(s).is_some_and(|t| t.must_recharge)
+            };
             let ok = self.force_move_gate_ok
                 || match self.final_single_target(actor_side, actor_slot, move_id, attacker, m, target) {
-                    Some((side, slot)) if side == actor_side.opposing() => {
-                        let s = slot as usize & 1;
-                        pending_kind[opp][s] == 1
-                    }
-                    _ => pending_kind[opp].iter().any(|&k| k == 1),
+                    Some((side, slot)) if side == foe => attacking(slot as usize & 1),
+                    _ => (0..pending_kind[opp].len()).any(attacking),
                 };
             if !ok {
                 let extra = pressure_extra_pp(self, actor_side, m, target);
@@ -14114,6 +14162,7 @@ self.trigger_emergency_exits();
         self.eot_grassy_terrain_heal();
         self.eot_cure_abilities();
         self.eot_item_residual();
+        self.eot_aqua_ring();
         self.eot_leech_seed();
         self.eot_status_dot();
         self.eot_curse();
@@ -14443,6 +14492,36 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// Aqua Ring residual — PS data/moves.ts:480-483 condition
+    /// `onResidualOrder: 6, onResidual: this.heal(pokemon.baseMaxhp / 16)`.
+    /// `heal` rounds a sub-1 amount up to 1 (sim/battle.ts heal); Big Root's
+    /// onTryHeal chainModify([5324, 4096]) covers `aquaring`
+    /// (data/items.ts bigroot); Heal Block's onTryHeal vetoes it.
+    fn eot_aqua_ring(&mut self) {
+        let n = self.format().active_count() as u8;
+        if !self.eot_any_active_has_volatile(n, crate::pokemon::VolatileKind::AquaRing) {
+            return;
+        }
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                    if !m.is_alive()
+                        || !m.volatiles.has(crate::pokemon::VolatileKind::AquaRing)
+                        || m.is_heal_blocked()
+                        || m.current_hp >= m.stats.hp
+                    {
+                        continue;
+                    }
+                    let mut heal = (m.stats.hp as u32 / 16).max(1);
+                    if m.effective_item_id() == data::item_id::BIGROOT {
+                        heal = (heal * 5324 + 2047) / 4096;
+                    }
+                    m.current_hp = (m.current_hp as u32 + heal).min(m.stats.hp as u32) as u16;
+                }
+            }
+        }
+    }
+
     /// EOT sub-phase `leech_seed`. Extracted from
     /// `resolve_end_of_turn` in PR-F3 — body unchanged from the
     /// pre-F3 inline version; the section's own PS-citation comments
@@ -14644,13 +14723,16 @@ self.trigger_emergency_exits();
                             m.fainted = true;
                         }
                         if matches!(m.status, Status::Toxic) {
-                            let next = m.toxic_counter().saturating_add(1).min(15);
+                            // A switch-in clears the counter volatile (PS
+                            // stage = 0); this residual dealt stage 1, so the
+                            // next one is 2, not 0 + 1.
+                            let next = m.toxic_counter().max(1).saturating_add(1).min(15);
                             m.set_toxic_counter(next);
                         }
                     } else if matches!(m.status, Status::Toxic) {
                         // Magic Guard blocks damage but the toxic counter
                         // still ticks (PS does the same).
-                        let next = m.toxic_counter().saturating_add(1).min(15);
+                        let next = m.toxic_counter().max(1).saturating_add(1).min(15);
                         m.set_toxic_counter(next);
                     }
                 }
@@ -17335,6 +17417,21 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::AQUARING => {
+                // Aqua Ring — PS data/moves.ts:466-489: `volatileStatus:
+                // 'aquaring'` (fails if already present); the condition heals
+                // baseMaxhp/16 at onResidualOrder 6 (`eot_aqua_ring`).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Aqua_Ring_(move)>
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if !a.volatiles.has(crate::pokemon::VolatileKind::AquaRing) {
+                        let _ = a.volatiles.add(crate::pokemon::Volatile {
+                            kind: crate::pokemon::VolatileKind::AquaRing,
+                            turns_remaining: 0,
+                            payload: 0,
+                        });
+                    }
+                }
+            }
             data::move_id::NORETREAT => {
                 // PS data/moves.ts:noretreat — raise all five of the user's
                 // stats by one stage and trap it (NoRetreat volatile, enforced
@@ -17696,17 +17793,9 @@ self.trigger_emergency_exits();
                 // and the switch via `selfSwitch: true`. Snow is the
                 // gen-9 rename of Hail (same `Weather::Snow` here). The
                 // cosmetic `priorityChargeCallback` flavor is skipped.
-                self.weather = crate::weather::Weather::Snow;
-                // PR-LC1: weather field changed — refresh cache.
-                self.sync_weather_terrain_cache();
-                // Icy Rock extends Snow 5 → 8 (PS data/items.ts:icyrock).
-                let user_item = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .map(|m| m.item_id)
-                    .unwrap_or(u16::MAX);
-                self.weather_turns = if user_item == data::item_id::ICYROCK { 8 } else { 5 };
-                self.refresh_forecast_formes();
+                // field.setWeather fails when Snow is already up, so a
+                // repeat use does not refresh the duration (Icy Rock 8).
+                self.set_weather_from_move(crate::weather::Weather::Snow, actor_side, actor_slot);
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);

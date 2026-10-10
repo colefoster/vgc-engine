@@ -1631,15 +1631,19 @@ pub(crate) fn calculate_damage_with_bp(
     // `onBasePower` returns `chainModify([powMod[fallen], 4096])` with
     // `powMod = [4096, 4506, 4915, 5325, 5734, 6144]` (so 5 fallen → ×1.5).
     // PS caches `fallen = min(side.totalFainted, 5)` at switch-in via
-    // `onStart`; we read `attacker_total_fainted_allies` live (the same
-    // value PS sees when nobody faints mid-turn — Kingambit doesn't
-    // normally see its own teammates faint between its switch-in and its
-    // own move). Kingambit signature, 24.5% usage per Smogon 2026-05.
+    // `onStart` (`Pokemon::supreme_overlord_fallen`). Kingambit signature,
+    // 24.5% usage per Smogon 2026-05.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Supreme_Overlord_(Ability)>.
     if attacker.effective_ability_id() != u16::MAX
         && attacker.effective_ability_id() == data::ability_id::SUPREMEOVERLORD
     {
-        let fallen = (ctx.attacker_total_fainted_allies as usize).min(5);
+        // The count latched at onStart; the live one only for a mon whose
+        // ability never started in a battle (calc API).
+        let fallen = if attacker.supreme_overlord_fallen != u8::MAX {
+            attacker.supreme_overlord_fallen as usize
+        } else {
+            (ctx.attacker_total_fainted_allies as usize).min(5)
+        };
         const POW_MOD: [u32; 6] = [4096, 4506, 4915, 5325, 5734, 6144];
         let n = POW_MOD[fallen];
         if n != 4096 {

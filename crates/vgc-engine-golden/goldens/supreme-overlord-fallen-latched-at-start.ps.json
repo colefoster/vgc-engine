@@ -1,0 +1,128 @@
+{
+  "ok": true,
+  "name": "supreme-overlord-fallen-latched-at-start",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Pichu",
+      "hp": 95,
+      "max": 95
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Kingambit",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Jolteon",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Final Gambit",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 45,
+      "max": 140,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "faint",
+      "actor": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Iron Head",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 98,
+      "max": 330,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 38,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791638432\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Pichu, L50, M|\n|poke|p1|Kingambit, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p2|Jolteon, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1791638432\n|teamsize|p1|3\n|teamsize|p2|2\n|start\n|switch|p1a: Pichu|Pichu, L50, M|95/95\n|switch|p1b: Kingambit|Kingambit, L50, F|175/175\n|switch|p2a: Jolteon|Jolteon, L50, F|140/140\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|turn|1|\n|t:|1791638432\n|move|p2a: Jolteon|Splash|p2a: Jolteon\n|-nothing\n|move|p1a: Pichu|Final Gambit|p2a: Jolteon\n|-damage|p2a: Jolteon|45/140\n|faint|p1a: Pichu\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1b: Kingambit|Iron Head|p2b: Blissey\n|-damage|p2b: Blissey|98/330\n|\n|upkeep"
+}
