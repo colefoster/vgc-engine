@@ -17298,6 +17298,48 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::MEMENTO => {
+                // Memento — PS data/moves.ts:11620: `boosts: {atk:-2, spa:-2}`
+                // on the target, `selfdestruct: 'ifHit'`. spreadMoveHit faints
+                // the user once the move has hit (sim/battle-actions.ts:1287
+                // `if (move.selfdestruct === 'ifHit' && damage[i] !== false)`),
+                // so a miss, Protect (gated above) or Substitute (status move
+                // into a sub fails, data/moves.ts:18341 substitute
+                // onTryPrimaryHit) leaves the user standing. A Clear Body veto
+                // does not save it. Bulbapedia:
+                // <https://bulbapedia.bulbagarden.net/wiki/Memento_(move)>.
+                if !self.rolled_accuracy_passed(m) {
+                    return;
+                }
+                let Some((ts, tslot)) = opp_target else { return };
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0) {
+                    return;
+                }
+                let mut buf = [(0u8, 0i8); 2];
+                let mut k = 0usize;
+                for (idx, delta) in [(0u8, -2i8), (2, -2)] {
+                    let blocked = self.side(ts).active_mon(tslot as usize)
+                        .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, idx));
+                    if !blocked {
+                        buf[k] = (idx, delta);
+                        k += 1;
+                    }
+                }
+                if k > 0 {
+                    let before = self.side(ts).active_mon(tslot as usize).map_or([0; 7], |t| t.boosts);
+                    self.apply_boosts(ts, tslot, &buf[..k], actor_side, actor_slot);
+                    if ts != actor_side {
+                        self.after_foe_drop(ts, tslot, before, true);
+                    } else {
+                        crate::item::try_consume_white_herb(self, ts, tslot);
+                        let _ = crate::item::try_consume_eject_pack(self, ts, tslot, true);
+                    }
+                }
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.current_hp = 0;
+                    a.fainted = true;
+                }
+            }
             data::move_id::REVIVALBLESSING => {
                 // Revival Blessing — PS data/moves.ts:15110: onTryHit fails
                 // with no fainted party member; otherwise a pick of a

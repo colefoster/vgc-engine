@@ -1,0 +1,138 @@
+{
+  "ok": true,
+  "name": "champions-memento-faints-user",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Sinistcha",
+      "hp": 146,
+      "max": 146
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Protect",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Memento",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Memento",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p2a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p1a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Range",
+      "value": 1,
+      "bound": 2,
+      "site": "BattleQueue.insertChoice (sim/battle-queue.js:286)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637322\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Sinistcha, L50|\n|poke|p1|Garchomp, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Garchomp, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Pikachu, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791637322\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Sinistcha|Sinistcha, L50|146/146\n|switch|p1b: Garchomp|Garchomp, L50, M|183/183\n|switch|p2a: Garchomp|Garchomp, L50, F|183/183\n|switch|p2b: Miltank|Miltank, L50, F|170/170\n|turn|1|\n|t:|1791637322\n|move|p2a: Garchomp|Protect|p2a: Garchomp\n|-singleturn|p2a: Garchomp|Protect\n|move|p1b: Garchomp|Splash|p1b: Garchomp\n|-nothing\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Sinistcha|Memento|p2a: Garchomp\n|-activate|p2a: Garchomp|move: Protect\n|\n|upkeep\n|turn|2|\n|t:|1791637322\n|move|p1b: Garchomp|Splash|p1b: Garchomp\n|-nothing\n|move|p2a: Garchomp|Splash|p2a: Garchomp\n|-nothing\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Sinistcha|Memento|p2a: Garchomp\n|-unboost|p2a: Garchomp|atk|2\n|-unboost|p2a: Garchomp|spa|2\n|faint|p1a: Sinistcha\n|\n|upkeep"
+}
