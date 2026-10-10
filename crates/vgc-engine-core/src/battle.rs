@@ -14475,13 +14475,16 @@ self.trigger_emergency_exits();
                             m.fainted = true;
                         }
                         if matches!(m.status, Status::Toxic) {
-                            let next = m.toxic_counter().saturating_add(1).min(15);
+                            // A switch-in clears the counter volatile (PS
+                            // stage = 0); this residual dealt stage 1, so the
+                            // next one is 2, not 0 + 1.
+                            let next = m.toxic_counter().max(1).saturating_add(1).min(15);
                             m.set_toxic_counter(next);
                         }
                     } else if matches!(m.status, Status::Toxic) {
                         // Magic Guard blocks damage but the toxic counter
                         // still ticks (PS does the same).
-                        let next = m.toxic_counter().saturating_add(1).min(15);
+                        let next = m.toxic_counter().max(1).saturating_add(1).min(15);
                         m.set_toxic_counter(next);
                     }
                 }

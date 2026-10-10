@@ -1,0 +1,18 @@
+{
+  "name": "toxic-counter-after-switch-back-in",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Blissey\nAbility: Serene Grace\nLevel: 50\n- Splash\n\nChansey\nAbility: Serene Grace\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Toxapex\nAbility: Regenerator\nLevel: 50\n- Toxic\n- Roar\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 2" },
+    { "p1": "move 1", "p2": "move 2" },
+    { "p1": "move 1", "p2": "move 3" },
+    { "p1": "move 1", "p2": "move 3" }
+  ]
+}
