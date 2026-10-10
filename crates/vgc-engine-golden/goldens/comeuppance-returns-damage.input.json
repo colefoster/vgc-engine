@@ -1,0 +1,15 @@
+{
+  "name": "comeuppance-returns-damage",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Jolteon (M)\nAbility: Volt Absorb\nLevel: 50\nTimid Nature\nEVs: 252 Spe\n- Quick Attack\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Kingambit (M)\nAbility: Pressure\nLevel: 50\nBrave Nature\n- Comeuppance\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" }
+  ]
+}
