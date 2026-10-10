@@ -2655,6 +2655,64 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
     }
 
+    /// `ps-rng` only: Cloud Nine / Air Lock run `eachEvent('WeatherChange')`
+    /// from both onStart and onEnd (data/abilities.ts cloudnine / airlock),
+    /// a speed sort of the living actives, whether or not any weather is up.
+    #[cfg(feature = "ps-rng")]
+    pub(crate) fn ps_weather_suppressor_ties(&mut self, ability: u16) {
+        if self.rng.is_ps() && matches!(ability, data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK) {
+            self.ps_active_ties(false, "shuffle");
+        }
+    }
+
+    /// `ps-rng` only: the Champions hit loop's faintMessages
+    /// (data/mods/champions/scripts.ts, after the loop) runs each knocked-out
+    /// target's ability End; a Cloud Nine / Air Lock holder's onEnd sorts
+    /// getAllActive, which still holds every target not yet processed
+    /// (`fainted` is set after its End, sim/battle.ts faintMessages), the
+    /// holder included, on its cached Speed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_hit_loop_faint_ends(&mut self) {
+        let n_active = self.format().active_count().min(2);
+        for hs in [SideRef::P1, SideRef::P2] {
+            for hslot in 0..n_active {
+                let bit = |side: SideRef, slot: usize| 1u8 << (side as usize * 2 + slot);
+                let holder_ko = self.side(hs).active_mon(hslot).is_some_and(|m| {
+                    m.current_hp == 0
+                        && matches!(m.effective_ability_id(), data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK)
+                }) && self.ps_action_live & bit(hs, hslot) != 0;
+                if !holder_ko {
+                    continue;
+                }
+                let mut keys = [0i64; 4];
+                let mut n = 0;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n_active {
+                        let s = self.side(side);
+                        let Some(m) = s.active_mon(slot) else { continue };
+                        // KO'd targets earlier in the faint queue are already
+                        // `fainted`; approximated by slot order.
+                        let later = (side as usize, slot) >= (hs as usize, hslot);
+                        let pending = m.current_hp == 0 && self.ps_action_live & bit(side, slot) != 0 && later;
+                        let key = if pending {
+                            self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
+                        } else if m.is_alive() {
+                            self.ps_speed(side, slot)
+                        } else {
+                            None
+                        };
+                        if let Some(k) = key {
+                            keys[n] = k;
+                            n += 1;
+                        }
+                    }
+                }
+                keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+                let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+            }
+        }
+    }
+
     /// `ps-rng` only: how many `random(100)` rolls PS's `secondaries` makes
     /// for a move's target-affecting secondaries (sim/battle-actions.ts:1336):
     /// one per entry of `move.secondaries` without `self` (two for the fangs
@@ -3974,6 +4032,7 @@ self.trigger_emergency_exits();
             if windowed {
                 self.ps_hit_update();
             }
+            self.ps_hit_loop_faint_ends();
             self.ps_active_ties(false, "shuffle");
         }
         #[cfg(feature = "ps-rng")]
@@ -4342,6 +4401,8 @@ self.trigger_emergency_exits();
         };
         let mega_species = stone.mega_species_id;
         let mega_ability = stone.mega_ability_id;
+        #[cfg(feature = "ps-rng")]
+        let old_ability = self.side(side).active_mon(slot).map_or(u16::MAX, |m| m.effective_ability_id());
         // Forme + recomputed stats (Speed feeds the upcoming `action_order`).
         self.set_forme(side, actor_slot, mega_species, true);
         // formeChange -> setSpecies caches the forme's raw Speed stat
@@ -4349,6 +4410,10 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_reset_speed(side, slot);
+            // ...then setAbility runs the old ability's End
+            // (data/mods/champions/scripts.ts formeChange -> sim/pokemon.ts
+            // setAbility): a Cloud Nine Altaria's eachEvent('WeatherChange').
+            self.ps_weather_suppressor_ties(old_ability);
         }
         // Overwrite the base ability so it survives switching out and back;
         // clear any transient override (e.g. a prior Skill Swap) so the mega
@@ -4788,6 +4853,12 @@ self.trigger_emergency_exits();
                 && s_view.team[team_index as usize].is_alive()
             {
                 crate::ability::on_switch_out(self, side, actor_slot);
+                // switchIn runs the leaving mon's ability End
+                // (sim/battle-actions.ts switchIn, `if (unfaintedActive)`).
+                #[cfg(feature = "ps-rng")]
+                if let Some(ab) = self.side(side).active_mon(actor_slot as usize).filter(|m| m.is_alive()).map(|m| m.effective_ability_id()) {
+                    self.ps_weather_suppressor_ties(ab);
+                }
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
                 self.gulp_missile_leave_field(side, actor_slot);
