@@ -1,0 +1,17 @@
+{
+  "name": "champions-future-sight-retargets-fainted-foe",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [1, 2, 3, 4],
+  "decision_phases": true,
+  "p1": {
+    "team": "Sinistcha\nAbility: Hospitality\nLevel: 50\nEVs: 32 Spe\nTimid Nature\n- Memento\n- Splash\n\nSpiritomb\nAbility: Pressure\nLevel: 50\n- Protect\n- Shadow Sneak\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Gardevoir\nAbility: Synchronize\nLevel: 50\nEVs: 32 SpA\nModest Nature\n- Future Sight\n- Splash\n\nMiltank\nAbility: Sap Sipper\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 2, move 1", "p2": "move 1 1, move 1", "p1_replace": "switch 3, pass" },
+    { "p1": "move 1, move 1", "p2": "move 2, move 1" },
+    { "p1": "move 1, move 1", "p2": "move 2, move 1" }
+  ]
+}
