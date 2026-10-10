@@ -57,3 +57,58 @@ fn tied_replacements_shuffle_in_the_switch_commit_sort() {
     assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-2");
     assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-3");
 }
+
+/// Meowstic-F Mega Evolves into Trace facing Palafin (Zero to Hero,
+/// `notrace`) and Pelipper. Trace's `possibleTargets` drops the `notrace`
+/// foe (data/abilities.ts:5138-5143), so PS draws `random(1)` and copies
+/// Drizzle; the engine used to sample both foes.
+#[test]
+fn trace_skips_a_notrace_foe() {
+    assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-1");
+    assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-2");
+}
+
+/// Alakazam Speed Swaps with Snorlax, Snorlax switches out and back in.
+/// clearVolatile's setSpecies recomputes Snorlax's storedStats
+/// (sim/pokemon.ts clearVolatile -> setSpecies), so it returns with its
+/// own Speed and ties Alakazam (which kept Snorlax's); the engine kept the
+/// swapped Speed and moved Snorlax first without a tie.
+#[test]
+fn speed_swap_ends_when_the_target_switches_out() {
+    assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-1");
+    assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-2");
+}
+
+/// Charizard charges Solar Beam at Gyarados; next turn Whimsicott Encores
+/// it. Its queued action is already the locked Solar Beam
+/// (sim/side.ts:675-688), so Champions Encore's onStart sees
+/// `action.moveid === move.id` and leaves it alone
+/// (data/mods/champions/moves.ts:328): no changeAction, no
+/// getRandomTarget, the beam keeps its stored target. The engine compared
+/// against the submitted move and re-queued it at a random foe.
+#[test]
+fn encore_leaves_a_locked_two_turn_move_queued() {
+    assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-1");
+    assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-3");
+}
+
+/// Two equal-Speed Cloud Nine Altaria: one switches out and back, the
+/// other faints to Blizzard. Cloud Nine's onStart and onEnd each run
+/// `eachEvent('WeatherChange')` (data/abilities.ts cloudnine), a speed
+/// sort that draws on the tie, at switch-in, at switch-out (switchIn's
+/// ability End) and in the hit loop's faintMessages.
+#[test]
+fn cloud_nine_start_and_end_sort_the_actives() {
+    assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-1");
+    assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-2");
+}
+
+/// Inteleon uses Focus Energy, then Snipe Shot (critRatio 2): Focus
+/// Energy's onModifyCritRatio +2 (data/moves.ts focusenergy) makes it
+/// critRatio 4, PS's `randomChance(1, 1)` (sim/battle-actions.ts
+/// getDamage). The engine never applied Focus Energy and rolled 1/8.
+#[test]
+fn focus_energy_raises_the_crit_ratio() {
+    assert_seeded_matches_ps("psrng-focus-energy-raises-crit-ratio-1");
+    assert_seeded_matches_ps("psrng-focus-energy-raises-crit-ratio-2");
+}

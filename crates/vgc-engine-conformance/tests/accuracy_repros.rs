@@ -551,3 +551,109 @@ fn species_check_stays_exact_outside_the_loaded_base() {
         assert_eq!((d.turn, d.slot.as_str(), d.field.as_str(), d.ps.as_str()), (1, "p1a", "species", wrong));
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-trace-replacement-jobs.jsonl`.
+/// Whimsicott's Memento faints it; Gardevoir (Trace) replaces it and samples
+/// Garchomp / Arcanine. PS draws that sample in turn 1 (the replacement runs
+/// before `|turn|2`), while the engine keys it `turn() + 1` = 2 because its
+/// turn counter already advanced. The harness has to hand turn 1's
+/// recovered Trace sample to the engine's turn-2 Ability draw; before, it
+/// fell back and seeds 2-4 copied the wrong foe.
+#[test]
+fn trace_sample_on_a_faint_replacement_is_keyed() {
+    for name in ["keyed-trace-on-faint-replacement-1", "keyed-trace-on-faint-replacement-2"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared > 0, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-freeze-thaw-jobs.jsonl`.
+/// Blizzard freezes a foe; next turn the frozen mon picks a spread move,
+/// whose getTarget draws PS records under the same (turn, actor, move)
+/// `range` key as Champions' thaw `randomChance(1, 4)`
+/// (data/mods/champions/conditions.ts frz onBeforeMove). The thaw gate
+/// must pair with the parked pass/fail bool, not pop a getTarget pick.
+#[test]
+fn freeze_thaw_roll_is_keyed_apart_from_the_moves_target_picks() {
+    for name in ["keyed-freeze-thaw-spread-14", "keyed-freeze-thaw-spread-27", "keyed-freeze-thaw-spread-101"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared > 0, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-sleep-drops-charge-jobs.jsonl`.
+/// Archaludon charges Electro Shot and is Spored. On the release turn it
+/// can't move (slp); runMove's MoveAborted runs twoturnmove
+/// `onMoveAborted`, which drops the charge (data/conditions.ts:320-322),
+/// so once awake it uses the Protect it chose instead of firing the shot.
+#[test]
+fn a_move_aborted_on_its_release_turn_drops_the_two_turn_charge() {
+    for name in ["keyed-sleep-drops-charge-1", "keyed-sleep-drops-charge-4"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 4, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-frozen-flinch-order-jobs.jsonl`.
+/// Blizzard freezes a foe, then Garchomp's Rock Slide flinches it. PS runs
+/// the BeforeMove handlers by priority (frz 10 before flinch 8,
+/// data/conditions.ts), so the frozen mon still ticks its Champions freeze
+/// counter and rolls its thaw before the flinch stops it; the engine
+/// checked flinch first and skipped both.
+#[test]
+fn a_flinched_frozen_mon_still_rolls_its_thaw() {
+    for name in ["keyed-frozen-flinch-order-3", "keyed-frozen-flinch-order-110", "keyed-frozen-flinch-order-125"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 3, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-yawn-sleep-sample-jobs.jsonl`.
+/// Yawn puts Garchomp to sleep in turn 2's residual, after Sylveon's Hyper
+/// Voice. Champions slp `onStart` draws `this.sample([2, 3, 3])`
+/// (data/mods/champions/conditions.ts:44); the engine drew it under the
+/// stale Hyper Voice context and popped one of that move's getTarget picks
+/// instead of the recovered condition sample, so Garchomp woke a turn
+/// early or late (seed 7: late, seed 11: early).
+#[test]
+fn champions_sleep_sample_is_keyed_apart_from_the_last_move() {
+    for name in ["keyed-yawn-sleep-sample-7", "keyed-yawn-sleep-sample-11"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 5, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}

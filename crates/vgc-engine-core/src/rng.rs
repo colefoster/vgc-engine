@@ -52,6 +52,12 @@ pub type SlotRef = u8;
 /// Sentinel slot ref — self-targeting / field draws with no attributable target.
 pub const NO_SLOT: SlotRef = 0xFF;
 
+/// Keyed-oracle effect id for a PS `this.sample(...)` drawn by a condition's
+/// `onStart` (Champions sleep `startTime = this.sample([2, 3, 3])`). The
+/// conformance harness files those draws under
+/// `{turn, NO_SLOT, NO_SLOT, KEY_CONDITION_SAMPLE, Range}`.
+pub const KEY_CONDITION_SAMPLE: u16 = u16::MAX - 2;
+
 /// The kind of decision a draw resolves. Used as part of the keyed
 /// oracle's lookup key so that the engine and the PS driver can agree
 /// on *which* randomized decision a recorded outcome belongs to,
@@ -1125,6 +1131,19 @@ impl Rng {
             return p.random_n("range", n);
         }
         self.effect_draw(turn, holder, ability, RngDecision::Ability, n)
+    }
+
+    /// A condition's own `this.sample` of `n` items (Champions sleep), keyed
+    /// under [`KEY_CONDITION_SAMPLE`] instead of the stale move context: PS
+    /// draws it wherever the status lands (a move, Yawn's residual), and the
+    /// stale key can hold that move's getTarget picks. Other RNG variants
+    /// draw the same `random(n)`.
+    #[cfg_attr(feature = "ps-rng", track_caller)]
+    pub fn condition_sample(&mut self, turn: u32, n: u32) -> u32 {
+        match self {
+            Rng::OracleKeyed(_) => self.effect_draw(turn, NO_SLOT, KEY_CONDITION_SAMPLE, RngDecision::Range, n),
+            _ => self.range(n),
+        }
     }
 
     /// PS item handler's `randomChance`, keyed by holder + item instead of

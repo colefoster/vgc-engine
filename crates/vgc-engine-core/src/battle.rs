@@ -2661,6 +2661,64 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
     }
 
+    /// `ps-rng` only: Cloud Nine / Air Lock run `eachEvent('WeatherChange')`
+    /// from both onStart and onEnd (data/abilities.ts cloudnine / airlock),
+    /// a speed sort of the living actives, whether or not any weather is up.
+    #[cfg(feature = "ps-rng")]
+    pub(crate) fn ps_weather_suppressor_ties(&mut self, ability: u16) {
+        if self.rng.is_ps() && matches!(ability, data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK) {
+            self.ps_active_ties(false, "shuffle");
+        }
+    }
+
+    /// `ps-rng` only: the Champions hit loop's faintMessages
+    /// (data/mods/champions/scripts.ts, after the loop) runs each knocked-out
+    /// target's ability End; a Cloud Nine / Air Lock holder's onEnd sorts
+    /// getAllActive, which still holds every target not yet processed
+    /// (`fainted` is set after its End, sim/battle.ts faintMessages), the
+    /// holder included, on its cached Speed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_hit_loop_faint_ends(&mut self) {
+        let n_active = self.format().active_count().min(2);
+        for hs in [SideRef::P1, SideRef::P2] {
+            for hslot in 0..n_active {
+                let bit = |side: SideRef, slot: usize| 1u8 << (side as usize * 2 + slot);
+                let holder_ko = self.side(hs).active_mon(hslot).is_some_and(|m| {
+                    m.current_hp == 0
+                        && matches!(m.effective_ability_id(), data::ability_id::CLOUDNINE | data::ability_id::AIRLOCK)
+                }) && self.ps_action_live & bit(hs, hslot) != 0;
+                if !holder_ko {
+                    continue;
+                }
+                let mut keys = [0i64; 4];
+                let mut n = 0;
+                for side in [SideRef::P1, SideRef::P2] {
+                    for slot in 0..n_active {
+                        let s = self.side(side);
+                        let Some(m) = s.active_mon(slot) else { continue };
+                        // KO'd targets earlier in the faint queue are already
+                        // `fainted`; approximated by slot order.
+                        let later = (side as usize, slot) >= (hs as usize, hslot);
+                        let pending = m.current_hp == 0 && self.ps_action_live & bit(side, slot) != 0 && later;
+                        let key = if pending {
+                            self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
+                        } else if m.is_alive() {
+                            self.ps_speed(side, slot)
+                        } else {
+                            None
+                        };
+                        if let Some(k) = key {
+                            keys[n] = k;
+                            n += 1;
+                        }
+                    }
+                }
+                keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+                let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+            }
+        }
+    }
+
     /// `ps-rng` only: how many `random(100)` rolls PS's `secondaries` makes
     /// for a move's target-affecting secondaries (sim/battle-actions.ts:1336):
     /// one per entry of `move.secondaries` without `self` (two for the fangs
@@ -3816,9 +3874,8 @@ self.trigger_emergency_exits();
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
-                // A mon mid-way through a two-turn move queues the locked
-                // move, not the submitted slot (PS sim/side.ts:675-688), so
-                // Sucker Punch sees the Solar Beam release as an attack.
+                // A mon mid two-turn move queues its locked move
+                // (sim/side.ts:675-688), which Encore / Sucker Punch see.
                 match self.locked_move_choice(side_ref, *c) {
                     Choice::Move { actor_slot, move_slot, .. }
                     | Choice::Terastallize { actor_slot, move_slot, .. }
@@ -3981,6 +4038,7 @@ self.trigger_emergency_exits();
             if windowed {
                 self.ps_hit_update();
             }
+            self.ps_hit_loop_faint_ends();
             self.ps_active_ties(false, "shuffle");
         }
         #[cfg(feature = "ps-rng")]
@@ -4349,6 +4407,8 @@ self.trigger_emergency_exits();
         };
         let mega_species = stone.mega_species_id;
         let mega_ability = stone.mega_ability_id;
+        #[cfg(feature = "ps-rng")]
+        let old_ability = self.side(side).active_mon(slot).map_or(u16::MAX, |m| m.effective_ability_id());
         // Forme + recomputed stats (Speed feeds the upcoming `action_order`).
         self.set_forme(side, actor_slot, mega_species, true);
         // formeChange -> setSpecies caches the forme's raw Speed stat
@@ -4356,6 +4416,10 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_reset_speed(side, slot);
+            // ...then setAbility runs the old ability's End
+            // (data/mods/champions/scripts.ts formeChange -> sim/pokemon.ts
+            // setAbility): a Cloud Nine Altaria's eachEvent('WeatherChange').
+            self.ps_weather_suppressor_ties(old_ability);
         }
         // Overwrite the base ability so it survives switching out and back;
         // clear any transient override (e.g. a prior Skill Swap) so the mega
@@ -4795,6 +4859,12 @@ self.trigger_emergency_exits();
                 && s_view.team[team_index as usize].is_alive()
             {
                 crate::ability::on_switch_out(self, side, actor_slot);
+                // switchIn runs the leaving mon's ability End
+                // (sim/battle-actions.ts switchIn, `if (unfaintedActive)`).
+                #[cfg(feature = "ps-rng")]
+                if let Some(ab) = self.side(side).active_mon(actor_slot as usize).filter(|m| m.is_alive()).map(|m| m.effective_ability_id()) {
+                    self.ps_weather_suppressor_ties(ab);
+                }
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
                 self.gulp_missile_leave_field(side, actor_slot);
@@ -4818,6 +4888,10 @@ self.trigger_emergency_exits();
             if let Some(outgoing) = s.team.get_mut(outgoing_idx) {
                 outgoing.ability_override = u16::MAX;
                 outgoing.revert_transform();
+                // clearVolatile's setSpecies(baseSpecies) recomputes
+                // storedStats (sim/pokemon.ts clearVolatile, setSpecies), so
+                // Speed Swap / Guard Split's stat exchange ends on switch-out.
+                outgoing.change_forme(outgoing.species_id, true);
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);
@@ -6045,6 +6119,18 @@ self.trigger_emergency_exits();
             ),
             PreMoveOutcome::Abort
         ) {
+            // runMove's `MoveAborted` event (sim/battle-actions.ts runMove):
+            // twoturnmove `onMoveAborted` removes the charge volatile, and
+            // its onEnd the move's own (Fly / Dig semi-invulnerability)
+            // (data/conditions.ts:314-322). A mon frozen, asleep or fully
+            // paralysed on its release turn is no longer locked.
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                if a.charging_turns > 0 {
+                    a.charging_turns = 0;
+                    a.charging_move_slot = 255;
+                    a.semi_invuln = 0;
+                }
+            }
             return;
         }
         // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
@@ -11854,6 +11940,110 @@ self.trigger_emergency_exits();
         if self.force_move_gate_ok {
             return PreMoveOutcome::Proceed;
         }
+        // PS runs these as BeforeMove handlers in priority order
+        // (sim/battle.ts runEvent, highest first) and stops at the first
+        // `false`: slp / frz 10 (data/conditions.ts), Truant 9
+        // (data/abilities.ts), flinch 8, Disable 7, Throat Chop / Heal Block
+        // 6, Taunt 5, Imprison 4 (onFoeBeforeMove), confusion 3, Attract 2,
+        // par 1 (data/conditions.ts, data/moves.ts). So a frozen or asleep
+        // mon still rolls its thaw / ticks its sleep when it also flinched.
+        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
+        //     decrement sleep_turns; wake up + continue when it hits 0;
+        //     otherwise skip the move (no PP). `sleepUsable` moves like
+        //     Snore are not in the top-50 corpus — defer.
+        if matches!(attacker.status, Status::Sleep) {
+            let still_asleep = {
+                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
+                match mon {
+                    Some(a) => {
+                        let next = a.sleep_turns().saturating_sub(1);
+                        a.set_sleep_turns(next);
+                        if next == 0 {
+                            a.status = Status::None;
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    None => return PreMoveOutcome::Abort,
+                }
+            };
+            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
+            // asleep it normally returns false (skip the move), but
+            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
+            // proceed. We let those through so Sleep Talk's `onHit`
+            // (random-move pick) runs and consumes its PRNG draw.
+            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
+        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
+        //       user and lets the move proceed regardless of the roll.
+        //     - otherwise 20% chance to thaw and proceed; 80% to stay
+        //       frozen and skip the move (no PP).
+        //     Champions (data/mods/champions/conditions.ts frz): `time`
+        //     starts at 3 and drops each attempt; the mon thaws at 0 with no
+        //     draw, otherwise on `randomChance(1, 4)`. The counter shares
+        //     the status-counter volatile with Sleep (see `set_sleep_turns`);
+        //     a freeze set without one counts as fresh.
+        //     PS keys the thaw roll to this mon's move use.
+        if matches!(attacker.status, Status::Freeze) {
+            let thaws_self = move_is_defrost(m.slug);
+            let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
+            let ctx_target = match target {
+                Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
+                None => crate::rng::NO_SLOT,
+            };
+            // The keyed oracle holds the thaw roll as a pass/fail bool, parked
+            // apart from the move's own range draws (its getTarget picks share
+            // the key), like the paralysis gate below.
+            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
+            let lucky_thaw = !thaws_self && if self.champions {
+                let left = match attacker.sleep_turns() { 0 => 3, t => t } - 1;
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.set_sleep_turns(left);
+                }
+                left == 0 || {
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+                    self.rng.range(4) == 0
+                }
+            } else {
+                self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+                self.rng.range(5) == 0
+            };
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if thaws_self || lucky_thaw {
+                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    a.status = Status::None;
+                    a.set_sleep_turns(0);
+                }
+            } else {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
+        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
+        //   if (pokemon.removeVolatile('truant')) return;
+        //   if (!pokemon.hp) return;
+        //   this.add('cant', pokemon, 'ability: Truant');
+        //   return false;
+        // Effect: holder uses move on turn N, loafs around on N+1,
+        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
+        // (init false on switch-in). When true, skip the move and
+        // flip to false. When false, allow the move and flip to true.
+        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
+        if attacker.effective_ability_id() == data::ability_id::TRUANT {
+            let loafing_now = attacker.truant_loafing;
+            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                a.truant_loafing = !loafing_now;
+            }
+            if loafing_now {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
         // 1. Flinch check — flinched mons cannot move at all this turn.
         //    PS: PP is NOT consumed on flinch (the move is replaced with
         //    inaction). Source: PS sim/battle-actions.ts:runMove.
@@ -11925,98 +12115,6 @@ self.trigger_emergency_exits();
             return PreMoveOutcome::Abort;
         }
 
-        // Truant — PS `data/abilities.ts:5138` `onBeforeMove`:
-        //   if (pokemon.removeVolatile('truant')) return;
-        //   if (!pokemon.hp) return;
-        //   this.add('cant', pokemon, 'ability: Truant');
-        //   return false;
-        // Effect: holder uses move on turn N, loafs around on N+1,
-        // moves on N+2, loafs on N+3, etc. We store `truant_loafing`
-        // (init false on switch-in). When true, skip the move and
-        // flip to false. When false, allow the move and flip to true.
-        // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Truant_(Ability)>.
-        if attacker.effective_ability_id() == data::ability_id::TRUANT {
-            let loafing_now = attacker.truant_loafing;
-            if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                a.truant_loafing = !loafing_now;
-            }
-            if loafing_now {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
-        // 1a. Sleep skip. PS data/conditions.ts:slp onBeforeMove:
-        //     decrement sleep_turns; wake up + continue when it hits 0;
-        //     otherwise skip the move (no PP). `sleepUsable` moves like
-        //     Snore are not in the top-50 corpus — defer.
-        if matches!(attacker.status, Status::Sleep) {
-            let still_asleep = {
-                let mon = self.side_mut(actor_side).active_mon_mut(actor_slot as usize);
-                match mon {
-                    Some(a) => {
-                        let next = a.sleep_turns().saturating_sub(1);
-                        a.set_sleep_turns(next);
-                        if next == 0 {
-                            a.status = Status::None;
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    None => return PreMoveOutcome::Abort,
-                }
-            };
-            // PS `data/conditions.ts:slp` onBeforeMove: when the mon stays
-            // asleep it normally returns false (skip the move), but
-            // `move.sleepUsable` moves (Sleep Talk / Snore) are allowed to
-            // proceed. We let those through so Sleep Talk's `onHit`
-            // (random-move pick) runs and consumes its PRNG draw.
-            if still_asleep && !matches!(move_id, data::move_id::SLEEPTALK | data::move_id::SNORE) {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
-        // 1b. Freeze thaw. PS data/conditions.ts:frz onBeforeMove:
-        //     - move.flags.defrost (e.g. Flare Blitz, Scald) thaws the
-        //       user and lets the move proceed regardless of the roll.
-        //     - otherwise 20% chance to thaw and proceed; 80% to stay
-        //       frozen and skip the move (no PP).
-        //     Champions (data/mods/champions/conditions.ts frz): `time`
-        //     starts at 3 and drops each attempt; the mon thaws at 0 with no
-        //     draw, otherwise on `randomChance(1, 4)`. The counter shares
-        //     the status-counter volatile with Sleep (see `set_sleep_turns`);
-        //     a freeze set without one counts as fresh.
-        //     PS keys the thaw roll to this mon's move use.
-        if matches!(attacker.status, Status::Freeze) {
-            let thaws_self = move_is_defrost(m.slug);
-            let ctx_actor = (match actor_side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + actor_slot;
-            let ctx_target = match target {
-                Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
-                None => crate::rng::NO_SLOT,
-            };
-            let lucky_thaw = !thaws_self && if self.champions {
-                let left = match attacker.sleep_turns() { 0 => 3, t => t } - 1;
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.set_sleep_turns(left);
-                }
-                left == 0 || {
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-                    self.rng.range(4) == 0
-                }
-            } else {
-                self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-                self.rng.range(5) == 0
-            };
-            if thaws_self || lucky_thaw {
-                if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                    a.status = Status::None;
-                    a.set_sleep_turns(0);
-                }
-            } else {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
         // Imprison — PS data/moves.ts:9512 imprison onFoeBeforeMove
         // (priority 4): a move the foe's imprisoner knows fails, no PP.
         if self.imprisoned(actor_side, move_id) {
@@ -12051,23 +12149,6 @@ self.trigger_emergency_exits();
             Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
             None => crate::rng::NO_SLOT,
         };
-        if matches!(attacker.status, Status::Paralysis) {
-            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
-            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
-            let denom = if self.champions { 8 } else { 4 };
-            // The keyed oracle holds this gate as a pass/fail bool, which the
-            // harness parks apart from the move's own range draws (Dire
-            // Claw's status pick shares the key). Draw it under a context
-            // no PS draw carries, so it pairs with the parked bool.
-            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
-            self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
-            let full = self.rng.range(denom) == 0;
-            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
-            if full {
-                return PreMoveOutcome::Abort;
-            }
-        }
-
         // 1d. Confusion onBeforeMove. See `try_confusion_self_hit` for
         //     the gate + damage draw + apply detail; PS draw sites and
         //     ordering are preserved verbatim there.
@@ -12108,6 +12189,25 @@ self.trigger_emergency_exits();
                 }
             }
         }
+
+        // Paralysis (priority 1) runs after confusion and Attract.
+        if matches!(attacker.status, Status::Paralysis) {
+            // PS data/conditions.ts par `randomChance(1, 4)`; Champions
+            // (data/mods/champions/conditions.ts:5) `randomChance(1, 8)`.
+            let denom = if self.champions { 8 } else { 4 };
+            // The keyed oracle holds this gate as a pass/fail bool, which the
+            // harness parks apart from the move's own range draws (Dire
+            // Claw's status pick shares the key). Draw it under a context
+            // no PS draw carries, so it pairs with the parked bool.
+            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
+            self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
+            let full = self.rng.range(denom) == 0;
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+            if full {
+                return PreMoveOutcome::Abort;
+            }
+        }
+
 
         PreMoveOutcome::Proceed
     }
@@ -13948,8 +14048,11 @@ self.trigger_emergency_exits();
         // (data/mods/champions/conditions.ts slp onStart): the same
         // `random(3)`, mapped 0/1/2 -> 2/3/3.
         let sleep_turns = if matches!(status, Status::Sleep) {
-            let r = self.rng.range(3) as u8;
-            if self.champions { [2, 3, 3][r as usize] } else { r + 2 }
+            if self.champions {
+                [2, 3, 3][self.rng.condition_sample(self.turn + 1, 3).min(2) as usize]
+            } else {
+                self.rng.range(3) as u8 + 2
+            }
         } else {
             0
         };
@@ -15865,6 +15968,26 @@ self.trigger_emergency_exits();
                     if p.is_alive() {
                         p.set_helping_handed(true);
                     }
+                }
+            }
+            data::move_id::FOCUSENERGY => {
+                // PS data/moves.ts:5971-6000 (focusenergy): `volatileStatus`
+                // (fails if already present), whose onStart fails under
+                // Dragon Cheer; onModifyCritRatio +2 (the crit_stage_volatile
+                // channel, cleared on switch-out, copied by Baton Pass).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Energy_(move)>.
+                if let Some(u) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if u.volatiles.has(crate::pokemon::VolatileKind::FocusEnergy)
+                        || u.volatiles.has(crate::pokemon::VolatileKind::DragonCheer)
+                    {
+                        return;
+                    }
+                    let _ = u.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::FocusEnergy,
+                        turns_remaining: 0, // indefinite; cleared on switch-out.
+                        payload: 0,
+                    });
+                    u.crit_stage_volatile = u.crit_stage_volatile.saturating_add(2);
                 }
             }
             data::move_id::DRAGONCHEER => {
