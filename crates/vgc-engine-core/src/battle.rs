@@ -350,6 +350,11 @@ pub struct Battle {
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
     #[serde(skip)]
     status_sure_hit: bool,
+    /// The status move's net accuracy stage against its resolved target
+    /// (user accuracy minus target evasion, clamped to +-6), applied by
+    /// `rolled_accuracy_passed`.
+    #[serde(skip)]
+    status_acc_boost: i8,
     pub config: BattleConfig,
     pub p1: Side,
     pub p2: Side,
@@ -741,6 +746,7 @@ impl Battle {
             in_residual: false,
             unnerve_unstarted: 0,
             status_sure_hit: false,
+            status_acc_boost: 0,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
             weather: crate::weather::Weather::None, weather_turns: 0,
@@ -12777,12 +12783,22 @@ self.trigger_emergency_exits();
         // Threshold-aware draw: PS `sim/battle-actions.ts` accuracy
         // compare. Records `m.accuracy` on DrawSpace::UniformPercent so a
         // future enumerator pass can collapse to hit/miss.
-        let roll = self.rng.percent_1_100_t(m.accuracy.min(100)) as u32;
+        // Accuracy / evasion stages scale the base accuracy as for a
+        // damaging move (sim/battle-actions.ts:614-631 hitStepAccuracy).
+        let boost = self.status_acc_boost as i32;
+        let acc: u32 = if boost > 0 {
+            m.accuracy as u32 * (3 + boost as u32) / 3
+        } else if boost < 0 {
+            m.accuracy as u32 * 3 / (3 + (-boost) as u32)
+        } else {
+            m.accuracy as u32
+        };
+        let roll = self.rng.percent_1_100_t(acc.min(100) as u8) as u32;
         #[cfg(feature = "ps-rng")]
-        if roll > m.accuracy as u32 {
+        if roll > acc {
             self.ps_status_missed = true;
         }
-        roll <= m.accuracy as u32
+        roll <= acc
     }
 
     /// Apply Sleep to an explicit target mon, with optional powder-move
@@ -15439,6 +15455,14 @@ self.trigger_emergency_exits();
             .side(actor_side)
             .active_mon(actor_slot as usize)
             .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+        self.status_acc_boost = match opp_target {
+            Some((ts, tslot)) if (ts, tslot) != (actor_side, actor_slot) => {
+                let acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                let eva = self.side(ts).active_mon(tslot as usize).map_or(0, |t| t.boosts[6] as i32);
+                (acc - eva).clamp(-6, 6) as i8
+            }
+            _ => 0,
+        };
         // Keyed-oracle attribution for this status move's own draws
         // (accuracy, sleep length, ...): without it they carry whatever move
         // context the last damaging move left behind. No-op for every
