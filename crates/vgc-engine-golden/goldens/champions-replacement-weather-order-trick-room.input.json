@@ -1,0 +1,21 @@
+{
+  "name": "champions-replacement-weather-order-trick-room",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [1, 2, 3, 4],
+  "decision_phases": true,
+  "p1": {
+    "team": "Sinistcha\nAbility: Hospitality\nLevel: 50\n- Memento\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nPelipper\nAbility: Drizzle\nLevel: 50\nEVs: 32 SpA\nModest Nature\n- Weather Ball\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Sinistcha\nAbility: Hospitality\nLevel: 50\n- Memento\n- Splash\n\nFarigiraf\nAbility: Armor Tail\nLevel: 50\n- Trick Room\n- Splash\n\nTorkoal\nAbility: Drought\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 2, move 1",
+      "p2": "move 1 2, move 1",
+      "p1_replace": "switch 3, pass",
+      "p2_replace": "switch 3, pass"
+    },
+    { "p1": "move 1 2, move 1", "p2": "move 1, move 2" }
+  ]
+}
