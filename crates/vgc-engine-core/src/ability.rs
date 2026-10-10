@@ -870,13 +870,11 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     t.is_alive() && t.substitute_hp() == 0
                 });
                 if drop {
-                    battle.apply_boosts(opp, s, &[(6, -1)], side, slot);
-                    // The evasion drop is a negative boost from an opposing
-                    // source, so the foe's White Herb restores it and is
-                    // consumed (PS `data/items.ts:whiteherb` onUpdate restores
-                    // any negative boost). Mirrors the Intimidate path below;
-                    // without this the herb stayed unconsumed.
-                    crate::item::try_consume_white_herb(battle, opp, s);
+                    // A plain `this.boost` from an opposing source: Clear
+                    // Body / White Smoke / Full Metal Body / Clear Amulet veto
+                    // it (onTryBoost), and a drop that lands runs Defiant /
+                    // Competitive, Eject Pack and White Herb.
+                    battle.apply_foe_stat_drop(opp, s, &[6], -1, side, slot);
                 }
             }
         }
