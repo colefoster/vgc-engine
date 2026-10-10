@@ -1,0 +1,195 @@
+{
+  "ok": true,
+  "name": "decorate-misses-semi-invulnerable-ally",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Milotic",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Annihilape",
+      "hp": 185,
+      "max": 185
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Alcremie",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Phantom Force",
+      "target": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Decorate",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "miss",
+      "source": "p2b",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Phantom Force",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 89,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Decorate",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791638242\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Milotic, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Annihilape, L50, M|\n|poke|p2|Alcremie, L50, F|\n|teampreview|\n|t:|1791638242\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Milotic|Milotic, L50, F|170/170\n|switch|p1b: Blissey|Blissey, L50, F|330/330\n|switch|p2a: Annihilape|Annihilape, L50, M|185/185\n|switch|p2b: Alcremie|Alcremie, L50, F|140/140\n|turn|1|\n|t:|1791638242\n|move|p2a: Annihilape|Phantom Force||[still]\n|-prepare|p2a: Annihilape|Phantom Force\n|move|p1a: Milotic|Splash|p1a: Milotic\n|-nothing\n|move|p2b: Alcremie|Decorate|p2a: Annihilape|[miss]\n|-miss|p2b: Alcremie|p2a: Annihilape\n|move|p1b: Blissey|Splash|p1b: Blissey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1791638242\n|move|p2a: Annihilape|Phantom Force|p1a: Milotic|[from] lockedmove\n|-damage|p1a: Milotic|89/170\n|move|p1a: Milotic|Splash|p1a: Milotic\n|-nothing\n|move|p2b: Alcremie|Decorate|p2a: Annihilape\n|-boost|p2a: Annihilape|atk|2\n|-boost|p2a: Annihilape|spa|2\n|move|p1b: Blissey|Splash|p1b: Blissey\n|-nothing\n|\n|upkeep\n|turn|3",
+  "keyed": [
+    {
+      "turn": 2,
+      "actor": "p2a",
+      "target": "p1a",
+      "move": "phantomforce",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p2a",
+      "target": "p1a",
+      "move": "phantomforce",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p2a",
+      "target": "p1a",
+      "move": "phantomforce",
+      "decision": "damage",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    }
+  ]
+}

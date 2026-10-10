@@ -15222,6 +15222,25 @@ self.trigger_emergency_exits();
         // shield punish (Spiky Shield chip, King's Shield −Atk, etc.).
         // PS: data/moves.ts `protect` flag + conditions.ts Protect onTryHit.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protect_(move)>.
+        // A semi-invulnerable target (mid Fly / Dig / Phantom Force ...)
+        // dodges a single-target status move, foe or ally alike: PS
+        // sim/battle-actions.ts:621 hitStepInvulnerabilityEvent runs the
+        // charge volatile's onInvulnerability (returns false) before any
+        // accuracy roll; No Guard on either side (onAnyInvulnerability ->
+        // 0) lets it through. Seen as Decorate on an ally mid Phantom Force.
+        if matches!(m.target, 0 | 4 | 10) {
+            if let Some((ts, tslot)) = opp_target {
+                let no_guard = |b: &Self, s: SideRef, sl: u8| {
+                    b.side(s).active_mon(sl as usize).is_some_and(|x| x.effective_ability_id() == data::ability_id::NOGUARD)
+                };
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.semi_invuln != 0)
+                    && !no_guard(self, ts, tslot)
+                    && !no_guard(self, actor_side, actor_slot)
+                {
+                    return;
+                }
+            }
+        }
         if m.blocked_by_protect && matches!(m.target, 0 | 4 | 10) {
             if let Some((ts, tslot)) = opp_target {
                 if self
