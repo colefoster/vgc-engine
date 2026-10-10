@@ -635,3 +635,25 @@ fn a_flinched_frozen_mon_still_rolls_its_thaw() {
         assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-yawn-sleep-sample-jobs.jsonl`.
+/// Yawn puts Garchomp to sleep in turn 2's residual, after Sylveon's Hyper
+/// Voice. Champions slp `onStart` draws `this.sample([2, 3, 3])`
+/// (data/mods/champions/conditions.ts:44); the engine drew it under the
+/// stale Hyper Voice context and popped one of that move's getTarget picks
+/// instead of the recovered condition sample, so Garchomp woke a turn
+/// early or late (seed 7: late, seed 11: early).
+#[test]
+fn champions_sleep_sample_is_keyed_apart_from_the_last_move() {
+    for name in ["keyed-yawn-sleep-sample-7", "keyed-yawn-sleep-sample-11"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared >= 5, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}

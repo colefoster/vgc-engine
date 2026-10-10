@@ -557,7 +557,7 @@ fn offset_two_arg_draws(acc: &AccBattle) -> Vec<DrawRecord> {
 /// not `Battle.random`, so the keyed envelopes miss it; it is recovered from
 /// the raw trace and handed to the engine's `range(n)` draw of the same turn
 /// by the repair pass.
-const CONDITION_SAMPLE: u16 = u16::MAX - 2;
+const CONDITION_SAMPLE: u16 = vgc_engine_core::rng::KEY_CONDITION_SAMPLE;
 
 fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
     for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
