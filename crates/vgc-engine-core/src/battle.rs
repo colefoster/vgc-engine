@@ -9640,6 +9640,7 @@ self.trigger_emergency_exits();
         if ctx.piercing_drill_quarter {
             dmg /= 4;
         }
+        let sub_absorbed = dmg.min(ctx.defender.substitute_hp());
         let (hit_sub, effective_dmg) = self.intercept_substitute_and_clamp(ctx, dmg);
         // PS counts every hit whose damage is a number, a Substitute's
         // HIT_SUBSTITUTE (0) included (data/mods/champions/scripts.ts:564-567).
@@ -9709,7 +9710,11 @@ self.trigger_emergency_exits();
         // Big Root +30% boost also deferred. It heals inside PS's
         // spreadDamage, so before the secondaries and the onDamagingHit
         // reactions (Rocky Helmet, Rough Skin).
-        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, hp_lost);
+        // A Substitute hit drains too: PS substitute onTryPrimaryHit heals
+        // `ceil(damage * drain)` of the damage the sub took
+        // (data/moves.ts:18363-18365).
+        let drained = if hit_sub { sub_absorbed } else { hp_lost };
+        self.apply_drain_heal(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot, m, hit_sub, drained);
 
         // Destiny Bond — if this hit fainted a holder of the volatile,
         // the attacker faints too (PS onFaint). Fires after the damage /
@@ -9953,11 +9958,15 @@ self.trigger_emergency_exits();
         hit_sub: bool,
         effective_dmg: u16,
     ) {
-        if m.drain_num > 0 && !hit_sub && effective_dmg > 0 {
-            // Round half-up: (x*n + den/2) / den.
+        if m.drain_num > 0 && effective_dmg > 0 {
+            // Round half-up: (x*n + den/2) / den; a Substitute hit rounds up.
             let num = m.drain_num as u32;
             let den = m.drain_den.max(1) as u32;
-            let mut heal = ((effective_dmg as u32 * num + den / 2) / den).max(1);
+            let mut heal = if hit_sub {
+                (effective_dmg as u32 * num).div_ceil(den)
+            } else {
+                ((effective_dmg as u32 * num + den / 2) / den).max(1)
+            };
             // Big Root — PS `data/items.ts:bigroot` `onTryHeal`
             // returns `chainModify([5324, 4096])` (~×1.3) when
             // the heal source is in {drain, leechseed, ingrain,
