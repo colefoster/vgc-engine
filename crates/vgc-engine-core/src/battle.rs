@@ -6777,7 +6777,16 @@ self.trigger_emergency_exits();
         // TryHit runs for every target before any accuracy roll
         // (sim/battle-actions.ts:556-577): the move's other targets draw
         // no accuracy roll and cannot miss.
-        let flash_fire_sure_hit = m.type_ == 1
+        let flash_fire_sure_hit = crate::damage::move_type_in_ctx(
+            &attacker,
+            move_id,
+            &DamageContext {
+                weather: self.effective_weather_for(actor_side, actor_slot),
+                terrain: self.terrain,
+                champions: self.champions,
+                ..DamageContext::default()
+            },
+        ) == 1
             && !attacker_breaks_mold
             && targets.iter().any(|&(ts, tsl)| {
                 (ts, tsl) != (actor_side, actor_slot)
@@ -7227,11 +7236,23 @@ self.trigger_emergency_exits();
             // return null on Electric-type moves and apply their effect.
             // Electric type code = 3. Mold Breaker honored. Aura Wheel's
             // onModifyType runs first (Dark as Morpeko-Hangry).
-            let absorb_type = if move_id == data::move_id::AURAWHEEL {
-                crate::damage::aura_wheel_type(&attacker)
-            } else {
-                m.type_
-            };
+            //
+            // Every absorb ability below keys on the move's runtime type:
+            // PS runs ModifyType (sim/battle-actions.ts:401, useMoveInner)
+            // before the target's onTryHit, so a sun Weather Ball is Fire
+            // into Flash Fire, a Pixilate move Fairy, etc. Weather Ball
+            // reads the user's own effectiveWeather (data/moves.ts
+            // weatherball onModifyType), hence the attacker-only weather.
+            let absorb_type = crate::damage::move_type_in_ctx(
+                &attacker,
+                move_id,
+                &DamageContext {
+                    weather: self.effective_weather_for(actor_side, actor_slot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                },
+            );
             if absorb_type == 3 {
                 let def_ability = defender.effective_ability_id();
                 if !attacker_breaks_mold {
@@ -7276,7 +7297,7 @@ self.trigger_emergency_exits();
             // target-resolution step above. Gastrodon / Lanturn /
             // Lumineon. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
-            if m.type_ == 2 {
+            if absorb_type == 2 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::STORMDRAIN && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
@@ -7291,7 +7312,7 @@ self.trigger_emergency_exits();
             // (boost applied in damage.rs). Fire type code = 1. Carries
             // `flags: { breakable: 1 }` — Mold Breaker bypasses.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
-            if m.type_ == 1 {
+            if absorb_type == 1 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::FLASHFIRE && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7328,7 +7349,7 @@ self.trigger_emergency_exits();
             // grounded check runs slightly later but the net result is the
             // same — Flying defenders skip damage anyway.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Earth_Eater_(Ability)>.
-            if m.type_ == 8 {
+            if absorb_type == 8 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::EARTHEATER && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7381,7 +7402,7 @@ self.trigger_emergency_exits();
             // end-of-turn ability hook.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>,
             //             <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
-            if m.type_ == 2 {
+            if absorb_type == 2 {
                 let def_ability = defender.effective_ability_id();
                 if matches!(def_ability, data::ability_id::WATERABSORB | data::ability_id::DRYSKIN) && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7397,7 +7418,7 @@ self.trigger_emergency_exits();
             // the target. Grass type code = 4. Absorbs the hit (no
             // damage, no secondaries). Goodra / Azumarill HA fallback.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sap_Sipper_(Ability)>.
-            if m.type_ == 4 {
+            if absorb_type == 4 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::SAPSIPPER && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
