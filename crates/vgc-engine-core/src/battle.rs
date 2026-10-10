@@ -15877,10 +15877,16 @@ self.trigger_emergency_exits();
                 // `target.boosts` order atk/def/spa/spd/spe/accuracy/evasion)
                 // still below +6, `this.sample(stats)` one of them and +2 it;
                 // fails with no draw when all seven are maxed. A chosen ally
-                // that has fainted does not retarget.
+                // that has fainted retargets to the user (sim/battle.ts:2471-2473
+                // getTarget: adjacentAllyOrSelf, gen != 5).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Acupressure_(move)>.
                 let (tside, tslot) = match target {
-                    Some(t) if t.side == actor_side => (t.side, t.slot),
+                    Some(t)
+                        if t.side == actor_side
+                            && self.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
                     _ => (actor_side, actor_slot),
                 };
                 let Some(boosts) = self
