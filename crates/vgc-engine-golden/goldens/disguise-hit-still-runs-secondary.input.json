@@ -1,0 +1,15 @@
+{
+  "name": "disguise-hit-still-runs-secondary",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Pikachu (M)\nAbility: Static\nLevel: 50\nHardy Nature\n- Nuzzle\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Mimikyu (M)\nAbility: Disguise\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" }
+  ]
+}
