@@ -15883,6 +15883,26 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::FOCUSENERGY => {
+                // PS data/moves.ts:5971-6000 (focusenergy): `volatileStatus`
+                // (fails if already present), whose onStart fails under
+                // Dragon Cheer; onModifyCritRatio +2 (the crit_stage_volatile
+                // channel, cleared on switch-out, copied by Baton Pass).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Focus_Energy_(move)>.
+                if let Some(u) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                    if u.volatiles.has(crate::pokemon::VolatileKind::FocusEnergy)
+                        || u.volatiles.has(crate::pokemon::VolatileKind::DragonCheer)
+                    {
+                        return;
+                    }
+                    let _ = u.volatiles.add(crate::pokemon::Volatile {
+                        kind: crate::pokemon::VolatileKind::FocusEnergy,
+                        turns_remaining: 0, // indefinite; cleared on switch-out.
+                        payload: 0,
+                    });
+                    u.crit_stage_volatile = u.crit_stage_volatile.saturating_add(2);
+                }
+            }
             data::move_id::DRAGONCHEER => {
                 // PS data/moves.ts:4056 (dragoncheer, num 913) — Status,
                 // target: adjacentAlly. Adds +2 crit stages if the recipient

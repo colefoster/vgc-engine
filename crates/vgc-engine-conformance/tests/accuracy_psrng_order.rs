@@ -102,3 +102,13 @@ fn cloud_nine_start_and_end_sort_the_actives() {
     assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-1");
     assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-2");
 }
+
+/// Inteleon uses Focus Energy, then Snipe Shot (critRatio 2): Focus
+/// Energy's onModifyCritRatio +2 (data/moves.ts focusenergy) makes it
+/// critRatio 4, PS's `randomChance(1, 1)` (sim/battle-actions.ts
+/// getDamage). The engine never applied Focus Energy and rolled 1/8.
+#[test]
+fn focus_energy_raises_the_crit_ratio() {
+    assert_seeded_matches_ps("psrng-focus-energy-raises-crit-ratio-1");
+    assert_seeded_matches_ps("psrng-focus-energy-raises-crit-ratio-2");
+}
