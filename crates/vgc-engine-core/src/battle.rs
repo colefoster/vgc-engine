@@ -18488,6 +18488,11 @@ self.trigger_emergency_exits();
                         }
                     }
                     for &(ts, tslot) in tgts.iter().take(ntgt) {
+                        // Cotton Spore is a powder move: hitStepTryImmunity
+                        // drops a powder-immune target (sim/battle-actions.ts:669).
+                        if m.is_powder && self.target_is_powder_immune(ts, tslot) {
+                            continue;
+                        }
                         // Protect blocks this target (move carries the flag).
                         if fd.respects_protect
                             && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.is_protected_this_turn())
