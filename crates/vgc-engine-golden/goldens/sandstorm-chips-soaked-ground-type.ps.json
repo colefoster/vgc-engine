@@ -1,0 +1,159 @@
+{
+  "ok": true,
+  "name": "sandstorm-chips-soaked-ground-type",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Tyranitar",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Politoed",
+      "hp": 165,
+      "max": 165
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Excadrill",
+      "hp": 185,
+      "max": 185
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Soak",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 174,
+      "max": 185,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 155,
+      "max": 165,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Soak",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 172,
+      "max": 183,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 163,
+      "max": 185,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 145,
+      "max": 165,
+      "from": "Sandstorm"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791640552\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Tyranitar, L50, M|\n|poke|p1|Politoed, L50, M|\n|poke|p2|Excadrill, L50, M|\n|poke|p2|Garchomp, L50, M|\n|teampreview|\n|t:|1791640552\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Tyranitar|Tyranitar, L50, M|175/175\n|switch|p1b: Politoed|Politoed, L50, M|165/165\n|switch|p2a: Excadrill|Excadrill, L50, M|185/185\n|switch|p2b: Garchomp|Garchomp, L50, M|183/183\n|-ability|p2a: Excadrill|Mold Breaker\n|-weather|Sandstorm|[from] ability: Sand Stream|[of] p1a: Tyranitar\n|turn|1|\n|t:|1791640552\n|move|p2b: Garchomp|Splash|p2b: Garchomp\n|-nothing\n|move|p2a: Excadrill|Splash|p2a: Excadrill\n|debug|TryMove handler suppressed by Mold Breaker\n|-nothing\n|move|p1b: Politoed|Soak|p2a: Excadrill\n|-start|p2a: Excadrill|typechange|Water\n|move|p1a: Tyranitar|Splash|p1a: Tyranitar\n|-nothing\n|\n|-weather|Sandstorm|[upkeep]\n|debug|natural status immunity\n|debug|weather immunity\n|-damage|p2a: Excadrill|174/185|[from] Sandstorm\n|-damage|p1b: Politoed|155/165|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|upkeep\n|turn|2|\n|t:|1791640552\n|move|p2b: Garchomp|Splash|p2b: Garchomp\n|-nothing\n|move|p2a: Excadrill|Splash|p2a: Excadrill\n|debug|TryMove handler suppressed by Mold Breaker\n|-nothing\n|move|p1b: Politoed|Soak|p2b: Garchomp\n|-start|p2b: Garchomp|typechange|Water\n|move|p1a: Tyranitar|Splash|p1a: Tyranitar\n|-nothing\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p2b: Garchomp|172/183|[from] Sandstorm\n|-damage|p2a: Excadrill|163/185|[from] Sandstorm\n|-damage|p1b: Politoed|145/165|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|upkeep\n|turn|3"
+}
