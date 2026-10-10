@@ -4279,6 +4279,13 @@ self.trigger_emergency_exits();
         if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
             m.ability_id = mega_ability;
             m.ability_override = u16::MAX;
+            // formeChange -> setSpecies -> setType(species.types, true) drops a
+            // Protean / Color Change retype (sim/pokemon.ts:1392), and
+            // setAbility gives the new ability a fresh abilityState
+            // (sim/pokemon.ts:1925), so Protean's once-per-switch latch
+            // re-arms on the mega forme.
+            m.clear_type_override();
+            m.protean_used = false;
         }
         self.side_mut(side).conditions.mega_used = true;
         // Fire the mega ability's switch-in effect (Mega Charizard Y →
