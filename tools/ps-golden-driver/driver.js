@@ -220,7 +220,12 @@ function parseLog(log) {
         const details = parts[3] || '';
         const species = details.split(',')[0].trim();
         const { hp, max } = parseHpString(parts[4] || '');
-        out.push({ turn, kind: 'switch', actor, species, hp, max });
+        const ev = { turn, kind: 'switch', actor, species, hp, max };
+        // A statused mon switching in carries it in the HP token
+        // ("310/330 tox"); emit it so the harness doesn't reset to none.
+        const st = (parts[4] || '').split(' ')[1];
+        if (st && st !== 'fnt') ev.status = st;
+        out.push(ev);
         break;
       }
       case '-damage': {
