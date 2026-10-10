@@ -11922,19 +11922,24 @@ self.trigger_emergency_exits();
                 Some(tt) => (match tt.side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + tt.slot,
                 None => crate::rng::NO_SLOT,
             };
+            // The keyed oracle holds the thaw roll as a pass/fail bool, parked
+            // apart from the move's own range draws (its getTarget picks share
+            // the key), like the paralysis gate below.
+            let gate_move = if self.rng.is_oracle_keyed() { u16::MAX - 4 } else { move_id };
             let lucky_thaw = !thaws_self && if self.champions {
                 let left = match attacker.sleep_turns() { 0 => 3, t => t } - 1;
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.set_sleep_turns(left);
                 }
                 left == 0 || {
-                    self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                    self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
                     self.rng.range(4) == 0
                 }
             } else {
-                self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
+                self.rng.set_move_context(self.turn + 1, ctx_actor, gate_move, ctx_target);
                 self.rng.range(5) == 0
             };
+            self.rng.set_move_context(self.turn + 1, ctx_actor, move_id, ctx_target);
             if thaws_self || lucky_thaw {
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.status = Status::None;
