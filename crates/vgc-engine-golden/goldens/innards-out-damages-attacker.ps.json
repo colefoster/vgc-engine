@@ -1,0 +1,99 @@
+{
+  "ok": true,
+  "name": "innards-out-damages-attacker",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Pyukumuku",
+      "hp": 46,
+      "max": 46
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 279,
+      "max": 325,
+      "from": "ability: Innards Out"
+    },
+    {
+      "turn": 1,
+      "kind": "faint",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791641785\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Pyukumuku, L15, M|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791641785\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Chansey|Chansey, L50, F|325/325\n|switch|p1b: Blissey|Blissey, L50, F|330/330\n|switch|p2a: Pyukumuku|Pyukumuku, L15, M|46/46\n|switch|p2b: Snorlax|Snorlax, L50, M|235/235\n|turn|1|\n|t:|1791641785\n|move|p1b: Blissey|Splash|p1b: Blissey\n|-nothing\n|move|p1a: Chansey|Seismic Toss|p2a: Pyukumuku\n|-damage|p2a: Pyukumuku|0 fnt\n|-damage|p1a: Chansey|279/325|[from] ability: Innards Out|[of] p2a: Pyukumuku\n|faint|p2a: Pyukumuku\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|2"
+}
