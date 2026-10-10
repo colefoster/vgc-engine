@@ -91,3 +91,14 @@ fn encore_leaves_a_locked_two_turn_move_queued() {
     assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-1");
     assert_seeded_matches_ps("psrng-encore-keeps-locked-charge-3");
 }
+
+/// Two equal-Speed Cloud Nine Altaria: one switches out and back, the
+/// other faints to Blizzard. Cloud Nine's onStart and onEnd each run
+/// `eachEvent('WeatherChange')` (data/abilities.ts cloudnine), a speed
+/// sort that draws on the tie, at switch-in, at switch-out (switchIn's
+/// ability End) and in the hit loop's faintMessages.
+#[test]
+fn cloud_nine_start_and_end_sort_the_actives() {
+    assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-1");
+    assert_seeded_matches_ps("psrng-cloud-nine-weatherchange-2");
+}
