@@ -1042,9 +1042,14 @@ fn parse_one_action(
         let move_slot = n - 1;
         let mut target: Option<Target> = None;
         let mut tera = false;
+        let mut mega = false;
         for tok in parts {
             if tok == "terastallize" || tok == "tera" {
                 tera = true;
+                continue;
+            }
+            if tok == "mega" {
+                mega = true;
                 continue;
             }
             if let Ok(t) = tok.parse::<i32>() {
@@ -1064,6 +1069,8 @@ fn parse_one_action(
         }
         return Ok(if tera {
             Choice::Terastallize { actor_slot, move_slot, target }
+        } else if mega {
+            Choice::MegaEvolve { actor_slot, move_slot, target }
         } else {
             Choice::Move { actor_slot, move_slot, target }
         });
