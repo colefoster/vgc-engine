@@ -1098,6 +1098,45 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
         _ => return,
     };
 
+    // Pickup — PS data/abilities.ts:3262-3279 (onResidualOrder 28, sub 2):
+    // with no item, take the lastItem of a random adjacent active mon that
+    // used its item this turn (`this.sample`, one draw even for a single
+    // candidate) and clear that mon's lastItem. Doubles/singles: every
+    // other active mon is adjacent (sim/pokemon.ts:741-743).
+    // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Pickup_(Ability)>.
+    if ability_id == data::ability_id::PICKUP
+        && battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == u16::MAX)
+    {
+        let n = battle.format().active_count() as u8;
+        let mut cands = [(SideRef::P1, 0u8); 4];
+        let mut k = 0usize;
+        for s in [SideRef::P1, SideRef::P2] {
+            for sl in 0..n {
+                if (s, sl) == (side, slot) {
+                    continue;
+                }
+                if battle.side(s).active_mon(sl as usize).is_some_and(|m| {
+                    m.is_alive() && m.used_item_this_turn && m.consumed_item != u16::MAX
+                }) {
+                    cands[k] = (s, sl);
+                    k += 1;
+                }
+            }
+        }
+        if k > 0 {
+            let pick = (rng.ability_random(battle.turn() + 1, holder_ref((side, slot)), ability_id, k as u32) as usize).min(k - 1);
+            let (ts, tsl) = cands[pick];
+            let item = battle.side(ts).active_mon(tsl as usize).map_or(u16::MAX, |m| m.consumed_item);
+            if let Some(m) = battle.side_mut(ts).active_mon_mut(tsl as usize) {
+                m.consumed_item = u16::MAX;
+            }
+            if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
+                m.item_id = item;
+                m.sync_can_mega_evolve();
+            }
+        }
+    }
+
     // Cud Chew (Farigiraf signature) — PS `data/abilities.ts:732`:
     //   onResidualOrder: 28, onResidualSubOrder: 2,
     //   onResidual(pokemon) {
