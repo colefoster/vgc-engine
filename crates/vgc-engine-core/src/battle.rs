@@ -1661,6 +1661,31 @@ impl Battle {
         let mist_blocks = !is_self_source
             && !source_infiltrates
             && self.side(target_side).conditions.mist_turns > 0;
+        // Flower Veil — PS data/abilities.ts:1419 flowerveil `onAllyTryBoost`:
+        //   if ((source && target === source) || !target.hasType('Grass')) return;
+        //   for (i in boost) if (boost[i] < 0) delete boost[i];
+        // An `onAlly` handler, so it covers the holder and its allies. A
+        // Grass-type on a side with an active Flower Veil holder ignores
+        // stat drops from any other source (Intimidate, Parting Shot, move
+        // secondaries). Breakable (Mold Breaker source). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Flower_Veil_(Ability)>.
+        let veil_blocks = !is_self_source
+            && self.side(target_side).active_mon(target_slot as usize).is_some_and(|m| {
+                let (types, num) = m.effective_types();
+                types[..num as usize].contains(&4)
+            })
+            && (0..self.format().active_count()).any(|s| {
+                self.side(target_side).active_mon(s).is_some_and(|m| {
+                    m.is_alive() && m.effective_ability_id() == data::ability_id::FLOWERVEIL
+                })
+            })
+            && !self.side(source_side).active_mon(source_slot as usize).is_some_and(|m| {
+                matches!(
+                    m.effective_ability_id(),
+                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+                )
+            });
+        let mist_blocks = mist_blocks || veil_blocks;
         // When Mist is up, strip the negative deltas and keep only the
         // positives in a fixed-size stack buffer (≤ 7 stat indices — no
         // heap allocation in step()). If nothing positive remains, the
