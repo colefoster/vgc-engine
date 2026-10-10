@@ -551,3 +551,25 @@ fn species_check_stays_exact_outside_the_loaded_base() {
         assert_eq!((d.turn, d.slot.as_str(), d.field.as_str(), d.ps.as_str()), (1, "p1a", "species", wrong));
     }
 }
+
+/// Pinned PS a5df8274 captures from `tools/accuracy/repros/keyed-trace-replacement-jobs.jsonl`.
+/// Whimsicott's Memento faints it; Gardevoir (Trace) replaces it and samples
+/// Garchomp / Arcanine. PS draws that sample in turn 1 (the replacement runs
+/// before `|turn|2`), while the engine keys it `turn() + 1` = 2 because its
+/// turn counter already advanced. The harness has to hand turn 1's
+/// recovered Trace sample to the engine's turn-2 Ability draw; before, it
+/// fell back and seeds 2-4 copied the wrong foe.
+#[test]
+fn trace_sample_on_a_faint_replacement_is_keyed() {
+    for name in ["keyed-trace-on-faint-replacement-1", "keyed-trace-on-faint-replacement-2"] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/accuracy/repros/battles")
+            .join(format!("{name}.json"));
+        let acc: AccBattle = serde_json::from_str(&std::fs::read_to_string(&path).expect(name)).expect(name);
+        let rep = replay_keyed(&acc);
+        assert!(rep.engine_error.is_none(), "{name}: {:?}", rep.engine_error);
+        assert!(rep.turns_compared > 0, "{name}");
+        assert!(rep.divergence.is_none(), "{name}: {:?}", rep.divergence);
+        assert_eq!(rep.unmatched_total, 0, "{name}: {:?}", rep.miss_keys);
+    }
+}
