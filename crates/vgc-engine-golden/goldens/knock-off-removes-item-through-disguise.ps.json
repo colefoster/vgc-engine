@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "name": "knock-off-removes-item-through-disguise",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Malamar",
+      "hp": 161,
+      "max": 161
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Mimikyu",
+      "hp": 130,
+      "max": 130
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Knock Off",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 130,
+      "max": 130,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 114,
+      "max": 130,
+      "from": "pokemon: Mimikyu-Busted"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791638185\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Malamar, L50, M|\n|poke|p2|Mimikyu, L50, F|\n|teampreview|\n|t:|1791638185\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Malamar|Malamar, L50, M|161/161\n|switch|p2a: Mimikyu|Mimikyu, L50, F|130/130\n|turn|1|\n|t:|1791638185\n|move|p2a: Mimikyu|Splash|p2a: Mimikyu\n|-nothing\n|move|p1a: Malamar|Knock Off|p2a: Mimikyu\n|-activate|p2a: Mimikyu|ability: Disguise\n|-damage|p2a: Mimikyu|130/130\n|-enditem|p2a: Mimikyu|Leftovers|[from] move: Knock Off|[of] p1a: Malamar\n|detailschange|p2a: Mimikyu|Mimikyu-Busted, L50, F\n|-damage|p2a: Mimikyu|114/130|[from] pokemon: Mimikyu-Busted\n|\n|upkeep\n|turn|2"
+}

@@ -9206,6 +9206,21 @@ self.trigger_emergency_exits();
         true
     }
 
+    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975):
+    /// Sticky Hold and a holder's own Mega Stone keep the item.
+    fn knock_off_take_item(&mut self, side: SideRef, slot: u8) {
+        let can_knock = self.side(side).active_mon(slot as usize)
+            .is_some_and(|m| m.is_alive()
+                && m.effective_ability_id() != data::ability_id::STICKYHOLD
+                && !m.holds_own_mega_stone());
+        if can_knock {
+            if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
+                t.item_id = u16::MAX;
+                t.sync_can_mega_evolve();
+            }
+        }
+    }
+
     /// Move-specific post-damage side effects that don't fit the generic
     /// secondary / on-hit-reaction dispatch — currently Knock Off's
     /// item removal and Smack Down / Thousand Arrows' grounding
@@ -9393,6 +9408,12 @@ self.trigger_emergency_exits();
         let m = &ctx.move_def;
 
         if self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category) {
+            // A Disguise-blocked hit still runs the move's AfterHit: Knock
+            // Off takes the item (data/moves.ts:9975-9980; PS logs the
+            // -enditem before the Busted forme change).
+            if ctx.move_id == data::move_id::KNOCKOFF {
+                self.knock_off_take_item(ctx.tside, ctx.tslot);
+            }
             return;
         }
 
@@ -9522,16 +9543,7 @@ self.trigger_emergency_exits();
         // Knock Off's AfterHit takes the item after the DamagingHit
         // reactions (data/moves.ts knockoff onAfterHit).
         if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
-            let can_knock = self.side(ctx.tside).active_mon(ctx.tslot as usize)
-                .is_some_and(|m| m.is_alive()
-                    && m.effective_ability_id() != data::ability_id::STICKYHOLD
-                    && !m.holds_own_mega_stone());
-            if can_knock {
-                if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
-                    t.item_id = u16::MAX;
-                    t.sync_can_mega_evolve();
-                }
-            }
+            self.knock_off_take_item(ctx.tside, ctx.tslot);
         }
 
         // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
