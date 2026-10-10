@@ -1,0 +1,17 @@
+{
+  "name": "lashout-stats-lowered-this-turn",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Lash Out\n- Splash\n\nPikachu (F)\nAbility: Static\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Whimsicott (M)\nAbility: Prankster\nLevel: 50\nHardy Nature\n- Charm\n- Splash\n\nHariyama (F)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash\n\nIncineroar (M)\nAbility: Intimidate\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 2, move 1", "p2": "move 2, move 1" },
+    { "p1": "move 1 2, move 1", "p2": "move 1 1, move 1" },
+    { "p1": "move 1 2, move 1", "p2": "move 2, move 1" },
+    { "p1": "move 1 2, move 1", "p2": "move 1 1, move 1" }
+  ]
+}

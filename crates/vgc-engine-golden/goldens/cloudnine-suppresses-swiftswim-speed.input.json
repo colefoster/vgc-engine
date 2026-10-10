@@ -1,0 +1,14 @@
+{
+  "name": "cloudnine-suppresses-swiftswim-speed",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Pelipper (F)\nAbility: Drizzle\nLevel: 50\nHardy Nature\n- Splash\n\nBasculegion-F\nAbility: Swift Swim\nLevel: 50\nEVs: 252 SpA\nModest Nature\n- Ice Beam\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Altaria (M)\nAbility: Cloud Nine\nLevel: 50\nEVs: 252 Spe\nTimid Nature\n- Hyper Voice\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nAudino (F)\nAbility: Healer\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1 1", "p2": "move 1, move 1" }
+  ]
+}

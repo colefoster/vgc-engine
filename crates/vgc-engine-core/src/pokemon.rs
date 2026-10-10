@@ -710,6 +710,10 @@ pub struct Pokemon {
     /// (sim/battle.ts boost; cleared at endTurn). Burning Jealousy reads it.
     #[serde(default)]
     pub stats_raised_this_turn: bool,
+    /// PS `statsLoweredThisTurn`: a successful boost call carried a
+    /// negative delta (sim/battle.ts:2086). Lash Out reads it.
+    #[serde(default)]
+    pub stats_lowered_this_turn: bool,
     /// Transform / Imposter: the species, stats, moves and PP from before
     /// the copy (PS baseSpecies / baseMoveSlots), restored on switch-out.
     #[serde(default)]
@@ -1055,6 +1059,7 @@ impl Pokemon {
             turns_active: 0,
             move_actions: 0,
             stats_raised_this_turn: false,
+            stats_lowered_this_turn: false,
             transform_base: None,
             last_used_move_slot: 255,
             last_used_move_target: 255,

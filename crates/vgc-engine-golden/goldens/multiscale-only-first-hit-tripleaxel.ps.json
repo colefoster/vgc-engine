@@ -1,0 +1,166 @@
+{
+  "ok": true,
+  "name": "multiscale-only-first-hit-tripleaxel",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Tsareena",
+      "hp": 147,
+      "max": 147
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Dragonite",
+      "hp": 198,
+      "max": 198
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Triple Axel",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 182,
+      "max": 198,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 126,
+      "max": 198,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "supereffective",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 46,
+      "max": 198,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 90,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 90,
+      "site": "BattleActions.hitStepMoveHitLoop (data/mods/champions/scripts.js:432)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 90,
+      "site": "BattleActions.hitStepMoveHitLoop (data/mods/champions/scripts.js:432)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791639155\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Tsareena, L50, F|\n|poke|p1|Pikachu, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Dragonite, L50, M|\n|poke|p2|Snorlax, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Audino, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791639155\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Tsareena|Tsareena, L50, F|147/147\n|switch|p1b: Pikachu|Pikachu, L50, F|110/110\n|switch|p2a: Dragonite|Dragonite, L50, M|198/198\n|switch|p2b: Snorlax|Snorlax, L50, M|235/235\n|turn|1|\n|t:|1791639155\n|move|p1b: Pikachu|Splash|p1b: Pikachu\n|-nothing\n|move|p2a: Dragonite|Splash|p2a: Dragonite\n|-nothing\n|move|p1a: Tsareena|Triple Axel|p2a: Dragonite\n|-supereffective|p2a: Dragonite|2\n|-damage|p2a: Dragonite|182/198\n|-supereffective|p2a: Dragonite|2\n|-damage|p2a: Dragonite|126/198\n|-supereffective|p2a: Dragonite|2\n|-damage|p2a: Dragonite|46/198\n|-hitcount|p2a: Dragonite|3\n|move|p2b: Snorlax|Splash|p2b: Snorlax\n|-nothing\n|\n|upkeep\n|turn|2"
+}

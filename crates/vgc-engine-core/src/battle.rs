@@ -1747,7 +1747,11 @@ impl Battle {
                             self.side_mut(source_side).active_mon_mut(source_slot as usize)
                         {
                             let stage = &mut s.boosts[idx as usize];
+                            let before = *stage;
                             *stage = (*stage + delta).clamp(-6, 6);
+                            if *stage != before {
+                                s.stats_lowered_this_turn = true;
+                            }
                         }
                     }
                 } else if delta > 0 {
@@ -1774,13 +1778,21 @@ impl Battle {
             return;
         }
         if let Some(m) = self.side_mut(target_side).active_mon_mut(target_slot as usize) {
+            let mut changed = false;
             for &(idx, delta) in deltas {
                 let stage = &mut m.boosts[idx as usize];
                 let before = *stage;
                 *stage = (*stage + delta).clamp(-6, 6);
+                changed |= *stage != before;
                 if *stage > before {
                     m.stats_raised_this_turn = true;
                 }
+            }
+            // PS sim/battle.ts:2084-2086: on a successful boost (any stage
+            // moved), any negative entry in the boost table marks
+            // statsLoweredThisTurn.
+            if changed && deltas.iter().any(|&(_, d)| d < 0) {
+                m.stats_lowered_this_turn = true;
             }
         }
         self.mirror_to_opportunist(target_side, target_slot, deltas);
@@ -2305,6 +2317,15 @@ impl Battle {
                     // can faint to hazards on entry.
                     self.faint_forme_cleanup();
                     self.sync_weather_terrain_cache();
+                    // PS runs faint replacements before endTurn, whose
+                    // clear (sim/battle.ts:1679) wipes statsLoweredThisTurn
+                    // set by an entry Intimidate — it must not reach the
+                    // next turn's Lash Out.
+                    for side in [SideRef::P1, SideRef::P2] {
+                        for m in self.side_mut(side).team.iter_mut() {
+                            m.stats_lowered_this_turn = false;
+                        }
+                    }
                     self.ended = match (self.p1.is_defeated(), self.p2.is_defeated()) {
                         (true, true) => Some(None),
                         (true, false) => Some(Some(SideRef::P2)),
@@ -2457,7 +2478,7 @@ self.trigger_emergency_exits();
     fn ps_live_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
         let m = self.side(side).active_mon(slot)?;
         let tw = self.side(side).conditions.tailwind_turns > 0;
-        let mut spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
+        let mut spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
         if self.trick_room_turns > 0 {
             spe = 10000 - spe;
         }
@@ -3039,7 +3060,7 @@ self.trigger_emergency_exits();
                 let spe: Option<i64> = None;
                 let spe = spe.unwrap_or_else(|| {
                     let tw = self.side(side).conditions.tailwind_turns > 0;
-                    crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64
+                    crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64
                 });
                 if n < keys.len() {
                     keys[n] = -spe;
@@ -3393,7 +3414,7 @@ self.trigger_emergency_exits();
                 }
                 let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
                 seen[slot.min(1)] = true;
-                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather, self.terrain) as i64;
+                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.effective_weather(), self.terrain) as i64;
                 let spe = if trick_room { 10000 - raw } else { raw };
                 let mut push = |key: (i64, i64, i64, i64), kind: u8| {
                     if k < keys.len() {
@@ -4157,6 +4178,7 @@ self.trigger_emergency_exits();
         for side in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(side).team.iter_mut() {
                 m.stats_raised_this_turn = false;
+                m.stats_lowered_this_turn = false;
             }
         }
         self.turn = self.turn.saturating_add(1);
@@ -4200,7 +4222,7 @@ self.trigger_emergency_exits();
                     let Some(m) = self.side(side).active_mon(actor_slot as usize) else { continue };
                     if n < out.len() {
                         let tw = self.side(side).conditions.tailwind_turns > 0;
-                        let spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
+                        let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
                         out[n] = (side, actor_slot);
                         keys[n] = if trick_room { spe } else { -spe };
                         n += 1;
@@ -4371,7 +4393,7 @@ self.trigger_emergency_exits();
                         let spd = self
                             .side(side)
                             .active_mon(actor_slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
+                            .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
                             .unwrap_or(0);
                         if n < acts.len() {
                             acts[n] = (spd, side, actor_slot, team_index);
@@ -4576,7 +4598,7 @@ self.trigger_emergency_exits();
             e.0 = self
                 .side(e.1)
                 .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
+                .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
                 .unwrap_or(0);
         }
         // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
@@ -4661,7 +4683,7 @@ self.trigger_emergency_exits();
                 if !is_pursuit {
                     continue;
                 }
-                let spe = crate::order::effective_speed(mon, tailwind, self.weather, self.terrain);
+                let spe = crate::order::effective_speed(mon, tailwind, self.effective_weather(), self.terrain);
                 if n < sources.len() {
                     sources[n] = (actor_slot, move_slot, spe);
                     n += 1;
@@ -6845,7 +6867,16 @@ self.trigger_emergency_exits();
         // TryHit runs for every target before any accuracy roll
         // (sim/battle-actions.ts:556-577): the move's other targets draw
         // no accuracy roll and cannot miss.
-        let flash_fire_sure_hit = m.type_ == 1
+        let flash_fire_sure_hit = crate::damage::move_type_in_ctx(
+            &attacker,
+            move_id,
+            &DamageContext {
+                weather: self.effective_weather_for(actor_side, actor_slot),
+                terrain: self.terrain,
+                champions: self.champions,
+                ..DamageContext::default()
+            },
+        ) == 1
             && !attacker_breaks_mold
             && targets.iter().any(|&(ts, tsl)| {
                 (ts, tsl) != (actor_side, actor_slot)
@@ -7295,11 +7326,23 @@ self.trigger_emergency_exits();
             // return null on Electric-type moves and apply their effect.
             // Electric type code = 3. Mold Breaker honored. Aura Wheel's
             // onModifyType runs first (Dark as Morpeko-Hangry).
-            let absorb_type = if move_id == data::move_id::AURAWHEEL {
-                crate::damage::aura_wheel_type(&attacker)
-            } else {
-                m.type_
-            };
+            //
+            // Every absorb ability below keys on the move's runtime type:
+            // PS runs ModifyType (sim/battle-actions.ts:401, useMoveInner)
+            // before the target's onTryHit, so a sun Weather Ball is Fire
+            // into Flash Fire, a Pixilate move Fairy, etc. Weather Ball
+            // reads the user's own effectiveWeather (data/moves.ts
+            // weatherball onModifyType), hence the attacker-only weather.
+            let absorb_type = crate::damage::move_type_in_ctx(
+                &attacker,
+                move_id,
+                &DamageContext {
+                    weather: self.effective_weather_for(actor_side, actor_slot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                },
+            );
             if absorb_type == 3 {
                 let def_ability = defender.effective_ability_id();
                 if !attacker_breaks_mold {
@@ -7344,7 +7387,7 @@ self.trigger_emergency_exits();
             // target-resolution step above. Gastrodon / Lanturn /
             // Lumineon. Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Storm_Drain_(Ability)>.
-            if m.type_ == 2 {
+            if absorb_type == 2 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::STORMDRAIN && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
@@ -7359,7 +7402,7 @@ self.trigger_emergency_exits();
             // (boost applied in damage.rs). Fire type code = 1. Carries
             // `flags: { breakable: 1 }` — Mold Breaker bypasses.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Flash_Fire_(Ability)>.
-            if m.type_ == 1 {
+            if absorb_type == 1 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::FLASHFIRE && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7396,7 +7439,7 @@ self.trigger_emergency_exits();
             // grounded check runs slightly later but the net result is the
             // same — Flying defenders skip damage anyway.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Earth_Eater_(Ability)>.
-            if m.type_ == 8 {
+            if absorb_type == 8 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::EARTHEATER && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7449,7 +7492,7 @@ self.trigger_emergency_exits();
             // end-of-turn ability hook.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Water_Absorb_(Ability)>,
             //             <https://bulbapedia.bulbagarden.net/wiki/Dry_Skin_(Ability)>.
-            if m.type_ == 2 {
+            if absorb_type == 2 {
                 let def_ability = defender.effective_ability_id();
                 if matches!(def_ability, data::ability_id::WATERABSORB | data::ability_id::DRYSKIN) && !attacker_breaks_mold {
                     if let Some(d) = self.side_mut(tside).active_mon_mut(tslot as usize) {
@@ -7465,7 +7508,7 @@ self.trigger_emergency_exits();
             // the target. Grass type code = 4. Absorbs the hit (no
             // damage, no secondaries). Goodra / Azumarill HA fallback.
             // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Sap_Sipper_(Ability)>.
-            if m.type_ == 4 {
+            if absorb_type == 4 {
                 let def_ability = defender.effective_ability_id();
                 if def_ability == data::ability_id::SAPSIPPER && !attacker_breaks_mold {
                     self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
@@ -8680,7 +8723,12 @@ self.trigger_emergency_exits();
         let mut count: usize = 0;
         let side = self.side(actor_side);
         let active_idx = side.active[actor_slot as usize] as usize;
-        for (idx, member) in side.team.iter().enumerate() {
+        // PS iterates `side.pokemon`, whose order switches permute
+        // (`Side::ps_order`), so hit k's base power follows that order.
+        let len = side.team.len().min(side.ps_order.len());
+        for &idx in &side.ps_order[..len] {
+            let idx = idx as usize;
+            let Some(member) = side.team.get(idx) else { continue };
             if count >= 6 {
                 break;
             }
@@ -8688,7 +8736,15 @@ self.trigger_emergency_exits();
             let eligible = is_active
                 || (!member.fainted && matches!(member.status, Status::None));
             if eligible {
-                beat_up_base_atks[count] = member.species().base_stats[1] as u16;
+                // PS reads `set.species` (the team-sheet species), so a
+                // Mega Evolved or forme-changed member contributes its
+                // set form's Attack.
+                let sid = if member.set_species_id == u16::MAX {
+                    member.species_id
+                } else {
+                    member.set_species_id
+                };
+                beat_up_base_atks[count] = data::SPECIES[sid as usize].base_stats[1] as u16;
                 count += 1;
             }
         }
@@ -9447,6 +9503,18 @@ self.trigger_emergency_exits();
         // + order preserved (see method docs). PR-LC7: 13-arg
         // shuffle collapsed into `&PerHitInvariants` built once at
         // PerTargetContext construction.
+        // PS recomputes each hit against the target's live HP, so a
+        // full-HP modifier (Multiscale / Shadow Shield,
+        // data/abilities.ts:multiscale onSourceModifyDamage
+        // `target.hp >= target.maxhp`) only halves the first hit.
+        // `ctx.defender` is the pre-move snapshot; show the damage calc
+        // the current HP for later hits, then restore the snapshot.
+        let snap_hp = ctx.defender.current_hp;
+        if hit_idx >= 1 {
+            if let Some(d) = self.side(ctx.tside).active_mon(ctx.tslot as usize) {
+                ctx.defender.current_hp = d.current_hp;
+            }
+        }
         let mut dmg: u16 = self.compute_per_hit_damage(
             hit_idx,
             &ctx.attacker,
@@ -9454,6 +9522,7 @@ self.trigger_emergency_exits();
             &ctx.per_hit_inv,
             &mut ctx.pipeline,
         );
+        ctx.defender.current_hp = snap_hp;
         #[cfg(feature = "ps-rng")]
         if hit_idx >= 1 && ctx.per_hit_inv.fixed_dmg_snapshot.is_none() {
             self.ps_modify_damage_ties(ctx.actor_side, ctx.actor_slot as u8, ctx.tside, ctx.tslot);
@@ -10455,7 +10524,7 @@ self.trigger_emergency_exits();
                         if !p.is_alive() || p.effective_ability_id() != want {
                             continue;
                         }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather, self.terrain);
+                        let spe = crate::order::effective_speed(p, tailwind, self.effective_weather(), self.terrain);
                         if best.is_none() || spe > best_spe {
                             best = Some((side, slot));
                             best_spe = spe;
@@ -16462,6 +16531,50 @@ self.trigger_emergency_exits();
                     }
                 }
             }
+            data::move_id::GUARDSPLIT => {
+                // Guard Split — average raw `storedStats` Def and SpD of
+                // user and target (floored); both get the average. PS
+                // data/moves.ts:7958 onHit:
+                //   const newdef = Math.floor((target.storedStats.def + source.storedStats.def) / 2);
+                //   (same for spd)
+                // accuracy `true`; single-target `normal` (allies allowed).
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Guard_Split_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t)
+                        if self
+                            .side(t.side)
+                            .active_mon(t.slot as usize)
+                            .is_some_and(|m| m.is_alive()) =>
+                    {
+                        (t.side, t.slot)
+                    }
+                    _ => match opp_target {
+                        Some(x) => x,
+                        None => return,
+                    },
+                };
+                if tside == actor_side && tslot == actor_slot {
+                    return;
+                }
+                let user = self.side(actor_side).active_mon(actor_slot as usize).map(|m| m.stats);
+                let tgt = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| m.stats);
+                if let (Some(us), Some(ts)) = (user, tgt) {
+                    let def = ((us.def as u32 + ts.def as u32) / 2) as u16;
+                    let spd = ((us.spd as u32 + ts.spd as u32) / 2) as u16;
+                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
+                        a.stats.def = def;
+                        a.stats.spd = spd;
+                    }
+                    if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+                        t.stats.def = def;
+                        t.stats.spd = spd;
+                    }
+                }
+            }
             data::move_id::BESTOW => {
                 // Bestow — give the user's held item to the target if (and
                 // only if) the target is itemless. PS data/moves.ts:1237
@@ -20106,6 +20219,37 @@ mod tests {
         assert_eq!(b.p2.active_mon(0).unwrap().species().name, "Rillaboom");
         assert_eq!(b.p2.active_mon(0).unwrap().boosts[0], -1, "replacement Rillaboom intimidated");
         assert_eq!(b.p2.active_mon(1).unwrap().boosts[0], -1, "Pikachu intimidated");
+    }
+
+    #[test]
+    fn replacement_intimidate_does_not_carry_stats_lowered_into_next_turn() {
+        // PS endTurn (sim/battle.ts:1679) clears statsLoweredThisTurn after
+        // the faint replacements ran, so a replacement Intimidate never
+        // doubles the foe's Lash Out on the following turn.
+        let p1 = r#"[
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"jolly","moves":["earthquake"]},
+            {"species":"pelipper","level":50,"ability":"drizzle","nature":"modest","moves":["hurricane"]},
+            {"species":"incineroar","level":50,"ability":"intimidate","nature":"adamant","moves":["fakeout"]}
+        ]"#;
+        let p2 = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"brave","moves":["lashout"]},
+            {"species":"pikachu","level":50,"ability":"static","nature":"hardy","moves":["thunderbolt"]}
+        ]"#;
+        let mut b = Battle::new(
+            BattleConfig { format: Format::Doubles, seed: 3 },
+            TeamBuilder::from_json(p1).unwrap(),
+            TeamBuilder::from_json(p2).unwrap(),
+        );
+        b.decision_phases = true;
+        b.p1.team[0].current_hp = 0;
+        b.p1.team[0].fainted = true;
+        b.step(
+            &[Choice::Switch { actor_slot: 0, team_index: 2 }, Choice::Pass { actor_slot: 1 }],
+            &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+        );
+        let snorlax = b.p2.active_mon(0).unwrap();
+        assert_eq!(snorlax.boosts[0], -1, "replacement Incineroar intimidated");
+        assert!(!snorlax.stats_lowered_this_turn);
     }
 
     // ---- Delayed-effect subsystem: Wish / Future Sight / Doom Desire ----
