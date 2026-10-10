@@ -557,7 +557,7 @@ fn offset_two_arg_draws(acc: &AccBattle) -> Vec<DrawRecord> {
 /// not `Battle.random`, so the keyed envelopes miss it; it is recovered from
 /// the raw trace and handed to the engine's `range(n)` draw of the same turn
 /// by the repair pass.
-const CONDITION_SAMPLE: u16 = u16::MAX - 2;
+const CONDITION_SAMPLE: u16 = vgc_engine_core::rng::KEY_CONDITION_SAMPLE;
 
 fn add_condition_samples(table: &mut Table, acc: &AccBattle) {
     for d in acc.turns.iter().flat_map(|t| t.raw.iter()) {
@@ -739,7 +739,13 @@ fn repaired_table(
                     **n > 0
                         && ((k.turn == mk.turn && k.actor == mk.actor && (k.move_id == mk.move_id || k.move_id == BOOL_GATE))
                             || (k.move_id == CONDITION_SAMPLE && k.turn == mk.turn && mk.decision == RngDecision::Range)
-                            || (k.move_id == ABILITY_SAMPLE && k.turn == mk.turn && mk.decision == RngDecision::Ability)
+                            // A faint replacement's switch-in (Trace) runs
+                            // in PS's turn N, after the engine's turn
+                            // counter already moved on: `turn() + 1` keys it
+                            // N + 1.
+                            || (k.move_id == ABILITY_SAMPLE
+                                && (k.turn == mk.turn || k.turn + 1 == mk.turn)
+                                && mk.decision == RngDecision::Ability)
                             || (mk.decision == RngDecision::Tiebreak
                                 && k.decision == RngDecision::Tiebreak
                                 && (k.turn == mk.turn || k.turn == mk.turn + 1)))
@@ -750,7 +756,7 @@ fn repaired_table(
             // between equally good candidates: keeps runs reproducible.
             // Condition samples are the last resort: they carry no actor or
             // move, so any same-move-use candidate is a better match.
-            cands.sort_by_key(|k| (k.move_id == CONDITION_SAMPLE, k.move_id != ABILITY_SAMPLE, k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
+            cands.sort_by_key(|k| (k.move_id == CONDITION_SAMPLE, k.move_id != ABILITY_SAMPLE, k.turn != mk.turn, k.decision != mk.decision, k.target != mk.target, k.decision as u8, k.target, k.move_id, k.turn, k.actor));
             for k in cands {
                 let n = remaining[&k];
                 let q = table.get(&k).expect("leftover key in table");

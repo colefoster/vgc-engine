@@ -305,6 +305,52 @@ fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
     }
 }
 
+/// Abilities PS flags `notrace` (data/abilities.ts, `flags: { notrace: 1 }`;
+/// no Champions override in data/mods/champions/abilities.ts). Trace's
+/// `onUpdate` drops a foe holding one from `possibleTargets` before its
+/// `sample` (data/abilities.ts:5138-5143), so it changes both the pick and
+/// the draw's span. Bulbapedia:
+/// <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
+fn is_untraceable_ability(ability_id: u16) -> bool {
+    matches!(
+        ability_id,
+        data::ability_id::ASONEGLASTRIER
+            | data::ability_id::ASONESPECTRIER
+            | data::ability_id::BATTLEBOND
+            | data::ability_id::COMATOSE
+            | data::ability_id::COMMANDER
+            | data::ability_id::DISGUISE
+            | data::ability_id::EMBODYASPECTCORNERSTONE
+            | data::ability_id::EMBODYASPECTHEARTHFLAME
+            | data::ability_id::EMBODYASPECTTEAL
+            | data::ability_id::EMBODYASPECTWELLSPRING
+            | data::ability_id::FLOWERGIFT
+            | data::ability_id::FORECAST
+            | data::ability_id::HUNGERSWITCH
+            | data::ability_id::ICEFACE
+            | data::ability_id::ILLUSION
+            | data::ability_id::IMPOSTER
+            | data::ability_id::MULTITYPE
+            | data::ability_id::NEUTRALIZINGGAS
+            | data::ability_id::POISONPUPPETEER
+            | data::ability_id::POWERCONSTRUCT
+            | data::ability_id::POWEROFALCHEMY
+            | data::ability_id::PROTOSYNTHESIS
+            | data::ability_id::QUARKDRIVE
+            | data::ability_id::RECEIVER
+            | data::ability_id::RKSSYSTEM
+            | data::ability_id::SCHOOLING
+            | data::ability_id::SHIELDSDOWN
+            | data::ability_id::STANCECHANGE
+            | data::ability_id::TERAFORMZERO
+            | data::ability_id::TERASHELL
+            | data::ability_id::TERASHIFT
+            | data::ability_id::TRACE
+            | data::ability_id::ZENMODE
+            | data::ability_id::ZEROTOHERO
+    )
+}
+
 /// Abilities PS flags `cantsuppress` — they cannot be turned off by
 /// Neutralizing Gas (or Gastro Acid). These are form-locking / identity
 /// abilities whose loss would corrupt the mon's state. PS list lives as
@@ -497,6 +543,8 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             m.supreme_overlord_fallen = fallen;
         }
     }
+    #[cfg(feature = "ps-rng")]
+    battle.ps_weather_suppressor_ties(ability_id);
     // Forecast — a Castform switching into existing weather adopts the
     // matching forme immediately (PS data/abilities.ts:forecast onStart /
     // onUpdate). Cheap no-op for every non-Forecast active.
@@ -688,13 +736,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     //   }
     // PS samples uniformly from the valid adjacent foes (`onUpdate`:
     // `this.sample(possibleTargets)`); valid = alive with a non-empty,
-    // non-Trace ability. The PS un-traceable list
-    // (As One, Comatose, Disguise, Flower Gift, Forecast, Hunger
-    // Switch, Ice Face, Illusion, Imposter, Multitype, Neutralizing
-    // Gas, Power Construct, Power of Alchemy, Receiver, RKS System,
-    // Schooling, Shields Down, Stance Change, Trace itself, Zen Mode,
-    // Zero to Hero) is approximated as just "no copying Trace" — most
-    // top-100 mons don't run those.
+    // traceable ability (`is_untraceable_ability`: PS `notrace`).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
     if ability_id == data::ability_id::TRACE {
         // Ability Shield on the Trace user blocks the change to its own
@@ -715,7 +757,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     Some(m) if m.is_alive() => current_ability(m),
                     _ => continue,
                 };
-                if candidate == u16::MAX || candidate == data::ability_id::TRACE { continue; }
+                if candidate == u16::MAX || is_untraceable_ability(candidate) { continue; }
                 // A foe's Ability Shield doesn't stop Trace copying from it:
                 // the shield has no onCopyAbility (data/items.ts:2-17), and
                 // Trace's filter is only noTrace / noability
