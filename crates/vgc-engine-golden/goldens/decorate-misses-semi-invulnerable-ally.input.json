@@ -1,0 +1,27 @@
+{
+  "name": "decorate-misses-semi-invulnerable-ally",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Milotic (F)\nAbility: Marvel Scale\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Annihilape (M)\nAbility: Defiant\nLevel: 50\nHardy Nature\n- Phantom Force\n\nAlcremie (F)\nAbility: Sweet Veil\nLevel: 50\nHardy Nature\n- Decorate"
+  },
+  "turns": [
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1 1, move 1 -1"
+    },
+    {
+      "p1": "move 1, move 1",
+      "p2": "move 1, move 1 -1"
+    }
+  ]
+}

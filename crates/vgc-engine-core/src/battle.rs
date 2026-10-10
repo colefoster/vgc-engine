@@ -1661,6 +1661,31 @@ impl Battle {
         let mist_blocks = !is_self_source
             && !source_infiltrates
             && self.side(target_side).conditions.mist_turns > 0;
+        // Flower Veil — PS data/abilities.ts:1419 flowerveil `onAllyTryBoost`:
+        //   if ((source && target === source) || !target.hasType('Grass')) return;
+        //   for (i in boost) if (boost[i] < 0) delete boost[i];
+        // An `onAlly` handler, so it covers the holder and its allies. A
+        // Grass-type on a side with an active Flower Veil holder ignores
+        // stat drops from any other source (Intimidate, Parting Shot, move
+        // secondaries). Breakable (Mold Breaker source). Bulbapedia:
+        // <https://bulbapedia.bulbagarden.net/wiki/Flower_Veil_(Ability)>.
+        let veil_blocks = !is_self_source
+            && self.side(target_side).active_mon(target_slot as usize).is_some_and(|m| {
+                let (types, num) = m.effective_types();
+                types[..num as usize].contains(&4)
+            })
+            && (0..self.format().active_count()).any(|s| {
+                self.side(target_side).active_mon(s).is_some_and(|m| {
+                    m.is_alive() && m.effective_ability_id() == data::ability_id::FLOWERVEIL
+                })
+            })
+            && !self.side(source_side).active_mon(source_slot as usize).is_some_and(|m| {
+                matches!(
+                    m.effective_ability_id(),
+                    data::ability_id::MOLDBREAKER | data::ability_id::TERAVOLT | data::ability_id::TURBOBLAZE
+                )
+            });
+        let mist_blocks = mist_blocks || veil_blocks;
         // When Mist is up, strip the negative deltas and keep only the
         // positives in a fixed-size stack buffer (≤ 7 stat indices — no
         // heap allocation in step()). If nothing positive remains, the
@@ -8415,9 +8440,26 @@ self.trigger_emergency_exits();
                         ctx.defender.status = d.status;
                     }
                 }
+                let dealt_before = ctx.any_damage_dealt;
                 self.apply_single_hit(&mut ctx, hit_idx);
                 if ctx.target_fainted_this_hit {
                     break;
+                }
+                // A multi-hit use of a `self.boosts` move (Parental Bond
+                // Hammer Arm / Close Combat / Draco Meteor) drops the user
+                // after EVERY hit: PS selfDrops only sets `move.selfDropped`
+                // when `!move.multihit` (sim/battle-actions.ts:1329), and
+                // runs inside each hit's moveHit, so the next hit sees the
+                // drop. The last hit's drop is the post-move one below.
+                if hit_idx + 1 < ctx.hits && ctx.any_damage_dealt > dealt_before {
+                    if let Some(drops) = self_stat_drops(m.slug, self.champions) {
+                        #[cfg(feature = "ps-rng")]
+                        if self.rng.is_ps() {
+                            let _ = self.rng.ps_random_range("selfdrop", 0, 100);
+                        }
+                        self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
+                        crate::item::try_consume_white_herb(self, actor_side, actor_slot);
+                    }
                 }
                 // The loop also ends once the user is knocked out (Rough
                 // Skin, Rocky Helmet): `if (!pokemon.hp && targets.length
@@ -9659,9 +9701,12 @@ self.trigger_emergency_exits();
         attacker: &Pokemon,
         crit: bool,
         hit_sub: bool,
-        effective_dmg: u16,
+        _effective_dmg: u16,
     ) {
-        if !hit_sub && effective_dmg > 0 {
+        // PS collects DamagingHit targets by `typeof damage[i] === 'number'`
+        // (data/mods/champions/scripts.ts:402, sim/battle-actions.ts:1113),
+        // so a hit capped to 0 (Endure at 1 HP) still fires it.
+        if !hit_sub {
             // PS fires onDamagingHit regardless of whether the
             // target survived (Rough Skin / Static / Flame Body
             // tick on a KO hit too). Individual ability arms in
@@ -14836,6 +14881,14 @@ self.trigger_emergency_exits();
     }
 
     pub(crate) fn after_foe_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool) -> usize {
+        self.after_drop(side, slot, before, eject, true)
+    }
+
+    /// `after_foe_drop` for a drop whose source may be the target's ally:
+    /// Defiant / Competitive return on `target.isAlly(source)` (PS
+    /// data/abilities.ts defiant / competitive onAfterEachBoost), while
+    /// Eject Pack and White Herb react to any drop.
+    pub(crate) fn after_drop(&mut self, side: SideRef, slot: u8, before: [i8; 7], eject: bool, foe_source: bool) -> usize {
         let lowered = self
             .side(side)
             .active_mon(slot as usize)
@@ -14843,8 +14896,10 @@ self.trigger_emergency_exits();
         if lowered == 0 {
             return 0;
         }
-        for _ in 0..lowered {
-            crate::ability::react_to_opposing_stat_drop(self, side, slot);
+        if foe_source {
+            for _ in 0..lowered {
+                crate::ability::react_to_opposing_stat_drop(self, side, slot);
+            }
         }
         if eject {
             let _ = crate::item::try_consume_eject_pack(self, side, slot, true);
@@ -15246,6 +15301,25 @@ self.trigger_emergency_exits();
         // shield punish (Spiky Shield chip, King's Shield −Atk, etc.).
         // PS: data/moves.ts `protect` flag + conditions.ts Protect onTryHit.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Protect_(move)>.
+        // A semi-invulnerable target (mid Fly / Dig / Phantom Force ...)
+        // dodges a single-target status move, foe or ally alike: PS
+        // sim/battle-actions.ts:621 hitStepInvulnerabilityEvent runs the
+        // charge volatile's onInvulnerability (returns false) before any
+        // accuracy roll; No Guard on either side (onAnyInvulnerability ->
+        // 0) lets it through. Seen as Decorate on an ally mid Phantom Force.
+        if matches!(m.target, 0 | 4 | 10) {
+            if let Some((ts, tslot)) = opp_target {
+                let no_guard = |b: &Self, s: SideRef, sl: u8| {
+                    b.side(s).active_mon(sl as usize).is_some_and(|x| x.effective_ability_id() == data::ability_id::NOGUARD)
+                };
+                if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.semi_invuln != 0)
+                    && !no_guard(self, ts, tslot)
+                    && !no_guard(self, actor_side, actor_slot)
+                {
+                    return;
+                }
+            }
+        }
         if m.blocked_by_protect && matches!(m.target, 0 | 4 | 10) {
             if let Some((ts, tslot)) = opp_target {
                 if self
@@ -15635,6 +15709,52 @@ self.trigger_emergency_exits();
                 crate::item::try_consume_mirror_herb_on_foe_boost(
                     self, tside, tslot, boosts,
                 );
+            }
+            data::move_id::ACUPRESSURE => {
+                // PS data/moves.ts:acupressure (num 367) — target
+                // adjacentAllyOrSelf, onHit: collect every boost id (PS
+                // `target.boosts` order atk/def/spa/spd/spe/accuracy/evasion)
+                // still below +6, `this.sample(stats)` one of them and +2 it;
+                // fails with no draw when all seven are maxed. A chosen ally
+                // that has fainted does not retarget.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Acupressure_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t) if t.side == actor_side => (t.side, t.slot),
+                    _ => (actor_side, actor_slot),
+                };
+                let Some(boosts) = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| m.boosts)
+                else {
+                    return;
+                };
+                let mut stats = [0u8; 7];
+                let mut n = 0usize;
+                for (i, &b) in boosts.iter().enumerate() {
+                    if b < 6 {
+                        stats[n] = i as u8;
+                        n += 1;
+                    }
+                }
+                if n == 0 {
+                    return;
+                }
+                // Keyed like the harness envelope: the target slot, NO_SLOT
+                // when the user targets itself.
+                let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+                let ctx_target = if (tside, tslot) == (actor_side, actor_slot) {
+                    crate::rng::NO_SLOT
+                } else {
+                    sref(tside) + tslot
+                };
+                self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, ctx_target);
+                self.rng.set_decision(RngDecision::Range);
+                let pick = self.rng.range(n as u32) as usize;
+                let delta: &[(u8, i8)] = &[(stats[pick], 2)];
+                self.apply_boosts(tside, tslot, delta, actor_side, actor_slot);
+                crate::item::try_consume_mirror_herb_on_foe_boost(self, tside, tslot, delta);
             }
             data::move_id::AROMATICMIST => {
                 // PS data/moves.ts:aromaticmist — target adjacentAlly,
@@ -17327,16 +17447,26 @@ self.trigger_emergency_exits();
                 if !self.rolled_accuracy_passed(m) { return; }
                 let mut dropped_any = false;
                 if let Some((opp, slot)) = opp_target {
-                    let blocked = self.side(opp).active_mon(slot as usize)
-                        .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
-                    // PS Clear Body / Clear Amulet: drop is vetoed. Parting
-                    // Shot's self-switch hinges on whether ANY boost call
-                    // returned a success; a fully-blocked target means no
-                    // switch fires (skip the dropped_any flip).
-                    if !blocked {
+                    // PS onTryBoost vetoes per stat: Clear Body / Clear
+                    // Amulet delete both, Hyper Cutter only the Atk drop
+                    // (data/abilities.ts hypercutter), so the SpA drop
+                    // still lands. Parting Shot's self-switch hinges on
+                    // whether ANY boost call returned a success; a
+                    // fully-blocked target means no switch fires.
+                    let mut drops = [(0u8, 0i8); 2];
+                    let mut k = 0usize;
+                    if let Some(t) = self.side(opp).active_mon(slot as usize) {
+                        for stat in [0u8, 2] {
+                            if !crate::ability::blocks_opposing_stat_drop_for(t, stat) {
+                                drops[k] = (stat, -1);
+                                k += 1;
+                            }
+                        }
+                    }
+                    if k > 0 {
                         // Opposing drop — source is the Parting Shot user.
                         let before = self.side(opp).active_mon(slot as usize).map_or([0; 7], |t| t.boosts);
-                        self.apply_boosts(opp, slot, &[(0, -1), (2, -1)], actor_side, actor_slot);
+                        self.apply_boosts(opp, slot, &drops[..k], actor_side, actor_slot);
                         // Eject Pack ignores Parting Shot (data/items.ts:1712).
                         self.after_foe_drop(opp, slot, before, false);
                         dropped_any = true;
@@ -17613,9 +17743,10 @@ self.trigger_emergency_exits();
                     }
                 }
                 // Drop target Atk by 1 (blocked by Clear Body / Clear
-                // Amulet / White Smoke / Full Metal Body).
+                // Amulet / White Smoke / Full Metal Body, and Hyper Cutter's
+                // Atk-only onTryBoost, data/abilities.ts hypercutter).
                 let blocked = self.side(opp).active_mon(ts as usize)
-                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop(t));
+                    .is_some_and(|t| crate::ability::blocks_opposing_stat_drop_for(t, 0));
                 if !blocked {
                     // Opposing drop — source is the Strength Sap user.
                     self.apply_boosts(opp, ts, &[(0, -1)], actor_side, actor_slot);
@@ -18114,6 +18245,18 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swords_Dance_(move)>
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
+                    // Growth in sun — PS data/moves.ts:7869 growth
+                    // onModifyMove: `if (['sunnyday', 'desolateland']
+                    // .includes(pokemon.effectiveWeather())) move.boosts =
+                    // {atk: 2, spa: 2}` (the user's view, so Utility
+                    // Umbrella cancels it).
+                    let boosts: &[(u8, i8)] = if move_id == data::move_id::GROWTH
+                        && self.effective_weather_for(actor_side, actor_slot) == crate::weather::Weather::Sun
+                    {
+                        &[(0, 2), (2, 2)]
+                    } else {
+                        boosts
+                    };
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                     // Charge's volatileStatus (data/moves.ts charge; onRestart
                     // keeps it).
@@ -19448,7 +19591,9 @@ fn apply_secondary_effect(
                 battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
                 // Defiant / Competitive (onAfterEachBoost), Eject Pack, White
                 // Herb (e.g. Crunch's Def drop, Lumina Crash's SpD drop).
-                battle.after_foe_drop(target_side, target_slot, before, true);
+                // An ally's spread secondary (Bulldoze, Icy Wind) does not
+                // trigger Defiant / Competitive.
+                battle.after_drop(target_side, target_slot, before, true, attacker_side != target_side);
             }
         }
     }

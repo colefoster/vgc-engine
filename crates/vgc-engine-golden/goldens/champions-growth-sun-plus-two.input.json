@@ -1,0 +1,16 @@
+{
+  "name": "champions-growth-sun-plus-two",
+  "format": "gen9championsvgc2026regmc",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Venusaur\nAbility: Overgrow\nLevel: 50\n- Growth\n- Energy Ball\n\nTorkoal\nAbility: Drought\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nMiltank\nAbility: Sap Sipper\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 1, move 1" },
+    { "p1": "move 2 1, move 1", "p2": "move 1, move 1" }
+  ]
+}

@@ -1,0 +1,290 @@
+{
+  "ok": true,
+  "name": "hypercutter-partingshot-strengthsap",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Gliscor",
+      "hp": 150,
+      "max": 150
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Incineroar",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Whimsicott",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Strength Sap",
+      "target": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 151,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Parting Shot",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "spa",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Tackle",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 133,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637758\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Gliscor, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p2|Incineroar, L50, M|\n|poke|p2|Whimsicott, L50, F|\n|teampreview|\n|t:|1791637758\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Gliscor|Gliscor, L50, M|150/150\n|switch|p1b: Chansey|Chansey, L50, F|325/325\n|switch|p2a: Incineroar|Incineroar, L50, M|170/170\n|switch|p2b: Whimsicott|Whimsicott, L50, F|135/135\n|turn|1|\n|t:|1791637758\n|move|p2b: Whimsicott|Strength Sap||[still]\n|-fail|p1a: Gliscor|unboost|atk|[from] ability: Hyper Cutter|[of] p1a: Gliscor\n|-fail|p2b: Whimsicott\n|debug|move failed because it did nothing\n|move|p1a: Gliscor|Tackle|p2a: Incineroar\n|-damage|p2a: Incineroar|151/170\n|move|p2a: Incineroar|Parting Shot|p1a: Gliscor\n|-fail|p1a: Gliscor|unboost|atk|[from] ability: Hyper Cutter|[of] p1a: Gliscor\n|-unboost|p1a: Gliscor|spa|1\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1791637758\n|move|p2b: Whimsicott|Splash|p2b: Whimsicott\n|-nothing\n|move|p1a: Gliscor|Tackle|p2a: Incineroar\n|-damage|p2a: Incineroar|133/170\n|move|p2a: Incineroar|Splash|p2a: Incineroar\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|\n|upkeep\n|turn|3",
+  "keyed": [
+    {
+      "turn": 1,
+      "actor": "p2b",
+      "target": "p1a",
+      "move": "strengthsap",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "damage",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p2a",
+      "target": "p1a",
+      "move": "partingshot",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "tackle",
+      "decision": "damage",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    }
+  ]
+}

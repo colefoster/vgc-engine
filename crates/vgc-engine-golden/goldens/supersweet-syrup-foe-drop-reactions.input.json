@@ -1,0 +1,15 @@
+{
+  "name": "supersweet-syrup-foe-drop-reactions",
+  "format": "gen9championsvgc2026regmc",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Kingambit\nAbility: Defiant\nLevel: 50\n- Iron Head\n\nDragapult\nAbility: Clear Body\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Hydrapple\nAbility: Supersweet Syrup\nLevel: 50\n- Splash\n\nSnorlax\nAbility: Thick Fat\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 2, move 1", "p2": "move 1, move 1" }
+  ]
+}
