@@ -1,0 +1,26 @@
+{
+  "name": "acupressure-fainted-ally-targets-self",
+  "format": "gen9doublescustomgame",
+  "seed": [
+    9,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Magikarp (M)\nAbility: Swift Swim\nLevel: 1\nHardy Nature\n- Splash\n\nPincurchin (M)\nAbility: Lightning Rod\nLevel: 50\nHardy Nature\n- Acupressure\n- Tackle"
+  },
+  "p2": {
+    "team": "Jolteon (M)\nAbility: Volt Absorb\nLevel: 50\nTimid Nature\n- Quick Attack\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Tackle"
+  },
+  "turns": [
+    {
+      "p1": "move 1, move 1 -1",
+      "p2": "move 1 1, move 1 2"
+    },
+    {
+      "p1": "pass, move 2 2",
+      "p2": "move 1 2, move 1 2"
+    }
+  ]
+}
