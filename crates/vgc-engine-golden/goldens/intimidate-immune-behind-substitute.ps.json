@@ -1,0 +1,395 @@
+{
+  "ok": true,
+  "name": "intimidate-immune-behind-substitute",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Miltank",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Body Slam",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 120,
+      "max": 325,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Substitute",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 177,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Incineroar",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 2,
+      "kind": "immune",
+      "actor": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "unboost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Body Slam",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 140,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "status",
+      "actor": "p2a",
+      "status": "par",
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Body Slam",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 80,
+      "max": 170,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 95,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 10,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 31,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637670\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Snorlax, L50, M|\n|poke|p1|Miltank, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Incineroar, L50, F|\n|poke|p2|Garchomp, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791637670\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Snorlax|Snorlax, L50, M|235/235\n|switch|p1b: Miltank|Miltank, L50, F|170/170\n|switch|p2a: Chansey|Chansey, L50, F|325/325\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|turn|1|\n|t:|1791637670\n|move|p1b: Miltank|Body Slam|p2a: Chansey\n|-damage|p2a: Chansey|120/325\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p2a: Chansey|Splash|p2a: Chansey\n|-nothing\n|move|p1a: Snorlax|Substitute|p1a: Snorlax\n|-start|p1a: Snorlax|Substitute\n|-damage|p1a: Snorlax|177/235\n|\n|upkeep\n|turn|2|\n|t:|1791637670\n|switch|p2a: Incineroar|Incineroar, L50, F|170/170\n|-ability|p2a: Incineroar|Intimidate|boost\n|-immune|p1a: Snorlax\n|-unboost|p1b: Miltank|atk|1\n|move|p1b: Miltank|Body Slam|p2a: Incineroar\n|-damage|p2a: Incineroar|140/170\n|-status|p2a: Incineroar|par\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|move|p1a: Snorlax|Body Slam|p2a: Incineroar\n|-damage|p2a: Incineroar|80/170 par\n|\n|upkeep\n|turn|3",
+  "keyed": [
+    {
+      "turn": 1,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "damage",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 1,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "secondary",
+      "value": 95,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "damage",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1b",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "secondary",
+      "value": 10,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "damage",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "bodyslam",
+      "decision": "secondary",
+      "value": 31,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    }
+  ]
+}

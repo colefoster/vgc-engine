@@ -1,0 +1,16 @@
+{
+  "name": "intimidate-immune-behind-substitute",
+  "format": "gen9championsvgc2026regmc",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Snorlax\nAbility: Thick Fat\nLevel: 50\n- Substitute\n- Body Slam\n\nMiltank\nAbility: Sap Sipper\nLevel: 50\n- Body Slam\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Chansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nIncineroar\nAbility: Intimidate\nLevel: 50\n- Splash\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1 1", "p2": "move 1, move 1" },
+    { "p1": "move 2 1, move 1 1", "p2": "switch 3, move 1" }
+  ]
+}
