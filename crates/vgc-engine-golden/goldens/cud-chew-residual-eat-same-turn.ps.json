@@ -1,0 +1,251 @@
+{
+  "ok": true,
+  "name": "cud-chew-residual-eat-same-turn",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Farigiraf",
+      "hp": 195,
+      "max": 195
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Tyranitar",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Tauros",
+      "hp": 276,
+      "max": 276
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "unboost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 0,
+      "kind": "unboost",
+      "actor": "p1b",
+      "stat": "atk",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 100,
+      "max": 195,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 259,
+      "max": 276,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 88,
+      "max": 195,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 310,
+      "max": 330,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 1,
+      "kind": "heal",
+      "actor": "p1a",
+      "hp": 136,
+      "max": 195,
+      "from": "item: Sitrus Berry"
+    },
+    {
+      "turn": 1,
+      "kind": "heal",
+      "actor": "p1a",
+      "hp": 184,
+      "max": 195,
+      "from": "item: Sitrus Berry"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 242,
+      "max": 276,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 172,
+      "max": 195,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 290,
+      "max": 330,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 225,
+      "max": 276,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 160,
+      "max": 195,
+      "from": "Sandstorm"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 270,
+      "max": 330,
+      "from": "Sandstorm"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637172\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Farigiraf, L50, M|\n|poke|p1|Tyranitar, L50, F|\n|poke|p2|Tauros, L95, M|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1791637172\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Farigiraf|Farigiraf, L50, M|195/195\n|switch|p1b: Tyranitar|Tyranitar, L50, F|175/175\n|switch|p2a: Tauros|Tauros, L95, M|276/276\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|-ability|p2a: Tauros|Intimidate|boost\n|-unboost|p1a: Farigiraf|atk|1\n|-unboost|p1b: Tyranitar|atk|1\n|-weather|Sandstorm|[from] ability: Sand Stream|[of] p1b: Tyranitar\n|turn|1|\n|t:|1791637172\n|move|p2a: Tauros|Seismic Toss|p1a: Farigiraf\n|-damage|p1a: Farigiraf|100/195\n|move|p1b: Tyranitar|Splash|p1b: Tyranitar\n|-nothing\n|move|p1a: Farigiraf|Splash|p1a: Farigiraf\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p2a: Tauros|259/276|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|-damage|p1a: Farigiraf|88/195|[from] Sandstorm\n|-damage|p2b: Blissey|310/330|[from] Sandstorm\n|-enditem|p1a: Farigiraf|Sitrus Berry|[eat]\n|-heal|p1a: Farigiraf|136/195|[from] item: Sitrus Berry\n|-activate|p1a: Farigiraf|ability: Cud Chew\n|-enditem|p1a: Farigiraf|Sitrus Berry|[eat]\n|-heal|p1a: Farigiraf|184/195|[from] item: Sitrus Berry\n|upkeep\n|turn|2|\n|t:|1791637172\n|move|p2a: Tauros|Splash|p2a: Tauros\n|-nothing\n|move|p1b: Tyranitar|Splash|p1b: Tyranitar\n|-nothing\n|move|p1a: Farigiraf|Splash|p1a: Farigiraf\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p2a: Tauros|242/276|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|-damage|p1a: Farigiraf|172/195|[from] Sandstorm\n|-damage|p2b: Blissey|290/330|[from] Sandstorm\n|upkeep\n|turn|3|\n|t:|1791637172\n|move|p2a: Tauros|Splash|p2a: Tauros\n|-nothing\n|move|p1b: Tyranitar|Splash|p1b: Tyranitar\n|-nothing\n|move|p1a: Farigiraf|Splash|p1a: Farigiraf\n|-nothing\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|\n|-weather|Sandstorm|[upkeep]\n|-damage|p2a: Tauros|225/276|[from] Sandstorm\n|debug|natural status immunity\n|debug|weather immunity\n|-damage|p1a: Farigiraf|160/195|[from] Sandstorm\n|-damage|p2b: Blissey|270/330|[from] Sandstorm\n|upkeep\n|turn|4"
+}

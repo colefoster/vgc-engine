@@ -1,0 +1,16 @@
+{
+  "name": "cud-chew-residual-eat-same-turn",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Farigiraf @ Sitrus Berry\nAbility: Cud Chew\nLevel: 50\nIVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe\n- Splash\n\nTyranitar\nAbility: Sand Stream\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Tauros\nAbility: Intimidate\nLevel: 95\n- Seismic Toss\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 1 1, move 1" },
+    { "p1": "move 1, move 1", "p2": "move 2, move 1" },
+    { "p1": "move 1, move 1", "p2": "move 2, move 1" }
+  ]
+}
