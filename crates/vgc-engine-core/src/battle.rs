@@ -9035,6 +9035,17 @@ self.trigger_emergency_exits();
                                 self.apply_boosts(tside, tslot, &[(0, 1)], tside, tslot);
                                 return;
                             }
+                            // Lightning Rod / Storm Drain onTryHit absorb any
+                            // Electric / Water move, Status included, for +1 SpA
+                            // (data/abilities.ts lightningrod / stormdrain).
+                            Some(data::ability_id::LIGHTNINGROD) if m.type_ == 3 => {
+                                self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
+                                return;
+                            }
+                            Some(data::ability_id::STORMDRAIN) if m.type_ == 2 => {
+                                self.apply_boosts(tside, tslot, &[(2, 1)], tside, tslot);
+                                return;
+                            }
                             Some(data::ability_id::SOUNDPROOF) if m.is_sound => return,
                             Some(data::ability_id::OBLIVIOUS)
                                 if matches!(
