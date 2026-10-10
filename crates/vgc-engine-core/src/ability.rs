@@ -419,6 +419,13 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             Some(m) if m.is_alive() => m.effective_ability_id(),
             _ => continue,
         };
+        // A target behind a Substitute is immune (PS data/abilities.ts:2201
+        // `if (target.volatiles['substitute']) this.add('-immune', target)`):
+        // `boost` is never called, so no Atk drop and no onTryBoost /
+        // onAfterBoost reaction (Guard Dog, Adrenaline Orb, Rattled).
+        if battle.side(opp).active_mon(s as usize).is_some_and(|m| m.substitute_hp() > 0) {
+            continue;
+        }
         // Adrenaline Orb — PS `data/items.ts:adrenalineorb` fires on
         // `onAfterBoost` for Intimidate even if the Atk drop was blocked
         // (Hyper Cutter / Clear Body / Clear Amulet ...). +1 Spe, consumed.
