@@ -57,3 +57,13 @@ fn tied_replacements_shuffle_in_the_switch_commit_sort() {
     assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-2");
     assert_seeded_matches_ps("psrng-tied-replacements-sort-on-bare-speed-3");
 }
+
+/// Meowstic-F Mega Evolves into Trace facing Palafin (Zero to Hero,
+/// `notrace`) and Pelipper. Trace's `possibleTargets` drops the `notrace`
+/// foe (data/abilities.ts:5138-5143), so PS draws `random(1)` and copies
+/// Drizzle; the engine used to sample both foes.
+#[test]
+fn trace_skips_a_notrace_foe() {
+    assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-1");
+    assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-2");
+}
