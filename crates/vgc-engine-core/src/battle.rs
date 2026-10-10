@@ -341,6 +341,11 @@ pub struct Battle {
     /// then, which Cud Chew's onEatItem reads (`!this.queue.peek()`).
     #[serde(skip)]
     pub(crate) in_residual: bool,
+    /// Bit `side * 2 + slot` set while a just-entered replacement's
+    /// Unnerve has not started yet (PS abilities.ts:5258-5270: it blocks
+    /// berries only once onStart set `effectState.unnerved`).
+    #[serde(skip)]
+    pub(crate) unnerve_unstarted: u8,
     /// The status move being resolved cannot miss its target (Glaive Rush
     /// volatile or No Guard): `rolled_accuracy_passed` draws nothing.
     #[serde(skip)]
@@ -734,6 +739,7 @@ impl Battle {
             white_herb_move_defer: false,
             disguise_hit_this_move: false,
             in_residual: false,
+            unnerve_unstarted: 0,
             status_sure_hit: false,
             multi_targeted_defenders: 0,
             spread_segmentable_defenders: 0,
@@ -4509,6 +4515,17 @@ self.trigger_emergency_exits();
             self.ps_active_ties(false, "shuffle");
             self.ps_active_ties(true, "shuffle");
         }
+        // That last instaswitch's Update runs before any runSwitch, so HP
+        // berries eat while the entering Unnerve holders have not started.
+        for &(_, side, slot) in &entered[..n] {
+            self.unnerve_unstarted |= 1 << (side as u8 * 2 + slot);
+        }
+        for &(_, side, slot) in &entered[..n] {
+            let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
+            crate::item::on_after_damage(self, side, slot, &mut rng);
+            self.rng = rng;
+        }
+        self.unnerve_unstarted = 0;
         for e in &mut entered[..n] {
             let tw = self.side(e.1).conditions.tailwind_turns > 0;
             e.0 = self

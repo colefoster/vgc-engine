@@ -32,12 +32,13 @@ pub fn foe_has_unnerve(battle: &Battle, side: SideRef) -> bool {
     let opp = side.opposing();
     let n = battle.format().active_count();
     (0..n).any(|s| {
-        battle
-            .side(opp)
-            .active_mon(s)
-            .is_some_and(|m| {
-                m.is_alive() && m.effective_ability_id() == data::ability_id::UNNERVE
-            })
+        battle.unnerve_unstarted & (1 << (opp as u8 * 2 + s as u8)) == 0
+            && battle
+                .side(opp)
+                .active_mon(s)
+                .is_some_and(|m| {
+                    m.is_alive() && m.effective_ability_id() == data::ability_id::UNNERVE
+                })
     })
 }
 
