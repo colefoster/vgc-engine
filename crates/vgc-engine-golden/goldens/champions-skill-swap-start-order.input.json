@@ -1,0 +1,14 @@
+{
+  "name": "champions-skill-swap-start-order",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Indeedee-F\nAbility: Psychic Surge\nLevel: 50\n- Skill Swap\n- Splash\n\nGarchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 Atk\nAdamant Nature\n- Dragon Claw\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Pikachu\nAbility: Static\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nRillaboom\nAbility: Grassy Surge\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1 2", "p2": "switch 3, move 1" }
+  ]
+}

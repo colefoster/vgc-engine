@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "name": "champions-skill-swap-start-order",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Indeedee-F",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 1,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Rillaboom",
+      "hp": 175,
+      "max": 175
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Dragon Claw",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2b",
+      "hp": 23,
+      "max": 330,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Skill Swap",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "heal",
+      "actor": "p2b",
+      "hp": 43,
+      "max": 330,
+      "from": "Grassy Terrain"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637868\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Indeedee-F, L50, F|\n|poke|p1|Garchomp, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Pikachu, L50, F|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Rillaboom, L50, F|\n|poke|p2|Chansey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791637868\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Indeedee|Indeedee-F, L50, F|145/145\n|switch|p1b: Garchomp|Garchomp, L50, M|183/183\n|switch|p2a: Pikachu|Pikachu, L50, F|110/110\n|switch|p2b: Blissey|Blissey, L50, F|330/330\n|-fieldstart|move: Psychic Terrain|[from] ability: Psychic Surge|[of] p1a: Indeedee\n|turn|1|\n|t:|1791637868\n|switch|p2a: Rillaboom|Rillaboom, L50, F|175/175\n|-fieldstart|move: Grassy Terrain|[from] ability: Grassy Surge|[of] p2a: Rillaboom\n|move|p1b: Garchomp|Dragon Claw|p2b: Blissey\n|-damage|p2b: Blissey|23/330\n|move|p1a: Indeedee|Skill Swap|p2a: Rillaboom\n|-activate|p1a: Indeedee|Skill Swap|Grassy Surge|Psychic Surge|[of] p2a: Rillaboom\n|-fieldstart|move: Psychic Terrain|[from] ability: Psychic Surge|[of] p2a: Rillaboom\n|-fieldstart|move: Grassy Terrain|[from] ability: Grassy Surge|[of] p1a: Indeedee\n|move|p2b: Blissey|Splash|p2b: Blissey\n|-nothing\n|\n|-heal|p2b: Blissey|43/330|[from] Grassy Terrain\n|upkeep\n|turn|2"
+}
