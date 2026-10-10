@@ -1,0 +1,14 @@
+{
+  "name": "innards-out-damages-attacker",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Chansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Seismic Toss\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Pyukumuku (M)\nAbility: Innards Out\nLevel: 15\nHardy Nature\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1 1, move 1", "p2": "move 1, move 1" }
+  ]
+}

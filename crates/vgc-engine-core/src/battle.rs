@@ -9775,6 +9775,26 @@ self.trigger_emergency_exits();
 
         self.apply_move_specific_post_damage(ctx, hit_sub);
 
+        // Innards Out (onDamagingHitOrder 1): a holder KO'd by the hit deals
+        // the HP it lost (plus earlier hits of a multi-hit move) to the
+        // attacker (data/abilities.ts:2140-2147).
+        if !hit_sub && hp_lost > 0 {
+            let innards = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|d| {
+                d.current_hp == 0 && d.effective_ability_id() == data::ability_id::INNARDSOUT
+            });
+            if innards {
+                let dmg = if ctx.hits > 1 { ctx.any_damage_dealt } else { hp_lost };
+                if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
+                    if a.is_alive() && !crate::ability::has_magic_guard(a) {
+                        a.current_hp = a.current_hp.saturating_sub(dmg);
+                        if a.current_hp == 0 {
+                            a.fainted = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Defender ability `onDamagingHit` and the DamagingHit items (Rocky
         // Helmet, Jaboca). Runs only when the hit actually reached the mon —
         // sub-absorbed hits skipped. PS runs DamagingHit before the move's
