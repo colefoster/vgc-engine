@@ -1,0 +1,209 @@
+{
+  "ok": true,
+  "name": "champions-growth-sun-plus-two",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Venusaur",
+      "hp": 155,
+      "max": 155
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Torkoal",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Growth",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "atk",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p1a",
+      "stat": "spa",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Energy Ball",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 130,
+      "max": 235,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    },
+    {
+      "kind": "Range",
+      "value": 77,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637837\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Venusaur, L50, M|\n|poke|p1|Torkoal, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Snorlax, L50, F|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791637837\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Venusaur|Venusaur, L50, M|155/155\n|switch|p1b: Torkoal|Torkoal, L50, F|145/145\n|switch|p2a: Snorlax|Snorlax, L50, F|235/235\n|switch|p2b: Miltank|Miltank, L50, F|170/170\n|-weather|SunnyDay|[from] ability: Drought|[of] p1b: Torkoal\n|turn|1|\n|t:|1791637837\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Venusaur|Growth|p1a: Venusaur\n|-boost|p1a: Venusaur|atk|2\n|-boost|p1a: Venusaur|spa|2\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|move|p1b: Torkoal|Splash|p1b: Torkoal\n|-nothing\n|\n|-weather|SunnyDay|[upkeep]\n|upkeep\n|turn|2|\n|t:|1791637837\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|move|p1a: Venusaur|Energy Ball|p2a: Snorlax\n|-damage|p2a: Snorlax|130/235\n|move|p2a: Snorlax|Splash|p2a: Snorlax\n|-nothing\n|move|p1b: Torkoal|Splash|p1b: Torkoal\n|-nothing\n|\n|-weather|SunnyDay|[upkeep]\n|upkeep\n|turn|3",
+  "keyed": [
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "energyball",
+      "decision": "accuracy",
+      "value": true,
+      "raw_is_bool": true,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)",
+      "op": "randomChance",
+      "args": [
+        100,
+        100
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "energyball",
+      "decision": "crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)",
+      "op": "randomChance",
+      "args": [
+        1,
+        24
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "energyball",
+      "decision": "damage",
+      "value": 6,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)",
+      "op": "random",
+      "args": [
+        16
+      ]
+    },
+    {
+      "turn": 2,
+      "actor": "p1a",
+      "target": "p2a",
+      "move": "energyball",
+      "decision": "secondary",
+      "value": 77,
+      "raw_is_bool": false,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)",
+      "op": "random",
+      "args": [
+        100
+      ]
+    }
+  ]
+}

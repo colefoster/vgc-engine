@@ -18087,6 +18087,18 @@ self.trigger_emergency_exits();
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Swords_Dance_(move)>
                 // plus per-move pages for each entry.
                 if let Some(boosts) = self_boost_moves(m.slug) {
+                    // Growth in sun — PS data/moves.ts:7869 growth
+                    // onModifyMove: `if (['sunnyday', 'desolateland']
+                    // .includes(pokemon.effectiveWeather())) move.boosts =
+                    // {atk: 2, spa: 2}` (the user's view, so Utility
+                    // Umbrella cancels it).
+                    let boosts: &[(u8, i8)] = if move_id == data::move_id::GROWTH
+                        && self.effective_weather_for(actor_side, actor_slot) == crate::weather::Weather::Sun
+                    {
+                        &[(0, 2), (2, 2)]
+                    } else {
+                        boosts
+                    };
                     self.apply_boosts(actor_side, actor_slot, boosts, actor_side, actor_slot);
                     // Charge's volatileStatus (data/moves.ts charge; onRestart
                     // keeps it).
