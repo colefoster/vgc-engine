@@ -9448,6 +9448,35 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// Thief / Covet onAfterHit (PS data/moves.ts thief / covet): an
+    /// item-less user with HP takes the target's item. The target may have
+    /// fainted (takeItem doesn't check HP; Sticky Hold only blocks while its
+    /// holder has HP); a fainted user can't receive it (setItem), so the
+    /// item stays put.
+    fn thief_steal_item(&mut self, ctx: &PerTargetContext) {
+        let user_ok = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize)
+            .is_some_and(|a| a.is_alive() && a.item_id == u16::MAX);
+        if !user_ok {
+            return;
+        }
+        let item = self.side(ctx.tside).active_mon(ctx.tslot as usize).and_then(|t| {
+            let sticky = t.is_alive() && t.effective_ability_id() == data::ability_id::STICKYHOLD;
+            (t.item_id != u16::MAX && !sticky && !t.holds_own_mega_stone()).then_some(t.item_id)
+        });
+        let Some(item) = item else { return };
+        if let Some(t) = self.side_mut(ctx.tside).active_mon_mut(ctx.tslot as usize) {
+            t.item_id = u16::MAX;
+            t.sync_can_mega_evolve();
+            if t.is_alive() && t.effective_ability_id() == data::ability_id::UNBURDEN {
+                t.unburden_active = true;
+            }
+        }
+        if let Some(a) = self.side_mut(ctx.actor_side).active_mon_mut(ctx.actor_slot as usize) {
+            a.item_id = item;
+            a.sync_can_mega_evolve();
+        }
+    }
+
     /// Move-specific post-damage side effects that don't fit the generic
     /// secondary / on-hit-reaction dispatch — currently Knock Off's
     /// item removal and Smack Down / Thousand Arrows' grounding
@@ -9807,6 +9836,9 @@ self.trigger_emergency_exits();
         // reactions (data/moves.ts knockoff onAfterHit).
         if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
             self.knock_off_take_item(ctx.tside, ctx.tslot);
+        }
+        if !hit_sub && matches!(ctx.move_id, data::move_id::THIEF | data::move_id::COVET) {
+            self.thief_steal_item(ctx);
         }
 
         // Pinch berries (Sitrus / Starf etc.) are eaten at the hit loop's
