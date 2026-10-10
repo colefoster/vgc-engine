@@ -126,6 +126,12 @@ pub struct GoldenTurn {
     pub p1_followups: Vec<String>,
     #[serde(default)]
     pub p2_followups: Vec<String>,
+    /// Post-faint replacement choices for this turn (e.g. "switch 3, pass"),
+    /// stepped only when the engine is waiting for replacements.
+    #[serde(default)]
+    pub p1_replace: Option<serde_json::Value>,
+    #[serde(default)]
+    pub p2_replace: Option<serde_json::Value>,
     #[serde(default)]
     pub p1: serde_json::Value,
     #[serde(default)]
@@ -445,7 +451,16 @@ pub fn run_golden_in_memory(
 
         for (slot, action) in turn.p1_followups.iter().enumerate() { p1c.push(parse_one_action(action, SideRef::P1, slot as u8, active_count)?); }
         for (slot, action) in turn.p2_followups.iter().enumerate() { p2c.push(parse_one_action(action, SideRef::P2, slot as u8, active_count)?); }
-        let r = battle.step(&p1c, &p2c);
+        let mut r = battle.step(&p1c, &p2c);
+        if !matches!(r, StepResult::Ended { .. })
+            && (turn.p1_replace.is_some() || turn.p2_replace.is_some())
+            && battle.needs_replacements()
+        {
+            let none = serde_json::Value::Null;
+            let rp1 = parse_turn_actions(turn.p1_replace.as_ref().unwrap_or(&none), SideRef::P1, active_count)?;
+            let rp2 = parse_turn_actions(turn.p2_replace.as_ref().unwrap_or(&none), SideRef::P2, active_count)?;
+            r = battle.step(&rp1, &rp2);
+        }
         ended = matches!(r, StepResult::Ended { .. });
         report.turns_run += 1;
 
@@ -1489,7 +1504,7 @@ pub(crate) fn derive_turns_from_events(
             (p1_slot_a, p2_slot_a)
         };
         out.push(GoldenTurn {
-            p1_followups: Vec::new(), p2_followups: Vec::new(),
+            p1_followups: Vec::new(), p2_followups: Vec::new(), p1_replace: None, p2_replace: None,
             p1: serde_json::Value::String(p1_str),
             p2: serde_json::Value::String(p2_str),
         });
@@ -2055,6 +2070,8 @@ mod stat_point_tests {
             turns: vec![GoldenTurn {
                 p1_followups: vec![],
                 p2_followups: vec![],
+                p1_replace: None,
+                p2_replace: None,
                 p1: serde_json::json!("move 1 1, move 1"),
                 p2: serde_json::json!("move 1 1, move 1"),
             }],
