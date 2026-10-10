@@ -10431,7 +10431,10 @@ self.trigger_emergency_exits();
         let tracks_target = matches!(
             attacker.effective_ability_id(),
             data::ability_id::STALWART | data::ability_id::PROPELLERTAIL
-        ) || move_id == data::move_id::SNIPESHOT;
+        ) || move_id == data::move_id::SNIPESHOT
+            // Champions Curse carries `tracksTarget: true`
+            // (data/mods/champions/moves.ts:165-167).
+            || (self.champions && move_id == data::move_id::CURSE);
 
         let mut redirected = false;
         if !tracks_target
