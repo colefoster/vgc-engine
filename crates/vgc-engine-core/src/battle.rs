@@ -4517,7 +4517,14 @@ self.trigger_emergency_exits();
                 .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
                 .unwrap_or(0);
         }
-        entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        // Under Trick Room PS's speed is `10000 - spe` (sim/pokemon.ts:641
+        // getActionSpeed), so the slower replacement's onStart runs first
+        // (Torkoal's Drought before Pelipper's Drizzle -> rain stays).
+        if self.trick_room_turns > 0 {
+            entered[..n].sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        } else {
+            entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        }
         // Handlers sort by priority before Speed: abilities (0) all run
         // before the item handlers (seeds / Booster Energy / Room Service
         // carry `onSwitchInPriority` -1 or -2, data/items.ts).
