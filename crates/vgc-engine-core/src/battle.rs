@@ -2520,6 +2520,7 @@ self.trigger_emergency_exits();
     /// sim/prng.ts shuffle). Returns the permutation applied (`perm[k]` =
     /// original index now at `k`).
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_shuffle_ties(&mut self, keys: &[i64], op: &'static str) -> [u8; 8] {
         let n = keys.len().min(8);
         let mut perm = [0u8, 1, 2, 3, 4, 5, 6, 7];
@@ -2545,6 +2546,7 @@ self.trigger_emergency_exits();
     /// of them tie on Speed. PS runs `eachEvent('Update')` after every
     /// action (sim/battle.ts runAction, gen >= 5).
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_active_ties(&mut self, include_fainted: bool, op: &'static str) {
         let n_active = self.format().active_count();
         let mut keys = [0i64; 4];
@@ -2570,6 +2572,7 @@ self.trigger_emergency_exits();
     /// 0 HP but PS marks it `fainted` only in faintMessages after the loop
     /// (:550), so getAllActive still includes it, on its cached Speed.
     #[cfg(feature = "ps-rng")]
+    #[track_caller]
     fn ps_hit_update(&mut self) {
         let mut keys = [0i64; 4];
         let mut n = 0;
@@ -2690,6 +2693,12 @@ self.trigger_emergency_exits();
                     let vols = m.volatiles;
                     for v in &vols.items[..vols.len as usize] {
                         let order = match v.kind {
+                            // The engine keeps a Stall entry for a failed or
+                            // skipped stall move (counter 0, "used this
+                            // turn"); PS deletes the `stall` volatile when
+                            // the roll fails (data/moves.ts stall
+                            // onStallMove) and never adds it otherwise.
+                            V::Stall if v.payload & 0xFF == 0 => continue,
                             V::Taunt => 15, V::Disable => 17, V::Yawn => 23, V::HealBlock => 20,
                             V::Embargo => 21, V::LeechSeed => 8, V::Curse => 12, V::Nightmare => 11,
                             V::PerishSong => 24, V::Ingrain => 7, V::AquaRing => 6, V::MagnetRise => 18,
@@ -4434,16 +4443,44 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() {
             self.ps_update_speed_all();
         }
-        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
-        let mut n = 0usize;
+        // (side, slot, team index) in queue order.
+        let mut picks = [(SideRef::P1, 0u8, 0u8); 4];
+        let mut k = 0usize;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 if let Choice::Switch { actor_slot, team_index } = *c {
-                    if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
-                        entered[n] = (0, side, actor_slot);
-                        n += 1;
+                    if k < picks.len() {
+                        picks[k] = (side, actor_slot, team_index);
+                        k += 1;
                     }
                 }
+            }
+        }
+        // commitChoices' queue.sort() over the instaswitch actions (order 3),
+        // each keyed on the Speed of the mon it replaces (resolveAction ->
+        // getActionSpeed, sim/battle-queue.ts:93-174): a fainted one's bare
+        // stat. Ties shuffle, and the sorted queue sets the switch order.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && k > 1 {
+            let trick_room = self.trick_room_turns > 0;
+            let mut keys = [0i64; 4];
+            for (key, &(side, slot, _)) in keys.iter_mut().zip(&picks[..k]) {
+                let tw = self.side(side).conditions.tailwind_turns > 0;
+                let spe = self
+                    .side(side)
+                    .active_mon(slot as usize)
+                    .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64)
+                    .unwrap_or(0);
+                *key = if trick_room { spe - 10000 } else { -spe };
+            }
+            crate::order::ps_speed_sort(&mut keys[..k], &mut picks[..k], |a, b| self.rng.ps_random_range("shuffle", a, b));
+        }
+        let mut entered: [(u16, SideRef, u8); 4] = [(0, SideRef::P1, 0); 4];
+        let mut n = 0usize;
+        for &(side, actor_slot, team_index) in &picks[..k] {
+            if n < entered.len() && self.do_switch(side, actor_slot, team_index) {
+                entered[n] = (0, side, actor_slot);
+                n += 1;
             }
         }
         // A residual Emergency Exit with no pick queued: first bench mon,
@@ -13104,10 +13141,10 @@ self.trigger_emergency_exits();
         let flags = std::mem::take(&mut self.force_switch_flags);
         for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
             for slot in 0..self.format().active_count().min(2) {
-                if flags[si][slot]
-                    && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive())
-                    && self.can_be_dragged_out(side, slot as u8, false)
-                {
+                // Every flag setter already ran the DragOut check (with the
+                // phazer's Mold Breaker, which dragIn's rerun still sees
+                // through the active move).
+                if flags[si][slot] && self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
                     self.force_switch_random(side, slot as u8);
                 }
             }
@@ -13323,6 +13360,9 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_reset_speed(side, slot as usize);
+            // runSwitch's speedSort(getAllActive(true)) before the SwitchIn
+            // handlers (sim/battle-actions.ts:174-178).
+            self.ps_active_ties(true, "shuffle");
         }
         self.replaced_mid_turn[side as usize][(slot as usize).min(1)] = true;
         crate::ability::on_switch_in(self, side, slot);
@@ -16391,7 +16431,10 @@ self.trigger_emergency_exits();
                 if !self.can_be_dragged_out(ts, tslot, breaks_mold) {
                     return;
                 }
-                self.force_switch_random(ts, tslot);
+                // The move only sets `forceSwitchFlag`; runAction drags the
+                // target in after the whole move, its hit loop's Updates
+                // included (sim/battle.ts:2821-2829 -> dragIn).
+                self.force_switch_flags[ts as usize][(tslot as usize).min(1)] = true;
             }
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
