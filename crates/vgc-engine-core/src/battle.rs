@@ -2453,7 +2453,7 @@ self.trigger_emergency_exits();
     fn ps_live_speed(&self, side: SideRef, slot: usize) -> Option<i64> {
         let m = self.side(side).active_mon(slot)?;
         let tw = self.side(side).conditions.tailwind_turns > 0;
-        let mut spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
+        let mut spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
         if self.trick_room_turns > 0 {
             spe = 10000 - spe;
         }
@@ -3026,7 +3026,7 @@ self.trigger_emergency_exits();
                 let spe: Option<i64> = None;
                 let spe = spe.unwrap_or_else(|| {
                     let tw = self.side(side).conditions.tailwind_turns > 0;
-                    crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64
+                    crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64
                 });
                 if n < keys.len() {
                     keys[n] = -spe;
@@ -3380,7 +3380,7 @@ self.trigger_emergency_exits();
                 }
                 let Some(m) = self.side(side).active_mon(slot).filter(|m| m.is_alive()) else { continue };
                 seen[slot.min(1)] = true;
-                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.weather, self.terrain) as i64;
+                let raw = crate::order::effective_speed(m, self.side(side).conditions.tailwind_turns > 0, self.effective_weather(), self.terrain) as i64;
                 let spe = if trick_room { 10000 - raw } else { raw };
                 let mut push = |key: (i64, i64, i64, i64), kind: u8| {
                     if k < keys.len() {
@@ -4188,7 +4188,7 @@ self.trigger_emergency_exits();
                     let Some(m) = self.side(side).active_mon(actor_slot as usize) else { continue };
                     if n < out.len() {
                         let tw = self.side(side).conditions.tailwind_turns > 0;
-                        let spe = crate::order::effective_speed(m, tw, self.weather, self.terrain) as i64;
+                        let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
                         out[n] = (side, actor_slot);
                         keys[n] = if trick_room { spe } else { -spe };
                         n += 1;
@@ -4352,7 +4352,7 @@ self.trigger_emergency_exits();
                         let spd = self
                             .side(side)
                             .active_mon(actor_slot as usize)
-                            .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
+                            .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
                             .unwrap_or(0);
                         if n < acts.len() {
                             acts[n] = (spd, side, actor_slot, team_index);
@@ -4529,7 +4529,7 @@ self.trigger_emergency_exits();
             e.0 = self
                 .side(e.1)
                 .active_mon(e.2 as usize)
-                .map(|m| crate::order::effective_speed(m, tw, self.weather, self.terrain))
+                .map(|m| crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain))
                 .unwrap_or(0);
         }
         entered[..n].sort_unstable_by(|a, b| b.0.cmp(&a.0));
@@ -4607,7 +4607,7 @@ self.trigger_emergency_exits();
                 if !is_pursuit {
                     continue;
                 }
-                let spe = crate::order::effective_speed(mon, tailwind, self.weather, self.terrain);
+                let spe = crate::order::effective_speed(mon, tailwind, self.effective_weather(), self.terrain);
                 if n < sources.len() {
                     sources[n] = (actor_slot, move_slot, spe);
                     n += 1;
@@ -10407,7 +10407,7 @@ self.trigger_emergency_exits();
                         if !p.is_alive() || p.effective_ability_id() != want {
                             continue;
                         }
-                        let spe = crate::order::effective_speed(p, tailwind, self.weather, self.terrain);
+                        let spe = crate::order::effective_speed(p, tailwind, self.effective_weather(), self.terrain);
                         if best.is_none() || spe > best_spe {
                             best = Some((side, slot));
                             best_spe = spe;
