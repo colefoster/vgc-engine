@@ -3810,7 +3810,10 @@ self.trigger_emergency_exits();
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
-                match *c {
+                // A mon mid-way through a two-turn move queues the locked
+                // move, not the submitted slot (PS sim/side.ts:675-688), so
+                // Sucker Punch sees the Solar Beam release as an attack.
+                match self.locked_move_choice(side_ref, *c) {
                     Choice::Move { actor_slot, move_slot, .. }
                     | Choice::Terastallize { actor_slot, move_slot, .. }
                     | Choice::MegaEvolve { actor_slot, move_slot, .. } => {

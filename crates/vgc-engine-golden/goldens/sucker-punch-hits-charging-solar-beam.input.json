@@ -1,0 +1,15 @@
+{
+  "name": "sucker-punch-hits-charging-solar-beam",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Venusaur (M)\nAbility: Overgrow\nLevel: 50\nHardy Nature\n- Protect\n- Solar Beam\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Kingambit (M)\nAbility: Pressure\nLevel: 50\nAdamant Nature\n- Sucker Punch\n- Splash\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 2 1, move 1", "p2": "move 2, move 1" },
+    { "p1": "move 1, move 1", "p2": "move 1 1, move 1" }
+  ]
+}
