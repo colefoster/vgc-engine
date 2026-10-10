@@ -6175,8 +6175,12 @@ self.trigger_emergency_exits();
         // <https://bulbapedia.bulbagarden.net/wiki/Future_Sight_(move)>.
         if matches!(move_id, data::move_id::FUTURESIGHT | data::move_id::DOOMDESIRE) {
             let opp = actor_side.opposing();
+            // A chosen foe that already fainted retargets to the remaining
+            // foe, as for any single-target move (sim/battle.ts getTarget ->
+            // getRandomTarget), so the future hit pends on THAT slot.
             let tslot = match target {
-                Some(Target { side, slot }) if side == opp => slot,
+                Some(Target { side, slot }) if side == opp
+                    && self.side(opp).active_mon(slot as usize).is_some_and(|p| p.is_alive()) => slot,
                 _ => {
                     let n = self.format().active_count() as u8;
                     (0..n)
