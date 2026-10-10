@@ -6220,20 +6220,30 @@ self.trigger_emergency_exits();
                 .map(|a| a.effective_ability_id())
                 .unwrap_or(u16::MAX);
             if matches!(pl_ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) {
+                // `move.type` here is post-onModifyType (runMove's
+                // ModifyType precedes PrepareHit, sim/battle-actions.ts
+                // useMoveInner): Weather Ball in rain retypes to Water,
+                // an -ate Normal move to the -ate type.
+                let move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
+                    weather: self.effective_weather_for(actor_side, actor_slot),
+                    terrain: self.terrain,
+                    champions: self.champions,
+                    ..DamageContext::default()
+                });
                 let do_retype = self
                     .side(actor_side)
                     .active_mon(actor_slot as usize)
                     .is_some_and(|a| {
-                        if a.protean_used || a.terastallized || m.type_ == u8::MAX {
+                        if a.protean_used || a.terastallized || move_type == u8::MAX {
                             return false;
                         }
                         // Skip when the holder is already mono of the move type.
                         let (types, num) = a.effective_types();
-                        !(num == 1 && types[0] == m.type_)
+                        !(num == 1 && types[0] == move_type)
                     });
                 if do_retype {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.set_type_override(m.type_, None);
+                        a.set_type_override(move_type, None);
                         a.protean_used = true;
                     }
                     // Refresh the attacker SNAPSHOT (cloned at the top of this
@@ -6242,7 +6252,7 @@ self.trigger_emergency_exits();
                     // Protean/Libero — PS `onPrepareHit` retypes before the move
                     // resolves. Same snapshot-refresh idiom as Stance Change
                     // above. Without this the STAB check reads the stale clone.
-                    attacker.set_type_override(m.type_, None);
+                    attacker.set_type_override(move_type, None);
                 }
             }
         }
