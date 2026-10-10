@@ -1,0 +1,221 @@
+{
+  "ok": true,
+  "name": "chilly-reception-repeat-keeps-snow-duration",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 7,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Slowking-Galar",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Walrein",
+      "hp": 185,
+      "max": 185
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 135,
+      "max": 185,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Chilly Reception",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 146,
+      "max": 185,
+      "from": "ability: Ice Body"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 96,
+      "max": 185,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 107,
+      "max": 185,
+      "from": "ability: Ice Body"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Chilly Reception",
+      "target": null
+    },
+    {
+      "turn": 4,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 118,
+      "max": 185,
+      "from": "ability: Ice Body"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 5,
+      "kind": "heal",
+      "actor": "p2a",
+      "hp": 129,
+      "max": 185,
+      "from": "ability: Ice Body"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 6,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 6,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 79,
+      "max": 185,
+      "from": null
+    },
+    {
+      "turn": 7,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 7,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 7,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 29,
+      "max": 185,
+      "from": null
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637688\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Slowking-Galar, L50, M|\n|poke|p2|Walrein, L50, F|\n|teampreview|\n|t:|1791637688\n|teamsize|p1|1\n|teamsize|p2|1\n|start\n|switch|p1a: Slowking|Slowking-Galar, L50, M|170/170\n|switch|p2a: Walrein|Walrein, L50, F|185/185\n|turn|1|\n|t:|1791637688\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|move|p1a: Slowking|Seismic Toss|p2a: Walrein\n|-damage|p2a: Walrein|135/185\n|\n|upkeep\n|turn|2|\n|t:|1791637688\n|debug|priority charge callback: chillyreception\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|-prepare|p1a: Slowking|Chilly Reception|[premajor]\n|move|p1a: Slowking|Chilly Reception|p1a: Slowking\n|-weather|Snowscape\n|\n|-weather|Snowscape|[upkeep]\n|-heal|p2a: Walrein|146/185|[from] ability: Ice Body\n|upkeep\n|turn|3|\n|t:|1791637688\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|move|p1a: Slowking|Seismic Toss|p2a: Walrein\n|-damage|p2a: Walrein|96/185\n|\n|-weather|Snowscape|[upkeep]\n|-heal|p2a: Walrein|107/185|[from] ability: Ice Body\n|upkeep\n|turn|4|\n|t:|1791637688\n|debug|priority charge callback: chillyreception\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|-prepare|p1a: Slowking|Chilly Reception|[premajor]\n|move|p1a: Slowking|Chilly Reception||[still]\n|-fail|p1a: Slowking\n|debug|move failed because it did nothing\n|\n|-weather|Snowscape|[upkeep]\n|-heal|p2a: Walrein|118/185|[from] ability: Ice Body\n|upkeep\n|turn|5|\n|t:|1791637688\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|move|p1a: Slowking|Splash|p1a: Slowking\n|-nothing\n|\n|-weather|Snowscape|[upkeep]\n|-heal|p2a: Walrein|129/185|[from] ability: Ice Body\n|upkeep\n|turn|6|\n|t:|1791637688\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|move|p1a: Slowking|Seismic Toss|p2a: Walrein\n|-damage|p2a: Walrein|79/185\n|\n|-weather|none\n|upkeep\n|turn|7|\n|t:|1791637688\n|move|p2a: Walrein|Splash|p2a: Walrein\n|-nothing\n|move|p1a: Slowking|Seismic Toss|p2a: Walrein\n|-damage|p2a: Walrein|29/185\n|\n|upkeep\n|turn|8"
+}

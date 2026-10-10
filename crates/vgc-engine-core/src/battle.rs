@@ -17354,17 +17354,9 @@ self.trigger_emergency_exits();
                 // and the switch via `selfSwitch: true`. Snow is the
                 // gen-9 rename of Hail (same `Weather::Snow` here). The
                 // cosmetic `priorityChargeCallback` flavor is skipped.
-                self.weather = crate::weather::Weather::Snow;
-                // PR-LC1: weather field changed — refresh cache.
-                self.sync_weather_terrain_cache();
-                // Icy Rock extends Snow 5 → 8 (PS data/items.ts:icyrock).
-                let user_item = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .map(|m| m.item_id)
-                    .unwrap_or(u16::MAX);
-                self.weather_turns = if user_item == data::item_id::ICYROCK { 8 } else { 5 };
-                self.refresh_forecast_formes();
+                // field.setWeather fails when Snow is already up, so a
+                // repeat use does not refresh the duration (Icy Rock 8).
+                self.set_weather_from_move(crate::weather::Weather::Snow, actor_side, actor_slot);
                 if self.has_eligible_bench(actor_side) {
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.set_pending_self_switch(true);
