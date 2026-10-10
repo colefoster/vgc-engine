@@ -196,7 +196,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         let p = self.0;
         // Field count below MUST equal the number of `serialize_field`
         // calls — serde checks this in debug builds.
-        let mut s = ser.serialize_struct("Pokemon", 44)?;
+        let mut s = ser.serialize_struct("Pokemon", 45)?;
         s.serialize_field("species_id", &p.species_id)?;
         // The forme a non-permanent change returns to (`forme_origin_key`).
         // A legacy core Minior that still knows its colour hashes like a
@@ -295,6 +295,7 @@ impl<'a> Serialize for CanonicalPokemonView<'a> {
         s.serialize_field("commanded", &p.commanded)?;
         s.serialize_field("cud_chew_berry", &p.cud_chew_berry)?;
         s.serialize_field("cud_chew_counter", &p.cud_chew_counter)?;
+        s.serialize_field("supreme_overlord_fallen", &p.supreme_overlord_fallen)?;
         s.serialize_field("move_last_turn_result", &(p.move_last_turn_result as u8))?;
         s.serialize_field("moves_used", &p.moves_used)?;
         s.end()

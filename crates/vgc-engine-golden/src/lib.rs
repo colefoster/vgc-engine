@@ -1125,7 +1125,7 @@ fn ps_snapshots_for_turn(
                     out.insert(key, SlotSnapshot {
                         side: key.0, slot: key.1, hp, max,
                         fainted: hp == 0,
-                        status: "none".into(),
+                        status: ev.status.clone().unwrap_or_else(|| "none".into()),
                     });
                 }
             }

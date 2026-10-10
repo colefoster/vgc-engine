@@ -1,0 +1,160 @@
+{
+  "ok": true,
+  "name": "toxic-counter-after-switch-back-in",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9customgame",
+  "turns": 5,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Blissey",
+      "hp": 330,
+      "max": 330
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Toxapex",
+      "hp": 125,
+      "max": 125
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Toxic",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "status",
+      "actor": "p1a",
+      "status": "tox",
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 310,
+      "max": 330,
+      "from": "psn"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Roar",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Roar",
+      "target": "p1a"
+    },
+    {
+      "turn": 3,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Blissey",
+      "hp": 310,
+      "max": 330,
+      "status": "tox"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 290,
+      "max": 330,
+      "from": "psn"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 4,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 4,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 250,
+      "max": 330,
+      "from": "psn"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Splash",
+      "target": "p1a"
+    },
+    {
+      "turn": 5,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 5,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 190,
+      "max": 330,
+      "from": "psn"
+    }
+  ],
+  "rng": [],
+  "errors": [],
+  "log": "|t:|1791637519\n|gametype|singles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Custom Game\n|clearpoke\n|poke|p1|Blissey, L50, F|\n|poke|p1|Chansey, L50, F|\n|poke|p2|Toxapex, L50, M|\n|teampreview|\n|t:|1791637519\n|teamsize|p1|2\n|teamsize|p2|1\n|start\n|switch|p1a: Blissey|Blissey, L50, F|330/330\n|switch|p2a: Toxapex|Toxapex, L50, M|125/125\n|turn|1|\n|t:|1791637519\n|move|p1a: Blissey|Splash|p1a: Blissey\n|-nothing\n|move|p2a: Toxapex|Toxic|p1a: Blissey\n|-status|p1a: Blissey|tox\n|\n|-damage|p1a: Blissey|310/330 tox|[from] psn\n|upkeep\n|turn|2|\n|t:|1791637519\n|move|p1a: Blissey|Splash|p1a: Blissey\n|-nothing\n|move|p2a: Toxapex|Roar|p1a: Blissey\n|drag|p1a: Chansey|Chansey, L50, F|325/325\n|\n|upkeep\n|turn|3|\n|t:|1791637519\n|move|p1a: Chansey|Splash|p1a: Chansey\n|-nothing\n|move|p2a: Toxapex|Roar|p1a: Chansey\n|drag|p1a: Blissey|Blissey, L50, F|310/330 tox\n|\n|-damage|p1a: Blissey|290/330 tox|[from] psn\n|upkeep\n|turn|4|\n|t:|1791637519\n|move|p1a: Blissey|Splash|p1a: Blissey\n|-nothing\n|move|p2a: Toxapex|Splash|p2a: Toxapex\n|-nothing\n|\n|-damage|p1a: Blissey|250/330 tox|[from] psn\n|upkeep\n|turn|5|\n|t:|1791637519\n|move|p1a: Blissey|Splash|p1a: Blissey\n|-nothing\n|move|p2a: Toxapex|Splash|p2a: Toxapex\n|-nothing\n|\n|-damage|p1a: Blissey|190/330 tox|[from] psn\n|upkeep\n|turn|6"
+}

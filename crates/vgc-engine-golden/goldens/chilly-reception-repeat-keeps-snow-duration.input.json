@@ -1,0 +1,20 @@
+{
+  "name": "chilly-reception-repeat-keeps-snow-duration",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Slowking-Galar\nAbility: Regenerator\nLevel: 50\n- Seismic Toss\n- Chilly Reception\n- Splash"
+  },
+  "p2": {
+    "team": "Walrein\nAbility: Ice Body\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 2", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 2", "p2": "move 1" },
+    { "p1": "move 3", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 1" }
+  ]
+}
