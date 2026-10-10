@@ -1,0 +1,103 @@
+{
+  "ok": true,
+  "name": "champions-follow-me-rage-powder-faster-wins",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9championsvgc2026regmc",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Indeedee-F",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Sinistcha",
+      "hp": 146,
+      "max": 146
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Garchomp",
+      "hp": 183,
+      "max": 183
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Miltank",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Follow Me",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Rage Powder",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Dragon Claw",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 31,
+      "max": 145,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 9,
+      "site": "BattleActions.modifyDamage (data/mods/champions/scripts.js:211)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791637985\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9 Champions] VGC 2026 Reg M-C\n|rule|Species Clause: Limit one of each Pokémon\n|rule|Item Clause: Limit 1 of each item\n|clearpoke\n|poke|p1|Indeedee-F, L50, F|\n|poke|p1|Sinistcha, L50|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p2|Garchomp, L50, M|\n|poke|p2|Miltank, L50, F|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Pikachu, L50, F|\n|teampreview|4\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>\n|uhtml|otsrequest|<button name=\"send\" value=\"/acceptopenteamsheets\" class=\"button\" style=\"margin-right: 10px;\"><strong>Accept Open Team Sheets</strong></button><button name=\"send\" value=\"/rejectopenteamsheets\" class=\"button\" style=\"margin-top: 10px\"><strong>Deny Open Team Sheets</strong></button>|\n|t:|1791637985\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|uhtmlchange|otsrequest|\n|uhtmlchange|otsrequest|\n|switch|p1a: Indeedee|Indeedee-F, L50, F|145/145\n|switch|p1b: Sinistcha|Sinistcha, L50|146/146\n|switch|p2a: Garchomp|Garchomp, L50, M|183/183\n|switch|p2b: Miltank|Miltank, L50, F|170/170\n|-fieldstart|move: Psychic Terrain|[from] ability: Psychic Surge|[of] p1a: Indeedee\n|turn|1|\n|t:|1791637985\n|move|p1a: Indeedee|Follow Me|p1a: Indeedee\n|-singleturn|p1a: Indeedee|move: Follow Me\n|move|p1b: Sinistcha|Rage Powder|p1b: Sinistcha\n|-singleturn|p1b: Sinistcha|move: Rage Powder\n|move|p2a: Garchomp|Dragon Claw|p1a: Indeedee\n|-damage|p1a: Indeedee|31/145\n|move|p2b: Miltank|Splash|p2b: Miltank\n|-nothing\n|\n|upkeep\n|turn|2"
+}

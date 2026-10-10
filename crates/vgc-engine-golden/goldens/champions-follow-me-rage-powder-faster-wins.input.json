@@ -1,0 +1,14 @@
+{
+  "name": "champions-follow-me-rage-powder-faster-wins",
+  "format": "gen9championsvgc2026regmc",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Indeedee-F\nAbility: Psychic Surge\nLevel: 50\n- Follow Me\n- Splash\n\nSinistcha\nAbility: Hospitality\nLevel: 50\n- Rage Powder\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nBlissey\nAbility: Natural Cure\nLevel: 50\n- Splash"
+  },
+  "p2": {
+    "team": "Garchomp\nAbility: Rough Skin\nLevel: 50\nEVs: 32 Atk\nAdamant Nature\n- Dragon Claw\n- Splash\n\nMiltank\nAbility: Sap Sipper\nLevel: 50\n- Splash\n\nChansey\nAbility: Natural Cure\nLevel: 50\n- Splash\n\nPikachu\nAbility: Static\nLevel: 50\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 1 2, move 1" }
+  ]
+}
