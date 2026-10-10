@@ -419,6 +419,13 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             Some(m) if m.is_alive() => m.effective_ability_id(),
             _ => continue,
         };
+        // A target behind a Substitute is immune (PS data/abilities.ts:2201
+        // `if (target.volatiles['substitute']) this.add('-immune', target)`):
+        // `boost` is never called, so no Atk drop and no onTryBoost /
+        // onAfterBoost reaction (Guard Dog, Adrenaline Orb, Rattled).
+        if battle.side(opp).active_mon(s as usize).is_some_and(|m| m.substitute_hp() > 0) {
+            continue;
+        }
         // Adrenaline Orb — PS `data/items.ts:adrenalineorb` fires on
         // `onAfterBoost` for Intimidate even if the Atk drop was blocked
         // (Hyper Cutter / Clear Body / Clear Amulet ...). +1 Spe, consumed.
@@ -863,13 +870,11 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                     t.is_alive() && t.substitute_hp() == 0
                 });
                 if drop {
-                    battle.apply_boosts(opp, s, &[(6, -1)], side, slot);
-                    // The evasion drop is a negative boost from an opposing
-                    // source, so the foe's White Herb restores it and is
-                    // consumed (PS `data/items.ts:whiteherb` onUpdate restores
-                    // any negative boost). Mirrors the Intimidate path below;
-                    // without this the herb stayed unconsumed.
-                    crate::item::try_consume_white_herb(battle, opp, s);
+                    // A plain `this.boost` from an opposing source: Clear
+                    // Body / White Smoke / Full Metal Body / Clear Amulet veto
+                    // it (onTryBoost), and a drop that lands runs Defiant /
+                    // Competitive, Eject Pack and White Herb.
+                    battle.apply_foe_stat_drop(opp, s, &[6], -1, side, slot);
                 }
             }
         }

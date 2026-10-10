@@ -1,0 +1,15 @@
+{
+  "name": "damaginghit-fires-on-zero-damage-endure",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Armarouge (M) @ Rocky Helmet\nAbility: Weak Armor\nLevel: 50\nHardy Nature\n- Endure\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Snorlax (M)\nAbility: Thick Fat\nLevel: 50\nAdamant Nature\nEVs: 252 Atk\n- Double Hit\n\nUrsaluna (M)\nAbility: Guts\nLevel: 50\nAdamant Nature\nEVs: 252 Atk\n- Crunch"
+  },
+  "turns": [
+    { "p1": "move 1, move 1", "p2": "move 1 1, move 1 1" }
+  ]
+}

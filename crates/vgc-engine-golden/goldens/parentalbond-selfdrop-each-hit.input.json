@@ -1,0 +1,23 @@
+{
+  "name": "parentalbond-selfdrop-each-hit",
+  "format": "gen9doublescustomgame",
+  "rng_mode": "keyed",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "p1": {
+    "team": "Machamp (M)\nAbility: Parental Bond\nLevel: 50\nHardy Nature\n- Superpower\n\nMilotic (F)\nAbility: Marvel Scale\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "p2": {
+    "team": "Toxapex (F)\nAbility: Limber\nLevel: 50\nHardy Nature\n- Splash\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    {
+      "p1": "move 1 1, move 1",
+      "p2": "move 1, move 1"
+    }
+  ]
+}
