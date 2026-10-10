@@ -8595,7 +8595,12 @@ self.trigger_emergency_exits();
         let mut count: usize = 0;
         let side = self.side(actor_side);
         let active_idx = side.active[actor_slot as usize] as usize;
-        for (idx, member) in side.team.iter().enumerate() {
+        // PS iterates `side.pokemon`, whose order switches permute
+        // (`Side::ps_order`), so hit k's base power follows that order.
+        let len = side.team.len().min(side.ps_order.len());
+        for &idx in &side.ps_order[..len] {
+            let idx = idx as usize;
+            let Some(member) = side.team.get(idx) else { continue };
             if count >= 6 {
                 break;
             }
@@ -8603,7 +8608,15 @@ self.trigger_emergency_exits();
             let eligible = is_active
                 || (!member.fainted && matches!(member.status, Status::None));
             if eligible {
-                beat_up_base_atks[count] = member.species().base_stats[1] as u16;
+                // PS reads `set.species` (the team-sheet species), so a
+                // Mega Evolved or forme-changed member contributes its
+                // set form's Attack.
+                let sid = if member.set_species_id == u16::MAX {
+                    member.species_id
+                } else {
+                    member.set_species_id
+                };
+                beat_up_base_atks[count] = data::SPECIES[sid as usize].base_stats[1] as u16;
                 count += 1;
             }
         }
