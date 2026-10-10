@@ -1,0 +1,92 @@
+{
+  "ok": true,
+  "name": "lightning-rod-absorbs-thunder-wave",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 1,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Jolteon",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Marowak-Alola",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Thunder Wave",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "boost",
+      "actor": "p2a",
+      "stat": "spa",
+      "amount": 1
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Range",
+      "value": 1,
+      "bound": 2,
+      "site": "BattleQueue.insertChoice (sim/battle-queue.js:286)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791641297\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Jolteon, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p2|Marowak-Alola, L50, M|\n|poke|p2|Chansey, L50, F|\n|teampreview|\n|t:|1791641297\n|teamsize|p1|2\n|teamsize|p2|2\n|start\n|switch|p1a: Jolteon|Jolteon, L50, M|140/140\n|switch|p1b: Chansey|Chansey, L50, F|325/325\n|switch|p2a: Marowak|Marowak-Alola, L50, M|135/135\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|turn|1|\n|t:|1791641297\n|move|p1a: Jolteon|Thunder Wave|p2a: Marowak\n|-ability|p2a: Marowak|Lightning Rod|boost\n|-boost|p2a: Marowak|spa|1\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|move|p2a: Marowak|Splash|p2a: Marowak\n|-nothing\n|\n|upkeep\n|turn|2"
+}
