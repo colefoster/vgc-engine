@@ -1,0 +1,195 @@
+{
+  "ok": true,
+  "name": "disguise-hit-still-runs-secondary",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Pikachu",
+      "hp": 110,
+      "max": 110
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Mimikyu",
+      "hp": 130,
+      "max": 130
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Nuzzle",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 130,
+      "max": 130,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "status",
+      "actor": "p2a",
+      "status": "par",
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 114,
+      "max": 130,
+      "from": "pokemon: Mimikyu-Busted"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Nuzzle",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 104,
+      "max": 130,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "Range",
+      "value": 0,
+      "bound": 2,
+      "site": "BattleQueue.insertChoice (sim/battle-queue.js:286)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 2,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 93,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 8,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "Range",
+      "value": 25,
+      "bound": 100,
+      "site": "BattleActions.secondaries (sim/battle-actions.js:1139)"
+    },
+    {
+      "kind": "Chance",
+      "value": false,
+      "num": 1,
+      "denom": 4,
+      "site": "Battle.onBeforeMove (data/conditions.js:63)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791639907\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Pikachu, L50, M|\n|poke|p1|Chansey, L50, F|\n|poke|p1|Blissey, L50, F|\n|poke|p1|Snorlax, L50, M|\n|poke|p2|Mimikyu, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|poke|p2|Snorlax, L50, M|\n|teampreview|\n|t:|1791639907\n|teamsize|p1|4\n|teamsize|p2|4\n|start\n|switch|p1a: Pikachu|Pikachu, L50, M|110/110\n|switch|p1b: Chansey|Chansey, L50, F|325/325\n|switch|p2a: Mimikyu|Mimikyu, L50, M|130/130\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|turn|1|\n|t:|1791639907\n|move|p2a: Mimikyu|Splash|p2a: Mimikyu\n|-nothing\n|move|p1a: Pikachu|Nuzzle|p2a: Mimikyu\n|-activate|p2a: Mimikyu|ability: Disguise\n|-damage|p2a: Mimikyu|130/130\n|-status|p2a: Mimikyu|par\n|detailschange|p2a: Mimikyu|Mimikyu-Busted, L50, M\n|-damage|p2a: Mimikyu|114/130 par|[from] pokemon: Mimikyu-Busted\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1791639907\n|move|p1a: Pikachu|Nuzzle|p2a: Mimikyu\n|-damage|p2a: Mimikyu|104/130 par\n|debug|move failed because it did nothing\n|move|p1b: Chansey|Splash|p1b: Chansey\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|move|p2a: Mimikyu|Splash|p2a: Mimikyu\n|-nothing\n|\n|upkeep\n|turn|3"
+}

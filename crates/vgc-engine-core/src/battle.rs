@@ -9338,11 +9338,13 @@ self.trigger_emergency_exits();
     /// PS `data/abilities.ts:960`.
     /// Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Disguise_(Ability)>.
     ///
-    /// Returns `true` when Disguise consumed the hit — caller must
-    /// short-circuit (`return` from `apply_single_hit`) so the normal
-    /// apply / item-hook / Stellar bookkeeping doesn't fire. The
-    /// driver does NOT stop the multi-hit loop on Disguise: PS's
-    /// `continue` semantics let the next hit land on the busted form.
+    /// Returns `true` when Disguise absorbs the hit. The caller skips
+    /// the HP write but, as in PS (the hit's damage is the number 0),
+    /// still runs the hit's secondaries, DamagingHit and AfterHit, then
+    /// calls `disguise_bust` at the hit loop's `eachEvent('Update')`
+    /// (data/mods/champions/scripts.ts:385-416, :538). The driver does
+    /// NOT stop the multi-hit loop on Disguise: the next hit lands on
+    /// the busted form.
     fn check_disguise_negate(
         &mut self,
         ctx: &PerTargetContext,
@@ -9365,12 +9367,18 @@ self.trigger_emergency_exits();
                             data::species_id::MIMIKYU | data::species_id::MIMIKYUTOTEM
                         )
                 });
-        if !disguise_triggered {
-            return false;
+        if disguise_triggered {
+            self.disguise_hit_this_move = true;
         }
+        disguise_triggered
+    }
+
+    /// Disguise's `onUpdate`: forme-change to Busted and take the
+    /// `baseMaxhp / 8` chip (data/abilities.ts:1002-1007).
+    fn disguise_bust(&mut self, ctx: &PerTargetContext) {
         // Busted-forme slug: totem -> busted-totem, else busted.
         let (chip, busted_id) = {
-            let d = self.side(ctx.tside).active_mon(ctx.tslot as usize).unwrap();
+            let Some(d) = self.side(ctx.tside).active_mon(ctx.tslot as usize) else { return };
             let busted_id = if d.species_id == data::species_id::MIMIKYUTOTEM {
                 Some(data::species_id::MIMIKYUBUSTEDTOTEM)
             } else {
@@ -9389,9 +9397,7 @@ self.trigger_emergency_exits();
             d.disguise_busted = true;
             d.current_hp = d.current_hp.saturating_sub(chip);
         }
-        self.disguise_hit_this_move = true;
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
-        true
     }
 
     /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975):
@@ -9608,15 +9614,7 @@ self.trigger_emergency_exits();
         // defrost / secondary gate) can read move-def fields.
         let m = &ctx.move_def;
 
-        if self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category) {
-            // A Disguise-blocked hit still runs the move's AfterHit: Knock
-            // Off takes the item (data/moves.ts:9975-9980; PS logs the
-            // -enditem before the Busted forme change).
-            if ctx.move_id == data::move_id::KNOCKOFF {
-                self.knock_off_take_item(ctx.tside, ctx.tslot);
-            }
-            return;
-        }
+        let disguised = self.check_disguise_negate(ctx, hit_sub, effective_dmg, m.category);
 
         // Apply (only when the sub didn't intercept). HP write +
         // damaged_this_turn / last_attacker / last_phys/spec /
@@ -9625,7 +9623,7 @@ self.trigger_emergency_exits();
         // `Battle::apply_damage_step`. See
         // `docs/damage-pipeline-design.md` PR-B.
         let mut hp_lost: u16 = 0;
-        if !hit_sub {
+        if !hit_sub && !disguised {
             let res = self.apply_damage_step(DamageApplication {
                 effective_dmg,
                 attacker_side: ctx.actor_side,
@@ -9756,6 +9754,9 @@ self.trigger_emergency_exits();
             let mut rng = std::mem::replace(&mut self.rng, Rng::Splitmix(0));
             crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
             self.rng = rng;
+        }
+        if disguised {
+            self.disguise_bust(ctx);
         }
 
         // Red Card / Eject Button (PS onAfterMoveSecondary).
