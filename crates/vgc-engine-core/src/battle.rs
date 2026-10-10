@@ -15574,6 +15574,52 @@ self.trigger_emergency_exits();
                     self, tside, tslot, boosts,
                 );
             }
+            data::move_id::ACUPRESSURE => {
+                // PS data/moves.ts:acupressure (num 367) — target
+                // adjacentAllyOrSelf, onHit: collect every boost id (PS
+                // `target.boosts` order atk/def/spa/spd/spe/accuracy/evasion)
+                // still below +6, `this.sample(stats)` one of them and +2 it;
+                // fails with no draw when all seven are maxed. A chosen ally
+                // that has fainted does not retarget.
+                // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Acupressure_(move)>.
+                let (tside, tslot) = match target {
+                    Some(t) if t.side == actor_side => (t.side, t.slot),
+                    _ => (actor_side, actor_slot),
+                };
+                let Some(boosts) = self
+                    .side(tside)
+                    .active_mon(tslot as usize)
+                    .filter(|m| m.is_alive())
+                    .map(|m| m.boosts)
+                else {
+                    return;
+                };
+                let mut stats = [0u8; 7];
+                let mut n = 0usize;
+                for (i, &b) in boosts.iter().enumerate() {
+                    if b < 6 {
+                        stats[n] = i as u8;
+                        n += 1;
+                    }
+                }
+                if n == 0 {
+                    return;
+                }
+                // Keyed like the harness envelope: the target slot, NO_SLOT
+                // when the user targets itself.
+                let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+                let ctx_target = if (tside, tslot) == (actor_side, actor_slot) {
+                    crate::rng::NO_SLOT
+                } else {
+                    sref(tside) + tslot
+                };
+                self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, ctx_target);
+                self.rng.set_decision(RngDecision::Range);
+                let pick = self.rng.range(n as u32) as usize;
+                let delta: &[(u8, i8)] = &[(stats[pick], 2)];
+                self.apply_boosts(tside, tslot, delta, actor_side, actor_slot);
+                crate::item::try_consume_mirror_herb_on_foe_boost(self, tside, tslot, delta);
+            }
             data::move_id::AROMATICMIST => {
                 // PS data/moves.ts:aromaticmist — target adjacentAlly,
                 // boosts {spd: 1}; fails without a live ally.
