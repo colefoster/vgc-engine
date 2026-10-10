@@ -1,0 +1,15 @@
+{
+  "name": "sucker-punch-fails-vs-recharge",
+  "format": "gen9customgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Blissey\nAbility: Natural Cure\nLevel: 50\n- Hyper Beam"
+  },
+  "p2": {
+    "team": "Kingambit @ Life Orb\nAbility: Defiant\nLevel: 50\n- Sucker Punch"
+  },
+  "turns": [
+    { "p1": "move 1", "p2": "move 1" },
+    { "p1": "move 1", "p2": "move 1" }
+  ]
+}
