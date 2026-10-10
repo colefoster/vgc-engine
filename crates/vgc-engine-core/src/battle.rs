@@ -10024,7 +10024,13 @@ self.trigger_emergency_exits();
             }
         }
 
-        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN) && any_damage_dealt > 0 {
+        // A hit Disguise absorbed (0 move damage) still counts as a hit:
+        // PS gates selfSwitch on the move hitting, not on HP lost
+        // (sim/battle-actions.ts:1311 `move.selfSwitch && source.hp` after a
+        // successful spreadMoveHit).
+        if matches!(move_id, data::move_id::UTURN | data::move_id::VOLTSWITCH | data::move_id::FLIPTURN)
+            && (any_damage_dealt > 0 || self.disguise_hit_this_move)
+        {
             let still_alive = self
                 .side(actor_side)
                 .active_mon(actor_slot as usize)
