@@ -4809,6 +4809,10 @@ self.trigger_emergency_exits();
             if let Some(outgoing) = s.team.get_mut(outgoing_idx) {
                 outgoing.ability_override = u16::MAX;
                 outgoing.revert_transform();
+                // clearVolatile's setSpecies(baseSpecies) recomputes
+                // storedStats (sim/pokemon.ts clearVolatile, setSpecies), so
+                // Speed Swap / Guard Split's stat exchange ends on switch-out.
+                outgoing.change_forme(outgoing.species_id, true);
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);

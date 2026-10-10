@@ -67,3 +67,14 @@ fn trace_skips_a_notrace_foe() {
     assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-1");
     assert_seeded_matches_ps("psrng-trace-skips-notrace-foe-2");
 }
+
+/// Alakazam Speed Swaps with Snorlax, Snorlax switches out and back in.
+/// clearVolatile's setSpecies recomputes Snorlax's storedStats
+/// (sim/pokemon.ts clearVolatile -> setSpecies), so it returns with its
+/// own Speed and ties Alakazam (which kept Snorlax's); the engine kept the
+/// swapped Speed and moved Snorlax first without a tie.
+#[test]
+fn speed_swap_ends_when_the_target_switches_out() {
+    assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-1");
+    assert_seeded_matches_ps("psrng-speed-swap-ends-on-switch-out-2");
+}
