@@ -415,6 +415,15 @@ pub struct Battle {
     /// `None` between actions; a plain Copy field — no heap.
     #[serde(skip)]
     pub(crate) encore_requeue: Option<(SideRef, u8, u8, Option<Target>, u8)>,
+    /// Transient Instruct re-run (data/moves.ts instruct onHit
+    /// `queue.prioritizeAction`): the target's repeated move, queued as its
+    /// own action right after Instruct's by `finalize_move_resolution`.
+    #[serde(skip)]
+    pub(crate) instruct_requeue: Option<ScheduledAction>,
+    /// Queue index of that re-run (`usize::MAX` = none). prioritizeAction
+    /// gives it `order: 3`, so it sorts ahead of every queued move.
+    #[serde(skip, default = "no_instruct_at")]
+    pub(crate) instruct_at: usize,
     /// This turn's fixed per-slot sort keys (Quick Claw, fractional
     /// priority, After You / Quash) for the gen-8+ re-sort. Rebuilt with
     /// every turn's queue.
@@ -757,6 +766,8 @@ impl Battle {
             wonder_room_turns: 0,
             pending_queue_reorder: None,
             encore_requeue: None,
+            instruct_requeue: None,
+            instruct_at: usize::MAX,
             turn_keys: crate::order::TurnKeys::default(),
             quick_frac: None,
             queued_move_slot: [[255; 2]; 2],
@@ -3875,6 +3886,8 @@ self.trigger_emergency_exits();
         let mut queue = ActionQueue::default();
         self.queued_move_slot = [[255; 2]; 2];
         self.encore_requeue = None;
+        self.instruct_requeue = None;
+        self.instruct_at = usize::MAX;
         for (side_ref, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
             for c in choices {
                 let s = side_ref as usize;
@@ -3995,7 +4008,13 @@ self.trigger_emergency_exits();
         // genuinely hasn't acted yet.
         let s = action.side as usize;
         let slot = (action.actor_slot as usize).min(1);
-        pending_kind[s][slot] = 0;
+        // An Instruct re-run is an extra action: the mon's own queued
+        // action (if any) is still pending.
+        if self.instruct_at == idx {
+            self.instruct_at = usize::MAX;
+        } else {
+            pending_kind[s][slot] = 0;
+        }
         // ko_split/segment collapse soundness: the per-hit hp_bucket
         // partition is computed against ONE HP snapshot, so it is only
         // joint-invariant when this defender is hit by a SINGLE move this
@@ -12689,6 +12708,10 @@ self.trigger_emergency_exits();
         // After You / Quash reorder the remaining queue. Apply the
         // request (if any) to the unprocessed tail `(idx..]` before
         // advancing — a no-op when the target already acted.
+        if let Some(a) = self.instruct_requeue.take() {
+            order.insert(idx + 1, a);
+            self.instruct_at = idx + 1;
+        }
         if let Some((rside, rslot, to_front)) = self.pending_queue_reorder.take() {
             order.reorder_remaining(idx, rside, rslot, to_front);
             // PS gives the action order 3 (After You) or 201 (Quash), which
@@ -18600,8 +18623,10 @@ self.trigger_emergency_exits();
                 if move_fails_instruct(last_slug) || pp_left == 0 {
                     return;
                 }
-                // Re-run the target's last move at the same target location.
-                let action = ScheduledAction {
+                // Re-run the target's last move at the same target location,
+                // as its own action right after Instruct's
+                // (`finalize_move_resolution`).
+                self.instruct_requeue = Some(ScheduledAction {
                     side: ts,
                     actor_slot: tslot,
                     choice: Choice::Move {
@@ -18609,14 +18634,7 @@ self.trigger_emergency_exits();
                         move_slot: last_slot,
                         target: dec_target(last_tgt_enc),
                     },
-                };
-                // Instruct re-execution — a second hit that can couple with
-                // the original on the same defender. Conservatively disable
-                // damage collapse (full-enumerate) for the re-run.
-                let saved_couple = self.multi_targeted_defenders;
-                self.multi_targeted_defenders = 0b1111;
-                self.resolve_move_with_pending(action, pending_kind, true);
-                self.multi_targeted_defenders = saved_couple;
+                });
             }
             data::move_id::SWAGGER => {
                 // Swagger — PS data/moves.ts:swagger. A foe-targeting STATUS
@@ -19608,6 +19626,10 @@ fn dec_target(enc: u8) -> Option<Target> {
         2 | 3 => Some(Target { side: SideRef::P2, slot: enc - 2 }),
         _ => None,
     }
+}
+
+fn no_instruct_at() -> usize {
+    usize::MAX
 }
 
 /// PS `flags.failinstruct` — moves Instruct cannot make the target repeat.
