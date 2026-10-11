@@ -653,6 +653,12 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_twoturn_release: [u8; 2],
+    /// `ps-rng` only: the current action's move got past BeforeMove, so
+    /// runMove ends with `runEvent('AfterMove')`; see
+    /// [`Battle::ps_after_move_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_move_used: bool,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
@@ -815,6 +821,8 @@ impl Battle {
             ps_hit_dead: 0,
             #[cfg(feature = "ps-rng")]
             ps_twoturn_release: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_move_used: false,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             keyed_commit_moves: ([(0, 0); 4], 0),
@@ -2797,6 +2805,62 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: runMove's `runEvent('AfterMove', user)`
+    /// (sim/battle-actions.js:275), once the move got past BeforeMove. Its
+    /// handlers: the user's `lockedmove` volatile (subOrder 2) and every
+    /// active's `onAnyAfterMove` White Herb / Mirror Herb / Eject Pack
+    /// (Item, 8) and Opportunist (Ability, 7), on cached Speed. Two
+    /// holders of the same Speed tie. The user still counts when its own
+    /// recoil knocked it out (not `fainted` until runAction).
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_move_ties(&mut self, user_side: SideRef, user_slot: u8) {
+        let mut h = [(0i64, 0i64); 8];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                let s = self.side(side);
+                let Some(m) = s.active_mon(slot) else { continue };
+                let bit = 1u8 << (side as usize * 2 + slot);
+                let user = side == user_side && slot == user_slot as usize;
+                let pending = user && m.current_hp == 0 && self.ps_action_live & bit != 0 && self.ps_hit_dead & bit == 0;
+                let spe = if pending {
+                    self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied().unwrap_or(0)
+                } else if m.is_alive() {
+                    self.ps_speed(side, slot).unwrap_or(0)
+                } else {
+                    continue;
+                };
+                if user && m.lockin_turns > 0 && n < h.len() {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
+                if matches!(m.item_id, data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK)
+                    && n < h.len()
+                {
+                    h[n] = (spe, 8);
+                    n += 1;
+                }
+                if m.effective_ability_id() == data::ability_id::OPPORTUNIST && n < h.len() {
+                    h[n] = (spe, 7);
+                    n += 1;
+                }
+            }
+        }
+        let list = &mut h[..n];
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end - 1 {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
     /// `ps-rng` only: record a two-turn move's release turn for
     /// [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
@@ -4178,6 +4242,7 @@ self.trigger_emergency_exits();
             }
             self.ps_action_live = live;
             self.ps_hit_dead = 0;
+            self.ps_move_used = false;
             self.ps_spread_window(action, pending_kind, will_act)
         };
         #[cfg(not(feature = "ps-rng"))]
@@ -4202,6 +4267,10 @@ self.trigger_emergency_exits();
             }
             self.ps_hit_loop_faint_ends();
             self.ps_loop_end_update(action.side, action.actor_slot);
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.ps_move_used {
+            self.ps_after_move_ties(action.side, action.actor_slot);
         }
         #[cfg(feature = "ps-rng")]
         {
@@ -6340,6 +6409,10 @@ self.trigger_emergency_exits();
                 }
             }
             return;
+        }
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_move_used = true;
         }
         // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
         // the user's own move runs in between, so drop it now. An aborted
