@@ -19593,6 +19593,9 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
     Some(match slug {
         // PS data/moves.ts confusion secondaries (slug → chance):
         "axekick" => 30,        // moves.ts:944
+        // Alluring Voice: chance 100, confuses only a target whose stats
+        // rose this turn (moves.ts alluringvoice onHit `statsRaisedThisTurn`).
+        "alluringvoice" => 100,
         "chatter" => 100,       // moves.ts:2369
         "confusion" => 10,      // moves.ts:2751
         "dizzypunch" => 20,     // moves.ts:3805
@@ -20011,6 +20014,7 @@ fn apply_secondary_effect(
                 .active_mon(target_slot as usize)
                 .map(|t| {
                     !t.is_alive()
+                        || (move_slug == "alluringvoice" && !t.stats_raised_this_turn)
                         // Already confused: addVolatile returns early.
                         || t.volatiles.has(crate::pokemon::VolatileKind::Confusion)
                         // Own Tempo — PS data/abilities.ts:3106
