@@ -21455,6 +21455,26 @@ mod tests {
 
     #[cfg(feature = "ps-rng")]
     #[test]
+    fn ps_rng_forewarn_samples_the_strongest_foe_moves() {
+        // data/abilities.ts forewarn onStart: `this.sample(warnMoves)` over
+        // the foes' highest-power moves; Fissure's 150 (OHKO) beats Body
+        // Slam, and a lone move still draws random(1).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"musharna","level":50,"ability":"forewarn","moves":["calmmind"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["bodyslam","fissure","tackle"]}]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000007").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks: Vec<u32> = trace.iter().filter(|d| d.op == "sample" && d.file.ends_with("ability.rs")).map(|d| d.b).collect();
+        assert_eq!(picks, [1], "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
     fn ps_rng_struggle_hits_run_moves_random_pick() {
         // Struggle is randomNormal: runMove's getTarget draws randomFoe
         // (sim/battle.ts getTarget -> getRandomTarget) and useMove hits that
