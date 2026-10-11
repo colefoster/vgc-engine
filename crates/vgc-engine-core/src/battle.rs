@@ -1065,7 +1065,17 @@ impl Battle {
     /// call.
     pub(crate) fn sync_weather_terrain_cache(&mut self) {
         self.cached_weather = self.recompute_effective_weather();
+        let old_terrain = self.cached_terrain;
         self.cached_terrain = self.recompute_effective_terrain();
+        // Mimicry's onTerrainChange (data/abilities.ts mimicry).
+        if old_terrain != self.cached_terrain {
+            let n = self.format().active_count() as u8;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    self.apply_mimicry(side, slot);
+                }
+            }
+        }
         // PS field.setWeather / clearWeather / setTerrain / clearTerrain
         // each end with eachEvent('WeatherChange' / 'TerrainChange')
         // (sim/field.ts:87, :97, :155, :165): a speed sort of the living
@@ -1081,6 +1091,28 @@ impl Battle {
                 }
                 self.ps_field_seen = Some((self.weather, self.terrain));
             }
+        }
+    }
+
+    /// Mimicry (PS data/abilities.ts mimicry `onTerrainChange`, also run by
+    /// its onStart): the holder becomes the terrain's type (Electric, Grass,
+    /// Psychic, Fairy), or its species types again with no terrain;
+    /// `setType` refuses a Terastallized mon.
+    pub(crate) fn apply_mimicry(&mut self, side: SideRef, slot: u8) {
+        let ty = match self.terrain {
+            crate::terrain::Terrain::Electric => Some(3),
+            crate::terrain::Terrain::Grassy => Some(4),
+            crate::terrain::Terrain::Psychic => Some(10),
+            crate::terrain::Terrain::Misty => Some(17),
+            crate::terrain::Terrain::None => None,
+        };
+        let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
+        if !m.is_alive() || m.terastallized || m.effective_ability_id() != data::ability_id::MIMICRY {
+            return;
+        }
+        match ty {
+            Some(t) => m.set_type_override(t, None),
+            None => m.clear_type_override(),
         }
     }
 
@@ -1592,6 +1624,18 @@ impl Battle {
         // moves; we then overlay the Transform-specific copies (foe ability,
         // the five battle stats, and the target's stat stages).
         self.set_forme(user_side, user_slot, sp, false);
+        // transformInto's setSpecies sets the cached `speed` from the new
+        // species' base stats on the transformer's own set, before the
+        // target's storedStats are copied (sim/pokemon.ts setSpecies,
+        // transformInto); it stays until the next updateSpeed().
+        #[cfg(feature = "ps-rng")]
+        if let Some(m) = self.side(user_side).active_mon(user_slot as usize) {
+            let spe = crate::pokemon::compute_stats(&data::SPECIES[sp as usize], m.level, &m.ivs, &m.evs, crate::pokemon::nature_by_id(m.nature_id)).spe;
+            let i = self.side(user_side).active[user_slot as usize] as usize;
+            if i < 6 {
+                self.ps_speed_cache[user_side as usize][i] = spe as i64;
+            }
+        }
         if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
             m.ability_id = ab;
             let hp = m.stats.hp;
@@ -2459,6 +2503,9 @@ self.trigger_emergency_exits();
                 // inline path did AFTER the draw is the same tail
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
+                // runAction's Update eats an HP berry the self-hit enabled
+                // (sim/battle.ts:2357; items.ts sitrusberry onUpdate).
+                self.update_hp_berries();
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.white_herb_after_move();
                 self.faint_forme_cleanup();
@@ -2558,7 +2605,10 @@ self.trigger_emergency_exits();
         let s = self.side(side);
         let m = s.active_mon(slot)?;
         if !m.is_alive() {
-            return Some(m.stats.spe as i64);
+            // faintMessages' clearVolatile -> setSpecies(baseSpecies) resets
+            // a fainted Transform user's `speed` to its own stat
+            // (sim/battle.ts:2103, sim/pokemon.ts setSpecies).
+            return Some(m.transform_base.map_or(m.stats.spe, |b| b.stats.spe) as i64);
         }
         let i = *s.active.get(slot)? as usize;
         Some(self.ps_speed_cache[side as usize].get(i).copied().unwrap_or(m.stats.spe as i64))
@@ -3485,6 +3535,16 @@ self.trigger_emergency_exits();
                 let (types, nt) = mon.effective_types();
                 let ghost = types[..nt as usize].contains(&13); // Ghost type index
                 if move_id == data::move_id::CURSE && !ghost {
+                    continue;
+                }
+                // A lockedmove (Outrage) action keeps lastMoveTargetLoc, the
+                // first turn's random pick (sim/side.ts:442-454), so
+                // resolveAction draws no random target; getActionSpeed's
+                // getTarget still draws for the randomNormal move.
+                if mon.lockin_turns > 0 && mon.lockin_move_slot != 255 {
+                    if let Some(&id) = mon.moves.get(mon.lockin_move_slot as usize) {
+                        self.ps_get_target_draw(side, actor_slot, id, None);
+                    }
                     continue;
                 }
                 if target.is_some() {
@@ -7419,6 +7479,12 @@ self.trigger_emergency_exits();
                         })
             });
 
+        // Aura abilities are read before any target takes damage: PS's
+        // getSpreadDamage computes every target's damage before spreadDamage
+        // applies it (sim/battle-actions.ts spreadMoveHit), so a holder this
+        // move knocks out still boosts the later targets.
+        let aura_at_start = scan_aura_field(self);
+
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
         for (ti, &(tside, tslot)) in targets.iter().enumerate() {
@@ -7585,6 +7651,17 @@ self.trigger_emergency_exits();
                     if !g {
                         continue;
                     }
+                }
+                // Protect's onTryHit (hitStepTryHitEvent) stops it before
+                // hitStepAccuracy's level check and roll
+                // (sim/battle-actions.ts:504-629).
+                if m.blocked_by_protect && defender.is_protected_this_turn() && is_targeting_move(m.target) {
+                    let variant = defender.protect_variant();
+                    if variant != 0 && crate::damage::move_makes_contact(&self.moves()[move_id as usize], &attacker) {
+                        self.apply_protect_punish(variant, actor_side, actor_slot, tside, tslot);
+                    }
+                    n_protected += 1;
+                    continue;
                 }
                 // Level gate: user must be >= target level.
                 if attacker.level < defender.level {
@@ -8512,8 +8589,7 @@ self.trigger_emergency_exits();
             // each holder; here we precompute presence (PS de-dupes via
             // `move.auraBooster`, so two Fairy Aura users boost the same
             // move just once).
-            let (fairy_aura_active, dark_aura_active, aura_break_active) =
-                scan_aura_field(self);
+            let (fairy_aura_active, dark_aura_active, aura_break_active) = aura_at_start;
             // Last Respects reads the attacker's side fainted count via
             // DamageContext (PS `pokemon.side.totalFainted`). Cheap
             // derivation from team state; see `Side::total_fainted`.
@@ -14513,7 +14589,9 @@ self.trigger_emergency_exits();
                     Status::Sleep => ab == data::ability_id::VITALSPIRIT || ab == data::ability_id::INSOMNIA,
                     Status::None => false,
                 };
-                let type_immune = is_type_immune_to_status(m.species(), status)
+                // runStatusImmunity reads the live typing (sim/pokemon.ts
+                // getTypes: Tera, Mimicry, Soak ...).
+                let type_immune = is_type_immune_to_status(m.effective_types(), status)
                     && !(matches!(status, Status::Poison | Status::Toxic) && source_has_corrosion);
                 (type_immune, terrain_blocks, ability_status_block)
             }
@@ -14703,6 +14781,9 @@ self.trigger_emergency_exits();
         // getDamage's crit roll, before the damage roll.
         #[allow(unused_mut)]
         let mut ps_crit = false;
+        // An immune target ends trySpreadMoveHit before getDamage: no rolls.
+        #[allow(unused_mut)]
+        let mut ps_immune = false;
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             let m = &self.moves()[entry.move_id as usize];
@@ -14724,14 +14805,19 @@ self.trigger_emergency_exits();
                 (immune, acc, attacker.effective_crit_stage().saturating_add(m.crit_stage_delta), crit_immune)
             };
             if !immune {
+                self.rng.set_decision(RngDecision::Accuracy);
                 if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
                     return;
                 }
+                self.rng.set_decision(RngDecision::Crit);
                 ps_crit = self.rng.crit_with_stage(crit_stage) && !crit_immune;
+                self.rng.set_decision(RngDecision::Damage);
             }
+            ps_immune = immune;
         }
         let roll = match &self.rng {
             Rng::Oracle(_) => 7,
+            _ if ps_immune => 0,
             _ => self.rng.damage_roll(),
         };
 
@@ -17270,8 +17356,17 @@ self.trigger_emergency_exits();
                     return;
                 }
                 if let Some((ts, tslot)) = opp_target {
-                    if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
+                    // onHit returns false unless `queue.willMove(target)`: a
+                    // mon that already acted or replaced its slot mid-turn
+                    // has no queued action.
+                    let (si, sl) = (ts as usize, (tslot as usize).min(1));
+                    let will_move = matches!(pending_kind[si][sl], 1 | 2)
+                        && !self.replaced_mid_turn[si][sl]
+                        && !self.pursuit_consumed[si][sl];
+                    if will_move && self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
                         self.pending_queue_reorder = Some((ts, tslot, false));
+                    } else {
+                        self.ps_status_failed();
                     }
                 }
             }
@@ -18329,16 +18424,21 @@ self.trigger_emergency_exits();
                 // a `leechseed` volatile to the target tracking the
                 // seeder's slot (`sourceSlot`). End-of-turn residual:
                 // target loses 1/8 max HP, seeder heals the same.
+                // Grass-type immunity: PS `onTryImmunity` returns false when
+                // the target has Grass, a hit step before the accuracy roll
+                // (sim/battle-actions.ts hitStepTryImmunity -> hitStepAccuracy).
+                let is_grass = opp_target.is_some_and(|(opp, slot)| {
+                    self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        types[..n as usize].contains(&4) // Grass = 4
+                    })
+                });
+                if is_grass {
+                    self.ps_status_failed();
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
-                    // Grass-type immunity: PS `onTryImmunity` returns
-                    // false when target has Grass.
-                    let is_grass = self.side(opp).active_mon(slot as usize)
-                        .map(|t| {
-                            let s = t.species();
-                            (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
-                        })
-                        .unwrap_or(false);
                     // Already seeded — PS volatileStatus add is a no-op.
                     let already_seeded = self.side(opp).active_mon(slot as usize)
                         .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
@@ -20941,10 +21041,8 @@ fn apply_secondary_effect(
 ///   Poison/Steel immune to Poison/Toxic
 /// Grass immunity to powder moves (Spore, Sleep Powder) is per-move,
 /// not per-status — handled at move resolution when sleep lands.
-fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool {
-    let has = |code: u8| {
-        (0..species.num_types as usize).any(|i| species.types[i] == code)
-    };
+fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
+    let has = |code: u8| types[..n as usize].contains(&code);
     // Type codes per data::TYPE_NAMES:
     // Fire=1 Electric=3 Ice=5 Poison=7 Ground=8 Steel=16.
     match status {
@@ -34338,6 +34436,73 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn mimicry_takes_the_terrain_type_and_reverts_when_it_ends() {
+        // PS data/abilities.ts mimicry onTerrainChange: Electric Terrain makes
+        // the holder pure Electric (so it can't be paralyzed); no terrain
+        // restores its species types.
+        let p1_json = r#"[
+            {"species":"pincurchin","level":50,"ability":"electricsurge","nature":"modest","moves":["thunderwave","protect","discharge","spikes"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"stunfiskgalar","level":50,"ability":"mimicry","nature":"adamant","moves":["protect","snaptrap","yawn","fissure"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+        crate::ability::on_switch_in(&mut b, SideRef::P2, 0);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        assert_eq!(b.p2.team[0].effective_types(), ([3, 0], 1), "pure Electric under Electric Terrain");
+        b.try_set_status_from_src(SideRef::P2, 0, Status::Paralysis, SideRef::P1, 0);
+        assert_eq!(b.p2.team[0].status, Status::None, "an Electric type can't be paralyzed");
+        b.terrain = crate::terrain::Terrain::None;
+        b.sync_weather_terrain_cache();
+        assert_eq!(b.p2.team[0].effective_types(), (b.p2.team[0].species().types, b.p2.team[0].species().num_types));
+    }
+
+    #[test]
+    fn fairy_aura_holder_knocked_out_by_a_spread_move_still_boosts_its_later_target() {
+        // PS getSpreadDamage computes every target's damage before any is
+        // applied, so a Fairy Aura holder the spread move KOs still boosts
+        // the other target's damage.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","item":"focussash","nature":"modest","moves":["dazzlinggleam","protect","hypervoice","moonblast"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"xerneas","level":50,"ability":"fairyaura","nature":"timid","moves":["protect","moonblast","psyshock","geomancy"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#;
+        let hit = |holder_hp: Option<u16>| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+            b.champions = true;
+            b.force_accuracy_hit = Some(true);
+            if let Some(hp) = holder_hp {
+                b.p2.team[0].current_hp = hp;
+            }
+            let before = b.p2.team[1].current_hp;
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 1, target: Some(Target { side: SideRef::P1, slot: 1 }) },
+                    Choice::Move { actor_slot: 1, move_slot: 2, target: Some(Target { side: SideRef::P1, slot: 1 }) },
+                ],
+            );
+            (before - b.p2.team[1].current_hp, b.p2.team[0].current_hp)
+        };
+        let (full, _) = hit(None);
+        let (after_ko, holder_left) = hit(Some(1));
+        assert!(full > 0);
+        assert_eq!(holder_left, 0, "the 1 HP Fairy Aura holder is knocked out");
+        assert_eq!(after_ko, full, "Fairy Aura still applies to the later target");
     }
 
     #[test]
