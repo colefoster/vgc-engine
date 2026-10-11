@@ -6148,6 +6148,39 @@ self.trigger_emergency_exits();
             .all(|(x, y)| x.side == y.side && x.actor_slot == y.actor_slot)
     }
 
+    /// Multi-hit hit-count roll (see the call site in
+    /// `resolve_move_with_pending` for the PS rules).
+    fn roll_multihit_count(&mut self, attacker: &Pokemon, m: &data::MoveDef) -> u32 {
+        let skill_link = attacker.effective_ability_id() == data::ability_id::SKILLLINK;
+        let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
+        let mut hits = if m.multihit_min == m.multihit_max {
+            // Fixed multihit (Double Hit = 2, Population Bomb = 10).
+            m.multihit_max as u32
+        } else if skill_link {
+            // Skill Link forces the maximum number of hits (no draw).
+            m.multihit_max as u32
+        } else if m.multihit_min == 2 && m.multihit_max == 5 {
+            // gen 5+ weighted 2-5 sample (35/35/15/15).
+            let r = self.rng.range(20);
+            let mut h = if r < 7 { 2 } else if r < 14 { 3 } else if r < 17 { 4 } else { 5 };
+            // Loaded Dice: a roll below 4 becomes `5 - random(2)`
+            // (= 4 or 5). A roll already >= 4 is left untouched.
+            if loaded_dice && h < 4 {
+                h = 5 - self.rng.range(2);
+            }
+            h
+        } else {
+            // Generic range (rare): uniform in [min, max].
+            let span = (m.multihit_max - m.multihit_min + 1) as u32;
+            m.multihit_min as u32 + self.rng.range(span)
+        };
+        // Loaded Dice on a 10-hit move (Population Bomb): 10 - random(7).
+        if loaded_dice && hits == 10 {
+            hits -= self.rng.range(7);
+        }
+        hits.clamp(1, 10)
+    }
+
     fn resolve_move_with_pending(
         &mut self,
         action: ScheduledAction,
@@ -6641,7 +6674,7 @@ self.trigger_emergency_exits();
             let before = self.status_effect_snapshot();
             let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m, target).is_some();
             self.resolve_status_move_branch(
-                actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
+                actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act, &before,
             );
             let r = self.status_move_result(actor_side, actor_slot, m, target, &before, bounced);
             self.set_move_result(actor_side, actor_slot, r);
@@ -7155,7 +7188,16 @@ self.trigger_emergency_exits();
                     && self
                         .side(ts)
                         .active_mon(tsl as usize)
-                        .is_some_and(|d| d.is_alive() && d.effective_ability_id() == data::ability_id::FLASHFIRE)
+                        .is_some_and(|d| {
+                            d.is_alive()
+                                && d.effective_ability_id() == data::ability_id::FLASHFIRE
+                                // Protect's TryHit (onTryHitPriority 3) stops
+                                // the event before Flash Fire's onTryHit runs
+                                // (sim/battle.js runEvent breaks on a falsy
+                                // return), so a protected holder doesn't make
+                                // the move sure-hit.
+                                && !(m.blocked_by_protect && d.is_protected_this_turn())
+                        })
             });
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
@@ -8044,6 +8086,32 @@ self.trigger_emergency_exits();
                     defender.effective_ability_id(),
                     data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
                 );
+            // PS draws the multi-hit count in hitStepMoveHitLoop
+            // (data/mods/champions/scripts.js:365-378) before the first hit's
+            // crit and damage rolls, so under `Rng::Ps` roll it here.
+            let ps_pre_hits: Option<u32> =
+                if self.rng.is_ps() && m.multihit_min > 0 && fixed_damage.is_none() {
+                    Some(self.roll_multihit_count(&attacker, m))
+                } else {
+                    None
+                };
+            // PS getDamage (sim/battle-actions.js:1395-1401) rolls the crit
+            // whenever `willCrit` is undefined and only then lets
+            // `runEvent('CriticalHit')` (Shell / Battle Armor) veto it, so
+            // the armored defender still costs a draw.
+            #[cfg(feature = "ps-rng")]
+            if crit_immune
+                && fixed_damage.is_none()
+                && self.force_crit.is_none()
+                && self.rng.is_ps()
+                && !matches!(
+                    move_id,
+                    data::move_id::STORMTHROW | data::move_id::FROSTBREATH | data::move_id::FLOWERTRICK
+                        | data::move_id::WICKEDBLOW | data::move_id::SURGINGSTRIKES
+                )
+            {
+                let _ = self.rng.crit_with_stage(crit_stage);
+            }
             let crit = if fixed_damage.is_some() || crit_immune {
                 false
             } else if matches!(
@@ -8544,34 +8612,10 @@ self.trigger_emergency_exits();
             //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
             let mut hits: u32 = 1;
             if m.multihit_min > 0 && dmg > 0 {
-                let skill_link = attacker.effective_ability_id() == data::ability_id::SKILLLINK;
-                let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
-                hits = if m.multihit_min == m.multihit_max {
-                    // Fixed multihit (Double Hit = 2, Population Bomb = 10).
-                    m.multihit_max as u32
-                } else if skill_link {
-                    // Skill Link forces the maximum number of hits (no draw).
-                    m.multihit_max as u32
-                } else if m.multihit_min == 2 && m.multihit_max == 5 {
-                    // gen 5+ weighted 2-5 sample (35/35/15/15).
-                    let r = self.rng.range(20);
-                    let mut h = if r < 7 { 2 } else if r < 14 { 3 } else if r < 17 { 4 } else { 5 };
-                    // Loaded Dice: a roll below 4 becomes `5 - random(2)`
-                    // (= 4 or 5). A roll already >= 4 is left untouched.
-                    if loaded_dice && h < 4 {
-                        h = 5 - self.rng.range(2);
-                    }
-                    h
-                } else {
-                    // Generic range (rare): uniform in [min, max].
-                    let span = (m.multihit_max - m.multihit_min + 1) as u32;
-                    m.multihit_min as u32 + self.rng.range(span)
+                hits = match ps_pre_hits {
+                    Some(h) => h,
+                    None => self.roll_multihit_count(&attacker, m),
                 };
-                // Loaded Dice on a 10-hit move (Population Bomb): 10 - random(7).
-                if loaded_dice && hits == 10 {
-                    hits -= self.rng.range(7);
-                }
-                hits = hits.clamp(1, 10);
             }
             if darts_phase[ti] == 2 && darts_pass == [true, true] {
                 hits = 1;
@@ -9137,6 +9181,7 @@ self.trigger_emergency_exits();
         target: Option<Target>,
         pending_kind: &[[u8; 2]; 2],
         will_act: bool,
+        before: &StatusEffectSnapshot,
     ) {
         // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
         let prankster_boosted = attacker.effective_ability_id() == data::ability_id::PRANKSTER;
@@ -9372,8 +9417,23 @@ self.trigger_emergency_exits();
             self.ps_status_missed = false;
         }
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
+        // A status move whose effect failed (runMoveEffects' hit result is
+        // false for every target) leaves the hit loop at hit 1 with no Update
+        // (data/mods/champions/scripts.js:442, :456).
+        #[cfg(not(feature = "ps-rng"))]
+        let _ = before;
         #[cfg(feature = "ps-rng")]
-        if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m, target) {
+        if ps_loop
+            && self.ps_status_move_landed(actor_side, actor_slot, m, target)
+            && (self.status_move_result(actor_side, actor_slot, m, target, before, false)
+                == crate::pokemon::MoveResult::Succeeded
+                // Effects the snapshot cannot see: a stat swap, a called
+                // move, a pending drag, and a heal that fails with NOT_FAIL
+                // (data/moves.js healpulse / floralhealing).
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing")
+                || (matches!(m.slug, "roar" | "whirlwind")
+                    && self.force_switch_flags.iter().flatten().any(|&f| f)))
+        {
             self.ps_loop_hits = 1;
             if self.ps_inline_hit_updates {
                 self.ps_hit_update();
@@ -14369,6 +14429,38 @@ self.trigger_emergency_exits();
         // queue. OraclePartial / Splitmix draw deterministically; strict
         // Oracle uses a fixed mid bucket rather than popping an unrelated
         // event.
+        // PS futuremove onEnd runs trySpreadMoveHit (data/conditions.js:416):
+        // a target the move's type can hit draws hitStepAccuracy's roll, then
+        // getDamage's crit roll, before the damage roll.
+        #[allow(unused_mut)]
+        let mut ps_crit = false;
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let m = &self.moves()[entry.move_id as usize];
+            let (immune, acc, crit_stage, crit_immune) = {
+                let attacker = &self.side(src_side).team[src_idx];
+                let Some(defender) = self.side(tside).active_mon(tslot as usize) else { return };
+                let immune = crate::damage::effectiveness_for_attack(attacker, entry.move_id, m.type_, defender)
+                    .is_immune();
+                let boost = (attacker.boosts[5] as i32 - defender.boosts[6] as i32).clamp(-6, 6);
+                let acc: u32 = if boost > 0 {
+                    m.accuracy as u32 * (3 + boost as u32) / 3
+                } else {
+                    m.accuracy as u32 * 3 / (3 + (-boost) as u32)
+                };
+                let crit_immune = matches!(
+                    defender.effective_ability_id(),
+                    data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
+                );
+                (immune, acc, attacker.effective_crit_stage().saturating_add(m.crit_stage_delta), crit_immune)
+            };
+            if !immune {
+                if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
+                    return;
+                }
+                ps_crit = self.rng.crit_with_stage(crit_stage) && !crit_immune;
+            }
+        }
         let roll = match &self.rng {
             Rng::Oracle(_) => 7,
             _ => self.rng.damage_roll(),
@@ -14396,7 +14488,7 @@ self.trigger_emergency_exits();
                 defender,
                 entry.move_id,
                 DamageContext {
-                    crit: false,
+                    crit: ps_crit,
                     roll,
                     is_spread: false,
                     weather,
@@ -17156,13 +17248,21 @@ self.trigger_emergency_exits();
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
+                // PS hitStepTryImmunity (sim/battle-actions.js:566) fails a
+                // powder move on an immune target before the accuracy roll.
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, true);
                 }
             }
             data::move_id::SLEEPPOWDER => {
-                // Powder: 75% acc, Grass immunity.
+                // Powder: 75% acc, Grass immunity (before the roll, as Spore).
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, true);
@@ -18033,6 +18133,10 @@ self.trigger_emergency_exits();
                 crate::item::try_consume_mental_herb(self, opp, target_slot);
             }
             data::move_id::POISONPOWDER => {
+                // Powder immunity fails it before the roll, as Spore.
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 // Powder gate: Grass / Overcoat / Safety Goggles.
                 if let Some((opp, slot)) = opp_target {
@@ -18735,7 +18839,11 @@ self.trigger_emergency_exits();
                 // Eject Pack / Defiant·Competitive. Found missing by the
                 // Champions conformance harness (out_46: Emolga Tickle).
                 if let Some(fd) = foe_debuff_moves(m.slug) {
-                    if !self.rolled_accuracy_passed(m) {
+                    // A spread debuff (String Shot, Growl ...) rolls accuracy
+                    // per target, after Protect / powder immunity drop a
+                    // target (hitStepAccuracy, sim/battle-actions.js:584-629).
+                    let per_target_acc = fd.spread && forced_target.is_none();
+                    if !per_target_acc && !self.rolled_accuracy_passed(m) {
                         return;
                     }
                     let opp_side = actor_side.opposing();
@@ -18761,7 +18869,44 @@ self.trigger_emergency_exits();
                             ntgt = 1;
                         }
                     }
-                    for &(ts, tslot) in tgts.iter().take(ntgt) {
+                    let mut acc_hit = [true; 2];
+                    if per_target_acc {
+                        let (mut any_rolled, mut any_hit) = (false, false);
+                        let user_noguard = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+                        let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                        for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
+                            let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
+                            if (m.is_powder && self.target_is_powder_immune(ts, tslot))
+                                || (fd.respects_protect && t.is_protected_this_turn())
+                            {
+                                continue;
+                            }
+                            let sure = user_noguard
+                                || t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
+                                || t.effective_ability_id() == data::ability_id::NOGUARD;
+                            let boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
+                            self.status_sure_hit = sure;
+                            self.status_acc_boost = boost;
+                            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+                            self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, sref(ts) + tslot);
+                            self.rng.set_decision(RngDecision::Accuracy);
+                            any_rolled = true;
+                            acc_hit[i] = self.rolled_accuracy_passed(m);
+                            any_hit |= acc_hit[i];
+                        }
+                        #[cfg(feature = "ps-rng")]
+                        {
+                            self.ps_status_missed = any_rolled && !any_hit;
+                        }
+                        let _ = (any_rolled, any_hit);
+                    }
+                    for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
+                        if !acc_hit[i] {
+                            continue;
+                        }
                         // Cotton Spore is a powder move: hitStepTryImmunity
                         // drops a powder-immune target (sim/battle-actions.ts:669).
                         if m.is_powder && self.target_is_powder_immune(ts, tslot) {
