@@ -2377,7 +2377,11 @@ impl Battle {
                     // action that actually executes (runAction returns early
                     // for a fainted or inactive user, and switches ran in the
                     // prologue).
+                    // A user switched out mid-turn (Eject Button, Red Card,
+                    // a self-switch) had its action cancelled
+                    // (sim/battle-actions.js switchIn -> queue.cancelAction).
                     let ran = matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && !self.replaced_mid_turn[order[idx].side as usize][(order[idx].actor_slot as usize).min(1)]
                         && self.side(order[idx].side).active_mon(order[idx].actor_slot as usize).is_some_and(|m| m.is_alive());
                     self.process_one_action(&mut order, idx, &mut pending_kind);
                     if let Some(pending) = self.pending_yield.take() {
