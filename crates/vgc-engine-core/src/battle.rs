@@ -16259,13 +16259,9 @@ self.trigger_emergency_exits();
                 // target: adjacentAlly, sets a single-turn volatile on
                 // the partner that boosts its next damaging move's BP
                 // ×1.5. Fails outside Doubles (no ally) and when the
-                // partner is missing / fainted. PS additionally fails
-                // if the partner has already moved this turn
-                // (`onTryHit: if (!target.newlySwitched && !this.queue.willMove(target)) return false`);
-                // skipped here — the engine doesn't yet expose the
-                // remaining-action queue to status moves, and the
-                // common case (Helping Hand goes before partner's
-                // attack thanks to +5 priority) is already correct.
+                // partner is missing / fainted, or has already moved
+                // this turn and did not switch in this turn
+                // (`onTryHit: if (!target.newlySwitched && !this.queue.willMove(target)) return false`).
                 // BP application: `damage.rs` reads
                 // `attacker.helping_handed_this_turn()`.
                 let n = self.format().active_count() as u8;
@@ -16273,6 +16269,17 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = actor_slot ^ 1;
+                // Cleared to 0 once the partner's action runs; a queued
+                // move whose slot also carries a mid-turn pick reads 3.
+                let will_move = pending_kind[actor_side as usize][(partner_slot as usize).min(1)] != 0;
+                let newly = self
+                    .side(actor_side)
+                    .active_mon(partner_slot as usize)
+                    .is_some_and(|p| p.switched_in_this_turn());
+                if !will_move && !newly {
+                    self.ps_status_failed();
+                    return;
+                }
                 if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot as usize) {
                     if p.is_alive() {
                         p.set_helping_handed(true);
@@ -34402,6 +34409,32 @@ mod tests {
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
         assert!(!b.p1.team[0].helping_handed_this_turn());
+    }
+
+    #[test]
+    fn helping_hand_fails_on_a_partner_with_no_action_left() {
+        // PS data/moves.ts helpinghand onTryHit: fails unless the partner
+        // switched in this turn or `queue.willMove(target)`.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let run = |partner: Choice| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 1)) }, partner],
+                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            );
+            b.p1.team[1].helping_handed_this_turn()
+        };
+        assert!(run(Choice::Move { actor_slot: 1, move_slot: 1, target: Some(t(SideRef::P2, 0)) }));
+        assert!(!run(Choice::Pass { actor_slot: 1 }), "no queued action: Helping Hand fails");
     }
 
     #[test]
