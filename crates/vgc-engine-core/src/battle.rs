@@ -1592,6 +1592,18 @@ impl Battle {
         // moves; we then overlay the Transform-specific copies (foe ability,
         // the five battle stats, and the target's stat stages).
         self.set_forme(user_side, user_slot, sp, false);
+        // transformInto's setSpecies sets the cached `speed` from the new
+        // species' base stats on the transformer's own set, before the
+        // target's storedStats are copied (sim/pokemon.ts setSpecies,
+        // transformInto); it stays until the next updateSpeed().
+        #[cfg(feature = "ps-rng")]
+        if let Some(m) = self.side(user_side).active_mon(user_slot as usize) {
+            let spe = crate::pokemon::compute_stats(&data::SPECIES[sp as usize], m.level, &m.ivs, &m.evs, crate::pokemon::nature_by_id(m.nature_id)).spe;
+            let i = self.side(user_side).active[user_slot as usize] as usize;
+            if i < 6 {
+                self.ps_speed_cache[user_side as usize][i] = spe as i64;
+            }
+        }
         if let Some(m) = self.side_mut(user_side).active_mon_mut(user_slot as usize) {
             m.ability_id = ab;
             let hp = m.stats.hp;
