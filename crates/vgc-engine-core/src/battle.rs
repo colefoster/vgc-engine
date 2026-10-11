@@ -6003,6 +6003,39 @@ self.trigger_emergency_exits();
             .all(|(x, y)| x.side == y.side && x.actor_slot == y.actor_slot)
     }
 
+    /// Multi-hit hit-count roll (see the call site in
+    /// `resolve_move_with_pending` for the PS rules).
+    fn roll_multihit_count(&mut self, attacker: &Pokemon, m: &data::MoveDef) -> u32 {
+        let skill_link = attacker.effective_ability_id() == data::ability_id::SKILLLINK;
+        let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
+        let mut hits = if m.multihit_min == m.multihit_max {
+            // Fixed multihit (Double Hit = 2, Population Bomb = 10).
+            m.multihit_max as u32
+        } else if skill_link {
+            // Skill Link forces the maximum number of hits (no draw).
+            m.multihit_max as u32
+        } else if m.multihit_min == 2 && m.multihit_max == 5 {
+            // gen 5+ weighted 2-5 sample (35/35/15/15).
+            let r = self.rng.range(20);
+            let mut h = if r < 7 { 2 } else if r < 14 { 3 } else if r < 17 { 4 } else { 5 };
+            // Loaded Dice: a roll below 4 becomes `5 - random(2)`
+            // (= 4 or 5). A roll already >= 4 is left untouched.
+            if loaded_dice && h < 4 {
+                h = 5 - self.rng.range(2);
+            }
+            h
+        } else {
+            // Generic range (rare): uniform in [min, max].
+            let span = (m.multihit_max - m.multihit_min + 1) as u32;
+            m.multihit_min as u32 + self.rng.range(span)
+        };
+        // Loaded Dice on a 10-hit move (Population Bomb): 10 - random(7).
+        if loaded_dice && hits == 10 {
+            hits -= self.rng.range(7);
+        }
+        hits.clamp(1, 10)
+    }
+
     fn resolve_move_with_pending(
         &mut self,
         action: ScheduledAction,
@@ -7899,6 +7932,15 @@ self.trigger_emergency_exits();
                     defender.effective_ability_id(),
                     data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
                 );
+            // PS draws the multi-hit count in hitStepMoveHitLoop
+            // (data/mods/champions/scripts.js:365-378) before the first hit's
+            // crit and damage rolls, so under `Rng::Ps` roll it here.
+            let ps_pre_hits: Option<u32> =
+                if self.rng.is_ps() && m.multihit_min > 0 && fixed_damage.is_none() {
+                    Some(self.roll_multihit_count(&attacker, m))
+                } else {
+                    None
+                };
             // PS getDamage (sim/battle-actions.js:1395-1401) rolls the crit
             // whenever `willCrit` is undefined and only then lets
             // `runEvent('CriticalHit')` (Shell / Battle Armor) veto it, so
@@ -8416,34 +8458,10 @@ self.trigger_emergency_exits();
             //             <https://bulbapedia.bulbagarden.net/wiki/Triple_Axel_(move)>.
             let mut hits: u32 = 1;
             if m.multihit_min > 0 && dmg > 0 {
-                let skill_link = attacker.effective_ability_id() == data::ability_id::SKILLLINK;
-                let loaded_dice = attacker.item_id == data::item_id::LOADEDDICE;
-                hits = if m.multihit_min == m.multihit_max {
-                    // Fixed multihit (Double Hit = 2, Population Bomb = 10).
-                    m.multihit_max as u32
-                } else if skill_link {
-                    // Skill Link forces the maximum number of hits (no draw).
-                    m.multihit_max as u32
-                } else if m.multihit_min == 2 && m.multihit_max == 5 {
-                    // gen 5+ weighted 2-5 sample (35/35/15/15).
-                    let r = self.rng.range(20);
-                    let mut h = if r < 7 { 2 } else if r < 14 { 3 } else if r < 17 { 4 } else { 5 };
-                    // Loaded Dice: a roll below 4 becomes `5 - random(2)`
-                    // (= 4 or 5). A roll already >= 4 is left untouched.
-                    if loaded_dice && h < 4 {
-                        h = 5 - self.rng.range(2);
-                    }
-                    h
-                } else {
-                    // Generic range (rare): uniform in [min, max].
-                    let span = (m.multihit_max - m.multihit_min + 1) as u32;
-                    m.multihit_min as u32 + self.rng.range(span)
+                hits = match ps_pre_hits {
+                    Some(h) => h,
+                    None => self.roll_multihit_count(&attacker, m),
                 };
-                // Loaded Dice on a 10-hit move (Population Bomb): 10 - random(7).
-                if loaded_dice && hits == 10 {
-                    hits -= self.rng.range(7);
-                }
-                hits = hits.clamp(1, 10);
             }
             if darts_phase[ti] == 2 && darts_pass == [true, true] {
                 hits = 1;
