@@ -13391,6 +13391,11 @@ self.trigger_emergency_exits();
     /// Whether a foe's Protect blocks every target of a status move
     /// (hitStepTryHitEvent, sim/battle-actions.ts:643).
     fn status_move_protected(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
+        // Protect's onTryHit only stops moves with `flags.protect` (Roar,
+        // Whirlwind, Transform... pass through).
+        if !m.blocked_by_protect {
+            return false;
+        }
         let protected = |t: Target| {
             self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
         };
