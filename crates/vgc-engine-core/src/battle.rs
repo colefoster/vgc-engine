@@ -1619,6 +1619,26 @@ impl Battle {
                 m.pp[i] = if moves[i] == u16::MAX { 0 } else { data::MOVES[moves[i] as usize].pp.min(5) };
             }
         }
+        // transformInto's setSpecies caches `speed` from the target species'
+        // stats on the transformer's own set (sim/pokemon.js:991, :1008),
+        // before storedStats take the target's; updateSpeed corrects it.
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let s = self.side(user_side);
+            let i = s.active[user_slot as usize] as usize;
+            let m = &s.team[i];
+            let spe = crate::pokemon::compute_stats(
+                &data::SPECIES[sp as usize],
+                m.level,
+                &m.ivs,
+                &m.evs,
+                crate::pokemon::nature_by_id(m.nature_id),
+            )
+            .spe as i64;
+            if i < 6 {
+                self.ps_speed_cache[user_side as usize][i] = spe;
+            }
+        }
         // PS `transformInto` -> `setAbility(target.ability, ..., isTransform=true)`
         // (sim/pokemon.ts:1358). `setAbility` runs the acquired ability's onStart
         // when `!isTransform || oldAbility.id !== ability.id` (sim/pokemon.ts:1946).
