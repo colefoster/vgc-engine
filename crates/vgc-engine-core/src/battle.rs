@@ -7444,6 +7444,12 @@ self.trigger_emergency_exits();
                         })
             });
 
+        // Aura abilities are read before any target takes damage: PS's
+        // getSpreadDamage computes every target's damage before spreadDamage
+        // applies it (sim/battle-actions.ts spreadMoveHit), so a holder this
+        // move knocks out still boosts the later targets.
+        let aura_at_start = scan_aura_field(self);
+
         // 6. Per-target resolution — PS does accuracy + damage rolls and
         //    Protect/secondary checks independently per target.
         for (ti, &(tside, tslot)) in targets.iter().enumerate() {
@@ -8537,8 +8543,7 @@ self.trigger_emergency_exits();
             // each holder; here we precompute presence (PS de-dupes via
             // `move.auraBooster`, so two Fairy Aura users boost the same
             // move just once).
-            let (fairy_aura_active, dark_aura_active, aura_break_active) =
-                scan_aura_field(self);
+            let (fairy_aura_active, dark_aura_active, aura_break_active) = aura_at_start;
             // Last Respects reads the attacker's side fainted count via
             // DamageContext (PS `pokemon.side.totalFainted`). Cheap
             // derivation from team state; see `Side::total_fainted`.
@@ -34373,6 +34378,48 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn fairy_aura_holder_knocked_out_by_a_spread_move_still_boosts_its_later_target() {
+        // PS getSpreadDamage computes every target's damage before any is
+        // applied, so a Fairy Aura holder the spread move KOs still boosts
+        // the other target's damage.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","item":"focussash","nature":"modest","moves":["dazzlinggleam","protect","hypervoice","moonblast"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","item":"focussash","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"xerneas","level":50,"ability":"fairyaura","nature":"timid","moves":["protect","moonblast","psyshock","geomancy"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["protect","bodyslam","crunch","rest"]}
+        ]"#;
+        let hit = |holder_hp: Option<u16>| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 7 }, p1, p2);
+            b.champions = true;
+            b.force_accuracy_hit = Some(true);
+            if let Some(hp) = holder_hp {
+                b.p2.team[0].current_hp = hp;
+            }
+            let before = b.p2.team[1].current_hp;
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 0, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: 1, target: Some(Target { side: SideRef::P1, slot: 1 }) },
+                    Choice::Move { actor_slot: 1, move_slot: 2, target: Some(Target { side: SideRef::P1, slot: 1 }) },
+                ],
+            );
+            (before - b.p2.team[1].current_hp, b.p2.team[0].current_hp)
+        };
+        let (full, _) = hit(None);
+        let (after_ko, holder_left) = hit(Some(1));
+        assert!(full > 0);
+        assert_eq!(holder_left, 0, "the 1 HP Fairy Aura holder is knocked out");
+        assert_eq!(after_ko, full, "Fairy Aura still applies to the later target");
     }
 
     #[test]
