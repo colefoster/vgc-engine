@@ -14713,6 +14713,9 @@ self.trigger_emergency_exits();
         // getDamage's crit roll, before the damage roll.
         #[allow(unused_mut)]
         let mut ps_crit = false;
+        // An immune target ends trySpreadMoveHit before getDamage: no rolls.
+        #[allow(unused_mut)]
+        let mut ps_immune = false;
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             let m = &self.moves()[entry.move_id as usize];
@@ -14739,9 +14742,11 @@ self.trigger_emergency_exits();
                 }
                 ps_crit = self.rng.crit_with_stage(crit_stage) && !crit_immune;
             }
+            ps_immune = immune;
         }
         let roll = match &self.rng {
             Rng::Oracle(_) => 7,
+            _ if ps_immune => 0,
             _ => self.rng.damage_roll(),
         };
 
