@@ -17861,6 +17861,24 @@ self.trigger_emergency_exits();
                 }
                 self.sync_status_dot_bit(ts, tslot);
             }
+            data::move_id::TRICKORTREAT | data::move_id::FORESTSCURSE => {
+                // PS data/moves.ts trickortreat / forestscurse: accuracy 100,
+                // then onHit fails when the target already has the type, else
+                // `target.addType` (Ghost / Grass; refused while
+                // Terastallized). The added third type is NOT modeled (the
+                // engine's typing holds two types); this arm only keeps the
+                // accuracy roll and the hit-loop result PS has.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
+                let add = if move_id == data::move_id::TRICKORTREAT { 13 } else { 4 };
+                let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    let (types, n) = t.effective_types();
+                    t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !types[..n as usize].contains(&add)
+                });
+                if !ok {
+                    self.ps_status_failed();
+                }
+            }
             data::move_id::MAGICPOWDER => {
                 // PS data/moves.ts:10738 magicpowder. A powder move: Grass
                 // types (hitStepTryImmunity, sim/battle-actions.ts:669),

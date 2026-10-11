@@ -916,3 +916,17 @@ fn good_as_gold_blocks_parting_shot_in_doubles() {
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
     assert_eq!(b.p2.team[0].boosts[0], 0);
 }
+
+#[test]
+fn trick_or_treat_rolls_accuracy() {
+    // PS data/moves.ts trickortreat: accuracy 100, so the roll is drawn
+    // (the added Ghost type itself is not modeled).
+    let mut b = singles(
+        r#"[{"species":"gourgeist","level":50,"ability":"frisk","moves":["trickortreat"]}]"#,
+        r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
+        1,
+    );
+    b.set_rng(crate::rng::Rng::recording(3));
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+    assert_eq!(accuracy_rolls(&b, data::move_id::TRICKORTREAT), 1);
+}
