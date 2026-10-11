@@ -19913,6 +19913,14 @@ fn apply_secondary_effect(
     if defender_shield_dust && !attacker_breaks_mold {
         return;
     }
+    // Stone Axe / Ceaseless Edge carry an empty `secondary: {}` (their
+    // hazard is an onAfterHit), which PS still rolls: one random(100), no
+    // effect (data/moves.ts stoneaxe/ceaselessedge, sim/battle-actions.ts:
+    // 1133 secondaries). Draws only.
+    #[cfg(feature = "ps-rng")]
+    if rng.is_ps() && matches!(move_slug, "stoneaxe" | "ceaselessedge") {
+        let _ = rng.percent_1_100();
+    }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
     // secondaries)`, one `random(100)` per entry. The elemental Fangs
