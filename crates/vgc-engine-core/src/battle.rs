@@ -5485,7 +5485,16 @@ self.trigger_emergency_exits();
                 }
                 let team_index = deferred[pos].1;
                 if revives {
+                    #[cfg(feature = "ps-rng")]
+                    let benched = !self.side(side).active[..self.format().active_count()].contains(&team_index);
                     self.revive_party_member(side, Some(team_index));
+                    // The revivalblessing action ends with eachEvent('Update')
+                    // unless it queued an instaswitch for an active slot
+                    // (sim/battle.js:2291-2308, :2346-2357).
+                    #[cfg(feature = "ps-rng")]
+                    if benched && self.rng.is_ps() {
+                        self.ps_active_ties(false, "shuffle");
+                    }
                     continue;
                 }
                 self.copy_volatiles_next_switch = copies;
