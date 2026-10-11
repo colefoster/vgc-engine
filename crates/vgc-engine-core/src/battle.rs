@@ -7617,6 +7617,17 @@ self.trigger_emergency_exits();
                         continue;
                     }
                 }
+                // Protect's onTryHit (hitStepTryHitEvent) stops it before
+                // hitStepAccuracy's level check and roll
+                // (sim/battle-actions.ts:504-629).
+                if m.blocked_by_protect && defender.is_protected_this_turn() && is_targeting_move(m.target) {
+                    let variant = defender.protect_variant();
+                    if variant != 0 && crate::damage::move_makes_contact(&self.moves()[move_id as usize], &attacker) {
+                        self.apply_protect_punish(variant, actor_side, actor_slot, tside, tslot);
+                    }
+                    n_protected += 1;
+                    continue;
+                }
                 // Level gate: user must be >= target level.
                 if attacker.level < defender.level {
                     continue;
