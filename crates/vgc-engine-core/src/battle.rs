@@ -3245,6 +3245,78 @@ self.trigger_emergency_exits();
         let (slot, move_slot) = match action.choice {
             Choice::Move { actor_slot, move_slot, .. }
             | Choice::Terastallize { actor_slot, move_slot, .. }
+    /// `ps-rng` only: hitStepAccuracy's `runEvent('Accuracy')` handler sort
+    /// (sim/battle-actions.js:627), run per target unless the move is
+    /// Toxic from a Poison type or a self-targeting status move (:624).
+    /// Handlers: every living active's No Guard (`onAnyAccuracy`, an
+    /// Ability: subOrder 7), the target's Glaive Rush / Minimize (onAccuracy,
+    /// volatiles: subOrder 2) and Telekinesis (onAccuracyPriority -1), the
+    /// user's Micle Berry volatile (onSourceAccuracy). Ties shuffle.
+    #[cfg(feature = "ps-rng")]
+    fn ps_accuracy_event_ties(&mut self, atk_side: SideRef, atk_slot: u8, def_side: SideRef, def_slot: u8, move_id: u16) {
+        if !self.rng.is_ps() {
+            return;
+        }
+        if move_id == data::move_id::TOXIC
+            && self.side(atk_side).active_mon(atk_slot as usize).is_some_and(|a| {
+                let (types, n) = a.effective_types();
+                types[..n as usize].contains(&7) // Poison
+            })
+        {
+            return;
+        }
+        use crate::pokemon::VolatileKind as V;
+        // (priority, speed, subOrder)
+        let mut h = [(0i64, 0i64, 0i64); 8];
+        let mut n = 0usize;
+        let mut push = |h: &mut [(i64, i64, i64); 8], k: (i64, i64, i64)| {
+            if n < h.len() {
+                h[n] = k;
+                n += 1;
+            }
+        };
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.current_hp > 0) else { continue };
+                if m.effective_ability_id() == data::ability_id::NOGUARD {
+                    push(&mut h, (0, self.ps_speed(side, slot).unwrap_or(0), 7));
+                }
+            }
+        }
+        if let Some(d) = self.side(def_side).active_mon(def_slot as usize) {
+            let spe = self.ps_speed(def_side, def_slot as usize).unwrap_or(0);
+            for v in [V::GlaiveRush, V::Minimize] {
+                if d.volatiles.has(v) {
+                    push(&mut h, (0, spe, 2));
+                }
+            }
+            if d.volatiles.has(V::Telekinesis) {
+                push(&mut h, (-1, spe, 2));
+            }
+        }
+        if let Some(a) = self.side(atk_side).active_mon(atk_slot as usize) {
+            if a.micle_next_move {
+                push(&mut h, (0, self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0), 2));
+            }
+        }
+        if n < 2 {
+            return;
+        }
+        let list = &mut h[..n];
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
             | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
             _ => return false,
         };
@@ -8267,6 +8339,10 @@ self.trigger_emergency_exits();
                 // per-target loop below (the snapshot `attacker.current_hp`
                 // is the live value since the user hasn't taken damage this
                 // resolution).
+            #[cfg(feature = "ps-rng")]
+            if darts_phase[ti] != 2 && !(m.category == 2 && m.target == 1) {
+                self.ps_accuracy_event_ties(actor_side, actor_slot, tside, tslot, move_id);
+            }
                 data::move_id::FINALGAMBIT => Some(attacker.current_hp),
                 // Counter — PS data/moves.ts:counter damageCallback returns
                 // the `counter` volatile's stored `2 * damage` (the last
