@@ -664,6 +664,20 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_twoturn_release: [u8; 2],
+    /// `ps-rng` only: team indices (bit per index, per side) whose
+    /// priorityChargeCallback or beforeTurnCallback added a duration-1
+    /// volatile this turn (chillyreception, focuspunch, shelltrap, counter,
+    /// mirrorcoat), which lasts to the
+    /// residual unless the mon leaves. See [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_charge_volatile: [u8; 2],
+    /// `ps-rng` only: team indices (bit per index, per side) of fainted
+    /// actives whose status checkFainted set to 'fnt' at the end of an
+    /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_status_fnt: [u8; 2],
     /// `ps-rng` only: the current action's move got past BeforeMove, so
     /// runMove ends with `runEvent('AfterMove')`; see
     /// [`Battle::ps_after_move_ties`].
@@ -836,6 +850,10 @@ impl Battle {
             ps_hit_dead: 0,
             #[cfg(feature = "ps-rng")]
             ps_twoturn_release: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_charge_volatile: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_status_fnt: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_move_used: false,
             #[cfg(feature = "ps-rng")]
@@ -1419,6 +1437,19 @@ impl Battle {
                     self.shields_down_leave_field(side, slot);
                     self.hunger_switch_leave_field(side, slot, true);
                     self.gulp_missile_leave_field(side, slot);
+                    // clearVolatile's setSpecies(baseSpecies) recomputes
+                    // storedStats (sim/pokemon.ts clearVolatile, setSpecies):
+                    // a fainted mon's Speed Swap / stat split ends here, and
+                    // its switch-out Speed (the replacement sort) is its own.
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        if m.transform_base.is_none() {
+                            m.change_forme(m.species_id, true);
+                        }
+                    }
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() {
+                        self.ps_reset_speed(side, slot as usize);
+                    }
                 }
             }
             for i in 0..self.side(side).team.len() {
@@ -2827,7 +2858,11 @@ self.trigger_emergency_exits();
                     m.heal_block_turns() > 0,
                     m.throat_chop_turns() > 0,
                     m.volatiles.has(V::Torment),
-                    choice_item && m.locked_move_slot() != 255,
+                    // The choicelock volatile outlives its item until this
+                    // DisableMove removes it (data/conditions.js choicelock
+                    // onDisableMove); a Gorilla Tactics lock is the ability's.
+                    m.locked_move_slot() != 255
+                        && (choice_item || m.effective_ability_id() != data::ability_id::GORILLATACTICS),
                 ];
                 // (speed, subOrder)
                 let mut h = [(0i64, 0i64); 12];
@@ -3085,7 +3120,10 @@ self.trigger_emergency_exits();
             for slot in 0..n_active {
                 let Some(m) = self.side(side).active_mon(slot) else { continue };
                 let spe = self.ps_speed(side, slot).unwrap_or(0);
+                let ti = self.side(side).active[slot] as usize;
+                let fnt = !m.is_alive() && ti < 8 && self.ps_status_fnt[side as usize] & (1 << ti) != 0;
                 match m.status {
+                    _ if fnt => {}
                     Status::Burn => push(&mut h, (10, 0, spe, 0)),
                     Status::Poison | Status::Toxic => push(&mut h, (9, 0, spe, 0)),
                     _ => {}
@@ -3107,7 +3145,8 @@ self.trigger_emergency_exits();
                             V::Telekinesis => 19, V::Roost => 25, V::SyrupBomb => 14, V::SaltCure => 13,
                             V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13, V::Octolock => 14,
                             V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
-                            | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch => NONE,
+                            | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch
+                            | V::BeakBlast => NONE,
                             _ => continue,
                         };
                         push(&mut h, (order, 0, spe, 2));
@@ -3123,6 +3162,10 @@ self.trigger_emergency_exits();
                     // what onTryMove removed).
                     let ti = self.side(side).active[slot] as usize;
                     if ti < 8 && self.ps_twoturn_release[side as usize] & (1 << ti) != 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
+                    // A priorityChargeCallback volatile (duration 1).
+                    if ti < 8 && self.ps_charge_volatile[side as usize] & (1 << ti) != 0 {
                         push(&mut h, (NONE, 0, spe, 2));
                     }
                 }
@@ -3248,6 +3291,78 @@ self.trigger_emergency_exits();
         }
         let list = &mut h[..n];
         // comparePriority: priority desc, speed desc, subOrder asc.
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end.saturating_sub(1) {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
+    /// `ps-rng` only: hitStepAccuracy's `runEvent('Accuracy')` handler sort
+    /// (sim/battle-actions.js:627), run per target unless the move is
+    /// Toxic from a Poison type or a self-targeting status move (:624).
+    /// Handlers: every living active's No Guard (`onAnyAccuracy`, an
+    /// Ability: subOrder 7), the target's Glaive Rush / Minimize (onAccuracy,
+    /// volatiles: subOrder 2) and Telekinesis (onAccuracyPriority -1), the
+    /// user's Micle Berry volatile (onSourceAccuracy). Ties shuffle.
+    #[cfg(feature = "ps-rng")]
+    fn ps_accuracy_event_ties(&mut self, atk_side: SideRef, atk_slot: u8, def_side: SideRef, def_slot: u8, move_id: u16) {
+        if !self.rng.is_ps() {
+            return;
+        }
+        if move_id == data::move_id::TOXIC
+            && self.side(atk_side).active_mon(atk_slot as usize).is_some_and(|a| {
+                let (types, n) = a.effective_types();
+                types[..n as usize].contains(&7) // Poison
+            })
+        {
+            return;
+        }
+        use crate::pokemon::VolatileKind as V;
+        // (priority, speed, subOrder)
+        let mut h = [(0i64, 0i64, 0i64); 8];
+        let mut n = 0usize;
+        let mut push = |h: &mut [(i64, i64, i64); 8], k: (i64, i64, i64)| {
+            if n < h.len() {
+                h[n] = k;
+                n += 1;
+            }
+        };
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                let Some(m) = self.side(side).active_mon(slot).filter(|m| m.current_hp > 0) else { continue };
+                if m.effective_ability_id() == data::ability_id::NOGUARD {
+                    push(&mut h, (0, self.ps_speed(side, slot).unwrap_or(0), 7));
+                }
+            }
+        }
+        if let Some(d) = self.side(def_side).active_mon(def_slot as usize) {
+            let spe = self.ps_speed(def_side, def_slot as usize).unwrap_or(0);
+            for v in [V::GlaiveRush, V::Minimize] {
+                if d.volatiles.has(v) {
+                    push(&mut h, (0, spe, 2));
+                }
+            }
+            if d.volatiles.has(V::Telekinesis) {
+                push(&mut h, (-1, spe, 2));
+            }
+        }
+        if let Some(a) = self.side(atk_side).active_mon(atk_slot as usize) {
+            if a.micle_next_move {
+                push(&mut h, (0, self.ps_speed(atk_side, atk_slot as usize).unwrap_or(0), 2));
+            }
+        }
+        if n < 2 {
+            return;
+        }
+        let list = &mut h[..n];
         list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
         let mut st = 0;
         while st < n {
@@ -3619,6 +3734,9 @@ self.trigger_emergency_exits();
                         k += 1;
                     }
                 };
+                // A mon locked into a two-turn move queues that move
+                // (sim/side.ts:675-688), whatever slot the choice names.
+                let c = &self.locked_move_choice(side, *c);
                 match *c {
                     Choice::Switch { .. } => {
                         moved[slot.min(1)] = true;
@@ -3684,6 +3802,41 @@ self.trigger_emergency_exits();
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
         self.ps_active_ties(false, "shuffle");
+        // Each Counter / Mirror Coat queues a beforeTurnMove action (order 5,
+        // sim/battle-queue.js:106-112) whose runAction ends with its own
+        // eachEvent('Update') (sim/battle.js:2357).
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                if seen[slot] {
+                    continue;
+                }
+                seen[slot] = true;
+                let c = self.locked_move_choice(side, *c);
+                let (Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. }) = c
+                else {
+                    continue;
+                };
+                let counter = self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
+                    m.is_alive()
+                        && m.moves
+                            .get(move_slot as usize)
+                            .is_some_and(|&id| matches!(id, data::move_id::COUNTER | data::move_id::MIRRORCOAT))
+                });
+                if counter {
+                    self.ps_active_ties(false, "shuffle");
+                    // beforeTurnCallback adds the duration-1 counter /
+                    // mirrorcoat volatile, live to the residual.
+                    let i = self.side(side).active[actor_slot as usize] as usize;
+                    if i < 8 {
+                        self.ps_charge_volatile[side as usize] |= 1 << i;
+                    }
+                }
+            }
+        }
     }
 
     /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
@@ -4039,6 +4192,26 @@ self.trigger_emergency_exits();
                 }
             }
         }
+        // endTurn's DisableMove removes a choicelock whose holder no longer
+        // has a Choice item (data/conditions.js choicelock onDisableMove), so
+        // a Choice item regained later locks afresh. Gorilla Tactics keeps
+        // its own lock.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                    let choice_item = matches!(
+                        m.item_id,
+                        data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                    );
+                    if m.locked_move_slot() != 255
+                        && !choice_item
+                        && m.effective_ability_id() != data::ability_id::GORILLATACTICS
+                    {
+                        m.set_locked_move_slot(255);
+                    }
+                }
+            }
+        }
         // 0. Per-turn volatile reset on every mon.
         for s in [SideRef::P1, SideRef::P2] {
             for m in self.side_mut(s).team.iter_mut() {
@@ -4139,6 +4312,31 @@ self.trigger_emergency_exits();
                             turns_remaining: 1,
                             payload: 0,
                         });
+                    }
+                }
+                // Every priorityChargeMove action (Beak Blast, Chilly Reception,
+                // Focus Punch, Shell Trap) ends with runAction's
+                // eachEvent('Update') (sim/battle.js:2255-2261, :2357).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps()
+                    && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
+                        m.is_alive()
+                            && m.moves.get(move_slot as usize).is_some_and(|&id| {
+                                matches!(
+                                    id,
+                                    data::move_id::BEAKBLAST
+                                        | data::move_id::CHILLYRECEPTION
+                                        | data::move_id::FOCUSPUNCH
+                                        | data::move_id::SHELLTRAP
+                                )
+                            })
+                    })
+                {
+                    self.ps_active_ties(false, "shuffle");
+                    let i = self.side(side).active[actor_slot as usize] as usize;
+                    let id = self.side(side).team[i].moves[move_slot as usize];
+                    if i < 8 && id != data::move_id::BEAKBLAST {
+                        self.ps_charge_volatile[side as usize] |= 1 << i;
                     }
                 }
             }
@@ -4495,6 +4693,7 @@ self.trigger_emergency_exits();
             #[cfg(feature = "ps-rng")]
             {
                 self.ps_twoturn_release = [0; 2];
+                self.ps_charge_volatile = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             self.in_residual = true;
@@ -4507,6 +4706,16 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_active_ties(false, "shuffle");
+            // The turn's last action ran checkFainted: every fainted active's
+            // status becomes 'fnt' (sim/battle.js:2066-2073).
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() {
+                    let ti = self.side(side).active[slot] as usize;
+                    if ti < 8 && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
+                        self.ps_status_fnt[side as usize] |= 1 << ti;
+                    }
+                }
+            }
         }
 
         // 4. Per-mon end-of-turn flags + side-condition timers.
@@ -8259,6 +8468,10 @@ self.trigger_emergency_exits();
             // the single `percent_1_100` draw, Micle-latch clear, and
             // Blunder Policy consumption on miss. Behavior is byte-
             // identical to the prior inline computation.
+            #[cfg(feature = "ps-rng")]
+            if darts_phase[ti] != 2 && !(m.category == 2 && m.target == 1) {
+                self.ps_accuracy_event_ties(actor_side, actor_slot, tside, tslot, move_id);
+            }
             if darts_phase[ti] != 2 {
                 match self.roll_accuracy(
                     &attacker,
@@ -25076,6 +25289,29 @@ mod tests {
     }
 
     #[test]
+    fn choice_lock_ends_once_the_choice_item_is_gone() {
+        // choicelock onDisableMove (endTurn) removes the lock when the holder
+        // has no Choice item; a scarf regained later locks the next move.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"corviknight","level":50,"ability":"pressure","item":"choicescarf","nature":"adamant","moves":["roost","bravebird","bulkup","uturn"]}]"#,
+        )
+        .unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}]"#,
+        )
+        .unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], &pass);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 0);
+        b.p1.team[0].item_id = u16::MAX;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], &pass);
+        b.p1.team[0].item_id = data::item_id::CHOICESCARF;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], &pass);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 2, "relocked into Bulk Up, not Roost");
+    }
+
+    #[test]
     fn choice_lock_clears_on_switch() {
         let p1_json = r#"[
             {"species":"urshifu","level":50,"ability":"unseenfist","item":"choiceband","nature":"adamant","moves":["closecombat","wickedblow","aquajet","detect"]},
@@ -36101,6 +36337,32 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].stats.spe, lax_spe, "user took target's Speed");
         assert_eq!(b.p2.team[0].stats.spe, zam_spe, "target took user's Speed");
+    }
+
+    #[test]
+    fn speed_swap_ends_when_the_holder_faints() {
+        // PS faintMessages -> clearVolatile -> setSpecies(baseSpecies)
+        // recomputes storedStats, so a fainted mon keys its replacement
+        // switch on its own Speed again.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["speedswap","psychic","recover","calmmind"]}]"#,
+        )
+        .unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}]"#,
+        )
+        .unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let lax_spe = b.p2.team[0].stats.spe;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_ne!(b.p2.team[0].stats.spe, lax_spe);
+        b.p2.team[0].current_hp = 0;
+        b.p2.team[0].fainted = true;
+        b.faint_forme_cleanup();
+        assert_eq!(b.p2.team[0].stats.spe, lax_spe, "fainted Snorlax back to its own Speed");
     }
 
     #[test]
