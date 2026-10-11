@@ -3317,6 +3317,26 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: resolve a spread move (allAdjacent / allAdjacentFoes)
+    /// with its draws in PS's order. PS runs each hit step across every
+    /// target before the next (sim/battle-actions.ts trySpreadMoveHit:
+    /// all accuracy rolls, then spreadMoveHit: every target's crit and
+    /// damage, the selfDrops roll, every target's secondaries, then the
+    /// DamagingHit procs); the engine resolves target by target. A dry run
+    /// on a clone tags each engine draw with its phase; the real run then
+    /// reads the PS stream through a window that maps the engine's i-th
+    /// draw to PS's position for it. The mapping is iterated to a fixpoint
+    /// because the values it hands out can change which draws happen.
+    /// Returns false (nothing resolved) when the move isn't windowed.
+    #[cfg(feature = "ps-rng")]
+    fn ps_spread_window(&mut self, action: ScheduledAction, pending_kind: &[[u8; 2]; 2], will_act: bool) -> bool {
+        use crate::ps_rng::WINDOW_CAP;
+        if !self.rng.is_ps() {
+            return false;
+        }
+        let (slot, move_slot) = match action.choice {
+            Choice::Move { actor_slot, move_slot, .. }
+            | Choice::Terastallize { actor_slot, move_slot, .. }
             | Choice::MegaEvolve { actor_slot, move_slot, .. } => (actor_slot, move_slot),
             _ => return false,
         };
@@ -3712,6 +3732,35 @@ self.trigger_emergency_exits();
         // eachEvent('Update').
         self.ps_active_ties(false, "shuffle");
         self.ps_active_ties(false, "shuffle");
+        // Each Counter / Mirror Coat queues a beforeTurnMove action (order 5,
+        // sim/battle-queue.js:106-112) whose runAction ends with its own
+        // eachEvent('Update') (sim/battle.js:2357).
+        for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
+            let mut seen = [false; 2];
+            for c in choices {
+                let slot = (c.actor_slot() as usize).min(1);
+                if seen[slot] {
+                    continue;
+                }
+                seen[slot] = true;
+                let c = self.locked_move_choice(side, *c);
+                let (Choice::Move { actor_slot, move_slot, .. }
+                | Choice::Terastallize { actor_slot, move_slot, .. }
+                | Choice::MegaEvolve { actor_slot, move_slot, .. }) = c
+                else {
+                    continue;
+                };
+                let counter = self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
+                    m.is_alive()
+                        && m.moves
+                            .get(move_slot as usize)
+                            .is_some_and(|&id| matches!(id, data::move_id::COUNTER | data::move_id::MIRRORCOAT))
+                });
+                if counter {
+                    self.ps_active_ties(false, "shuffle");
+                }
+            }
+        }
     }
 
     /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
@@ -4168,6 +4217,26 @@ self.trigger_emergency_exits();
                             payload: 0,
                         });
                     }
+                }
+                // Every priorityChargeMove action (Beak Blast, Chilly Reception,
+                // Focus Punch, Shell Trap) ends with runAction's
+                // eachEvent('Update') (sim/battle.js:2255-2261, :2357).
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps()
+                    && self.side(side).active_mon(actor_slot as usize).is_some_and(|m| {
+                        m.is_alive()
+                            && m.moves.get(move_slot as usize).is_some_and(|&id| {
+                                matches!(
+                                    id,
+                                    data::move_id::BEAKBLAST
+                                        | data::move_id::CHILLYRECEPTION
+                                        | data::move_id::FOCUSPUNCH
+                                        | data::move_id::SHELLTRAP
+                                )
+                            })
+                    })
+                {
+                    self.ps_active_ties(false, "shuffle");
                 }
             }
         }
@@ -8270,6 +8339,10 @@ self.trigger_emergency_exits();
             // the single `percent_1_100` draw, Micle-latch clear, and
             // Blunder Policy consumption on miss. Behavior is byte-
             // identical to the prior inline computation.
+            #[cfg(feature = "ps-rng")]
+            if darts_phase[ti] != 2 && !(m.category == 2 && m.target == 1) {
+                self.ps_accuracy_event_ties(actor_side, actor_slot, tside, tslot, move_id);
+            }
             if darts_phase[ti] != 2 {
                 match self.roll_accuracy(
                     &attacker,
@@ -8339,10 +8412,6 @@ self.trigger_emergency_exits();
                 // per-target loop below (the snapshot `attacker.current_hp`
                 // is the live value since the user hasn't taken damage this
                 // resolution).
-            #[cfg(feature = "ps-rng")]
-            if darts_phase[ti] != 2 && !(m.category == 2 && m.target == 1) {
-                self.ps_accuracy_event_ties(actor_side, actor_slot, tside, tslot, move_id);
-            }
                 data::move_id::FINALGAMBIT => Some(attacker.current_hp),
                 // Counter — PS data/moves.ts:counter damageCallback returns
                 // the `counter` volatile's stored `2 * damage` (the last
