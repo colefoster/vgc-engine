@@ -155,6 +155,9 @@ pub struct PsRng {
     ctx_target: u8,
     #[serde(skip)]
     ctx_decision: &'static str,
+    /// The next crit / damage draws are a hit on a Substitute.
+    #[serde(skip)]
+    ctx_sub: bool,
     /// An open reorder window ([`PsRng::window_begin`]), else `None`.
     #[serde(skip)]
     window: Option<Box<DrawWindow>>,
@@ -218,6 +221,7 @@ impl PsRng {
             ctx_move: 0,
             ctx_target: 0xFF,
             ctx_decision: "",
+            ctx_sub: false,
             window: None,
         }
     }
@@ -294,6 +298,12 @@ impl PsRng {
         self.ctx_decision = d;
     }
 
+    /// Mark the next crit / damage draws as a hit on a Substitute
+    /// (see [`phase`]).
+    pub fn set_sub_hit(&mut self, sub: bool) {
+        self.ctx_sub = sub;
+    }
+
     pub fn enable_trace(&mut self) {
         self.trace = Some(Vec::new());
     }
@@ -325,6 +335,11 @@ impl PsRng {
                     1 + self.ctx_target % 2
                 };
                 let tag = match op {
+                    // A Substitute takes its hit in spreadMoveHit's
+                    // TryPrimaryHit step (data/moves.ts substitute
+                    // onTryPrimaryHit -> getDamage), before every other
+                    // target's getSpreadDamage.
+                    "crit" | "damage" if self.ctx_sub => phase::ACCURACY * 8 + 4 + rank,
                     "crit" | "damage" => phase::DAMAGE * 8 + rank,
                     "selfdrop" => phase::SELF_DROP * 8,
                     "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
