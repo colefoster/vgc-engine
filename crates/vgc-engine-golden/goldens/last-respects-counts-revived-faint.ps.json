@@ -1,0 +1,250 @@
+{
+  "ok": true,
+  "name": "last-respects-counts-revived-faint",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 3,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Basculegion",
+      "hp": 195,
+      "max": 195
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Wynaut",
+      "hp": 13,
+      "max": 13
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Umbreon",
+      "hp": 170,
+      "max": 170
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Last Respects",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 151,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1b",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "faint",
+      "actor": "p1b"
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 1,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Pawmot",
+      "hp": 145,
+      "max": 145
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Revival Blessing",
+      "target": "p1b"
+    },
+    {
+      "turn": 2,
+      "kind": "heal",
+      "actor": "p1",
+      "hp": 6,
+      "max": 13,
+      "from": "move: Revival Blessing"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Last Respects",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 116,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Splash",
+      "target": "p1b"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Last Respects",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "resisted",
+      "actor": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 80,
+      "max": 170,
+      "from": null
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Splash",
+      "target": "p2a"
+    },
+    {
+      "turn": 3,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 10,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 15,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "Crit",
+      "value": false,
+      "site": "BattleActions.getDamage (sim/battle-actions.js:1397)"
+    },
+    {
+      "kind": "DamageRoll",
+      "value": 13,
+      "site": "BattleActions.modifyDamage (sim/battle-actions.js:1470)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791642648\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Basculegion, L50, M|\n|poke|p1|Wynaut, L1, M|\n|poke|p1|Pawmot, L50, M|\n|poke|p2|Umbreon, L50, M|\n|poke|p2|Chansey, L50, F|\n|teampreview|\n|t:|1791642648\n|teamsize|p1|3\n|teamsize|p2|2\n|start\n|switch|p1a: Basculegion|Basculegion, L50, M|195/195\n|switch|p1b: Wynaut|Wynaut, L1, M|13/13\n|switch|p2a: Umbreon|Umbreon, L50, M|170/170\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|turn|1|\n|t:|1791642648\n|move|p1a: Basculegion|Last Respects|p2a: Umbreon\n|-resisted|p2a: Umbreon\n|-damage|p2a: Umbreon|151/170\n|move|p2a: Umbreon|Seismic Toss|p1b: Wynaut\n|-damage|p1b: Wynaut|0 fnt\n|faint|p1b: Wynaut\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep|\n|t:|1791642648\n|switch|p1b: Pawmot|Pawmot, L50, M|145/145\n|turn|2|\n|t:|1791642648\n|move|p1b: Pawmot|Revival Blessing|p1b: Pawmot|\n|t:|1791642648\n|-heal|p1: Wynaut|6/13|[from] move: Revival Blessing\n|move|p1a: Basculegion|Last Respects|p2a: Umbreon\n|-resisted|p2a: Umbreon\n|-damage|p2a: Umbreon|116/170\n|move|p2a: Umbreon|Splash|p2a: Umbreon\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|3|\n|t:|1791642648\n|move|p1b: Pawmot|Splash|p1b: Pawmot\n|-nothing\n|move|p1a: Basculegion|Last Respects|p2a: Umbreon\n|-resisted|p2a: Umbreon\n|-damage|p2a: Umbreon|80/170\n|move|p2a: Umbreon|Splash|p2a: Umbreon\n|-nothing\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|4"
+}
