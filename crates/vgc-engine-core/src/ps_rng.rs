@@ -343,6 +343,10 @@ impl PsRng {
                     "crit" | "damage" => phase::DAMAGE * 8 + rank,
                     "selfdrop" => phase::SELF_DROP * 8,
                     "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
+                    // Before any hit step, a `secondary`-keyed roll is a
+                    // pre-move gate (confusion's onBeforeMove randomChance,
+                    // data/conditions.js:207), which PS draws first.
+                    "percent" if self.ctx_decision == "secondary" && prev < phase::ACCURACY * 8 => prev,
                     "percent" if self.ctx_decision == "secondary" => phase::SECONDARY * 8 + rank,
                     _ if at.file().ends_with("ability.rs") => phase::ABILITY * 8,
                     _ => prev,
