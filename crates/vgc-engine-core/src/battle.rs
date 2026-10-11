@@ -13679,6 +13679,13 @@ self.trigger_emergency_exits();
             }
         }
         let target = self.random_target_for(ts, tslot, mid);
+        // resolveAction then runs getActionSpeed -> getTarget
+        // (sim/battle-queue.ts:173), which redraws for a move whose picked
+        // location never validates (Howl's `allies`, spread moves).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_get_target_draw(ts, tslot, mid, target);
+        }
         #[allow(unused_mut)]
         let mut insert = 255u8;
         #[cfg(feature = "ps-rng")]
