@@ -653,6 +653,23 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_action_live: u8,
+    /// `ps-rng` only: active slots at 0 HP at the current action's last
+    /// per-hit Update (same bits); see [`Battle::ps_loop_end_update`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_hit_dead: u8,
+    /// `ps-rng` only: team indices (bit per index, per side) that released
+    /// a two-turn move this turn; their `twoturnmove` volatile lasts to the
+    /// residual. See [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_twoturn_release: [u8; 2],
+    /// `ps-rng` only: the current action's move got past BeforeMove, so
+    /// runMove ends with `runEvent('AfterMove')`; see
+    /// [`Battle::ps_after_move_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_move_used: bool,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
@@ -815,6 +832,12 @@ impl Battle {
             ps_status_missed: false,
             #[cfg(feature = "ps-rng")]
             ps_action_live: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_hit_dead: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_twoturn_release: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_move_used: false,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             keyed_commit_moves: ([(0, 0); 4], 0),
@@ -2385,7 +2408,11 @@ impl Battle {
                     // action that actually executes (runAction returns early
                     // for a fainted or inactive user, and switches ran in the
                     // prologue).
+                    // A user switched out mid-turn (Eject Button, Red Card,
+                    // a self-switch) had its action cancelled
+                    // (sim/battle-actions.js switchIn -> queue.cancelAction).
                     let ran = matches!(order[idx].choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
+                        && !self.replaced_mid_turn[order[idx].side as usize][(order[idx].actor_slot as usize).min(1)]
                         && self.side(order[idx].side).active_mon(order[idx].actor_slot as usize).is_some_and(|m| m.is_alive());
                     self.process_one_action(&mut order, idx, &mut pending_kind);
                     if let Some(pending) = self.pending_yield.take() {
@@ -2661,6 +2688,49 @@ self.trigger_emergency_exits();
                 let s = self.side(side);
                 let Some(m) = s.active_mon(slot) else { continue };
                 let pending = m.current_hp == 0 && self.ps_action_live & (1 << (side as usize * 2 + slot)) != 0;
+                let alive = m.is_alive();
+                if m.current_hp == 0 {
+                    self.ps_hit_dead |= 1 << (side as usize * 2 + slot);
+                }
+                let s = self.side(side);
+                let key = if pending {
+                    self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
+                } else if alive {
+                    self.ps_speed(side, slot)
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    keys[n] = k;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
+    /// `ps-rng` only: the hit loop's closing `eachEvent('Update')`
+    /// (data/mods/champions/scripts.ts:575). The loop's faintMessages
+    /// (:550) has already marked the KO'd targets `fainted`, but the user's
+    /// recoil lands after it (applyRecoilDamage) and Life Orb / Mind Blown
+    /// only after the loop, so a user the engine has already knocked out
+    /// with its own move still sorts, on its cached Speed. A user KO'd
+    /// inside the hit (Rocky Helmet, Rough Skin, Explosion: 0 HP at the
+    /// per-hit Update; Final Gambit, `selfdestruct: 'ifHit'`) is `fainted`
+    /// by now.
+    #[cfg(feature = "ps-rng")]
+    #[track_caller]
+    fn ps_loop_end_update(&mut self, user_side: SideRef, user_slot: u8) {
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                let s = self.side(side);
+                let Some(m) = s.active_mon(slot) else { continue };
+                let user = side == user_side && slot == user_slot as usize;
+                let bit = 1 << (side as usize * 2 + slot);
+                let pending = user && m.current_hp == 0 && self.ps_action_live & bit != 0 && self.ps_hit_dead & bit == 0;
                 let key = if pending {
                     self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
                 } else if m.is_alive() {
@@ -2676,6 +2746,146 @@ self.trigger_emergency_exits();
         }
         keys[..n].sort_unstable_by(|a, b| b.cmp(a));
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
+    /// `ps-rng` only: endTurn's `runEvent('DisableMove', pokemon)` for each
+    /// active (sim/battle.js:1400), before the next turn's commitChoices.
+    /// Its handlers: the mon's own volatiles (Taunt, Disable, Encore, Heal
+    /// Block, Throat Chop, Torment, a Choice item's `choicelock`; subOrder
+    /// 2), Gorilla Tactics (7), Assault Vest (8), and each foe's Imprison
+    /// (`onFoeDisableMove`, 2, on the foe's Speed), all on cached Speed.
+    /// Two of the mon's own volatiles always tie.
+    #[cfg(feature = "ps-rng")]
+    fn ps_disable_move_ties(&mut self) {
+        let n_active = self.format().active_count().min(2);
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot) else { continue };
+                if !m.is_alive() {
+                    continue;
+                }
+                let spe = self.ps_speed(side, slot).unwrap_or(0);
+                let choice_item = matches!(
+                    m.item_id,
+                    data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                );
+                use crate::pokemon::VolatileKind as V;
+                let own = [
+                    m.taunt_turns() > 0,
+                    m.disabled_move_slot() != 255,
+                    m.encore_turns() > 0,
+                    m.heal_block_turns() > 0,
+                    m.throat_chop_turns() > 0,
+                    m.volatiles.has(V::Torment),
+                    choice_item && m.locked_move_slot() != 255,
+                ];
+                // (speed, subOrder)
+                let mut h = [(0i64, 0i64); 12];
+                let mut n = 0;
+                for _ in own.iter().filter(|&&b| b) {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
+                if m.effective_ability_id() == data::ability_id::GORILLATACTICS {
+                    h[n] = (spe, 7);
+                    n += 1;
+                }
+                if m.item_id == data::item_id::ASSAULTVEST {
+                    h[n] = (spe, 8);
+                    n += 1;
+                }
+                let foe = side.opposing();
+                for fslot in 0..n_active {
+                    let imprison = self
+                        .side(foe)
+                        .active_mon(fslot)
+                        .is_some_and(|f| f.is_alive() && f.volatiles.has(V::Imprison));
+                    if imprison {
+                        h[n] = (self.ps_speed(foe, fslot).unwrap_or(0), 2);
+                        n += 1;
+                    }
+                }
+                let list = &mut h[..n];
+                list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                let mut st = 0;
+                while st < n {
+                    let mut end = st + 1;
+                    while end < n && list[end] == list[st] {
+                        end += 1;
+                    }
+                    for i in st..end - 1 {
+                        let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+                    }
+                    st = end;
+                }
+            }
+        }
+    }
+
+    /// `ps-rng` only: runMove's `runEvent('AfterMove', user)`
+    /// (sim/battle-actions.js:275), once the move got past BeforeMove. Its
+    /// handlers: the user's `lockedmove` volatile (subOrder 2) and every
+    /// active's `onAnyAfterMove` White Herb / Mirror Herb / Eject Pack
+    /// (Item, 8) and Opportunist (Ability, 7), on cached Speed. Two
+    /// holders of the same Speed tie. The user still counts when its own
+    /// recoil knocked it out (not `fainted` until runAction).
+    #[cfg(feature = "ps-rng")]
+    fn ps_after_move_ties(&mut self, user_side: SideRef, user_slot: u8) {
+        let mut h = [(0i64, 0i64); 8];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                let s = self.side(side);
+                let Some(m) = s.active_mon(slot) else { continue };
+                let bit = 1u8 << (side as usize * 2 + slot);
+                let user = side == user_side && slot == user_slot as usize;
+                let pending = user && m.current_hp == 0 && self.ps_action_live & bit != 0 && self.ps_hit_dead & bit == 0;
+                let spe = if pending {
+                    self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied().unwrap_or(0)
+                } else if m.is_alive() {
+                    self.ps_speed(side, slot).unwrap_or(0)
+                } else {
+                    continue;
+                };
+                if user && m.lockin_turns > 0 && n < h.len() {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
+                if matches!(m.item_id, data::item_id::WHITEHERB | data::item_id::MIRRORHERB | data::item_id::EJECTPACK)
+                    && n < h.len()
+                {
+                    h[n] = (spe, 8);
+                    n += 1;
+                }
+                if m.effective_ability_id() == data::ability_id::OPPORTUNIST && n < h.len() {
+                    h[n] = (spe, 7);
+                    n += 1;
+                }
+            }
+        }
+        let list = &mut h[..n];
+        list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut st = 0;
+        while st < n {
+            let mut end = st + 1;
+            while end < n && list[end] == list[st] {
+                end += 1;
+            }
+            for i in st..end - 1 {
+                let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+            }
+            st = end;
+        }
+    }
+
+    /// `ps-rng` only: record a two-turn move's release turn for
+    /// [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    fn ps_mark_twoturn_release(&mut self, side: SideRef, slot: u8) {
+        let ti = self.side(side).active.get(slot as usize).copied().unwrap_or(u8::MAX);
+        if ti < 8 {
+            self.ps_twoturn_release[side as usize] |= 1 << ti;
+        }
     }
 
     /// `ps-rng` only: Cloud Nine / Air Lock run `eachEvent('WeatherChange')`
@@ -2857,6 +3067,14 @@ self.trigger_emergency_exits();
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    // The released two-turn move's `twoturnmove` volatile
+                    // (duration 2) only expires at this residual
+                    // (data/conditions.js:305; the move's own volatile is
+                    // what onTryMove removed).
+                    let ti = self.side(side).active[slot] as usize;
+                    if ti < 8 && self.ps_twoturn_release[side as usize] & (1 << ti) != 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
                 }
                 // Slot conditions: Wish (4), Future Sight (3); subOrder 3.
                 if self.wish_pending[side as usize][slot.min(1)].is_some() { push(&mut h, (4, 0, spe, 3)); }
@@ -3189,6 +3407,7 @@ self.trigger_emergency_exits();
     /// stream advance. Sides commit p1 then p2, slots in order.
     #[cfg(feature = "ps-rng")]
     fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
+        self.ps_disable_move_ties();
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
         self.ps_scripted_pick = [[255; 2]; 2];
@@ -4121,6 +4340,8 @@ self.trigger_emergency_exits();
                 }
             }
             self.ps_action_live = live;
+            self.ps_hit_dead = 0;
+            self.ps_move_used = false;
             self.ps_spread_window(action, pending_kind, will_act)
         };
         #[cfg(not(feature = "ps-rng"))]
@@ -4140,9 +4361,15 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
             if windowed {
                 self.ps_hit_update();
+                // Drawn after the whole move resolved, Life Orb included.
+                self.ps_hit_dead = 0;
             }
             self.ps_hit_loop_faint_ends();
-            self.ps_active_ties(false, "shuffle");
+            self.ps_loop_end_update(action.side, action.actor_slot);
+        }
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() && self.ps_move_used {
+            self.ps_after_move_ties(action.side, action.actor_slot);
         }
         #[cfg(feature = "ps-rng")]
         {
@@ -4197,6 +4424,10 @@ self.trigger_emergency_exits();
             if self.rng.is_ps() {
                 self.ps_update_speed_all();
                 self.ps_residual_ties();
+            }
+            #[cfg(feature = "ps-rng")]
+            {
+                self.ps_twoturn_release = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             self.in_residual = true;
@@ -5584,7 +5815,16 @@ self.trigger_emergency_exits();
                 }
                 let team_index = deferred[pos].1;
                 if revives {
+                    #[cfg(feature = "ps-rng")]
+                    let benched = !self.side(side).active[..self.format().active_count()].contains(&team_index);
                     self.revive_party_member(side, Some(team_index));
+                    // The revivalblessing action ends with eachEvent('Update')
+                    // unless it queued an instaswitch for an active slot
+                    // (sim/battle.js:2291-2308, :2346-2357).
+                    #[cfg(feature = "ps-rng")]
+                    if benched && self.rng.is_ps() {
+                        self.ps_active_ties(false, "shuffle");
+                    }
                     continue;
                 }
                 self.copy_volatiles_next_switch = copies;
@@ -6278,6 +6518,10 @@ self.trigger_emergency_exits();
                 }
             }
             return;
+        }
+        #[cfg(feature = "ps-rng")]
+        {
+            self.ps_move_used = true;
         }
         // beakblast onAfterMove removes the charge (data/moves.ts:1143); only
         // the user's own move runs in between, so drop it now. An aborted
@@ -11486,6 +11730,8 @@ self.trigger_emergency_exits();
                     a.charging_turns = 0;
                     a.charging_move_slot = 255;
                 }
+                #[cfg(feature = "ps-rng")]
+                self.ps_mark_twoturn_release(actor_side, actor_slot);
                 skip_pp_deduct = true;
             } else {
                 // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
@@ -11549,6 +11795,8 @@ self.trigger_emergency_exits();
                     a.charging_move_slot = 255;
                     a.semi_invuln = 0;
                 }
+                #[cfg(feature = "ps-rng")]
+                self.ps_mark_twoturn_release(actor_side, actor_slot);
                 skip_pp_deduct = true;
             } else {
                 // Dive's onTryMove loads Gulp Missile on the initial charge
@@ -12483,6 +12731,10 @@ self.trigger_emergency_exits();
                 a.current_hp = 0;
                 a.fainted = true;
             }
+            #[cfg(feature = "ps-rng")]
+            {
+                self.ps_hit_dead |= 1 << (actor_side as usize * 2 + actor_slot as usize);
+            }
         }
 
         // Self stat drops (PS `self.boosts` on the move def). Applies
@@ -12503,6 +12755,18 @@ self.trigger_emergency_exits();
         // Ice Spinner (data/moves.ts icespinner onAfterHit / onAfterSubDamage)
         // does the same.
         if matches!(move_id, data::move_id::STEELROLLER | data::move_id::ICESPINNER) && any_damage_dealt > 0 {
+            // clearTerrain's eachEvent('TerrainChange') runs from onHit,
+            // inside the hit, so a target the hit KO'd still sorts (not
+            // `fainted` until the loop's faintMessages, sim/field.js:163).
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() && self.terrain != crate::terrain::Terrain::None {
+                if let Some((w, _)) = self.ps_field_seen {
+                    let dead = self.ps_hit_dead;
+                    self.ps_hit_update();
+                    self.ps_hit_dead = dead;
+                    self.ps_field_seen = Some((w, crate::terrain::Terrain::None));
+                }
+            }
             self.terrain = crate::terrain::Terrain::None;
             self.terrain_turns = 0;
             self.sync_weather_terrain_cache();
@@ -13127,6 +13391,11 @@ self.trigger_emergency_exits();
     /// Whether a foe's Protect blocks every target of a status move
     /// (hitStepTryHitEvent, sim/battle-actions.ts:643).
     fn status_move_protected(&self, side: SideRef, slot: u8, m: &data::MoveDef, target: Option<Target>) -> bool {
+        // Protect's onTryHit only stops moves with `flags.protect` (Roar,
+        // Whirlwind, Transform... pass through).
+        if !m.blocked_by_protect {
+            return false;
+        }
         let protected = |t: Target| {
             self.side(t.side).active_mon(t.slot as usize).is_some_and(|d| d.is_alive() && d.is_protected_this_turn())
         };
@@ -16218,13 +16487,9 @@ self.trigger_emergency_exits();
                 // target: adjacentAlly, sets a single-turn volatile on
                 // the partner that boosts its next damaging move's BP
                 // ×1.5. Fails outside Doubles (no ally) and when the
-                // partner is missing / fainted. PS additionally fails
-                // if the partner has already moved this turn
-                // (`onTryHit: if (!target.newlySwitched && !this.queue.willMove(target)) return false`);
-                // skipped here — the engine doesn't yet expose the
-                // remaining-action queue to status moves, and the
-                // common case (Helping Hand goes before partner's
-                // attack thanks to +5 priority) is already correct.
+                // partner is missing / fainted, or has already moved
+                // this turn and did not switch in this turn
+                // (`onTryHit: if (!target.newlySwitched && !this.queue.willMove(target)) return false`).
                 // BP application: `damage.rs` reads
                 // `attacker.helping_handed_this_turn()`.
                 let n = self.format().active_count() as u8;
@@ -16232,6 +16497,17 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = actor_slot ^ 1;
+                // Cleared to 0 once the partner's action runs; a queued
+                // move whose slot also carries a mid-turn pick reads 3.
+                let will_move = pending_kind[actor_side as usize][(partner_slot as usize).min(1)] != 0;
+                let newly = self
+                    .side(actor_side)
+                    .active_mon(partner_slot as usize)
+                    .is_some_and(|p| p.switched_in_this_turn());
+                if !will_move && !newly {
+                    self.ps_status_failed();
+                    return;
+                }
                 if let Some(p) = self.side_mut(actor_side).active_mon_mut(partner_slot as usize) {
                     if p.is_alive() {
                         p.set_helping_handed(true);
@@ -34436,6 +34712,32 @@ mod tests {
         // didn't get self-flagged (Helping Hand is `target:
         // adjacentAlly`, not self).
         assert!(!b.p1.team[0].helping_handed_this_turn());
+    }
+
+    #[test]
+    fn helping_hand_fails_on_a_partner_with_no_action_left() {
+        // PS data/moves.ts helpinghand onTryHit: fails unless the partner
+        // switched in this turn or `queue.willMove(target)`.
+        let p1_json = r#"[
+            {"species":"sylveon","level":50,"ability":"pixilate","nature":"modest","moves":["hypervoice","shadowball","mysticalfire","helpinghand"]},
+            {"species":"garchomp","level":50,"ability":"roughskin","nature":"adamant","moves":["earthquake","dragonclaw","aerialace","ironhead"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]},
+            {"species":"snorlax","level":50,"ability":"thickfat","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}
+        ]"#;
+        let run = |partner: Choice| {
+            let p1 = TeamBuilder::from_json(p1_json).unwrap();
+            let p2 = TeamBuilder::from_json(p2_json).unwrap();
+            let mut b = Battle::new(BattleConfig { format: Format::Doubles, seed: 3 }, p1, p2);
+            b.step(
+                &[Choice::Move { actor_slot: 0, move_slot: 3, target: Some(t(SideRef::P1, 1)) }, partner],
+                &[Choice::Pass { actor_slot: 0 }, Choice::Pass { actor_slot: 1 }],
+            );
+            b.p1.team[1].helping_handed_this_turn()
+        };
+        assert!(run(Choice::Move { actor_slot: 1, move_slot: 1, target: Some(t(SideRef::P2, 0)) }));
+        assert!(!run(Choice::Pass { actor_slot: 1 }), "no queued action: Helping Hand fails");
     }
 
     #[test]
