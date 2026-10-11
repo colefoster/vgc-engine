@@ -3559,6 +3559,9 @@ self.trigger_emergency_exits();
                         k += 1;
                     }
                 };
+                // A mon locked into a two-turn move queues that move
+                // (sim/side.ts:675-688), whatever slot the choice names.
+                let c = &self.locked_move_choice(side, *c);
                 match *c {
                     Choice::Switch { .. } => {
                         moved[slot.min(1)] = true;
