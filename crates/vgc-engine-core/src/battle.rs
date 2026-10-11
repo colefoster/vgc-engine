@@ -18690,7 +18690,11 @@ self.trigger_emergency_exits();
                 // Eject Pack / Defiant·Competitive. Found missing by the
                 // Champions conformance harness (out_46: Emolga Tickle).
                 if let Some(fd) = foe_debuff_moves(m.slug) {
-                    if !self.rolled_accuracy_passed(m) {
+                    // A spread debuff (String Shot, Growl ...) rolls accuracy
+                    // per target, after Protect / powder immunity drop a
+                    // target (hitStepAccuracy, sim/battle-actions.js:584-629).
+                    let per_target_acc = fd.spread && forced_target.is_none();
+                    if !per_target_acc && !self.rolled_accuracy_passed(m) {
                         return;
                     }
                     let opp_side = actor_side.opposing();
@@ -18716,7 +18720,44 @@ self.trigger_emergency_exits();
                             ntgt = 1;
                         }
                     }
-                    for &(ts, tslot) in tgts.iter().take(ntgt) {
+                    let mut acc_hit = [true; 2];
+                    if per_target_acc {
+                        let (mut any_rolled, mut any_hit) = (false, false);
+                        let user_noguard = self
+                            .side(actor_side)
+                            .active_mon(actor_slot as usize)
+                            .is_some_and(|a| a.effective_ability_id() == data::ability_id::NOGUARD);
+                        let user_acc = self.side(actor_side).active_mon(actor_slot as usize).map_or(0, |a| a.boosts[5] as i32);
+                        for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
+                            let Some(t) = self.side(ts).active_mon(tslot as usize) else { continue };
+                            if (m.is_powder && self.target_is_powder_immune(ts, tslot))
+                                || (fd.respects_protect && t.is_protected_this_turn())
+                            {
+                                continue;
+                            }
+                            let sure = user_noguard
+                                || t.volatiles.has(crate::pokemon::VolatileKind::GlaiveRush)
+                                || t.effective_ability_id() == data::ability_id::NOGUARD;
+                            let boost = (user_acc - t.boosts[6] as i32).clamp(-6, 6) as i8;
+                            self.status_sure_hit = sure;
+                            self.status_acc_boost = boost;
+                            let sref = |s: SideRef| match s { SideRef::P1 => 0u8, SideRef::P2 => 2 };
+                            self.rng.set_move_context(self.turn + 1, sref(actor_side) + actor_slot, move_id, sref(ts) + tslot);
+                            self.rng.set_decision(RngDecision::Accuracy);
+                            any_rolled = true;
+                            acc_hit[i] = self.rolled_accuracy_passed(m);
+                            any_hit |= acc_hit[i];
+                        }
+                        #[cfg(feature = "ps-rng")]
+                        {
+                            self.ps_status_missed = any_rolled && !any_hit;
+                        }
+                        let _ = (any_rolled, any_hit);
+                    }
+                    for (i, &(ts, tslot)) in tgts.iter().take(ntgt).enumerate() {
+                        if !acc_hit[i] {
+                            continue;
+                        }
                         // Cotton Spore is a powder move: hitStepTryImmunity
                         // drops a powder-immune target (sim/battle-actions.ts:669).
                         if m.is_powder && self.target_is_powder_immune(ts, tslot) {
