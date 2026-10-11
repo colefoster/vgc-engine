@@ -12755,6 +12755,18 @@ self.trigger_emergency_exits();
         // Ice Spinner (data/moves.ts icespinner onAfterHit / onAfterSubDamage)
         // does the same.
         if matches!(move_id, data::move_id::STEELROLLER | data::move_id::ICESPINNER) && any_damage_dealt > 0 {
+            // clearTerrain's eachEvent('TerrainChange') runs from onHit,
+            // inside the hit, so a target the hit KO'd still sorts (not
+            // `fainted` until the loop's faintMessages, sim/field.js:163).
+            #[cfg(feature = "ps-rng")]
+            if self.rng.is_ps() && self.terrain != crate::terrain::Terrain::None {
+                if let Some((w, _)) = self.ps_field_seen {
+                    let dead = self.ps_hit_dead;
+                    self.ps_hit_update();
+                    self.ps_hit_dead = dead;
+                    self.ps_field_seen = Some((w, crate::terrain::Terrain::None));
+                }
+            }
             self.terrain = crate::terrain::Terrain::None;
             self.terrain_turns = 0;
             self.sync_weather_terrain_cache();
