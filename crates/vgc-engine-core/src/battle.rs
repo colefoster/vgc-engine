@@ -2732,7 +2732,7 @@ self.trigger_emergency_exits();
         let plural = matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows");
         if !(m.has_secondary || plural)
             || self_boost_secondary(m.slug).is_some()
-            || matches!(m.slug, "esperwing" | "rapidspin" | "mortalspin" | "zippyzap" | "mysticalpower")
+            || matches!(m.slug, "esperwing" | "rapidspin" | "zippyzap" | "mysticalpower")
         {
             return 0;
         }
