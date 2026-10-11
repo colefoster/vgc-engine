@@ -625,6 +625,11 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_loop_hits: u8,
+    /// `ps-rng` only: the action Instruct queued with `prioritizeAction`,
+    /// run after Instruct's own action ends (its Update and re-sort).
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_instruct_pending: Option<ScheduledAction>,
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -792,6 +797,8 @@ impl Battle {
             ps_field_seen: None,
             #[cfg(feature = "ps-rng")]
             ps_loop_hits: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_instruct_pending: None,
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -2395,6 +2402,8 @@ self.trigger_emergency_exits();
                     if ran {
                         self.after_move_action(&mut order, idx);
                     }
+                    #[cfg(feature = "ps-rng")]
+                    self.ps_run_instructed(&mut order, idx, &pending_kind);
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
                         p1, p2, order, idx, pending_kind,
@@ -3595,6 +3604,54 @@ self.trigger_emergency_exits();
         self.ps_active_ties(false, "shuffle");
     }
 
+    /// `ps-rng` only: the action Instruct queued (`ps_instruct_pending`),
+    /// run as PS's next action with its own runAction tail (faintMessages,
+    /// Update, re-sort).
+    #[cfg(feature = "ps-rng")]
+    fn ps_run_instructed(&mut self, order: &mut ActionOrder, idx: usize, pending_kind: &[[u8; 2]; 2]) {
+        let Some(action) = self.ps_instruct_pending.take() else { return };
+        if self.p1.is_defeated() || self.p2.is_defeated() {
+            return;
+        }
+        if !self.side(action.side).active_mon(action.actor_slot as usize).is_some_and(|m| m.is_alive()) {
+            return;
+        }
+        self.multi_targeted_defenders = 0b1111;
+        // process_one_action's hit-loop emulation (spread window, Updates).
+        self.ps_loop_hits = 0;
+        self.ps_inline_hit_updates = false;
+        let mut live = 0u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                if self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
+                    live |= 1 << (side as usize * 2 + slot);
+                }
+            }
+        }
+        self.ps_action_live = live;
+        let windowed = self.ps_spread_window(action, pending_kind, true);
+        if !windowed {
+            self.ps_inline_hit_updates = true;
+            self.resolve_move_with_pending(action, pending_kind, true);
+        }
+        if self.ps_loop_hits > 0 {
+            if windowed {
+                self.ps_hit_update();
+            }
+            self.ps_hit_loop_faint_ends();
+            self.ps_active_ties(false, "shuffle");
+        }
+        self.ps_inline_hit_updates = false;
+        self.update_hp_berries();
+        self.multi_targeted_defenders = 0;
+        self.white_herb_after_move();
+        self.faint_forme_cleanup();
+        self.run_pending_drags();
+        self.trigger_emergency_exits();
+        self.ps_post_action_update();
+        self.after_move_action(order, idx);
+    }
+
     /// `ps-rng` only: the gen-8+ re-sort half of [`Battle::after_move_action`];
     /// the Update ([`Battle::ps_post_action_update`]) is drawn before any
     /// mid-turn switch.
@@ -3613,10 +3670,15 @@ self.trigger_emergency_exits();
             matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
                 && self.side(a.side).active_mon(a.actor_slot as usize).is_some()
         });
-        if !next_is_move {
+        // An Instruct re-run sits at the queue's front (prioritizeAction).
+        let instructed = self.ps_instruct_pending;
+        if !next_is_move && instructed.is_none() {
             return;
         }
         self.ps_update_speed_all();
+        if let Some(a) = instructed {
+            self.ps_resort_get_targets(&[a]);
+        }
         let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
         let mut k = 0;
         for a in rest.iter().filter(|a| !replaced(self, a)).take(4) {
@@ -16686,6 +16748,12 @@ self.trigger_emergency_exits();
                 }
                 // Already taunted — PS addVolatile('taunt') is a no-op.
                 if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.taunt_turns() > 0) {
+                    // moveHit fails, so the hit loop breaks before its
+                    // Update (data/mods/champions/scripts.ts hitStepMoveHitLoop).
+                    #[cfg(feature = "ps-rng")]
+                    {
+                        self.ps_status_missed = true;
+                    }
                     return;
                 }
                 // Aroma Veil — holder/partner immunity (PS abilities.ts:234
@@ -18510,6 +18578,17 @@ self.trigger_emergency_exits();
                         target: dec_target(last_tgt_enc),
                     },
                 };
+                // PS queues the re-run as its own action
+                // (`queue.prioritizeAction`, data/moves.ts instruct onHit), so
+                // it runs after Instruct's action ends: its Update and the
+                // gen-8+ re-sort draw first (sim/battle.ts runAction).
+                // Its resolveAction already runs getActionSpeed -> getTarget.
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_resort_get_targets(&[action]);
+                    self.ps_instruct_pending = Some(action);
+                    return;
+                }
                 // Instruct re-execution — a second hit that can couple with
                 // the original on the same defender. Conservatively disable
                 // damage collapse (full-enumerate) for the re-run.
