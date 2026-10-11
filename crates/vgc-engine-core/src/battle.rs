@@ -3406,10 +3406,10 @@ self.trigger_emergency_exits();
     /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
     /// Stalwart / Propeller Tail keep an active original target.
     #[cfg(feature = "ps-rng")]
-    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) {
+    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) -> Option<Target> {
         let n_active = self.format().active_count();
         let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
-        let Some(user) = self.side(side).active_mon(slot as usize) else { return };
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return None };
         // A recharging mon's action is the locked 'recharge' move
         // (data/conditions.ts mustrecharge onLockMove), not in the dex: its
         // undefined target never validates (sim/battle.ts validTargetLoc), so
@@ -3420,12 +3420,12 @@ self.trigger_emergency_exits();
             if n > 0 && n_active > 1 {
                 let _ = self.rng.ps_random_range("get_target", 0, n as u32);
             }
-            return;
+            return None;
         }
         let ability = user.effective_ability_id();
         let tcode = self.moves()[move_id as usize].target;
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
-            return;
+            return None;
         }
         // Champions Curse: a non-Ghost user's is a self move (no draw, as in
         // resolveAction); a Ghost's tracks its target
@@ -3434,7 +3434,7 @@ self.trigger_emergency_exits();
         if curse {
             let (types, nt) = user.effective_types();
             if !types[..nt as usize].contains(&13) {
-                return;
+                return None;
             }
         }
         let tracks = curse
@@ -3443,25 +3443,30 @@ self.trigger_emergency_exits();
             || ability == data::ability_id::PROPELLERTAIL;
         if let Some(t) = target {
             if tracks && alive_at(self, t) {
-                return;
+                return None;
             }
             if matches!(tcode, 0 | 2 | 4 | 10) {
                 if alive_at(self, t) || t.side == side {
-                    return; // living target, or a fainted ally (no retarget)
+                    return None; // living target, or a fainted ally (no retarget)
                 }
             }
         }
-        let n = if tcode == 2 {
-            (0..n_active)
-                .filter(|&s| s != slot as usize && self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
-                .count()
-        } else {
-            let foe = side.opposing();
-            (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
-        };
-        if n > 0 && n_active > 1 {
-            let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+        // The pick is returned (as `sample` sees it: living mons in slot
+        // order) so a randomNormal move can hit it.
+        let tside = if tcode == 2 { side } else { side.opposing() };
+        let mut alive = [0u8; 2];
+        let mut n = 0usize;
+        for s in 0..n_active.min(2) {
+            if (tcode != 2 || s != slot as usize) && self.side(tside).active_mon(s).is_some_and(|m| m.is_alive()) {
+                alive[n] = s as u8;
+                n += 1;
+            }
         }
+        if n > 0 && n_active > 1 {
+            let pick = self.rng.ps_random_range("get_target", 0, n as u32) as usize;
+            return Some(Target { side: tside, slot: alive[pick.min(n - 1)] });
+        }
+        None
     }
 
     /// Keyed oracle only: PS's commitChoices `queue.sort()` (sim/battle.ts
@@ -6101,9 +6106,19 @@ self.trigger_emergency_exits();
 
         let m = &self.moves()[move_id as usize];
 
+        #[allow(unused_mut)]
+        let mut ps_pick: Option<Target> = None;
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
-            self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            let pick = self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            // runMove hands getTarget's pick to useMove (sim/battle-actions.ts:209):
+            // a randomNormal move (Struggle, Outrage ...), or a single-target
+            // move whose foe target is gone, hits that foe.
+            // The choice's own location stays `lastMoveTargetLoc`
+            // (sim/pokemon.ts moveUsed), so only the hit takes the pick.
+            if matches!(m.target, 0 | 4 | 10 | 13) && pick.is_some() {
+                ps_pick = pick;
+            }
         }
 
         // Pre-move volatile/status checks (flinch, disable, throat chop, heal
@@ -6601,7 +6616,7 @@ self.trigger_emergency_exits();
         };
 
         // 5. Enumerate targets (spread or single).
-        let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
+        let mut targets = enumerate_targets(self, actor_side, actor_slot, m, ps_pick.or(target));
         if targets.is_empty() {
             return;
         }
@@ -21357,6 +21372,41 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let targets = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
         assert_eq!(targets, 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_struggle_hits_run_moves_random_pick() {
+        // Struggle is randomNormal: runMove's getTarget draws randomFoe
+        // (sim/battle.ts getTarget -> getRandomTarget) and useMove hits that
+        // foe, not the first living one.
+        let mut picked = [false; 2];
+        for seed in 0..12u32 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"moves":["tackle"]},
+                {"species":"chansey","level":50,"moves":["calmmind"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"blissey","level":50,"moves":["calmmind"]},
+                {"species":"chansey","level":50,"moves":["calmmind"]}
+            ]"#).unwrap();
+            let mut rng = Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+            rng.ps_mut().unwrap().enable_trace();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: crate::choice::STRUGGLE_MOVE_SLOT, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            );
+            let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+            let pick = trace.iter().filter(|d| d.op == "get_target").last().unwrap().result as usize;
+            let hit: Vec<usize> = (0..2).filter(|&s| b.p2.active_mon(s).unwrap().current_hp < b.p2.active_mon(s).unwrap().stats.hp).collect();
+            assert_eq!(hit, [pick], "seed {seed}: {trace:#?}");
+            picked[pick] = true;
+        }
+        assert_eq!(picked, [true, true]);
     }
 
     #[cfg(feature = "ps-rng")]
