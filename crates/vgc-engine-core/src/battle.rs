@@ -9159,6 +9159,20 @@ self.trigger_emergency_exits();
         will_act: bool,
         before: &StatusEffectSnapshot,
     ) {
+        // No living foe to aim a foe-targeting status move at: useMoveInner
+        // fails it with `[notarget]` before any accuracy roll
+        // (sim/battle-actions.ts:427-431; getMoveTargets drops fainted mons).
+        if matches!(m.target, 0 | 4 | 6 | 10 | 13) && self.format().active_count() > 1 {
+            let opp = actor_side.opposing();
+            let ally_target = target.is_some_and(|t| {
+                t.side == actor_side && self.side(t.side).active_mon(t.slot as usize).is_some_and(|p| p.is_alive())
+            });
+            let foe_alive = (0..self.format().active_count())
+                .any(|s| self.side(opp).active_mon(s).is_some_and(|p| p.is_alive()));
+            if !ally_target && !foe_alive {
+                return;
+            }
+        }
         // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
         let prankster_boosted = attacker.effective_ability_id() == data::ability_id::PRANKSTER;
         let opposing_targeting = is_targeting_move(m.target);
