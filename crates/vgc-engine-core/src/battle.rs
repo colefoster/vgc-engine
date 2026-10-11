@@ -7899,6 +7899,23 @@ self.trigger_emergency_exits();
                     defender.effective_ability_id(),
                     data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
                 );
+            // PS getDamage (sim/battle-actions.js:1395-1401) rolls the crit
+            // whenever `willCrit` is undefined and only then lets
+            // `runEvent('CriticalHit')` (Shell / Battle Armor) veto it, so
+            // the armored defender still costs a draw.
+            #[cfg(feature = "ps-rng")]
+            if crit_immune
+                && fixed_damage.is_none()
+                && self.force_crit.is_none()
+                && self.rng.is_ps()
+                && !matches!(
+                    move_id,
+                    data::move_id::STORMTHROW | data::move_id::FROSTBREATH | data::move_id::FLOWERTRICK
+                        | data::move_id::WICKEDBLOW | data::move_id::SURGINGSTRIKES
+                )
+            {
+                let _ = self.rng.crit_with_stage(crit_stage);
+            }
             let crit = if fixed_damage.is_some() || crit_immune {
                 false
             } else if matches!(
