@@ -16272,13 +16272,6 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = (actor_slot ^ 1) as usize;
-                let partner_alive = self
-                    .side(actor_side)
-                    .active_mon(partner_slot)
-                    .is_some_and(|p| p.is_alive());
-                if !partner_alive {
-                    return;
-                }
                 // `counter == 0` → no active chain: first use always succeeds
                 // and draws nothing (PS `onStart` sets the counter without
                 // rolling). Otherwise roll `randomChance(1, counter)` ≡
@@ -16303,6 +16296,16 @@ self.trigger_emergency_exits();
                 let next_counter = if counter == 0 { 3 } else { (counter * 3).min(729) };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.set_ally_switch_volatile(next_counter);
+                }
+                // The volatile (and its roll) comes from onPrepareHit; only
+                // then does onHit fail for a missing or fainted partner, so a
+                // lone user still builds the chain.
+                let partner_alive = self
+                    .side(actor_side)
+                    .active_mon(partner_slot)
+                    .is_some_and(|p| p.is_alive());
+                if !partner_alive {
+                    return;
                 }
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
                 // PR-EOT3: the two active slots' DOT bits swap with them.
@@ -40773,6 +40776,23 @@ mod tests {
             "failed roll cleared the chain volatile (resets to 100%)",
         );
         assert_eq!(b.p1.team[0].ally_switch_counter(), 0, "chain reset");
+    }
+
+    #[test]
+    fn ally_switch_without_a_partner_still_arms_the_chain() {
+        // PS adds the allyswitch volatile in onPrepareHit (data/moves.ts
+        // allyswitch); onHit then fails for a fainted partner, but the chain
+        // is armed, so the next use rolls randomChance(1, 3).
+        let mut b = battle();
+        b.p1.team[1].current_hp = 0;
+        b.p1.team[1].fainted = true;
+        b.p1.team[0].moves[0] = data::move_id::ALLYSWITCH;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active, [0, 1], "no swap without a partner");
+        assert_eq!(b.p1.team[0].ally_switch_counter(), 3);
     }
 
     #[test]
