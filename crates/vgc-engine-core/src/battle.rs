@@ -2726,7 +2726,11 @@ self.trigger_emergency_exits();
     /// filters them (`ModifySecondaries`; not for a Substitute's `null`).
     #[cfg(feature = "ps-rng")]
     fn ps_target_secondary_rolls(&self, m: &data::MoveDef, tside: SideRef, tslot: u8, hit_sub: bool, attacker: &Pokemon) -> u32 {
-        if !m.has_secondary
+        // `has_secondary` mirrors PS's singular `secondary` field; the
+        // fangs and Triple Arrows carry a `secondaries` array instead
+        // (data/moves.ts firefang/icefang/thunderfang/triplearrows).
+        let plural = matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows");
+        if !(m.has_secondary || plural)
             || self_boost_secondary(m.slug).is_some()
             || matches!(m.slug, "esperwing" | "rapidspin" | "mortalspin" | "zippyzap" | "mysticalpower")
         {
@@ -2745,7 +2749,7 @@ self.trigger_emergency_exits();
                 return 0;
             }
         }
-        if matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows") { 2 } else { 1 }
+        if plural { 2 } else { 1 }
     }
 
     /// `ps-rng` only: the speed sort of PS's `fieldEvent('Residual')`
