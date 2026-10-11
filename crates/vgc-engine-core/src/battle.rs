@@ -647,6 +647,12 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_hit_dead: u8,
+    /// `ps-rng` only: team indices (bit per index, per side) that released
+    /// a two-turn move this turn; their `twoturnmove` volatile lasts to the
+    /// residual. See [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_twoturn_release: [u8; 2],
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
@@ -807,6 +813,8 @@ impl Battle {
             ps_action_live: 0,
             #[cfg(feature = "ps-rng")]
             ps_hit_dead: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_twoturn_release: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             keyed_commit_moves: ([(0, 0); 4], 0),
@@ -2789,6 +2797,16 @@ self.trigger_emergency_exits();
         }
     }
 
+    /// `ps-rng` only: record a two-turn move's release turn for
+    /// [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    fn ps_mark_twoturn_release(&mut self, side: SideRef, slot: u8) {
+        let ti = self.side(side).active.get(slot as usize).copied().unwrap_or(u8::MAX);
+        if ti < 8 {
+            self.ps_twoturn_release[side as usize] |= 1 << ti;
+        }
+    }
+
     /// `ps-rng` only: Cloud Nine / Air Lock run `eachEvent('WeatherChange')`
     /// from both onStart and onEnd (data/abilities.ts cloudnine / airlock),
     /// a speed sort of the living actives, whether or not any weather is up.
@@ -2968,6 +2986,14 @@ self.trigger_emergency_exits();
                     if m.semi_invuln != 0 { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.must_recharge { push(&mut h, (NONE, 0, spe, 2)); }
                     if m.lockin_turns > 0 { push(&mut h, (NONE, 0, spe, 2)); }
+                    // The released two-turn move's `twoturnmove` volatile
+                    // (duration 2) only expires at this residual
+                    // (data/conditions.js:305; the move's own volatile is
+                    // what onTryMove removed).
+                    let ti = self.side(side).active[slot] as usize;
+                    if ti < 8 && self.ps_twoturn_release[side as usize] & (1 << ti) != 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
                 }
                 // Slot conditions: Wish (4), Future Sight (3); subOrder 3.
                 if self.wish_pending[side as usize][slot.min(1)].is_some() { push(&mut h, (4, 0, spe, 3)); }
@@ -4230,6 +4256,10 @@ self.trigger_emergency_exits();
             if self.rng.is_ps() {
                 self.ps_update_speed_all();
                 self.ps_residual_ties();
+            }
+            #[cfg(feature = "ps-rng")]
+            {
+                self.ps_twoturn_release = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             self.in_residual = true;
@@ -11496,6 +11526,8 @@ self.trigger_emergency_exits();
                     a.charging_turns = 0;
                     a.charging_move_slot = 255;
                 }
+                #[cfg(feature = "ps-rng")]
+                self.ps_mark_twoturn_release(actor_side, actor_slot);
                 skip_pp_deduct = true;
             } else {
                 // Electro Shot (data/moves.ts:electroshot:4639 onTryMove)
@@ -11559,6 +11591,8 @@ self.trigger_emergency_exits();
                     a.charging_move_slot = 255;
                     a.semi_invuln = 0;
                 }
+                #[cfg(feature = "ps-rng")]
+                self.ps_mark_twoturn_release(actor_side, actor_slot);
                 skip_pp_deduct = true;
             } else {
                 // Dive's onTryMove loads Gulp Missile on the initial charge
