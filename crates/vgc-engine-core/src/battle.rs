@@ -3245,26 +3245,6 @@ self.trigger_emergency_exits();
         }
     }
 
-    /// `ps-rng` only: resolve a spread move (allAdjacent / allAdjacentFoes)
-    /// with its draws in PS's order. PS runs each hit step across every
-    /// target before the next (sim/battle-actions.ts trySpreadMoveHit:
-    /// all accuracy rolls, then spreadMoveHit: every target's crit and
-    /// damage, the selfDrops roll, every target's secondaries, then the
-    /// DamagingHit procs); the engine resolves target by target. A dry run
-    /// on a clone tags each engine draw with its phase; the real run then
-    /// reads the PS stream through a window that maps the engine's i-th
-    /// draw to PS's position for it. The mapping is iterated to a fixpoint
-    /// because the values it hands out can change which draws happen.
-    /// Returns false (nothing resolved) when the move isn't windowed.
-    #[cfg(feature = "ps-rng")]
-    fn ps_spread_window(&mut self, action: ScheduledAction, pending_kind: &[[u8; 2]; 2], will_act: bool) -> bool {
-        use crate::ps_rng::WINDOW_CAP;
-        if !self.rng.is_ps() {
-            return false;
-        }
-        let (slot, move_slot) = match action.choice {
-            Choice::Move { actor_slot, move_slot, .. }
-            | Choice::Terastallize { actor_slot, move_slot, .. }
     /// `ps-rng` only: hitStepAccuracy's `runEvent('Accuracy')` handler sort
     /// (sim/battle-actions.js:627), run per target unless the move is
     /// Toxic from a Poison type or a self-targeting status move (:624).
