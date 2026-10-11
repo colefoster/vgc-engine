@@ -19920,8 +19920,15 @@ fn apply_secondary_effect(
     // hazard is an onAfterHit), which PS still rolls: one random(100), no
     // effect (data/moves.ts stoneaxe/ceaselessedge, sim/battle-actions.ts:
     // 1133 secondaries). Draws only.
+    // Eerie Spell / Sparkling Aria / Spirit Shackle / Syrup Bomb: a 100%
+    // secondary whose effect the engine does not model; PS still rolls.
     #[cfg(feature = "ps-rng")]
-    if rng.is_ps() && matches!(move_slug, "stoneaxe" | "ceaselessedge") {
+    if rng.is_ps()
+        && matches!(
+            move_slug,
+            "stoneaxe" | "ceaselessedge" | "eeriespell" | "sparklingaria" | "spiritshackle" | "syrupbomb"
+        )
+    {
         let _ = rng.percent_1_100();
     }
     // PS rolls each secondary independently in `secondaries[]` array
