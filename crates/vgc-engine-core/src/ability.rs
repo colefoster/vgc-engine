@@ -738,6 +738,40 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // `this.sample(possibleTargets)`); valid = alive with a non-empty,
     // traceable ability (`is_untraceable_ability`: PS `notrace`).
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Trace_(Ability)>.
+    // Forewarn only announces a move, but its `this.sample(warnMoves)` draws
+    // (data/abilities.ts forewarn onStart): the foes' moves with the highest
+    // warning power (OHKO 150; Counter / Metal Burst / Mirror Coat 120; a
+    // 1 or 0 BP damaging move 80; status 0), one draw even for a lone move.
+    #[cfg(feature = "ps-rng")]
+    if ability_id == data::ability_id::FOREWARN && battle.rng_mut().is_ps() {
+        let mut best = 1u16;
+        let mut n = 0u32;
+        for s in 0..battle.format().active_count() {
+            let Some(foe) = battle.side(side.opposing()).active_mon(s).filter(|m| m.is_alive()) else { continue };
+            for &mid in foe.moves.iter().filter(|&&id| id != u16::MAX) {
+                let mv = &data::MOVES[mid as usize];
+                let mut bp = mv.base_power;
+                if matches!(mid, data::move_id::FISSURE | data::move_id::HORNDRILL | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD) {
+                    bp = 150;
+                }
+                if matches!(mid, data::move_id::COUNTER | data::move_id::METALBURST | data::move_id::MIRRORCOAT) {
+                    bp = 120;
+                }
+                if bp == 1 || (bp == 0 && mv.category != 2) {
+                    bp = 80;
+                }
+                if bp > best {
+                    best = bp;
+                    n = 1;
+                } else if bp == best {
+                    n += 1;
+                }
+            }
+        }
+        if n > 0 {
+            let _ = battle.rng_mut().ps_random_range("sample", 0, n);
+        }
+    }
     if ability_id == data::ability_id::TRACE {
         // Ability Shield on the Trace user blocks the change to its own
         // ability — PS `onSetAbility` (data/items.ts:2-17) returns null for
