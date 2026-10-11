@@ -2820,7 +2820,11 @@ self.trigger_emergency_exits();
                     m.heal_block_turns() > 0,
                     m.throat_chop_turns() > 0,
                     m.volatiles.has(V::Torment),
-                    choice_item && m.locked_move_slot() != 255,
+                    // The choicelock volatile outlives its item until this
+                    // DisableMove removes it (data/conditions.js choicelock
+                    // onDisableMove); a Gorilla Tactics lock is the ability's.
+                    m.locked_move_slot() != 255
+                        && (choice_item || m.effective_ability_id() != data::ability_id::GORILLATACTICS),
                 ];
                 // (speed, subOrder)
                 let mut h = [(0i64, 0i64); 12];
@@ -3773,16 +3777,16 @@ self.trigger_emergency_exits();
                 });
                 if counter {
                     self.ps_active_ties(false, "shuffle");
-                }
-            }
-        }
-    }
                     // beforeTurnCallback adds the duration-1 counter /
                     // mirrorcoat volatile, live to the residual.
                     let i = self.side(side).active[actor_slot as usize] as usize;
                     if i < 8 {
                         self.ps_charge_volatile[side as usize] |= 1 << i;
                     }
+                }
+            }
+        }
+    }
 
     /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
     /// when the next queued action is a move — `getActionSpeed` (and so
@@ -4133,6 +4137,26 @@ self.trigger_emergency_exits();
                     if !seen[slot] {
                         seen[slot] = true;
                         self.roll_quick_fractional(side, *c);
+                    }
+                }
+            }
+        }
+        // endTurn's DisableMove removes a choicelock whose holder no longer
+        // has a Choice item (data/conditions.js choicelock onDisableMove), so
+        // a Choice item regained later locks afresh. Gorilla Tactics keeps
+        // its own lock.
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count() {
+                if let Some(m) = self.side_mut(side).active_mon_mut(slot) {
+                    let choice_item = matches!(
+                        m.item_id,
+                        data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                    );
+                    if m.locked_move_slot() != 255
+                        && !choice_item
+                        && m.effective_ability_id() != data::ability_id::GORILLATACTICS
+                    {
+                        m.set_locked_move_slot(255);
                     }
                 }
             }
@@ -25163,6 +25187,29 @@ mod tests {
                 assert_ne!(move_slot, 2, "Assault Vest filters out Helping Hand");
             }
         }
+    }
+
+    #[test]
+    fn choice_lock_ends_once_the_choice_item_is_gone() {
+        // choicelock onDisableMove (endTurn) removes the lock when the holder
+        // has no Choice item; a scarf regained later locks the next move.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"corviknight","level":50,"ability":"pressure","item":"choicescarf","nature":"adamant","moves":["roost","bravebird","bulkup","uturn"]}]"#,
+        )
+        .unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}]"#,
+        )
+        .unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 3 }, p1, p2);
+        let pass = [Choice::Pass { actor_slot: 0 }];
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 0, target: None }], &pass);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 0);
+        b.p1.team[0].item_id = u16::MAX;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], &pass);
+        b.p1.team[0].item_id = data::item_id::CHOICESCARF;
+        b.step(&[Choice::Move { actor_slot: 0, move_slot: 2, target: None }], &pass);
+        assert_eq!(b.p1.team[0].locked_move_slot(), 2, "relocked into Bulk Up, not Roost");
     }
 
     #[test]
