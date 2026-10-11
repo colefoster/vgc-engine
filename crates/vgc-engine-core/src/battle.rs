@@ -14771,10 +14771,13 @@ self.trigger_emergency_exits();
                 (immune, acc, attacker.effective_crit_stage().saturating_add(m.crit_stage_delta), crit_immune)
             };
             if !immune {
+                self.rng.set_decision(RngDecision::Accuracy);
                 if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
                     return;
                 }
+                self.rng.set_decision(RngDecision::Crit);
                 ps_crit = self.rng.crit_with_stage(crit_stage) && !crit_immune;
+                self.rng.set_decision(RngDecision::Damage);
             }
             ps_immune = immune;
         }
