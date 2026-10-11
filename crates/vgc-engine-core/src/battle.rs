@@ -665,8 +665,9 @@ pub struct Battle {
     #[serde(skip)]
     pub(crate) ps_twoturn_release: [u8; 2],
     /// `ps-rng` only: team indices (bit per index, per side) whose
-    /// priorityChargeCallback added a duration-1 volatile this turn
-    /// (chillyreception, focuspunch, shelltrap), which lasts to the
+    /// priorityChargeCallback or beforeTurnCallback added a duration-1
+    /// volatile this turn (chillyreception, focuspunch, shelltrap, counter,
+    /// mirrorcoat), which lasts to the
     /// residual unless the mon leaves. See [`Battle::ps_residual_ties`].
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
@@ -3776,6 +3777,12 @@ self.trigger_emergency_exits();
             }
         }
     }
+                    // beforeTurnCallback adds the duration-1 counter /
+                    // mirrorcoat volatile, live to the residual.
+                    let i = self.side(side).active[actor_slot as usize] as usize;
+                    if i < 8 {
+                        self.ps_charge_volatile[side as usize] |= 1 << i;
+                    }
 
     /// `ps-rng` only: the gen-8+ dynamic re-sort PS runs after an action
     /// when the next queued action is a move — `getActionSpeed` (and so
