@@ -212,36 +212,34 @@ pub fn effective_speed(
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Quick_Feet_(Ability)>.
     let statused = !matches!(mon.status, Status::None);
     let has_quick_feet = mon.ability_id == data::ability_id::QUICKFEET;
-    let after_para = if matches!(mon.status, Status::Paralysis) && !has_quick_feet {
-        boosted / 2
-    } else {
-        boosted
-    };
-    let after_para = if has_quick_feet && statused {
-        after_para * 3 / 2
-    } else {
-        after_para
-    };
-    let after_tailwind = if tailwind_active { after_para * 2 } else { after_para };
+    // Every onModifySpe below is a chainModify: PS chains them into one
+    // 4096-based modifier (sim/battle.ts chainModify) applied once, then
+    // paralysis (onModifySpePriority -101) finalModify()s and floors half
+    // (data/conditions.ts par). Applying each in turn with flooring loses
+    // a point (167 paralysed under Tailwind: 167, not 166).
+    let mut modifier: u32 = 4096;
+    let mut chain = |next: u32| modifier = (modifier * next + 2048) >> 12;
+    if has_quick_feet && statused {
+        chain(6144);
+    }
+    if tailwind_active {
+        chain(8192);
+    }
     // Choice Scarf: ×1.5 to final speed.
-    let after_item = if mon.item_id == data::item_id::CHOICESCARF {
-        after_tailwind * 3 / 2
+    if mon.item_id == data::item_id::CHOICESCARF {
+        chain(6144);
     } else if mon.item_id == data::item_id::IRONBALL {
         // Iron Ball — PS `data/items.ts:ironball` `onModifySpe`:
         //   `return this.chainModify(0.5);`
         // Halves the holder's speed unconditionally. Bulbapedia:
         // <https://bulbapedia.bulbagarden.net/wiki/Iron_Ball>.
-        after_tailwind / 2
-    } else {
-        after_tailwind
-    };
+        chain(2048);
+    }
     // Paradox booster on Spe (index 4): ×1.5 to speed. PS chainModify(1.5)
     // for protosynthesisspe / quarkdrivespe volatile flavors.
-    let after_paradox = if mon.boosted_stat == 4 {
-        after_item * 3 / 2
-    } else {
-        after_item
-    };
+    if mon.boosted_stat == 4 {
+        chain(6144);
+    }
     // Unburden — PS `data/abilities.ts:unburden` (line 5227). The
     // `unburden` volatile is latched (`unburden_active`) when the holder's
     // item is used up or taken; its `onModifySpe` returns chainModify(2)
@@ -250,14 +248,9 @@ pub fn effective_speed(
     // suspends the boost (the latch persists until switch-out). Hawlucha /
     // Sceptile / Hitmonlee signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Unburden_(Ability)>.
-    let after_unburden = if mon.ability_id == data::ability_id::UNBURDEN
-        && mon.unburden_active
-        && mon.item_id == u16::MAX
-    {
-        after_paradox * 2
-    } else {
-        after_paradox
-    };
+    if mon.ability_id == data::ability_id::UNBURDEN && mon.unburden_active && mon.item_id == u16::MAX {
+        chain(8192);
+    }
     // Weather speed abilities — PS `data/abilities.ts` `onModifySpe`
     // returns `this.chainModify(2)` for Swift Swim under Rain,
     // Chlorophyll under Sun, Sand Rush under Sand, Slush Rush under Snow.
@@ -274,17 +267,20 @@ pub fn effective_speed(
     // chainModify(2) in Electric Terrain (no grounding check).
     let surge_double = mon.ability_id == data::ability_id::SURGESURFER
         && matches!(terrain, crate::terrain::Terrain::Electric);
-    let after_weather = if weather_double || surge_double { after_unburden * 2 } else { after_unburden };
+    if weather_double || surge_double {
+        chain(8192);
+    }
     // Slow Start — PS `data/abilities.ts:4266` while volatile alive,
     // `onModifySpe` returns chainModify(0.5). Regigigas signature.
-    let after_slowstart = if mon.ability_id == data::ability_id::SLOWSTART
-        && mon.slow_start_active_turns > 0
-    {
-        after_weather / 2
-    } else {
-        after_weather
-    };
-    after_slowstart.min(u16::MAX as u32) as u16
+    if mon.ability_id == data::ability_id::SLOWSTART && mon.slow_start_active_turns > 0 {
+        chain(2048);
+    }
+    // sim/battle.ts modify: tr((tr(value * modifier) + 2048 - 1) / 4096).
+    let mut spe = (boosted * modifier + 2047) / 4096;
+    if matches!(mon.status, Status::Paralysis) && !has_quick_feet {
+        spe = spe * 50 / 100;
+    }
+    spe.min(u16::MAX as u32) as u16
 }
 
 /// One move action's sort key plus the action itself:
@@ -1030,6 +1026,17 @@ mod tests {
         let before = effective_speed(&b.p1.team[0], false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         let after = effective_speed(&mon, false, crate::weather::Weather::None, crate::terrain::Terrain::None);
         assert_eq!(after, before / 2);
+    }
+
+    #[test]
+    fn paralysis_halves_after_the_chained_speed_modifiers() {
+        // data/conditions.ts par: finalModify the chain (Tailwind x2), then
+        // floor half — an odd Speed keeps its last point.
+        let b = make_battle();
+        let mut mon = b.p1.team[0].clone();
+        mon.stats.spe = 167;
+        mon.status = Status::Paralysis;
+        assert_eq!(effective_speed(&mon, true, crate::weather::Weather::None, crate::terrain::Terrain::None), 167);
     }
 
     #[test]
