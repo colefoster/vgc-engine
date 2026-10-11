@@ -1065,7 +1065,17 @@ impl Battle {
     /// call.
     pub(crate) fn sync_weather_terrain_cache(&mut self) {
         self.cached_weather = self.recompute_effective_weather();
+        let old_terrain = self.cached_terrain;
         self.cached_terrain = self.recompute_effective_terrain();
+        // Mimicry's onTerrainChange (data/abilities.ts mimicry).
+        if old_terrain != self.cached_terrain {
+            let n = self.format().active_count() as u8;
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..n {
+                    self.apply_mimicry(side, slot);
+                }
+            }
+        }
         // PS field.setWeather / clearWeather / setTerrain / clearTerrain
         // each end with eachEvent('WeatherChange' / 'TerrainChange')
         // (sim/field.ts:87, :97, :155, :165): a speed sort of the living
@@ -1081,6 +1091,28 @@ impl Battle {
                 }
                 self.ps_field_seen = Some((self.weather, self.terrain));
             }
+        }
+    }
+
+    /// Mimicry (PS data/abilities.ts mimicry `onTerrainChange`, also run by
+    /// its onStart): the holder becomes the terrain's type (Electric, Grass,
+    /// Psychic, Fairy), or its species types again with no terrain;
+    /// `setType` refuses a Terastallized mon.
+    pub(crate) fn apply_mimicry(&mut self, side: SideRef, slot: u8) {
+        let ty = match self.terrain {
+            crate::terrain::Terrain::Electric => Some(3),
+            crate::terrain::Terrain::Grassy => Some(4),
+            crate::terrain::Terrain::Psychic => Some(10),
+            crate::terrain::Terrain::Misty => Some(17),
+            crate::terrain::Terrain::None => None,
+        };
+        let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) else { return };
+        if !m.is_alive() || m.terastallized || m.effective_ability_id() != data::ability_id::MIMICRY {
+            return;
+        }
+        match ty {
+            Some(t) => m.set_type_override(t, None),
+            None => m.clear_type_override(),
         }
     }
 
@@ -14557,7 +14589,9 @@ self.trigger_emergency_exits();
                     Status::Sleep => ab == data::ability_id::VITALSPIRIT || ab == data::ability_id::INSOMNIA,
                     Status::None => false,
                 };
-                let type_immune = is_type_immune_to_status(m.species(), status)
+                // runStatusImmunity reads the live typing (sim/pokemon.ts
+                // getTypes: Tera, Mimicry, Soak ...).
+                let type_immune = is_type_immune_to_status(m.effective_types(), status)
                     && !(matches!(status, Status::Poison | Status::Toxic) && source_has_corrosion);
                 (type_immune, terrain_blocks, ability_status_block)
             }
@@ -20998,10 +21032,8 @@ fn apply_secondary_effect(
 ///   Poison/Steel immune to Poison/Toxic
 /// Grass immunity to powder moves (Spore, Sleep Powder) is per-move,
 /// not per-status — handled at move resolution when sleep lands.
-fn is_type_immune_to_status(species: &data::SpeciesDef, status: Status) -> bool {
-    let has = |code: u8| {
-        (0..species.num_types as usize).any(|i| species.types[i] == code)
-    };
+fn is_type_immune_to_status((types, n): ([u8; 2], u8), status: Status) -> bool {
+    let has = |code: u8| types[..n as usize].contains(&code);
     // Type codes per data::TYPE_NAMES:
     // Fire=1 Electric=3 Ice=5 Poison=7 Ground=8 Steel=16.
     match status {
@@ -34395,6 +34427,31 @@ mod tests {
         assert!(fairy, "Fairy Aura should be detected on Xerneas");
         assert!(!dark);
         assert!(!brk);
+    }
+
+    #[test]
+    fn mimicry_takes_the_terrain_type_and_reverts_when_it_ends() {
+        // PS data/abilities.ts mimicry onTerrainChange: Electric Terrain makes
+        // the holder pure Electric (so it can't be paralyzed); no terrain
+        // restores its species types.
+        let p1_json = r#"[
+            {"species":"pincurchin","level":50,"ability":"electricsurge","nature":"modest","moves":["thunderwave","protect","discharge","spikes"]}
+        ]"#;
+        let p2_json = r#"[
+            {"species":"stunfiskgalar","level":50,"ability":"mimicry","nature":"adamant","moves":["protect","snaptrap","yawn","fissure"]}
+        ]"#;
+        let p1 = TeamBuilder::from_json(p1_json).unwrap();
+        let p2 = TeamBuilder::from_json(p2_json).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        crate::ability::on_switch_in(&mut b, SideRef::P1, 0);
+        crate::ability::on_switch_in(&mut b, SideRef::P2, 0);
+        assert_eq!(b.terrain, crate::terrain::Terrain::Electric);
+        assert_eq!(b.p2.team[0].effective_types(), ([3, 0], 1), "pure Electric under Electric Terrain");
+        b.try_set_status_from_src(SideRef::P2, 0, Status::Paralysis, SideRef::P1, 0);
+        assert_eq!(b.p2.team[0].status, Status::None, "an Electric type can't be paralyzed");
+        b.terrain = crate::terrain::Terrain::None;
+        b.sync_weather_terrain_cache();
+        assert_eq!(b.p2.team[0].effective_types(), (b.p2.team[0].species().types, b.p2.team[0].species().num_types));
     }
 
     #[test]

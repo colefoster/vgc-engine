@@ -545,6 +545,9 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     }
     #[cfg(feature = "ps-rng")]
     battle.ps_weather_suppressor_ties(ability_id);
+    if ability_id == data::ability_id::MIMICRY && battle.terrain != crate::terrain::Terrain::None {
+        battle.apply_mimicry(side, slot);
+    }
     // Forecast — a Castform switching into existing weather adopts the
     // matching forme immediately (PS data/abilities.ts:forecast onStart /
     // onUpdate). Cheap no-op for every non-Forecast active.
