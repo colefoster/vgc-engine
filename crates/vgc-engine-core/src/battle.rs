@@ -7043,7 +7043,16 @@ self.trigger_emergency_exits();
                     && self
                         .side(ts)
                         .active_mon(tsl as usize)
-                        .is_some_and(|d| d.is_alive() && d.effective_ability_id() == data::ability_id::FLASHFIRE)
+                        .is_some_and(|d| {
+                            d.is_alive()
+                                && d.effective_ability_id() == data::ability_id::FLASHFIRE
+                                // Protect's TryHit (onTryHitPriority 3) stops
+                                // the event before Flash Fire's onTryHit runs
+                                // (sim/battle.js runEvent breaks on a falsy
+                                // return), so a protected holder doesn't make
+                                // the move sure-hit.
+                                && !(m.blocked_by_protect && d.is_protected_this_turn())
+                        })
             });
 
         // 6. Per-target resolution — PS does accuracy + damage rolls and
