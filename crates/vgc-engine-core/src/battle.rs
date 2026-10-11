@@ -2558,7 +2558,10 @@ self.trigger_emergency_exits();
         let s = self.side(side);
         let m = s.active_mon(slot)?;
         if !m.is_alive() {
-            return Some(m.stats.spe as i64);
+            // faintMessages' clearVolatile -> setSpecies(baseSpecies) resets
+            // a fainted Transform user's `speed` to its own stat
+            // (sim/battle.ts:2103, sim/pokemon.ts setSpecies).
+            return Some(m.transform_base.map_or(m.stats.spe, |b| b.stats.spe) as i64);
         }
         let i = *s.active.get(slot)? as usize;
         Some(self.ps_speed_cache[side as usize].get(i).copied().unwrap_or(m.stats.spe as i64))
