@@ -17042,13 +17042,21 @@ self.trigger_emergency_exits();
             data::move_id::SPORE => {
                 // Powder move: 100% accuracy, but Grass types are immune
                 // to powder. (Overcoat / Safety Goggles deferred.)
+                // PS hitStepTryImmunity (sim/battle-actions.js:566) fails a
+                // powder move on an immune target before the accuracy roll.
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, true);
                 }
             }
             data::move_id::SLEEPPOWDER => {
-                // Powder: 75% acc, Grass immunity.
+                // Powder: 75% acc, Grass immunity (before the roll, as Spore).
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((ts, tslot)) = opp_target {
                     self.apply_sleep_to_target(ts, tslot, true);
@@ -17919,6 +17927,10 @@ self.trigger_emergency_exits();
                 crate::item::try_consume_mental_herb(self, opp, target_slot);
             }
             data::move_id::POISONPOWDER => {
+                // Powder immunity fails it before the roll, as Spore.
+                if opp_target.is_some_and(|(ts, tslot)| self.target_is_powder_immune(ts, tslot)) {
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 // Powder gate: Grass / Overcoat / Safety Goggles.
                 if let Some((opp, slot)) = opp_target {
