@@ -14271,6 +14271,38 @@ self.trigger_emergency_exits();
         // queue. OraclePartial / Splitmix draw deterministically; strict
         // Oracle uses a fixed mid bucket rather than popping an unrelated
         // event.
+        // PS futuremove onEnd runs trySpreadMoveHit (data/conditions.js:416):
+        // a target the move's type can hit draws hitStepAccuracy's roll, then
+        // getDamage's crit roll, before the damage roll.
+        #[allow(unused_mut)]
+        let mut ps_crit = false;
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            let m = &self.moves()[entry.move_id as usize];
+            let (immune, acc, crit_stage, crit_immune) = {
+                let attacker = &self.side(src_side).team[src_idx];
+                let Some(defender) = self.side(tside).active_mon(tslot as usize) else { return };
+                let immune = crate::damage::effectiveness_for_attack(attacker, entry.move_id, m.type_, defender)
+                    .is_immune();
+                let boost = (attacker.boosts[5] as i32 - defender.boosts[6] as i32).clamp(-6, 6);
+                let acc: u32 = if boost > 0 {
+                    m.accuracy as u32 * (3 + boost as u32) / 3
+                } else {
+                    m.accuracy as u32 * 3 / (3 + (-boost) as u32)
+                };
+                let crit_immune = matches!(
+                    defender.effective_ability_id(),
+                    data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
+                );
+                (immune, acc, attacker.effective_crit_stage().saturating_add(m.crit_stage_delta), crit_immune)
+            };
+            if !immune {
+                if self.rng.percent_1_100_t(acc.min(100) as u8) as u32 > acc {
+                    return;
+                }
+                ps_crit = self.rng.crit_with_stage(crit_stage) && !crit_immune;
+            }
+        }
         let roll = match &self.rng {
             Rng::Oracle(_) => 7,
             _ => self.rng.damage_roll(),
@@ -14298,7 +14330,7 @@ self.trigger_emergency_exits();
                 defender,
                 entry.move_id,
                 DamageContext {
-                    crit: false,
+                    crit: ps_crit,
                     roll,
                     is_spread: false,
                     weather,
