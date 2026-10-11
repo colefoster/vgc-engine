@@ -115,13 +115,6 @@ impl ActionOrder {
         }
     }
 
-    /// Insert `a` at index `at` (Instruct's re-run). Heap only past
-    /// [`ACTION_INLINE_CAP`] actions, as `push`.
-    pub fn insert(&mut self, at: usize, a: ScheduledAction) {
-        self.push(a);
-        self.as_mut_slice()[at..].rotate_right(1);
-    }
-
     /// Re-position the pending move action of `(side, slot)` within the
     /// still-unprocessed tail of the queue (indices `after + 1 ..`).
     ///
@@ -653,10 +646,6 @@ pub(crate) fn resort_from(
         // tied with nothing.
         if battle.replaced_mid_turn[si][sl] {
             out[k] = (i8::MAX, k as i32, 0, 0);
-            continue;
-        }
-        if start + k == battle.instruct_at {
-            out[k] = (i8::MIN, 0, 0, 0);
             continue;
         }
         out[k] = queued_move_key_tr(battle, a.side, a.actor_slot, move_slot, keys, trick_room);
