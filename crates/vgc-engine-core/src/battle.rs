@@ -1387,6 +1387,19 @@ impl Battle {
                     self.shields_down_leave_field(side, slot);
                     self.hunger_switch_leave_field(side, slot, true);
                     self.gulp_missile_leave_field(side, slot);
+                    // clearVolatile's setSpecies(baseSpecies) recomputes
+                    // storedStats (sim/pokemon.ts clearVolatile, setSpecies):
+                    // a fainted mon's Speed Swap / stat split ends here, and
+                    // its switch-out Speed (the replacement sort) is its own.
+                    if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
+                        if m.transform_base.is_none() {
+                            m.change_forme(m.species_id, true);
+                        }
+                    }
+                    #[cfg(feature = "ps-rng")]
+                    if self.rng.is_ps() {
+                        self.ps_reset_speed(side, slot as usize);
+                    }
                 }
             }
             for i in 0..self.side(side).team.len() {
@@ -35905,6 +35918,32 @@ mod tests {
         );
         assert_eq!(b.p1.team[0].stats.spe, lax_spe, "user took target's Speed");
         assert_eq!(b.p2.team[0].stats.spe, zam_spe, "target took user's Speed");
+    }
+
+    #[test]
+    fn speed_swap_ends_when_the_holder_faints() {
+        // PS faintMessages -> clearVolatile -> setSpecies(baseSpecies)
+        // recomputes storedStats, so a fainted mon keys its replacement
+        // switch on its own Speed again.
+        let p1 = TeamBuilder::from_json(
+            r#"[{"species":"alakazam","level":50,"ability":"synchronize","item":"","nature":"timid","moves":["speedswap","psychic","recover","calmmind"]}]"#,
+        )
+        .unwrap();
+        let p2 = TeamBuilder::from_json(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","item":"","nature":"careful","moves":["bodyslam","rest","sleeptalk","crunch"]}]"#,
+        )
+        .unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 7 }, p1, p2);
+        let lax_spe = b.p2.team[0].stats.spe;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Pass { actor_slot: 0 }],
+        );
+        assert_ne!(b.p2.team[0].stats.spe, lax_spe);
+        b.p2.team[0].current_hp = 0;
+        b.p2.team[0].fainted = true;
+        b.faint_forme_cleanup();
+        assert_eq!(b.p2.team[0].stats.spe, lax_spe, "fainted Snorlax back to its own Speed");
     }
 
     #[test]
