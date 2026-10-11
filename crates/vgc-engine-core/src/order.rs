@@ -410,7 +410,7 @@ fn schedule_move(
             // uses the bumped priority. PS data/abilities.ts prankster
             // onModifyPriority.
             let pri_after_ability = if category == 2
-                && m.ability_id == data::ability_id::PRANKSTER
+                && m.effective_ability_id() == data::ability_id::PRANKSTER
             {
                 base_pri + 1
             } else {
@@ -590,7 +590,7 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
         (mv.priority as i32, mv.category)
     };
     let mut pri = base;
-    if category == 2 && m.ability_id == data::ability_id::PRANKSTER {
+    if category == 2 && m.effective_ability_id() == data::ability_id::PRANKSTER {
         pri += 1;
     }
     if mid == data::move_id::GRASSYGLIDE
@@ -894,6 +894,19 @@ mod tests {
         let p1 = TeamBuilder::from_json(P1).unwrap();
         let p2 = TeamBuilder::from_json(P2).unwrap();
         Battle::new(BattleConfig::default(), p1, p2)
+    }
+
+    #[test]
+    fn prankster_reads_the_current_ability() {
+        // A Prankster mon Simple Beamed into Simple loses the +1 (PS
+        // data/abilities.ts prankster onModifyPriority runs off the current
+        // ability).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"grimmsnarl","level":50,"ability":"prankster","moves":["thunderwave"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"pikachu","level":50,"moves":["tackle"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig::default(), p1, p2);
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 1);
+        b.p1.team[0].ability_override = data::ability_id::SIMPLE;
+        assert_eq!(state_priority(&b, SideRef::P1, 0, 0), 0);
     }
 
     fn t(side: SideRef, slot: u8) -> Target {
