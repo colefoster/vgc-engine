@@ -3487,6 +3487,16 @@ self.trigger_emergency_exits();
                 if move_id == data::move_id::CURSE && !ghost {
                     continue;
                 }
+                // A lockedmove (Outrage) action keeps lastMoveTargetLoc, the
+                // first turn's random pick (sim/side.ts:442-454), so
+                // resolveAction draws no random target; getActionSpeed's
+                // getTarget still draws for the randomNormal move.
+                if mon.lockin_turns > 0 && mon.lockin_move_slot != 255 {
+                    if let Some(&id) = mon.moves.get(mon.lockin_move_slot as usize) {
+                        self.ps_get_target_draw(side, actor_slot, id, None);
+                    }
+                    continue;
+                }
                 if target.is_some() {
                     // A chosen target: only getActionSpeed -> getTarget,
                     // which redraws when that target already fainted.
