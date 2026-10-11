@@ -664,6 +664,13 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_twoturn_release: [u8; 2],
+    /// `ps-rng` only: team indices (bit per index, per side) whose
+    /// priorityChargeCallback added a duration-1 volatile this turn
+    /// (chillyreception, focuspunch, shelltrap), which lasts to the
+    /// residual unless the mon leaves. See [`Battle::ps_residual_ties`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_charge_volatile: [u8; 2],
     /// `ps-rng` only: the current action's move got past BeforeMove, so
     /// runMove ends with `runEvent('AfterMove')`; see
     /// [`Battle::ps_after_move_ties`].
@@ -836,6 +843,8 @@ impl Battle {
             ps_hit_dead: 0,
             #[cfg(feature = "ps-rng")]
             ps_twoturn_release: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_charge_volatile: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_move_used: false,
             #[cfg(feature = "ps-rng")]
@@ -3090,7 +3099,8 @@ self.trigger_emergency_exits();
                             V::Telekinesis => 19, V::Roost => 25, V::SyrupBomb => 14, V::SaltCure => 13,
                             V::Encore => 16, V::ThroatChop => 22, V::PartialTrap => 13, V::Octolock => 14,
                             V::MagicCoat | V::Snatch | V::PowderShield | V::LaserFocus | V::Endure
-                            | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch => NONE,
+                            | V::HelpingHand | V::Flinch | V::Protect | V::Stall | V::Redirect | V::AllySwitch
+                            | V::BeakBlast => NONE,
                             _ => continue,
                         };
                         push(&mut h, (order, 0, spe, 2));
@@ -3106,6 +3116,10 @@ self.trigger_emergency_exits();
                     // what onTryMove removed).
                     let ti = self.side(side).active[slot] as usize;
                     if ti < 8 && self.ps_twoturn_release[side as usize] & (1 << ti) != 0 {
+                        push(&mut h, (NONE, 0, spe, 2));
+                    }
+                    // A priorityChargeCallback volatile (duration 1).
+                    if ti < 8 && self.ps_charge_volatile[side as usize] & (1 << ti) != 0 {
                         push(&mut h, (NONE, 0, spe, 2));
                     }
                 }
@@ -4237,6 +4251,11 @@ self.trigger_emergency_exits();
                     })
                 {
                     self.ps_active_ties(false, "shuffle");
+                    let i = self.side(side).active[actor_slot as usize] as usize;
+                    let id = self.side(side).team[i].moves[move_slot as usize];
+                    if i < 8 && id != data::move_id::BEAKBLAST {
+                        self.ps_charge_volatile[side as usize] |= 1 << i;
+                    }
                 }
             }
         }
@@ -4592,6 +4611,7 @@ self.trigger_emergency_exits();
             #[cfg(feature = "ps-rng")]
             {
                 self.ps_twoturn_release = [0; 2];
+                self.ps_charge_volatile = [0; 2];
             }
             let hp_before = self.active_hp_snapshot();
             self.in_residual = true;
