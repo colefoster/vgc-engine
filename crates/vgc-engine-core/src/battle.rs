@@ -41698,6 +41698,18 @@ mod tests {
     }
 
     #[test]
+    fn recharge_action_sorts_at_priority_zero() {
+        // A recharging mon's action is PS's 'recharge' move (data/conditions.ts
+        // mustrecharge onLockMove), which isn't in the dex: getActionSpeed
+        // sorts it at priority 0, not at its chosen slot's (+4 Detect).
+        let mut b = battle();
+        b.p1.team[0].moves[0] = data::move_id::DETECT;
+        assert_eq!(crate::order::state_priority(&b, SideRef::P1, 0, 0), 4);
+        b.p1.team[0].must_recharge = true;
+        assert_eq!(crate::order::state_priority(&b, SideRef::P1, 0, 0), 0);
+    }
+
+    #[test]
     fn hyper_beam_sets_must_recharge_then_skips_next_turn() {
         // Turn 1: Snorlax Hyper Beam hits → must_recharge set.
         // Turn 2: Snorlax tries Body Slam → action skipped (recharge),
