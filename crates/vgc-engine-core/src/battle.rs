@@ -6529,7 +6529,7 @@ self.trigger_emergency_exits();
             let before = self.status_effect_snapshot();
             let bounced = m.is_reflectable && self.find_magic_bounce_target(actor_side, m, target).is_some();
             self.resolve_status_move_branch(
-                actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act,
+                actor_side, actor_slot, move_id, m, &attacker, target, pending_kind, will_act, &before,
             );
             let r = self.status_move_result(actor_side, actor_slot, m, target, &before, bounced);
             self.set_move_result(actor_side, actor_slot, r);
@@ -9027,6 +9027,7 @@ self.trigger_emergency_exits();
         target: Option<Target>,
         pending_kind: &[[u8; 2]; 2],
         will_act: bool,
+        before: &StatusEffectSnapshot,
     ) {
         // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
         let prankster_boosted = attacker.effective_ability_id() == data::ability_id::PRANKSTER;
@@ -9262,8 +9263,23 @@ self.trigger_emergency_exits();
             self.ps_status_missed = false;
         }
         self.resolve_status_move(actor_side, actor_slot, m, move_id, target, pending_kind, will_act);
+        // A status move whose effect failed (runMoveEffects' hit result is
+        // false for every target) leaves the hit loop at hit 1 with no Update
+        // (data/mods/champions/scripts.js:442, :456).
+        #[cfg(not(feature = "ps-rng"))]
+        let _ = before;
         #[cfg(feature = "ps-rng")]
-        if ps_loop && self.ps_status_move_landed(actor_side, actor_slot, m, target) {
+        if ps_loop
+            && self.ps_status_move_landed(actor_side, actor_slot, m, target)
+            && (self.status_move_result(actor_side, actor_slot, m, target, before, false)
+                == crate::pokemon::MoveResult::Succeeded
+                // Effects the snapshot cannot see: a stat swap, a called
+                // move, a pending drag, and a heal that fails with NOT_FAIL
+                // (data/moves.js healpulse / floralhealing).
+                || matches!(m.slug, "speedswap" | "instruct" | "healpulse" | "floralhealing")
+                || (matches!(m.slug, "roar" | "whirlwind")
+                    && self.force_switch_flags.iter().flatten().any(|&f| f)))
+        {
             self.ps_loop_hits = 1;
             if self.ps_inline_hit_updates {
                 self.ps_hit_update();
