@@ -18339,16 +18339,21 @@ self.trigger_emergency_exits();
                 // a `leechseed` volatile to the target tracking the
                 // seeder's slot (`sourceSlot`). End-of-turn residual:
                 // target loses 1/8 max HP, seeder heals the same.
+                // Grass-type immunity: PS `onTryImmunity` returns false when
+                // the target has Grass, a hit step before the accuracy roll
+                // (sim/battle-actions.ts hitStepTryImmunity -> hitStepAccuracy).
+                let is_grass = opp_target.is_some_and(|(opp, slot)| {
+                    self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        types[..n as usize].contains(&4) // Grass = 4
+                    })
+                });
+                if is_grass {
+                    self.ps_status_failed();
+                    return;
+                }
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
-                    // Grass-type immunity: PS `onTryImmunity` returns
-                    // false when target has Grass.
-                    let is_grass = self.side(opp).active_mon(slot as usize)
-                        .map(|t| {
-                            let s = t.species();
-                            (0..s.num_types as usize).any(|i| s.types[i] == 4) // Grass = 4
-                        })
-                        .unwrap_or(false);
                     // Already seeded — PS volatileStatus add is a no-op.
                     let already_seeded = self.side(opp).active_mon(slot as usize)
                         .is_some_and(|t| t.volatiles.has(crate::pokemon::VolatileKind::LeechSeed));
