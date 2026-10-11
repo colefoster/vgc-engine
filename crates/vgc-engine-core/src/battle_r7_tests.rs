@@ -67,9 +67,12 @@ fn simple_beam_gives_the_target_simple() {
 }
 
 #[test]
-fn simple_beam_fails_on_truant_before_its_accuracy_roll() {
-    // PS simplebeam onTryHit (hitStepTryHitEvent, before hitStepAccuracy):
-    // Simple / Truant / cantsuppress targets fail with no roll.
+fn simple_beam_fails_on_truant_after_its_accuracy_roll() {
+    // PS simplebeam onTryHit is the move's own handler: hitStepTryHitEvent's
+    // runEvent skips it (sim/battle.ts runEvent, no onEffect), and it runs as
+    // a singleEvent in the hit loop after hitStepAccuracy
+    // (data/mods/champions/scripts.ts spreadMoveHit). Simple / Truant /
+    // cantsuppress targets fail after the roll.
     let mut b = singles(
         r#"[{"species":"audino","level":50,"ability":"healer","moves":["simplebeam"]}]"#,
         r#"[{"species":"slaking","level":50,"ability":"truant","moves":["bulkup"]}]"#,
@@ -78,7 +81,7 @@ fn simple_beam_fails_on_truant_before_its_accuracy_roll() {
     b.set_rng(crate::rng::Rng::recording(3));
     b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
     assert_eq!(b.p2.team[0].effective_ability_id(), data::ability_id::TRUANT);
-    assert_eq!(accuracy_rolls(&b, data::move_id::SIMPLEBEAM), 0);
+    assert_eq!(accuracy_rolls(&b, data::move_id::SIMPLEBEAM), 1);
 }
 
 #[test]
@@ -130,8 +133,9 @@ fn entrained_intimidate_starts_on_the_target() {
 }
 
 #[test]
-fn entrainment_fails_on_a_shared_ability_before_its_accuracy_roll() {
-    // PS entrainment onTryHit: target.ability === source.ability fails.
+fn entrainment_fails_on_a_shared_ability_after_its_accuracy_roll() {
+    // PS entrainment onTryHit: target.ability === source.ability fails, in
+    // the hit loop after the accuracy roll (as simplebeam above).
     let mut b = doubles(
         r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["entrainment"]},
             {"species":"snorlax","level":50,"ability":"thickfat","moves":["curse"]}]"#,
@@ -141,7 +145,7 @@ fn entrainment_fails_on_a_shared_ability_before_its_accuracy_roll() {
     );
     b.set_rng(crate::rng::Rng::recording(3));
     b.step(&[mv(0, 0, Some(t(SideRef::P1, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
-    assert_eq!(accuracy_rolls(&b, data::move_id::ENTRAINMENT), 0);
+    assert_eq!(accuracy_rolls(&b, data::move_id::ENTRAINMENT), 1);
 }
 
 #[test]
