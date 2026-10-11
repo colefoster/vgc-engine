@@ -3907,10 +3907,17 @@ self.trigger_emergency_exits();
                     }
                     Choice::Switch { actor_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
-                        queue.entries[s][slot] = ActionQueueEntry {
-                            kind: ActionKind::Switch,
-                            move_id: u16::MAX,
-                        };
+                        // A Switch after this slot's Move is its mid-turn
+                        // pivot / Eject Button pick (`apply_self_switches`),
+                        // not its queued action: the slot still queues the
+                        // move (PS queue.willMove, data/moves.ts suckerpunch
+                        // onTry).
+                        if queue.entries[s][slot].kind == ActionKind::None {
+                            queue.entries[s][slot] = ActionQueueEntry {
+                                kind: ActionKind::Switch,
+                                move_id: u16::MAX,
+                            };
+                        }
                     }
                     Choice::Pass { .. } => {}
                 }
@@ -36523,6 +36530,29 @@ mod tests {
         );
         assert!(b.p2.team[0].current_hp < hp_before,
                 "Sucker Punch should hit when target queues a damaging move");
+    }
+
+    #[test]
+    fn sucker_punch_hits_a_target_whose_choice_list_carries_a_mid_turn_pick() {
+        // Decision phases: the target's slot queues [move, eject pick]. The
+        // trailing Switch is the Eject Button replacement, not its action, so
+        // the target still queues a damaging move (PS data/moves.ts
+        // suckerpunch onTry, queue.willMove).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","nature":"jolly","moves":["suckerpunch"],"evs":{"atk":252,"spe":252}}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","nature":"careful","moves":["bodyslam"]},
+            {"species":"pichu","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Sucker Punch connected");
+        assert_eq!(b.p2.active[0], 1, "the hit fired Eject Button");
     }
 
     #[test]
