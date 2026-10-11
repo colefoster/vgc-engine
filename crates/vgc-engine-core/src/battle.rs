@@ -17356,8 +17356,17 @@ self.trigger_emergency_exits();
                     return;
                 }
                 if let Some((ts, tslot)) = opp_target {
-                    if self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
+                    // onHit returns false unless `queue.willMove(target)`: a
+                    // mon that already acted or replaced its slot mid-turn
+                    // has no queued action.
+                    let (si, sl) = (ts as usize, (tslot as usize).min(1));
+                    let will_move = matches!(pending_kind[si][sl], 1 | 2)
+                        && !self.replaced_mid_turn[si][sl]
+                        && !self.pursuit_consumed[si][sl];
+                    if will_move && self.side(ts).active_mon(tslot as usize).is_some_and(|m| m.is_alive()) {
                         self.pending_queue_reorder = Some((ts, tslot, false));
+                    } else {
+                        self.ps_status_failed();
                     }
                 }
             }
