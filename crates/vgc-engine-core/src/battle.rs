@@ -2715,6 +2715,80 @@ self.trigger_emergency_exits();
         let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
     }
 
+    /// `ps-rng` only: endTurn's `runEvent('DisableMove', pokemon)` for each
+    /// active (sim/battle.js:1400), before the next turn's commitChoices.
+    /// Its handlers: the mon's own volatiles (Taunt, Disable, Encore, Heal
+    /// Block, Throat Chop, Torment, a Choice item's `choicelock`; subOrder
+    /// 2), Gorilla Tactics (7), Assault Vest (8), and each foe's Imprison
+    /// (`onFoeDisableMove`, 2, on the foe's Speed), all on cached Speed.
+    /// Two of the mon's own volatiles always tie.
+    #[cfg(feature = "ps-rng")]
+    fn ps_disable_move_ties(&mut self) {
+        let n_active = self.format().active_count().min(2);
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n_active {
+                let Some(m) = self.side(side).active_mon(slot) else { continue };
+                if !m.is_alive() {
+                    continue;
+                }
+                let spe = self.ps_speed(side, slot).unwrap_or(0);
+                let choice_item = matches!(
+                    m.item_id,
+                    data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                );
+                use crate::pokemon::VolatileKind as V;
+                let own = [
+                    m.taunt_turns() > 0,
+                    m.disabled_move_slot() != 255,
+                    m.encore_turns() > 0,
+                    m.heal_block_turns() > 0,
+                    m.throat_chop_turns() > 0,
+                    m.volatiles.has(V::Torment),
+                    choice_item && m.locked_move_slot() != 255,
+                ];
+                // (speed, subOrder)
+                let mut h = [(0i64, 0i64); 12];
+                let mut n = 0;
+                for _ in own.iter().filter(|&&b| b) {
+                    h[n] = (spe, 2);
+                    n += 1;
+                }
+                if m.effective_ability_id() == data::ability_id::GORILLATACTICS {
+                    h[n] = (spe, 7);
+                    n += 1;
+                }
+                if m.item_id == data::item_id::ASSAULTVEST {
+                    h[n] = (spe, 8);
+                    n += 1;
+                }
+                let foe = side.opposing();
+                for fslot in 0..n_active {
+                    let imprison = self
+                        .side(foe)
+                        .active_mon(fslot)
+                        .is_some_and(|f| f.is_alive() && f.volatiles.has(V::Imprison));
+                    if imprison {
+                        h[n] = (self.ps_speed(foe, fslot).unwrap_or(0), 2);
+                        n += 1;
+                    }
+                }
+                let list = &mut h[..n];
+                list.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                let mut st = 0;
+                while st < n {
+                    let mut end = st + 1;
+                    while end < n && list[end] == list[st] {
+                        end += 1;
+                    }
+                    for i in st..end - 1 {
+                        let _ = self.rng.ps_random_range("shuffle", i as u32, end as u32);
+                    }
+                    st = end;
+                }
+            }
+        }
+    }
+
     /// `ps-rng` only: Cloud Nine / Air Lock run `eachEvent('WeatherChange')`
     /// from both onStart and onEnd (data/abilities.ts cloudnine / airlock),
     /// a speed sort of the living actives, whether or not any weather is up.
@@ -3226,6 +3300,7 @@ self.trigger_emergency_exits();
     /// stream advance. Sides commit p1 then p2, slots in order.
     #[cfg(feature = "ps-rng")]
     fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
+        self.ps_disable_move_ties();
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
