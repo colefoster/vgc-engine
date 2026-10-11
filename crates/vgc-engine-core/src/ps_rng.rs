@@ -155,6 +155,9 @@ pub struct PsRng {
     ctx_target: u8,
     #[serde(skip)]
     ctx_decision: &'static str,
+    /// The next crit / damage draws are a hit on a Substitute.
+    #[serde(skip)]
+    ctx_sub: bool,
     /// An open reorder window ([`PsRng::window_begin`]), else `None`.
     #[serde(skip)]
     window: Option<Box<DrawWindow>>,
@@ -190,6 +193,8 @@ struct DrawWindow {
     tags: [u8; WINDOW_CAP],
     n: usize,
     trace_from: usize,
+    /// An accuracy or damage-step draw has been made.
+    hit_seen: bool,
 }
 
 impl PsRng {
@@ -216,6 +221,7 @@ impl PsRng {
             ctx_move: 0,
             ctx_target: 0xFF,
             ctx_decision: "",
+            ctx_sub: false,
             window: None,
         }
     }
@@ -292,6 +298,12 @@ impl PsRng {
         self.ctx_decision = d;
     }
 
+    /// Mark the next crit / damage draws as a hit on a Substitute
+    /// (see [`phase`]).
+    pub fn set_sub_hit(&mut self, sub: bool) {
+        self.ctx_sub = sub;
+    }
+
     pub fn enable_trace(&mut self) {
         self.trace = Some(Vec::new());
     }
@@ -322,7 +334,12 @@ impl PsRng {
                 } else {
                     1 + self.ctx_target % 2
                 };
-                w.tags[i] = match op {
+                let tag = match op {
+                    // A Substitute takes its hit in spreadMoveHit's
+                    // TryPrimaryHit step (data/moves.ts substitute
+                    // onTryPrimaryHit -> getDamage), before every other
+                    // target's getSpreadDamage.
+                    "crit" | "damage" if self.ctx_sub => phase::ACCURACY * 8 + 4 + rank,
                     "crit" | "damage" => phase::DAMAGE * 8 + rank,
                     "selfdrop" => phase::SELF_DROP * 8,
                     "percent" if self.ctx_decision == "accuracy" => phase::ACCURACY * 8 + rank,
@@ -334,6 +351,11 @@ impl PsRng {
                     _ if at.file().ends_with("ability.rs") => phase::ABILITY * 8,
                     _ => prev,
                 };
+                // Before any hit step every draw is runMove / useMoveInner's
+                // (BeforeMove's confusion roll, Expanding Force's re-picks),
+                // whatever decision context it carries.
+                w.hit_seen |= matches!(tag / 8, phase::ACCURACY | phase::DAMAGE);
+                w.tags[i] = if w.hit_seen { tag } else { phase::PRE };
                 return w.raws[w.map[i] as usize];
             }
             // Past the window: PS's own next draws, after everything mapped.
@@ -368,6 +390,7 @@ impl PsRng {
             tags: [0; WINDOW_CAP],
             n: 0,
             trace_from: self.trace.as_ref().map_or(0, |t| t.len()),
+            hit_seen: false,
         }));
     }
 

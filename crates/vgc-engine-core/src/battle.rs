@@ -625,6 +625,17 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_loop_hits: u8,
+    /// `ps-rng` only: the action Instruct queued with `prioritizeAction`,
+    /// run after Instruct's own action ends (its Update and re-sort).
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_instruct_pending: Option<ScheduledAction>,
+    /// `ps-rng` only: the foe slot resolveAction picked this turn for a
+    /// targetless `scripted` move (Counter, Mirror Coat, Metal Burst), PS's
+    /// `targetLoc` for its later getTarget calls; 255 = none.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_scripted_pick: [[u8; 2]; 2],
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -792,6 +803,10 @@ impl Battle {
             ps_field_seen: None,
             #[cfg(feature = "ps-rng")]
             ps_loop_hits: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_instruct_pending: None,
+            #[cfg(feature = "ps-rng")]
+            ps_scripted_pick: [[255; 2]; 2],
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -2395,6 +2410,8 @@ self.trigger_emergency_exits();
                     if ran {
                         self.after_move_action(&mut order, idx);
                     }
+                    #[cfg(feature = "ps-rng")]
+                    self.ps_run_instructed(&mut order, idx, &pending_kind);
                     idx += 1;
                     cursor.phase = StepPhase::ActionLoop {
                         p1, p2, order, idx, pending_kind,
@@ -3174,6 +3191,7 @@ self.trigger_emergency_exits();
     fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
+        self.ps_scripted_pick = [[255; 2]; 2];
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
             let mut seen = [false; 2];
@@ -3270,7 +3288,21 @@ self.trigger_emergency_exits();
                 // Singles picks the foe without a draw (sim/battle.ts
                 // getRandomTarget: `gameType === 'singles'`).
                 if n > 0 && n_active > 1 {
-                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    let scripted = self.moves()[move_id as usize].target == 14;
+                    // Counter / Mirror Coat first resolve their targetless
+                    // beforeTurnMove action (sim/battle-queue.ts:106-112),
+                    // which picks a random foe too.
+                    if scripted && matches!(move_id, data::move_id::COUNTER | data::move_id::MIRRORCOAT) {
+                        let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    }
+                    let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
+                    if scripted {
+                        let foe = side.opposing();
+                        let alive = (0..n_active.min(2)).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive()));
+                        if let Some(slot) = alive.clone().nth(pick).or(alive.last()) {
+                            self.ps_scripted_pick[side as usize][(actor_slot as usize).min(1)] = slot as u8;
+                        }
+                    }
                 }
                 // resolveAction then calls getActionSpeed -> getTarget, whose
                 // location (the random pick) never validates for a spread
@@ -3410,10 +3442,10 @@ self.trigger_emergency_exits();
     /// without drawing; Dragon Darts keeps a living target; Snipe Shot and
     /// Stalwart / Propeller Tail keep an active original target.
     #[cfg(feature = "ps-rng")]
-    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) {
+    fn ps_get_target_draw(&mut self, side: SideRef, slot: u8, move_id: u16, target: Option<Target>) -> Option<Target> {
         let n_active = self.format().active_count();
         let alive_at = |b: &Self, t: Target| b.side(t.side).active_mon(t.slot as usize).is_some_and(|m| m.is_alive());
-        let Some(user) = self.side(side).active_mon(slot as usize) else { return };
+        let Some(user) = self.side(side).active_mon(slot as usize) else { return None };
         // A recharging mon's action is the locked 'recharge' move
         // (data/conditions.ts mustrecharge onLockMove), not in the dex: its
         // undefined target never validates (sim/battle.ts validTargetLoc), so
@@ -3424,12 +3456,12 @@ self.trigger_emergency_exits();
             if n > 0 && n_active > 1 {
                 let _ = self.rng.ps_random_range("get_target", 0, n as u32);
             }
-            return;
+            return None;
         }
         let ability = user.effective_ability_id();
         let tcode = self.moves()[move_id as usize].target;
         if matches!(tcode, 1 | 3 | 8 | 9 | 12) {
-            return;
+            return None;
         }
         // Champions Curse: a non-Ghost user's is a self move (no draw, as in
         // resolveAction); a Ghost's tracks its target
@@ -3438,34 +3470,48 @@ self.trigger_emergency_exits();
         if curse {
             let (types, nt) = user.effective_types();
             if !types[..nt as usize].contains(&13) {
-                return;
+                return None;
             }
         }
+        // A scripted move's targetLoc is resolveAction's pick, a foe
+        // location that validates like a `normal` move's while it lives.
+        let target = match (tcode, target) {
+            (14, None) => {
+                let p = self.ps_scripted_pick[side as usize][(slot as usize).min(1)];
+                (p != 255).then(|| Target { side: side.opposing(), slot: p })
+            }
+            _ => target,
+        };
         let tracks = curse
             || move_id == data::move_id::SNIPESHOT
             || ability == data::ability_id::STALWART
             || ability == data::ability_id::PROPELLERTAIL;
         if let Some(t) = target {
             if tracks && alive_at(self, t) {
-                return;
+                return None;
             }
-            if matches!(tcode, 0 | 2 | 4 | 10) {
+            if matches!(tcode, 0 | 2 | 4 | 10 | 14) {
                 if alive_at(self, t) || t.side == side {
-                    return; // living target, or a fainted ally (no retarget)
+                    return None; // living target, or a fainted ally (no retarget)
                 }
             }
         }
-        let n = if tcode == 2 {
-            (0..n_active)
-                .filter(|&s| s != slot as usize && self.side(side).active_mon(s).is_some_and(|m| m.is_alive()))
-                .count()
-        } else {
-            let foe = side.opposing();
-            (0..n_active).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive())).count()
-        };
-        if n > 0 && n_active > 1 {
-            let _ = self.rng.ps_random_range("get_target", 0, n as u32);
+        // The pick is returned (as `sample` sees it: living mons in slot
+        // order) so a randomNormal move can hit it.
+        let tside = if tcode == 2 { side } else { side.opposing() };
+        let mut alive = [0u8; 2];
+        let mut n = 0usize;
+        for s in 0..n_active.min(2) {
+            if (tcode != 2 || s != slot as usize) && self.side(tside).active_mon(s).is_some_and(|m| m.is_alive()) {
+                alive[n] = s as u8;
+                n += 1;
+            }
         }
+        if n > 0 && n_active > 1 {
+            let pick = self.rng.ps_random_range("get_target", 0, n as u32) as usize;
+            return Some(Target { side: tside, slot: alive[pick.min(n - 1)] });
+        }
+        None
     }
 
     /// Keyed oracle only: PS's commitChoices `queue.sort()` (sim/battle.ts
@@ -3594,6 +3640,54 @@ self.trigger_emergency_exits();
         self.ps_active_ties(false, "shuffle");
     }
 
+    /// `ps-rng` only: the action Instruct queued (`ps_instruct_pending`),
+    /// run as PS's next action with its own runAction tail (faintMessages,
+    /// Update, re-sort).
+    #[cfg(feature = "ps-rng")]
+    fn ps_run_instructed(&mut self, order: &mut ActionOrder, idx: usize, pending_kind: &[[u8; 2]; 2]) {
+        let Some(action) = self.ps_instruct_pending.take() else { return };
+        if self.p1.is_defeated() || self.p2.is_defeated() {
+            return;
+        }
+        if !self.side(action.side).active_mon(action.actor_slot as usize).is_some_and(|m| m.is_alive()) {
+            return;
+        }
+        self.multi_targeted_defenders = 0b1111;
+        // process_one_action's hit-loop emulation (spread window, Updates).
+        self.ps_loop_hits = 0;
+        self.ps_inline_hit_updates = false;
+        let mut live = 0u8;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                if self.side(side).active_mon(slot).is_some_and(|m| m.is_alive()) {
+                    live |= 1 << (side as usize * 2 + slot);
+                }
+            }
+        }
+        self.ps_action_live = live;
+        let windowed = self.ps_spread_window(action, pending_kind, true);
+        if !windowed {
+            self.ps_inline_hit_updates = true;
+            self.resolve_move_with_pending(action, pending_kind, true);
+        }
+        if self.ps_loop_hits > 0 {
+            if windowed {
+                self.ps_hit_update();
+            }
+            self.ps_hit_loop_faint_ends();
+            self.ps_active_ties(false, "shuffle");
+        }
+        self.ps_inline_hit_updates = false;
+        self.update_hp_berries();
+        self.multi_targeted_defenders = 0;
+        self.white_herb_after_move();
+        self.faint_forme_cleanup();
+        self.run_pending_drags();
+        self.trigger_emergency_exits();
+        self.ps_post_action_update();
+        self.after_move_action(order, idx);
+    }
+
     /// `ps-rng` only: the gen-8+ re-sort half of [`Battle::after_move_action`];
     /// the Update ([`Battle::ps_post_action_update`]) is drawn before any
     /// mid-turn switch.
@@ -3612,10 +3706,15 @@ self.trigger_emergency_exits();
             matches!(a.choice, Choice::Move { .. } | Choice::Terastallize { .. } | Choice::MegaEvolve { .. })
                 && self.side(a.side).active_mon(a.actor_slot as usize).is_some()
         });
-        if !next_is_move {
+        // An Instruct re-run sits at the queue's front (prioritizeAction).
+        let instructed = self.ps_instruct_pending;
+        if !next_is_move && instructed.is_none() {
             return;
         }
         self.ps_update_speed_all();
+        if let Some(a) = instructed {
+            self.ps_resort_get_targets(&[a]);
+        }
         let mut acts = [ScheduledAction { side: SideRef::P1, actor_slot: 0, choice: Choice::Pass { actor_slot: 0 } }; 4];
         let mut k = 0;
         for a in rest.iter().filter(|a| !replaced(self, a)).take(4) {
@@ -6145,9 +6244,19 @@ self.trigger_emergency_exits();
 
         let m = &self.moves()[move_id as usize];
 
+        #[allow(unused_mut)]
+        let mut ps_pick: Option<Target> = None;
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
-            self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            let pick = self.ps_get_target_draw(actor_side, actor_slot, move_id, target);
+            // runMove hands getTarget's pick to useMove (sim/battle-actions.ts:209):
+            // a randomNormal move (Struggle, Outrage ...), or a single-target
+            // move whose foe target is gone, hits that foe.
+            // The choice's own location stays `lastMoveTargetLoc`
+            // (sim/pokemon.ts moveUsed), so only the hit takes the pick.
+            if matches!(m.target, 0 | 4 | 10 | 13) && pick.is_some() {
+                ps_pick = pick;
+            }
         }
 
         // Pre-move volatile/status checks (flinch, disable, throat chop, heal
@@ -6645,7 +6754,7 @@ self.trigger_emergency_exits();
         };
 
         // 5. Enumerate targets (spread or single).
-        let mut targets = enumerate_targets(self, actor_side, actor_slot, m, target);
+        let mut targets = enumerate_targets(self, actor_side, actor_slot, m, ps_pick.or(target));
         if targets.is_empty() {
             return;
         }
@@ -7952,6 +8061,14 @@ self.trigger_emergency_exits();
                     defender.effective_ability_id(),
                     data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
                 );
+            #[cfg(feature = "ps-rng")]
+            if let Some(p) = self.rng.ps_mut() {
+                p.set_sub_hit(
+                    defender.substitute_hp() > 0
+                        && !m.is_sound
+                        && attacker.effective_ability_id() != data::ability_id::INFILTRATOR,
+                );
+            }
             // PS draws the multi-hit count in hitStepMoveHitLoop
             // (data/mods/champions/scripts.js:365-378) before the first hit's
             // crit and damage rolls, so under `Rng::Ps` roll it here.
@@ -9049,6 +9166,20 @@ self.trigger_emergency_exits();
         will_act: bool,
         before: &StatusEffectSnapshot,
     ) {
+        // No living foe to aim a foe-targeting status move at: useMoveInner
+        // fails it with `[notarget]` before any accuracy roll
+        // (sim/battle-actions.ts:427-431; getMoveTargets drops fainted mons).
+        if matches!(m.target, 0 | 4 | 6 | 10 | 13) && self.format().active_count() > 1 {
+            let opp = actor_side.opposing();
+            let ally_target = target.is_some_and(|t| {
+                t.side == actor_side && self.side(t.side).active_mon(t.slot as usize).is_some_and(|p| p.is_alive())
+            });
+            let foe_alive = (0..self.format().active_count())
+                .any(|s| self.side(opp).active_mon(s).is_some_and(|p| p.is_alive()));
+            if !ally_target && !foe_alive {
+                return;
+            }
+        }
         // Prankster + Dark-type immunity (gen 7+). PS data/abilities.ts:prankster.
         let prankster_boosted = attacker.effective_ability_id() == data::ability_id::PRANKSTER;
         let opposing_targeting = is_targeting_move(m.target);
@@ -13673,6 +13804,13 @@ self.trigger_emergency_exits();
             }
         }
         let target = self.random_target_for(ts, tslot, mid);
+        // resolveAction then runs getActionSpeed -> getTarget
+        // (sim/battle-queue.ts:173), which redraws for a move whose picked
+        // location never validates (Howl's `allies`, spread moves).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            self.ps_get_target_draw(ts, tslot, mid, target);
+        }
         #[allow(unused_mut)]
         let mut insert = 255u8;
         #[cfg(feature = "ps-rng")]
@@ -16298,13 +16436,6 @@ self.trigger_emergency_exits();
                     return;
                 }
                 let partner_slot = (actor_slot ^ 1) as usize;
-                let partner_alive = self
-                    .side(actor_side)
-                    .active_mon(partner_slot)
-                    .is_some_and(|p| p.is_alive());
-                if !partner_alive {
-                    return;
-                }
                 // `counter == 0` → no active chain: first use always succeeds
                 // and draws nothing (PS `onStart` sets the counter without
                 // rolling). Otherwise roll `randomChance(1, counter)` ≡
@@ -16329,6 +16460,16 @@ self.trigger_emergency_exits();
                 let next_counter = if counter == 0 { 3 } else { (counter * 3).min(729) };
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.set_ally_switch_volatile(next_counter);
+                }
+                // The volatile (and its roll) comes from onPrepareHit; only
+                // then does onHit fail for a missing or fainted partner, so a
+                // lone user still builds the chain.
+                let partner_alive = self
+                    .side(actor_side)
+                    .active_mon(partner_slot)
+                    .is_some_and(|p| p.is_alive());
+                if !partner_alive {
+                    return;
                 }
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
                 // PR-EOT3: the two active slots' DOT bits swap with them.
@@ -16774,6 +16915,12 @@ self.trigger_emergency_exits();
                 }
                 // Already taunted — PS addVolatile('taunt') is a no-op.
                 if self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.taunt_turns() > 0) {
+                    // moveHit fails, so the hit loop breaks before its
+                    // Update (data/mods/champions/scripts.ts hitStepMoveHitLoop).
+                    #[cfg(feature = "ps-rng")]
+                    {
+                        self.ps_status_missed = true;
+                    }
                     return;
                 }
                 // Aroma Veil — holder/partner immunity (PS abilities.ts:234
@@ -18610,6 +18757,17 @@ self.trigger_emergency_exits();
                         target: dec_target(last_tgt_enc),
                     },
                 };
+                // PS queues the re-run as its own action
+                // (`queue.prioritizeAction`, data/moves.ts instruct onHit), so
+                // it runs after Instruct's action ends: its Update and the
+                // gen-8+ re-sort draw first (sim/battle.ts runAction).
+                // Its resolveAction already runs getActionSpeed -> getTarget.
+                #[cfg(feature = "ps-rng")]
+                if self.rng.is_ps() {
+                    self.ps_resort_get_targets(&[action]);
+                    self.ps_instruct_pending = Some(action);
+                    return;
+                }
                 // Instruct re-execution — a second hit that can couple with
                 // the original on the same defender. Conservatively disable
                 // damage collapse (full-enumerate) for the re-run.
@@ -21532,6 +21690,61 @@ mod tests {
         let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
         let targets = trace.iter().filter(|d| matches!(d.op, "get_target" | "random_target")).count();
         assert_eq!(targets, 6, "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_forewarn_samples_the_strongest_foe_moves() {
+        // data/abilities.ts forewarn onStart: `this.sample(warnMoves)` over
+        // the foes' highest-power moves; Fissure's 150 (OHKO) beats Body
+        // Slam, and a lone move still draws random(1).
+        let p1 = TeamBuilder::from_json(r#"[{"species":"musharna","level":50,"ability":"forewarn","moves":["calmmind"]}]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"snorlax","level":50,"moves":["bodyslam","fissure","tackle"]}]"#).unwrap();
+        let mut rng = Rng::ps("sodium,00000000000000000000000000000007").unwrap();
+        rng.ps_mut().unwrap().enable_trace();
+        let mut b = Battle::with_rng(BattleConfig { format: Format::Singles, seed: 0 }, rng, p1, p2);
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 2, target: Some(t(SideRef::P1, 0)) }],
+        );
+        let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+        let picks: Vec<u32> = trace.iter().filter(|d| d.op == "sample" && d.file.ends_with("ability.rs")).map(|d| d.b).collect();
+        assert_eq!(picks, [1], "{trace:#?}");
+    }
+
+    #[cfg(feature = "ps-rng")]
+    #[test]
+    fn ps_rng_struggle_hits_run_moves_random_pick() {
+        // Struggle is randomNormal: runMove's getTarget draws randomFoe
+        // (sim/battle.ts getTarget -> getRandomTarget) and useMove hits that
+        // foe, not the first living one.
+        let mut picked = [false; 2];
+        for seed in 0..12u32 {
+            let p1 = TeamBuilder::from_json(r#"[
+                {"species":"snorlax","level":50,"moves":["tackle"]},
+                {"species":"chansey","level":50,"moves":["calmmind"]}
+            ]"#).unwrap();
+            let p2 = TeamBuilder::from_json(r#"[
+                {"species":"blissey","level":50,"moves":["calmmind"]},
+                {"species":"chansey","level":50,"moves":["calmmind"]}
+            ]"#).unwrap();
+            let mut rng = Rng::ps(&format!("sodium,{seed:032x}")).unwrap();
+            rng.ps_mut().unwrap().enable_trace();
+            let mut b = Battle::with_rng(BattleConfig { format: Format::Doubles, seed: 0 }, rng, p1, p2);
+            b.step(
+                &[
+                    Choice::Move { actor_slot: 0, move_slot: crate::choice::STRUGGLE_MOVE_SLOT, target: None },
+                    Choice::Move { actor_slot: 1, move_slot: 0, target: None },
+                ],
+                &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }, Choice::Move { actor_slot: 1, move_slot: 0, target: None }],
+            );
+            let trace = b.rng_mut().ps_mut().unwrap().take_trace().unwrap();
+            let pick = trace.iter().filter(|d| d.op == "get_target").last().unwrap().result as usize;
+            let hit: Vec<usize> = (0..2).filter(|&s| b.p2.active_mon(s).unwrap().current_hp < b.p2.active_mon(s).unwrap().stats.hp).collect();
+            assert_eq!(hit, [pick], "seed {seed}: {trace:#?}");
+            picked[pick] = true;
+        }
+        assert_eq!(picked, [true, true]);
     }
 
     #[cfg(feature = "ps-rng")]
@@ -40825,6 +41038,23 @@ mod tests {
     }
 
     #[test]
+    fn ally_switch_without_a_partner_still_arms_the_chain() {
+        // PS adds the allyswitch volatile in onPrepareHit (data/moves.ts
+        // allyswitch); onHit then fails for a fainted partner, but the chain
+        // is armed, so the next use rolls randomChance(1, 3).
+        let mut b = battle();
+        b.p1.team[1].current_hp = 0;
+        b.p1.team[1].fainted = true;
+        b.p1.team[0].moves[0] = data::move_id::ALLYSWITCH;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: None }],
+            &[Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P1, 0)) }, Choice::Move { actor_slot: 1, move_slot: 0, target: Some(t(SideRef::P1, 0)) }],
+        );
+        assert_eq!(b.p1.active, [0, 1], "no swap without a partner");
+        assert_eq!(b.p1.team[0].ally_switch_counter(), 3);
+    }
+
+    #[test]
     fn ally_switch_repoints_ally_action_so_it_still_acts() {
         // Ally Switch (+2) resolves before the ally's normal-priority move.
         // After the slot swap the ally's queued action must "follow the mon"
@@ -41764,6 +41994,18 @@ mod tests {
                 "Outrage PP kept decreasing while locked");
         assert_eq!(b.p1.team[0].pp[1], other_pp_before,
                 "slot 1 PP unchanged — locked into Outrage");
+    }
+
+    #[test]
+    fn recharge_action_sorts_at_priority_zero() {
+        // A recharging mon's action is PS's 'recharge' move (data/conditions.ts
+        // mustrecharge onLockMove), which isn't in the dex: getActionSpeed
+        // sorts it at priority 0, not at its chosen slot's (+4 Detect).
+        let mut b = battle();
+        b.p1.team[0].moves[0] = data::move_id::DETECT;
+        assert_eq!(crate::order::state_priority(&b, SideRef::P1, 0, 0), 4);
+        b.p1.team[0].must_recharge = true;
+        assert_eq!(crate::order::state_priority(&b, SideRef::P1, 0, 0), 0);
     }
 
     #[test]
