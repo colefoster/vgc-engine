@@ -170,6 +170,11 @@ pub struct SideConditions {
     /// `tera_used`. PS `side.megaEvo` / `pokemon.canMegaEvo` gate. Not on a
     /// `SideConditions` tick.
     pub mega_used: bool,
+    /// Faints already undone by Revival Blessing. PS `side.totalFainted`
+    /// counts every faint (sim/battle.ts:2554) and a revive never lowers
+    /// it, so `total_fainted` adds these back to the currently-fainted count.
+    #[serde(default)]
+    pub revived_faints: u8,
 }
 
 impl Side {
@@ -204,7 +209,8 @@ impl Side {
     /// trivially correct. Mirrors PS `side.totalFainted`; consumed by
     /// Last Respects (`BP = 50 + 50 * totalFainted`).
     pub fn total_fainted(&self) -> u8 {
-        self.team.iter().filter(|m| m.fainted).count().min(u8::MAX as usize) as u8
+        let now = self.team.iter().filter(|m| m.fainted).count().min(u8::MAX as usize) as u8;
+        now.saturating_add(self.conditions.revived_faints)
     }
 
     /// Record a switch into `slot` in the PS order: the incoming mon takes

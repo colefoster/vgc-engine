@@ -1,0 +1,200 @@
+{
+  "ok": true,
+  "name": "cotton-spore-grass-powder-immune",
+  "seed": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "format": "gen9doublescustomgame",
+  "turns": 2,
+  "random_play": false,
+  "events": [
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1a",
+      "species": "Whimsicott",
+      "hp": 135,
+      "max": 135
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p1b",
+      "species": "Snorlax",
+      "hp": 235,
+      "max": 235
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2a",
+      "species": "Tangela",
+      "hp": 140,
+      "max": 140
+    },
+    {
+      "turn": 0,
+      "kind": "switch",
+      "actor": "p2b",
+      "species": "Chansey",
+      "hp": 325,
+      "max": 325
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Cotton Spore",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "immune",
+      "actor": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "unboost",
+      "actor": "p2b",
+      "stat": "spe",
+      "amount": 2
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 85,
+      "max": 135,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 1,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 90,
+      "max": 140,
+      "from": null
+    },
+    {
+      "turn": 1,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1a",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 40,
+      "max": 140,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2a",
+      "name": "Seismic Toss",
+      "target": "p1a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p1a",
+      "hp": 35,
+      "max": 135,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p1b",
+      "name": "Seismic Toss",
+      "target": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "damage",
+      "actor": "p2a",
+      "hp": 0,
+      "max": null,
+      "from": null
+    },
+    {
+      "turn": 2,
+      "kind": "faint",
+      "actor": "p2a"
+    },
+    {
+      "turn": 2,
+      "kind": "move",
+      "actor": "p2b",
+      "name": "Splash",
+      "target": "p2b"
+    }
+  ],
+  "rng": [
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    },
+    {
+      "kind": "PercentRoll",
+      "value": true,
+      "threshold": 100,
+      "site": "BattleActions.hitStepAccuracy (sim/battle-actions.js:629)"
+    }
+  ],
+  "errors": [],
+  "log": "|t:|1791642460\n|gametype|doubles|player|p1|P1|||player|p2|P2||\n|gen|9\n|tier|[Gen 9] Doubles Custom Game\n|clearpoke\n|poke|p1|Whimsicott, L50, M|\n|poke|p1|Snorlax, L50, M|\n|poke|p2|Tangela, L50, M|\n|poke|p2|Chansey, L50, F|\n|poke|p2|Blissey, L50, F|\n|teampreview|\n|t:|1791642460\n|teamsize|p1|2\n|teamsize|p2|3\n|start\n|switch|p1a: Whimsicott|Whimsicott, L50, M|135/135\n|switch|p1b: Snorlax|Snorlax, L50, M|235/235\n|switch|p2a: Tangela|Tangela, L50, M|140/140\n|switch|p2b: Chansey|Chansey, L50, F|325/325\n|turn|1|\n|t:|1791642460\n|move|p1a: Whimsicott|Cotton Spore|p2a: Tangela|[spread] p2b\n|debug|natural powder immunity\n|-immune|p2a: Tangela\n|-unboost|p2b: Chansey|spe|2\n|move|p2a: Tangela|Seismic Toss|p1a: Whimsicott\n|-damage|p1a: Whimsicott|85/135\n|move|p1b: Snorlax|Seismic Toss|p2a: Tangela\n|-damage|p2a: Tangela|90/140\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep\n|turn|2|\n|t:|1791642460\n|move|p1a: Whimsicott|Seismic Toss|p2a: Tangela\n|-damage|p2a: Tangela|40/140\n|move|p2a: Tangela|Seismic Toss|p1a: Whimsicott\n|-damage|p1a: Whimsicott|35/135\n|move|p1b: Snorlax|Seismic Toss|p2a: Tangela\n|-damage|p2a: Tangela|0 fnt\n|faint|p2a: Tangela\n|move|p2b: Chansey|Splash|p2b: Chansey\n|-nothing\n|\n|upkeep"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "cotton-spore-grass-powder-immune",
+  "format": "gen9doublescustomgame",
+  "seed": [1, 2, 3, 4],
+  "p1": {
+    "team": "Whimsicott (M)\nAbility: Infiltrator\nLevel: 50\nHardy Nature\n- Cotton Spore\n- Seismic Toss\n\nSnorlax (M)\nAbility: Thick Fat\nLevel: 50\nHardy Nature\n- Seismic Toss"
+  },
+  "p2": {
+    "team": "Tangela (M) @ Eject Pack\nAbility: Chlorophyll\nLevel: 50\nHardy Nature\n- Seismic Toss\n\nChansey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash\n\nBlissey (F)\nAbility: Natural Cure\nLevel: 50\nHardy Nature\n- Splash"
+  },
+  "turns": [
+    { "p1": "move 1, move 1 1", "p2": "move 1 1, move 1" },
+    { "p1": "move 2 1, move 1 1", "p2": "move 1 1, move 1" }
+  ]
+}
