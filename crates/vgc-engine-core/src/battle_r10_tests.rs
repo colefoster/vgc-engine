@@ -1295,3 +1295,27 @@ fn replacement_eats_sitrus_before_an_entering_unnerve_starts() {
     assert_eq!(b.p1.team[2].item_id, u16::MAX, "Sitrus eaten");
     assert_eq!(b.p1.team[2].current_hp, 35 + max / 4);
 }
+
+#[test]
+fn alluring_voice_confuses_only_a_target_whose_stats_rose_this_turn() {
+    // PS data/moves.ts alluringvoice: `secondary: { chance: 100, onHit:
+    // if (target?.statsRaisedThisTurn) addVolatile('confusion') }`.
+    // A faster Swords Dance user is confused; a Splash user is not.
+    for (setup, expect) in [("swordsdance", true), ("splash", false)] {
+        let p2 = format!(
+            r#"[{{"species":"jolteon","level":50,"ability":"voltabsorb","moves":["{setup}"],"evs":{{"hp":252,"spe":252}}}}]"#
+        );
+        let mut b = singles(
+            r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["alluringvoice"]}]"#,
+            &p2,
+            7,
+        );
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 0, None)]);
+        assert!(b.p2.team[0].is_alive());
+        assert_eq!(
+            b.p2.team[0].volatiles.has(crate::pokemon::VolatileKind::Confusion),
+            expect,
+            "{setup}"
+        );
+    }
+}

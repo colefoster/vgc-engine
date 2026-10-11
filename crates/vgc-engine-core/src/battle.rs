@@ -2726,9 +2726,13 @@ self.trigger_emergency_exits();
     /// filters them (`ModifySecondaries`; not for a Substitute's `null`).
     #[cfg(feature = "ps-rng")]
     fn ps_target_secondary_rolls(&self, m: &data::MoveDef, tside: SideRef, tslot: u8, hit_sub: bool, attacker: &Pokemon) -> u32 {
-        if !m.has_secondary
+        // `has_secondary` mirrors PS's singular `secondary` field; the
+        // fangs and Triple Arrows carry a `secondaries` array instead
+        // (data/moves.ts firefang/icefang/thunderfang/triplearrows).
+        let plural = matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows");
+        if !(m.has_secondary || plural)
             || self_boost_secondary(m.slug).is_some()
-            || matches!(m.slug, "esperwing" | "rapidspin" | "mortalspin" | "zippyzap" | "mysticalpower")
+            || matches!(m.slug, "esperwing" | "rapidspin" | "zippyzap" | "mysticalpower")
         {
             return 0;
         }
@@ -2745,7 +2749,7 @@ self.trigger_emergency_exits();
                 return 0;
             }
         }
-        if matches!(m.slug, "firefang" | "icefang" | "thunderfang" | "triplearrows") { 2 } else { 1 }
+        if plural { 2 } else { 1 }
     }
 
     /// `ps-rng` only: the speed sort of PS's `fieldEvent('Residual')`
@@ -19589,6 +19593,9 @@ fn confuse_secondary(slug: &str) -> Option<u8> {
     Some(match slug {
         // PS data/moves.ts confusion secondaries (slug → chance):
         "axekick" => 30,        // moves.ts:944
+        // Alluring Voice: chance 100, confuses only a target whose stats
+        // rose this turn (moves.ts alluringvoice onHit `statsRaisedThisTurn`).
+        "alluringvoice" => 100,
         "chatter" => 100,       // moves.ts:2369
         "confusion" => 10,      // moves.ts:2751
         "dizzypunch" => 20,     // moves.ts:3805
@@ -19909,6 +19916,21 @@ fn apply_secondary_effect(
     if defender_shield_dust && !attacker_breaks_mold {
         return;
     }
+    // Stone Axe / Ceaseless Edge carry an empty `secondary: {}` (their
+    // hazard is an onAfterHit), which PS still rolls: one random(100), no
+    // effect (data/moves.ts stoneaxe/ceaselessedge, sim/battle-actions.ts:
+    // 1133 secondaries). Draws only.
+    // Eerie Spell / Sparkling Aria / Spirit Shackle / Syrup Bomb: a 100%
+    // secondary whose effect the engine does not model; PS still rolls.
+    #[cfg(feature = "ps-rng")]
+    if rng.is_ps()
+        && matches!(
+            move_slug,
+            "stoneaxe" | "ceaselessedge" | "eeriespell" | "sparklingaria" | "spiritshackle" | "syrupbomb"
+        )
+    {
+        let _ = rng.percent_1_100();
+    }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
     // secondaries)`, one `random(100)` per entry. The elemental Fangs
@@ -19999,6 +20021,7 @@ fn apply_secondary_effect(
                 .active_mon(target_slot as usize)
                 .map(|t| {
                     !t.is_alive()
+                        || (move_slug == "alluringvoice" && !t.stats_raised_this_turn)
                         // Already confused: addVolatile returns early.
                         || t.volatiles.has(crate::pokemon::VolatileKind::Confusion)
                         // Own Tempo — PS data/abilities.ts:3106
