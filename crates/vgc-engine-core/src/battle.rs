@@ -42091,6 +42091,9 @@ mod tests {
         assert_eq!(super::status_secondary("icepunch", true), Some((Status::Freeze, 10)), "Ice Punch 10% frz");
         assert_eq!(super::status_secondary("blizzard", true), Some((Status::Freeze, 10)), "Blizzard 10% frz");
         assert_eq!(super::status_secondary("freezedry", true), None, "Freeze-Dry has no Champions secondary");
+        let fd = data::MOVES.iter().position(|m| m.slug == "freezedry").unwrap();
+        assert!(!data::move_table(true)[fd].has_secondary, "Champions Freeze-Dry: secondary undefined (no roll, no Sheer Force)");
+        assert!(data::move_table(false)[fd].has_secondary, "gen 9 Freeze-Dry keeps its 10% freeze");
         // Thunder (PS num 87) is `chance: 30` par — NOT 10% like Thunderbolt.
         assert_eq!(
             super::status_secondary("thunder", true), Some((Status::Paralysis, 30)),
