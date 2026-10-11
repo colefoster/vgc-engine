@@ -2471,6 +2471,9 @@ self.trigger_emergency_exits();
                 // inline path did AFTER the draw is the same tail
                 // `process_one_action` runs after `resolve_move_with_pending`
                 // returns: `finalize_move_resolution`, then `idx += 1`.
+                // runAction's Update eats an HP berry the self-hit enabled
+                // (sim/battle.ts:2357; items.ts sitrusberry onUpdate).
+                self.update_hp_berries();
                 self.finalize_move_resolution(&mut order, idx, &mut pending_kind);
                 self.white_herb_after_move();
                 self.faint_forme_cleanup();
