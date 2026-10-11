@@ -630,6 +630,12 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_instruct_pending: Option<ScheduledAction>,
+    /// `ps-rng` only: the foe slot resolveAction picked this turn for a
+    /// targetless `scripted` move (Counter, Mirror Coat, Metal Burst), PS's
+    /// `targetLoc` for its later getTarget calls; 255 = none.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_scripted_pick: [[u8; 2]; 2],
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -799,6 +805,8 @@ impl Battle {
             ps_loop_hits: 0,
             #[cfg(feature = "ps-rng")]
             ps_instruct_pending: None,
+            #[cfg(feature = "ps-rng")]
+            ps_scripted_pick: [[255; 2]; 2],
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -3183,6 +3191,7 @@ self.trigger_emergency_exits();
     fn ps_resolve_action_draws(&mut self, p1: &[Choice], p2: &[Choice]) {
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
+        self.ps_scripted_pick = [[255; 2]; 2];
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
             let mut seen = [false; 2];
@@ -3279,7 +3288,21 @@ self.trigger_emergency_exits();
                 // Singles picks the foe without a draw (sim/battle.ts
                 // getRandomTarget: `gameType === 'singles'`).
                 if n > 0 && n_active > 1 {
-                    let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    let scripted = self.moves()[move_id as usize].target == 14;
+                    // Counter / Mirror Coat first resolve their targetless
+                    // beforeTurnMove action (sim/battle-queue.ts:106-112),
+                    // which picks a random foe too.
+                    if scripted && matches!(move_id, data::move_id::COUNTER | data::move_id::MIRRORCOAT) {
+                        let _ = self.rng.ps_random_range("random_target", 0, n as u32);
+                    }
+                    let pick = self.rng.ps_random_range("random_target", 0, n as u32) as usize;
+                    if scripted {
+                        let foe = side.opposing();
+                        let alive = (0..n_active.min(2)).filter(|&s| self.side(foe).active_mon(s).is_some_and(|m| m.is_alive()));
+                        if let Some(slot) = alive.clone().nth(pick).or(alive.last()) {
+                            self.ps_scripted_pick[side as usize][(actor_slot as usize).min(1)] = slot as u8;
+                        }
+                    }
                 }
                 // resolveAction then calls getActionSpeed -> getTarget, whose
                 // location (the random pick) never validates for a spread
@@ -3450,6 +3473,15 @@ self.trigger_emergency_exits();
                 return None;
             }
         }
+        // A scripted move's targetLoc is resolveAction's pick, a foe
+        // location that validates like a `normal` move's while it lives.
+        let target = match (tcode, target) {
+            (14, None) => {
+                let p = self.ps_scripted_pick[side as usize][(slot as usize).min(1)];
+                (p != 255).then(|| Target { side: side.opposing(), slot: p })
+            }
+            _ => target,
+        };
         let tracks = curse
             || move_id == data::move_id::SNIPESHOT
             || ability == data::ability_id::STALWART
@@ -3458,7 +3490,7 @@ self.trigger_emergency_exits();
             if tracks && alive_at(self, t) {
                 return None;
             }
-            if matches!(tcode, 0 | 2 | 4 | 10) {
+            if matches!(tcode, 0 | 2 | 4 | 10 | 14) {
                 if alive_at(self, t) || t.side == side {
                     return None; // living target, or a fainted ally (no retarget)
                 }
