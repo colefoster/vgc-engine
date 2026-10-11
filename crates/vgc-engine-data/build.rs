@@ -509,6 +509,11 @@ fn champions_tail(slug: &str, tail: &str) -> String {
     if let Some(f) = flag {
         t = t.replace(&format!("{f}: false"), &format!("{f}: true"));
     }
+    // The mod strips Freeze-Dry's freeze secondary (`secondary: undefined`),
+    // so no secondary roll and no Sheer Force boost.
+    if slug == "freezedry" {
+        t = t.replace("has_secondary: true", "has_secondary: false");
+    }
     t
 }
 

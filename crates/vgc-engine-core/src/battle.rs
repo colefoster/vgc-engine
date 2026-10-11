@@ -4241,10 +4241,17 @@ self.trigger_emergency_exits();
                     }
                     Choice::Switch { actor_slot, .. } => {
                         let slot = (actor_slot as usize).min(1);
-                        queue.entries[s][slot] = ActionQueueEntry {
-                            kind: ActionKind::Switch,
-                            move_id: u16::MAX,
-                        };
+                        // A Switch after this slot's Move is its mid-turn
+                        // pivot / Eject Button pick (`apply_self_switches`),
+                        // not its queued action: the slot still queues the
+                        // move (PS queue.willMove, data/moves.ts suckerpunch
+                        // onTry).
+                        if queue.entries[s][slot].kind == ActionKind::None {
+                            queue.entries[s][slot] = ActionQueueEntry {
+                                kind: ActionKind::Switch,
+                                move_id: u16::MAX,
+                            };
+                        }
                     }
                     Choice::Pass { .. } => {}
                 }
@@ -18061,33 +18068,38 @@ self.trigger_emergency_exits();
                 }
             }
             data::move_id::SIMPLEBEAM => {
-                // PS data/moves.ts:simplebeam. onTryHit (hitStepTryHitEvent,
-                // before the accuracy roll) fails against a cantsuppress,
-                // Simple or Truant target; onHit runs setAbility('simple').
-                // A Substitute stops it in the hit loop, after the roll
+                // PS data/moves.ts:simplebeam. The move's own onTryHit runs
+                // in the hit loop after the accuracy roll (singleEvent,
+                // data/mods/champions/scripts.ts spreadMoveHit; hitStepTryHitEvent's
+                // runEvent skips the move's handler) and fails against a
+                // cantsuppress, Simple or Truant target; onHit runs
+                // setAbility('simple'). A Substitute stops it next
                 // (data/conditions.ts substitute onTryPrimaryHit).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Simple_Beam_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
                 if ps_cantsuppress(cur) || cur == data::ability_id::SIMPLE || cur == data::ability_id::TRUANT {
                     self.ps_status_failed();
                     return;
                 }
-                if !self.rolled_accuracy_passed(m) { return; }
                 let behind_sub = self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::SIMPLE) {
                     self.ps_status_failed();
                 }
             }
             data::move_id::ENTRAINMENT => {
-                // PS data/moves.ts:4859 entrainment. onTryHit (before the
-                // accuracy roll) fails against the user itself, a target that
+                // PS data/moves.ts:4859 entrainment. The move's onTryHit (in
+                // the hit loop after the accuracy roll, data/mods/champions/
+                // scripts.ts spreadMoveHit singleEvent) fails against the user
+                // itself, a target that
                 // already has the user's ability, a cantsuppress or Truant
                 // target, or when the user's ability is `noentrain`. onHit
                 // runs target.setAbility(source.ability), whose onStart fires
                 // (sim/pokemon.ts:1943). A Substitute stops it after the roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Entrainment_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
                 let src = self.side(actor_side).active_mon(actor_slot as usize).map(current_ability).unwrap_or(u16::MAX);
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
                 if (ts == actor_side && tslot == actor_slot)
@@ -18099,7 +18111,6 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
-                if !self.rolled_accuracy_passed(m) { return; }
                 let behind_sub = ts != actor_side
                     && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, src) {
@@ -18109,20 +18120,25 @@ self.trigger_emergency_exits();
                 crate::ability::on_start(self, ts, tslot);
             }
             data::move_id::WORRYSEED => {
-                // PS data/moves.ts:21050 worryseed. onTryHit fails against a
-                // cantsuppress target and onTryImmunity against Truant or
-                // Insomnia, both before the accuracy roll
-                // (sim/battle-actions.ts:559-568). onHit runs
-                // setAbility('insomnia') and cures sleep. A Substitute stops
-                // it after the roll.
+                // PS data/moves.ts:21050 worryseed. onTryImmunity fails
+                // against Truant or Insomnia before the accuracy roll
+                // (sim/battle-actions.ts:559-568); the move's onTryHit (a
+                // cantsuppress target) runs in the hit loop after it
+                // (data/mods/champions/scripts.ts spreadMoveHit singleEvent).
+                // onHit runs setAbility('insomnia') and cures sleep. A
+                // Substitute stops it after the roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Worry_Seed_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
-                if ps_cantsuppress(cur) || cur == data::ability_id::TRUANT || cur == data::ability_id::INSOMNIA {
+                if cur == data::ability_id::TRUANT || cur == data::ability_id::INSOMNIA {
                     self.ps_status_failed();
                     return;
                 }
                 if !self.rolled_accuracy_passed(m) { return; }
+                if ps_cantsuppress(cur) {
+                    self.ps_status_failed();
+                    return;
+                }
                 let behind_sub = ts != actor_side
                     && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::INSOMNIA) {
@@ -18136,6 +18152,24 @@ self.trigger_emergency_exits();
                     }
                 }
                 self.sync_status_dot_bit(ts, tslot);
+            }
+            data::move_id::TRICKORTREAT | data::move_id::FORESTSCURSE => {
+                // PS data/moves.ts trickortreat / forestscurse: accuracy 100,
+                // then onHit fails when the target already has the type, else
+                // `target.addType` (Ghost / Grass; refused while
+                // Terastallized). The added third type is NOT modeled (the
+                // engine's typing holds two types); this arm only keeps the
+                // accuracy roll and the hit-loop result PS has.
+                let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
+                let add = if move_id == data::move_id::TRICKORTREAT { 13 } else { 4 };
+                let ok = self.side(ts).active_mon(tslot as usize).is_some_and(|t| {
+                    let (types, n) = t.effective_types();
+                    t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !types[..n as usize].contains(&add)
+                });
+                if !ok {
+                    self.ps_status_failed();
+                }
             }
             data::move_id::MAGICPOWDER => {
                 // PS data/moves.ts:10738 magicpowder. A powder move: Grass
@@ -37083,6 +37117,29 @@ mod tests {
     }
 
     #[test]
+    fn sucker_punch_hits_a_target_whose_choice_list_carries_a_mid_turn_pick() {
+        // Decision phases: the target's slot queues [move, eject pick]. The
+        // trailing Switch is the Eject Button replacement, not its action, so
+        // the target still queues a damaging move (PS data/moves.ts
+        // suckerpunch onTry, queue.willMove).
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"urshifu","level":50,"ability":"unseenfist","nature":"jolly","moves":["suckerpunch"],"evs":{"atk":252,"spe":252}}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"item":"ejectbutton","nature":"careful","moves":["bodyslam"]},
+            {"species":"pichu","level":50,"moves":["tackle"]}
+        ]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        b.decision_phases = true;
+        b.step(
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P2, 0)) }],
+            &[Choice::Move { actor_slot: 0, move_slot: 0, target: Some(t(SideRef::P1, 0)) }, Choice::Switch { actor_slot: 0, team_index: 1 }],
+        );
+        assert!(b.p2.team[0].current_hp < b.p2.team[0].stats.hp, "Sucker Punch connected");
+        assert_eq!(b.p2.active[0], 1, "the hit fired Eject Button");
+    }
+
+    #[test]
     fn sucker_punch_fails_when_target_switches() {
         // Target queues a switch — not a damaging move; Sucker Punch
         // should fail. (Sucker Punch user also moves with +1 priority,
@@ -42677,6 +42734,9 @@ mod tests {
         assert_eq!(super::status_secondary("icepunch", true), Some((Status::Freeze, 10)), "Ice Punch 10% frz");
         assert_eq!(super::status_secondary("blizzard", true), Some((Status::Freeze, 10)), "Blizzard 10% frz");
         assert_eq!(super::status_secondary("freezedry", true), None, "Freeze-Dry has no Champions secondary");
+        let fd = data::MOVES.iter().position(|m| m.slug == "freezedry").unwrap();
+        assert!(!data::move_table(true)[fd].has_secondary, "Champions Freeze-Dry: secondary undefined (no roll, no Sheer Force)");
+        assert!(data::move_table(false)[fd].has_secondary, "gen 9 Freeze-Dry keeps its 10% freeze");
         // Thunder (PS num 87) is `chance: 30` par — NOT 10% like Thunderbolt.
         assert_eq!(
             super::status_secondary("thunder", true), Some((Status::Paralysis, 30)),
