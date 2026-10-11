@@ -672,6 +672,12 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_charge_volatile: [u8; 2],
+    /// `ps-rng` only: team indices (bit per index, per side) of fainted
+    /// actives whose status checkFainted set to 'fnt' at the end of an
+    /// earlier turn (sim/battle.js:2066-2073): no status residual handler.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_status_fnt: [u8; 2],
     /// `ps-rng` only: the current action's move got past BeforeMove, so
     /// runMove ends with `runEvent('AfterMove')`; see
     /// [`Battle::ps_after_move_ties`].
@@ -846,6 +852,8 @@ impl Battle {
             ps_twoturn_release: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_charge_volatile: [0; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_status_fnt: [0; 2],
             #[cfg(feature = "ps-rng")]
             ps_move_used: false,
             #[cfg(feature = "ps-rng")]
@@ -3082,7 +3090,10 @@ self.trigger_emergency_exits();
             for slot in 0..n_active {
                 let Some(m) = self.side(side).active_mon(slot) else { continue };
                 let spe = self.ps_speed(side, slot).unwrap_or(0);
+                let ti = self.side(side).active[slot] as usize;
+                let fnt = !m.is_alive() && ti < 8 && self.ps_status_fnt[side as usize] & (1 << ti) != 0;
                 match m.status {
+                    _ if fnt => {}
                     Status::Burn => push(&mut h, (10, 0, spe, 0)),
                     Status::Poison | Status::Toxic => push(&mut h, (9, 0, spe, 0)),
                     _ => {}
@@ -4655,6 +4666,16 @@ self.trigger_emergency_exits();
         #[cfg(feature = "ps-rng")]
         if self.rng.is_ps() {
             self.ps_active_ties(false, "shuffle");
+            // The turn's last action ran checkFainted: every fainted active's
+            // status becomes 'fnt' (sim/battle.js:2066-2073).
+            for side in [SideRef::P1, SideRef::P2] {
+                for slot in 0..self.format().active_count() {
+                    let ti = self.side(side).active[slot] as usize;
+                    if ti < 8 && self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive()) {
+                        self.ps_status_fnt[side as usize] |= 1 << ti;
+                    }
+                }
+            }
         }
 
         // 4. Per-mon end-of-turn flags + side-condition timers.
