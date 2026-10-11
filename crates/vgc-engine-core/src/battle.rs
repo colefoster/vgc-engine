@@ -7976,6 +7976,14 @@ self.trigger_emergency_exits();
                     defender.effective_ability_id(),
                     data::ability_id::SHELLARMOR | data::ability_id::BATTLEARMOR
                 );
+            #[cfg(feature = "ps-rng")]
+            if let Some(p) = self.rng.ps_mut() {
+                p.set_sub_hit(
+                    defender.substitute_hp() > 0
+                        && !m.is_sound
+                        && attacker.effective_ability_id() != data::ability_id::INFILTRATOR,
+                );
+            }
             let crit = if fixed_damage.is_some() || crit_immune {
                 false
             } else if matches!(
