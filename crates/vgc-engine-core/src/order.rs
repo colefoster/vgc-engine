@@ -393,8 +393,13 @@ fn schedule_move(
             } else {
                 m.moves.get(move_slot as usize).copied().unwrap_or(u16::MAX)
             };
+            // A recharging mon's action is PS's 'recharge' move (not in the
+            // dex, so priority 0 and no category): data/conditions.ts
+            // mustrecharge onLockMove, sim/battle.ts getActionSpeed.
             let (base_pri, category) = if mid == u16::MAX {
                 (0i32, 2u8)
+            } else if m.must_recharge {
+                (0i32, 0u8)
             } else {
                 let mv = &data::MOVES[mid as usize];
                 (mv.priority as i32, mv.category)
@@ -426,6 +431,7 @@ fn schedule_move(
             // Bulbapedia:
             // <https://bulbapedia.bulbagarden.net/wiki/Grassy_Glide_(move)>.
             let pri_after_terrain = if mid == data::move_id::GRASSYGLIDE
+                && !m.must_recharge
                 && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
                 && m.is_grounded()
             {
@@ -577,6 +583,8 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
     };
     let (base, category) = if mid == u16::MAX {
         (0i32, 2u8)
+    } else if m.must_recharge {
+        (0i32, 0u8) // 'recharge' (see `schedule_move`)
     } else {
         let mv = &data::MOVES[mid as usize];
         (mv.priority as i32, mv.category)
@@ -586,6 +594,7 @@ pub(crate) fn state_priority(battle: &Battle, side: SideRef, actor_slot: u8, mov
         pri += 1;
     }
     if mid == data::move_id::GRASSYGLIDE
+        && !m.must_recharge
         && matches!(battle.terrain, crate::terrain::Terrain::Grassy)
         && m.is_grounded()
     {
