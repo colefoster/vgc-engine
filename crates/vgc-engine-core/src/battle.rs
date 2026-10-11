@@ -642,6 +642,11 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_action_live: u8,
+    /// `ps-rng` only: active slots at 0 HP at the current action's last
+    /// per-hit Update (same bits); see [`Battle::ps_loop_end_update`].
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_hit_dead: u8,
     /// `ps-rng` only: this turn's move actions in the order commitChoices'
     /// queue.sort left them, as (side, slot).
     #[cfg(feature = "ps-rng")]
@@ -800,6 +805,8 @@ impl Battle {
             ps_status_missed: false,
             #[cfg(feature = "ps-rng")]
             ps_action_live: 0,
+            #[cfg(feature = "ps-rng")]
+            ps_hit_dead: 0,
             #[cfg(feature = "ps-rng")]
             ps_commit_moves: ([(0, 0); 4], 0),
             keyed_commit_moves: ([(0, 0); 4], 0),
@@ -2644,6 +2651,49 @@ self.trigger_emergency_exits();
                 let s = self.side(side);
                 let Some(m) = s.active_mon(slot) else { continue };
                 let pending = m.current_hp == 0 && self.ps_action_live & (1 << (side as usize * 2 + slot)) != 0;
+                let alive = m.is_alive();
+                if m.current_hp == 0 {
+                    self.ps_hit_dead |= 1 << (side as usize * 2 + slot);
+                }
+                let s = self.side(side);
+                let key = if pending {
+                    self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
+                } else if alive {
+                    self.ps_speed(side, slot)
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    keys[n] = k;
+                    n += 1;
+                }
+            }
+        }
+        keys[..n].sort_unstable_by(|a, b| b.cmp(a));
+        let _ = self.ps_shuffle_ties(&keys[..n], "shuffle");
+    }
+
+    /// `ps-rng` only: the hit loop's closing `eachEvent('Update')`
+    /// (data/mods/champions/scripts.ts:575). The loop's faintMessages
+    /// (:550) has already marked the KO'd targets `fainted`, but the user's
+    /// recoil lands after it (applyRecoilDamage) and Life Orb / Mind Blown
+    /// only after the loop, so a user the engine has already knocked out
+    /// with its own move still sorts, on its cached Speed. A user KO'd
+    /// inside the hit (Rocky Helmet, Rough Skin, Explosion: 0 HP at the
+    /// per-hit Update; Final Gambit, `selfdestruct: 'ifHit'`) is `fainted`
+    /// by now.
+    #[cfg(feature = "ps-rng")]
+    #[track_caller]
+    fn ps_loop_end_update(&mut self, user_side: SideRef, user_slot: u8) {
+        let mut keys = [0i64; 4];
+        let mut n = 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) {
+                let s = self.side(side);
+                let Some(m) = s.active_mon(slot) else { continue };
+                let user = side == user_side && slot == user_slot as usize;
+                let bit = 1 << (side as usize * 2 + slot);
+                let pending = user && m.current_hp == 0 && self.ps_action_live & bit != 0 && self.ps_hit_dead & bit == 0;
                 let key = if pending {
                     self.ps_speed_cache[side as usize].get(s.active[slot] as usize).copied()
                 } else if m.is_alive() {
@@ -4022,6 +4072,7 @@ self.trigger_emergency_exits();
                 }
             }
             self.ps_action_live = live;
+            self.ps_hit_dead = 0;
             self.ps_spread_window(action, pending_kind, will_act)
         };
         #[cfg(not(feature = "ps-rng"))]
@@ -4041,9 +4092,11 @@ self.trigger_emergency_exits();
         if self.rng.is_ps() && self.ps_loop_hits > 0 {
             if windowed {
                 self.ps_hit_update();
+                // Drawn after the whole move resolved, Life Orb included.
+                self.ps_hit_dead = 0;
             }
             self.ps_hit_loop_faint_ends();
-            self.ps_active_ties(false, "shuffle");
+            self.ps_loop_end_update(action.side, action.actor_slot);
         }
         #[cfg(feature = "ps-rng")]
         {
@@ -12300,6 +12353,10 @@ self.trigger_emergency_exits();
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 a.current_hp = 0;
                 a.fainted = true;
+            }
+            #[cfg(feature = "ps-rng")]
+            {
+                self.ps_hit_dead |= 1 << (actor_side as usize * 2 + actor_slot as usize);
             }
         }
 
