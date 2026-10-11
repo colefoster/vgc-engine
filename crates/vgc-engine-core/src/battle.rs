@@ -17776,33 +17776,38 @@ self.trigger_emergency_exits();
                 }
             }
             data::move_id::SIMPLEBEAM => {
-                // PS data/moves.ts:simplebeam. onTryHit (hitStepTryHitEvent,
-                // before the accuracy roll) fails against a cantsuppress,
-                // Simple or Truant target; onHit runs setAbility('simple').
-                // A Substitute stops it in the hit loop, after the roll
+                // PS data/moves.ts:simplebeam. The move's own onTryHit runs
+                // in the hit loop after the accuracy roll (singleEvent,
+                // data/mods/champions/scripts.ts spreadMoveHit; hitStepTryHitEvent's
+                // runEvent skips the move's handler) and fails against a
+                // cantsuppress, Simple or Truant target; onHit runs
+                // setAbility('simple'). A Substitute stops it next
                 // (data/conditions.ts substitute onTryPrimaryHit).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Simple_Beam_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
                 if ps_cantsuppress(cur) || cur == data::ability_id::SIMPLE || cur == data::ability_id::TRUANT {
                     self.ps_status_failed();
                     return;
                 }
-                if !self.rolled_accuracy_passed(m) { return; }
                 let behind_sub = self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::SIMPLE) {
                     self.ps_status_failed();
                 }
             }
             data::move_id::ENTRAINMENT => {
-                // PS data/moves.ts:4859 entrainment. onTryHit (before the
-                // accuracy roll) fails against the user itself, a target that
+                // PS data/moves.ts:4859 entrainment. The move's onTryHit (in
+                // the hit loop after the accuracy roll, data/mods/champions/
+                // scripts.ts spreadMoveHit singleEvent) fails against the user
+                // itself, a target that
                 // already has the user's ability, a cantsuppress or Truant
                 // target, or when the user's ability is `noentrain`. onHit
                 // runs target.setAbility(source.ability), whose onStart fires
                 // (sim/pokemon.ts:1943). A Substitute stops it after the roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Entrainment_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
+                if !self.rolled_accuracy_passed(m) { return; }
                 let src = self.side(actor_side).active_mon(actor_slot as usize).map(current_ability).unwrap_or(u16::MAX);
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
                 if (ts == actor_side && tslot == actor_slot)
@@ -17814,7 +17819,6 @@ self.trigger_emergency_exits();
                     self.ps_status_failed();
                     return;
                 }
-                if !self.rolled_accuracy_passed(m) { return; }
                 let behind_sub = ts != actor_side
                     && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, src) {
@@ -17824,20 +17828,25 @@ self.trigger_emergency_exits();
                 crate::ability::on_start(self, ts, tslot);
             }
             data::move_id::WORRYSEED => {
-                // PS data/moves.ts:21050 worryseed. onTryHit fails against a
-                // cantsuppress target and onTryImmunity against Truant or
-                // Insomnia, both before the accuracy roll
-                // (sim/battle-actions.ts:559-568). onHit runs
-                // setAbility('insomnia') and cures sleep. A Substitute stops
-                // it after the roll.
+                // PS data/moves.ts:21050 worryseed. onTryImmunity fails
+                // against Truant or Insomnia before the accuracy roll
+                // (sim/battle-actions.ts:559-568); the move's onTryHit (a
+                // cantsuppress target) runs in the hit loop after it
+                // (data/mods/champions/scripts.ts spreadMoveHit singleEvent).
+                // onHit runs setAbility('insomnia') and cures sleep. A
+                // Substitute stops it after the roll.
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Worry_Seed_(move)>
                 let Some((ts, tslot)) = opp_target else { return };
                 let cur = self.side(ts).active_mon(tslot as usize).map(current_ability).unwrap_or(u16::MAX);
-                if ps_cantsuppress(cur) || cur == data::ability_id::TRUANT || cur == data::ability_id::INSOMNIA {
+                if cur == data::ability_id::TRUANT || cur == data::ability_id::INSOMNIA {
                     self.ps_status_failed();
                     return;
                 }
                 if !self.rolled_accuracy_passed(m) { return; }
+                if ps_cantsuppress(cur) {
+                    self.ps_status_failed();
+                    return;
+                }
                 let behind_sub = ts != actor_side
                     && self.side(ts).active_mon(tslot as usize).is_some_and(|t| t.substitute_hp() > 0);
                 if behind_sub || !self.set_ability_by_move(ts, tslot, data::ability_id::INSOMNIA) {
