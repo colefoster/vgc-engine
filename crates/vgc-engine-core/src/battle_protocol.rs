@@ -4,7 +4,9 @@
 
 use crate::battle::Battle;
 use crate::data;
-use crate::protocol::{health, ProtocolLog, ProtocolOptions, ProtocolView};
+use crate::protocol::{health, BoostFx, ProtocolLog, ProtocolOptions, ProtocolView};
+
+pub(crate) const BOOST_NAMES: [&str; 7] = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"];
 use crate::side::SideRef;
 
 /// `p1a` / `p2b` slot letters (PS `getSlot`, sim/pokemon.ts:520).
@@ -36,6 +38,30 @@ pub(crate) fn item_name(id: u16) -> &'static str {
 
 pub(crate) fn ability_name(id: u16) -> &'static str {
     data::ABILITIES.get(id as usize).map(|m| m.name).unwrap_or("")
+}
+
+/// The weather's PS condition name (`-weather|RainDance`).
+pub(crate) fn weather_id(w: crate::weather::Weather) -> &'static str {
+    use crate::weather::Weather;
+    match w {
+        Weather::None => "none",
+        Weather::Rain => "RainDance",
+        Weather::Sun => "SunnyDay",
+        Weather::Sand => "Sandstorm",
+        Weather::Snow => "Snowscape",
+    }
+}
+
+/// `move: Electric Terrain` etc. (`-fieldstart` / `-fieldend`).
+pub(crate) fn terrain_name(t: crate::terrain::Terrain) -> &'static str {
+    use crate::terrain::Terrain;
+    match t {
+        Terrain::None => "",
+        Terrain::Electric => "move: Electric Terrain",
+        Terrain::Grassy => "move: Grassy Terrain",
+        Terrain::Psychic => "move: Psychic Terrain",
+        Terrain::Misty => "move: Misty Terrain",
+    }
 }
 
 pub(crate) fn type_name(t: u8) -> &'static str {
@@ -95,11 +121,28 @@ impl Battle {
             .unwrap_or("")
     }
 
-    /// PS `Pokemon.toString()` for the mon in active `slot`: `p1a: Name`.
+    fn p_faint_logged(&self, side: SideRef, idx: u8) -> bool {
+        idx < 8 && self.protocol.log().is_some_and(|l| l.fainted_logged & (1 << (side as u16 * 8 + idx as u16)) != 0)
+    }
+
+    /// PS `Pokemon.toString()` for the mon in active `slot`: `p1a: Name`
+    /// (`p1: Name` once its `|faint|` printed: no longer `isActive`).
     pub(crate) fn p_ident(&self, side: SideRef, slot: u8) -> String {
         let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        if self.p_faint_logged(side, idx) {
+            return format!("p{}: {}", side as u8 + 1, self.p_name(side, idx));
+        }
         let tag = slot_tag(side, slot);
         format!("{}: {}", std::str::from_utf8(&tag).unwrap_or("p1a"), self.p_name(side, idx))
+    }
+
+    /// `|tag|<ident>{rest}` for the mon in active `slot`.
+    pub(crate) fn p_mon(&mut self, tag: &str, side: SideRef, slot: u8, rest: &str) {
+        if !self.plog() {
+            return;
+        }
+        let id = self.p_ident(side, slot);
+        self.p_push(format!("|{tag}|{id}{rest}"));
     }
 
     /// PS `Pokemon.toString()` for a team member: the slot form when it is
@@ -235,6 +278,17 @@ impl Battle {
         let mut last = None;
         for &(s, idx) in &queue {
             let side = if s == 0 { SideRef::P1 } else { SideRef::P2 };
+            let pre: Vec<String> = match self.protocol.log_mut() {
+                Some(l) => {
+                    let (hit, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut l.faint_prefix).into_iter().partition(|(ps, pi, _)| *ps == s && *pi == idx);
+                    l.faint_prefix = keep;
+                    hit.into_iter().map(|(_, _, line)| line).collect()
+                }
+                None => Vec::new(),
+            };
+            for line in pre {
+                self.p_push(line);
+            }
             let id = self.p_ident_idx(side, idx);
             self.p_push(format!("|faint|{id}"));
             if let Some(l) = self.protocol.log_mut() {
@@ -283,6 +337,576 @@ impl Battle {
         }
     }
 
+    /// Set the effect of the next `apply_boosts` call.
+    #[inline]
+    pub(crate) fn p_boost_fx(&mut self, fx: BoostFx) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.boost_fx = fx;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn p_take_boost_fx(&mut self) -> BoostFx {
+        match self.protocol.log_mut() {
+            Some(l) => std::mem::take(&mut l.boost_fx),
+            None => BoostFx::Move,
+        }
+    }
+
+    /// The per-stat lines of one `boost` call (sim/battle.ts:2038-2082).
+    pub(crate) fn p_boost_lines(&mut self, side: SideRef, slot: u8, deltas: &[(u8, i8)], before: [i8; 7], fx: BoostFx) {
+        if !self.plog() || fx == BoostFx::Silent {
+            return;
+        }
+        let Some(after) = self.side(side).active_mon(slot as usize).map(|m| m.boosts) else { return };
+        let mut announced = matches!(fx, BoostFx::AbilitySecondary(_));
+        for &(idx, delta) in deltas {
+            let i = idx as usize;
+            if i >= 7 {
+                continue;
+            }
+            let by = (after[i] - before[i]).abs();
+            let msg = if delta < 0 || after[i] == -6 { "-unboost" } else { "-boost" };
+            let stat = BOOST_NAMES[i];
+            if by != 0 {
+                match fx {
+                    BoostFx::Item(id) => {
+                        pmon!(self, msg, side, slot, "|{stat}|{by}|[from] item: {}", item_name(id));
+                    }
+                    BoostFx::Ability(id) | BoostFx::AbilitySecondary(id) | BoostFx::AbilitySelf(id) => {
+                        if !announced {
+                            pmon!(self, "-ability", side, slot, "|{}|boost", ability_name(id));
+                            announced = true;
+                        }
+                        pmon!(self, msg, side, slot, "|{stat}|{by}");
+                    }
+                    _ => pmon!(self, msg, side, slot, "|{stat}|{by}"),
+                }
+            } else {
+                let show = match fx {
+                    BoostFx::Ability(_) => false,
+                    BoostFx::AbilitySecondary(_) | BoostFx::AbilitySelf(_) => true,
+                    BoostFx::Move | BoostFx::Item(_) => true,
+                    BoostFx::MoveSecondary | BoostFx::Silent => false,
+                };
+                if show {
+                    pmon!(self, msg, side, slot, "|{stat}|0");
+                }
+            }
+        }
+    }
+
+    /// A move's per-hit modifyDamage lines: effectiveness, then crit
+    /// (data/mods/champions/scripts.ts:266-285; sim/battle-actions.ts:1796-1814).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn p_hit_messages(
+        &mut self,
+        a_side: SideRef,
+        a_slot: u8,
+        t_side: SideRef,
+        t_slot: u8,
+        move_id: u16,
+        attacker: &crate::pokemon::Pokemon,
+        defender: &crate::pokemon::Pokemon,
+        crit: bool,
+    ) {
+        use crate::damage::TypeEff;
+        let ctx = crate::damage::DamageContext {
+            weather: self.effective_weather_for_pair(a_side, a_slot, t_side, t_slot),
+            terrain: self.terrain,
+            champions: self.champions,
+            ..crate::damage::DamageContext::default()
+        };
+        let move_type = crate::damage::move_type_in_ctx(attacker, move_id, &ctx);
+        let eff = if move_type < 18 {
+            crate::damage::effectiveness_for_attack(attacker, move_id, move_type, defender)
+        } else {
+            TypeEff::Neutral
+        };
+        let champ = self.protocol.log().is_some_and(|l| l.champions_hp);
+        match eff {
+            TypeEff::DoubleX | TypeEff::QuadrupleX => {
+                if champ {
+                    let n = if eff == TypeEff::QuadrupleX { 2 } else { 1 };
+                    pmon!(self, "-supereffective", t_side, t_slot, "|{n}");
+                } else {
+                    pmon!(self, "-supereffective", t_side, t_slot);
+                }
+            }
+            TypeEff::HalfX | TypeEff::QuarterX => {
+                if champ {
+                    let n = if eff == TypeEff::QuarterX { 2 } else { 1 };
+                    pmon!(self, "-resisted", t_side, t_slot, "|{n}");
+                } else {
+                    pmon!(self, "-resisted", t_side, t_slot);
+                }
+            }
+            _ => {}
+        }
+        if crit {
+            pmon!(self, "-crit", t_side, t_slot);
+        }
+    }
+
+    /// `-start|typechange|<types>` for the mon in `slot`.
+    pub(crate) fn p_typechange(&mut self, side: SideRef, slot: u8, suffix: &str) {
+        if !self.plog() {
+            return;
+        }
+        let Some(m) = self.side(side).active_mon(slot as usize) else { return };
+        let (types, n) = m.effective_types();
+        let names: Vec<&str> = types[..n as usize].iter().map(|&t| type_name(t)).collect();
+        let joined = if names.is_empty() { "???".to_string() } else { names.join("/") };
+        pmon!(self, "-start", side, slot, "|typechange|{joined}{suffix}");
+    }
+
+    /// Lines after the window's hit loop: tagged `hit` 255.
+    pub(crate) fn p_set_hit_after_loop(&mut self) {
+        self.p_set_hit(255);
+    }
+
+    /// The hit loop's end, once per move: faintMessages, then `-hitcount`
+    /// (data/mods/champions/scripts.ts:547-551).
+    pub(crate) fn p_loop_end(&mut self) {
+        if !self.plog() || self.protocol.log().is_some_and(|l| l.loop_ended) {
+            return;
+        }
+        if let Some(l) = self.protocol.log_mut() {
+            l.loop_ended = true;
+        }
+        self.p_set_hit(255);
+        self.p_tag_step(crate::protocol::step::LOOP_FAINT);
+        self.p_faint_messages();
+        self.p_tag_step(crate::protocol::step::HITCOUNT);
+        if let Some((s, sl, n)) = self.protocol.log_mut().and_then(|l| l.hitcount.take()) {
+            let side = if s == 0 { SideRef::P1 } else { SideRef::P2 };
+            pmon!(self, "-hitcount", side, sl, "|{n}");
+        }
+    }
+
+    /// Close a damaging move's window: the `[spread]` attr when it had
+    /// several targets.
+    pub(crate) fn p_close_move_window(&mut self) {
+        if !self.plog() {
+            return;
+        }
+        let spread = self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
+        self.p_window_close(spread);
+        if let Some(l) = self.protocol.log_mut() {
+            l.loop_ended = false;
+        }
+    }
+
+    /// Print `line` right before `|faint|` for the mon (side, team index).
+    pub(crate) fn p_faint_prefix(&mut self, side: SideRef, idx: u8, line: String) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.faint_prefix.push((side as u8, idx, line));
+        }
+    }
+
+    /// Announce-only ability onStart lines (data/abilities.ts).
+    pub(crate) fn p_ability_announce(&mut self, side: SideRef, slot: u8, ability: u16) {
+        if !self.plog() {
+            return;
+        }
+        use data::ability_id as a;
+        let announce = matches!(
+            ability,
+            a::MOLDBREAKER
+                | a::TERAVOLT
+                | a::TURBOBLAZE
+                | a::PRESSURE
+                | a::UNNERVE
+                | a::AIRLOCK
+                | a::CLOUDNINE
+                | a::FAIRYAURA
+                | a::DARKAURA
+                | a::AURABREAK
+                | a::COMATOSE
+                | a::NEUTRALIZINGGAS
+                | a::BEADSOFRUIN
+                | a::SWORDOFRUIN
+                | a::TABLETSOFRUIN
+                | a::VESSELOFRUIN
+        );
+        if announce {
+            pmon!(self, "-ability", side, slot, "|{}", ability_name(ability));
+        }
+    }
+
+    /// Protosynthesis / Quark Drive's volatile onStart (data/abilities.ts
+    /// protosynthesis condition).
+    pub(crate) fn p_paradox_start(&mut self, side: SideRef, slot: u8, ability: u16, stat: u8, from_item: bool) {
+        if !self.plog() {
+            return;
+        }
+        let name = ability_name(ability);
+        let id = if ability == data::ability_id::QUARKDRIVE { "quarkdrive" } else { "protosynthesis" };
+        let stat = BOOST_NAMES.get(stat as usize).copied().unwrap_or("atk");
+        pmon!(self, "-activate", side, slot, "|ability: {name}{}", if from_item { "|[fromitem]" } else { "" });
+        pmon!(self, "-start", side, slot, "|{id}{stat}");
+    }
+
+    /// The `-fail|unboost` a blocking ability prints (data/abilities.ts
+    /// clearbody / hypercutter / innerfocus ...). `stat` is the blocked stat.
+    pub(crate) fn p_unboost_fail(&mut self, side: SideRef, slot: u8, ability: u16, stat: u8) {
+        if !self.plog() {
+            return;
+        }
+        use data::ability_id as a;
+        let name = ability_name(ability);
+        let of = self.p_ident(side, slot);
+        let stat_part = match ability {
+            a::CLEARBODY | a::WHITESMOKE | a::FULLMETALBODY => String::new(),
+            _ => format!("|{}", BOOST_NAMES.get(stat as usize).copied().unwrap_or("atk")),
+        };
+        pmon!(self, "-fail", side, slot, "|unboost{stat_part}|[from] ability: {name}|[of] {of}");
+    }
+
+    /// `|tag|<ident>|<Item Name>{suffix}`.
+    pub(crate) fn p_item_line(&mut self, tag: &str, side: SideRef, slot: u8, item: u16, suffix: &str) {
+        if !self.plog() || item == u16::MAX {
+            return;
+        }
+        pmon!(self, tag, side, slot, "|{}{suffix}", item_name(item));
+    }
+
+    /// An HP berry: `-enditem|[eat]`, then its heal if HP moved
+    /// (sim/pokemon.ts:1783, data/items.ts sitrusberry onEat).
+    pub(crate) fn p_berry_heal(&mut self, side: SideRef, slot: u8, item: u16, hp_before: u16) {
+        if !self.plog() {
+            return;
+        }
+        self.p_item_line("-enditem", side, slot, item, "|[eat]");
+        if self.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != hp_before) {
+            let suffix = format!("|[from] item: {}", item_name(item));
+            self.p_heal(side, slot, &suffix);
+        }
+    }
+
+    /// Set the effect of the next status infliction.
+    #[inline]
+    pub(crate) fn p_status_fx(&mut self, fx: crate::protocol::StatusFx) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.status_fx = fx;
+        }
+    }
+
+    /// `-status` for a status that just landed, suffixed per its effect.
+    pub(crate) fn p_status_line(&mut self, side: SideRef, slot: u8, status: crate::pokemon::Status, fx: crate::protocol::StatusFx) {
+        use crate::protocol::StatusFx;
+        if !self.plog() {
+            return;
+        }
+        let st = status_id(status);
+        let fx = match fx {
+            StatusFx::Plain if status == crate::pokemon::Status::Sleep => {
+                match self.protocol.log().map(|l| l.active_move).unwrap_or(u16::MAX) {
+                    u16::MAX => StatusFx::Plain,
+                    mv => StatusFx::Move(mv),
+                }
+            }
+            other => other,
+        };
+        match fx {
+            StatusFx::Silent => {}
+            StatusFx::Plain => pmon!(self, "-status", side, slot, "|{st}"),
+            StatusFx::Move(mv) => {
+                if status == crate::pokemon::Status::Sleep {
+                    pmon!(self, "-status", side, slot, "|{st}|[from] move: {}", move_name(mv));
+                } else {
+                    pmon!(self, "-status", side, slot, "|{st}");
+                }
+            }
+            StatusFx::Item(id) => pmon!(self, "-status", side, slot, "|{st}|[from] item: {}", item_name(id)),
+            StatusFx::Ability(id, s, sl) => {
+                let src = if s == 0 { SideRef::P1 } else { SideRef::P2 };
+                let of = self.p_ident(src, sl);
+                pmon!(self, "-status", side, slot, "|{st}|[from] ability: {}|[of] {of}", ability_name(id));
+            }
+        }
+    }
+
+    /// PS `getTarget` + `getRandomTarget` (sim/battle.ts): the mon the
+    /// `|move|` line names. Random foe picks PS draws but the engine does
+    /// not are read from the keyed oracle (`Rng::log_pick`).
+    pub(crate) fn p_display_target(&mut self, side: SideRef, slot: u8, move_id: u16, chosen: Option<crate::choice::Target>) -> Option<(SideRef, u8)> {
+        let n_active = self.format().active_count() as u8;
+        let tcode = self.moves()[move_id as usize].target;
+        let alive = |b: &Battle, s: SideRef, sl: u8| b.side(s).active_mon(sl as usize).is_some_and(|m| m.is_alive());
+        match tcode {
+            1 | 7 | 8 | 9 | 12 => return Some((side, slot)),
+            3 if chosen.is_none_or(|t| t.side == side && t.slot == slot) => return Some((side, slot)),
+            _ => {}
+        }
+        if matches!(tcode, 0 | 2 | 3 | 4 | 10) {
+            if let Some(t) = chosen {
+                if t.slot < n_active && !(t.side == side && t.slot == slot) {
+                    if alive(self, t.side, t.slot) {
+                        return Some((t.side, t.slot));
+                    }
+                    if t.side == side {
+                        return Some((t.side, t.slot));
+                    }
+                }
+            }
+        }
+        if tcode == 2 {
+            let ally = slot ^ 1;
+            return (n_active > 1 && alive(self, side, ally)).then_some((side, ally));
+        }
+        let foe = side.opposing();
+        if n_active == 1 {
+            return Some((foe, 0));
+        }
+        let mut live = [0u8; 2];
+        let mut n = 0usize;
+        for s in 0..n_active.min(2) {
+            if alive(self, foe, s) {
+                live[n] = s;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return Some((foe, 0));
+        }
+        let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
+        let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
+        let pick = self.rng.log_pick(key, n as u32).unwrap_or(0) as usize;
+        Some((foe, live[pick.min(n - 1)]))
+    }
+
+    /// Hold the `|move|` line for the action now running (see
+    /// `ProtocolLog::pending_move`).
+    pub(crate) fn p_move_announce(&mut self, side: SideRef, slot: u8, move_id: u16, attacker: &crate::pokemon::Pokemon, chosen: Option<crate::choice::Target>) {
+        if !self.plog() {
+            return;
+        }
+        let mut display = self.p_display_target(side, slot, move_id, chosen);
+        // Expanding Force in Psychic Terrain re-picks its target after each
+        // ModifyMove (sim/battle-actions.ts:432-443).
+        if move_id == data::move_id::EXPANDINGFORCE
+            && matches!(self.terrain, crate::terrain::Terrain::Psychic)
+            && attacker.is_grounded()
+            && self.format().active_count() > 1
+        {
+            let foe = side.opposing();
+            let live: Vec<u8> = (0..2u8).filter(|&s| self.side(foe).active_mon(s as usize).is_some_and(|m| m.is_alive())).collect();
+            if !live.is_empty() {
+                let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
+                let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
+                for _ in 0..2 {
+                    let pick = self.rng.log_pick(key, live.len() as u32).unwrap_or(0) as usize;
+                    display = Some((foe, live[pick.min(live.len() - 1)]));
+                }
+            }
+        }
+        let id = self.p_ident(side, slot);
+        let tgt = display.map(|(s, sl)| self.p_ident(s, sl)).unwrap_or_default();
+        let locked = attacker.lockin_turns > 0 || attacker.charging_turns > 0;
+        let from = if locked { "|[from] lockedmove" } else { "" };
+        let line = format!("|move|{id}|{}|{tgt}{from}", move_name(move_id));
+        if let Some(l) = self.protocol.log_mut() {
+            l.flush_pending_move();
+            l.pending_move = Some(line);
+            l.active_move = move_id;
+            l.last_move[side as usize][(slot as usize).min(1)] = move_id;
+        }
+    }
+
+    /// Drop a held `|move|` line (the move was stopped before PS prints it).
+    pub(crate) fn p_move_cancel(&mut self) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.pending_move = None;
+        }
+    }
+
+    /// The end of a move action: write any held `|move|` line.
+    pub(crate) fn p_action_end(&mut self) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.flush_pending_move();
+            l.window_close();
+            l.active_move = u16::MAX;
+        }
+    }
+
+    /// PS `attrLastMove`.
+    pub(crate) fn p_attr(&mut self, attr: &str) {
+        if let Some(l) = self.protocol.log_mut() {
+            if !l.ended {
+                l.attr_last_move(attr);
+            }
+        }
+    }
+
+    /// PS `retargetLastMove` to the mon in `slot`.
+    pub(crate) fn p_retarget(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let id = self.p_ident(side, slot);
+        if let Some(l) = self.protocol.log_mut() {
+            l.retarget_last_move(&id);
+        }
+    }
+
+    /// A move's onTry / PrepareHit returned false: `-fail` and `[still]`
+    /// (sim/battle-actions.ts:593-598).
+    pub(crate) fn p_try_fail(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        pmon!(self, "-fail", side, slot);
+        self.p_attr("[still]");
+    }
+
+    /// A charge move skipping its charge turn (sun / rain / Power Herb):
+    /// `[still]`, then the `-anim` that becomes the last move line.
+    pub(crate) fn p_charge_skip(&mut self, side: SideRef, slot: u8, name: &str, target: Option<crate::choice::Target>) {
+        if !self.plog() {
+            return;
+        }
+        self.p_attr("[still]");
+        let id = self.p_ident(side, slot);
+        let tgt = target
+            .filter(|t| self.side(t.side).active_mon(t.slot as usize).is_some())
+            .map(|t| self.p_ident(t.side, t.slot))
+            .unwrap_or_default();
+        if let Some(l) = self.protocol.log_mut() {
+            l.push_move(format!("|-anim|{id}|{name}|{tgt}"));
+        }
+    }
+
+    /// Open a spread move's reorder window over `targets` (PS target order
+    /// = rank).
+    pub(crate) fn p_window_open(&mut self, targets: &[(SideRef, u8)]) {
+        if !self.plog() {
+            return;
+        }
+        let mut slots = [[0u8; 3]; 4];
+        for (i, &(s, sl)) in targets.iter().take(4).enumerate() {
+            slots[i] = slot_tag(s, sl);
+        }
+        if let Some(l) = self.protocol.log_mut() {
+            l.window_open();
+            if let Some(w) = l.window.as_deref_mut() {
+                w.rank_slots = slots;
+                w.n_ranks = targets.len().min(4) as u8;
+            }
+        }
+    }
+
+    /// The window rank of a target slot.
+    fn p_rank(&self, side: SideRef, slot: u8) -> u8 {
+        let tag = slot_tag(side, slot);
+        self.protocol
+            .log()
+            .and_then(|l| l.window.as_deref())
+            .and_then(|w| w.rank_slots[..w.n_ranks as usize].iter().position(|&t| t == tag))
+            .unwrap_or(0) as u8
+    }
+
+    /// The hit the following window lines belong to.
+    #[inline]
+    pub(crate) fn p_set_hit(&mut self, hit: u8) {
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.hit = hit;
+        }
+    }
+
+    /// Tag the lines that follow with `step` for the target in `slot`.
+    #[inline]
+    pub(crate) fn p_tag(&mut self, step: u8, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let rank = self.p_rank(side, slot);
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key = (w.hit as u32) << 16 | (step as u32) << 8 | rank as u32;
+            if step == crate::protocol::step::CALC {
+                w.hit_ranks |= 1 << rank;
+            }
+        }
+    }
+
+    /// Tag the lines that follow with a target-less step.
+    #[inline]
+    pub(crate) fn p_tag_step(&mut self, step: u8) {
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key = (w.hit as u32) << 16 | (step as u32) << 8;
+        }
+    }
+
+    /// `-miss` (and `[miss]` on a single-target move's line), PS
+    /// hitStepAccuracy / hitStepInvulnerabilityEvent.
+    pub(crate) fn p_miss(&mut self, side: SideRef, slot: u8, tside: SideRef, tslot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let spread = self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
+        if !spread {
+            self.p_attr("[miss]");
+        }
+        let t = self.p_ident(tside, tslot);
+        pmon!(self, "-miss", side, slot, "|{t}");
+    }
+
+    /// An absorbing ability's boost (Lightning Rod, Storm Drain, Motor
+    /// Drive, Sap Sipper, Wind Rider, Well-Baked Body): the ability boost,
+    /// or `-immune` when the stat is capped.
+    pub(crate) fn p_absorb_boost_fx(&mut self, side: SideRef, slot: u8, ability: u16, stat: u8, amount: i8) {
+        if !self.plog() {
+            return;
+        }
+        let capped = self.side(side).active_mon(slot as usize).is_some_and(|m| {
+            let b = m.boosts[stat as usize];
+            if amount > 0 { b >= 6 } else { b <= -6 }
+        });
+        if capped {
+            pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ability));
+            self.p_boost_fx(BoostFx::Silent);
+        } else {
+            self.p_boost_fx(BoostFx::Ability(ability));
+        }
+    }
+
+    /// An absorbing ability's heal (Volt / Water Absorb, Dry Skin, Earth
+    /// Eater): `-heal [from] ability: X|[of] attacker`, or `-immune`.
+    pub(crate) fn p_absorb_heal(&mut self, side: SideRef, slot: u8, ability: u16, before: u16, src_side: SideRef, src_slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let healed = self.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != before);
+        if healed {
+            let of = self.p_ident(src_side, src_slot);
+            self.p_heal(side, slot, &format!("|[from] ability: {}|[of] {of}", ability_name(ability)));
+        } else {
+            pmon!(self, "-immune", side, slot, "|[from] ability: {}", ability_name(ability));
+        }
+    }
+
+    /// Close the window, then (a spread hit) `[spread] <hit slots>`
+    /// (sim/battle-actions.ts:617-618).
+    pub(crate) fn p_window_close(&mut self, spread: bool) {
+        let Some(l) = self.protocol.log_mut() else { return };
+        let Some(w) = l.window.as_deref() else { return };
+        let mut attr = String::from("[spread] ");
+        let mut first = true;
+        for r in 0..w.n_ranks as usize {
+            if w.hit_ranks & (1 << r) != 0 {
+                if !first {
+                    attr.push(',');
+                }
+                first = false;
+                attr.push_str(std::str::from_utf8(&w.rank_slots[r]).unwrap_or(""));
+            }
+        }
+        l.window_close();
+        if spread && !l.ended {
+            l.attr_last_move(&attr);
+        }
+    }
+
     /// PS turnLoop entry (sim/battle.ts:2939-2940).
     pub(crate) fn p_turn_loop_start(&mut self) {
         if !self.plog() {
@@ -291,6 +915,36 @@ impl Battle {
         let t = self.protocol.log().map(|l| l.now()).unwrap_or(0);
         self.p_push("|".to_string());
         self.p_push(format!("|t:|{t}"));
+    }
+
+    /// Tag the next `do_switch` line: `drag`, or `switch` with a `[from]`.
+    pub(crate) fn p_set_switch_ctx(&mut self, tag: &'static str, suffix: String) {
+        if let Some(l) = self.protocol.log_mut() {
+            l.switch_ctx = Some((tag, suffix));
+        }
+    }
+
+    /// The switch-in line for the mon `do_switch` just put in `slot`.
+    pub(crate) fn p_switch_in(&mut self, side: SideRef, slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let (tag, suffix) = self
+            .protocol
+            .log_mut()
+            .and_then(|l| l.switch_ctx.take())
+            .unwrap_or(("switch", String::new()));
+        let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        if let Some(l) = self.protocol.log_mut() {
+            l.fainted_logged &= !(1u16 << (side as u16 * 8 + idx as u16));
+            l.last_move[side as usize][(slot as usize).min(1)] = u16::MAX;
+        }
+        let id = self.p_ident(side, slot);
+        let det = self.p_details(side, idx);
+        let (sec, shr) = self.p_health_idx(side, idx);
+        if let Some(l) = self.protocol.log_mut() {
+            l.push_split(side as u8, format!("|{tag}|{id}|{det}|{sec}{suffix}"), Some(format!("|{tag}|{id}|{det}|{shr}{suffix}")));
+        }
     }
 
     /// `|switch|` / `|drag|` / `|replace|` for the mon now in `slot`.
