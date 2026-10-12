@@ -644,6 +644,17 @@ pub struct Battle {
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_scripted_pick: [[u8; 2]; 2],
+    /// `ps-rng` only: per active slot, the copied moves of a transformed
+    /// mon that fainted this turn (its moves revert on faint, but PS's
+    /// queued action keeps the chosen move for the re-sort's getTarget);
+    /// `[u16::MAX; 4]` = none.
+    #[cfg(feature = "ps-rng")]
+    #[serde(skip)]
+    pub(crate) ps_fainted_transform_moves: [[[u16; 4]; 2]; 2],
+    /// Whether any mon in either team starts with Receiver / Power of
+    /// Alchemy (`faint_events`); computed on first use.
+    #[serde(skip)]
+    pub(crate) receiver_possible: Option<bool>,
     #[cfg(feature = "ps-rng")]
     #[serde(skip)]
     pub(crate) ps_inline_hit_updates: bool,
@@ -871,6 +882,9 @@ impl Battle {
             ps_instruct_pending: None,
             #[cfg(feature = "ps-rng")]
             ps_scripted_pick: [[255; 2]; 2],
+            #[cfg(feature = "ps-rng")]
+            ps_fainted_transform_moves: [[[u16::MAX; 4]; 2]; 2],
+            receiver_possible: None,
             #[cfg(feature = "ps-rng")]
             ps_inline_hit_updates: false,
             #[cfg(feature = "ps-rng")]
@@ -1479,6 +1493,131 @@ impl Battle {
         }
     }
 
+    /// Protean / Libero's onPrepareHit retype (see the call in
+    /// `resolve_move_with_pending`). `attacker` supplies the move's type
+    /// after onModifyType. Returns the new type when it retyped.
+    fn protean_prepare_hit(&mut self, side: SideRef, slot: u8, move_id: u16, attacker: &Pokemon) -> Option<u8> {
+        let a = self.side(side).active_mon(slot as usize)?;
+        let ability = a.effective_ability_id();
+        if !matches!(ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) || a.protean_used || a.terastallized {
+            return None;
+        }
+        // `move.type` here is post-onModifyType (runMove's ModifyType
+        // precedes PrepareHit, sim/battle-actions.ts useMoveInner): Weather
+        // Ball in rain retypes to Water, an -ate Normal move to the -ate type.
+        let move_type = crate::damage::move_type_in_ctx(attacker, move_id, &DamageContext {
+            weather: self.effective_weather_for(side, slot),
+            terrain: self.terrain,
+            champions: self.champions,
+            ..DamageContext::default()
+        });
+        // Skip when the holder is already mono of the move type.
+        let (types, num) = a.effective_types();
+        if move_type == u8::MAX || (num == 1 && types[0] == move_type) {
+            return None;
+        }
+        if let Some(a) = self.side_mut(side).active_mon_mut(slot as usize) {
+            a.set_type_override(move_type, None);
+            a.protean_used = true;
+        }
+        // protean onPrepareHit (data/abilities.ts:3505).
+        if self.plog() {
+            pmon!(self, "-start", side, slot, "|typechange|{}|[from] ability: {}", crate::battle_protocol::type_name(move_type), crate::battle_protocol::ability_name(ability));
+        }
+        Some(move_type)
+    }
+
+    /// Protean / Libero for a stall move whose onPrepareHit passed.
+    fn protean_after_stall(&mut self, side: SideRef, slot: u8, move_id: u16) {
+        if let Some(a) = self.side(side).active_mon(slot as usize).cloned() {
+            let _ = self.protean_prepare_hit(side, slot, move_id, &a);
+        }
+    }
+
+    /// The hit loop's end (data/mods/champions/scripts.ts:547): its
+    /// faintMessages, then each new faint's Faint event.
+    #[inline(always)]
+    fn hit_loop_end(&mut self) {
+        self.p_loop_end();
+        if self.receiver_possible != Some(false) {
+            self.faint_events();
+        }
+    }
+
+    /// PS faintMessages' `runEvent('Faint', pokemon)` (sim/battle.ts:2555)
+    /// once per faint, for every active mon down since the last call:
+    /// Receiver / Power of Alchemy on its ally. Called where the engine
+    /// prints faints: the hit loop's end and after every action.
+    #[inline(never)]
+    fn faint_events(&mut self) {
+        // Only Receiver / Power of Alchemy read the Faint event, and only a
+        // battle where some mon starts with one can ever have a holder
+        // (Trace / Role Play / Entrainment can't copy them; Skill Swap and
+        // Transform only move an existing one). Cached per Battle object.
+        let possible = match self.receiver_possible {
+            Some(p) => p,
+            None => {
+                let p = [SideRef::P1, SideRef::P2].iter().any(|&s| {
+                    self.side(s).team.iter().any(|m| matches!(m.ability_id, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY))
+                });
+                self.receiver_possible = Some(p);
+                p
+            }
+        };
+        if !possible {
+            return;
+        }
+        let n = self.format().active_count();
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..n {
+                let idx = self.side(side).active[slot];
+                let Some(bit) = 1u8.checked_shl(idx as u32) else { continue };
+                let down = self.side(side).active_mon(slot).is_some_and(|m| !m.is_alive());
+                if !down || self.side(side).conditions.faint_handled & bit != 0 {
+                    continue;
+                }
+                self.side_mut(side).conditions.faint_handled |= bit;
+                if n == 2 {
+                    self.receiver_on_ally_faint(side, 1 - slot as u8, slot as u8);
+                }
+            }
+        }
+    }
+
+    /// Receiver / Power of Alchemy — PS data/abilities.ts:3787 receiver,
+    /// :3400 powerofalchemy onAllyFaint: if the holder has HP, take the
+    /// fainted ally's `getAbility()` unless it is `noreceiver` (the same set
+    /// as `noentrain`) or noability, through `setAbility(ability, target)`
+    /// (sim/pokemon.ts:1908): fails on a `cantsuppress` ability either way
+    /// or an Ability Shield, prints `-ability|<holder>|<new>|<old>|[from]
+    /// ability: Receiver|[of] <ally>`, then runs the new ability's Start.
+    fn receiver_on_ally_faint(&mut self, side: SideRef, holder: u8, fainted: u8) {
+        let Some(h) = self.side(side).active_mon(holder as usize) else { return };
+        let old = h.effective_ability_id();
+        if !h.is_alive() || !matches!(old, data::ability_id::RECEIVER | data::ability_id::POWEROFALCHEMY) {
+            return;
+        }
+        let Some(f) = self.side(side).active_mon(fainted as usize) else { return };
+        let gained = current_ability(f);
+        if gained == u16::MAX || ps_noentrain(gained) {
+            return;
+        }
+        if !self.set_ability_by_move(side, holder, gained) {
+            return;
+        }
+        if self.plog() {
+            self.p_tag_step(crate::protocol::step::AFTER_FAINT);
+            // Still `isActive` inside faintMessages: `p2a: Name`.
+            let idx = self.side(side).active[fainted as usize];
+            let tag = crate::battle_protocol::slot_tag(side, fainted);
+            let of = format!("{}: {}", std::str::from_utf8(&tag).unwrap_or("p1a"), self.p_name(side, idx));
+            let (new, from) = (crate::battle_protocol::ability_name(gained), crate::battle_protocol::ability_name(old));
+            pmon!(self, "-ability", side, holder, "|{new}|{from}|[from] ability: {from}|[of] {of}");
+        }
+        crate::ability::on_start(self, side, holder);
+        self.p_tag_step(crate::protocol::step::HITCOUNT);
+    }
+
     /// PS faintMessages runs `clearVolatile(false)` on each fainted mon
     /// (sim/battle.ts:2563) after every action, after the pre-move phase and
     /// after the residuals, whether or not anything replaces it. Run the
@@ -1494,6 +1633,9 @@ impl Battle {
     /// fainted on the bench.
     fn faint_forme_cleanup(&mut self) {
         self.p_faint_messages();
+        if self.receiver_possible != Some(false) {
+            self.faint_events();
+        }
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some_and(|m| m.fainted) {
@@ -1504,10 +1646,17 @@ impl Battle {
                     // storedStats (sim/pokemon.ts clearVolatile, setSpecies):
                     // a fainted mon's Speed Swap / stat split ends here, and
                     // its switch-out Speed (the replacement sort) is its own.
+                    // clearVolatile also ends Transform / Imposter: species,
+                    // ability, stats and moveSlots return to the base ones
+                    // (sim/pokemon.ts clearVolatile, `this.transformed`), so
+                    // a fainted Ditto's request shows its own moves and PP.
+                    #[cfg(feature = "ps-rng")]
+                    if let Some(m) = self.side(side).active_mon(slot as usize).filter(|m| m.transform_base.is_some()) {
+                        self.ps_fainted_transform_moves[side as usize][(slot as usize).min(1)] = m.moves;
+                    }
                     if let Some(m) = self.side_mut(side).active_mon_mut(slot as usize) {
-                        if m.transform_base.is_none() {
-                            m.change_forme(m.species_id, true);
-                        }
+                        m.revert_transform();
+                        m.change_forme(m.species_id, true);
                     }
                     #[cfg(feature = "ps-rng")]
                     if self.rng.is_ps() {
@@ -3767,6 +3916,7 @@ self.trigger_emergency_exits();
         // commitChoices starts with updateSpeed() (sim/battle.ts:2999).
         self.ps_update_speed_all();
         self.ps_scripted_pick = [[255; 2]; 2];
+        self.ps_fainted_transform_moves = [[[u16::MAX; 4]; 2]; 2];
         for (side, choices) in [(SideRef::P1, p1), (SideRef::P2, p2)] {
             let n_active = self.format().active_count();
             let mut seen = [false; 2];
@@ -4047,10 +4197,12 @@ self.trigger_emergency_exits();
                 _ => continue,
             };
             let Some(mon) = self.side(a.side).active_mon(actor_slot as usize) else { continue };
+            let copied = self.ps_fainted_transform_moves[a.side as usize][(actor_slot as usize).min(1)];
+            let moves = if !mon.is_alive() && copied[0] != u16::MAX { copied } else { mon.moves };
             let move_id = if move_slot == crate::choice::STRUGGLE_MOVE_SLOT {
                 data::move_id::STRUGGLE
             } else {
-                match mon.moves.get(move_slot as usize) {
+                match moves.get(move_slot as usize) {
                     Some(&id) if id != u16::MAX => id,
                     _ => continue,
                 }
@@ -5775,6 +5927,8 @@ self.trigger_emergency_exits();
                 self.shields_down_leave_field(side, actor_slot);
                 self.hunger_switch_leave_field(side, actor_slot, false);
                 self.gulp_missile_leave_field(side, actor_slot);
+                let outgoing = self.side(side).active[actor_slot as usize];
+                self.release_linked_traps(side, outgoing);
             }
         }
         let gravity_active = self.gravity_turns > 0;
@@ -5802,6 +5956,7 @@ self.trigger_emergency_exits();
             }
             s.active[actor_slot as usize] = team_index;
             s.note_ps_switch(actor_slot as usize, team_index);
+            s.conditions.faint_handled &= !1u8.checked_shl(team_index as u32).unwrap_or(0);
             let incoming = &mut s.team[team_index as usize];
             incoming.boosts = [0; 7];
             incoming.turns_active = 0;
@@ -7471,51 +7626,19 @@ self.trigger_emergency_exits();
         // future moves, Snatch, calls-move like Metronome) are edge cases we
         // don't model as move flags yet; standard moves are unaffected.
         // Reset on switch-out via `protean_used = false`.
-        {
-            let pl_ability = self
-                .side(actor_side)
-                .active_mon(actor_slot as usize)
-                .map(|a| a.effective_ability_id())
-                .unwrap_or(u16::MAX);
-            if matches!(pl_ability, data::ability_id::PROTEAN | data::ability_id::LIBERO) {
-                // `move.type` here is post-onModifyType (runMove's
-                // ModifyType precedes PrepareHit, sim/battle-actions.ts
-                // useMoveInner): Weather Ball in rain retypes to Water,
-                // an -ate Normal move to the -ate type.
-                let move_type = crate::damage::move_type_in_ctx(&attacker, move_id, &DamageContext {
-                    weather: self.effective_weather_for(actor_side, actor_slot),
-                    terrain: self.terrain,
-                    champions: self.champions,
-                    ..DamageContext::default()
-                });
-                let do_retype = self
-                    .side(actor_side)
-                    .active_mon(actor_slot as usize)
-                    .is_some_and(|a| {
-                        if a.protean_used || a.terastallized || move_type == u8::MAX {
-                            return false;
-                        }
-                        // Skip when the holder is already mono of the move type.
-                        let (types, num) = a.effective_types();
-                        !(num == 1 && types[0] == move_type)
-                    });
-                if do_retype {
-                    if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
-                        a.set_type_override(move_type, None);
-                        a.protean_used = true;
-                    }
-                    // protean onPrepareHit (data/abilities.ts:3452).
-                    if self.plog() {
-                        pmon!(self, "-start", actor_side, actor_slot, "|typechange|{}|[from] ability: {}", crate::battle_protocol::type_name(move_type), crate::battle_protocol::ability_name(pl_ability));
-                    }
-                    // Refresh the attacker SNAPSHOT (cloned at the top of this
-                    // fn, before this retype) so the damage calc sees the new
-                    // mono-type and grants STAB on the very move that triggered
-                    // Protean/Libero — PS `onPrepareHit` retypes before the move
-                    // resolves. Same snapshot-refresh idiom as Stance Change
-                    // above. Without this the STAB check reads the stale clone.
-                    attacker.set_type_override(move_type, None);
-                }
+        // A stall move's own onPrepareHit (`willAct() && StallMove`) runs
+        // first (sim/battle-actions.ts:826-828), so when it fails Protean
+        // never fires: those moves retype in their success branch
+        // (`resolve_status_move`) instead.
+        if !is_stall_prepare_hit_move(move_id) {
+            if let Some(t) = self.protean_prepare_hit(actor_side, actor_slot, move_id, &attacker) {
+                // Refresh the attacker SNAPSHOT (cloned at the top of this
+                // fn, before this retype) so the damage calc sees the new
+                // mono-type and grants STAB on the very move that triggered
+                // Protean/Libero — PS `onPrepareHit` retypes before the move
+                // resolves. Same snapshot-refresh idiom as Stance Change
+                // above. Without this the STAB check reads the stale clone.
+                attacker.set_type_override(t, None);
             }
         }
 
@@ -14182,7 +14305,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Scale_Shot_(move)>.
         if m.slug == "scaleshot" && any_damage_dealt > 0 {
             // After the whole hit step (sim/battle-actions.ts:520).
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1), (4, 1)], actor_side, actor_slot);
             // Mirror Herb copies the spe raise onto a foe.
@@ -14202,7 +14325,7 @@ self.trigger_emergency_exits();
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Clanging_Scales_(move)>.
         if m.slug == "clangingscales" && any_damage_dealt > 0 {
             // After the whole hit step (sim/battle-actions.ts:520).
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::SELF_BOOST);
             self.apply_boosts(actor_side, actor_slot, &[(1, -1)], actor_side, actor_slot);
             crate::item::try_consume_white_herb(self, actor_side, actor_slot);
@@ -14326,7 +14449,7 @@ self.trigger_emergency_exits();
         }
 
         if m.recoil_num > 0 && any_damage_dealt > 0 {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
             let skip_recoil = attacker_post.is_some_and(crate::ability::has_magic_guard)
@@ -14354,7 +14477,7 @@ self.trigger_emergency_exits();
         // NOT block (PS scopes Rock Head to the `recoil` effect id only).
         // PS data/moves.ts:steelbeam,mindblown,chloroblast.
         if matches!(move_id, data::move_id::STEELBEAM | data::move_id::MINDBLOWN | data::move_id::CHLOROBLAST) {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             let attacker_post = self.side(actor_side).active_mon(actor_slot as usize);
             let skip = attacker_post.is_some_and(crate::ability::has_magic_guard);
@@ -14386,7 +14509,7 @@ self.trigger_emergency_exits();
         // Magic Guard nor Rock Head reduces it.
         // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Struggle_(move)>.
         if move_id == data::move_id::STRUGGLE && any_damage_dealt > 0 {
-            self.p_loop_end();
+            self.hit_loop_end();
             self.p_tag_step(crate::protocol::step::RECOIL);
             if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 let recoil = ((a.stats.hp + 2) / 4).max(1);
@@ -14407,7 +14530,7 @@ self.trigger_emergency_exits();
         // routes through the standard onDamage event.
         // The hit loop is over: faintMessages, `-hitcount`, then the
         // AfterMoveSecondary lines; the window closes before AfterMoveSecondarySelf.
-        self.p_loop_end();
+        self.hit_loop_end();
         self.p_emergency_exit_targets(actor_side, actor_slot);
         self.p_close_move_window();
         // The Update after the hit step: Attract ends once its source fainted
@@ -15209,6 +15332,12 @@ self.trigger_emergency_exits();
         // Octolock's onTrapPokemon traps only while its source is active.
         if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Octolock) {
             if self.octolock_source_active(v.payload) {
+                return true;
+            }
+        }
+        // Spirit Shackle's `trapped` (data/conditions.ts onTrapPokemon).
+        if let Some(v) = mon.volatiles.get(crate::pokemon::VolatileKind::Trapped) {
+            if self.trap_source_active(v.payload) {
                 return true;
             }
         }
@@ -17280,6 +17409,52 @@ self.trigger_emergency_exits();
 
     /// Whether the Pokemon an Octolock payload names is still on the field
     /// and able to act (PS: `source.isActive && source.hp`).
+    /// Whether the source a `Trapped` payload (`side << 16 | team index`)
+    /// names is on the field and not fainted. A fainted source's link is
+    /// gone in PS (faintMessages' clearVolatile removes linked volatiles);
+    /// a switched-out source's is removed in `do_switch`.
+    pub(crate) fn trap_source_active(&self, payload: u32) -> bool {
+        let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
+        let idx = (payload & 0xFF) as u8;
+        let s = self.side(side);
+        (0..self.format().active_count()).any(|slot| s.active[slot] == idx && s.active_mon(slot).is_some_and(|m| m.is_alive()))
+    }
+
+    /// `target.addVolatile('trapped', source, move, 'trapper')`: see the
+    /// Spirit Shackle arm of `apply_secondary_effect`.
+    fn apply_move_trap(&mut self, tside: SideRef, tslot: u8, sside: SideRef, sslot: u8) {
+        let src_idx = self.side(sside).active[sslot as usize];
+        if self.side(sside).active_mon(sslot as usize).is_none() {
+            return;
+        }
+        let Some(t) = self.side(tside).active_mon(tslot as usize) else { return };
+        let (types, n) = t.effective_types();
+        let ghost = (0..n as usize).any(|i| types[i] == 13);
+        let held = t.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| self.trap_source_active(v.payload));
+        if !t.is_alive() || ghost || held {
+            return;
+        }
+        let payload = ((sside as u32) << 16) | src_idx as u32;
+        if let Some(t) = self.side_mut(tside).active_mon_mut(tslot as usize) {
+            let _ = t.volatiles.add(crate::pokemon::Volatile { kind: crate::pokemon::VolatileKind::Trapped, turns_remaining: 0, payload });
+        }
+        pmon!(self, "-activate", tside, tslot, "|trapped");
+    }
+
+    /// PS `removeLinkedVolatiles` for a leaving trapper (sim/pokemon.ts
+    /// clearVolatile): its foes' `trapped` ends.
+    fn release_linked_traps(&mut self, side: SideRef, idx: u8) {
+        let payload = ((side as u32) << 16) | idx as u32;
+        let foe = side.opposing();
+        for slot in 0..self.format().active_count() {
+            if let Some(m) = self.side_mut(foe).active_mon_mut(slot) {
+                if m.volatiles.get(crate::pokemon::VolatileKind::Trapped).is_some_and(|v| v.payload == payload) {
+                    m.volatiles.remove(crate::pokemon::VolatileKind::Trapped);
+                }
+            }
+        }
+    }
+
     pub(crate) fn octolock_source_active(&self, payload: u32) -> bool {
         let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
         let slot = ((payload >> 8) & 0xFF) as usize;
@@ -17994,6 +18169,10 @@ self.trigger_emergency_exits();
                     n => 3u32.saturating_pow(n.min(6) as u32),
                 };
                 let success = self.rng.range(denom) == 0;
+                // The move's PrepareHit passed: Protean / Libero's runs next.
+                if success {
+                    self.protean_after_stall(actor_side, actor_slot, move_id);
+                }
 
                 let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     Some(a) => a,
@@ -18049,6 +18228,9 @@ self.trigger_emergency_exits();
                     n => 3u32.saturating_pow(n.min(6) as u32),
                 };
                 let success = self.rng.range(denom) == 0;
+                if success {
+                    self.protean_after_stall(actor_side, actor_slot, move_id);
+                }
                 let actor = match self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     Some(a) => a,
                     None => return,
@@ -20024,12 +20206,21 @@ self.trigger_emergency_exits();
             }
             data::move_id::SOAK => {
                 // PS data/moves.ts:soak — set the target's typing to pure
-                // Water (type code 2). 100% accuracy. Idempotent if the
-                // target is already pure Water (PS -fails for the animation;
-                // the resulting typing is identical, so we just re-set it).
+                // Water (type code 2). 100% accuracy. onHit fails with
+                // `-fail|<target>` when the target is already pure Water or
+                // setType refuses (Terastallized, sim/pokemon.ts:2119).
                 // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Soak_(move)>
                 if !self.rolled_accuracy_passed(m) { return; }
                 if let Some((opp, slot)) = opp_target {
+                    let fails = self.side(opp).active_mon(slot as usize).is_some_and(|t| {
+                        let (types, n) = t.effective_types();
+                        t.is_alive() && (t.terastallized || (n == 1 && types[0] == 2))
+                    });
+                    if fails {
+                        pmon!(self, "-fail", opp, slot);
+                        self.ps_status_failed();
+                        return;
+                    }
                     if let Some(t) = self.side_mut(opp).active_mon_mut(slot as usize) {
                         if t.is_alive() {
                             t.set_type_override(2, None);
@@ -21759,6 +21950,19 @@ struct MonEffectSnapshot {
     species: u16,
 }
 
+/// Moves whose own onPrepareHit is the stall check `!!this.queue.willAct()
+/// && this.runEvent('StallMove', pokemon)` (data/moves.ts protect, detect,
+/// spikyshield, banefulbunker, kingsshield, obstruct, burningbulwark,
+/// silktrap, endure).
+fn is_stall_prepare_hit_move(move_id: u16) -> bool {
+    use data::move_id as M;
+    matches!(
+        move_id,
+        M::PROTECT | M::DETECT | M::SPIKYSHIELD | M::BANEFULBUNKER | M::KINGSSHIELD | M::OBSTRUCT | M::BURNINGBULWARK
+            | M::SILKTRAP | M::ENDURE
+    )
+}
+
 fn protect_variant_for(move_id: u16) -> u8 {
     match move_id {
         data::move_id::SPIKYSHIELD => protect_variant::SPIKY,
@@ -22190,17 +22394,20 @@ fn enumerate_targets(
             }
             TargetBuf::new()
         }
-        // 5 allAdjacent — all adjacent foes + ally (skip self).
+        // 5 allAdjacent — the ally (skip self), then all adjacent foes: PS
+        // getMoveTargets pushes adjacentAllies() before adjacentFoes()
+        // (sim/pokemon.ts:809-813), and spreadDamage applies damage and
+        // drain target by target in that order.
         5 => {
             let mut out = TargetBuf::new();
             for slot in 0..active_n {
-                if alive(opp, slot) {
-                    out.push((opp, slot));
+                if slot != actor_slot && alive(actor_side, slot) {
+                    out.push((actor_side, slot));
                 }
             }
             for slot in 0..active_n {
-                if slot != actor_slot && alive(actor_side, slot) {
-                    out.push((actor_side, slot));
+                if alive(opp, slot) {
+                    out.push((opp, slot));
                 }
             }
             out
@@ -22779,6 +22986,15 @@ fn apply_secondary_effect(
     {
         let _ = rng.percent_1_100();
     }
+    // Spirit Shackle — PS data/moves.ts:17629 secondary (chance 100) onHit:
+    // `if (source.isActive) target.addVolatile('trapped', source, move,
+    // 'trapper')`. addVolatile fails silently on a fainted target, on an
+    // existing `trapped`, and on a Ghost (runStatusImmunity('trapped'),
+    // data/typechart.ts). The condition's onStart prints `-activate|trapped`
+    // (data/conditions.ts trapped). The 100% roll above can't fail.
+    if move_slug == "spiritshackle" {
+        battle.apply_move_trap(target_side, target_slot, attacker_side, attacker_slot);
+    }
     // PS rolls each secondary independently in `secondaries[]` array
     // order — sim/battle-actions.ts:1363 `for (const secondary of
     // secondaries)`, one `random(100)` per entry. The elemental Fangs
@@ -22921,6 +23137,9 @@ fn apply_secondary_effect(
                 // the attacker (move secondary). Mirror Armor reflect hook
                 // will read the threaded source here.
                 let before = battle.side(target_side).active_mon(target_slot as usize).map_or([0; 7], |t| t.boosts);
+                // moveHit's secondaries call boost(..., isSecondary), which
+                // prints nothing for a stat already at -6 (sim/battle.ts:2079).
+                battle.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                 battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
                 // Defiant / Competitive (onAfterEachBoost), Eject Pack, White
                 // Herb (e.g. Crunch's Def drop, Lumina Crash's SpD drop).
@@ -49856,3 +50075,7 @@ mod r9_tests;
 #[cfg(test)]
 #[path = "battle_r10_tests.rs"]
 mod r10_tests;
+
+#[cfg(test)]
+#[path = "battle_r11_tests.rs"]
+mod r11_tests;

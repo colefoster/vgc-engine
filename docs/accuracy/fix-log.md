@@ -3195,3 +3195,78 @@ stay disclosed and are not retroactively approved.
   incomplete.
 - The original Phase 2-4 gates are still unmet, and D1 and D2 are not
   adopted. The real-corpus and production-rollout blockers are unchanged.
+
+# Round 11 (2026-10-12, branch `mechanics-fixes-11`)
+
+Source: the phase-3 `vgc sim` vs PS `simulate-battle` differential
+(`tools/protocol/sim-diff.js`, 1,000 seeded battles from the B and C job
+files, Reg M-B / M-C / G / I, PS a5df8274; see
+[protocol.md](../protocol.md#phase-3-gate)). Base `22129e7` reproduced the
+phase-3 result exactly: 965 / 1000 identical, the same 35 battles.
+
+Result: **965 → 970 identical** (Reg M-C 242 → 246, Reg I 237 → 238). No
+battle that was identical before diverged. Of the 9 "mechanics" battles, 5
+are now identical and 2 diverge later on something else; 2 remain.
+
+## Fixes
+
+| commit | change | PS reference | test | sim-diff |
+|---|---|---|---|---|
+| `87aa02d` | allAdjacent resolves the user's ally before its foes, so each spread drain heal logs the HP after that target only | `sim/pokemon.ts:809-813`; `sim/battle.ts` spreadDamage | `r11_tests::spread_drain_*` | b00029 moves on |
+| `519c2c9` | golden `doubles-stealth-rock-chip` runs keyed (its flat oracle only fed real rolls to the last-resolved spread target) | `sim/battle-actions.ts` trySpreadMoveHit | the golden | — |
+| `74abd66` | Spirit Shackle's `trapped` (new `VolatileKind::Trapped`, linked to the source) | `data/moves.ts:17620`; `data/conditions.ts` trapped | `spirit_shackle_traps_until_its_user_leaves` | b00297 moves on |
+| `25b0ab9` | Receiver / Power of Alchemy (Faint event at the hit loop's end and after each action; `SideConditions::faint_handled`) | `data/abilities.ts:3787, :3400`; `sim/pokemon.ts:1908` | `receiver_*` | **b00280** |
+| `25df407` | Protean / Libero don't fire when a stall move's own PrepareHit fails | `sim/battle-actions.ts:826-828`; `data/abilities.ts:3497` | `protean_skips_a_stall_move_that_fails_its_prepare_hit` | **b00984** |
+| `3f1c483` | a fainted transformed mon reverts (clearVolatile): request moves / PP, Speed for the replacement order | `sim/battle.ts:2563`; `sim/pokemon.ts:1508-1535` | `a_fainted_transformed_mon_reverts` | **b00820**, **b00160** |
+| `9bce51e` | a move secondary's stat drop at -6 prints nothing (`BoostFx::MoveSecondary`) | `sim/battle.ts:2077-2081` | `a_secondary_drop_at_minus_six_prints_nothing` | b00219 moves on |
+| `0f44146` | Soak fails on a pure-Water or Terastallized target | `data/moves.ts` soak | `soak_fails_on_pure_water_and_terastallized_targets` | **b00029** |
+| `6dbaf1b` | perf: the Faint event runs only when some mon starts with Receiver / Power of Alchemy | — | — | — |
+
+`840ff2d` (harness) lets `accuracy keyed` / `psrng` honour `ACC_THREADS`.
+
+Notes on the brief's list:
+
+- **Spread drain** healed per target already (HP was right). The
+  divergence was the log: the engine resolved allAdjacent foes first and
+  sorted the lines into PS's ally-first order, so the ally's `-heal` line
+  showed the HP after both heals. Only Parabolic Charge is an allAdjacent
+  drain move in these formats; Matcha Gotcha is allAdjacentFoes and was
+  unaffected.
+- **Ditto / Imposter** was a fainted Ditto still transformed in its
+  `|request|`. The ps-rng re-sort's getTarget draw reads the copied moves
+  for a mon that fainted transformed that turn
+  (`ps_fainted_transform_moves`), because PS's queued action keeps its move.
+- **Protean** already had the once-per-switch-in latch. Sucker Punch's
+  onTry already fails before Protean in the engine
+  (`check_move_identity_pre_use`).
+- Receiver, Spirit Shackle, Parabolic Charge, Matcha Gotcha, Imposter and
+  Protean / Libero are all legal in Reg M-C (PS validator).
+
+## Remaining sim-diff divergences (30)
+
+- Draw order 18, formatting 10, other 2: b00269 (`>forcewin` end record
+  `score`, `pokemonLeft` during a Flip Turn switch) and b00654 (Alcremie's
+  cosmetic forme in `|poke|`, a known limit). Not fixed: neither is cheap.
+- b00297 now first differs at Shell Bell's `[of]` (PS names the fainted
+  foe), b00219 at a crit draw order.
+
+## Default RNG stream changes
+
+`87aa02d` (allAdjacent per-target draws run ally first). The rest change
+state, requests or log lines only.
+
+## Gates (head `6dbaf1b`)
+
+- `cargo test --workspace --exclude vgc-engine-py` with `ps-rng` off and on
+  (`-j 4`, `RUST_TEST_THREADS=4`): pass. Audit clean, clippy clean.
+- Forced-RNG and seeded conformance, samples B and C (1,300 each), against
+  `22129e7`: keyed B 1288 → 1288, C 1290 → 1290; seeded B 1291 → 1291,
+  C 1296 → 1296; turn counts unchanged; no battle regressed and no first
+  divergent draw moved earlier.
+- Phase-4 resume gate (3,600 battles): continuations 3600 / 3600; builder
+  round trip 2633 / 2633 (one more expressible position: a fainted Ditto
+  is no longer transformed).
+- Python: wheel 0.3.1 (`--features ps-rng`, cp39) built; 59 tests pass
+  against the unpacked wheel (not installed).
+- `perf_bench --battles 5000`, 4 interleaved seeds: ~+1.2% ns/step vs
+  `22129e7`, 0 allocations.
