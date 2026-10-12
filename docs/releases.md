@@ -12,3 +12,4 @@ CARGO_BUILD_JOBS=4 maturin build --release --features ps-rng -i PYTHON -o ../../
 | 0.2.0 | 3251ded (phase 2: PS session, requests, `observe(side)`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | `/usr/bin/python3` (user site), `mimikyu/.venv-analytics` |
 | 0.3.0 | 78b4cd9 (phase 4: `Battle.from_position`, `position_from_board`) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | `/usr/bin/python3` (user site), `mimikyu/.venv-analytics` |
 | 0.3.1 | 8294d87 (round 11: Receiver, Spirit Shackle, spread-drain order, Imposter, Protean) | `protocol` (default), `ps-rng` | cp39, cp312 macOS arm64 | `/usr/bin/python3` (user site), `mimikyu/.venv-analytics` |
+| 0.4.0 | branch `replay-position` (real replay -> position: `position_from_replay`, `reconstruction_report`) | `protocol` (default), `ps-rng` | cp39 macOS arm64 (built, not installed) | — |
