@@ -8311,6 +8311,10 @@ self.trigger_emergency_exits();
                     // OHKO check. Behavior unchanged.
                     let roll = self.rng.percent_1_100_t(eff_acc.min(100) as u8) as u32;
                     if roll > eff_acc {
+                        // hitStepAccuracy's `-miss` and `[miss]`
+                        // (sim/battle-actions.ts:748-753).
+                        self.p_tag(crate::protocol::step::ACCURACY, tside, tslot);
+                        self.p_miss(actor_side, actor_slot, tside, tslot);
                         continue;
                     }
                 }
@@ -13977,6 +13981,11 @@ self.trigger_emergency_exits();
             let shown = self.plog().then(|| {
                 self.side(actor_side).active_mon(actor_slot as usize).map(|a| {
                     let (t, n) = a.effective_types();
+                    // setType refuses a Terastallized mon, whose getTypes()
+                    // is its Tera type (sim/pokemon.ts setType / getTypes).
+                    if a.terastallized {
+                        return t[..n as usize].iter().map(|&x| crate::battle_protocol::type_name(x)).collect::<Vec<_>>().join("/");
+                    }
                     t[..n as usize].iter().map(|&x| if x == 3 { "???" } else { crate::battle_protocol::type_name(x) }).collect::<Vec<_>>().join("/")
                 })
             }).flatten();
@@ -14734,6 +14743,15 @@ self.trigger_emergency_exits();
             "instruct" if instructed => true,
             // A consecutive Destiny Bond removes the volatile and fails.
             "destinybond" => user.volatiles.has(crate::pokemon::VolatileKind::DestinyBond),
+            // addType (not modelled) succeeds on a target without the type
+            // (accuracy 100: a miss is not told apart here).
+            "trickortreat" | "forestscurse" => {
+                let add = if m.slug == "trickortreat" { 13 } else { 4 };
+                target.and_then(|t| self.side(t.side).active_mon(t.slot as usize)).is_some_and(|t| {
+                    let (types, n) = t.effective_types();
+                    t.is_alive() && t.substitute_hp() == 0 && !t.terastallized && !types[..n as usize].contains(&add)
+                })
+            }
             "protect" | "detect" | "spikyshield" | "kingsshield" | "banefulbunker" | "silktrap"
             | "burningbulwark" | "obstruct" | "maxguard" => user.is_protected_this_turn(),
             "endure" => user.volatiles.has(crate::pokemon::VolatileKind::Endure),
@@ -20034,6 +20052,12 @@ self.trigger_emergency_exits();
                 });
                 if !ok {
                     self.ps_status_failed();
+                } else {
+                    // addType's `-start ... typeadd` (data/moves.ts
+                    // trickortreat / forestscurse onHit). The third type
+                    // itself is not modelled (see above).
+                    let name = crate::battle_protocol::type_name(add);
+                    pmon!(self, "-start", ts, tslot, "|typeadd|{name}|[from] move: {}", m.name);
                 }
             }
             data::move_id::MAGICPOWDER => {
@@ -20078,6 +20102,8 @@ self.trigger_emergency_exits();
                     (0..n as usize).any(|i| types[i] == 13)
                 });
                 if ghost {
+                    // hitStepTryImmunity's `-immune` (sim/battle-actions.ts:673-675).
+                    pmon!(self, "-immune", ts, tslot);
                     self.ps_status_failed();
                     return;
                 }
