@@ -357,6 +357,7 @@ async function runBattle(job, maxTurns) {
   };
 
   const logChunks = [];
+  let rawLog = null;
   const drainOmni = (async () => {
     for await (const chunk of sides.omniscient) {
       logChunks.push(chunk);
@@ -445,6 +446,9 @@ async function runBattle(job, maxTurns) {
     const timeout = new Promise((res) => setTimeout(() => res('timeout'), 20000));
     const r = await Promise.race([Promise.all([d1, d2]), timeout]);
     if (r === 'timeout') errors.push('timeout');
+    // PS's raw battle.log, `|split|pN` secret/public pairs included
+    // (sim/battle.ts:3083 addSplit), for the protocol-log diff.
+    if (battleRef && battleRef.log) rawLog = battleRef.log.join('\n');
     sides.omniscient.writeEnd();
     await Promise.race([drainOmni, new Promise((res) => setTimeout(res, 1000))]);
   } finally {
@@ -506,6 +510,7 @@ async function runBattle(job, maxTurns) {
       totalRaw: raw.length,
       replay: job.meta && job.meta.replay,
       log: logChunks.join('\n'),
+      rawlog: rawLog,
     },
   };
 }

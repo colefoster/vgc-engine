@@ -176,6 +176,60 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        "protocol" => {
+            // accuracy protocol <dir|files...> [--jsonl out]: keyed replay
+            // with the PS protocol log on, diffed against PS's raw log.
+            let threads = std::env::var("ACC_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4usize).max(1);
+            let chunk = files.len().div_ceil(threads).max(1);
+            let mut recs: Vec<accuracy::ProtoRecord> = Vec::with_capacity(files.len());
+            std::thread::scope(|s| {
+                let hs: Vec<_> = files
+                    .chunks(chunk)
+                    .map(|c| {
+                        s.spawn(move || {
+                            c.iter().filter_map(|p| load(p).ok().map(|a| accuracy::replay_protocol(&a))).collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                for h in hs {
+                    recs.extend(h.join().expect("worker panicked"));
+                }
+            });
+            if let Some(path) = jsonl.as_deref() {
+                use std::io::Write;
+                let mut f = std::fs::File::create(path).expect("create jsonl");
+                for r in &recs {
+                    writeln!(f, "{}", serde_json::to_string(r).unwrap()).unwrap();
+                }
+            }
+            let clean: Vec<&accuracy::ProtoRecord> = recs.iter().filter(|r| r.state_clean && r.has_rawlog).collect();
+            let ident = clean.iter().filter(|r| r.identical).count();
+            let (lcs, tot): (usize, usize) = clean.iter().fold((0, 0), |(a, b), r| (a + r.lcs, b + r.ps_lines.max(r.eng_lines)));
+            println!(
+                "protocol: {} battles, {} state-clean; byte-identical logs {} / {} ({:.1}%); line match {} / {} ({:.2}%)",
+                recs.len(),
+                clean.len(),
+                ident,
+                clean.len(),
+                100.0 * ident as f64 / clean.len().max(1) as f64,
+                lcs,
+                tot,
+                100.0 * lcs as f64 / tot.max(1) as f64
+            );
+            let mut buckets: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+            for r in &clean {
+                if let Some(b) = r.bucket.as_deref() {
+                    buckets.entry(b).or_default().push(&r.id);
+                }
+            }
+            let mut v: Vec<_> = buckets.into_iter().collect();
+            v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+            let top: usize = std::env::var("PROTO_TOP").ok().and_then(|x| x.parse().ok()).unwrap_or(40);
+            for (k, ids) in v.iter().take(top) {
+                println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+            }
+            ExitCode::SUCCESS
+        }
         "keyed" => {
             let recs = run_parallel(&files, accuracy::replay_keyed);
             summarize("keyed", &recs, jsonl.as_deref());
