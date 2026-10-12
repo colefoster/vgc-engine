@@ -566,6 +566,10 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
 }
 
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
+    // The mon's runSwitch: its held hazard lines come first.
+    if let Some(l) = battle.protocol.log_mut() {
+        l.release_held(Some((side as u8, slot)));
+    }
     // Neutralizing Gas: re-evaluate field-wide ability suppression BEFORE
     // dispatching this mon's switch-in ability. If an NG holder is already
     // out, the incoming mon is now suppressed and its on-switch-in effect

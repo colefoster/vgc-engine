@@ -5810,10 +5810,19 @@ self.trigger_emergency_exits();
         // `try_set_status_from` and sync again on its own; the pre-sync
         // is for incoming mons that arrive already statused.
         self.sync_status_dot_bit(side, actor_slot);
+        // The hazards are SwitchIn handlers of this mon's runSwitch, which
+        // PS runs after every switch of the batch (sim/battle-actions.ts
+        // runSwitch): their lines wait for the mon's switch-in effects.
+        if let Some(l) = self.protocol.log_mut() {
+            l.hold_for = Some((side as u8, actor_slot));
+        }
         self.apply_stealth_rock_to(side, actor_slot);
         self.apply_spikes_to(side, actor_slot);
         self.apply_toxic_spikes_to(side, actor_slot);
         self.apply_sticky_web_to(side, actor_slot);
+        if let Some(l) = self.protocol.log_mut() {
+            l.hold_for = None;
+        }
         // PR-LC1: switching changes the active-mon set, which can flip
         // weather suppression on or off (Cloud Nine / Air Lock /
         // Neutralizing Gas joining or leaving the field). Sync the

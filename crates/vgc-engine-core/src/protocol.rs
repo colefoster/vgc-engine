@@ -323,6 +323,10 @@ pub struct ProtocolLog {
     pub(crate) hero_shown: u16,
     /// Wish's wisher (team index) per [side][slot], for `[wisher]`.
     pub(crate) wishers: [[u8; 2]; 2],
+    /// While set, lines are held for that (side, slot): a switch-in's
+    /// hazard lines wait for its runSwitch (after the batch's `|switch|`s).
+    pub(crate) hold_for: Option<(u8, u8)>,
+    pub(crate) held: Vec<(u8, u8, WinEntry)>,
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -457,6 +461,8 @@ impl ProtocolLog {
             cur_turn: 0,
             hero_shown: 0,
             wishers: [[255; 2]; 2],
+            hold_for: None,
+            held: Vec::new(),
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }
@@ -488,6 +494,10 @@ impl ProtocolLog {
         if let Some(t) = line.strip_prefix("|turn|") {
             self.cur_turn = t.parse().unwrap_or(self.cur_turn);
         }
+        if let Some((s, sl)) = self.hold_for {
+            self.held.push((s, sl, WinEntry::Line(line)));
+            return;
+        }
         self.flush_pending_move();
         self.since_move += 1;
         if let Some(w) = self.window.as_deref_mut() {
@@ -505,6 +515,21 @@ impl ProtocolLog {
             self.lines.insert(n - 2, line);
         } else {
             self.push(line);
+        }
+    }
+
+    /// Release the lines held for (side, slot) (or all with `None`).
+    pub(crate) fn release_held(&mut self, who: Option<(u8, u8)>) {
+        if self.held.is_empty() {
+            return;
+        }
+        let (mine, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held).into_iter().partition(|(s, sl, _)| who.is_none_or(|w| w == (*s, *sl)));
+        self.held = keep;
+        for (_, _, e) in mine {
+            match e {
+                WinEntry::Line(l) => self.push(l),
+                WinEntry::Split(side, a, b) => self.push_split(side, a, Some(b)),
+            }
         }
     }
 
@@ -529,6 +554,10 @@ impl ProtocolLog {
     /// from everyone but `side` (and the omniscient channel).
     pub(crate) fn push_split(&mut self, side: u8, secret: String, shared: Option<String>) {
         if self.ended {
+            return;
+        }
+        if let Some((s, sl)) = self.hold_for {
+            self.held.push((s, sl, WinEntry::Split(side, secret, shared.unwrap_or_default())));
             return;
         }
         self.flush_pending_move();

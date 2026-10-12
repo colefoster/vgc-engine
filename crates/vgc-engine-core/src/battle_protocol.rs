@@ -1533,6 +1533,10 @@ impl Battle {
     #[cold]
     #[inline(never)]
     fn p_action_end_cold(&mut self) {
+        // Anything still held (a switch-in that never ran its abilities).
+        if let Some(l) = self.protocol.log_mut() {
+            l.release_held(None);
+        }
         let was_move = self.protocol.log().is_some_and(|l| l.active_move != u16::MAX || l.pending_move.is_some());
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
