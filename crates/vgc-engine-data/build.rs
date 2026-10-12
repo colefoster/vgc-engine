@@ -525,6 +525,7 @@ fn champions_pp(slug: &str, std_pp: u8) -> u8 {
         "banefulbunker" | "beakblast" | "kingsshield" | "nihillight" | "obstruct" | "protect" | "purify"
         | "sandstorm" | "snowscape" | "spikyshield" | "strengthsap" | "wish" => 5,
         "shelltrap" | "spinout" => 10,
+        "nightslash" => 20,
         _ => std_pp.min(20),
     }
 }
