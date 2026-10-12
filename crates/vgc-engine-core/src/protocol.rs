@@ -311,7 +311,14 @@ pub struct ProtocolLog {
     pub(crate) move_target: Option<(u8, u8)>,
     /// The last residual handler ended by duration: fieldEvent `continue`s
     /// past its faintMessages (sim/battle.ts:515-521).
-    pub(crate) res_defer_faint: bool,
+    /// The residual's modelled handler order (protocol_residual.rs).
+    pub(crate) res_plan: Option<Box<ResPlan>>,
+    /// Faints the residual left for after `|upkeep|`.
+    pub(crate) res_hold_faints: bool,
+    /// A replaying harness's recorded residual tie shuffles.
+    pub(crate) oracle_shuffles: Vec<(u32, u8, u32, u32, u32)>,
+    /// The last `|turn|` number printed.
+    pub(crate) cur_turn: u32,
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -340,6 +347,36 @@ pub(crate) struct Window {
     pub(crate) n_ranks: u8,
     /// The hit number of the lines that follow (255 = after the loop).
     pub(crate) hit: u8,
+}
+
+/// A residual handler PS collects (see protocol_residual.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResId {
+    Weather,
+    Terrain,
+    /// A pseudo-weather by onFieldResidualSubOrder.
+    Pseudo(u8),
+    /// (side, onSideResidualSubOrder).
+    Side(u8, u8),
+    /// (side, slot, order, subOrder).
+    Mon(u8, u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResEntry {
+    /// (order, priority, speed, subOrder).
+    pub(crate) k: (i64, i64, i64, i64),
+    pub(crate) id: ResId,
+    /// Runs faintMessages after it: not ended by duration, holder not fainted.
+    pub(crate) flushes: bool,
+}
+
+/// The residual's handlers in PS's sorted order.
+#[derive(Debug, Clone)]
+pub(crate) struct ResPlan {
+    pub(crate) entries: Vec<ResEntry>,
+    /// Rank of each active in the weather's eachEvent('Weather').
+    pub(crate) each_rank: [[u8; 2]; 2],
 }
 
 /// Step tags for [`Window`] keys, in PS's order.
@@ -410,7 +447,10 @@ impl ProtocolLog {
             last_faint: None,
             ee_announced: 0,
             move_target: None,
-            res_defer_faint: false,
+            res_plan: None,
+            res_hold_faints: false,
+            oracle_shuffles: Vec::new(),
+            cur_turn: 0,
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }
@@ -438,6 +478,9 @@ impl ProtocolLog {
     pub(crate) fn push(&mut self, line: String) {
         if self.ended {
             return;
+        }
+        if let Some(t) = line.strip_prefix("|turn|") {
+            self.cur_turn = t.parse().unwrap_or(self.cur_turn);
         }
         self.flush_pending_move();
         self.since_move += 1;

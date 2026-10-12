@@ -4799,7 +4799,7 @@ self.trigger_emergency_exits();
             self.in_residual = true;
             self.resolve_end_of_turn();
             // `|upkeep|` (sim/battle.ts:2817) precedes the action's Update.
-            plog!(self, "|upkeep");
+            self.p_upkeep();
             // PS: the residual action ends with eachEvent('Update').
             self.update_hp_berries();
             self.in_residual = false;
@@ -17052,11 +17052,9 @@ self.trigger_emergency_exits();
                     let left = self.side(side).active_mon(slot as usize).map_or(0, |m| m.perish_turns());
                     let fainted = self.side(side).active_mon(slot as usize).is_some_and(|m| !m.is_alive());
                     pmon!(self, "-start", side, slot, "|perish{}", if fainted { 0 } else { left });
-                    if fainted {
-                        if let Some(l) = self.protocol.log_mut() {
-                            l.res_defer_faint = true;
-                        }
-                    }
+                    // onEnd's target.faint() queues it under this handler.
+                    self.p_queue_faint_if_down(side, slot);
+
                 }
             }
         }
