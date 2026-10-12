@@ -1655,7 +1655,7 @@ fn py_sets(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<Vec<core::TeamMembe
 /// `{"p1": ..., "p2": ...}`. `lookahead=True` also uses set facts revealed
 /// after the stop. The report is `battle.reconstruction_report()`.
 #[pyfunction]
-#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = "move", sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None))]
+#[pyo3(signature = (log, turn = None, prior = None, ps_seed = None, viewer = None, stop = None, sets = None, request = None, lookahead = false, format = None, protocol = "ps", player_names = None))]
 #[allow(clippy::too_many_arguments)]
 fn position_from_replay(
     py: Python<'_>,
@@ -1664,7 +1664,7 @@ fn position_from_replay(
     prior: Option<&str>,
     ps_seed: Option<&str>,
     viewer: Option<&str>,
-    stop: &str,
+    stop: Option<&str>,
     sets: Option<&Bound<'_, PyAny>>,
     request: Option<&Bound<'_, PyAny>>,
     lookahead: bool,
@@ -1684,9 +1684,10 @@ fn position_from_replay(
     let turn = turn.or(input.turn).ok_or_else(|| PyValueError::new_err("turn is required"))?;
     let mut o = ReconOptions::new(turn);
     o.stop = match stop {
-        "move" => Stop::Move,
-        "replace" => Stop::Replace,
-        s => return Err(PyValueError::new_err(format!("stop={s:?} (\"move\" | \"replace\")"))),
+        None => input.stop.unwrap_or(Stop::Move),
+        Some("move") => Stop::Move,
+        Some("replace") => Stop::Replace,
+        Some(s) => return Err(PyValueError::new_err(format!("stop={s:?} (\"move\" | \"replace\")"))),
     };
     o.viewer = match viewer {
         None => None,

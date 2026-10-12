@@ -239,9 +239,9 @@ struct ReconArgs {
     #[arg(long)]
     turn: Option<u32>,
     /// `move` (the turn's move request) or `replace` (the faint
-    /// replacement before it).
-    #[arg(long, default_value = "move")]
-    stop: String,
+    /// replacement before it). Default: a decision file's own stop, else `move`.
+    #[arg(long)]
+    stop: Option<String>,
     /// Fill the opponent's hidden info from this player's view only.
     #[arg(long)]
     viewer: Option<String>,
@@ -281,10 +281,11 @@ fn run_recon(a: &ReconArgs) -> Result<ExitCode, String> {
     let input = parse_input(&text)?;
     let turn = a.turn.or(input.turn).ok_or("--turn N is required")?;
     let mut o = ReconOptions::new(turn);
-    o.stop = match a.stop.as_str() {
-        "move" => Stop::Move,
-        "replace" => Stop::Replace,
-        s => return Err(format!("--stop {s} (move | replace)")),
+    o.stop = match a.stop.as_deref() {
+        None => input.stop.unwrap_or(Stop::Move),
+        Some("move") => Stop::Move,
+        Some("replace") => Stop::Replace,
+        Some(s) => return Err(format!("--stop {s} (move | replace)")),
     };
     o.viewer = match a.viewer.as_deref() {
         None => None,

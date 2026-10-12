@@ -99,6 +99,11 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             unsupported.push(format!("weather {}", w.name));
         }
     }
+    for side in 0..2 {
+        if n_active == 2 && tr.slots[side][0].is_some() && tr.slots[side][0] == tr.slots[side][1] {
+            unsupported.push("illusion (ambiguous)".into());
+        }
+    }
     if let Some(u) = unsupported.first() {
         return Err(err(&format!("unsupported: {u}"), unsupported.join(", ")));
     }
@@ -461,6 +466,18 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
                     pm.last_used_move_target = if matches!(single, 0 | 4 | 10 | 13) { foe_alive[side].first().copied().unwrap_or(255) } else { 255 };
                 }
             }
+            if m.vols.iter().any(|v| v.name == "?TORMENT") && !pm.volatiles.has(VolatileKind::Torment) {
+                let _ = pm.volatiles.add(vgc_engine_core::Volatile { kind: VolatileKind::Torment, turns_remaining: 0, payload: 0 });
+            }
+            if let Some(v) = m.vols.iter().find(|v| v.name == "?OCTOLOCK") {
+                // Payload: the source's side << 16 | slot << 8 | team index.
+                let src = v.arg.split_once(',').and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)));
+                if let Some((ss, si)) = src {
+                    let slot = tr.mons[ss][si].active.unwrap_or(0) as u32;
+                    let idx = team_orders[ss].iter().position(|&x| x == si).unwrap_or(0) as u32;
+                    let _ = pm.volatiles.add(vgc_engine_core::Volatile { kind: VolatileKind::Octolock, turns_remaining: 0, payload: ((ss as u32) << 16) | (slot << 8) | idx });
+                }
+            }
             if let Some(v) = m.vols.iter().find(|v| v.name == "?DRAGONCHEER") {
                 let _ = v;
                 let (types, nt) = pm.effective_types();
@@ -492,6 +509,36 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
             if m.item_lost && m.item_lost_line.is_some_and(|l| l > m.switch_line) && pm.effective_ability_id() == unburden {
                 pm.unburden_active = true;
             }
+        }
+    }
+    // Transform / Imposter: the target's species, ability, stats (its own HP),
+    // moves at 5 PP, as battle.rs transform_into copies them.
+    for side in 0..2 {
+        for (k, &i) in team_orders[side].iter().enumerate() {
+            let m = &tr.mons[side][i];
+            let (Some((ts, ti)), Some(_)) = (m.transformed, m.active) else { continue };
+            let Some(tk) = team_orders[ts].iter().position(|&x| x == ti) else { continue };
+            let target = b.side(side_ref(ts)).team[tk].clone();
+            let pm = if side == 0 { &mut b.p1.team[k] } else { &mut b.p2.team[k] };
+            if pm.fainted {
+                continue;
+            }
+            let mut pv = serde_json::to_value(&*pm).map_err(|e| err("board", e.to_string()))?;
+            pv["transform_base"] = json!({"species_id": pm.species_id, "ability_id": pm.ability_id, "stats": pv["stats"].clone(), "moves": pv["moves"].clone(), "pp": pv["pp"].clone()});
+            let mut np: vgc_engine_core::Pokemon = serde_json::from_value(pv).map_err(|e| err("board", e.to_string()))?;
+            np.change_forme(target.species_id, false);
+            np.ability_id = target.ability_id;
+            let hp = np.stats.hp;
+            np.stats = target.stats;
+            np.stats.hp = hp;
+            np.moves = target.moves;
+            for j in 0..4 {
+                let base = if np.moves[j] == u16::MAX { 0 } else { data::MOVES[np.moves[j] as usize].pp.min(5) };
+                let used = m.trans_pp.iter().find(|(mv, _)| np.moves[j] != u16::MAX && slug(mv) == data::MOVES[np.moves[j] as usize].slug).map(|x| x.1).unwrap_or(0);
+                np.pp[j] = (base as u32).saturating_sub(used) as u8;
+            }
+            np.last_used_move_slot = m.last_move.as_deref().and_then(|lm| np.moves.iter().position(|&x| x != u16::MAX && data::MOVES[x as usize].slug == slug(lm))).map(|x| x as u8).unwrap_or(255);
+            *pm = np;
         }
     }
     // Speed Swap, Power / Guard Split and Power Trick, in log order.
