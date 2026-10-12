@@ -1798,6 +1798,36 @@ fn compare_streams(rec: &mut ProtoRecord, st: &PsStreams, log: &vgc_engine_core:
     }
 }
 
+/// The engine's `|request|` JSON per side, in order, from the keyed
+/// protocol replay (the stops in its log).
+pub fn engine_requests(acc: &AccBattle) -> [Vec<String>; 2] {
+    let (table, _repaired, _b, _res, _misses) = repaired_table(acc);
+    let opts = vgc_engine_core::ProtocolOptions {
+        player_names: ["P1".to_string(), "P2".to_string()],
+        ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
+    };
+    let shuffles = residual_shuffles(acc);
+    let mut fed = false;
+    let (b, _res) = drive_with(
+        acc,
+        Rng::oracle_keyed(table, 0xC0FFEE),
+        |b, _| {
+            if !std::mem::replace(&mut fed, true) {
+                b.protocol_set_oracle_shuffles(shuffles.clone());
+            }
+        },
+        Some(&opts),
+    );
+    let mut out = [Vec::new(), Vec::new()];
+    if let Some(l) = b.protocol_log() {
+        for sp in l.sync_points() {
+            out[0].push(sp.requests[0].clone());
+            out[1].push(sp.requests[1].clone());
+        }
+    }
+    out
+}
+
 pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
     let (table, _repaired, b, res, misses) = repaired_table(acc);
     let state_clean = matches!(&res, Ok((_, _, None, _))) && misses.is_empty();
@@ -1908,6 +1938,9 @@ pub struct SessionRecord {
     pub ps_errors: usize,
     /// Commands left unfed when the session stopped asking.
     pub unfed: usize,
+    /// p1 / p2 `|request|` and `|error|` chunks identical (formats whose
+    /// updates the log can't match, e.g. a debug format's `|debug|`).
+    pub side_chunks_identical: [bool; 2],
 }
 
 pub fn replay_session(acc: &AccBattle) -> SessionRecord {
@@ -1925,6 +1958,7 @@ pub fn replay_session(acc: &AccBattle) -> SessionRecord {
         eng_errors: 0,
         ps_errors: 0,
         unfed: 0,
+        side_chunks_identical: [false; 2],
     };
     let (Some(cmds), Some(st)) = (acc.meta.cmds.as_ref(), acc.meta.streams.as_ref()) else { return rec };
     let (table, _repaired, _b, _res, _misses) = repaired_table(acc);
@@ -1981,6 +2015,12 @@ pub fn replay_session(acc: &AccBattle) -> SessionRecord {
         let ps: Vec<String> = ps_chunks.iter().map(|c| norm_chunk(c)).collect();
         let eng: Vec<String> = s.stream(view).iter().map(|c| norm_chunk(c)).collect();
         rec.identical[k] = ps == eng;
+        if k < 2 {
+            let side_only = |v: &[String]| -> Vec<String> {
+                v.iter().filter(|c| c.starts_with("|request|") || c.starts_with("|error|")).cloned().collect()
+            };
+            rec.side_chunks_identical[k] = side_only(&ps) == side_only(&eng);
+        }
         if ps != eng && rec.div.is_none() {
             let i = ps.iter().zip(&eng).take_while(|(x, y)| x == y).count();
             let la: Vec<&str> = ps.get(i).map(|c| c.split('\n').collect()).unwrap_or_default();
