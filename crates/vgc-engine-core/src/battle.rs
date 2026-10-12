@@ -13798,7 +13798,7 @@ self.trigger_emergency_exits();
             // steelroller / icespinner onAfterHit: clearTerrain's `-fieldend`.
             if self.plog() && self.terrain != crate::terrain::Terrain::None {
                 self.p_tag_step(crate::protocol::step::AFTER_HIT);
-                let t = crate::battle_protocol::terrain_name(self.terrain);
+                let t = crate::battle_protocol::terrain_end_name(self.terrain);
                 self.p_push(format!("|-fieldend|{t}"));
                 self.p_tag_step(crate::protocol::step::SELF_DROP);
             }
@@ -16361,7 +16361,8 @@ self.trigger_emergency_exits();
                     // wish onEnd: `[from] move: Wish|[wisher] <name>`; the wisher is
                     // the slot's mon when it was used (approximated by the
                     // current one).
-                    let idx = self.side(wside).active[wslot];
+                    let cur = self.side(wside).active[wslot];
+                    let idx = self.protocol.log().map(|l| l.wishers[wside as usize][wslot.min(1)]).filter(|&i| i != 255).unwrap_or(cur);
                     let wisher = self.p_name(wside, idx).to_string();
                     self.p_heal(wside, wslot as u8, &format!("|[from] move: Wish|[wisher] {wisher}"));
                 }
@@ -19002,6 +19003,11 @@ self.trigger_emergency_exits();
                         t.stats.def = def;
                         t.stats.spd = spd;
                     }
+                    // guardsplit onHit (data/moves.ts guardsplit).
+                    if self.plog() {
+                        let of = self.p_ident(tside, tslot);
+                        pmon!(self, "-activate", actor_side, actor_slot, "|move: Guard Split|[of] {of}");
+                    }
                 }
             }
             data::move_id::BESTOW => {
@@ -19423,10 +19429,11 @@ self.trigger_emergency_exits();
                     });
                 if !is_ghost {
                     // Non-Ghost: self-target Atk +1 / Def +1 / Spe −1.
+                    // PS key order: spe, atk, def (data/moves.ts curse self.boosts).
                     self.apply_boosts(
                         actor_side,
                         actor_slot,
-                        &[(0, 1), (1, 1), (4, -1)],
+                        &[(4, -1), (0, 1), (1, 1)],
                         actor_side,
                         actor_slot,
                     );
@@ -19655,6 +19662,10 @@ self.trigger_emergency_exits();
                         if t.is_alive() {
                             t.set_type_override(2, None);
                         }
+                    }
+                    // soak onHit's `-start|typechange|Water`.
+                    if self.side(opp).active_mon(slot as usize).is_some_and(|t| t.is_alive()) {
+                        self.p_typechange(opp, slot, "");
                     }
                 }
             }
@@ -19892,6 +19903,8 @@ self.trigger_emergency_exits();
                             payload: 0,
                         });
                     }
+                    // noretreat condition onStart.
+                    pmon!(self, "-start", actor_side, actor_slot, "|move: No Retreat");
                 }
             }
             data::move_id::GASTROACID => {
@@ -20505,6 +20518,10 @@ self.trigger_emergency_exits();
                         let heal = a.stats.hp / 2;
                         self.wish_pending[actor_side as usize][actor_slot as usize] =
                             Some(WishEffect { turns: 2, heal });
+                    }
+                    let idx = self.side(actor_side).active[actor_slot as usize];
+                    if let Some(l) = self.protocol.log_mut() {
+                        l.wishers[actor_side as usize][(actor_slot as usize).min(1)] = idx;
                     }
                 }
             }
@@ -22590,10 +22607,16 @@ fn apply_secondary_effect(
         // PS rolls random(100) for every secondary, a 100% one included
         // (sim/battle-actions.ts:1343), then applies it.
         let _ = rng.percent_1_100();
+        let mut started = false;
         if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             if t.is_alive() && t.heal_block_turns() == 0 {
                 t.set_heal_block(2);
+                started = true;
             }
+        }
+        // healblock condition onStart (data/moves.ts healblock).
+        if started {
+            pmon!(battle, "-start", target_side, target_slot, "|move: Heal Block");
         }
     }
     // King's Rock / Razor Fang — PS `data/items.ts:kingsrock` (3204) and
