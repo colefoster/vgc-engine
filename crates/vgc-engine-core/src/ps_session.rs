@@ -28,6 +28,19 @@ pub type BattleBuilder = Box<dyn Fn(Option<&[Vec<u8>; 2]>) -> Battle + Send + Sy
 
 const VIEWS: [ProtocolView; 4] = [ProtocolView::P1, ProtocolView::P2, ProtocolView::Spectator, ProtocolView::Omniscient];
 
+/// `|error|` text for a choice or undo after a `cantUndo` choice
+/// (sim/side.ts:1192-1194, sim/battle.ts:3036-3039).
+const CANT_UNDO: &str = "|error|[Invalid choice] Can't undo: A trapping/disabling effect would cause undo to leak information";
+
+/// What one `choose` / `undo` call sent the side, in PS's order: `|error|`
+/// lines, then (for an `[Unavailable choice]` or an undo that revealed
+/// something) the updated `|request|` JSON (sim/side.ts:529-537).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SideMessages {
+    pub errors: Vec<String>,
+    pub updated_request: Option<String>,
+}
+
 /// The session (see the module docs).
 pub struct PsSession {
     builder: BattleBuilder,
@@ -44,10 +57,26 @@ pub struct PsSession {
     mid_answered: usize,
     /// A side's accepted answer to the current request.
     answered: [Option<Answer>; 2],
+    /// The accepted answer as PS's `side.getChoice()` prints it
+    /// (sim/side.ts:323-351), for the input log.
+    choice_text: [Option<String>; 2],
+    /// PS `side.choice.cantUndo`.
+    cant_undo: [bool; 2],
+    /// Cancel Mod (data/rulesets.ts:1371-1378): without it every accepted
+    /// choice is final (sim/battle.ts:3060-3068).
+    support_cancel: bool,
     /// Chunks per view (p1, p2, spectator, omniscient).
     streams: [Vec<String>; 4],
     /// Log-derived chunks already in each stream.
     log_chunks: [usize; 4],
+    /// The raw `battle.log` lines exposed so far (`|split|` pairs included).
+    raw: Vec<String>,
+    /// How many of the log's raw lines `raw` holds.
+    raw_pos: usize,
+    /// A stop's requests were made and not yet taken (PS `sentRequests`).
+    new_requests: bool,
+    /// `>pN <choice>` lines PS's commitChoices logged (sim/battle.ts:3009-3012).
+    input_log: Vec<String>,
     ended: bool,
 }
 
@@ -78,15 +107,27 @@ impl PsSession {
             mid: [Vec::new(), Vec::new()],
             mid_answered: 0,
             answered: [None, None],
+            choice_text: [None, None],
+            cant_undo: [false; 2],
+            support_cancel: true,
             streams: Default::default(),
             log_chunks: [0; 4],
+            raw: Vec::new(),
+            raw_pos: 0,
+            new_requests: true,
+            input_log: Vec::new(),
             ended: false,
         };
         let line = s.stop.line;
-        let b = std::mem::replace(&mut s.base, Battle::new(crate::battle::BattleConfig { format: crate::Format::Singles, seed: 0 }, vec![], vec![]));
+        let b = s.take_base();
         s.expose(&b, Some(line));
         s.base = b;
         s
+    }
+
+    /// Cancel Mod off: an accepted choice can't be changed or undone.
+    pub fn set_support_cancel(&mut self, on: bool) {
+        self.support_cancel = on;
     }
 
     /// The committed battle state (start of the current turn while a
@@ -109,6 +150,29 @@ impl PsSession {
             }
             self.log_chunks[k] = self.log_chunks[k].max(chunks.len());
         }
+        let lines = log.raw_lines();
+        let end = upto.unwrap_or(lines.len()).min(lines.len());
+        if end > self.raw_pos {
+            self.raw.extend(lines[self.raw_pos..end].iter().cloned());
+            self.raw_pos = end;
+        }
+    }
+
+    /// The raw `battle.log` exposed so far: what PS has sent in `update`s
+    /// (with `|split|` pairs), up to the current stop.
+    pub fn raw_lines(&self) -> &[String] {
+        &self.raw
+    }
+
+    /// True once per stop: the stop's requests are still to be sent
+    /// (PS `sentRequests`, sim/battle.ts:3267-3274).
+    pub fn take_new_requests(&mut self) -> bool {
+        std::mem::take(&mut self.new_requests)
+    }
+
+    /// The `>pN <choice>` input-log lines committed since the last call.
+    pub fn take_input_log(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.input_log)
     }
 
     /// `side`'s current request JSON, or `None` when it has nothing to
@@ -120,6 +184,13 @@ impl PsSession {
             return None;
         }
         Some(self.reqs[i].to_json())
+    }
+
+    /// `side`'s current request as PS's `emitRequest` sends it (`wait`
+    /// requests included), or `None` once the battle is over (PS's
+    /// `activeRequest` is null then).
+    pub fn request_json(&self, side: SideRef) -> Option<String> {
+        (!self.ended).then(|| self.reqs[side as usize].to_json())
     }
 
     /// The structured current request of `side` (wait included).
@@ -138,47 +209,138 @@ impl PsSession {
     /// side's stream, followed by an updated `|request|` for an
     /// `[Unavailable choice]`).
     pub fn choose(&mut self, side: SideRef, input: &str) -> Result<(), Vec<String>> {
+        let m = self.choose_detailed(side, input);
+        if m.errors.is_empty() { Ok(()) } else { Err(m.errors) }
+    }
+
+    /// [`PsSession::choose`] with the updated request it sent, if any.
+    pub fn choose_detailed(&mut self, side: SideRef, input: &str) -> SideMessages {
         let i = side as usize;
+        if self.reqs[i].state != ReqState::Wait && !self.ended && self.cant_undo[i] {
+            return self.side_out(i, SideMessages { errors: vec![CANT_UNDO.to_string()], updated_request: None });
+        }
         let mut p = Parser::new(&self.reqs[i], side, self.ended);
         let res = p.choose(input);
         let ans = p.answer();
+        let text = p.choice_text(&self.base);
+        let cant_undo = p.cant_undo;
         let updated = p.updated.take();
         let errors = std::mem::take(&mut p.errors);
+        let was_open = self.reqs[i].state != ReqState::Wait && !self.ended;
+        let mut out = SideMessages { errors, updated_request: None };
         if let Some(r) = updated {
             self.reqs[i] = r;
+            out.updated_request = Some(self.reqs[i].to_json());
         }
         match res {
             Err(()) => {
-                for e in &errors {
-                    self.streams[i].push(e.clone());
+                // Side.choose cleared the old choice before failing.
+                if was_open {
+                    self.answered[i] = None;
+                    self.choice_text[i] = None;
+                    self.cant_undo[i] = cant_undo;
                 }
-                if self.reqs[i].update {
-                    let j = self.reqs[i].to_json();
-                    self.streams[i].push(format!("|request|{j}"));
-                }
-                Err(errors)
+                self.side_out(i, out)
             }
             Ok(()) => {
                 self.answered[i] = Some(ans);
+                self.choice_text[i] = Some(text);
+                self.cant_undo[i] = cant_undo || !self.support_cancel;
                 let waiting = (0..2).any(|k| self.reqs[k].state != ReqState::Wait && self.answered[k].is_none());
                 if !waiting {
                     self.advance();
                 }
-                Ok(())
+                out
             }
         }
     }
 
+    /// Record a side's messages in its stream and hand them back.
+    fn side_out(&mut self, i: usize, m: SideMessages) -> SideMessages {
+        for e in &m.errors {
+            self.streams[i].push(e.clone());
+        }
+        if let Some(r) = &m.updated_request {
+            self.streams[i].push(format!("|request|{r}"));
+        }
+        m
+    }
+
+    /// PS `>pN undo` (sim/battle.ts:3032-3058): drop `side`'s accepted
+    /// choice so it can choose again.
+    pub fn undo(&mut self, side: SideRef) -> SideMessages {
+        let i = side as usize;
+        if self.ended || self.reqs[i].state == ReqState::Wait {
+            return SideMessages::default();
+        }
+        if self.cant_undo[i] {
+            return self.side_out(i, SideMessages { errors: vec![CANT_UNDO.to_string()], updated_request: None });
+        }
+        // A move choice's mon reveals a maybeLocked / maybeDisabled flag
+        // (updateDisabledRequest, sim/side.ts:851-903).
+        let mut updated = false;
+        if self.reqs[i].state == ReqState::Move {
+            if let Some(Answer::Choices(cs)) = &self.answered[i] {
+                let slots: Vec<u8> = cs
+                    .iter()
+                    .filter_map(|c| match c {
+                        Choice::Move { actor_slot, .. } | Choice::Terastallize { actor_slot, .. } | Choice::MegaEvolve { actor_slot, .. } => Some(*actor_slot),
+                        _ => None,
+                    })
+                    .collect();
+                let doubles = self.reqs[i].n_active >= 2;
+                for s in slots {
+                    if let Some(Some(a)) = self.reqs[i].active.get_mut(s as usize) {
+                        updated |= update_disabled_request(a, doubles);
+                    }
+                }
+            }
+        }
+        self.answered[i] = None;
+        self.choice_text[i] = None;
+        let mut m = SideMessages::default();
+        if updated {
+            self.reqs[i].update = true;
+            m.updated_request = Some(self.reqs[i].to_json());
+        }
+        self.side_out(i, m)
+    }
+
     /// PS `>forcetie` (a turn-limit cutoff): `|tie`, and the battle ends.
     pub fn force_tie(&mut self) {
+        self.force_win(None);
+    }
+
+    /// PS `battle.win(side)` (sim/battle.ts:1520-1543): `|`, `|win|name`
+    /// (`|tie` for `None`), and the battle ends.
+    pub fn force_win(&mut self, side: Option<SideRef>) {
         if self.ended {
             return;
         }
-        self.base.protocol_force_tie();
+        self.base.protocol_force_win(side);
         let b = self.take_base();
         self.expose(&b, None);
         self.base = b;
         self.ended = true;
+        for r in &mut self.reqs {
+            r.state = ReqState::Wait;
+        }
+    }
+
+    /// PS `>tiebreak` (sim/battle.ts:1467-1508): its message lines, then
+    /// the win (a tie for `None`).
+    pub fn tiebreak(&mut self, lines: &[String], winner: Option<SideRef>) {
+        if self.ended {
+            return;
+        }
+        self.base.protocol_add_lines(lines);
+        self.force_win(winner);
+    }
+
+    /// PS `>reseed` (sim/battle.ts:360-363): the battle draws from `rng`
+    /// from here on.
+    pub fn reseed(&mut self, rng: crate::Rng) {
+        self.base.rng = rng;
     }
 
     fn take_base(&mut self) -> Battle {
@@ -187,6 +349,13 @@ impl PsSession {
 
     fn advance(&mut self) {
         let answers = [self.answered[0].take(), self.answered[1].take()];
+        // commitChoices logs each side's choice (sim/battle.ts:3009-3012).
+        for k in 0..2 {
+            if let Some(t) = self.choice_text[k].take().filter(|t| !t.is_empty()) {
+                self.input_log.push(format!(">p{} {t}", k + 1));
+            }
+        }
+        self.cant_undo = [false; 2];
         match self.stop.kind {
             SyncKind::TeamPreview => {
                 let picks: [Vec<u8>; 2] = std::array::from_fn(|k| match &answers[k] {
@@ -246,6 +415,7 @@ impl PsSession {
             self.reqs = (*sp.info).clone();
             self.stop = sp;
             self.answered = [None, None];
+            self.new_requests = true;
             return;
         }
         // The turn is through: commit.
@@ -256,6 +426,7 @@ impl PsSession {
                 self.expose(&b, Some(sp.line));
                 self.reqs = (*sp.info).clone();
                 self.stop = sp;
+                self.new_requests = true;
             }
             _ => {
                 self.expose(&b, None);
@@ -271,6 +442,37 @@ impl PsSession {
         self.mid = [Vec::new(), Vec::new()];
         self.mid_answered = 0;
     }
+}
+
+/// PS `updateDisabledRequest` (sim/side.ts:851-903) on one active slot:
+/// reveal `maybeLocked` and (in doubles) `maybeDisabled`. True when the
+/// request changed.
+fn update_disabled_request(a: &mut crate::ps_request::ActiveRequest, doubles: bool) -> bool {
+    let mut updated = false;
+    if a.maybe_locked {
+        a.maybe_locked = false;
+        updated = true;
+    }
+    if a.maybe_disabled && doubles {
+        a.maybe_disabled = false;
+        updated = true;
+        for m in a.moves.iter_mut() {
+            if m.really_disabled {
+                m.disabled = true;
+            }
+        }
+    }
+    if a.moves.iter().all(|m| m.disabled || m.id == "struggle") {
+        if a.can_mega == Some(true) {
+            a.can_mega = Some(false);
+            updated = true;
+        }
+        if a.can_tera.is_some() {
+            a.can_tera = None;
+            updated = true;
+        }
+    }
+    updated
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +516,7 @@ fn choosable(t: &str) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 enum Act {
-    Move { slot: u8, move_slot: u8, loc: i8, mega: bool, tera: bool },
+    Move { slot: u8, move_slot: u8, loc: i8, mega: bool, tera: bool, id: &'static str, locked: bool },
     Switch { slot: u8, pos: usize },
     Pass,
     Team { pos: usize },
@@ -336,6 +538,8 @@ struct Parser<'a> {
     errors: Vec<String>,
     /// The request after an `[Unavailable choice]` update.
     updated: Option<SideReq>,
+    /// PS `side.choice.cantUndo`.
+    cant_undo: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -354,6 +558,7 @@ impl<'a> Parser<'a> {
             error: false,
             errors: Vec::new(),
             updated: None,
+            cant_undo: false,
         };
         p.clear();
         p
@@ -374,6 +579,7 @@ impl<'a> Parser<'a> {
         self.mega = false;
         self.tera = false;
         self.error = false;
+        self.cant_undo = false;
         self.forced_switches_left = 0;
         self.forced_passes_left = 0;
         if self.req.state == ReqState::Switch {
@@ -673,8 +879,12 @@ impl<'a> Parser<'a> {
         };
         let mv = request.moves[mi].clone();
         if request.locked {
-            // Locked move / Recharge / Struggle: PS queues it as is.
-            self.acts.push(Act::Move { slot: index as u8, move_slot: mv.slot, loc: 0, mega: false, tera: false });
+            // Locked move / Recharge / Struggle: PS queues it as is
+            // (sim/side.ts:676-709).
+            if request.maybe_locked {
+                self.cant_undo = true;
+            }
+            self.acts.push(Act::Move { slot: index as u8, move_slot: mv.slot, loc: 0, mega: false, tera: false, id: mv.id, locked: true });
             return Ok(());
         }
         if mv.really_disabled {
@@ -732,7 +942,11 @@ impl<'a> Parser<'a> {
         if tera && self.tera {
             return self.err("Can't move: You can only Terastallize once per battle.");
         }
-        self.acts.push(Act::Move { slot: index as u8, move_slot: mv.slot, loc, mega, tera });
+        self.acts.push(Act::Move { slot: index as u8, move_slot: mv.slot, loc, mega, tera, id: mv.id, locked: false });
+        // sim/side.ts:835-840.
+        if request.maybe_disabled && self.n_active() < 2 {
+            self.cant_undo = true;
+        }
         self.mega |= mega;
         self.tera |= tera;
         Ok(())
@@ -821,6 +1035,10 @@ impl<'a> Parser<'a> {
                     return self.unavailable("Can't switch: The active Pokémon is trapped");
                 }
                 return self.err("Can't switch: The active Pokémon is trapped");
+            }
+            // sim/side.ts:998-1000.
+            if self.req.active.get(index).and_then(|a| a.as_ref()).is_some_and(|a| a.maybe_trapped) {
+                self.cant_undo = true;
             }
         } else if self.req.state == ReqState::Switch {
             self.forced_switches_left = self.forced_switches_left.saturating_sub(1);
@@ -962,6 +1180,44 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// The choice as PS's `side.getChoice()` prints it for the input log
+    /// (sim/side.ts:323-351). A locked move keeps its stored target
+    /// (sim/side.ts:676-688), which `b` (the turn's start) knows.
+    fn choice_text(&self, b: &Battle) -> String {
+        let teams: Vec<usize> = self.acts.iter().filter_map(|a| if let Act::Team { pos } = a { Some(*pos) } else { None }).collect();
+        if teams.len() > 1 && teams.len() == self.acts.len() {
+            return format!("team {}", teams.iter().map(|p| (p + 1).to_string()).collect::<Vec<_>>().join(", "));
+        }
+        let doubles = self.n_active() > 1;
+        let parts: Vec<String> = self
+            .acts
+            .iter()
+            .map(|a| match *a {
+                Act::Move { slot, loc, mega, tera, id, locked, .. } => {
+                    if locked && id == "struggle" {
+                        return "move struggle".to_string();
+                    }
+                    let loc = if locked { locked_target_loc(b, self.side, slot) } else { loc };
+                    let mut d = String::new();
+                    if loc != 0 && doubles {
+                        d.push_str(&format!(" {}{loc}", if loc > 0 { "+" } else { "" }));
+                    }
+                    if mega {
+                        d.push_str(" mega");
+                    }
+                    if tera {
+                        d.push_str(" terastallize");
+                    }
+                    format!("move {id}{d}")
+                }
+                Act::Switch { pos, .. } => format!("switch {}", pos + 1),
+                Act::Team { pos } => format!("team {}", pos + 1),
+                Act::Pass => "pass".to_string(),
+            })
+            .collect();
+        parts.join(", ")
+    }
+
     /// The accepted choice as engine choices / team picks.
     fn answer(&self) -> Answer {
         if self.req.state == ReqState::TeamPreview {
@@ -980,7 +1236,7 @@ impl<'a> Parser<'a> {
         for (slot, a) in self.acts.iter().enumerate() {
             let actor_slot = slot as u8;
             out.push(match *a {
-                Act::Move { slot, move_slot, loc, mega, tera } => {
+                Act::Move { slot, move_slot, loc, mega, tera, .. } => {
                     let target = match loc {
                         l if l > 0 => Some(Target { side: foe, slot: (l - 1) as u8 }),
                         l if l < 0 => Some(Target { side: self.side, slot: (-l - 1) as u8 }),
@@ -1001,4 +1257,16 @@ impl<'a> Parser<'a> {
         }
         Answer::Choices(out)
     }
+}
+
+/// PS `lockedMoveTargetLoc` (sim/side.ts:677-681): the mon's
+/// `lastMoveTargetLoc`, relative to it (foes positive, its side negative).
+fn locked_target_loc(b: &Battle, side: SideRef, slot: u8) -> i8 {
+    let Some(m) = b.side(side).active_mon(slot as usize) else { return 0 };
+    let enc = m.last_used_move_target;
+    if enc == 255 {
+        return 0;
+    }
+    let (tside, tslot) = if enc < 2 { (SideRef::P1, enc) } else { (SideRef::P2, enc - 2) };
+    if tside == side { -(tslot as i8 + 1) } else { tslot as i8 + 1 }
 }

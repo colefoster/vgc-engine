@@ -119,6 +119,31 @@ impl Battle {
         }
     }
 
+    /// PS `battle.win(side)` (sim/battle.ts:1520-1543) for `>forcewin` /
+    /// `>forcelose` / `>tiebreak`: `|`, then `|win|<name>` (`|tie` for
+    /// `None`); the log ends.
+    pub fn protocol_force_win(&mut self, side: Option<SideRef>) {
+        let Some(side) = side else { return self.protocol_force_tie() };
+        if self.plog() {
+            let name = self.protocol.log().map(|l| l.player_names[side as usize].clone()).unwrap_or_default();
+            self.p_push(String::new() + "|");
+            self.p_push(format!("|win|{name}"));
+            if let Some(l) = self.protocol.log_mut() {
+                l.ended = true;
+            }
+        }
+    }
+
+    /// Append lines to the log as they are (PS `battle.add` from outside
+    /// the simulation, e.g. `>tiebreak`'s messages).
+    pub fn protocol_add_lines(&mut self, lines: &[String]) {
+        if self.plog() {
+            for l in lines {
+                self.p_push(l.clone());
+            }
+        }
+    }
+
     pub(crate) fn p_push(&mut self, line: String) {
         self.protocol.add(line);
     }
@@ -1981,9 +2006,11 @@ impl Battle {
         }
         if pre.team_preview {
             self.p_push("|clearpoke".to_string());
+            let champions = crate::format_rules::is_champions_format(format_id) || self.champions;
+            let reveal = pre.rules.iter().any(|r| r.starts_with("Species Reveal Clause"));
             for side in [SideRef::P1, SideRef::P2] {
                 for i in 0..self.side(side).team.len() as u8 {
-                    let det = self.p_details(side, i);
+                    let det = preview_details(&self.p_details(side, i), champions, reveal);
                     self.p_push(format!("|poke|p{}|{det}|", side as u8 + 1));
                 }
             }
@@ -2239,4 +2266,41 @@ mod tests {
         assert!(!p1.iter().any(|l| exact(l, "p2")));
         assert!(!spectator.iter().any(|l| exact(l, "p1") || exact(l, "p2")));
     }
+}
+
+/// Team Preview hides formes that change at battle start or that the
+/// species would give away: data/rulesets.ts:643-653 (`Zacian` /
+/// `Zamazenta` unless Crowned, then Greninja, Gourgeist, Pumpkaboo,
+/// Xerneas, Silvally, Urshifu, Dudunsparce formes unless Species Reveal
+/// Clause), data/mods/champions/rulesets.ts:36-41 (Xerneas, Zacian,
+/// Zamazenta and their formes).
+fn preview_details(details: &str, champions: bool, reveal: bool) -> String {
+    // `(Name)(-[a-zA-Z?-]+)?` -> `$1-*` at the start of the details.
+    let mask = |d: &str, names: &[&str]| -> Option<String> {
+        let name = names.iter().find(|n| d.starts_with(**n))?;
+        let rest = &d[name.len()..];
+        let rest = match rest.strip_prefix('-') {
+            Some(r) if r.starts_with(|c: char| c.is_ascii_alphabetic() || c == '?' || c == '-') => {
+                let n = r.find(|c: char| !(c.is_ascii_alphabetic() || c == '?' || c == '-')).unwrap_or(r.len());
+                &r[n..]
+            }
+            _ => rest,
+        };
+        Some(format!("{name}-*{rest}"))
+    };
+    if champions {
+        return mask(details, &["Xerneas", "Zacian", "Zamazenta"]).unwrap_or_else(|| details.to_string());
+    }
+    let mut d = details.replacen(", shiny", "", 1);
+    for n in ["Zacian", "Zamazenta"] {
+        if d.starts_with(n) && !d[n.len()..].starts_with("-Crowned") {
+            d = format!("{n}-*{}", &d[n.len()..]);
+        }
+    }
+    if !reveal {
+        if let Some(m) = mask(&d, &["Greninja", "Gourgeist", "Pumpkaboo", "Xerneas", "Silvally", "Urshifu", "Dudunsparce"]) {
+            d = m;
+        }
+    }
+    d
 }
