@@ -309,6 +309,9 @@ pub struct ProtocolLog {
     pub(crate) ee_announced: u8,
     /// The running move's `|move|` target (side, slot).
     pub(crate) move_target: Option<(u8, u8)>,
+    /// The last residual handler ended by duration: fieldEvent `continue`s
+    /// past its faintMessages (sim/battle.ts:515-521).
+    pub(crate) res_defer_faint: bool,
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -407,6 +410,7 @@ impl ProtocolLog {
             last_faint: None,
             ee_announced: 0,
             move_target: None,
+            res_defer_faint: false,
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }

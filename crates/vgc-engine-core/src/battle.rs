@@ -1663,6 +1663,7 @@ impl Battle {
         user_slot: u8,
         target_side: SideRef,
         target_slot: u8,
+        from_imposter: bool,
     ) -> bool {
         let payload = self
             .side(target_side)
@@ -1733,6 +1734,13 @@ impl Battle {
         // transform. We re-fire only Intimidate here — matching the Trace onStart
         // precedent in `ability.rs`; other copied onStart abilities (Download,
         // weather setters, ...) via transform remain future work.
+        // transformInto's `-transform` (sim/pokemon.ts:1343-1347), before
+        // the copied ability starts.
+        if self.plog() {
+            let tgt = self.p_ident(target_side, target_slot);
+            let from = if from_imposter { "|[from] ability: Imposter" } else { "" };
+            pmon!(self, "-transform", user_side, user_slot, "|{tgt}{from}");
+        }
         if ab == data::ability_id::INTIMIDATE && ab != old_ab {
             crate::ability::fire_intimidate(self, user_side, user_slot);
         }
@@ -1904,6 +1912,7 @@ impl Battle {
                 .active_mon(source_slot as usize)
                 .is_some_and(|m| m.is_alive());
             let source_before = self.side(source_side).active_mon(source_slot as usize).map(|m| m.boosts);
+            let holder_before = self.side(target_side).active_mon(target_slot as usize).map(|m| m.boosts);
             for &(idx, delta) in deltas {
                 if delta < 0 {
                     // PS skips the bounce entirely when the holder's stage
@@ -1949,6 +1958,18 @@ impl Battle {
                         }
                     }
                 }
+            }
+            // The raises still print as the holder's own boost lines.
+            if let Some(before) = holder_before.filter(|_| self.plog()) {
+                let mut pos = [(0u8, 0i8); 7];
+                let mut k = 0;
+                for &(i, d) in deltas {
+                    if d > 0 && k < 7 {
+                        pos[k] = (i, d);
+                        k += 1;
+                    }
+                }
+                self.p_boost_lines(target_side, target_slot, &pos[..k], before, fx);
             }
             self.mirror_to_opportunist(target_side, target_slot, deltas);
             // The bounce is a full boost on the source (`this.boost(boosts,
@@ -7327,7 +7348,10 @@ self.trigger_emergency_exits();
             // A status move that did nothing: runMoveEffects' `-fail` and
             // `[still]` (sim/battle-actions.ts:1303-1309), unless a more
             // specific line already explained it.
-            if r == crate::pokemon::MoveResult::Failed {
+            // A phazing move's drag comes after the move (its flag is set).
+            let dragging = matches!(move_id, data::move_id::ROAR | data::move_id::WHIRLWIND)
+                && self.force_switch_flags.iter().flatten().any(|&f| f);
+            if r == crate::pokemon::MoveResult::Failed && !dragging {
                 self.p_status_fail_fallback(actor_side, actor_slot);
             }
             // charge onAfterMove: any Electric move but Charge ends it.
@@ -8014,7 +8038,8 @@ self.trigger_emergency_exits();
                 && tside != actor_side
                 && defender.is_grounded()
             {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                // psychicterrain onTryHitPriority 4.
+                self.p_tag_tryhit(0, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Psychic Terrain");
                 continue;
             }
@@ -8026,7 +8051,7 @@ self.trigger_emergency_exits();
                 && defender.semi_invuln == 0
                 && self.plog()
             {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                self.p_tag_tryhit(0, tside, tslot);
                 self.p_push("|-hint|Psychic Terrain doesn't affect airborne Pokémon.".to_string());
             }
             // poltergeist onTryHit (data/moves.ts:13607-13609).
@@ -8285,7 +8310,8 @@ self.trigger_emergency_exits();
             // reduction is applied to the final damage below.
             let mut piercing_drill_quarter = false;
             if protect_flag && defender.is_protected_this_turn() && is_targeting_move(m.target) {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                // protect et al. onTryHitPriority 3.
+                self.p_tag_tryhit(1, tside, tslot);
                 let pierces = damaging
                     && matches!(attacker_ability_id, data::ability_id::PIERCINGDRILL | data::ability_id::UNSEENFIST)
                     && crate::damage::move_makes_contact(
@@ -9599,7 +9625,7 @@ self.trigger_emergency_exits();
             for hit_idx in 0..ctx.hits {
                 // Dragon Darts over two targets: hit n strikes targets[n-1]
                 // (data/mods/champions/scripts.ts:467-480).
-                let hit_no = if darts_phase[ti] == 2 { (ti - 2) as u8 } else { hit_idx as u8 };
+                let hit_no = if darts_phase[ti] == 2 && darts_pass == [true, true] { (ti - 2) as u8 } else { hit_idx as u8 };
                 self.p_set_hit(hit_no);
                 if move_id == data::move_id::DRAGONDARTS && self.plog() {
                     self.p_tag(crate::protocol::step::PRE, tside, tslot);
@@ -9771,8 +9797,15 @@ self.trigger_emergency_exits();
             if !sheer_force && user_alive {
                 let opp = actor_side.opposing();
                 let layers = &mut self.side_mut(opp).conditions.spikes_layers;
+                let added = *layers < 3;
                 if *layers < 3 {
                     *layers += 1;
+                }
+                // spikes onSideStart / onSideRestart (data/moves.ts spikes).
+                if added && self.plog() {
+                    self.p_tag_step(crate::protocol::step::AFTER_HIT);
+                    let s = self.p_side_ident(opp);
+                    self.p_push(format!("|-sidestart|{s}|Spikes"));
                 }
             }
         }
@@ -9794,7 +9827,14 @@ self.trigger_emergency_exits();
                 .is_some_and(|a| a.is_alive());
             if !sheer_force && user_alive {
                 let opp = actor_side.opposing();
+                let added = !self.side(opp).conditions.stealth_rock;
                 self.side_mut(opp).conditions.stealth_rock = true;
+                // stealthrock onSideStart (data/moves.ts stealthrock).
+                if added && self.plog() {
+                    self.p_tag_step(crate::protocol::step::AFTER_HIT);
+                    let s = self.p_side_ident(opp);
+                    self.p_push(format!("|-sidestart|{s}|move: Stealth Rock"));
+                }
             }
         }
     }
@@ -10530,6 +10570,7 @@ self.trigger_emergency_exits();
                 .is_some_and(|d| d.volatiles.has(crate::pokemon::VolatileKind::Endure));
             if target_endured && capped >= def_cur && def_cur > 0 {
                 capped = def_cur - 1;
+                pmon!(self, "-activate", ctx.tside, ctx.tslot, "|move: Endure");
             }
             // Pre-damage item hook (Focus Sash / Focus Band may cap
             // further). Focus Band draws RNG, so swap it out across the
@@ -10790,9 +10831,13 @@ self.trigger_emergency_exits();
             .unwrap_or("");
         match attacker_ability {
             "moxie" => {
+                self.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::MOXIE));
                 self.apply_boosts(ctx.actor_side, ctx.actor_slot, &[(0, 1)], ctx.actor_side, ctx.actor_slot);
             }
             "beastboost" | "eelevate" => {
+                if let Some(ab) = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).map(|a| a.effective_ability_id()) {
+                    self.p_boost_fx(crate::protocol::BoostFx::Ability(ab));
+                }
                 let idx = self
                     .side(ctx.actor_side)
                     .active_mon(ctx.actor_slot as usize)
@@ -13895,7 +13940,10 @@ self.trigger_emergency_exits();
                         a.fainted = true;
                     }
                 }
-                self.p_damage(actor_side, actor_slot, &format!("|[from] {}", m.name));
+                // mindBlownRecoil's effect is conditions.get(move.name), shown
+                // by id; Chloroblast's is 'recoil' (sim/battle-actions.ts:1391).
+                let from = if move_id == data::move_id::CHLOROBLAST { "Recoil" } else { m.slug };
+                self.p_damage(actor_side, actor_slot, &format!("|[from] {from}"));
             }
         }
 
@@ -16060,6 +16108,7 @@ self.trigger_emergency_exits();
             let n = self.format().active_count() as u8;
             for side in [SideRef::P1, SideRef::P2] {
                 for slot in 0..n {
+                    self.p_res_each(1, 10, side, slot);
                     crate::ability::on_weather(self, side, slot);
                     let _ = slot;
                 }
@@ -17003,6 +17052,11 @@ self.trigger_emergency_exits();
                     let left = self.side(side).active_mon(slot as usize).map_or(0, |m| m.perish_turns());
                     let fainted = self.side(side).active_mon(slot as usize).is_some_and(|m| !m.is_alive());
                     pmon!(self, "-start", side, slot, "|perish{}", if fainted { 0 } else { left });
+                    if fainted {
+                        if let Some(l) = self.protocol.log_mut() {
+                            l.res_defer_faint = true;
+                        }
+                    }
                 }
             }
         }
@@ -17198,13 +17252,30 @@ self.trigger_emergency_exits();
         terrain: crate::terrain::Terrain,
         setter_side: SideRef,
         setter_slot: u8,
+        from_ability: Option<u16>,
     ) {
         if self.terrain == terrain {
+            if from_ability.is_none() {
+                // setTerrain returns false: the move fails.
+                self.p_try_fail(setter_side, setter_slot);
+            }
             return;
         }
         self.terrain = terrain;
         // PR-LC1: terrain field changed — refresh cache.
         self.sync_weather_terrain_cache();
+        // The terrain's onFieldStart, before the TerrainChange event
+        // (seeds, paradox abilities; data/moves.ts electricterrain et al.).
+        if self.plog() {
+            let name = crate::battle_protocol::terrain_name(terrain);
+            match from_ability {
+                Some(ab) => {
+                    let of = self.p_ident(setter_side, setter_slot);
+                    self.p_push(format!("|-fieldstart|{name}|[from] ability: {}|[of] {of}", crate::battle_protocol::ability_name(ab)));
+                }
+                None => self.p_push(format!("|-fieldstart|{name}")),
+            }
+        }
         let setter_item = self
             .side(setter_side)
             .active_mon(setter_slot as usize)
@@ -18066,23 +18137,23 @@ self.trigger_emergency_exits();
             data::move_id::ELECTRICTERRAIN => {
                 // PS data/moves.ts:electricterrain — sets terrain unless
                 // already Electric, duration 5 (or 8 with Terrain Extender).
-                self.set_field_terrain(crate::terrain::Terrain::Electric, actor_side, actor_slot);
+                self.set_field_terrain(crate::terrain::Terrain::Electric, actor_side, actor_slot, None);
             }
             data::move_id::GRASSYTERRAIN => {
                 // PS data/moves.ts:grassyterrain. Secondary effects (EOT
                 // heal, Ground-move halving) live in the residual loop /
                 // damage chain; here we just raise the field.
-                self.set_field_terrain(crate::terrain::Terrain::Grassy, actor_side, actor_slot);
+                self.set_field_terrain(crate::terrain::Terrain::Grassy, actor_side, actor_slot, None);
             }
             data::move_id::PSYCHICTERRAIN => {
                 // PS data/moves.ts:psychicterrain. Priority-move block on
                 // grounded targets is gated at move-resolution time.
-                self.set_field_terrain(crate::terrain::Terrain::Psychic, actor_side, actor_slot);
+                self.set_field_terrain(crate::terrain::Terrain::Psychic, actor_side, actor_slot, None);
             }
             data::move_id::MISTYTERRAIN => {
                 // PS data/moves.ts:mistyterrain. Status-block + Dragon-move
                 // halving on grounded mons are gated elsewhere.
-                self.set_field_terrain(crate::terrain::Terrain::Misty, actor_side, actor_slot);
+                self.set_field_terrain(crate::terrain::Terrain::Misty, actor_side, actor_slot, None);
             }
             data::move_id::STEALTHROCK => {
                 self.p_side_start(opp_side, !self.side(opp_side).conditions.stealth_rock, "move: Stealth Rock", actor_slot);
@@ -18281,6 +18352,7 @@ self.trigger_emergency_exits();
             }
             data::move_id::PERISHSONG => {
                 let mut perish_msg = false;
+                let mut perish_result = false;
                 // Perish Song — PS `data/moves.ts:perishsong` `onHitField`.
                 // Status move, `target: "all"` (the whole field), `accuracy:
                 // true` (never misses, no roll). `flags: { sound, distance,
@@ -18325,18 +18397,27 @@ self.trigger_emergency_exits();
                         if immune {
                             if self.plog() && self.side(s).active_mon(slot as usize).is_some_and(|mon| mon.is_alive()) {
                                 pmon!(self, "-immune", s, slot, "|[from] ability: Soundproof");
+                                perish_result = true;
                             }
                             continue;
                         }
+                        let fresh = self.side(s).active_mon(slot as usize).is_some_and(|mon| !mon.volatiles.has(crate::pokemon::VolatileKind::PerishSong));
                         if let Some(mon) = self.side_mut(s).active_mon_mut(slot as usize) {
                             mon.set_perish_song();
                         }
-                        pmon!(self, "-start", s, slot, "|perish3|[silent]");
-                        perish_msg = true;
+                        if fresh {
+                            pmon!(self, "-start", s, slot, "|perish3|[silent]");
+                            perish_msg = true;
+                            perish_result = true;
+                        }
                     }
                 }
                 if perish_msg {
                     plog!(self, "|-fieldactivate|move: Perish Song");
+                }
+                // perishsong onHitField: no new holder and no immunity fails.
+                if !perish_result {
+                    self.p_try_fail(actor_side, actor_slot);
                 }
             }
             data::move_id::ENCORE => {
@@ -18999,7 +19080,7 @@ self.trigger_emergency_exits();
                 // Body Press leaves it at 1 HP instead of fainting. Bulbapedia:
                 // <https://bulbapedia.bulbagarden.net/wiki/Transform_(move)>.
                 if let Some((ts, tslot)) = opp_target {
-                    self.transform_into(actor_side, actor_slot, ts, tslot);
+                    self.transform_into(actor_side, actor_slot, ts, tslot, false);
                 }
             }
             data::move_id::SKILLSWAP => {

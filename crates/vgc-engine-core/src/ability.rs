@@ -826,6 +826,36 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // (data/abilities.ts forewarn onStart): the foes' moves with the highest
     // warning power (OHKO 150; Counter / Metal Burst / Mirror Coat 120; a
     // 1 or 0 BP damaging move 80; status 0), one draw even for a lone move.
+    // forewarn onStart's `-activate` (data/abilities.ts:1504-1527). The
+    // engine draws no sample for a tie, so it shows the first candidate.
+    if ability_id == data::ability_id::FOREWARN && battle.plog() {
+        let mut best = 1u16;
+        let mut pick: Option<(u16, u8)> = None;
+        for s in 0..battle.format().active_count() as u8 {
+            let Some(foe) = battle.side(side.opposing()).active_mon(s as usize).filter(|m| m.is_alive()) else { continue };
+            for &mid in foe.moves.iter().filter(|&&id| id != u16::MAX) {
+                let mv = &data::MOVES[mid as usize];
+                let mut bp = mv.base_power;
+                if matches!(mid, data::move_id::FISSURE | data::move_id::HORNDRILL | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD) {
+                    bp = 150;
+                }
+                if matches!(mid, data::move_id::COUNTER | data::move_id::METALBURST | data::move_id::MIRRORCOAT) {
+                    bp = 120;
+                }
+                if bp == 1 || (bp == 0 && mv.category != 2) {
+                    bp = 80;
+                }
+                if bp > best {
+                    best = bp;
+                    pick = Some((mid, s));
+                }
+            }
+        }
+        if let Some((mid, s)) = pick {
+            let of = battle.p_ident(side.opposing(), s);
+            pmon!(battle, "-activate", side, slot, "|ability: Forewarn|{}|[of] {of}", crate::battle_protocol::move_name(mid));
+        }
+    }
     #[cfg(feature = "ps-rng")]
     if ability_id == data::ability_id::FOREWARN && battle.rng_mut().is_ps() {
         let mut best = 1u16;
@@ -952,7 +982,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         let opp = side.opposing();
         let n = battle.format().active_count() as u8;
         let opp_slot = n - 1 - slot;
-        battle.transform_into(side, slot, opp, opp_slot);
+        battle.transform_into(side, slot, opp, opp_slot, true);
     }
 
     // Slow Start — PS `data/abilities.ts:4266` `onStart` adds the
@@ -1111,9 +1141,15 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => return,
     };
     if ability_id == data::ability_id::REGENERATOR {
+        let mut healed = false;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             let heal = (m.stats.hp / 3).max(1);
+            healed = m.current_hp < m.stats.hp;
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+        }
+        // regenerator onSwitchOut (data/mods/champions/abilities.ts:63-69).
+        if healed {
+            battle.p_heal(side, slot, "|[from] ability: Regenerator|[silent]");
         }
     }
     // Natural Cure — PS `data/abilities.ts:naturalcure`:
@@ -1149,6 +1185,8 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             .is_some_and(|m| m.species_id == data::species_id::PALAFIN);
         if is_zero {
             battle.set_forme(side, slot, data::species_id::PALAFINHERO, true);
+            // formeChange(..., isPermanent): `detailschange` (data/abilities.ts zerotohero).
+            battle.p_permanent_forme(side, slot, data::species_id::PALAFINHERO);
         }
     }
     // Stance Change reverts on switch-out — PS `formeChange` for Aegislash
@@ -1518,6 +1556,11 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.fainted = true;
                 }
             }
+            // damage(..., target, target): `[from] ability|[of]` self.
+            if battle.plog() {
+                let of = battle.p_ident(side, slot);
+                battle.p_damage(side, slot, &format!("|[from] ability: Solar Power|[of] {of}"));
+            }
         }
     }
 
@@ -1534,9 +1577,14 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
     if ability_id == data::ability_id::DRYSKIN {
         match battle.effective_weather() {
             crate::weather::Weather::Rain => {
+                let mut healed = false;
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     let heal = (m.stats.hp / 8).max(1);
+                    healed = m.current_hp < m.stats.hp;
                     m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                }
+                if healed {
+                    battle.p_heal(side, slot, "|[from] ability: Dry Skin");
                 }
             }
             crate::weather::Weather::Sun => {
@@ -1552,6 +1600,10 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
                         if m.current_hp == 0 {
                             m.fainted = true;
                         }
+                    }
+                    if battle.plog() {
+                        let of = battle.p_ident(side, slot);
+                        battle.p_damage(side, slot, &format!("|[from] ability: Dry Skin|[of] {of}"));
                     }
                 }
             }
@@ -1883,7 +1935,7 @@ pub fn on_damaging_hit(
         .active_mon(target_slot as usize)
         .is_some_and(|m| m.effective_ability_id() == data::ability_id::SEEDSOWER)
     {
-        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot);
+        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot, Some(data::ability_id::SEEDSOWER));
     }
     // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
     // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
@@ -2262,6 +2314,11 @@ pub fn on_damaging_hit(
                     .active_mon_mut(attacker_slot as usize)
                 {
                     a.set_disable(4, slot as u8);
+                }
+                // disable onStart with Cursed Body as the effect (data/moves.ts disable).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    pmon!(battle, "-start", attacker_side, attacker_slot, "|Disable|{}|[from] ability: Cursed Body|[of] {of}", crate::battle_protocol::move_name(move_id));
                 }
             }
         }
