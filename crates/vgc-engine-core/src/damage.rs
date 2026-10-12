@@ -1896,6 +1896,23 @@ pub(crate) fn calculate_damage_with_bp(
     // single point where every base-power modifier above lands on `bp`.
     bp = apply_modifier(bp, bp_mod);
 
+    // Terastallization's 60 BP floor, after the BasePower event: a move of
+    // the Terastallized user's type (a Stellar user: a type not yet
+    // boosted) under 60 BP hits as 60, unless it has priority, is
+    // multi-hit, or is a 0 / 150 BP variable-power move
+    // (sim/battle-actions.ts:1659-1667).
+    if attacker.terastallized && bp < 60 && m.priority <= 0 && m.multihit_min == 0 && !matches!(m.base_power, 0 | 150) {
+        let has_type = if attacker.tera_type == 255 {
+            (move_type as u32) < 32 && attacker.stellar_boosted_types & (1u32 << move_type as u32) == 0
+        } else {
+            let (t, n) = attacker.effective_types();
+            t[..n as usize].contains(&move_type)
+        };
+        if has_type {
+            bp = 60;
+        }
+    }
+
     // Photon Geyser / Light That Burns the Sky — `onModifyMove` PS sets
     // category to 'Physical' iff atk > spa (PS uses the *boosted* atk
     // and spa via `getStat('atk', false, true)`). Otherwise the move
