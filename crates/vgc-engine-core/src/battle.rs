@@ -22190,17 +22190,20 @@ fn enumerate_targets(
             }
             TargetBuf::new()
         }
-        // 5 allAdjacent — all adjacent foes + ally (skip self).
+        // 5 allAdjacent — the ally (skip self), then all adjacent foes: PS
+        // getMoveTargets pushes adjacentAllies() before adjacentFoes()
+        // (sim/pokemon.ts:809-813), and spreadDamage applies damage and
+        // drain target by target in that order.
         5 => {
             let mut out = TargetBuf::new();
             for slot in 0..active_n {
-                if alive(opp, slot) {
-                    out.push((opp, slot));
+                if slot != actor_slot && alive(actor_side, slot) {
+                    out.push((actor_side, slot));
                 }
             }
             for slot in 0..active_n {
-                if slot != actor_slot && alive(actor_side, slot) {
-                    out.push((actor_side, slot));
+                if alive(opp, slot) {
+                    out.push((opp, slot));
                 }
             }
             out
@@ -49856,3 +49859,7 @@ mod r9_tests;
 #[cfg(test)]
 #[path = "battle_r10_tests.rs"]
 mod r10_tests;
+
+#[cfg(test)]
+#[path = "battle_r11_tests.rs"]
+mod r11_tests;
