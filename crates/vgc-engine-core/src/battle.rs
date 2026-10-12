@@ -23101,6 +23101,9 @@ fn apply_secondary_effect(
                 // the attacker (move secondary). Mirror Armor reflect hook
                 // will read the threaded source here.
                 let before = battle.side(target_side).active_mon(target_slot as usize).map_or([0; 7], |t| t.boosts);
+                // moveHit's secondaries call boost(..., isSecondary), which
+                // prints nothing for a stat already at -6 (sim/battle.ts:2079).
+                battle.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                 battle.apply_boosts(target_side, target_slot, &[(idx, delta)], attacker_side, attacker_slot);
                 // Defiant / Competitive (onAfterEachBoost), Eject Pack, White
                 // Herb (e.g. Crunch's Def drop, Lumina Crash's SpD drop).
