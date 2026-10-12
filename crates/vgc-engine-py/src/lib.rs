@@ -336,7 +336,12 @@ impl PyBattle {
     /// PS id (`gen9vgc2025regh`, `gen9doublescustomgame`) is standard gen 9.
     /// The bare `"doubles"` / `"singles"` keep the engine's target format,
     /// Champions. `champions=True/False` overrides the format either way.
-    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None))]
+    ///
+    /// `protocol` (`"ps"` or `"compact"`) keeps a Pokémon Showdown battle
+    /// log, read with `protocol_log()` (docs/protocol.md); `None` (the
+    /// default) keeps none and costs nothing. `player_names` sets the
+    /// `|player|` / `|win|` names (default "Player 1" / "Player 2").
+    #[pyo3(signature = (p1_team_json, p2_team_json, format = "doubles", seed = 0, move_pp_json = None, tera_allowed = true, decision_phases = false, ps_seed = None, champions = None, protocol = None, player_names = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_teams(
         p1_team_json: &str,
@@ -348,6 +353,8 @@ impl PyBattle {
         decision_phases: bool,
         ps_seed: Option<&str>,
         champions: Option<bool>,
+        protocol: Option<&str>,
+        player_names: Option<(String, String)>,
     ) -> PyResult<Self> {
         let id = format.to_ascii_lowercase();
         let (fmt, format_champions) = match id.as_str() {
@@ -370,12 +377,30 @@ impl PyBattle {
             core::TeamBuilder::apply_pp_overlay(&mut p2, &pp).map_err(map_team_err)?;
         }
         let cfg = core::BattleConfig { format: fmt, seed };
+        let proto = match protocol {
+            None => None,
+            Some(m) => {
+                let mode = core::ProtocolMode::parse(m)
+                    .ok_or_else(|| PyValueError::new_err(format!("unknown protocol mode: {m} (ps | compact)")))?;
+                let mut opts = core::ProtocolOptions::new(mode);
+                if let Some((a, b)) = player_names {
+                    opts.player_names = [a, b];
+                }
+                Some(opts)
+            }
+        };
         let mut inner = match ps_seed {
-            None => core::Battle::new(cfg, p1, p2),
+            None => match &proto {
+                None => core::Battle::new(cfg, p1, p2),
+                Some(opts) => core::Battle::with_protocol(cfg, core::Rng::new(seed), p1, p2, opts, &id, None),
+            },
             #[cfg(feature = "ps-rng")]
             Some(s) => {
                 let rng = core::Rng::ps(s).map_err(|e| PyValueError::new_err(e.to_string()))?;
-                core::Battle::with_rng(cfg, rng, p1, p2)
+                match &proto {
+                    None => core::Battle::with_rng(cfg, rng, p1, p2),
+                    Some(opts) => core::Battle::with_protocol(cfg, rng, p1, p2, opts, &id, None),
+                }
             }
             #[cfg(not(feature = "ps-rng"))]
             Some(_) => {
@@ -394,6 +419,17 @@ impl PyBattle {
     }
 
     fn needs_replacements(&self) -> bool { self.inner.needs_replacements() }
+
+    /// The Showdown protocol log as seen by `view`: `"omniscient"` (every
+    /// `|split|` pair whole, as PS's own log), `"spectator"` (public
+    /// halves), `"p1"` or `"p2"` (that side's secret halves). `None` when
+    /// the battle was built without `protocol=`.
+    #[pyo3(signature = (view = "omniscient"))]
+    fn protocol_log(&self, view: &str) -> PyResult<Option<Vec<String>>> {
+        let v = core::ProtocolView::parse(view)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown view: {view} (omniscient | spectator | p1 | p2)")))?;
+        Ok(self.inner.protocol_view(v))
+    }
 
     #[getter]
     fn turn(&self) -> u32 {

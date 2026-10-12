@@ -611,6 +611,30 @@ impl Rng {
         a + (self.tiebreak_shuffle() % span) as u32
     }
 
+    /// Protocol-log only: a recorded PS pick the engine itself never draws
+    /// (the random foe PS shows on a spread move's `|move|` line). Only the
+    /// keyed oracle answers, from `key`'s queue; nothing else is consumed,
+    /// so a seeded battle's stream is untouched.
+    /// PS re-runs `getTarget` (one draw each) at every queue sort before
+    /// the move, so the pick shown is the last one recorded: the queue
+    /// is drained.
+    pub fn log_pick(&mut self, key: RngKey, n: u32) -> Option<u32> {
+        match self {
+            Rng::OracleKeyed(k) => {
+                let q = k.table.get_mut(&key)?;
+                let mut last = None;
+                while let Some(RngEvent::Range(v)) = q.front().copied() {
+                    q.pop_front();
+                    if v < n {
+                        last = Some(v);
+                    }
+                }
+                last
+            }
+            _ => None,
+        }
+    }
+
     /// True for the Showdown-compatible variant. Always false without the
     /// `ps-rng` feature, so gated call sites compile away.
     #[inline(always)]

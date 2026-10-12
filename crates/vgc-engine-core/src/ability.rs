@@ -187,6 +187,7 @@ pub(crate) fn react_to_opposing_stat_drop(
         _ => return,
     };
     // Defiant / Competitive rebound is a self-boost (PS source = target).
+    battle.p_boost_fx(crate::protocol::BoostFx::AbilitySelf(ability_id));
     battle.apply_boosts(target_side, target_slot, &[(stat_index as u8, 2)], target_side, target_slot);
 }
 
@@ -230,7 +231,16 @@ pub(crate) fn best_stat_index(mon: &crate::pokemon::Pokemon) -> u8 {
 ///
 /// Currently handles `protosynthesis` (trigger: Sun weather). Quark
 /// Drive (Electric Terrain) lands once terrain state is in.
+#[inline]
 pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+        matches!(m.ability_id, data::ability_id::PROTOSYNTHESIS | data::ability_id::QUARKDRIVE)
+    }) {
+        refresh_paradox_booster_inner(battle, side, slot);
+    }
+}
+
+fn refresh_paradox_booster_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     let (ability_id, currently_active, locked) = match battle.side(side).active_mon(slot as usize) {
         Some(m) if m.is_alive() => {
             (m.ability_id, m.boosted_stat != 255, m.booster_locked)
@@ -250,7 +260,12 @@ pub fn refresh_paradox_booster(battle: &mut Battle, side: SideRef, slot: u8) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.boosted_stat = new_idx;
         }
+        battle.p_paradox_start(side, slot, ability_id, new_idx, false);
     } else if !trigger && currently_active && !locked {
+        if battle.plog() {
+            let name = crate::battle_protocol::ability_name(ability_id);
+            pmon!(battle, "-end", side, slot, "|{name}");
+        }
         // PS: a Booster-Energy-activated volatile persists when the
         // natural trigger leaves; weather/terrain-activated volatiles
         // deactivate. See `data/conditions.ts:protosynthesis onEnd`
@@ -303,6 +318,8 @@ fn try_activate_booster_energy(battle: &mut Battle, side: SideRef, slot: u8) {
         m.booster_locked = true;
         m.consume_item(); // useItem() — consumed (Recycle-recoverable).
     }
+    pmon!(battle, "-enditem", side, slot, "|Booster Energy");
+    battle.p_paradox_start(side, slot, ability_id, new_idx, true);
 }
 
 /// Abilities PS flags `notrace` (data/abilities.ts, `flags: { notrace: 1 }`;
@@ -460,16 +477,23 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
     // `side` and its target is on `opp`, so the cross-side check is automatic.
     let opp = side.opposing();
     let n = battle.format().active_count() as u8;
+    let mut announced = false;
     for s in 0..n {
         let target_ability = match battle.side(opp).active_mon(s as usize) {
             Some(m) if m.is_alive() => m.effective_ability_id(),
             _ => continue,
         };
+        // `-ability|Intimidate|boost` once, before the first adjacent foe
+        // (data/abilities.ts:2195-2203).
+        if !std::mem::replace(&mut announced, true) {
+            pmon!(battle, "-ability", side, slot, "|Intimidate|boost");
+        }
         // A target behind a Substitute is immune (PS data/abilities.ts:2201
         // `if (target.volatiles['substitute']) this.add('-immune', target)`):
         // `boost` is never called, so no Atk drop and no onTryBoost /
         // onAfterBoost reaction (Guard Dog, Adrenaline Orb, Rattled).
         if battle.side(opp).active_mon(s as usize).is_some_and(|m| m.substitute_hp() > 0) {
+            pmon!(battle, "-immune", opp, s);
             continue;
         }
         // Adrenaline Orb — PS `data/items.ts:adrenalineorb` fires on
@@ -481,18 +505,29 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
                 && m.item_id == data::item_id::ADRENALINEORB
                 && m.boosts[4] < 6)
             .unwrap_or(false);
-        if adrenaline {
-            if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
-                t.consume_item();
+        // Adrenaline Orb's onAfterBoost runs after the drop (or its
+        // veto) and the AfterEachBoost reactions (sim/battle.ts:2076-2083);
+        // its Spe boost touches nothing the drop reads.
+        let adrenaline_orb = |battle: &mut Battle| {
+            if adrenaline {
+                if let Some(t) = battle.side_mut(opp).active_mon_mut(s as usize) {
+                    t.consume_item();
+                }
+                pmon!(battle, "-enditem", opp, s, "|Adrenaline Orb");
+                battle.p_boost_fx(crate::protocol::BoostFx::Item(data::item_id::ADRENALINEORB));
+                battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
             }
-            battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
-        }
+        };
         if blocks_intimidate(target_ability) {
             // Guard Dog (PS `data/abilities.ts:guarddog` onTryBoost) vetoes the
             // Atk drop AND grants the holder +1 Atk.
             if target_ability == data::ability_id::GUARDDOG {
+                battle.p_boost_fx(crate::protocol::BoostFx::AbilitySelf(data::ability_id::GUARDDOG));
                 battle.apply_boosts(opp, s, &[(0, 1)], opp, s);
+            } else if battle.plog() {
+                battle.p_unboost_fail(opp, s, target_ability, 0);
             }
+            adrenaline_orb(battle);
             continue;
         }
         // Clear Amulet (held item) also vetoes Intimidate's atk drop
@@ -501,22 +536,40 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             .map(|m| m.item_id == data::item_id::CLEARAMULET)
             .unwrap_or(false);
         if amulet {
+            if battle.plog() {
+                let of = battle.p_ident(opp, s);
+                pmon!(battle, "-fail", opp, s, "|unboost|[from] item: Clear Amulet|[of] {of}");
+            }
+            adrenaline_orb(battle);
             continue;
         }
         // Intimidate's Atk drop — source is the Intimidate user.
         let before = battle.side(opp).active_mon(s as usize).map_or([0; 7], |t| t.boosts);
+        battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(data::ability_id::INTIMIDATE));
         battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
-        // Defiant / Competitive, Eject Pack, then White Herb.
-        battle.after_foe_drop(opp, s, before, true);
+        // Defiant / Competitive, Eject Pack; White Herb waits for the
+        // Update after the whole ability (data/items.ts whiteherb onUpdate).
+        battle.after_drop_no_herb(opp, s, before, true, true);
+        adrenaline_orb(battle);
         // Rattled — PS `data/abilities.ts:rattled` onAfterBoost grants +1 Spe
         // on an Intimidate target (stacks with the drop).
         if target_ability == data::ability_id::RATTLED {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::RATTLED));
             battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
+        }
+    }
+    for s in 0..n {
+        if battle.side(opp).active_mon(s as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+            crate::item::try_consume_white_herb(battle, opp, s);
         }
     }
 }
 
 pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
+    // The mon's runSwitch: its held hazard lines come first.
+    if let Some(l) = battle.protocol.log_mut() {
+        l.release_held(Some((side as u8, slot)));
+    }
     // Neutralizing Gas: re-evaluate field-wide ability suppression BEFORE
     // dispatching this mon's switch-in ability. If an NG holder is already
     // out, the incoming mon is now suppressed and its on-switch-in effect
@@ -526,6 +579,17 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // flag for free.
     recompute_neutralizing_gas(battle);
     on_start(battle, side, slot);
+    // zerotohero: onSwitchIn arms its onStart's message for a Hero
+    // (data/abilities.ts zerotohero).
+    if battle.plog() && battle.side(side).active_mon(slot as usize).is_some_and(|m| {
+        m.effective_ability_id() == data::ability_id::ZEROTOHERO && m.species_id == data::species_id::PALAFINHERO
+    }) {
+        let bit = 1u16 << (side as u16 * 8 + battle.side(side).active[slot as usize] as u16);
+        if battle.protocol.log_mut().is_some_and(|l| l.hero_shown & bit == 0 && { l.hero_shown |= bit; true }) {
+            pmon!(battle, "-activate", side, slot, "|ability: Zero to Hero");
+        }
+    }
+    battle.p_air_balloon(side, slot);
 }
 
 /// The ability's `onStart`, which PS also runs when a move hands a mon a
@@ -535,12 +599,19 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) => m.effective_ability_id(),
         None => return,
     };
+    // Announce-only onStart handlers (data/abilities.ts: Mold Breaker,
+    // Pressure, Unnerve, the Ruin quartet, auras, ...).
+    battle.p_ability_announce(side, slot, ability_id);
     // Supreme Overlord onStart (data/abilities.ts:4731-4737) latches the
     // fallen count; the base-power boost reads it, not the live count.
     if ability_id == data::ability_id::SUPREMEOVERLORD {
         let fallen = battle.side(side).total_fainted().min(5);
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.supreme_overlord_fallen = fallen;
+        }
+        if fallen > 0 {
+            pmon!(battle, "-activate", side, slot, "|ability: Supreme Overlord");
+            pmon!(battle, "-start", side, slot, "|fallen{fallen}|[silent]");
         }
     }
     #[cfg(feature = "ps-rng")]
@@ -575,6 +646,15 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         // (Primal Rain etc.) don't apply in this format.
         if battle.weather != w {
             battle.weather = w;
+            // The weather's onFieldStart (data/conditions.ts:498-503 et al.).
+            if battle.plog() {
+                let of = battle.p_ident(side, slot);
+                let name = crate::battle_protocol::ability_name(ability_id);
+                battle.p_push(format!("|-weather|{}|[from] ability: {name}|[of] {of}", crate::battle_protocol::weather_id(w)));
+                if ability_id == data::ability_id::ORICHALCUMPULSE {
+                    pmon!(battle, "-activate", side, slot, "|Orichalcum Pulse|[source]");
+                }
+            }
             // PR-LC1: weather field changed — refresh cache.
             battle.sync_weather_terrain_cache();
             // Weather rocks — PS `data/items.ts:{damp,heat,smooth,icy}rock`
@@ -621,8 +701,17 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => None,
     };
     if let Some(t) = new_terrain {
+        if battle.terrain == t && ability_id == data::ability_id::HADRONENGINE {
+            pmon!(battle, "-activate", side, slot, "|ability: Hadron Engine");
+        }
         if battle.terrain != t {
             battle.terrain = t;
+            // The terrain's onFieldStart (data/moves.ts electricterrain et al.).
+            if battle.plog() {
+                let of = battle.p_ident(side, slot);
+                let name = crate::battle_protocol::ability_name(ability_id);
+                battle.p_push(format!("|-fieldstart|{}|[from] ability: {name}|[of] {of}", crate::battle_protocol::terrain_name(t)));
+            }
             // PR-LC1: terrain field changed — refresh cache.
             battle.sync_weather_terrain_cache();
             // Terrain Extender — PS `data/items.ts:terrainextender`
@@ -638,11 +727,9 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             battle.terrain_turns = if item_id == data::item_id::TERRAINEXTENDER { 8 } else { 5 };
             // PS `onTerrainChange` dispatch for terrain seeds — fires on
             // BOTH actives (any side) when the field's terrain changes.
-            let n = battle.format().active_count() as u8;
-            for s in [SideRef::P1, SideRef::P2] {
-                for slot_idx in 0..n {
-                    crate::item::try_consume_terrain_seed(battle, s, slot_idx);
-                }
+            let (order, k) = battle.actives_by_speed();
+            for &(s, slot_idx) in &order[..k] {
+                crate::item::try_consume_terrain_seed(battle, s, slot_idx);
             }
         }
     }
@@ -659,19 +746,31 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // ally's stat stages are cleared.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Curious_Medicine_(Ability)>.
     if ability_id == data::ability_id::CURIOUSMEDICINE && battle.format().active_count() > 1 {
+        let mut cleared = false;
         if let Some(ally) = battle.side_mut(side).active_mon_mut((slot ^ 1) as usize) {
             if ally.is_alive() {
                 ally.boosts = [0; 7];
+                cleared = true;
             }
+        }
+        if cleared && battle.plog() {
+            let of = battle.p_ident(side, slot);
+            pmon!(battle, "-clearboost", side, slot ^ 1, "|[from] ability: Curious Medicine|[of] {of}");
         }
     }
     if ability_id == data::ability_id::HOSPITALITY && battle.format().active_count() > 1 {
         let partner_slot = if slot == 0 { 1 } else { 0 };
+        let mut healed = false;
         if let Some(ally) = battle.side_mut(side).active_mon_mut(partner_slot as usize) {
-            if ally.is_alive() {
+            if ally.is_alive() && ally.current_hp < ally.stats.hp {
                 let heal = (ally.stats.hp / 4).max(1);
                 ally.current_hp = ally.current_hp.saturating_add(heal).min(ally.stats.hp);
+                healed = true;
             }
+        }
+        if healed && battle.plog() {
+            let of = battle.p_ident(side, slot);
+            battle.p_heal(side, partner_slot, &format!("|[from] ability: Hospitality|[of] {of}"));
         }
     }
 
@@ -699,6 +798,10 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         if let Some(boosts) = ally_boosts {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.boosts = boosts;
+            }
+            if battle.plog() {
+                let ally = battle.p_ident(side, partner_slot);
+                pmon!(battle, "-copyboost", side, slot, "|{ally}|[from] ability: Costar");
             }
         }
     }
@@ -728,6 +831,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         if do_boost {
             // Self-boost (+1). `.min(6)` historically; identical to the
             // clamp here since a freshly-switched-in stage is never < -7.
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             battle.apply_boosts(side, slot, &[(stat_idx, 1)], side, slot);
         }
     }
@@ -745,6 +849,36 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     // (data/abilities.ts forewarn onStart): the foes' moves with the highest
     // warning power (OHKO 150; Counter / Metal Burst / Mirror Coat 120; a
     // 1 or 0 BP damaging move 80; status 0), one draw even for a lone move.
+    // forewarn onStart's `-activate` (data/abilities.ts:1504-1527). The
+    // engine draws no sample for a tie, so it shows the first candidate.
+    if ability_id == data::ability_id::FOREWARN && battle.plog() {
+        let mut best = 1u16;
+        let mut pick: Option<(u16, u8)> = None;
+        for s in 0..battle.format().active_count() as u8 {
+            let Some(foe) = battle.side(side.opposing()).active_mon(s as usize).filter(|m| m.is_alive()) else { continue };
+            for &mid in foe.moves.iter().filter(|&&id| id != u16::MAX) {
+                let mv = &data::MOVES[mid as usize];
+                let mut bp = mv.base_power;
+                if matches!(mid, data::move_id::FISSURE | data::move_id::HORNDRILL | data::move_id::GUILLOTINE | data::move_id::SHEERCOLD) {
+                    bp = 150;
+                }
+                if matches!(mid, data::move_id::COUNTER | data::move_id::METALBURST | data::move_id::MIRRORCOAT) {
+                    bp = 120;
+                }
+                if bp == 1 || (bp == 0 && mv.category != 2) {
+                    bp = 80;
+                }
+                if bp > best {
+                    best = bp;
+                    pick = Some((mid, s));
+                }
+            }
+        }
+        if let Some((mid, s)) = pick {
+            let of = battle.p_ident(side.opposing(), s);
+            pmon!(battle, "-activate", side, slot, "|ability: Forewarn|{}|[of] {of}", crate::battle_protocol::move_name(mid));
+        }
+    }
     #[cfg(feature = "ps-rng")]
     if ability_id == data::ability_id::FOREWARN && battle.rng_mut().is_ps() {
         let mut best = 1u16;
@@ -824,6 +958,14 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.ability_override = new_id;
                 }
+                // trace onUpdate (data/abilities.ts:5135-5160).
+                if battle.plog() {
+                    let src = (0..n).find(|&s| battle.side(opp).active_mon(s as usize).is_some_and(|m| m.is_alive() && current_ability(m) == new_id));
+                    let of = src.map(|s| battle.p_ident(opp, s)).unwrap_or_default();
+                    // setAbility's `-ability|<new>|<old>|[from] ...|[of] ...`
+                    // (sim/pokemon.ts:1930-1936).
+                    pmon!(battle, "-ability", side, slot, "|{}|Trace|[from] ability: Trace|[of] {of}", crate::battle_protocol::ability_name(new_id));
+                }
                 // PS Trace calls `pokemon.setAbility(ability, target)`, which
                 // runs the copied ability's onStart (sim/pokemon.ts:1943). The
                 // local `ability_id` is still TRACE, so run it afresh; Trace is
@@ -863,7 +1005,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         let opp = side.opposing();
         let n = battle.format().active_count() as u8;
         let opp_slot = n - 1 - slot;
-        battle.transform_into(side, slot, opp, opp_slot);
+        battle.transform_into(side, slot, opp, opp_slot, true);
     }
 
     // Slow Start — PS `data/abilities.ts:4266` `onStart` adds the
@@ -875,6 +1017,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.slow_start_active_turns = 5;
         }
+        pmon!(battle, "-start", side, slot, "|ability: Slow Start");
     }
 
     // Truant — PS `data/abilities.ts:5138` `onStart` adds the truant
@@ -923,6 +1066,7 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
     if ability_id == data::ability_id::WINDRIDER
         && battle.side(side).conditions.tailwind_turns > 0
     {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         battle.apply_boosts(side, slot, &[(0, 1)], side, slot);
     }
 
@@ -950,13 +1094,19 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.syrup_triggered = true;
             }
+            pmon!(battle, "-ability", side, slot, "|Supersweet Syrup");
             let opp = side.opposing();
             let n = battle.format().active_count() as u8;
             for s in 0..n {
+                let alive = battle.side(opp).active_mon(s as usize).is_some_and(|t| t.is_alive());
                 let drop = battle.side(opp).active_mon(s as usize).is_some_and(|t| {
                     t.is_alive() && t.substitute_hp() == 0
                 });
+                if alive && !drop {
+                    pmon!(battle, "-immune", opp, s);
+                }
                 if drop {
+                    battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ability_id));
                     // A plain `this.boost` from an opposing source: Clear
                     // Body / White Smoke / Full Metal Body / Clear Amulet veto
                     // it (onTryBoost), and a drop that lands runs Defiant /
@@ -1013,10 +1163,18 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
         Some(m) if m.is_alive() => m.effective_ability_id(),
         _ => return,
     };
+    // The ability's End on switch-out (sim/battle-actions.ts:103).
+    battle.p_ability_end_lines(side, slot, false);
     if ability_id == data::ability_id::REGENERATOR {
+        let mut healed = false;
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             let heal = (m.stats.hp / 3).max(1);
+            healed = m.current_hp < m.stats.hp;
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+        }
+        // regenerator onSwitchOut (data/mods/champions/abilities.ts:63-69).
+        if healed {
+            battle.p_heal(side, slot, "|[from] ability: Regenerator|[silent]");
         }
     }
     // Natural Cure — PS `data/abilities.ts:naturalcure`:
@@ -1052,6 +1210,12 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             .is_some_and(|m| m.species_id == data::species_id::PALAFIN);
         if is_zero {
             battle.set_forme(side, slot, data::species_id::PALAFINHERO, true);
+            // formeChange(..., isPermanent): `detailschange` (data/abilities.ts zerotohero).
+            battle.p_permanent_forme(side, slot, data::species_id::PALAFINHERO);
+            let bit = 1u16 << (side as u16 * 8 + battle.side(side).active[slot as usize] as u16);
+            if let Some(l) = battle.protocol.log_mut() {
+                l.hero_shown &= !bit;
+            }
         }
     }
     // Stance Change reverts on switch-out — PS `formeChange` for Aegislash
@@ -1105,6 +1269,10 @@ pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut
             .unwrap_or(false);
         if statused {
             if proc_chance(battle, rng, (side, slot), ability_id, 33, 100) {
+                if let Some(st) = battle.side(side).active_mon(slot as usize).map(|m| crate::battle_protocol::status_id(m.status)) {
+                    pmon!(battle, "-activate", side, slot, "|ability: Shed Skin");
+                    pmon!(battle, "-curestatus", side, slot, "|{st}|[msg]");
+                }
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     m.status = crate::pokemon::Status::None;
                 }
@@ -1125,6 +1293,10 @@ pub fn on_residual_cures(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut
     // Manaphy / Goodra signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Hydration_(Ability)>.
     if ability_id == data::ability_id::HYDRATION && matches!(battle.effective_weather(), crate::weather::Weather::Rain) {
+        if let Some(st) = battle.side(side).active_mon(slot as usize).filter(|m| m.status != crate::pokemon::Status::None).map(|m| crate::battle_protocol::status_id(m.status)) {
+            pmon!(battle, "-activate", side, slot, "|ability: Hydration");
+            pmon!(battle, "-curestatus", side, slot, "|{st}|[msg]");
+        }
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             if !matches!(m.status, crate::pokemon::Status::None) {
                 m.status = crate::pokemon::Status::None;
@@ -1218,6 +1390,8 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
                 m.item_id = item;
                 m.sync_can_mega_evolve();
             }
+            // pickup onResidual's setItem message.
+            battle.p_item_line("-item", side, slot, item, "|[from] ability: Pickup");
         }
     }
 
@@ -1247,6 +1421,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             if berry != u16::MAX && counter > 0 {
                 let next = counter - 1;
                 if next == 0 {
+                    // cudchew onResidual: `-activate`, then the berry's `[eat]`.
+                    pmon!(battle, "-activate", side, slot, "|ability: Cud Chew");
+                    battle.p_item_line("-enditem", side, slot, berry, "|[eat]");
                     crate::item::cud_chew_reeat(battle, side, slot, berry, rng);
                     if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                         m.cud_chew_berry = u16::MAX;
@@ -1293,6 +1470,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
     // turn-1 starters) and 0 for mons brought in via this turn's switch
     // action. Our `switched_in_this_turn` flag is that exact bit.
     if ability_id == data::ability_id::SPEEDBOOST && !switched_in_this_turn {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         // Self-boost (+1 Spe) at end of turn.
         battle.apply_boosts(side, slot, &[(4, 1)], side, slot);
     }
@@ -1372,6 +1550,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8, rng: &mut crate
             dn += 1;
         }
         if dn > 0 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             battle.apply_boosts(side, slot, &deltas[..dn], side, slot);
         }
     }
@@ -1408,6 +1587,11 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.fainted = true;
                 }
             }
+            // damage(..., target, target): `[from] ability|[of]` self.
+            if battle.plog() {
+                let of = battle.p_ident(side, slot);
+                battle.p_damage(side, slot, &format!("|[from] ability: Solar Power|[of] {of}"));
+            }
         }
     }
 
@@ -1424,9 +1608,14 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
     if ability_id == data::ability_id::DRYSKIN {
         match battle.effective_weather() {
             crate::weather::Weather::Rain => {
+                let mut healed = false;
                 if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                     let heal = (m.stats.hp / 8).max(1);
+                    healed = m.current_hp < m.stats.hp;
                     m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
+                }
+                if healed {
+                    battle.p_heal(side, slot, "|[from] ability: Dry Skin");
                 }
             }
             crate::weather::Weather::Sun => {
@@ -1442,6 +1631,10 @@ pub fn on_weather(battle: &mut Battle, side: SideRef, slot: u8) {
                         if m.current_hp == 0 {
                             m.fainted = true;
                         }
+                    }
+                    if battle.plog() {
+                        let of = battle.p_ident(side, slot);
+                        battle.p_damage(side, slot, &format!("|[from] ability: Dry Skin|[of] {of}"));
                     }
                 }
             }
@@ -1490,6 +1683,7 @@ pub fn on_damaging_hit(
     // <https://bulbapedia.bulbagarden.net/wiki/Cotton_Down_(Ability)>.
     if ability_id == data::ability_id::COTTONDOWN && target_alive {
         let n = battle.format().active_count() as u8;
+        let mut announced = false;
         for sd in [SideRef::P1, SideRef::P2] {
             for s in 0..n {
                 if sd == target_side && s == target_slot { continue; }
@@ -1505,6 +1699,11 @@ pub fn on_damaging_hit(
                 let blocked = cross_side && battle.side(sd).active_mon(s as usize)
                     .is_some_and(|m| crate::ability::blocks_opposing_stat_drop_for(m, 4));
                 if blocked { continue; }
+                // cottondown onDamagingHit: `-ability` once, then each boost.
+                if !std::mem::replace(&mut announced, true) {
+                    pmon!(battle, "-ability", target_side, target_slot, "|Cotton Down");
+                }
+                battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ability_id));
                 // Cotton Down lowers Spe of every other active; source is
                 // the Cotton Down holder that was hit.
                 battle.apply_boosts(sd, s, &[(4, -1)], target_side, target_slot);
@@ -1527,6 +1726,10 @@ pub fn on_damaging_hit(
         battle.weather = crate::weather::Weather::Sand;
         // PR-LC1: weather field changed — refresh cache.
         battle.sync_weather_terrain_cache();
+        if battle.plog() {
+            let of = battle.p_ident(target_side, target_slot);
+            battle.p_push(format!("|-weather|Sandstorm|[from] ability: Sand Spit|[of] {of}"));
+        }
         let holds_smooth_rock = battle
             .side(target_side)
             .active_mon(target_slot as usize)
@@ -1548,6 +1751,7 @@ pub fn on_damaging_hit(
         && target_alive
         && data::MOVES[move_id as usize].category == 0
     {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         battle.apply_boosts(target_side, target_slot, &[(1, -1), (4, 2)], target_side, target_slot);
         crate::item::try_consume_white_herb(battle, target_side, target_slot);
     }
@@ -1589,6 +1793,9 @@ pub fn on_damaging_hit(
                         m.set_type_override(move_type, None);
                     }
                 }
+                if battle.side(target_side).active_mon(target_slot as usize).is_some_and(|m| !m.terastallized) {
+                    pmon!(battle, "-start", target_side, target_slot, "|typechange|{}|[from] ability: Color Change", crate::battle_protocol::type_name(move_type));
+                }
             }
         }
     }
@@ -1607,6 +1814,12 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::TOXICDEBRIS && data::MOVES[move_id as usize].category == 0 {
         // The attacker's side, or its foes' side when an ally hit the holder.
         let side = if attacker_side == target_side { attacker_side.opposing() } else { attacker_side };
+        // toxicdebris onDamagingHit (data/abilities.ts toxicdebris).
+        if battle.side(side).conditions.toxic_spikes_layers < 2 && battle.plog() {
+            pmon!(battle, "-activate", target_side, target_slot, "|ability: Toxic Debris");
+            let s = battle.p_side_ident(side);
+            battle.p_push(format!("|-sidestart|{s}|move: Toxic Spikes"));
+        }
         let layers = &mut battle.side_mut(side).conditions.toxic_spikes_layers;
         if *layers < 2 {
             *layers += 1;
@@ -1624,6 +1837,7 @@ pub fn on_damaging_hit(
     // Wattrel / Kilowattrel signature. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Wind_Power_(Ability)>.
     if ability_id == data::ability_id::WINDPOWER && target_alive && data::MOVES[move_id as usize].is_wind {
+        pmon!(battle, "-start", target_side, target_slot, "|Charge|{}|[from] ability: Wind Power", crate::battle_protocol::move_name(move_id));
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
@@ -1640,6 +1854,7 @@ pub fn on_damaging_hit(
     // mon can't carry a volatile). Bellibolt / Tadbulb signature.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Electromorphosis_(Ability)>.
     if ability_id == data::ability_id::ELECTROMORPHOSIS && target_alive {
+        pmon!(battle, "-start", target_side, target_slot, "|Charge|{}|[from] ability: Electromorphosis", crate::battle_protocol::move_name(move_id));
         if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
             m.set_charged(true);
         }
@@ -1653,6 +1868,7 @@ pub fn on_damaging_hit(
     // a stat boost. Bulbapedia:
     // <https://bulbapedia.bulbagarden.net/wiki/Stamina_(Ability)>.
     if ability_id == data::ability_id::STAMINA && target_alive {
+        battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
         // Self-boost (+1 Def) on hit.
         battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
     }
@@ -1668,6 +1884,9 @@ pub fn on_damaging_hit(
     // `!hit_sub`). Status moves can't crit. Primeape / Mankey / Tauros.
     // Bulbapedia: <https://bulbapedia.bulbagarden.net/wiki/Anger_Point_(Ability)>.
     if ability_id == data::ability_id::ANGERPOINT && target_alive && crit {
+        // angerpoint: boost({atk: 12}) prints `-setboost` (sim/battle.ts:2051-2052).
+        battle.p_boost_fx(crate::protocol::BoostFx::Silent);
+        pmon!(battle, "-setboost", target_side, target_slot, "|atk|6|[from] ability: Anger Point");
         // PS `boost({atk: 12})` — adding 12 to any in-range stage clamps to
         // +6, identical to the old absolute `= 6`. Self-boost.
         battle.apply_boosts(target_side, target_slot, &[(0, 12)], target_side, target_slot);
@@ -1695,8 +1914,14 @@ pub fn on_damaging_hit(
             let half = max / 2;
             // Crossed the half line: pre > half AND post <= half.
             if pre > half && post <= half && dmg > 0 {
+                battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
+                // berserk onAfterMoveSecondary: after the hit loop's Update.
+                let saved = battle.p_key_save();
+                battle.p_set_hit(255);
+                battle.p_tag(crate::protocol::step::AFTER_SECONDARY, target_side, target_slot);
                 // Berserk self-boost (+1 SpA) on crossing 50%.
                 battle.apply_boosts(target_side, target_slot, &[(2, 1)], target_side, target_slot);
+                battle.p_key_restore(saved);
             }
         }
     }
@@ -1709,6 +1934,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::JUSTIFIED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 15 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Justified self-boost (+1 Atk) on incoming Dark move.
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
@@ -1728,6 +1954,11 @@ pub fn on_damaging_hit(
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| crate::damage::move_makes_contact(&data::MOVES[move_id as usize], a));
         if contact {
+            // gooey / tanglinghair: `-ability`, then a secondary boost.
+            if let Some(ab) = battle.side(target_side).active_mon(target_slot as usize).map(|m| m.effective_ability_id()) {
+                pmon!(battle, "-ability", target_side, target_slot, "|{}", crate::battle_protocol::ability_name(ab));
+                battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ab));
+            }
             battle.apply_foe_stat_drop(attacker_side, attacker_slot, &[4], -1, target_side, target_slot);
         }
     }
@@ -1740,7 +1971,7 @@ pub fn on_damaging_hit(
         .active_mon(target_slot as usize)
         .is_some_and(|m| m.effective_ability_id() == data::ability_id::SEEDSOWER)
     {
-        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot);
+        battle.set_field_terrain(crate::terrain::Terrain::Grassy, target_side, target_slot, Some(data::ability_id::SEEDSOWER));
     }
     // Thermal Exchange — PS data/abilities.ts:4990 thermalexchange
     // onDamagingHit: `if (move.type === 'Fire') this.boost({atk: 1})`, on
@@ -1762,6 +1993,7 @@ pub fn on_damaging_hit(
             None => data::MOVES[move_id as usize].type_,
         };
         if move_type == 1 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::THERMALEXCHANGE));
             battle.apply_boosts(target_side, target_slot, &[(0, 1)], target_side, target_slot);
         }
     }
@@ -1776,6 +2008,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::STEAMENGINE && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if move_type == 1 || move_type == 2 {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Steam Engine self-boost — PS `boost({spe: 6})` (additive +6).
             battle.apply_boosts(target_side, target_slot, &[(4, 6)], target_side, target_slot);
         }
@@ -1794,6 +2027,7 @@ pub fn on_damaging_hit(
     if ability_id == data::ability_id::RATTLED && target_alive {
         let move_type = data::MOVES[move_id as usize].type_;
         if matches!(move_type, 6 | 13 | 15) {
+            battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
             // Rattled self-boost (+1 Spe) on incoming Bug/Ghost/Dark.
             battle.apply_boosts(target_side, target_slot, &[(4, 1)], target_side, target_slot);
         }
@@ -1825,6 +2059,7 @@ pub fn on_damaging_hit(
                 let pre = post + dmg;
                 let half = max / 2;
                 if pre > half && post <= half && dmg > 0 {
+                    battle.p_boost_fx(crate::protocol::BoostFx::Ability(ability_id));
                     // Anger Shell self-boost: +1 Atk/SpA/Spe, -1 Def/SpD.
                     battle.apply_boosts(
                         target_side,
@@ -1861,9 +2096,14 @@ pub fn on_damaging_hit(
                     }
                 }
             }
+            if battle.plog() {
+                let of = battle.p_ident(target_side, target_slot);
+                battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: Gulp Missile|[of] {of}"));
+            }
             let source = battle.side(attacker_side).active_mon(attacker_slot as usize);
             if source.is_some_and(|a| a.is_alive()) {
                 if gorging {
+                    battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                     // The holder is the status source (trySetStatus('par',
                     // target)), so the attacker's Synchronize reflects onto it.
                     battle.try_set_status_from_src(
@@ -1875,6 +2115,7 @@ pub fn on_damaging_hit(
                     );
                 } else if !source.is_some_and(|a| blocks_opposing_stat_drop_for(a, 1)) {
                     let before = source.map_or(0, |a| a.boosts[1]);
+                    battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(ability_id));
                     battle.apply_boosts(attacker_side, attacker_slot, &[(1, -1)], target_side, target_slot);
                     let after = battle.side(attacker_side).active_mon(attacker_slot as usize).map_or(0, |a| a.boosts[1]);
                     if after < before {
@@ -1922,6 +2163,14 @@ pub fn on_damaging_hit(
                         a.fainted = true;
                     }
                 }
+                // roughskin / ironbarbs onDamagingHit: damage(..., source=target).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    // onDamagingHitOrder: 1 (data/abilities.ts roughskin, ironbarbs).
+                    battle.p_sub(1);
+                    battle.p_damage(attacker_side, attacker_slot, &format!("|[from] ability: {}|[of] {of}", crate::battle_protocol::ability_name(ability_id)));
+                    battle.p_sub(3);
+                }
             }
         }
     }
@@ -1950,6 +2199,7 @@ pub fn on_damaging_hit(
                 .active_mon(attacker_slot as usize)
                 .is_some_and(|a| a.is_alive());
             if attacker_alive && proc_chance(battle, rng, (target_side, target_slot), ability_id, 3, 10) {
+                battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                 // Contact-ability status (Static/Flame Body/Poison Point):
                 // the ABILITY HOLDER (the defender) is the source, so
                 // Safeguard on the attacker's side vetoes it.
@@ -1980,6 +2230,7 @@ pub fn on_damaging_hit(
             .active_mon(attacker_slot as usize)
             .is_some_and(|a| a.is_alive());
         if attacker_alive {
+            battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
             battle.try_set_status_from(
                 attacker_side,
                 attacker_slot,
@@ -2045,6 +2296,10 @@ pub fn on_damaging_hit(
                 // (a Destiny-Knot-holding attacker reflects back onto the
                 // Cute Charm mon).
                 battle.apply_infatuation(attacker_side, attacker_slot, target_side, target_slot);
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    pmon!(battle, "-start", attacker_side, attacker_slot, "|Attract|[from] ability: Cute Charm|[of] {of}");
+                }
             }
         }
     }
@@ -2096,6 +2351,11 @@ pub fn on_damaging_hit(
                 {
                     a.set_disable(4, slot as u8);
                 }
+                // disable onStart with Cursed Body as the effect (data/moves.ts disable).
+                if battle.plog() {
+                    let of = battle.p_ident(target_side, target_slot);
+                    pmon!(battle, "-start", attacker_side, attacker_slot, "|Disable|{}|[from] ability: Cursed Body|[of] {of}", crate::battle_protocol::move_name(move_id));
+                }
             }
         }
     }
@@ -2144,6 +2404,7 @@ pub fn on_damaging_hit(
                     None
                 };
                 if let Some(s) = to_apply {
+                    battle.p_status_fx(crate::protocol::StatusFx::Ability(ability_id, target_side as u8, target_slot));
                     // Effect Spore: the holder (defender) is the source, so
                     // Safeguard on the attacker's side vetoes it.
                     battle.with_rng_installed(rng, |b| {
@@ -2199,6 +2460,11 @@ pub fn on_damaging_hit(
                 {
                     a.ability_override = rep;
                 }
+                // setAbility from Mummy / Lingering Aroma (sim/pokemon.ts:1928-1931).
+                if battle.plog() {
+                    let src = battle.p_ident(attacker_side, attacker_slot);
+                    pmon!(battle, "-activate", target_side, target_slot, "|ability: {}|{src}|[ability] {}", crate::battle_protocol::ability_name(rep), crate::battle_protocol::ability_name(attacker_curr_id));
+                }
             }
         }
     }
@@ -2231,6 +2497,7 @@ pub fn on_damaging_hit(
         && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10)
         && target_alive
     {
+        battle.p_status_fx(crate::protocol::StatusFx::Ability(attacker_ability_id, attacker_side as u8, attacker_slot));
         // Poison Touch: the ATTACKER holds it and is the source, so
         // Safeguard on the target's side vetoes it.
         battle.try_set_status_from(
@@ -2263,6 +2530,7 @@ pub fn on_damaging_hit(
                     || m.effective_item_id() == data::item_id::COVERTCLOAK
             });
         if !blocked && proc_chance(battle, rng, (attacker_side, attacker_slot), attacker_ability_id, 3, 10) {
+            battle.p_status_fx(crate::protocol::StatusFx::Ability(attacker_ability_id, attacker_side as u8, attacker_slot));
             battle.try_set_status(target_side, target_slot, crate::pokemon::Status::Toxic);
         }
     }
@@ -2364,6 +2632,17 @@ pub fn on_damaging_hit(
                 .active_mon_mut(target_slot as usize)
             {
                 t.ability_override = attacker_id;
+            }
+            // battle.skillSwap(source = attacker, target = holder)
+            // (sim/battle.ts:1325-1332).
+            if battle.plog() {
+                let of = battle.p_ident(target_side, target_slot);
+                if attacker_side == target_side {
+                    pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|||[of] {of}");
+                    battle.p_push("|-hint|Skill Swap does not announce the abilities of the Pokémon when used between allies.".to_string());
+                } else {
+                    pmon!(battle, "-activate", attacker_side, attacker_slot, "|Skill Swap|{}|{}|[of] {of}", crate::battle_protocol::ability_name(target_id), crate::battle_protocol::ability_name(attacker_id));
+                }
             }
         }
     }

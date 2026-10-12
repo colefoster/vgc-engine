@@ -100,7 +100,20 @@ pub fn try_consume_type_resist_berry(
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
     }
+    // eatItem's `[eat]` (sim/pokemon.ts:1783), then the berry's
+    // onSourceModifyDamage `[weaken]` (data/items.ts occaberry et al.).
+    battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[eat]");
+    battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[weaken]");
     maybe_on_item_consumed(battle, target_side, target_slot, item_id);
+    // Cud Chew's onEatItem schedules the re-eat for this berry too
+    // (data/abilities.ts:742-750); its onEat does nothing.
+    let in_residual = battle.in_residual;
+    if let Some(m) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
+        if m.effective_ability_id() == data::ability_id::CUDCHEW {
+            m.cud_chew_berry = item_id;
+            m.cud_chew_counter = if in_residual { 1 } else { 2 };
+        }
+    }
     true
 }
 
@@ -211,6 +224,7 @@ pub fn on_before_damage(
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.consume_item();
             }
+            battle.p_item_line("-enditem", side, slot, item_id, "");
             maybe_on_item_consumed(battle, side, slot, item_id);
             return Some(current - 1);
         }
@@ -249,6 +263,7 @@ pub fn on_before_damage(
         if incoming > 0 && current > 0 {
             let proc = rng.range(10) == 0;
             if proc && incoming >= current {
+                pmon!(battle, "-activate", side, slot, "|item: Focus Band");
                 return Some(current - 1);
             }
         }
@@ -297,6 +312,7 @@ pub fn on_after_damage(
             }
             m.consume_item();
         }
+        battle.p_berry_heal(side, slot, item_id, current);
     }
     // Pinch stat berries — fire at ≤25% HP (Gluttony ≤50%, deferred).
     // Each consumes for a +1 stat boost. PS data/items.ts:
@@ -323,6 +339,8 @@ pub fn on_after_damage(
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 m.consume_item();
             }
+            battle.p_item_line("-enditem", side, slot, item_id, "|[eat]");
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
             // Self-boost (+1) on the pinch-berry holder.
             battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
         }
@@ -339,6 +357,7 @@ pub fn on_after_damage(
             }
             m.consume_item();
         }
+        battle.p_berry_heal(side, slot, item_id, current);
     }
     // Figy-family healing berries — PS data/items.ts:
     //   figyberry  2040 (Atk-dislike → -Atk nature confuses)
@@ -367,6 +386,7 @@ pub fn on_after_damage(
             }
             m.consume_item();
         }
+        battle.p_berry_heal(side, slot, item_id, current);
     }
     // Starf Berry — PS data/items.ts:starfberry (line 5984): onUpdate eats
     // at <=25% HP (Gluttony <=50%, deferred); onEat raises a RANDOM stat
@@ -398,6 +418,7 @@ pub fn on_after_damage(
             m.consume_item();
             m.micle_next_move = true;
         }
+        battle.p_item_line("-enditem", side, slot, item_id, "|[eat]");
     }
     // Lansat Berry — PS data/items.ts:lansatberry (line 3248): onUpdate
     // eats at <=25% HP (Gluttony <=50%, deferred); onEat adds the
@@ -411,6 +432,8 @@ pub fn on_after_damage(
             m.consume_item();
             m.crit_stage_volatile = 2;
         }
+        battle.p_item_line("-enditem", side, slot, item_id, "|[eat]");
+        pmon!(battle, "-start", side, slot, "|move: Focus Energy");
     }
     if item_id == data::item_id::STARFBERRY && quarter {
         let boosts = match battle.side(side).active_mon(slot as usize) {
@@ -432,8 +455,10 @@ pub fn on_after_damage(
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
             m.consume_item();
         }
+        battle.p_item_line("-enditem", side, slot, item_id, "|[eat]");
         if n > 0 {
             let chosen = cands[rng.range(n as u32) as usize];
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
             battle.apply_boosts(side, slot, &[(chosen, 2)], side, slot);
         }
     }
@@ -471,11 +496,15 @@ pub fn on_after_damage(
                 && m.effective_ability_id() == data::ability_id::CHEEKPOUCH
         });
         if ate {
+            let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 if !m.is_heal_blocked() {
                     let heal = (m.stats.hp / 3).max(1);
                     m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
                 }
+            }
+            if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != before) {
+                battle.p_heal(side, slot, "|[from] ability: Cheek Pouch");
             }
         }
     }
@@ -509,6 +538,7 @@ pub fn cud_chew_reeat(
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
         }
+        battle.p_heal(side, slot, "|[from] item: Sitrus Berry");
         return;
     }
     if berry_id == data::item_id::ORANBERRY {
@@ -545,6 +575,7 @@ pub fn cud_chew_reeat(
         _ => None,
     };
     if let Some(stat_idx) = pinch {
+        battle.p_boost_fx(crate::protocol::BoostFx::Item(berry_id));
         battle.apply_boosts(side, slot, &[(stat_idx, 1)], side, slot);
         return;
     }
@@ -645,6 +676,10 @@ pub fn on_pp_depleted(battle: &mut Battle, side: SideRef, slot: u8) {
         let added: u8 = if ripen { 20 } else { 10 };
         m.pp[i] = m.pp[i].saturating_add(added).min(max_pp);
         m.consume_item();
+        if battle.plog() {
+            battle.p_item_line("-enditem", side, slot, item_id, "|[eat]");
+            pmon!(battle, "-activate", side, slot, "|item: Leppa Berry|{}|[consumed]", crate::battle_protocol::move_name(move_id));
+        }
     }
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -731,6 +766,13 @@ pub fn on_attacker_contact_hit(
                     a.fainted = true;
                 }
             }
+            if battle.plog() {
+                let of = battle.p_ident(target_side, target_slot);
+                // onDamagingHitOrder: 2 (data/items.ts rockyhelmet).
+                battle.p_sub(2);
+                battle.p_damage(attacker_side, attacker_slot, &format!("|[from] item: Rocky Helmet|[of] {of}"));
+                battle.p_sub(3);
+            }
         }
     }
 }
@@ -777,6 +819,7 @@ pub fn on_damaging_hit(
         {
             t.consume_item();
         }
+        battle.p_item_line("-enditem", target_side, target_slot, raw_item_id, "");
     }
     let item_id = match battle.side(target_side).active_mon(target_slot as usize) {
         Some(m) if m.is_alive() => m.effective_item_id(),
@@ -823,6 +866,8 @@ pub fn on_damaging_hit(
                     t.consume_item();
                 }
                 // Weakness Policy self-boost: +2 Atk, +2 SpA.
+                battle.p_item_line("-enditem", target_side, target_slot, item_id, "");
+                battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
                 battle.apply_boosts(target_side, target_slot, &[(0, 2), (2, 2)], target_side, target_slot);
             }
         }
@@ -849,6 +894,7 @@ pub fn on_damaging_hit(
             let eff = crate::damage::type_effectiveness(mv.type_, species);
             use crate::damage::TypeEff;
             if matches!(eff, TypeEff::DoubleX | TypeEff::QuadrupleX) {
+                let before = battle.side(target_side).active_mon(target_slot as usize).map_or(0, |t| t.current_hp);
                 if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
                     // Eaten even under Heal Block; `onTryHeal` vetoes the heal.
                     if !t.is_heal_blocked() {
@@ -857,6 +903,7 @@ pub fn on_damaging_hit(
                     }
                     t.consume_item();
                 }
+                battle.p_berry_heal(target_side, target_slot, item_id, before);
             }
         }
     }
@@ -900,6 +947,8 @@ pub fn on_damaging_hit(
                 t.consume_item();
             }
             // Booster-orb self-boost (+1) on the type-matched hit.
+            battle.p_item_line("-enditem", target_side, target_slot, item_id, "");
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
             battle.apply_boosts(target_side, target_slot, &[(stat_idx as u8, 1)], target_side, target_slot);
         }
         let _ = attacker_side; let _ = attacker_slot;
@@ -918,6 +967,8 @@ pub fn on_damaging_hit(
                 t.consume_item();
             }
             // Kee Berry self-boost (+1 Def) on a physical hit.
+            battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[eat]");
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
             battle.apply_boosts(target_side, target_slot, &[(1, 1)], target_side, target_slot);
         }
     }
@@ -934,6 +985,8 @@ pub fn on_damaging_hit(
                 t.consume_item();
             }
             // Maranga Berry self-boost (+1 SpD) on a special hit.
+            battle.p_item_line("-enditem", target_side, target_slot, item_id, "|[eat]");
+            battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
             battle.apply_boosts(target_side, target_slot, &[(3, 1)], target_side, target_slot);
         }
     }
@@ -1090,6 +1143,10 @@ pub fn try_consume_terrain_seed(battle: &mut Battle, side: SideRef, slot: u8) {
         m.consume_item();
     }
     // Booster-energy terrain orb self-boost (+1).
+    // useItem's `-enditem`, then the seed's `boosts` with the item as the
+    // effect (sim/pokemon.ts:1831-1836).
+    battle.p_item_line("-enditem", side, slot, item_id, "");
+    battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
     battle.apply_boosts(side, slot, &[(stat_idx as u8, 1)], side, slot);
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -1168,6 +1225,8 @@ pub fn try_consume_room_service(battle: &mut Battle, side: SideRef, slot: u8) {
         m.consume_item();
     }
     // -1 Speed self-drop (stat index 4).
+    battle.p_item_line("-enditem", side, slot, item_id, "");
+    battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
     battle.apply_boosts(side, slot, &[(4, -1)], side, slot);
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -1195,6 +1254,8 @@ pub fn try_consume_blunder_policy(battle: &mut Battle, side: SideRef, slot: u8) 
         m.consume_item();
     }
     // +2 Speed self-boost (stat index 4).
+    battle.p_item_line("-enditem", side, slot, item_id, "");
+    battle.p_boost_fx(crate::protocol::BoostFx::Item(item_id));
     battle.apply_boosts(side, slot, &[(4, 2)], side, slot);
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
@@ -1291,6 +1352,7 @@ pub(crate) fn try_consume_eject_button(
     }
     // Consume the item, then force-switch.
     let phases = battle.decision_phases;
+    battle.p_item_line("-enditem", target_side, target_slot, item_id, "");
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
         // PS sets `target.switchFlag`: the player picks the replacement
@@ -1346,6 +1408,10 @@ pub(crate) fn try_consume_red_card(
     if let Some(t) = battle.side_mut(target_side).active_mon_mut(target_slot as usize) {
         t.consume_item();
     }
+    if battle.plog() {
+        let of = battle.p_ident(attacker_side, attacker_slot);
+        battle.p_item_line("-enditem", target_side, target_slot, item_id, &format!("|[of] {of}"));
+    }
     if !battle.can_be_dragged_out(attacker_side, attacker_slot, false) {
         return false;
     }
@@ -1399,6 +1465,7 @@ pub(crate) fn try_consume_eject_pack(
     if let Some(t) = battle.side_mut(side).active_mon_mut(slot as usize) {
         t.consume_item();
     }
+    battle.p_item_line("-enditem", side, slot, item_id, "");
     battle.force_switch_auto(side, slot)
 }
 
@@ -1454,7 +1521,15 @@ pub fn try_consume_mirror_herb_on_foe_boost(
     }
 }
 
+#[inline]
 pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u8) {
+    // Raw-item prefilter: only a White Herb holder can consume one.
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == data::item_id::WHITEHERB) {
+        try_consume_white_herb_inner(battle, side, slot);
+    }
+}
+
+fn try_consume_white_herb_inner(battle: &mut Battle, side: SideRef, slot: u8) {
     if battle.white_herb_deferred() {
         return;
     }
@@ -1477,6 +1552,11 @@ pub(crate) fn try_consume_white_herb(battle: &mut Battle, side: SideRef, slot: u
             m.consume_item();
         }
     }
+    // White Herb's useItem, then its clearNegativeBoost (data/items.ts whiteherb).
+    if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.item_id == u16::MAX) {
+        battle.p_item_line("-enditem", side, slot, item_id, "");
+        pmon!(battle, "-clearnegativeboost", side, slot, "|[silent]");
+    }
     maybe_on_item_consumed(battle, side, slot, item_id);
 }
 
@@ -1489,6 +1569,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         _ => return,
     };
     if item_id == data::item_id::LEFTOVERS {
+        let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
         // Heal 1/16 max HP, capped at max. Heal Block vetoes the recovery
         // (PS Heal Block `onTryHeal`).
         if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -1496,6 +1577,9 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
                 let heal = (m.stats.hp / 16).max(1);
                 m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
             }
+        }
+        if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != before) {
+            battle.p_heal(side, slot, "|[from] item: Leftovers");
         }
     }
     // Black Sludge — PS `data/items.ts:blacksludge`:
@@ -1516,12 +1600,16 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
         let is_poison = (0..species.num_types as usize).any(|i| species.types[i] == 7);
         let magic_guard = crate::ability::has_magic_guard(mon);
         if is_poison {
+            let before = battle.side(side).active_mon(slot as usize).map_or(0, |m| m.current_hp);
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
                 // Heal Block vetoes the recovery (PS Heal Block `onTryHeal`).
                 if !m.is_heal_blocked() {
                     let heal = (m.stats.hp / 16).max(1);
                     m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
                 }
+            }
+            if battle.side(side).active_mon(slot as usize).is_some_and(|m| m.current_hp != before) {
+                battle.p_heal(side, slot, "|[from] item: Black Sludge");
             }
         } else if !magic_guard {
             if let Some(m) = battle.side_mut(side).active_mon_mut(slot as usize) {
@@ -1531,6 +1619,7 @@ pub fn on_residual(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.fainted = true;
                 }
             }
+            battle.p_damage(side, slot, "|[from] item: Black Sludge");
         }
     }
     // Sticky Barb is PS order 28 — fires AFTER status DOT (9-10), not
@@ -1576,6 +1665,7 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
                     m.fainted = true;
                 }
             }
+            battle.p_damage(side, slot, "|[from] item: Sticky Barb");
         }
     }
     // Flame Orb — PS `data/items.ts:flameorb`
@@ -1597,6 +1687,7 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
             .active_mon(slot as usize)
             .is_some_and(|m| m.is_alive());
         if still_alive {
+            battle.p_status_fx(crate::protocol::StatusFx::Item(item_id));
             battle.try_set_status(side, slot, crate::pokemon::Status::Burn);
         }
     }
@@ -1616,6 +1707,7 @@ pub fn on_residual_late(battle: &mut Battle, side: SideRef, slot: u8) {
             .active_mon(slot as usize)
             .is_some_and(|m| m.is_alive());
         if still_alive {
+            battle.p_status_fx(crate::protocol::StatusFx::Item(item_id));
             battle.try_set_status(side, slot, crate::pokemon::Status::Toxic);
         }
     }
