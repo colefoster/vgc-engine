@@ -2303,7 +2303,7 @@ mod tests {
 /// Xerneas, Silvally, Urshifu, Dudunsparce formes unless Species Reveal
 /// Clause), data/mods/champions/rulesets.ts:36-41 (Xerneas, Zacian,
 /// Zamazenta and their formes).
-fn preview_details(details: &str, champions: bool, reveal: bool) -> String {
+pub(crate) fn preview_details(details: &str, champions: bool, reveal: bool) -> String {
     // `(Name)(-[a-zA-Z?-]+)?` -> `$1-*` at the start of the details.
     let mask = |d: &str, names: &[&str]| -> Option<String> {
         let name = names.iter().find(|n| d.starts_with(**n))?;
