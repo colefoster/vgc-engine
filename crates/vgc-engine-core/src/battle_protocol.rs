@@ -242,7 +242,11 @@ impl Battle {
             l.illusion[side as usize][idx as usize % 6] = 255;
         }
         let id = self.p_ident(side, slot);
-        let det = self.p_details(side, idx);
+        // getUpdatedDetails(): no `, tera:` suffix (data/abilities.ts illusion onEnd).
+        let mut det = self.p_details(side, idx);
+        if let Some(i) = det.find(", tera:") {
+            det.truncate(i);
+        }
         self.p_push(format!("|replace|{id}|{det}"));
         self.p_push(format!("|-end|{id}|Illusion"));
     }
