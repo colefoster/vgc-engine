@@ -187,6 +187,23 @@ fn a_fainted_transformed_mon_reverts() {
 }
 
 #[test]
+fn a_secondary_drop_at_minus_six_prints_nothing() {
+    // moveHit's secondaries boost with isSecondary; a zero change then adds
+    // no line (sim/battle.ts:2077-2081). A move's own drop (Growl) still
+    // prints `-unboost|...|0`. Sim-diff b00219 (Mystical Fire, -6 SpA).
+    let p1 = r#"[{"species":"indeedee","level":50,"ability":"innerfocus","moves":["mysticalfire","growl"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]},
+        {"species":"snorlax","level":50,"ability":"thickfat","moves":["splash"]}]"#;
+    let mut b = logged_doubles(p1, p2, 3);
+    b.p2.team[0].boosts = [-6; 7];
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(!log_lines(&b).iter().any(|l| l.starts_with("|-unboost|p2a: Snorlax")), "secondary: silent");
+    b.step(&[mv(0, 1, None), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    assert!(log_lines(&b).iter().any(|l| l == "|-unboost|p2a: Snorlax|atk|0"), "Growl's own drop prints");
+}
+
+#[test]
 fn spread_drain_logs_each_heal_in_ps_target_order() {
     // allAdjacent lists the user's allies before its foes (PS
     // sim/pokemon.ts:809-813) and spreadDamage heals after each target in
