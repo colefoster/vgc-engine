@@ -560,6 +560,7 @@ pub fn on_switch_in(battle: &mut Battle, side: SideRef, slot: u8) {
     // flag for free.
     recompute_neutralizing_gas(battle);
     on_start(battle, side, slot);
+    battle.p_air_balloon(side, slot);
 }
 
 /// The ability's `onStart`, which PS also runs when a move hands a mon a
@@ -904,7 +905,9 @@ pub(crate) fn on_start(battle: &mut Battle, side: SideRef, slot: u8) {
                 if battle.plog() {
                     let src = (0..n).find(|&s| battle.side(opp).active_mon(s as usize).is_some_and(|m| m.is_alive() && current_ability(m) == new_id));
                     let of = src.map(|s| battle.p_ident(opp, s)).unwrap_or_default();
-                    pmon!(battle, "-ability", side, slot, "|{}|[from] ability: Trace|[of] {of}", crate::battle_protocol::ability_name(new_id));
+                    // setAbility's `-ability|<new>|<old>|[from] ...|[of] ...`
+                    // (sim/pokemon.ts:1930-1936).
+                    pmon!(battle, "-ability", side, slot, "|{}|Trace|[from] ability: Trace|[of] {of}", crate::battle_protocol::ability_name(new_id));
                 }
                 // PS Trace calls `pokemon.setAbility(ability, target)`, which
                 // runs the copied ability's onStart (sim/pokemon.ts:1943). The

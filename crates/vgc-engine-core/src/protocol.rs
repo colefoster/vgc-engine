@@ -294,6 +294,10 @@ pub struct ProtocolLog {
     pub(crate) res_hp_before: u16,
     /// `[side][team index]` the partial-trapping move holding the mon.
     pub(crate) trap_move: [[u16; 6]; 2],
+    /// The mon whose move is running (side, slot).
+    pub(crate) cur_user: Option<(u8, u8)>,
+    /// The side of the last `|faint|` (checkWin's tie rule).
+    pub(crate) last_faint: Option<u8>,
 }
 
 /// One buffered entry of a reorder window.
@@ -381,6 +385,8 @@ impl ProtocolLog {
             res_speed: [[0; 2]; 2],
             res_hp_before: 0,
             trap_move: [[u16::MAX; 6]; 2],
+            cur_user: None,
+            last_faint: None,
         }
     }
 

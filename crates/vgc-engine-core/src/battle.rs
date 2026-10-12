@@ -11004,8 +11004,13 @@ self.trigger_emergency_exits();
             self.p_tag(crate::protocol::step::AFTER_HIT, ctx.tside, ctx.tslot);
             let item_before = self.side(ctx.tside).active_mon(ctx.tslot as usize).map_or(u16::MAX, |t| t.item_id);
             self.knock_off_take_item(ctx.tside, ctx.tslot);
-            // knockoff onAfterHit (data/moves.ts knockoff).
-            if self.plog() && item_before != u16::MAX && self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| t.item_id == u16::MAX) {
+            // knockoff onAfterHit (data/moves.ts knockoff): takeItem works on
+            // a target the hit knocked out too.
+            let knocked = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
+                t.item_id == u16::MAX || (t.current_hp == 0 && !t.holds_own_mega_stone())
+            });
+            let user_up = self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.current_hp > 0);
+            if self.plog() && item_before != u16::MAX && knocked && user_up {
                 let of = self.p_ident(ctx.actor_side, ctx.actor_slot);
                 self.p_item_line("-enditem", ctx.tside, ctx.tslot, item_before, &format!("|[from] move: Knock Off|[of] {of}"));
             }
