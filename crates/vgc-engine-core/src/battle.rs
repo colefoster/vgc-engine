@@ -2347,6 +2347,25 @@ impl Battle {
         }
     }
 
+    /// The one choice of a mon whose move is locked (PS `getLockedMove`,
+    /// the order `ps_locked_move` reads): Recharge as
+    /// `Move { move_slot: RECHARGE_MOVE_SLOT, target: None }`, else the
+    /// charging or lockedmove slot (a charge keeps its stored target).
+    fn forced_move_choice(&self, side: SideRef, actor_slot: u8, m: &Pokemon) -> Option<Choice> {
+        if m.must_recharge {
+            return Some(Choice::Move { actor_slot, move_slot: crate::choice::RECHARGE_MOVE_SLOT, target: None });
+        }
+        let move_slot = if m.charging_turns > 0 {
+            m.charging_move_slot
+        } else if m.lockin_turns > 0 {
+            m.lockin_move_slot
+        } else {
+            return None;
+        };
+        m.moves.get(move_slot as usize).filter(|&&id| id != u16::MAX)?;
+        Some(self.locked_move_choice(side, Choice::Move { actor_slot, move_slot, target: None }))
+    }
+
     pub fn legal_choices(&self, side: SideRef, actor_slot: u8) -> Vec<Choice> {
         let mut out = Vec::with_capacity(8);
         self.legal_choices_into(side, actor_slot, &mut out);
@@ -2449,6 +2468,14 @@ impl Battle {
             if out.is_empty() || (self.decision_phases && out.len() < dead) {
                 out.push(Choice::Pass { actor_slot });
             }
+            return;
+        }
+        // A locked mon (PS getLockedMove: Recharge, a two-turn move's
+        // release, an Outrage-style lockedmove) gets one choice: PS sends
+        // only that move, `trapped`, no Mega / Tera (sim/pokemon.ts:1083-1151
+        // getMoveRequestData), answered by `move 1`.
+        if let Some(c) = self.forced_move_choice(side, actor_slot, active) {
+            out.push(c);
             return;
         }
 
@@ -44976,6 +45003,36 @@ mod tests {
         let pp = b.p1.team[0].pp[2];
         b.step(&foe(2), &heal);
         assert_eq!(b.p1.team[0].pp[2], pp - 1, "Body Slam is used the turn after");
+    }
+
+    #[test]
+    fn legal_choices_offer_only_the_locked_move() {
+        // PS getMoveRequestData (sim/pokemon.ts:1083-1151): a getLockedMove
+        // mon is sent one move and `trapped`, no switch / Mega / Tera.
+        let p1 = TeamBuilder::from_json(r#"[
+            {"species":"snorlax","level":50,"nature":"adamant","moves":["hyperbeam","dig","outrage","bodyslam"]},
+            {"species":"garchomp","level":50,"moves":["earthquake"]}
+        ]"#).unwrap();
+        let p2 = TeamBuilder::from_json(r#"[{"species":"chansey","level":50,"item":"eviolite","nature":"bold","evs":{"hp":252,"def":252},"moves":["softboiled"]}]"#).unwrap();
+        let mut b = Battle::new(BattleConfig { format: Format::Singles, seed: 1 }, p1, p2);
+        let foe = |slot: u8| [Choice::Move { actor_slot: 0, move_slot: slot, target: Some(t(SideRef::P2, 0)) }];
+        let heal = [Choice::Move { actor_slot: 0, move_slot: 0, target: None }];
+        assert!(b.legal_choices(SideRef::P1, 0).len() > 4);
+        b.step(&foe(0), &heal); // Hyper Beam
+        assert!(b.p1.team[0].must_recharge);
+        assert_eq!(
+            b.legal_choices(SideRef::P1, 0),
+            vec![Choice::Move { actor_slot: 0, move_slot: crate::choice::RECHARGE_MOVE_SLOT, target: None }]
+        );
+        b.step(&b.legal_choices(SideRef::P1, 0), &heal); // recharge
+        assert!(!b.p1.team[0].must_recharge);
+        b.step(&foe(1), &heal); // Dig: charge turn
+        assert!(b.p1.team[0].charging_turns > 0);
+        assert_eq!(b.legal_choices(SideRef::P1, 0), vec![Choice::Move { actor_slot: 0, move_slot: 1, target: Some(t(SideRef::P2, 0)) }]);
+        b.step(&b.legal_choices(SideRef::P1, 0), &heal); // Dig hits
+        b.step(&foe(2), &heal); // Outrage
+        assert!(b.p1.team[0].lockin_turns > 0);
+        assert_eq!(b.legal_choices(SideRef::P1, 0), vec![Choice::Move { actor_slot: 0, move_slot: 2, target: None }]);
     }
 
     #[test]

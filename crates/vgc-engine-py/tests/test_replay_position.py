@@ -105,6 +105,21 @@ def test_prior_ids_are_pinnable():
     pytest.fail("no stop")
 
 
+def test_prior_sample_seed():
+    for _k, orig, _reqs, _omni in stops():
+        spect = "\n".join(orig.protocol_log("spectator"))
+        argmax = vgc_engine.position_from_replay(spect, 4).reconstruction_report()
+        assert "prior_sample_seed" not in argmax
+        a = vgc_engine.position_from_replay(spect, 4, prior_sample_seed=3).reconstruction_report()
+        assert a == vgc_engine.position_from_replay(spect, 4, prior_sample_seed=3).reconstruction_report()
+        assert a["prior_sample_seed"] == 3
+        spreads = {json.dumps([m["spread"]["value"] for m in vgc_engine.position_from_replay(
+            spect, 4, prior_sample_seed=s).reconstruction_report()["sides"]["p2"]["team"]]) for s in range(10)}
+        assert len(spreads) > 1
+        return
+    pytest.fail("no stop")
+
+
 def test_ps_seed_play_out_is_deterministic():
     for k, orig, _reqs, _omni in stops():
         log = "\n".join(orig.protocol_log("spectator"))

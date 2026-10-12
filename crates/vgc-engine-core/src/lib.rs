@@ -79,7 +79,7 @@ pub use battle::{
     ko_split_disabled_state, set_crit_refine_disabled, set_ko_split_disabled, Battle,
     BattleConfig, StepResult,
 };
-pub use choice::{Choice, MoveSlot, Target};
+pub use choice::{Choice, MoveSlot, Target, RECHARGE_MOVE_SLOT, STRUGGLE_MOVE_SLOT};
 pub use damage::{
     calculate_damage, damage_range, damage_range_in_ctx, type_effectiveness, DamageContext,
     TypeEff,

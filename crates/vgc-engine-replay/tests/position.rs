@@ -115,3 +115,119 @@ fn no_prior_still_builds() {
     assert_eq!(rec.report["prior"], "none");
     rec.session(None).unwrap();
 }
+
+/// SHA-256 of every reconstruction of the sample (all turns, each viewer,
+/// with and without lookahead): battle, prefix, report, board and sets.
+fn digest(opts: impl Fn(u32) -> ReconOptions) -> String {
+    let input = parse_input(SAMPLE).unwrap();
+    let prior = Prior::embedded();
+    let mut all = String::new();
+    for n in turns(&input.lines) {
+        for viewer in [None, Some(SideRef::P1), Some(SideRef::P2)] {
+            for lookahead in [false, true] {
+                let mut o = opts(n);
+                o.viewer = viewer;
+                o.lookahead = lookahead;
+                let rec = reconstruct(&input.lines, &o, &prior).unwrap();
+                for v in [rec.battle_json(), rec.prefix_json(), rec.report.clone(), rec.board.clone(), rec.sets.clone()] {
+                    all.push_str(&serde_json::to_string(&v).unwrap());
+                    all.push('\n');
+                }
+            }
+        }
+    }
+    vgc_engine_replay::prior::sha256_hex(all.as_bytes())
+}
+
+#[test]
+fn argmax_output_is_byte_identical_to_0_4_1() {
+    // Recorded at ad420d9 (0.4.1): without `prior_sample_seed` the prior
+    // fill is the argmax, unchanged.
+    assert_eq!(digest(ReconOptions::new), "9dc4662704b3a6e801cb09b61f7bcee4af2852323a4f4bfb2c6a4c11659f09ab");
+}
+
+fn sampled(seed: u64) -> ReconOptions {
+    let mut o = ReconOptions::new(3);
+    o.prior_sample_seed = Some(seed);
+    o
+}
+
+#[test]
+fn prior_samples_are_deterministic_per_seed() {
+    let with = |seed| move |n| {
+        let mut o = ReconOptions::new(n);
+        o.prior_sample_seed = Some(seed);
+        o
+    };
+    assert_eq!(digest(with(7)), digest(with(7)));
+    assert_ne!(digest(with(7)), digest(with(8)));
+    let input = parse_input(SAMPLE).unwrap();
+    let rec = reconstruct(&input.lines, &sampled(7), &Prior::embedded()).unwrap();
+    assert_eq!(rec.report["prior_sample_seed"], 7);
+    let argmax = reconstruct(&input.lines, &ReconOptions::new(3), &Prior::embedded()).unwrap();
+    assert!(argmax.report.get("prior_sample_seed").is_none());
+}
+
+#[test]
+fn prior_samples_keep_revealed_info_and_legality() {
+    let input = parse_input(SAMPLE).unwrap();
+    let prior = Prior::embedded();
+    let argmax = reconstruct(&input.lines, &ReconOptions::new(3), &prior).unwrap();
+    let mut spreads = std::collections::HashSet::new();
+    for seed in 0..40 {
+        let rec = reconstruct(&input.lines, &sampled(seed), &prior).unwrap();
+        for side in ["p1", "p2"] {
+            let team = rec.report["sides"][side]["team"].as_array().unwrap();
+            let items: Vec<&str> = team.iter().filter_map(|m| m["item"]["value"].as_str()).collect();
+            assert_eq!(items.len(), items.iter().collect::<std::collections::HashSet<_>>().len(), "Item Clause, seed {seed}: {items:?}");
+            for (k, m) in team.iter().enumerate() {
+                let moves: Vec<&str> = m["moves"].as_array().unwrap().iter().map(|x| x["value"].as_str().unwrap()).collect();
+                assert_eq!(moves.len(), moves.iter().collect::<std::collections::HashSet<_>>().len(), "duplicate move, seed {seed}: {moves:?}");
+                let a = &argmax.report["sides"][side]["team"][k];
+                for f in ["species", "item", "ability", "nature", "spread"] {
+                    if a[f]["src"] == "exact" {
+                        assert_eq!(m[f], a[f], "{side} {k} {f} seed {seed}");
+                    }
+                }
+                for (j, mv) in a["moves"].as_array().unwrap().iter().enumerate() {
+                    if mv["src"] == "exact" {
+                        assert_eq!(m["moves"][j], *mv);
+                    }
+                }
+                if m["spread"]["src"] == "prior" {
+                    let p = m["spread"]["p"].as_f64().unwrap();
+                    assert!(p > 0.0 && p <= 1.0);
+                }
+            }
+        }
+        spreads.insert(rec.report["sides"]["p2"]["team"][0]["spread"]["value"].to_string());
+        rec.session(None).unwrap();
+    }
+    // Garchomp, a common species: different seeds, different spreads.
+    assert!(spreads.len() > 3, "{spreads:?}");
+}
+
+#[test]
+fn prior_sample_frequency_matches_the_prior() {
+    let input = parse_input(SAMPLE).unwrap();
+    let prior = Prior::embedded();
+    let fmt = reconstruct(&input.lines, &ReconOptions::new(3), &prior).unwrap().format_id;
+    let spreads = &prior.for_format(&fmt).get("Garchomp").unwrap().spreads;
+    let total: f64 = spreads.iter().map(|s| s.p).sum();
+    let n = 600;
+    let mut counts = vec![0usize; spreads.len()];
+    for seed in 0..n {
+        let rec = reconstruct(&input.lines, &sampled(1000 + seed), &prior).unwrap();
+        let g = &rec.report["sides"]["p2"]["team"][0];
+        let vals: Vec<u16> = g["spread"]["value"]["values"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u16).collect();
+        let nat = g["nature"]["value"].as_str().unwrap().to_ascii_lowercase();
+        let k = spreads.iter().position(|s| s.values.as_slice() == vals.as_slice() && s.nature == nat).unwrap();
+        assert!((g["spread"]["p"].as_f64().unwrap() - spreads[k].p).abs() < 1e-3, "p is rounded to 3 places");
+        counts[k] += 1;
+    }
+    for (s, c) in spreads.iter().zip(&counts) {
+        let want = s.p / total;
+        let got = *c as f64 / n as f64;
+        assert!((got - want).abs() < 0.06, "{} {:?}: {got:.3} vs {want:.3}", s.nature, s.values);
+    }
+}

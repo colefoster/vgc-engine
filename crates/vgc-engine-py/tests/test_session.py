@@ -302,3 +302,69 @@ def test_observe_side_hides_unrevealed_items_and_abilities():
     assert own["item"] == "lifeorb" and own["moves"] == ["earthquake", "dragonclaw", "protect", "rockslide"]
     assert own["hp"] == own["max_hp"] == 183
     assert o["weather"] == "Sandstorm"
+
+
+BEAM = json.dumps([
+    {"species": "snorlax", "gender": "M", "level": 50, "item": "leftovers", "ability": "thickfat",
+     "moves": ["hyperbeam", "bodyslam", "protect", "crunch"]},
+    {"species": "garchomp", "gender": "M", "level": 50, "item": "lifeorb", "ability": "roughskin",
+     "moves": ["protect", "dragonclaw", "earthquake", "rockslide"]},
+    {"species": "incineroar", "gender": "M", "level": 50, "item": "sitrusberry", "ability": "intimidate",
+     "moves": ["fakeout", "flareblitz", "partingshot", "knockoff"]},
+    {"species": "gengar", "gender": "M", "level": 50, "item": "focussash", "ability": "cursedbody",
+     "moves": ["shadowball", "sludgebomb", "protect", "trickroom"]},
+])
+# Turn 1: Snorlax Hyper Beams p2a, Garchomp Protects; Tyranitar Rock Slide, Amoonguss Rage Powder.
+BEAM_T1 = (("p1", "team 1234"), ("p2", "team 1234"), ("p1", "move 1 1, move 1"), ("p2", "move 1, move 2"))
+P2_T2 = "move 1, move 2"
+
+
+def recharge_seed():
+    """A seed whose turn 2 has p1's Snorlax recharging."""
+    for seed in range(1, 40):
+        b = vgc_engine.Battle.from_teams(BEAM, P2, format=FORMAT, seed=seed, ps_session=True)
+        for side, c in BEAM_T1:
+            assert b.choose(side, c) is None
+        if json.loads(b.request("p1"))["active"][0]["moves"][0]["id"] == "recharge":
+            return seed
+    raise AssertionError("Hyper Beam never connected")
+
+
+def recharge_session(seed):
+    b = vgc_engine.Battle.from_teams(BEAM, P2, format=FORMAT, seed=seed, ps_session=True)
+    for side, c in BEAM_T1:
+        assert b.choose(side, c) is None
+    return b
+
+
+def test_recharge_request_and_choices():
+    seed = recharge_seed()
+    b = recharge_session(seed)
+    a = json.loads(b.request("p1"))["active"][0]
+    # PS getMoveRequestData for a getLockedMove mon: one short-form move, trapped.
+    assert a["moves"] == [{"move": "Recharge", "id": "recharge"}]
+    assert a["trapped"] is True
+    assert b.legal_choices(0, 0) == [("recharge", 0, 0, -1, -1)]
+    assert len(b.legal_choices(0, 1)) > 1
+    assert b.choose("p1", "move 1, move 2 1") is None
+    assert b.choose("p2", P2_T2) is None
+    log = "\n".join(b.player_stream("p1"))
+    assert "|cant|p1a: Snorlax|recharge" in log
+
+    b2 = recharge_session(seed)
+    assert b2.choose("p1", "default") is None
+    assert b2.choose("p2", P2_T2) is None
+    assert "|cant|p1a: Snorlax|recharge" in "\n".join(b2.player_stream("p1"))
+
+
+def test_recharge_legal_choice_round_trips_through_step_move():
+    seed = recharge_seed()
+    b = vgc_engine.Battle.from_teams(BEAM, P2, format=FORMAT, seed=seed)
+    p2 = [("move", 0, 0, -1, -1), ("move", 1, 1, -1, -1)]
+    for _ in range(10):
+        if b.legal_choices(0, 0)[0][0] == "recharge":
+            break
+        b.step_move([("move", 0, 0, 1, 0), ("move", 1, 0, -1, -1)], p2)
+    assert b.legal_choices(0, 0) == [("recharge", 0, 0, -1, -1)]
+    b.step_move([("recharge", 0, 0, -1, -1), ("move", 1, 1, 1, 0)], p2)
+    assert b.legal_choices(0, 0)[0][0] != "recharge"

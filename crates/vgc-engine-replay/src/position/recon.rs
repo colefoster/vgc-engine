@@ -236,7 +236,8 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         ordered_for_prior.sort_by_key(|&i| tr.mons[side][i].item_orig.is_none());
         let mut by_mon: Vec<Option<SetPick>> = vec![None; tr.mons[side].len()];
         for &i in &ordered_for_prior {
-            by_mon[i] = Some(resolve_set(&tr, side, i, req, user_sets, later.as_ref(), prior, champions, &mut used_items)?);
+            let mut sampler = opts.prior_sample_seed.map(|seed| PriorSampler::for_mon(seed, side, i));
+            by_mon[i] = Some(resolve_set(&tr, side, i, req, user_sets, later.as_ref(), prior, champions, &mut used_items, sampler.as_mut())?);
         }
         picks[side] = order.iter().map(|&i| by_mon[i].clone().unwrap()).collect();
         brought_src[side] = order.iter().map(|i| bsrc[brought.iter().position(|b| b == i).unwrap()]).collect();
@@ -680,6 +681,10 @@ pub fn reconstruct(lines: &[String], opts: &ReconOptions, prior: &Prior) -> Resu
         "n_prior_fields": n_prior,
         "n_fields": n_fields,
     });
+    let mut report = report;
+    if let Some(seed) = opts.prior_sample_seed {
+        report["prior_sample_seed"] = json!(seed);
+    }
     Ok(Reconstruction { battle: b, format_id: fid, prefix, player_names: tr.names.clone(), report, board, sets: sets_out })
 }
 
