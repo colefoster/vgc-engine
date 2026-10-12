@@ -20,6 +20,22 @@ macro_rules! plog {
 
 pub use vgc_engine_data::Gender;
 
+/// `|tag|<ident of the mon in side/slot>{rest}`; `rest` is formatted only
+/// when the battle keeps a protocol log.
+macro_rules! pmon {
+    ($b:expr, $tag:expr, $side:expr, $slot:expr) => {
+        if $b.protocol.on() {
+            $b.p_mon($tag, $side, $slot, "");
+        }
+    };
+    ($b:expr, $tag:expr, $side:expr, $slot:expr, $($arg:tt)+) => {
+        if $b.protocol.on() {
+            let __rest = format!($($arg)+);
+            $b.p_mon($tag, $side, $slot, &__rest);
+        }
+    };
+}
+
 mod choice;
 mod format;
 pub mod format_rules;

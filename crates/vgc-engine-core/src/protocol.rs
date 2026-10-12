@@ -147,6 +147,45 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
     }
 }
 
+/// The effect behind a boost, which picks its protocol lines (PS
+/// `battle.boost`, sim/battle.ts:2048-2081).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BoostFx {
+    /// A move's own boost (`effectType === 'Move'`): a zero change prints.
+    #[default]
+    Move,
+    /// A move secondary / self effect (`isSecondary` / `isSelf`): a zero
+    /// change prints nothing.
+    MoveSecondary,
+    /// `[from] item: X`.
+    Item(u16),
+    /// `-ability|X|boost` first (unless `isSecondary`), then the lines.
+    Ability(u16),
+    /// The ability already announced itself (`isSecondary`).
+    AbilitySecondary(u16),
+    /// `isSelf` ability boost (Competitive, Defiant): zero changes print.
+    AbilitySelf(u16),
+    /// No lines.
+    Silent,
+}
+
+/// The source effect of a status infliction, which picks its `-status`
+/// suffix (data/conditions.ts brn / par / slp ... onStart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum StatusFx {
+    /// A move or a condition: plain (slp prints `[from] move:` for moves).
+    #[default]
+    Plain,
+    /// `[from] move: X` for sleep.
+    Move(u16),
+    /// `[from] ability: X|[of] <source side, slot>`.
+    Ability(u16, u8, u8),
+    /// `[from] item: Flame Orb` / `Toxic Orb`.
+    Item(u16),
+    /// Nothing printed.
+    Silent,
+}
+
 /// The battle's handle on its log. `Clone` yields an empty slot: solver and
 /// search clones never carry (or copy) the log.
 #[derive(Default)]
@@ -187,9 +226,7 @@ impl ProtoSlot {
     }
     pub(crate) fn add(&mut self, line: String) {
         if let Some(l) = self.0.as_deref_mut() {
-            if !l.ended {
-                l.lines.push(line);
-            }
+            l.push(line);
         }
     }
 }
@@ -219,6 +256,84 @@ pub struct ProtocolLog {
     pub(crate) champions_hp: bool,
     /// Open Team Sheets: clear the `otsrequest` box at start.
     pub(crate) ots: bool,
+    /// The next `do_switch`'s line tag and suffix (`drag`, `|[from] U-turn`).
+    pub(crate) switch_ctx: Option<(&'static str, String)>,
+    /// `[side][slot]` the move each active last printed a `|move|` for.
+    pub(crate) last_move: [[u16; 2]; 2],
+    /// A defrost move thawed its user: print the cure after `|move|`.
+    pub(crate) defrost_pending: bool,
+    /// The next `apply_boosts` call's effect.
+    pub(crate) boost_fx: BoostFx,
+    /// The next status infliction's effect.
+    pub(crate) status_fx: StatusFx,
+    /// The move being executed (PS `activeMove`), `u16::MAX` between actions.
+    pub(crate) active_move: u16,
+    /// A `|move|` line not yet written: the BeforeMove-style checks the
+    /// engine runs after the move's announcement point can still cancel
+    /// it (`cant` lines precede `|move|` in PS).
+    pub(crate) pending_move: Option<String>,
+    /// An open reorder window (a spread move's hit steps).
+    pub(crate) window: Option<Box<Window>>,
+    /// The crit flag of the hit being resolved (multi-hit re-rolls).
+    pub(crate) hit_crit: bool,
+    /// `-hitcount` to print after the hit loop: (side, slot, hits).
+    pub(crate) hitcount: Option<(u8, u8, u8)>,
+    /// The hit loop's end (faintMessages, `-hitcount`) already printed.
+    pub(crate) loop_ended: bool,
+    /// Lines printed right before a mon's `|faint|` (Destiny Bond).
+    pub(crate) faint_prefix: Vec<(u8, u8, String)>,
+}
+
+/// One buffered entry of a reorder window.
+#[derive(Debug, Clone)]
+pub(crate) enum WinEntry {
+    Line(String),
+    Split(u8, String, String),
+}
+
+/// A reorder window: the engine resolves a spread move target by target,
+/// PS step by step across all targets (sim/battle-actions.ts
+/// trySpreadMoveHit / spreadMoveHit). Lines are tagged with the current
+/// (hit, step, target rank) key and written in key order on close.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Window {
+    pub(crate) entries: Vec<(u32, WinEntry)>,
+    pub(crate) key: u32,
+    /// Bit `rank`: the target reached the damage step (PS `hitTargets`).
+    pub(crate) hit_ranks: u8,
+    /// `p1a`-style slot of each target rank, for `[spread]`.
+    pub(crate) rank_slots: [[u8; 3]; 4],
+    pub(crate) n_ranks: u8,
+    /// The hit number of the lines that follow (255 = after the loop).
+    pub(crate) hit: u8,
+}
+
+/// Step tags for [`Window`] keys, in PS's order.
+pub(crate) mod step {
+    pub const PRE: u8 = 0;
+    pub const INVULN: u8 = 1;
+    pub const TRYHIT: u8 = 2;
+    pub const TYPE_IMMUNE: u8 = 3;
+    pub const TRY_IMMUNE: u8 = 4;
+    pub const ACCURACY: u8 = 5;
+    pub const BREAK_PROTECT: u8 = 6;
+    pub const SUBSTITUTE: u8 = 7;
+    pub const CALC: u8 = 8;
+    pub const CALC_ITEM: u8 = 9;
+    pub const DAMAGE: u8 = 10;
+    pub const EFFECTS: u8 = 11;
+    pub const SELF_DROP: u8 = 12;
+    pub const SECONDARY: u8 = 13;
+    pub const DAMAGING_HIT: u8 = 14;
+    pub const AFTER_HIT: u8 = 15;
+    pub const UPDATE: u8 = 16;
+    // After the hit loop (`hit` = 255): faintMessages, `-hitcount`,
+    // recoil, the move's AfterMoveSecondary (Eject Button, Red Card).
+    pub const LOOP_FAINT: u8 = 20;
+    pub const AFTER_FAINT: u8 = 21;
+    pub const HITCOUNT: u8 = 22;
+    pub const RECOIL: u8 = 23;
+    pub const AFTER_SECONDARY: u8 = 24;
 }
 
 impl ProtocolLog {
@@ -236,6 +351,18 @@ impl ProtocolLog {
             fainted_logged: 0,
             champions_hp: false,
             ots: false,
+            switch_ctx: None,
+            last_move: [[u16::MAX; 2]; 2],
+            defrost_pending: false,
+            boost_fx: BoostFx::Move,
+            status_fx: StatusFx::Plain,
+            active_move: u16::MAX,
+            pending_move: None,
+            window: None,
+            hit_crit: false,
+            hitcount: None,
+            loop_ended: false,
+            faint_prefix: Vec::new(),
         }
     }
 
@@ -259,15 +386,26 @@ impl ProtocolLog {
     }
 
     pub(crate) fn push(&mut self, line: String) {
-        if !self.ended {
-            self.lines.push(line);
+        if self.ended {
+            return;
         }
+        self.flush_pending_move();
+        if let Some(w) = self.window.as_deref_mut() {
+            w.entries.push((w.key, WinEntry::Line(line)));
+            return;
+        }
+        self.lines.push(line);
     }
 
     /// PS `addSplit(side, secret, shared)`: `shared = None` hides the line
     /// from everyone but `side` (and the omniscient channel).
     pub(crate) fn push_split(&mut self, side: u8, secret: String, shared: Option<String>) {
         if self.ended {
+            return;
+        }
+        self.flush_pending_move();
+        if let Some(w) = self.window.as_deref_mut() {
+            w.entries.push((w.key, WinEntry::Split(side, secret, shared.unwrap_or_default())));
             return;
         }
         self.lines.push(format!("|split|p{}", side + 1));
@@ -279,12 +417,46 @@ impl ProtocolLog {
         if self.ended {
             return;
         }
+        self.flush_pending_move();
         self.last_move_line = Some(self.lines.len());
         self.lines.push(line);
     }
 
+    /// Write a pending `|move|` line (see `pending_move`).
+    pub(crate) fn flush_pending_move(&mut self) {
+        if let Some(l) = self.pending_move.take() {
+            self.last_move_line = Some(self.lines.len());
+            self.lines.push(l);
+        }
+    }
+
+    /// Open a reorder window (see [`Window`]).
+    pub(crate) fn window_open(&mut self) {
+        self.flush_pending_move();
+        if self.window.is_none() {
+            self.window = Some(Box::default());
+        }
+    }
+
+    /// Close the window: its lines, stably sorted by key, join the log.
+    pub(crate) fn window_close(&mut self) {
+        let Some(mut w) = self.window.take() else { return };
+        w.entries.sort_by_key(|(k, _)| *k);
+        for (_, e) in w.entries {
+            match e {
+                WinEntry::Line(l) => self.lines.push(l),
+                WinEntry::Split(side, a, b) => {
+                    self.lines.push(format!("|split|p{}", side + 1));
+                    self.lines.push(a);
+                    self.lines.push(b);
+                }
+            }
+        }
+    }
+
     /// PS `attrLastMove` (sim/battle.ts:3122-3140).
     pub(crate) fn attr_last_move(&mut self, attr: &str) {
+        self.flush_pending_move();
         let Some(i) = self.last_move_line else { return };
         if self.ended || i >= self.lines.len() {
             return;
@@ -309,6 +481,7 @@ impl ProtocolLog {
 
     /// PS `retargetLastMove` (sim/battle.ts:3142-3147).
     pub(crate) fn retarget_last_move(&mut self, target: &str) {
+        self.flush_pending_move();
         let Some(i) = self.last_move_line else { return };
         if self.ended || i >= self.lines.len() {
             return;
