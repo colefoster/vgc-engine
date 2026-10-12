@@ -267,7 +267,7 @@ pub(super) fn resolve_set(
         });
         match cand {
             Some((s, total)) => {
-                let vals = if s.sp == sp { s.values } else if sp { s.values.map(|x| (x + 7) / 8) } else { s.values.map(|x| if x == 0 { 0 } else { (8 * x - 4).min(252) }) };
+                let vals = if s.sp == sp { s.values } else if sp { s.values.map(|x| x.div_ceil(8)) } else { s.values.map(|x| if x == 0 { 0 } else { (8 * x - 4).min(252) }) };
                 spread = pk(vals, Src::Prior, Some(if nature.src == Src::Exact { s.p / total.max(1e-9) } else { s.p }));
                 if nature.src != Src::Exact {
                     nature = pk(s.nature.clone(), Src::Prior, Some(s.p));
@@ -525,7 +525,7 @@ pub(super) fn board_mon(view: &[String], side: usize, m: &Mon, sp: &SetPick, hp:
             continue;
         }
         // Encore needs the encored move in the kit (not Struggle).
-        if v.name == "ENCORE" && !m.last_move.as_deref().is_some_and(&in_set) {
+        if v.name == "ENCORE" && !m.last_move.as_deref().is_some_and(in_set) {
             continue;
         }
         if let Some(ai) = vgc_engine_core::ps_board::AGE_ORDER.iter().position(|a| *a == v.name) {
@@ -653,6 +653,3 @@ pub(super) fn mon_report(m: &Mon, sp: &SetPick, built: &vgc_engine_core::Pokemon
     out["n_fields"] = json!(n);
     out
 }
-
-#[allow(dead_code)]
-fn unused(_: BTreeMap<u8, u8>) {}

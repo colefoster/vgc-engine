@@ -21,7 +21,7 @@
 //! active / move actions, ...). The prefix (the log up to the stop) becomes
 //! the position's history, so each player's stream carries the real past.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use serde_json::{json, Map, Value};
 use vgc_engine_core::ps_position::{raw_channel, Prefix};

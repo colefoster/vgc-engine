@@ -201,10 +201,50 @@ fn choice_item(id: u16) -> bool {
 
 /// Every compared state field: (name, matched). Hidden counters (sleep
 /// turns left, confusion turns left) are returned apart.
+/// `rec` with each side's team reordered to the truth's (matched by Pokédex
+/// number): a spectator cannot know the bench's pick order, so per-mon
+/// fields are compared mon to mon.
+fn align(truth: &Battle, rec: &Battle) -> Battle {
+    let mut out = rec.clone();
+    for side in [SideRef::P1, SideRef::P2] {
+        let (st, sr) = (truth.side(side), rec.side(side));
+        let num = |m: &Pokemon| data::SPECIES.get(m.set_species_id.min(data::SPECIES.len() as u16 - 1) as usize).map(|s| s.num).unwrap_or(0);
+        let mut map: Vec<Option<usize>> = vec![None; st.team.len()];
+        let mut used = vec![false; sr.team.len()];
+        for (k, a) in st.team.iter().enumerate() {
+            if let Some(j) = (0..sr.team.len()).find(|&j| !used[j] && num(&sr.team[j]) == num(a)) {
+                map[k] = Some(j);
+                used[j] = true;
+            }
+        }
+        for slot in map.iter_mut() {
+            if slot.is_none() {
+                if let Some(j) = (0..sr.team.len()).find(|&j| !used[j]) {
+                    *slot = Some(j);
+                    used[j] = true;
+                }
+            }
+        }
+        if map.iter().any(Option::is_none) || sr.team.len() != st.team.len() {
+            continue;
+        }
+        let old_to_new = |j: u8| map.iter().position(|&m| m == Some(j as usize)).map(|x| x as u8).unwrap_or(j);
+        let sd = if side == SideRef::P1 { &mut out.p1 } else { &mut out.p2 };
+        sd.team = map.iter().map(|j| sr.team[j.unwrap()].clone()).collect();
+        for a in sd.active.iter_mut() {
+            *a = old_to_new(*a);
+        }
+        for p in sd.ps_order.iter_mut().take(st.team.len()) {
+            *p = old_to_new(*p);
+        }
+    }
+    out
+}
+
 fn compare(truth: &Battle, rec: &Battle) -> (Vec<(String, bool)>, Vec<(String, bool)>) {
     let mut f: Vec<(String, bool)> = Vec::new();
     let mut hidden: Vec<(String, bool)> = Vec::new();
-    let mut chk = |out: &mut Vec<(String, bool)>, name: &str, a: String, b: String| out.push(if a == b { (name.to_string(), true) } else { (format!("{name}: {a} vs {b}"), false) });
+    let chk = |out: &mut Vec<(String, bool)>, name: &str, a: String, b: String| out.push(if a == b { (name.to_string(), true) } else { (format!("{name}: {a} vs {b}"), false) });
     for side in [SideRef::P1, SideRef::P2] {
         let (st, sr) = (truth.side(side), rec.side(side));
         chk(&mut f, "team_size", st.team.len().to_string(), sr.team.len().to_string());
@@ -491,7 +531,7 @@ fn run(job: &Job, prior: &Prior) -> Result<Value, String> {
     match reconstruct(&spect, &ro, prior) {
         Err(e) => out["hidden"] = json!({"error": e.bucket, "detail": e.detail}),
         Ok(r) => {
-            let (fields, _) = compare(&truth, &r.battle);
+            let (fields, _) = compare(&truth, &align(&truth, &r.battle));
             let mut per: BTreeMap<String, (usize, usize)> = BTreeMap::new();
             for (name, ok) in &fields {
                 let e = per.entry(name.split(':').next().unwrap_or("").to_string()).or_default();
