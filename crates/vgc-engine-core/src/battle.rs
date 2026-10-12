@@ -958,6 +958,7 @@ impl Battle {
         // endTurn's `|turn|1` (sim/battle.ts:1785).
         b.p_faint_messages();
         plog!(b, "|turn|{}", b.turn + 1);
+        b.p_sync(crate::protocol::SyncKind::Move);
         b
     }
 
@@ -2487,7 +2488,10 @@ impl Battle {
         loop {
             match self.step_one(&mut cursor) {
                 StepProgress::Continue => continue,
-                StepProgress::Done(r) => return r,
+                StepProgress::Done(r) => {
+                    self.p_step_sync(r);
+                    return r;
+                }
                 StepProgress::ChanceYield { space, .. } => {
                     // Default in-step driver: draw the bucket from the
                     // live RNG and resume on that single path. Preserves
@@ -6195,6 +6199,8 @@ self.trigger_emergency_exits();
     /// matches PS's "no eligible replacement → switch fails silently".
     fn apply_self_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
         self.p_mid_turn_resumed = false;
+        // runAction's switch request comes before any pending switch runs.
+        self.p_mid_turn_sync();
         #[cfg(feature = "ps-rng")]
         let mut ps_committed = false;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
@@ -17018,7 +17024,7 @@ self.trigger_emergency_exits();
 
     /// Whether the Pokemon an Octolock payload names is still on the field
     /// and able to act (PS: `source.isActive && source.hp`).
-    fn octolock_source_active(&self, payload: u32) -> bool {
+    pub(crate) fn octolock_source_active(&self, payload: u32) -> bool {
         let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
         let slot = ((payload >> 8) & 0xFF) as usize;
         let idx = (payload & 0xFF) as usize;
@@ -18310,6 +18316,11 @@ self.trigger_emergency_exits();
                 // swapPosition's `|swap|` (sim/battle.ts:1595).
                 pmon!(self, "swap", actor_side, actor_slot, "|{partner_slot}|[from] move: Ally Switch");
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
+                // swapPosition also swaps the two in `side.pokemon`
+                // (sim/battle.ts:1585-1593): the request's team order.
+                if let Some(l) = self.protocol.log_mut() {
+                    l.pos[actor_side as usize].swap(actor_slot as usize, partner_slot);
+                }
                 // PR-EOT3: the two active slots' DOT bits swap with them.
                 self.sync_status_dot_bit(actor_side, actor_slot);
                 self.sync_status_dot_bit(actor_side, partner_slot as u8);

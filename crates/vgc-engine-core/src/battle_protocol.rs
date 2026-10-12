@@ -4,7 +4,8 @@
 
 use crate::battle::Battle;
 use crate::data;
-use crate::protocol::{health, BoostFx, ProtocolLog, ProtocolOptions, ProtocolView};
+use crate::protocol::{health, BoostFx, ProtocolLog, ProtocolOptions, ProtocolView, SyncKind};
+use crate::ps_request::RequestKind;
 
 pub(crate) const BOOST_NAMES: [&str; 7] = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"];
 use crate::side::SideRef;
@@ -1954,6 +1955,11 @@ impl Battle {
         self.p_push(format!("|t:|{t}"));
         self.p_push(format!("|gametype|{}", if doubles { "doubles" } else { "singles" }));
         for side in 0..2 {
+            // `>start` and `>player p1` each end in their own sendUpdates.
+            if let Some(l) = self.protocol.log_mut() {
+                let n = l.len();
+                l.cuts.push(n);
+            }
             let name = self.protocol.log().map(|l| l.player_names[side].clone()).unwrap_or_default();
             self.p_push(format!("|player|p{}|{name}||", side + 1));
         }
@@ -1986,6 +1992,75 @@ impl Battle {
         }
         if let Some(l) = self.protocol.log_mut() {
             l.ots = pre.open_team_sheets && pre.team_preview;
+            l.picked_team_size = if pre.team_preview { pre.picked_team_size } else { 0 };
+        }
+        if pre.team_preview {
+            self.p_sync_cold(SyncKind::TeamPreview);
+        }
+    }
+
+    /// Record an input stop (PS makeRequest + sendUpdates) with both
+    /// sides' requests.
+    #[inline(always)]
+    pub(crate) fn p_sync(&mut self, kind: SyncKind) {
+        if self.plog() {
+            self.p_sync_cold(kind);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn p_sync_cold(&mut self, kind: SyncKind) {
+        let rk = match kind {
+            SyncKind::TeamPreview => RequestKind::TeamPreview,
+            SyncKind::Move => RequestKind::Move,
+            SyncKind::MidTurn(f) | SyncKind::Replace(f) => RequestKind::Switch(f),
+        };
+        let reqs = self.ps_requests(rk);
+        if let Some(l) = self.protocol.log_mut() {
+            l.add_sync(kind, reqs);
+        }
+    }
+
+    /// The stop after a `step` (sim/battle.ts:2900-2912, 1800): a switch
+    /// request for faint replacements / a residual Emergency Exit, else
+    /// the next turn's move request; none once the battle is over.
+    #[inline(always)]
+    pub(crate) fn p_step_sync(&mut self, r: crate::battle::StepResult) {
+        if self.plog() && matches!(r, crate::battle::StepResult::Continue) {
+            self.p_step_sync_cold();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_step_sync_cold(&mut self) {
+        if self.decision_phases && self.needs_replacements() {
+            let f = self.ps_replacement_flags();
+            self.p_sync_cold(SyncKind::Replace(f));
+        } else {
+            self.p_sync_cold(SyncKind::Move);
+        }
+    }
+
+    /// A mid-turn switch request before `apply_self_switches` resolves the
+    /// pending switches (sim/battle.ts:2881-2912).
+    #[inline(always)]
+    pub(crate) fn p_mid_turn_sync(&mut self) {
+        if self.plog() {
+            self.p_mid_turn_sync_cold();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn p_mid_turn_sync_cold(&mut self) {
+        let pending = [SideRef::P1, SideRef::P2].into_iter().any(|side| {
+            (0..self.format().active_count()).any(|slot| self.side(side).active_mon(slot).is_some_and(|m| m.pending_self_switch()))
+        });
+        if pending {
+            let f = self.ps_mid_turn_flags();
+            self.p_sync_cold(SyncKind::MidTurn(f));
         }
     }
 
