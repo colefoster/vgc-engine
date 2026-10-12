@@ -313,6 +313,18 @@ impl Battle {
         rank
     }
 
+    /// Recompute the weather's eachEvent order once its draws are known
+    /// (`ps-rng`: the engine draws them after the residual window opened).
+    pub(crate) fn p_res_refresh_weather_order(&mut self) {
+        if !self.plog() || self.protocol.log().is_none_or(|l| l.res_plan.is_none()) {
+            return;
+        }
+        let rank = self.p_res_weather_order();
+        if let Some(plan) = self.protocol.log_mut().and_then(|l| l.res_plan.as_deref_mut()) {
+            plan.each_rank = rank;
+        }
+    }
+
     /// Open the residual window and model PS's handler order.
     #[inline(always)]
     pub(crate) fn p_res_open(&mut self) {

@@ -455,17 +455,21 @@ fn phantom_force_strikes_through_protect() {
 #[test]
 fn psychic_fangs_shatters_the_targets_screens() {
     // PS data/moves.ts psychicfangs onTryHit: the target side loses Reflect,
-    // Light Screen and Aurora Veil before the hit.
-    let mut b = singles(
-        r#"[{"species":"bruxish","level":50,"ability":"strongjaw","moves":["psychicfangs","splash"]}]"#,
-        r#"[{"species":"grimmsnarl","level":50,"ability":"prankster","moves":["reflect","lightscreen"],"evs":{"hp":252}}]"#,
-        1,
-    );
-    b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
-    assert!(b.p2.conditions.reflect_turns > 0);
-    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
-    assert_eq!(b.p2.conditions.reflect_turns, 0);
-    assert_eq!(b.p2.conditions.light_screen_turns, 0);
+    // Light Screen and Aurora Veil before the hit. The move's own onTryHit
+    // runs in spreadMoveHit (sim/battle-actions.ts:1034-1045), after the
+    // immunity and accuracy steps, so an immune (Dark) target keeps them
+    // (checked against PS a5df8274: `-immune`, no `-sideend`).
+    let run = |species: &str| {
+        let p2 = format!(r#"[{{"species":"{species}","level":50,"ability":"prankster","moves":["reflect","lightscreen"],"evs":{{"hp":252}}}}]"#);
+        let mut b = singles(r#"[{"species":"bruxish","level":50,"ability":"strongjaw","moves":["psychicfangs","splash"]}]"#, &p2, 1);
+        b.step(&[mv(0, 1, None)], &[mv(0, 0, None)]);
+        assert!(b.p2.conditions.reflect_turns > 0);
+        b.step(&[mv(0, 0, Some(t(SideRef::P2, 0)))], &[mv(0, 1, None)]);
+        (b.p2.conditions.reflect_turns, b.p2.conditions.light_screen_turns)
+    };
+    assert_eq!(run("whimsicott"), (0, 0));
+    let (reflect, light_screen) = run("grimmsnarl");
+    assert!(reflect > 0 && light_screen > 0, "an immune target keeps its screens");
 }
 
 #[test]

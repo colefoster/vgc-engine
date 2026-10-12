@@ -380,6 +380,10 @@ pub struct ProtocolLog {
     /// A keyed replay's random target for a `randomNormal` move (Struggle)
     /// chosen without one: the `|move|` line's pick, which the hit uses too.
     pub(crate) random_pick: Option<(crate::side::SideRef, u8)>,
+    /// `ps-rng`: runMove's getTarget pick for the action now running (the
+    /// `|move|` line's target when getTarget falls to getRandomTarget, e.g.
+    /// a spread move's).
+    pub(crate) ps_target_pick: Option<(crate::side::SideRef, u8)>,
     /// Points where PS stops for input: `sendUpdates` flushes the log so far
     /// as an `update`, then each side's `|request|` (sim/battle.ts:3267-3274).
     pub(crate) sync: Vec<SyncPoint>,
@@ -566,6 +570,7 @@ impl ProtocolLog {
             illusion: [[255; 6]; 2],
             picked_team_size: 0,
             random_pick: None,
+            ps_target_pick: None,
             exact_hp: false,
             sync: Vec::new(),
             cuts: Vec::new(),
