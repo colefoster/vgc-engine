@@ -204,6 +204,25 @@ fn a_secondary_drop_at_minus_six_prints_nothing() {
 }
 
 #[test]
+fn soak_fails_on_pure_water_and_terastallized_targets() {
+    // PS data/moves.ts soak onHit: `-fail|<target>` when the target is
+    // already pure Water or setType refuses (Terastallized). Sim-diff
+    // b00029 (Soak into a Tera Dragon Kommo-o, Reg I).
+    let p1 = r#"[{"species":"bellibolt","level":50,"ability":"static","moves":["soak"]},
+        {"species":"pikachu","level":50,"ability":"static","moves":["splash"]}]"#;
+    let p2 = r#"[{"species":"kommoo","level":50,"ability":"soundproof","moves":["splash"]},
+        {"species":"milotic","level":50,"ability":"competitive","moves":["splash"]}]"#;
+    let mut b = logged_doubles(p1, p2, 3);
+    b.p2.team[0].terastallized = true;
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 0))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    b.step(&[mv(0, 0, Some(t(SideRef::P2, 1))), mv(1, 0, None)], &[mv(0, 0, None), mv(1, 0, None)]);
+    let log = log_lines(&b);
+    assert!(log.iter().any(|l| l == "|-fail|p2a: Kommo-o"), "Tera target");
+    assert!(log.iter().any(|l| l == "|-fail|p2b: Milotic"), "pure Water target");
+    assert!(!log.iter().any(|l| l.contains("typechange")));
+}
+
+#[test]
 fn spread_drain_logs_each_heal_in_ps_target_order() {
     // allAdjacent lists the user's allies before its foes (PS
     // sim/pokemon.ts:809-813) and spreadDamage heals after each target in
