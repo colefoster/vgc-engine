@@ -145,6 +145,14 @@ impl Battle {
         }
     }
 
+    /// `!side.foePokemonLeft()`: every foe's `|faint|` printed, so boost()
+    /// does nothing (sim/battle.ts boost).
+    pub(crate) fn p_no_foes_left(&self, side: SideRef) -> bool {
+        let foe = side.opposing();
+        let n = self.side(foe).team.len().min(8);
+        (0..n as u8).all(|i| self.p_faint_logged(foe, i))
+    }
+
     /// switchIn's position swap, then Illusion's onBeforeSwitchIn
     /// (sim/battle-actions.ts:125-144; data/abilities.ts:2056-2070).
     fn p_switch_positions(&mut self, side: SideRef, slot: u8, idx: u8) {
@@ -445,7 +453,7 @@ impl Battle {
 
     /// The per-stat lines of one `boost` call (sim/battle.ts:2038-2082).
     pub(crate) fn p_boost_lines(&mut self, side: SideRef, slot: u8, deltas: &[(u8, i8)], before: [i8; 7], fx: BoostFx) {
-        if !self.plog() || fx == BoostFx::Silent {
+        if !self.plog() || fx == BoostFx::Silent || self.p_no_foes_left(side) {
             return;
         }
         let Some(after) = self.side(side).active_mon(slot as usize).map(|m| m.boosts) else { return };

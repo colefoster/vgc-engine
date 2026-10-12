@@ -538,8 +538,9 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
         let before = battle.side(opp).active_mon(s as usize).map_or([0; 7], |t| t.boosts);
         battle.p_boost_fx(crate::protocol::BoostFx::AbilitySecondary(data::ability_id::INTIMIDATE));
         battle.apply_boosts(opp, s, &[(0, -1)], side, slot);
-        // Defiant / Competitive, Eject Pack, then White Herb.
-        battle.after_foe_drop(opp, s, before, true);
+        // Defiant / Competitive, Eject Pack; White Herb waits for the
+        // Update after the whole ability (data/items.ts whiteherb onUpdate).
+        battle.after_drop_no_herb(opp, s, before, true, true);
         adrenaline_orb(battle);
         // Rattled — PS `data/abilities.ts:rattled` onAfterBoost grants +1 Spe
         // on an Intimidate target (stacks with the drop).
@@ -547,6 +548,9 @@ pub(crate) fn fire_intimidate(battle: &mut Battle, side: SideRef, slot: u8) {
             battle.p_boost_fx(crate::protocol::BoostFx::Ability(data::ability_id::RATTLED));
             battle.apply_boosts(opp, s, &[(4, 1)], opp, s);
         }
+    }
+    for s in 0..n {
+        crate::item::try_consume_white_herb(battle, opp, s);
     }
 }
 

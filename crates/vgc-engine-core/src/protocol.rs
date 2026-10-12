@@ -444,6 +444,23 @@ impl ProtocolLog {
         self.lines.push(line);
     }
 
+    /// Remove the last `n` plain lines if each starts with `prefix`
+    /// (window-aware); `None` leaves the log unchanged.
+    pub(crate) fn pop_tail_lines(&mut self, n: usize, prefix: &str) -> Option<Vec<String>> {
+        if let Some(w) = self.window.as_deref_mut() {
+            let len = w.entries.len();
+            if len < n || !w.entries[len - n..].iter().all(|(_, e)| matches!(e, WinEntry::Line(l) if l.starts_with(prefix))) {
+                return None;
+            }
+            return Some(w.entries.drain(len - n..).map(|(_, e)| match e { WinEntry::Line(l) => l, WinEntry::Split(_, s, _) => s }).collect());
+        }
+        let len = self.lines.len();
+        if self.pending_move.is_some() || len < n || !self.lines[len - n..].iter().all(|l| l.starts_with(prefix)) {
+            return None;
+        }
+        Some(self.lines.drain(len - n..).collect())
+    }
+
     /// PS `addSplit(side, secret, shared)`: `shared = None` hides the line
     /// from everyone but `side` (and the omniscient channel).
     pub(crate) fn push_split(&mut self, side: u8, secret: String, shared: Option<String>) {
