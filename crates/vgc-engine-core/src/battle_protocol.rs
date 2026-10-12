@@ -501,6 +501,14 @@ impl Battle {
         crit: bool,
     ) {
         use crate::damage::TypeEff;
+        // risingvoltage basePowerCallback's hint (data/moves.ts:15141-15143).
+        if move_id == data::move_id::RISINGVOLTAGE
+            && matches!(self.terrain, crate::terrain::Terrain::Electric)
+            && defender.is_grounded()
+            && a_side != t_side
+        {
+            self.p_push("|-hint|Rising Voltage's BP doubled on grounded target.".to_string());
+        }
         let ctx = crate::damage::DamageContext {
             weather: self.effective_weather_for_pair(a_side, a_slot, t_side, t_slot),
             terrain: self.terrain,
@@ -628,7 +636,8 @@ impl Battle {
         if !self.plog() {
             return;
         }
-        let spread = self.protocol.log().and_then(|l| l.window.as_deref()).is_some_and(|w| w.n_ranks > 1);
+        // smartTarget is not spreadHit (sim/battle-actions.ts:551).
+        let spread = self.protocol.log().is_some_and(|l| l.active_move != data::move_id::DRAGONDARTS && l.window.as_deref().is_some_and(|w| w.n_ranks > 1));
         self.p_window_close(spread);
         if let Some(l) = self.protocol.log_mut() {
             l.loop_ended = false;
@@ -1254,6 +1263,7 @@ impl Battle {
         if let Some(l) = self.protocol.log_mut() {
             l.flush_pending_move();
             l.pending_move = Some(line);
+            l.move_target = display.map(|(s, sl)| (s as u8, sl));
             l.since_move = 0;
             l.cur_user = Some((side as u8, slot));
             l.active_move = move_id;
@@ -1329,9 +1339,13 @@ impl Battle {
             self.p_push(format!("|-activate|{id}|ability: Mega Sol"));
         }
         // onTryMove's `defender` is the retargeted target (sim/battle-actions.ts getRandomTarget).
+        // The `|move|` line's (redirected / retargeted) target.
+        let _ = target;
         let tgt = self
-            .p_display_target(side, slot, move_id, target)
-            .map(|(s, sl)| self.p_ident(s, sl))
+            .protocol
+            .log()
+            .and_then(|l| l.move_target)
+            .map(|(s, sl)| self.p_ident(if s == 0 { SideRef::P1 } else { SideRef::P2 }, sl))
             .unwrap_or_default();
         if let Some(l) = self.protocol.log_mut() {
             l.push_move(format!("|-anim|{id}|{name}|{tgt}"));

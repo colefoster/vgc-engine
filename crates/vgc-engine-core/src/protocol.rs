@@ -307,6 +307,8 @@ pub struct ProtocolLog {
     /// Active slots (side*2+slot bits) whose Emergency Exit `-activate`
     /// printed during the current action.
     pub(crate) ee_announced: u8,
+    /// The running move's `|move|` target (side, slot).
+    pub(crate) move_target: Option<(u8, u8)>,
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -404,6 +406,7 @@ impl ProtocolLog {
             cur_user: None,
             last_faint: None,
             ee_announced: 0,
+            move_target: None,
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }
