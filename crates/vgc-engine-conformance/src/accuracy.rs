@@ -77,6 +77,10 @@ pub struct Meta {
     /// `streams`): the request / player-stream diff target.
     #[serde(default)]
     pub streams: Option<PsStreams>,
+    /// Every choice string each side sent, rejected ones included
+    /// (ps-battle.js `cmds`): the session replay's input.
+    #[serde(default)]
+    pub cmds: Option<SideCmds>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1877,6 +1881,133 @@ pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
             ps_ctx: ctx(&ps),
             eng_ctx: ctx(&eng),
         });
+    }
+    rec
+}
+
+// ---------------------------------------------------------------------------
+// Session replay (phase 2): drive `PsSession` with PS's own choice strings
+// ---------------------------------------------------------------------------
+
+/// One battle replayed through [`vgc_engine_core::ps_session::PsSession`]:
+/// the keyed RNG table, PS's choice strings as sent (rejected ones
+/// included), and the session's p1 / p2 / spectator / omniscient streams
+/// compared chunk by chunk with PS's.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionRecord {
+    pub id: String,
+    pub state_clean: bool,
+    pub has_cmds: bool,
+    /// The protocol-log replay is byte-identical (phase 1).
+    pub log_identical: bool,
+    pub identical: [bool; 4],
+    pub bucket: Option<String>,
+    pub div: Option<ProtoDiv>,
+    /// Choice strings the session rejected / PS rejected.
+    pub eng_errors: usize,
+    pub ps_errors: usize,
+    /// Commands left unfed when the session stopped asking.
+    pub unfed: usize,
+}
+
+pub fn replay_session(acc: &AccBattle) -> SessionRecord {
+    use vgc_engine_core::ps_session::PsSession;
+    use vgc_engine_core::ProtocolView;
+    let proto = replay_protocol(acc);
+    let mut rec = SessionRecord {
+        id: acc.id.clone(),
+        state_clean: proto.state_clean,
+        has_cmds: acc.meta.cmds.is_some() && acc.meta.streams.is_some(),
+        log_identical: proto.identical,
+        identical: [false; 4],
+        bucket: None,
+        div: None,
+        eng_errors: 0,
+        ps_errors: 0,
+        unfed: 0,
+    };
+    let (Some(cmds), Some(st)) = (acc.meta.cmds.as_ref(), acc.meta.streams.as_ref()) else { return rec };
+    let (table, _repaired, _b, _res, _misses) = repaired_table(acc);
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
+    let (Ok(p1), Ok(p2)) = (build_engine_team(&acc.p1team, champions), build_engine_team(&acc.p2team, champions)) else { return rec };
+    let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
+    let opts = vgc_engine_core::ProtocolOptions {
+        player_names: ["P1".to_string(), "P2".to_string()],
+        ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
+    };
+    let shuffles = residual_shuffles(acc);
+    let fmt_id = acc.format.clone();
+    let builder = move |picks: Option<&[Vec<u8>; 2]>| {
+        let rng = Rng::oracle_keyed(table.clone(), 0xC0FFEE);
+        let mut b = Battle::with_protocol(BattleConfig { format, seed: 0 }, rng, p1.clone(), p2.clone(), &opts, &fmt_id, picks);
+        b.decision_phases = true;
+        b.set_format_id(&fmt_id);
+        b.protocol_set_oracle_shuffles(shuffles.clone());
+        b
+    };
+    let mut s = PsSession::new(Box::new(builder));
+    let feeds = [&cmds.p1, &cmds.p2];
+    let mut cur = [0usize; 2];
+    let mut open = [true, true];
+    for _ in 0..10_000 {
+        let mut progressed = false;
+        for k in 0..2 {
+            if s.is_ended() {
+                break;
+            }
+            let side = if k == 0 { SideRef::P1 } else { SideRef::P2 };
+            if (s.request(side).is_some() || !open[k]) && cur[k] < feeds[k].len() {
+                let c = feeds[k][cur[k]].clone();
+                cur[k] += 1;
+                open[k] = s.choose(side, &c).is_ok();
+                if !open[k] {
+                    rec.eng_errors += 1;
+                }
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    rec.unfed = (feeds[0].len() - cur[0]) + (feeds[1].len() - cur[1]);
+    let ps_tie = acc.meta.rawlog.as_deref().is_some_and(|r| r.ends_with("|tie"));
+    if ps_tie {
+        s.force_tie();
+    }
+    rec.ps_errors = st.p1.iter().chain(&st.p2).filter(|c| c.starts_with("|error|")).count();
+    let views = [(&st.p1, ProtocolView::P1), (&st.p2, ProtocolView::P2), (&st.spectator, ProtocolView::Spectator), (&st.omniscient, ProtocolView::Omniscient)];
+    for (k, (ps_chunks, view)) in views.into_iter().enumerate() {
+        let ps: Vec<String> = ps_chunks.iter().map(|c| norm_chunk(c)).collect();
+        let eng: Vec<String> = s.stream(view).iter().map(|c| norm_chunk(c)).collect();
+        rec.identical[k] = ps == eng;
+        if ps != eng && rec.div.is_none() {
+            let i = ps.iter().zip(&eng).take_while(|(x, y)| x == y).count();
+            let la: Vec<&str> = ps.get(i).map(|c| c.split('\n').collect()).unwrap_or_default();
+            let lb: Vec<&str> = eng.get(i).map(|c| c.split('\n').collect()).unwrap_or_default();
+            let j = la.iter().zip(&lb).take_while(|(x, y)| x == y).count();
+            let kind = |c: Option<&String>| match c {
+                None => "<end>",
+                Some(c) if c.starts_with("|request|") => "request",
+                Some(c) if c.starts_with("|error|") => "error",
+                Some(_) => "update",
+            };
+            rec.bucket = Some(format!(
+                "{view:?} {}/{}: PS[{}] ENG[{}]",
+                kind(ps.get(i)),
+                kind(eng.get(i)),
+                proto_sig(la.get(j).copied()),
+                proto_sig(lb.get(j).copied())
+            ));
+            rec.div = Some(ProtoDiv {
+                index: i,
+                turn: 0,
+                ps: la.get(j).map(|x| x.chars().take(300).collect()),
+                eng: lb.get(j).map(|x| x.chars().take(300).collect()),
+                ps_ctx: la.iter().skip(j.saturating_sub(2)).take(6).map(|x| x.chars().take(200).collect()).collect(),
+                eng_ctx: lb.iter().skip(j.saturating_sub(2)).take(6).map(|x| x.chars().take(200).collect()).collect(),
+            });
+        }
     }
     rec
 }
