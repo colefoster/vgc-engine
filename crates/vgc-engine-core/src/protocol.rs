@@ -327,6 +327,8 @@ pub struct ProtocolLog {
     /// hazard lines wait for its runSwitch (after the batch's `|switch|`s).
     pub(crate) hold_for: Option<(u8, u8)>,
     pub(crate) held: Vec<(u8, u8, WinEntry)>,
+    /// Unnerve holders already announced ahead of a switch-in batch.
+    pub(crate) pre_announced: u8,
     /// PS `side.pokemon` order (position -> team index); switches swap.
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
@@ -463,6 +465,7 @@ impl ProtocolLog {
             wishers: [[255; 2]; 2],
             hold_for: None,
             held: Vec::new(),
+            pre_announced: 0,
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
         }
