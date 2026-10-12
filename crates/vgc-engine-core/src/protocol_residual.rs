@@ -493,15 +493,13 @@ impl Battle {
             self.p_faint_print(false);
             // faintMessages' checkWin: the battle ends here, and nothing a
             // later handler did prints.
-            if self.p1.is_defeated() || self.p2.is_defeated() {
+            let last = self.protocol.log().and_then(|l| l.last_faint).map(|s| if s == 0 { SideRef::P1 } else { SideRef::P2 });
+            if self.p_winner(last).is_some() {
                 if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
                     w.entries.retain(|(k, _)| *k <= key);
                 }
-                let last = self.protocol.log().and_then(|l| l.last_faint).map(|s| if s == 0 { SideRef::P1 } else { SideRef::P2 });
                 self.p_check_win(last);
-                if self.protocol.log().is_some_and(|l| l.ended) {
-                    return;
-                }
+                return;
             }
             i = j;
         }

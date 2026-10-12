@@ -2598,9 +2598,12 @@ impl Battle {
                         };
                         return StepProgress::ChanceYield { pending, key, space };
                     }
-                    self.p_action_end();
+                    // White Herb's onAnyAfterMove runs before runMove's
+                    // faintMessages / checkWin (data/items.ts whiteherb;
+                    // sim/battle-actions.ts:347-348).
                     self.white_herb_after_move();
-        self.attract_update();
+                    self.p_action_end();
+                    self.attract_update();
                     // runAction's faintMessages (sim/battle.ts:2835), before its Update.
                     self.faint_forme_cleanup();
                     self.run_pending_drags();
@@ -2633,6 +2636,7 @@ self.trigger_emergency_exits();
                     "step_one: ResolveYield re-entered without resolve_yield",
                 );
                 self.apply_pending_yield(pending, event);
+                self.white_herb_after_move();
                 self.p_action_end();
                 // After the apply, the per-action work that the pre-F2
                 // inline path did AFTER the draw is the same tail
@@ -8282,7 +8286,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.wide_guard_this_turn
                 && matches!(m.target, 5 | 6 | 11)
             {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                self.p_tag_tryhit(0, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Wide Guard");
                 n_protected += 1;
                 continue;
@@ -8296,7 +8300,7 @@ self.trigger_emergency_exits();
                 && self.side(tside).conditions.quick_guard_this_turn
                 && m.priority > 0
             {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                self.p_tag_tryhit(0, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Quick Guard");
                 n_protected += 1;
                 continue;
@@ -8316,7 +8320,7 @@ self.trigger_emergency_exits();
                 && damaging
                 && is_targeting_move(m.target)
             {
-                self.p_tag(crate::protocol::step::TRYHIT, tside, tslot);
+                self.p_tag_tryhit(1, tside, tslot);
                 pmon!(self, "-activate", tside, tslot, "|move: Mat Block");
                 n_protected += 1;
                 continue;
@@ -9700,6 +9704,8 @@ self.trigger_emergency_exits();
                         if self.rng.is_ps() {
                             let _ = self.rng.ps_random_range("selfdrop", 0, 100);
                         }
+                        // selfDrops: boost(..., isSelf) prints no zero change.
+                        self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                         self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
                         crate::item::try_consume_white_herb(self, actor_side, actor_slot);
                     }
@@ -13768,6 +13774,8 @@ self.trigger_emergency_exits();
                 if self.rng.is_ps() {
                     let _ = self.rng.ps_random_range("selfdrop", 0, 100);
                 }
+                // selfDrops: boost(..., isSelf) prints no zero change.
+                self.p_boost_fx(crate::protocol::BoostFx::MoveSecondary);
                 self.apply_boosts(actor_side, actor_slot, drops, actor_side, actor_slot);
                 // White Herb consumes itself to restore negative stages.
                 crate::item::try_consume_white_herb(self, actor_side, actor_slot);
@@ -14090,8 +14098,16 @@ self.trigger_emergency_exits();
                     a.current_hp = ((a.current_hp as u32) + heal as u32).min(max as u32) as u16;
                 }
             }
-            if self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.current_hp != hp_before) {
-                self.p_heal(actor_side, actor_slot, "|[from] item: Shell Bell");
+            if self.plog() && self.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.current_hp != hp_before) {
+                // heal(..., source = the move's target): `[of]` it.
+                let of = self
+                    .protocol
+                    .log()
+                    .and_then(|l| l.move_target)
+                    .filter(|&(s, sl)| (s, sl) != (actor_side as u8, actor_slot))
+                    .map(|(s, sl)| format!("|[of] {}", self.p_ident(if s == 0 { SideRef::P1 } else { SideRef::P2 }, sl)))
+                    .unwrap_or_default();
+                self.p_heal(actor_side, actor_slot, &format!("|[from] item: Shell Bell{of}"));
             }
         }
     }
@@ -17362,11 +17378,35 @@ self.trigger_emergency_exits();
                 crate::ability::refresh_paradox_booster(self, s, slot);
             }
         }
-        for s in [SideRef::P1, SideRef::P2] {
-            for slot in 0..n {
-                crate::item::try_consume_terrain_seed(self, s, slot);
+        // eachEvent('TerrainChange'): the actives in speed order.
+        let (order, k) = self.actives_by_speed();
+        for &(s, slot) in &order[..k] {
+            crate::item::try_consume_terrain_seed(self, s, slot);
+        }
+    }
+
+    /// The active slots in PS `speedSort` order by action speed (Trick
+    /// Room: `10000 - speed`); ties keep field order.
+    pub(crate) fn actives_by_speed(&self) -> ([(SideRef, u8); 4], usize) {
+        let mut v: [(i64, SideRef, u8); 4] = [(i64::MIN, SideRef::P1, 0); 4];
+        let mut k = 0;
+        let tr = self.trick_room_turns > 0;
+        for side in [SideRef::P1, SideRef::P2] {
+            for slot in 0..self.format().active_count().min(2) as u8 {
+                if let Some(m) = self.side(side).active_mon(slot as usize) {
+                    let tw = self.side(side).conditions.tailwind_turns > 0;
+                    let spe = crate::order::effective_speed(m, tw, self.effective_weather(), self.terrain) as i64;
+                    v[k] = (if tr { 10000 - spe } else { spe }, side, slot);
+                    k += 1;
+                }
             }
         }
+        v[..k].sort_by(|a, b| b.0.cmp(&a.0));
+        let mut out = [(SideRef::P1, 0u8); 4];
+        for (o, x) in out.iter_mut().zip(v.iter()) {
+            *o = (x.1, x.2);
+        }
+        (out, k)
     }
 
     /// Core status-move resolver. `forced_target` overrides the
@@ -19716,6 +19756,11 @@ self.trigger_emergency_exits();
                         turns_remaining: 0,
                         payload,
                     });
+                }
+                // octolock condition onStart (data/moves.ts:12976).
+                if self.plog() {
+                    let of = self.p_ident(actor_side, actor_slot);
+                    pmon!(self, "-start", ts, tslot, "|move: Octolock|[of] {of}");
                 }
             }
             data::move_id::IMPRISON => {
