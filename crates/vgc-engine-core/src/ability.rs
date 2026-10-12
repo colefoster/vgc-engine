@@ -1172,8 +1172,10 @@ pub fn on_switch_out(battle: &mut Battle, side: SideRef, slot: u8) {
             healed = m.current_hp < m.stats.hp;
             m.current_hp = m.current_hp.saturating_add(heal).min(m.stats.hp);
         }
-        // regenerator onSwitchOut (data/mods/champions/abilities.ts:63-69).
-        if healed {
+        // regenerator onSwitchOut: Champions logs a silent heal
+        // (data/mods/champions/abilities.ts:63-69); gen 9's
+        // `pokemon.heal` writes nothing (data/abilities.ts regenerator).
+        if healed && battle.champions {
             battle.p_heal(side, slot, "|[from] ability: Regenerator|[silent]");
         }
     }

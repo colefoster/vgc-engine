@@ -134,6 +134,17 @@ impl Battle {
         }
     }
 
+    /// Cut the log back to its first `n` raw lines (a session ending the
+    /// battle at a stop the battle was played past).
+    pub fn protocol_truncate(&mut self, n: usize) {
+        if let Some(l) = self.protocol.log_mut() {
+            if l.lines.len() > n {
+                l.lines.truncate(n);
+                l.ended = false;
+            }
+        }
+    }
+
     /// Append lines to the log as they are (PS `battle.add` from outside
     /// the simulation, e.g. `>tiebreak`'s messages).
     pub fn protocol_add_lines(&mut self, lines: &[String]) {
@@ -1483,6 +1494,16 @@ impl Battle {
         if n == 0 {
             return Some((foe, 0));
         }
+        // Under PS's PRNG the engine drew runMove's getTarget pick itself
+        // (sim/battle.ts getTarget -> getRandomTarget -> side.randomFoe).
+        #[cfg(feature = "ps-rng")]
+        if self.rng.is_ps() {
+            if let Some(p) = self.protocol.log_mut().and_then(|l| l.ps_target_pick.take()) {
+                if p.0 == foe && alive(self, p.0, p.1) {
+                    return Some(p);
+                }
+            }
+        }
         let actor = (match side { SideRef::P1 => 0u8, SideRef::P2 => 2 }) + slot;
         let key = crate::rng::RngKey { turn: self.turn + 1, actor, target: crate::rng::NO_SLOT, move_id, decision: crate::rng::RngDecision::Range };
         let keyed = self.rng.log_pick(key, n as u32);
@@ -2141,6 +2162,10 @@ impl Battle {
         for side in [SideRef::P1, SideRef::P2] {
             for slot in 0..self.format().active_count() as u8 {
                 if self.side(side).active_mon(slot as usize).is_some() {
+                    // The leads' switchIn runs Illusion's onBeforeSwitchIn too
+                    // (sim/battle-actions.ts:125-144).
+                    let idx = self.side(side).active[slot as usize];
+                    self.p_switch_positions(side, slot, idx);
                     self.p_switch_line("switch", side, slot);
                 }
             }
