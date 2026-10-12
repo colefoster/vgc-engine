@@ -18568,7 +18568,9 @@ self.trigger_emergency_exits();
                 pmon!(self, "swap", actor_side, actor_slot, "|{partner_slot}|[from] move: Ally Switch");
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
                 // swapPosition also swaps the two in `side.pokemon`
-                // (sim/battle.ts:1585-1593): the request's team order.
+                // (sim/battle.ts:1585-1593): the request's team order, and
+                // the order random switch-ins draw from (`Side::ps_order`).
+                self.side_mut(actor_side).ps_order.swap(actor_slot as usize, partner_slot);
                 if let Some(l) = self.protocol.log_mut() {
                     l.pos[actor_side as usize].swap(actor_slot as usize, partner_slot);
                 }
@@ -43649,6 +43651,8 @@ mod tests {
 
         // Positions swapped: indeedee now slot 1, armarouge slot 0.
         assert_eq!(b.p1.active, [1, 0], "active slot pointers swapped");
+        // swapPosition swaps them in side.pokemon too (sim/battle.ts:1585-1593).
+        assert_eq!(b.p1.ps_order[..2], [1, 0], "PS team order swapped");
         assert_eq!(b.p1.active_mon(0).unwrap().species_id, s1, "ally now in slot 0");
         assert_eq!(b.p1.active_mon(1).unwrap().species_id, s0, "user now in slot 1");
 
