@@ -245,7 +245,9 @@ struct ReconArgs {
     /// Fill the opponent's hidden info from this player's view only.
     #[arg(long)]
     viewer: Option<String>,
-    /// `default` (embedded Reg M-B 2026-08 usage), `none`, or a stats file.
+    /// `default` (per format: Reg M-C 2026-09 at 1500, Reg M-B 2026-08),
+    /// `none`, an embedded prior id (`smogon:2026-09/gen9championsvgc2026regmc-1500`,
+    /// `a+b` chains a fallback), or a stats file.
     #[arg(long, default_value = "default")]
     prior: String,
     /// Full sets for p1 / p2 (Showdown export or JSON team).

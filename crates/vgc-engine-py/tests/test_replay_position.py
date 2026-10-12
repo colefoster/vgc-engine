@@ -89,6 +89,22 @@ def test_spectator_log_with_a_viewer_reports_provenance():
     pytest.fail("no stop")
 
 
+def test_prior_ids_are_pinnable():
+    for _k, orig, _reqs, _omni in stops():
+        spect = "\n".join(orig.protocol_log("spectator"))
+        rep = vgc_engine.position_from_replay(spect, 4).reconstruction_report()
+        assert rep["prior"] == "smogon:2026-09/gen9championsvgc2026regmc-1500+bringfour:2026-09/regmc-reveals"
+        assert all(len(h) == 64 for h in rep["prior_sha256"].split("+"))
+        pinned = vgc_engine.position_from_replay(spect, 4, prior=rep["prior"]).reconstruction_report()
+        assert pinned == rep
+        old = "smogon:2026-08/gen9championsvgc2026regmb-0+bringfour:2026-09/regmc-reveals"
+        assert vgc_engine.position_from_replay(spect, 4, prior=old).reconstruction_report()["prior"] == old
+        with pytest.raises(ValueError):
+            vgc_engine.position_from_replay(spect, 4, prior="smogon:2026-07/nope")
+        return
+    pytest.fail("no stop")
+
+
 def test_ps_seed_play_out_is_deterministic():
     for k, orig, _reqs, _omni in stops():
         log = "\n".join(orig.protocol_log("spectator"))
