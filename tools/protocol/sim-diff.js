@@ -172,10 +172,22 @@ function generate(k) {
 	const errs = { p1: 0, p2: 0 };
 	let ended = false;
 	let turn = 0;
+	// PS's PRNG draws as `random(m, n)` spans (randomChance and sample go
+	// through it), for the draw-order check.
+	const spans = [];
 	const send = (chunk) => {
 		s.write(chunk);
+		if (s.battle && !s.battle.prng.traced) {
+			const prng = s.battle.prng;
+			const orig = prng.random.bind(prng);
+			prng.random = (a, b) => {
+				spans.push(b ? b - a : (a || 0));
+				return orig(a, b);
+			};
+			prng.traced = true;
+		}
 		const out = s.buf.splice(0);
-		script.push({ chunk, out: out.map(frame).join('') });
+		script.push({ chunk, out: out.map(frame).join(''), draws: spans.length });
 		for (const m of out) {
 			const [type, ...rest] = m.split('\n');
 			if (type === 'end') ended = true;
@@ -224,15 +236,15 @@ function generate(k) {
 		}
 	}
 	if (!ended) send('>forcetie');
-	return { id: `b${String(k).padStart(5, '0')}`, k, format, seed, script };
+	return { id: `b${String(k).padStart(5, '0')}`, k, format, seed, script, spans };
 }
 
 // ---- subprocess replay ---------------------------------------------------------
 const norm = s => s.replace(/\|t:\|\d+/g, '|t:|');
 
-function replay(cmd, argv, cwd, script, strict) {
+function replay(cmd, argv, cwd, script, strict, env) {
 	return new Promise((resolve) => {
-		const p = spawn(cmd, argv, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+		const p = spawn(cmd, argv, { cwd, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...(env || {}) } });
 		let out = '';
 		let err = '';
 		let lastData = Date.now();
@@ -318,7 +330,10 @@ async function runOne(k) {
 	if (ONLY && !ONLY.has(g.id)) return null;
 	const inproc = g.script.map(s => s.out).join('');
 	const ps = await replay('node', ['pokemon-showdown', 'simulate-battle', '--skip-build'], PS_ROOT, g.script, true);
-	const vg = await replay(VGC, ['sim'], process.cwd(), g.script, false);
+	const traceFile = path.join(OUT, `.draws-${process.pid}-${k}`);
+	const vg = await replay(VGC, ['sim'], process.cwd(), g.script, false, { VGC_DRAW_TRACE: traceFile });
+	let vgSpans = null;
+	try { vgSpans = fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).map(Number); fs.unlinkSync(traceFile); } catch {}
 	const ps_ok = norm(ps.out) === norm(inproc);
 	const c = compare(ps.out, vg.out);
 	if (!c.identical) {
@@ -329,9 +344,19 @@ async function runOne(k) {
 			if (seen > c.msg) {
 				c.write = i;
 				c.input = g.script.slice(Math.max(0, i - 3), i + 1).map(s => s.chunk);
+				c.draws_through_write = st.draws;
 				break;
 			}
 		}
+	}
+	if (!c.identical && vgSpans) {
+		// First PRNG draw whose span differs (or that one side lacks).
+		let k = 0;
+		while (k < g.spans.length && k < vgSpans.length && g.spans[k] === vgSpans[k]) k++;
+		c.first_draw_mismatch = (k === g.spans.length && k === vgSpans.length) ? null : k;
+		// Draw order explains the divergence when PS's and the engine's draws
+		// part before the end of the write whose output first differs.
+		c.draw_order = c.first_draw_mismatch !== null && c.first_draw_mismatch < (c.draws_through_write ?? Infinity);
 	}
 	const rec = { id: g.id, format: g.format, seed: g.seed, writes: g.script.length, ps_matches_inprocess: ps_ok, ...c };
 	if (vg.err) rec.vgc_stderr = vg.err.slice(0, 500);
