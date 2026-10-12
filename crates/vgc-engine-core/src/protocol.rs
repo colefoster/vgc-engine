@@ -250,6 +250,9 @@ pub struct ProtocolLog {
     pub(crate) timestamp: Option<u64>,
     /// PS `faintQueue`: mons whose HP hit 0, in order, awaiting `|faint|`.
     pub(crate) faint_queue: Vec<(u8, u8)>,
+    /// Window key when each `faint_queue` entry was queued: a spread move's
+    /// targets faint in target order, not the engine's processing order.
+    pub(crate) faint_keys: Vec<u32>,
     /// Bit `side * 8 + team index`: `|faint|` already printed.
     pub(crate) fainted_logged: u16,
     /// Champions HP display (sim/pokemon.ts:2067-2074).
@@ -298,6 +301,9 @@ pub struct ProtocolLog {
     pub(crate) cur_user: Option<(u8, u8)>,
     /// The side of the last `|faint|` (checkWin's tie rule).
     pub(crate) last_faint: Option<u8>,
+    /// Active slots (side*2+slot bits) whose Emergency Exit `-activate`
+    /// printed during the current action.
+    pub(crate) ee_announced: u8,
 }
 
 /// One buffered entry of a reorder window.
@@ -350,6 +356,7 @@ pub(crate) mod step {
     pub const HITCOUNT: u8 = 22;
     pub const RECOIL: u8 = 23;
     pub const AFTER_SECONDARY: u8 = 24;
+    pub const EMERGENCY_EXIT: u8 = 25;
 }
 
 impl ProtocolLog {
@@ -364,6 +371,7 @@ impl ProtocolLog {
             player_names: opts.player_names.clone(),
             timestamp: opts.timestamp,
             faint_queue: Vec::new(),
+            faint_keys: Vec::new(),
             fainted_logged: 0,
             champions_hp: false,
             ots: false,
@@ -387,6 +395,7 @@ impl ProtocolLog {
             trap_move: [[u16::MAX; 6]; 2],
             cur_user: None,
             last_faint: None,
+            ee_announced: 0,
         }
     }
 

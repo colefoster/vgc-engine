@@ -759,7 +759,10 @@ pub fn on_attacker_contact_hit(
             }
             if battle.plog() {
                 let of = battle.p_ident(target_side, target_slot);
+                // onDamagingHitOrder: 2 (data/items.ts rockyhelmet).
+                battle.p_sub(2);
                 battle.p_damage(attacker_side, attacker_slot, &format!("|[from] item: Rocky Helmet|[of] {of}"));
+                battle.p_sub(3);
             }
         }
     }

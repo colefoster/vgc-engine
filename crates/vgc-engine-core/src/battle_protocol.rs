@@ -226,6 +226,11 @@ impl Battle {
         if !self.plog() {
             return;
         }
+        // spreadDamage skips a target already at 0 HP (sim/battle.ts:2105).
+        let idx = self.side(side).active.get(slot as usize).copied().unwrap_or(255);
+        if self.p_faint_logged(side, idx) || self.protocol.log().is_some_and(|l| l.faint_queue.contains(&(side as u8, idx))) {
+            return;
+        }
         self.p_hp("-damage", side, slot, suffix);
         self.p_queue_faint_if_down(side, slot);
     }
@@ -251,6 +256,8 @@ impl Battle {
             let bit = 1u16 << (side as u16 * 8 + idx as u16);
             if l.fainted_logged & bit == 0 && !l.faint_queue.contains(&(side as u8, idx)) {
                 l.faint_queue.push((side as u8, idx));
+                let key = l.window.as_deref().map_or(0, |w| w.key);
+                l.faint_keys.push(key);
             }
         }
     }
@@ -276,7 +283,12 @@ impl Battle {
             }
         }
         let queue = match self.protocol.log_mut() {
-            Some(l) => std::mem::take(&mut l.faint_queue),
+            Some(l) => {
+                let keys = std::mem::take(&mut l.faint_keys);
+                let mut q: Vec<_> = keys.into_iter().zip(std::mem::take(&mut l.faint_queue)).collect();
+                q.sort_by_key(|&(k, _)| k);
+                q.into_iter().map(|(_, e)| e).collect::<Vec<_>>()
+            }
             None => return,
         };
         if queue.is_empty() {
@@ -508,6 +520,49 @@ impl Battle {
         if let Some((s, sl, n)) = self.protocol.log_mut().and_then(|l| l.hitcount.take()) {
             let side = if s == 0 { SideRef::P1 } else { SideRef::P2 };
             pmon!(self, "-hitcount", side, sl, "|{n}");
+        }
+    }
+
+    /// `|-activate|..|ability: Emergency Exit|` once per action
+    /// (data/mods/champions/abilities.ts emergencyexit).
+    pub(crate) fn p_emergency_exit(&mut self, side: SideRef, slot: u8) {
+        let bit = 1u8 << (side as u8 * 2 + slot);
+        let Some(l) = self.protocol.log_mut() else { return };
+        if l.ee_announced & bit != 0 {
+            return;
+        }
+        l.ee_announced |= bit;
+        pmon!(self, "-activate", side, slot, "|ability: Emergency Exit");
+    }
+
+    /// The hit loop's EmergencyExit for the move's targets, after
+    /// afterMoveSecondaryEvent (data/mods/champions/scripts.ts:578-589).
+    pub(crate) fn p_emergency_exit_targets(&mut self, actor_side: SideRef, actor_slot: u8) {
+        if !self.plog() {
+            return;
+        }
+        let Some((snap, true)) = self.hp_before_action else { return };
+        self.p_tag_step(crate::protocol::step::EMERGENCY_EXIT);
+        for (si, side) in [SideRef::P1, SideRef::P2].into_iter().enumerate() {
+            for slot in 0..self.format().active_count().min(2) {
+                if side == actor_side && slot as u8 == actor_slot {
+                    continue;
+                }
+                let (team_idx, before) = snap[si][slot];
+                let fires = self.side(side).active[slot] == team_idx
+                    && self.side(side).active_mon(slot).is_some_and(|m| {
+                        let half = m.stats.hp / 2;
+                        m.is_alive()
+                            && m.effective_ability_id() == data::ability_id::EMERGENCYEXIT
+                            && before > half
+                            && m.current_hp <= half
+                            && !m.pending_self_switch()
+                    })
+                    && self.first_bench_index(side).is_some();
+                if fires {
+                    self.p_emergency_exit(side, slot as u8);
+                }
+            }
         }
     }
 
@@ -1189,6 +1244,12 @@ impl Battle {
         }
         self.p_attr("[still]");
         let id = self.p_ident(side, slot);
+        // effectiveWeather(..., message) under Mega Sol (sim/pokemon.ts:2193-2196).
+        if self.effective_weather() != crate::weather::Weather::Sun
+            && self.side(side).active_mon(slot as usize).is_some_and(|m| m.effective_ability_id() == data::ability_id::MEGASOL)
+        {
+            self.p_push(format!("|-activate|{id}|ability: Mega Sol"));
+        }
         let tgt = target
             .filter(|t| self.side(t.side).active_mon(t.slot as usize).is_some())
             .map(|t| self.p_ident(t.side, t.slot))
@@ -1243,10 +1304,18 @@ impl Battle {
         }
         let rank = self.p_rank(side, slot);
         if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
-            w.key = (w.hit as u32) << 16 | (step as u32) << 8 | rank as u32;
+            w.key = (w.hit as u32) << 16 | (step as u32) << 8 | (rank as u32) << 4;
             if step == crate::protocol::step::CALC {
                 w.hit_ranks |= 1 << rank;
             }
+        }
+    }
+
+    /// Sub-order within the current step/target (handler `...Order`), 0-15.
+    #[inline]
+    pub(crate) fn p_sub(&mut self, sub: u8) {
+        if let Some(w) = self.protocol.log_mut().and_then(|l| l.window.as_deref_mut()) {
+            w.key = (w.key & !0xF) | (sub as u32 & 0xF);
         }
     }
 
