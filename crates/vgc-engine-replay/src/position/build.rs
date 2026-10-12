@@ -490,8 +490,13 @@ pub(super) fn board_mon(view: &[String], side: usize, m: &Mon, sp: &SetPick, hp:
             bm["item_consumed"] = json!(false);
         }
     }
-    if let Some(a) = &m.ability_now {
-        bm["ability"] = json!(a);
+    // The ability now: a request's (Skill Swap, Trace, ... it sees its own),
+    // else the log's change.
+    let req_ab = rm.and_then(|r| Some((r.get("ability")?.as_str()?, r.get("baseAbility")?.as_str()?))).filter(|(a, b)| !a.is_empty() && a != b).and_then(|(a, _)| ability_name(a));
+    if let Some(a) = req_ab.map(str::to_string).or_else(|| m.ability_now.clone()) {
+        if !m.mega || m.ability_now.is_some() {
+            bm["ability"] = json!(a);
+        }
     }
     // PP.
     let req_pp: Option<Vec<(String, u64)>> = req.zip(m.active).and_then(|(r, slot)| r.pointer(&format!("/active/{slot}/moves"))).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| Some((x.get("id")?.as_str()?.to_string(), x.get("pp")?.as_u64()?))).collect());
@@ -517,6 +522,10 @@ pub(super) fn board_mon(view: &[String], side: usize, m: &Mon, sp: &SetPick, hp:
     let name = m.name.clone().unwrap_or_default();
     for v in &m.vols {
         if v.name.starts_with('?') {
+            continue;
+        }
+        // Encore needs the encored move in the kit (not Struggle).
+        if v.name == "ENCORE" && !m.last_move.as_deref().is_some_and(&in_set) {
             continue;
         }
         if let Some(ai) = vgc_engine_core::ps_board::AGE_ORDER.iter().position(|a| *a == v.name) {
