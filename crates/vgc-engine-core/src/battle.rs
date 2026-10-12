@@ -958,6 +958,7 @@ impl Battle {
         // endTurn's `|turn|1` (sim/battle.ts:1785).
         b.p_faint_messages();
         plog!(b, "|turn|{}", b.turn + 1);
+        b.p_sync(crate::protocol::SyncKind::Move);
         b
     }
 
@@ -2487,7 +2488,10 @@ impl Battle {
         loop {
             match self.step_one(&mut cursor) {
                 StepProgress::Continue => continue,
-                StepProgress::Done(r) => return r,
+                StepProgress::Done(r) => {
+                    self.p_step_sync(r);
+                    return r;
+                }
                 StepProgress::ChanceYield { space, .. } => {
                     // Default in-step driver: draw the bucket from the
                     // live RNG and resume on that single path. Preserves
@@ -6195,6 +6199,8 @@ self.trigger_emergency_exits();
     /// matches PS's "no eligible replacement → switch fails silently".
     fn apply_self_switches(&mut self, p1_choices: &[Choice], p2_choices: &[Choice]) {
         self.p_mid_turn_resumed = false;
+        // runAction's switch request comes before any pending switch runs.
+        self.p_mid_turn_sync();
         #[cfg(feature = "ps-rng")]
         let mut ps_committed = false;
         for (side, choices) in [(SideRef::P1, p1_choices), (SideRef::P2, p2_choices)] {
@@ -10857,12 +10863,15 @@ self.trigger_emergency_exits();
         let _ = self.check_target_fainted(ctx.tside, ctx.tslot);
     }
 
-    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975):
-    /// Sticky Hold and a holder's own Mega Stone keep the item.
-    fn knock_off_take_item(&mut self, side: SideRef, slot: u8) {
-        let can_knock = self.side(side).active_mon(slot as usize)
-            .is_some_and(|m| m.is_alive()
-                && m.effective_ability_id() != data::ability_id::STICKYHOLD
+    /// Knock Off's onAfterHit `target.takeItem()` (data/moves.ts:9975),
+    /// which needs `source.hp`: a holder's own Mega Stone keeps the item, and
+    /// so does Sticky Hold while its holder has HP (data/abilities.ts
+    /// stickyhold onTakeItem `if (!pokemon.hp ...) return`). A target the hit
+    /// knocked out still loses its item.
+    fn knock_off_take_item(&mut self, side: SideRef, slot: u8, user_side: SideRef, user_slot: u8) {
+        let user_up = self.side(user_side).active_mon(user_slot as usize).is_some_and(|a| a.current_hp > 0);
+        let can_knock = user_up && self.side(side).active_mon(slot as usize)
+            .is_some_and(|m| (!m.is_alive() || m.effective_ability_id() != data::ability_id::STICKYHOLD)
                 && !m.holds_own_mega_stone());
         if can_knock {
             if let Some(t) = self.side_mut(side).active_mon_mut(slot as usize) {
@@ -11317,7 +11326,7 @@ self.trigger_emergency_exits();
         if !hit_sub && ctx.move_id == data::move_id::KNOCKOFF {
             self.p_tag(crate::protocol::step::AFTER_HIT, ctx.tside, ctx.tslot);
             let item_before = self.side(ctx.tside).active_mon(ctx.tslot as usize).map_or(u16::MAX, |t| t.item_id);
-            self.knock_off_take_item(ctx.tside, ctx.tslot);
+            self.knock_off_take_item(ctx.tside, ctx.tslot, ctx.actor_side, ctx.actor_slot);
             // knockoff onAfterHit (data/moves.ts knockoff): takeItem works on
             // a target the hit knocked out too.
             let knocked = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
@@ -12777,7 +12786,7 @@ self.trigger_emergency_exits();
                 } else {
                     // Charge turn: deduct PP (+ Pressure extra, which PS
                     // applies on turn 1 only), set charging state, return.
-                    let extra = pressure_extra_pp(self, actor_side, m, target);
+                    let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                     if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                         a.spend_pp(move_slot, 1 + extra);
                         a.last_used_move_slot = move_slot;
@@ -12814,7 +12823,7 @@ self.trigger_emergency_exits();
                 }
                 // Turn 1: enter semi-invuln, deduct PP (+ Pressure extra,
                 // applied turn 1 only per PS), no damage.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(a) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     a.spend_pp(move_slot, 1 + extra);
                     a.last_used_move_slot = move_slot;
@@ -12860,6 +12869,17 @@ self.trigger_emergency_exits();
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.last_used_move_slot = move_slot;
                 mon.last_used_move_target = enc_target(target);
+                // A Choice item picked up mid-charge (Trick) locks on the
+                // release turn too: choicescarf onModifyMove adds
+                // `choicelock` on every move use (data/items.ts choiceband
+                // / choicescarf / choicespecs).
+                let choice_item = matches!(
+                    mon.item_id,
+                    data::item_id::CHOICEBAND | data::item_id::CHOICESPECS | data::item_id::CHOICESCARF
+                ) || mon.effective_ability_id() == data::ability_id::GORILLATACTICS;
+                if choice_item && mon.locked_move_slot() == 255 {
+                    mon.set_locked_move_slot(move_slot);
+                }
             }
         }
         // Choice items AND Gorilla Tactics lock the holder into its first
@@ -12879,7 +12899,7 @@ self.trigger_emergency_exits();
         let pressure_extra = if skip_pp_deduct {
             0
         } else {
-            pressure_extra_pp(self, actor_side, m, target)
+            pressure_extra_pp(self, actor_side, actor_slot, m, target)
         };
         if !skip_pp_deduct {
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
@@ -13102,7 +13122,7 @@ self.trigger_emergency_exits();
                 // Pressure still applies — PS deducts the foe's extra PP in
                 // `useMove` (before the move's TryMove veto). See
                 // `pressure_extra_pp`.
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
@@ -13153,7 +13173,7 @@ self.trigger_emergency_exits();
                 };
             if !ok {
                 self.p_try_fail(actor_side, actor_slot);
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     // PS runMove's moveUsed (lastMove) precedes the onTry
@@ -13183,7 +13203,7 @@ self.trigger_emergency_exits();
             });
             if !ok {
                 self.p_try_fail(actor_side, actor_slot);
-                let extra = pressure_extra_pp(self, actor_side, m, target);
+                let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
                 if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                     mon.spend_pp(move_slot, 1 + extra);
                     mon.last_used_move_slot = move_slot;
@@ -13209,7 +13229,7 @@ self.trigger_emergency_exits();
             // focuspunch beforeMoveCallback: `cant` instead of `|move|`.
             self.p_move_cancel();
             pmon!(self, "cant", actor_side, actor_slot, "|Focus Punch|Focus Punch");
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
@@ -13234,7 +13254,7 @@ self.trigger_emergency_exits();
             && attacker.last_used_move_slot == move_slot
         {
             self.p_move_cancel();
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 // Set last_used_move_slot to 255 so a third attempt
@@ -13303,7 +13323,7 @@ self.trigger_emergency_exits();
                 }
             }
             // Failure still ticks PP per PS (plus Pressure extra).
-            let extra = pressure_extra_pp(self, actor_side, m, target);
+            let extra = pressure_extra_pp(self, actor_side, actor_slot, m, target);
             if let Some(mon) = self.side_mut(actor_side).active_mon_mut(actor_slot as usize) {
                 mon.spend_pp(move_slot, 1 + extra);
                 mon.last_used_move_slot = move_slot;
@@ -17004,7 +17024,7 @@ self.trigger_emergency_exits();
 
     /// Whether the Pokemon an Octolock payload names is still on the field
     /// and able to act (PS: `source.isActive && source.hp`).
-    fn octolock_source_active(&self, payload: u32) -> bool {
+    pub(crate) fn octolock_source_active(&self, payload: u32) -> bool {
         let side = if (payload >> 16) & 1 == 0 { SideRef::P1 } else { SideRef::P2 };
         let slot = ((payload >> 8) & 0xFF) as usize;
         let idx = (payload & 0xFF) as usize;
@@ -18296,6 +18316,11 @@ self.trigger_emergency_exits();
                 // swapPosition's `|swap|` (sim/battle.ts:1595).
                 pmon!(self, "swap", actor_side, actor_slot, "|{partner_slot}|[from] move: Ally Switch");
                 self.side_mut(actor_side).active.swap(actor_slot as usize, partner_slot);
+                // swapPosition also swaps the two in `side.pokemon`
+                // (sim/battle.ts:1585-1593): the request's team order.
+                if let Some(l) = self.protocol.log_mut() {
+                    l.pos[actor_side as usize].swap(actor_slot as usize, partner_slot);
+                }
                 // PR-EOT3: the two active slots' DOT bits swap with them.
                 self.sync_status_dot_bit(actor_side, actor_slot);
                 self.sync_status_dot_bit(actor_side, partner_slot as u8);
@@ -21788,6 +21813,15 @@ fn enumerate_targets(
                     return TargetBuf::single((t.side, t.slot));
                 }
             }
+            // A randomNormal move (Struggle) hits the foe its `|move|` line
+            // showed when a keyed replay supplied that pick.
+            if m.target == 13 && chosen.is_none() {
+                if let Some((s, sl)) = battle.protocol.log().and_then(|l| l.random_pick) {
+                    if s == opp && alive(s, sl) {
+                        return TargetBuf::single((s, sl));
+                    }
+                }
+            }
             // Fallback: first alive opposing active slot.
             for slot in 0..active_n {
                 if alive(opp, slot) {
@@ -21842,66 +21876,65 @@ fn enumerate_targets(
     }
 }
 
-/// Pressure — PS `data/abilities.ts:3392` (`onDeductPP` returns 1 for a
-/// non-ally `source`) applied via `sim/battle-actions.ts:467-484`: for each
-/// member of the move's `pressureTargets` (its foe-side targets) that holds
-/// Pressure, the move costs +1 PP. A spread move hitting two Pressure foes
-/// therefore costs +2. Allies with Pressure do NOT add (PS `isAlly` guard).
-/// Returns the extra PP to deduct (0 if no foe target holds active Pressure).
-/// Non-allocating — counts directly off the same foe-target rules as
-/// `enumerate_targets`. Respects ability suppression via
-/// `effective_ability_slug`.
+/// Pressure — PS `data/abilities.ts:3437` (`onDeductPP` returns 1 for a
+/// non-ally `source`) applied via `sim/battle-actions.ts:467-484` to each of
+/// the move's `pressureTargets` (sim/pokemon.ts:791-848): the targets after
+/// retargeting and redirection (Follow Me, Rage Powder, a fainted target),
+/// every foe for `all` field moves, none for `foeSide` unless the move has
+/// `mustpressure` (Imprison, Snatch, Spikes, Stealth Rock, Toxic Spikes),
+/// which counts every foe. Allies with Pressure do NOT add (`isAlly`).
+/// Returns the extra PP to deduct. Respects ability suppression via
+/// `effective_ability_id`.
 fn pressure_extra_pp(
     battle: &Battle,
     actor_side: SideRef,
+    actor_slot: u8,
     m: &data::MoveDef,
     chosen: Option<Target>,
 ) -> u8 {
     let opp = actor_side.opposing();
-    let active_n = battle.format().active_count() as u8;
-    let is_pressure_foe = |slot: u8| -> bool {
+    let active_n = battle.format().active_count();
+    let is_pressure_foe = |slot: usize| -> bool {
         battle
             .side(opp)
-            .active_mon(slot as usize)
+            .active_mon(slot)
             .is_some_and(|mon| mon.is_alive() && mon.effective_ability_id() == data::ability_id::PRESSURE)
     };
+    if !(0..active_n).any(is_pressure_foe) {
+        return 0;
+    }
+    let count_all = || (0..active_n).filter(|&s| is_pressure_foe(s)).count() as u8;
+    if matches!(m.slug, "imprison" | "snatch" | "spikes" | "stealthrock" | "toxicspikes") {
+        return count_all();
+    }
+    // Expanding Force from a grounded user in Psychic Terrain is
+    // `allAdjacentFoes` (data/moves.ts expandingforce onModifyMove), which
+    // runs before getMoveTargets.
+    if m.slug == "expandingforce"
+        && matches!(battle.terrain, crate::terrain::Terrain::Psychic)
+        && battle.side(actor_side).active_mon(actor_slot as usize).is_some_and(|a| a.is_grounded())
+    {
+        return count_all();
+    }
     match m.target {
         // 0 normal | 4 adjacentFoe | 10 any | 13 randomNormal — single target.
         0 | 4 | 10 | 13 => {
-            // Pressure only fires on a foe target. If the chosen target is on
-            // the actor's own side (e.g. `any` aimed at an ally), no Pressure.
-            if let Some(t) = chosen {
-                if t.side == opp && is_pressure_foe(t.slot) {
-                    return 1;
-                }
-                if t.side == actor_side {
-                    return 0;
-                }
+            let Some(attacker) = battle.side(actor_side).active_mon(actor_slot as usize) else { return 0 };
+            let move_id = attacker
+                .moves
+                .iter()
+                .copied()
+                .find(|&id| id != u16::MAX && battle.moves()[id as usize].slug == m.slug)
+                .unwrap_or(data::move_id::STRUGGLE);
+            match battle.final_single_target(actor_side, actor_slot, move_id, attacker, m, chosen) {
+                Some((side, slot)) => (side == opp && is_pressure_foe(slot as usize)) as u8,
+                None => 0,
             }
-            // Fallback: first alive opposing slot (matches enumerate_targets).
-            for slot in 0..active_n {
-                if battle
-                    .side(opp)
-                    .active_mon(slot as usize)
-                    .is_some_and(|mon| mon.is_alive())
-                {
-                    return is_pressure_foe(slot) as u8;
-                }
-            }
-            0
         }
-        // 5 allAdjacent | 6 allAdjacentFoes — count every opposing Pressure
-        // holder. (allAdjacent also hits the ally, but allies don't add.)
-        5 | 6 => {
-            let mut extra = 0u8;
-            for slot in 0..active_n {
-                if is_pressure_foe(slot) {
-                    extra += 1;
-                }
-            }
-            extra
-        }
-        // Self / ally / side / team / all / scripted — no foe target.
+        // 5 allAdjacent | 6 allAdjacentFoes | 12 all — every opposing
+        // Pressure holder (the ally / user targets don't add).
+        5 | 6 | 12 => count_all(),
+        // self / ally / side / team / scripted — no foe target.
         _ => 0,
     }
 }

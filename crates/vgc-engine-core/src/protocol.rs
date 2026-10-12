@@ -111,6 +111,9 @@ pub struct FormatPreamble {
     pub open_team_sheets: bool,
     /// `pickedTeamSize` (`|teampreview|N`); 0 = whole team.
     pub picked_team_size: u8,
+    /// A `debug` format reports exact HP to everyone (`reportExactHP =
+    /// !!format.debug`, sim/battle.ts:227; sim/pokemon.ts:2064).
+    pub exact_hp: bool,
 }
 
 const CHAMPIONS_RULES: &[&str] = &[
@@ -129,6 +132,7 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: true,
             open_team_sheets: true,
             picked_team_size: 4,
+            exact_hp: false,
         },
         "gen9championsvgc2026regmb" | "regmb" => FormatPreamble {
             tier: "[Gen 9 Champions] VGC 2026 Reg M-B",
@@ -136,6 +140,18 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: true,
             open_team_sheets: true,
             picked_team_size: 4,
+            exact_hp: false,
+        },
+        // "[Gen 9] (Doubles) Custom Game" (config/formats.ts:149-156,
+        // :230-238): Team Preview with no picked size (`|teampreview`), and
+        // a `debug` format's exact HP.
+        "gen9doublescustomgame" | "gen9customgame" => FormatPreamble {
+            tier: if doubles { "[Gen 9] Doubles Custom Game" } else { "[Gen 9] Custom Game" },
+            rules: &[],
+            team_preview: true,
+            open_team_sheets: false,
+            picked_team_size: 0,
+            exact_hp: true,
         },
         _ => FormatPreamble {
             tier: if doubles { "[Gen 9] Doubles Custom Game" } else { "[Gen 9] Custom Game" },
@@ -143,6 +159,7 @@ pub fn format_preamble(format_id: &str, doubles: bool) -> FormatPreamble {
             team_preview: false,
             open_team_sheets: false,
             picked_team_size: 0,
+            exact_hp: false,
         },
     }
 }
@@ -342,6 +359,65 @@ pub struct ProtocolLog {
     pub(crate) pos: [[u8; 6]; 2],
     /// Illusion disguise per team index (255 = none).
     pub(crate) illusion: [[u8; 6]; 2],
+    /// `pickedTeamSize` (team preview's `maxChosenTeamSize`), 0 = none.
+    pub(crate) picked_team_size: u8,
+    /// Shared HP lines carry exact HP (a `debug` format).
+    pub(crate) exact_hp: bool,
+    /// A keyed replay's random target for a `randomNormal` move (Struggle)
+    /// chosen without one: the `|move|` line's pick, which the hit uses too.
+    pub(crate) random_pick: Option<(crate::side::SideRef, u8)>,
+    /// Points where PS stops for input: `sendUpdates` flushes the log so far
+    /// as an `update`, then each side's `|request|` (sim/battle.ts:3267-3274).
+    pub(crate) sync: Vec<SyncPoint>,
+    /// Raw-line indices where PS's input handling split the preamble into
+    /// separate `update`s: after `>start` (`|t:|`, `|gametype|`) and after
+    /// `>player p1` (one `sendUpdates` per input line,
+    /// sim/battle-stream.ts:58-67).
+    pub(crate) cuts: Vec<usize>,
+}
+
+/// One input stop: PS's update/request boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncPoint {
+    /// Raw-line index the update before the requests ends at.
+    pub line: usize,
+    pub kind: SyncKind,
+    /// Each side's request JSON (`|request|` payload), PS-serialized.
+    pub requests: [String; 2],
+    /// The same requests, structured.
+    pub info: Box<[crate::ps_request::SideReq; 2]>,
+}
+
+/// Why the battle stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncKind {
+    TeamPreview,
+    /// The turn's move request.
+    Move,
+    /// A switch request in the middle of a turn (U-turn, Eject Button,
+    /// Revival Blessing, ...): `[side][slot]` switch flags.
+    MidTurn([[bool; 2]; 2]),
+    /// The end-of-turn switch request (faint replacements, residual
+    /// Emergency Exit).
+    Replace([[bool; 2]; 2]),
+}
+
+/// One chunk of a player stream (PS `getPlayerStreams`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamChunk {
+    /// An `update` block, with `|split|` resolved for the channel.
+    Update(String),
+    /// A `sideupdate` line (`|request|...`, `|error|...`).
+    Side(String),
+}
+
+impl StreamChunk {
+    /// The chunk as PS's player stream delivers it.
+    pub fn text(&self) -> &str {
+        match self {
+            StreamChunk::Update(s) | StreamChunk::Side(s) => s,
+        }
+    }
 }
 
 /// One buffered entry of a reorder window.
@@ -474,7 +550,106 @@ impl ProtocolLog {
             pre_announced: 0,
             pos: [[0, 1, 2, 3, 4, 5]; 2],
             illusion: [[255; 6]; 2],
+            picked_team_size: 0,
+            random_pick: None,
+            exact_hp: false,
+            sync: Vec::new(),
+            cuts: Vec::new(),
         }
+    }
+
+    /// Every input stop so far (see [`SyncPoint`]).
+    pub fn sync_points(&self) -> &[SyncPoint] {
+        &self.sync
+    }
+
+    /// Lines of `self.lines[from..to]` as `channel` sees them
+    /// (PS `extractChannelMessages`, sim/battle.ts:35-59).
+    fn channel_lines(&self, from: usize, to: usize, channel: i8, out: &mut Vec<String>) {
+        let mut i = from;
+        while i < to.min(self.lines.len()) {
+            let l = &self.lines[i];
+            if let Some(p) = l.strip_prefix("|split|p") {
+                let player: i8 = p.parse().unwrap_or(0);
+                let secret = self.lines.get(i + 1).map(String::as_str).unwrap_or("");
+                let shared = self.lines.get(i + 2).map(String::as_str).unwrap_or("");
+                let line = if channel == -1 || player == channel { secret } else { shared };
+                if !line.is_empty() {
+                    out.push(line.to_string());
+                }
+                i += 3;
+                continue;
+            }
+            if !l.is_empty() {
+                out.push(l.clone());
+            }
+            i += 1;
+        }
+        if self.mode == ProtocolMode::Compact {
+            out.retain(|l| !is_cosmetic(l));
+        }
+    }
+
+    /// The chunks PS's `getPlayerStreams` delivers on `view`'s stream for
+    /// raw lines `[0, upto)` and the stops at or before `upto`: each
+    /// `update` (sim/battle-stream.ts:438-442; an empty one too) and, on a
+    /// player stream, that side's `|request|` right after the update that
+    /// precedes it (sim/battle.ts:3267-3274). `None` renders the whole log,
+    /// lines after the last stop included.
+    pub fn stream(&self, view: ProtocolView, upto: Option<usize>) -> Vec<StreamChunk> {
+        let channel: i8 = match view {
+            ProtocolView::Omniscient => -1,
+            ProtocolView::Spectator => 0,
+            ProtocolView::P1 => 1,
+            ProtocolView::P2 => 2,
+        };
+        let end = upto.unwrap_or(usize::MAX).min(self.lines.len());
+        let mut stops: Vec<(usize, Option<&SyncPoint>)> = self.cuts.iter().map(|&c| (c, None)).collect();
+        stops.extend(self.sync.iter().map(|s| (s.line, Some(s))));
+        stops.sort_by_key(|(l, s)| (*l, s.is_some()));
+        let mut out = Vec::new();
+        let mut prev = 0usize;
+        let update = |from: usize, to: usize, out: &mut Vec<StreamChunk>| {
+            let mut v = Vec::new();
+            self.channel_lines(from, to, channel, &mut v);
+            out.push(StreamChunk::Update(v.join("\n")));
+        };
+        for (line, sp) in stops {
+            if line > end {
+                break;
+            }
+            // sendUpdates returns early when the log did not grow
+            // (sim/battle.ts:3268): no update, and no requests either.
+            if line <= prev {
+                continue;
+            }
+            update(prev, line, &mut out);
+            prev = line;
+            if let (Some(sp), 1 | 2) = (sp, channel) {
+                out.push(StreamChunk::Side(format!("|request|{}", sp.requests[(channel - 1) as usize])));
+            }
+        }
+        if upto.is_none() && self.lines.len() > prev {
+            update(prev, self.lines.len(), &mut out);
+        }
+        out
+    }
+
+    /// The raw line count (the position the next stop would sit at).
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Record a stop at the current end of the log.
+    pub(crate) fn add_sync(&mut self, kind: SyncKind, info: [crate::ps_request::SideReq; 2]) {
+        self.flush_pending_move();
+        let line = self.lines.len();
+        let requests = [info[0].to_json(), info[1].to_json()];
+        self.sync.push(SyncPoint { line, kind, requests, info: Box::new(info) });
     }
 
     /// The raw PS `battle.log` (with `|split|` markers), as PS stores it.

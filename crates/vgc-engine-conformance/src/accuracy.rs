@@ -73,6 +73,26 @@ pub struct Meta {
     /// `rawlog`), the protocol-log diff target. Absent in older captures.
     #[serde(default)]
     pub rawlog: Option<String>,
+    /// Every chunk PS's `getPlayerStreams` delivered (ps-battle.js
+    /// `streams`): the request / player-stream diff target.
+    #[serde(default)]
+    pub streams: Option<PsStreams>,
+    /// Every choice string each side sent, rejected ones included
+    /// (ps-battle.js `cmds`): the session replay's input.
+    #[serde(default)]
+    pub cmds: Option<SideCmds>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PsStreams {
+    #[serde(default)]
+    pub p1: Vec<String>,
+    #[serde(default)]
+    pub p2: Vec<String>,
+    #[serde(default)]
+    pub spectator: Vec<String>,
+    #[serde(default)]
+    pub omniscient: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1504,6 +1524,32 @@ pub struct ProtoRecord {
     pub first_div: Option<ProtoDiv>,
     pub bucket: Option<String>,
     pub engine_error: Option<String>,
+    /// PS captured the player streams (newer captures).
+    pub has_streams: bool,
+    /// PS `|request|`s on both player streams (updated requests after a
+    /// rejected choice excluded) and how many the engine matched byte for
+    /// byte, position by position.
+    pub req_total: usize,
+    pub req_match: usize,
+    /// First mismatching request: the first differing JSON path.
+    pub req_bucket: Option<String>,
+    pub req_div: Option<ReqDiv>,
+    /// p1 / p2 / spectator / omniscient streams identical, chunk by chunk.
+    pub streams_identical: [bool; 4],
+    /// First divergent p1 or p2 stream chunk.
+    pub stream_bucket: Option<String>,
+    pub stream_div: Option<ProtoDiv>,
+    /// PS rejected a choice in this battle (`|error|` on a player stream).
+    pub ps_choice_errors: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReqDiv {
+    pub side: u8,
+    pub index: usize,
+    pub path: String,
+    pub ps: String,
+    pub eng: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1598,6 +1644,190 @@ fn residual_shuffles(acc: &AccBattle) -> Vec<(u32, u8, u32, u32, u32)> {
     out
 }
 
+/// `|t:|` lines inside a stream chunk, normalized.
+fn norm_chunk(c: &str) -> String {
+    c.split('\n').map(norm_proto_line).collect::<Vec<_>>().join("\n")
+}
+
+/// A PS player-stream chunk the replay can't reproduce: the harness's own
+/// rejected choices (`|error|`, sim/side.ts:527-537) and the updated request
+/// an `[Unavailable choice]` re-sends (`"update":true`).
+fn is_choice_noise(c: &str) -> bool {
+    c.starts_with("|error|") || (c.starts_with("|request|") && c.contains(",\"update\":true"))
+}
+
+/// The first JSON path where two request strings differ (array indices
+/// folded to `*` for bucketing), with both values.
+pub fn json_first_diff(ps: &str, eng: &str) -> (String, String, String) {
+    fn walk(a: &serde_json::Value, b: &serde_json::Value, path: &mut String) -> Option<(String, String)> {
+        use serde_json::Value as V;
+        match (a, b) {
+            (V::Object(x), V::Object(y)) => {
+                let kx: Vec<&String> = x.keys().collect();
+                let ky: Vec<&String> = y.keys().collect();
+                for k in x.keys() {
+                    let Some(vy) = y.get(k) else {
+                        path.push_str(&format!(".{k}"));
+                        return Some((x[k].to_string(), "<missing>".into()));
+                    };
+                    let n = path.len();
+                    path.push_str(&format!(".{k}"));
+                    if let Some(d) = walk(&x[k], vy, path) {
+                        return Some(d);
+                    }
+                    path.truncate(n);
+                }
+                for k in y.keys() {
+                    if !x.contains_key(k) {
+                        path.push_str(&format!(".{k}"));
+                        return Some(("<missing>".into(), y[k].to_string()));
+                    }
+                }
+                if kx != ky {
+                    path.push_str(".<key order>");
+                    return Some((format!("{kx:?}"), format!("{ky:?}")));
+                }
+                None
+            }
+            (V::Array(x), V::Array(y)) => {
+                for (i, (vx, vy)) in x.iter().zip(y).enumerate() {
+                    let n = path.len();
+                    path.push_str(&format!("[{i}]"));
+                    if let Some(d) = walk(vx, vy, path) {
+                        return Some(d);
+                    }
+                    path.truncate(n);
+                }
+                if x.len() != y.len() {
+                    path.push_str(".<len>");
+                    return Some((x.len().to_string(), y.len().to_string()));
+                }
+                None
+            }
+            _ => (a != b).then(|| (a.to_string(), b.to_string())),
+        }
+    }
+    let (Ok(a), Ok(b)) = (serde_json::from_str::<serde_json::Value>(ps), serde_json::from_str::<serde_json::Value>(eng)) else {
+        return ("<unparsable>".into(), ps.chars().take(80).collect(), eng.chars().take(80).collect());
+    };
+    let mut path = String::new();
+    match walk(&a, &b, &mut path) {
+        Some((x, y)) => (path, x, y),
+        None => ("<number format>".into(), String::new(), String::new()),
+    }
+}
+
+/// Fold array indices out of a JSON path: `active[0].moves[2].pp` ->
+/// `active[*].moves[*].pp`.
+fn fold_indices(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut in_idx = false;
+    for c in path.chars() {
+        match c {
+            '[' => {
+                in_idx = true;
+                out.push_str("[*]");
+            }
+            ']' => in_idx = false,
+            _ if in_idx => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Diff PS's per-side requests and player / spectator / omniscient streams
+/// against the engine's log stops.
+fn compare_streams(rec: &mut ProtoRecord, st: &PsStreams, log: &vgc_engine_core::ProtocolLog) {
+    use vgc_engine_core::ProtocolView;
+    rec.ps_choice_errors = st.p1.iter().chain(&st.p2).filter(|c| c.starts_with("|error|")).count();
+    let sides = [(&st.p1, ProtocolView::P1), (&st.p2, ProtocolView::P2), (&st.spectator, ProtocolView::Spectator), (&st.omniscient, ProtocolView::Omniscient)];
+    for (k, (ps_chunks, view)) in sides.into_iter().enumerate() {
+        let ps: Vec<String> = ps_chunks.iter().filter(|c| !is_choice_noise(c)).map(|c| norm_chunk(c)).collect();
+        let eng: Vec<String> = log.stream(view, None).iter().map(|c| norm_chunk(c.text())).collect();
+        if k < 2 {
+            let pr: Vec<&String> = ps.iter().filter(|c| c.starts_with("|request|")).collect();
+            let er: Vec<&String> = eng.iter().filter(|c| c.starts_with("|request|")).collect();
+            rec.req_total += pr.len();
+            for (i, p) in pr.iter().enumerate() {
+                match er.get(i) {
+                    Some(e) if e == p => rec.req_match += 1,
+                    e => {
+                        if rec.req_div.is_none() {
+                            let e = e.map(|s| s.as_str()).unwrap_or("|request|");
+                            let (path, a, b) = json_first_diff(&p[9..], &e[9..]);
+                            rec.req_bucket = Some(fold_indices(&path));
+                            rec.req_div = Some(ReqDiv { side: k as u8 + 1, index: i, path, ps: a, eng: b });
+                        }
+                    }
+                }
+            }
+        }
+        rec.streams_identical[k] = ps == eng;
+        if k < 2 && ps != eng && rec.stream_div.is_none() {
+            let i = ps.iter().zip(&eng).take_while(|(x, y)| x == y).count();
+            let first_line_diff = |a: Option<&String>, b: Option<&String>| -> (Option<String>, Option<String>) {
+                let la: Vec<&str> = a.map(|s| s.split('\n').collect()).unwrap_or_default();
+                let lb: Vec<&str> = b.map(|s| s.split('\n').collect()).unwrap_or_default();
+                let j = la.iter().zip(&lb).take_while(|(x, y)| x == y).count();
+                (la.get(j).map(|s| s.to_string()), lb.get(j).map(|s| s.to_string()))
+            };
+            let (pl, el) = first_line_diff(ps.get(i), eng.get(i));
+            let kind = |c: Option<&String>| match c {
+                None => "<end>",
+                Some(c) if c.starts_with("|request|") => "request",
+                Some(_) => "update",
+            };
+            rec.stream_bucket = Some(format!(
+                "p{} {}/{}: PS[{}] ENG[{}]",
+                k + 1,
+                kind(ps.get(i)),
+                kind(eng.get(i)),
+                proto_sig(pl.as_deref()),
+                proto_sig(el.as_deref())
+            ));
+            rec.stream_div = Some(ProtoDiv {
+                index: i,
+                turn: 0,
+                ps: pl,
+                eng: el,
+                ps_ctx: ps.get(i).map(|c| c.split('\n').take(12).map(|s| s.chars().take(300).collect()).collect()).unwrap_or_default(),
+                eng_ctx: eng.get(i).map(|c| c.split('\n').take(12).map(|s| s.chars().take(300).collect()).collect()).unwrap_or_default(),
+            });
+        }
+    }
+}
+
+/// The engine's `|request|` JSON per side, in order, from the keyed
+/// protocol replay (the stops in its log).
+pub fn engine_requests(acc: &AccBattle) -> [Vec<String>; 2] {
+    let (table, _repaired, _b, _res, _misses) = repaired_table(acc);
+    let opts = vgc_engine_core::ProtocolOptions {
+        player_names: ["P1".to_string(), "P2".to_string()],
+        ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
+    };
+    let shuffles = residual_shuffles(acc);
+    let mut fed = false;
+    let (b, _res) = drive_with(
+        acc,
+        Rng::oracle_keyed(table, 0xC0FFEE),
+        |b, _| {
+            if !std::mem::replace(&mut fed, true) {
+                b.protocol_set_oracle_shuffles(shuffles.clone());
+            }
+        },
+        Some(&opts),
+    );
+    let mut out = [Vec::new(), Vec::new()];
+    if let Some(l) = b.protocol_log() {
+        for sp in l.sync_points() {
+            out[0].push(sp.requests[0].clone());
+            out[1].push(sp.requests[1].clone());
+        }
+    }
+    out
+}
+
 pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
     let (table, _repaired, b, res, misses) = repaired_table(acc);
     let state_clean = matches!(&res, Ok((_, _, None, _))) && misses.is_empty();
@@ -1612,6 +1842,15 @@ pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
         first_div: None,
         bucket: None,
         engine_error: res.as_ref().err().cloned(),
+        has_streams: acc.meta.streams.is_some(),
+        req_total: 0,
+        req_match: 0,
+        req_bucket: None,
+        req_div: None,
+        streams_identical: [false; 4],
+        stream_bucket: None,
+        stream_div: None,
+        ps_choice_errors: 0,
     };
     drop(b);
     let Some(raw) = acc.meta.rawlog.as_deref() else { return rec };
@@ -1640,6 +1879,17 @@ pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
         .protocol_log()
         .map(|l| l.raw_lines().iter().map(|x| norm_proto_line(x)).collect())
         .unwrap_or_default();
+    if let (Some(st), Some(log)) = (acc.meta.streams.as_ref(), b.protocol_log()) {
+        compare_streams(&mut rec, st, log);
+        // PROTO_DUMP=<id>: print the engine's p1 / p2 streams (triage).
+        if std::env::var("PROTO_DUMP").is_ok_and(|v| v == acc.id) {
+            for v in [vgc_engine_core::ProtocolView::P1, vgc_engine_core::ProtocolView::P2] {
+                for (i, c) in log.stream(v, None).iter().enumerate() {
+                    eprintln!("=== ENG {v:?} chunk {i}\n{}", c.text());
+                }
+            }
+        }
+    }
     rec.ps_lines = ps.len();
     rec.eng_lines = eng.len();
     rec.identical = ps == eng;
@@ -1661,6 +1911,143 @@ pub fn replay_protocol(acc: &AccBattle) -> ProtoRecord {
             ps_ctx: ctx(&ps),
             eng_ctx: ctx(&eng),
         });
+    }
+    rec
+}
+
+// ---------------------------------------------------------------------------
+// Session replay (phase 2): drive `PsSession` with PS's own choice strings
+// ---------------------------------------------------------------------------
+
+/// One battle replayed through [`vgc_engine_core::ps_session::PsSession`]:
+/// the keyed RNG table, PS's choice strings as sent (rejected ones
+/// included), and the session's p1 / p2 / spectator / omniscient streams
+/// compared chunk by chunk with PS's.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionRecord {
+    pub id: String,
+    pub state_clean: bool,
+    pub has_cmds: bool,
+    /// The protocol-log replay is byte-identical (phase 1).
+    pub log_identical: bool,
+    pub identical: [bool; 4],
+    pub bucket: Option<String>,
+    pub div: Option<ProtoDiv>,
+    /// Choice strings the session rejected / PS rejected.
+    pub eng_errors: usize,
+    pub ps_errors: usize,
+    /// Commands left unfed when the session stopped asking.
+    pub unfed: usize,
+    /// p1 / p2 `|request|` and `|error|` chunks identical (formats whose
+    /// updates the log can't match, e.g. a debug format's `|debug|`).
+    pub side_chunks_identical: [bool; 2],
+}
+
+pub fn replay_session(acc: &AccBattle) -> SessionRecord {
+    use vgc_engine_core::ps_session::PsSession;
+    use vgc_engine_core::ProtocolView;
+    let proto = replay_protocol(acc);
+    let mut rec = SessionRecord {
+        id: acc.id.clone(),
+        state_clean: proto.state_clean,
+        has_cmds: acc.meta.cmds.is_some() && acc.meta.streams.is_some(),
+        log_identical: proto.identical,
+        identical: [false; 4],
+        bucket: None,
+        div: None,
+        eng_errors: 0,
+        ps_errors: 0,
+        unfed: 0,
+        side_chunks_identical: [false; 2],
+    };
+    let (Some(cmds), Some(st)) = (acc.meta.cmds.as_ref(), acc.meta.streams.as_ref()) else { return rec };
+    let (table, _repaired, _b, _res, _misses) = repaired_table(acc);
+    let champions = vgc_engine_core::format_rules::is_champions_format(&acc.format);
+    let (Ok(p1), Ok(p2)) = (build_engine_team(&acc.p1team, champions), build_engine_team(&acc.p2team, champions)) else { return rec };
+    let format = if is_doubles(&acc.format) { Format::Doubles } else { Format::Singles };
+    let opts = vgc_engine_core::ProtocolOptions {
+        player_names: ["P1".to_string(), "P2".to_string()],
+        ..vgc_engine_core::ProtocolOptions::new(vgc_engine_core::ProtocolMode::Ps)
+    };
+    let shuffles = residual_shuffles(acc);
+    let fmt_id = acc.format.clone();
+    let builder = move |picks: Option<&[Vec<u8>; 2]>| {
+        let rng = Rng::oracle_keyed(table.clone(), 0xC0FFEE);
+        let mut b = Battle::with_protocol(BattleConfig { format, seed: 0 }, rng, p1.clone(), p2.clone(), &opts, &fmt_id, picks);
+        b.decision_phases = true;
+        b.set_format_id(&fmt_id);
+        b.protocol_set_oracle_shuffles(shuffles.clone());
+        b
+    };
+    let mut s = PsSession::new(Box::new(builder));
+    let feeds = [&cmds.p1, &cmds.p2];
+    let mut cur = [0usize; 2];
+    let mut open = [true, true];
+    for _ in 0..10_000 {
+        let mut progressed = false;
+        for k in 0..2 {
+            if s.is_ended() {
+                break;
+            }
+            let side = if k == 0 { SideRef::P1 } else { SideRef::P2 };
+            if (s.request(side).is_some() || !open[k]) && cur[k] < feeds[k].len() {
+                let c = feeds[k][cur[k]].clone();
+                cur[k] += 1;
+                open[k] = s.choose(side, &c).is_ok();
+                if !open[k] {
+                    rec.eng_errors += 1;
+                }
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    rec.unfed = (feeds[0].len() - cur[0]) + (feeds[1].len() - cur[1]);
+    let ps_tie = acc.meta.rawlog.as_deref().is_some_and(|r| r.ends_with("|tie"));
+    if ps_tie {
+        s.force_tie();
+    }
+    rec.ps_errors = st.p1.iter().chain(&st.p2).filter(|c| c.starts_with("|error|")).count();
+    let views = [(&st.p1, ProtocolView::P1), (&st.p2, ProtocolView::P2), (&st.spectator, ProtocolView::Spectator), (&st.omniscient, ProtocolView::Omniscient)];
+    for (k, (ps_chunks, view)) in views.into_iter().enumerate() {
+        let ps: Vec<String> = ps_chunks.iter().map(|c| norm_chunk(c)).collect();
+        let eng: Vec<String> = s.stream(view).iter().map(|c| norm_chunk(c)).collect();
+        rec.identical[k] = ps == eng;
+        if k < 2 {
+            let side_only = |v: &[String]| -> Vec<String> {
+                v.iter().filter(|c| c.starts_with("|request|") || c.starts_with("|error|")).cloned().collect()
+            };
+            rec.side_chunks_identical[k] = side_only(&ps) == side_only(&eng);
+        }
+        if ps != eng && rec.div.is_none() {
+            let i = ps.iter().zip(&eng).take_while(|(x, y)| x == y).count();
+            let la: Vec<&str> = ps.get(i).map(|c| c.split('\n').collect()).unwrap_or_default();
+            let lb: Vec<&str> = eng.get(i).map(|c| c.split('\n').collect()).unwrap_or_default();
+            let j = la.iter().zip(&lb).take_while(|(x, y)| x == y).count();
+            let kind = |c: Option<&String>| match c {
+                None => "<end>",
+                Some(c) if c.starts_with("|request|") => "request",
+                Some(c) if c.starts_with("|error|") => "error",
+                Some(_) => "update",
+            };
+            rec.bucket = Some(format!(
+                "{view:?} {}/{}: PS[{}] ENG[{}]",
+                kind(ps.get(i)),
+                kind(eng.get(i)),
+                proto_sig(la.get(j).copied()),
+                proto_sig(lb.get(j).copied())
+            ));
+            rec.div = Some(ProtoDiv {
+                index: i,
+                turn: 0,
+                ps: la.get(j).map(|x| x.chars().take(300).collect()),
+                eng: lb.get(j).map(|x| x.chars().take(300).collect()),
+                ps_ctx: la.iter().skip(j.saturating_sub(2)).take(6).map(|x| x.chars().take(200).collect()).collect(),
+                eng_ctx: lb.iter().skip(j.saturating_sub(2)).take(6).map(|x| x.chars().take(200).collect()).collect(),
+            });
+        }
     }
     rec
 }

@@ -49,6 +49,9 @@ mod accuracy;
 pub mod battle;
 mod battle_protocol;
 mod protocol_residual;
+pub mod ps_request;
+pub mod ps_session;
+pub mod ps_observe;
 pub mod protocol;
 pub mod calc;
 pub mod canonical_hash;
@@ -94,7 +97,7 @@ pub use rng::{
     expand_uniform_damage, DamageSegments, DrawSpace, RecordedDraw, Rng, RngDecision, RngEvent,
     RngKey, SlotRef, NO_SLOT,
 };
-pub use protocol::{ProtocolLog, ProtocolMode, ProtocolOptions, ProtocolView};
+pub use protocol::{ProtocolLog, ProtocolMode, ProtocolOptions, ProtocolView, StreamChunk, SyncKind, SyncPoint};
 pub use side::{Side, SideRef};
 pub use step_machine::{PendingYield, StepCursor, StepPhase, StepProgress};
 pub use team::{boosted_max_pp, build_member, build_member_in, champions_max_pp, TeamBuilder, TeamLoadError, TeamMember};

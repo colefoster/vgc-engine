@@ -228,6 +228,101 @@ fn main() -> ExitCode {
             for (k, ids) in v.iter().take(top) {
                 println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
             }
+            // Phase 2: per-side requests and player streams.
+            let sc: Vec<&&accuracy::ProtoRecord> = clean.iter().filter(|r| r.has_streams).collect();
+            if !sc.is_empty() {
+                let (rt, rm) = sc.iter().fold((0, 0), |(a, b), r| (a + r.req_total, b + r.req_match));
+                let both = sc.iter().filter(|r| r.streams_identical[0] && r.streams_identical[1]).count();
+                let spec = sc.iter().filter(|r| r.streams_identical[2]).count();
+                let omni = sc.iter().filter(|r| r.streams_identical[3]).count();
+                println!(
+                    "requests: {} / {} byte-identical ({:.2}%); p1+p2 streams identical {} / {} ({:.1}%); spectator {} ({:.1}%); omniscient {} ({:.1}%)",
+                    rm,
+                    rt,
+                    100.0 * rm as f64 / rt.max(1) as f64,
+                    both,
+                    sc.len(),
+                    100.0 * both as f64 / sc.len() as f64,
+                    spec,
+                    100.0 * spec as f64 / sc.len() as f64,
+                    omni,
+                    100.0 * omni as f64 / sc.len() as f64
+                );
+                let mut rb: std::collections::HashMap<&str, Vec<&accuracy::ProtoRecord>> = std::collections::HashMap::new();
+                for r in &sc {
+                    if let Some(b) = r.req_bucket.as_deref() {
+                        rb.entry(b).or_default().push(r);
+                    }
+                }
+                let mut v: Vec<_> = rb.into_iter().collect();
+                v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+                println!(" request buckets (battles, first mismatch):");
+                for (k, rs) in v.iter().take(top) {
+                    let d = rs[0].req_div.as_ref().unwrap();
+                    let cut = |s: &str| s.chars().take(70).collect::<String>();
+                    println!("  {:4}  {k}  PS={} ENG={}   e.g. {}", rs.len(), cut(&d.ps), cut(&d.eng), rs.iter().take(3).map(|r| r.id.as_str()).collect::<Vec<_>>().join(" "));
+                }
+                let mut sb: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+                for r in &sc {
+                    if let Some(b) = r.stream_bucket.as_deref() {
+                        sb.entry(b).or_default().push(&r.id);
+                    }
+                }
+                let mut v: Vec<_> = sb.into_iter().collect();
+                v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+                println!(" stream buckets (battles, first divergent chunk):");
+                for (k, ids) in v.iter().take(top) {
+                    println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        "session" => {
+            // accuracy session <dir|files...> [--jsonl out]: PS's choice
+            // strings through PsSession; streams diffed with PS's.
+            let threads = std::env::var("ACC_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4usize).max(1);
+            let chunk = files.len().div_ceil(threads).max(1);
+            let mut recs: Vec<accuracy::SessionRecord> = Vec::with_capacity(files.len());
+            std::thread::scope(|s| {
+                let hs: Vec<_> = files
+                    .chunks(chunk)
+                    .map(|c| s.spawn(move || c.iter().filter_map(|p| load(p).ok().map(|a| accuracy::replay_session(&a))).collect::<Vec<_>>()))
+                    .collect();
+                for h in hs {
+                    recs.extend(h.join().expect("worker panicked"));
+                }
+            });
+            if let Some(path) = jsonl.as_deref() {
+                use std::io::Write;
+                let mut f = std::fs::File::create(path).expect("create jsonl");
+                for r in &recs {
+                    writeln!(f, "{}", serde_json::to_string(r).unwrap()).unwrap();
+                }
+            }
+            let clean: Vec<&accuracy::SessionRecord> = recs.iter().filter(|r| r.state_clean && r.has_cmds).collect();
+            let n = clean.len().max(1) as f64;
+            let both = clean.iter().filter(|r| r.identical[0] && r.identical[1]).count();
+            let spec = clean.iter().filter(|r| r.identical[2]).count();
+            let omni = clean.iter().filter(|r| r.identical[3]).count();
+            let li = clean.iter().filter(|r| r.log_identical).count();
+            let li_both = clean.iter().filter(|r| r.log_identical && r.identical[0] && r.identical[1]).count();
+            let (ee, pe) = clean.iter().fold((0, 0), |(a, b), r| (a + r.eng_errors, b + r.ps_errors));
+            println!(
+                "session: {} battles, {} state-clean; p1+p2 streams identical {} ({:.1}%), spectator {} ({:.1}%), omniscient {} ({:.1}%); of {} log-identical, {} stream-identical; choice errors eng {} / PS {}",
+                recs.len(), clean.len(), both, 100.0 * both as f64 / n, spec, 100.0 * spec as f64 / n, omni, 100.0 * omni as f64 / n, li, li_both, ee, pe
+            );
+            let mut b: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+            for r in &clean {
+                if let Some(k) = r.bucket.as_deref() {
+                    b.entry(k).or_default().push(&r.id);
+                }
+            }
+            let mut v: Vec<_> = b.into_iter().collect();
+            v.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(b.0)));
+            let top: usize = std::env::var("PROTO_TOP").ok().and_then(|x| x.parse().ok()).unwrap_or(30);
+            for (k, ids) in v.iter().take(top) {
+                println!("  {:4}  {k}   e.g. {}", ids.len(), ids.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+            }
             ExitCode::SUCCESS
         }
         "keyed" => {
