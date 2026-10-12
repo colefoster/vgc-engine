@@ -11357,12 +11357,18 @@ self.trigger_emergency_exits();
             // and Life Orb.
             let attacker_hurt = (ctx.actor_side, ctx.actor_slot) != (ctx.tside, ctx.tslot)
                 && self.side(ctx.actor_side).active_mon(ctx.actor_slot as usize).is_some_and(|a| a.current_hp < attacker_hp_at_hit);
-            if !attacker_hurt {
+            // A knocked-out Unnerve / As One holder no longer blocks berries:
+            // every active's berry gets this Update.
+            let unnerve_down = self.side(ctx.tside).active_mon(ctx.tslot as usize).is_some_and(|t| {
+                t.current_hp == 0
+                    && matches!(t.effective_ability_id(), data::ability_id::UNNERVE | data::ability_id::ASONEGLASTRIER | data::ability_id::ASONESPECTRIER)
+            });
+            if !attacker_hurt && !unnerve_down {
                 crate::item::on_after_damage(self, ctx.tside, ctx.tslot, &mut rng);
             } else {
                 let (order, k) = self.actives_by_speed();
                 for &(s, sl) in &order[..k] {
-                    if (s, sl) == (ctx.tside, ctx.tslot) || (s, sl) == (ctx.actor_side, ctx.actor_slot) {
+                    if unnerve_down || (s, sl) == (ctx.tside, ctx.tslot) || (s, sl) == (ctx.actor_side, ctx.actor_slot) {
                         crate::item::on_after_damage(self, s, sl, &mut rng);
                     }
                 }
