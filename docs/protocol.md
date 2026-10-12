@@ -292,6 +292,14 @@ wraps; it takes a builder closure (team-preview picks -> `Battle`).
   choice runs into hidden information (a `maybeTrapped` mon that is
   trapped, an Imprisoned move). `move N` names PS's request order;
   `switch N` names PS's current side order.
+- **Locked moves** (PS `getLockedMove`): the request lists one move
+  (`{"move":"Recharge","id":"recharge"}` for Hyper Beam's recharge turn,
+  else the two-turn or Outrage-style move) with `trapped: true` and no
+  Mega / Tera; `move 1` or `default` answers it. `Battle.legal_choices`
+  agrees (0.4.2): a recharging mon has exactly
+  `[("recharge", slot, 0, -1, -1)]`, a locked move its one `("move", ...)`
+  (a charge keeps its stored target), with no switch. `step_move` takes
+  the `"recharge"` tuple; it is `move 1`.
 - **Mid-turn requests** (U-turn, Volt Switch, Parting Shot, Flip Turn,
   Eject Button, Eject Pack, Emergency Exit, Revival Blessing): the engine
   resolves a turn in one `step` with the picks given up front, so the
