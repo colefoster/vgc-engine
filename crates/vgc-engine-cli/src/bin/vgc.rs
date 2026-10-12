@@ -222,6 +222,100 @@ enum Command {
     /// `sideupdate` / `end` out). See docs/protocol.md, "Use as a local
     /// Showdown replacement".
     Sim(SimArgs),
+
+    /// Rebuild the battle at the start of turn N of a real replay: `vgc recon
+    /// --log FILE --turn N`. Prints `{"battle", "prefix", "report"}` JSON
+    /// (`battle` + `prefix` go to `Battle.from_position`). FILE is a replay
+    /// JSON, a ps_bot decision JSON, a raw log or one player's stream. See
+    /// docs/protocol.md, "Start from a real replay".
+    Recon(ReconArgs),
+}
+
+#[derive(clap::Args)]
+struct ReconArgs {
+    #[arg(long)]
+    log: String,
+    /// The turn (its move request). Default: a ps_bot decision file's turn.
+    #[arg(long)]
+    turn: Option<u32>,
+    /// `move` (the turn's move request) or `replace` (the faint
+    /// replacement before it). Default: a decision file's own stop, else `move`.
+    #[arg(long)]
+    stop: Option<String>,
+    /// Fill the opponent's hidden info from this player's view only.
+    #[arg(long)]
+    viewer: Option<String>,
+    /// `default` (embedded Reg M-B 2026-08 usage), `none`, or a stats file.
+    #[arg(long, default_value = "default")]
+    prior: String,
+    /// Full sets for p1 / p2 (Showdown export or JSON team).
+    #[arg(long)]
+    sets_p1: Option<String>,
+    #[arg(long)]
+    sets_p2: Option<String>,
+    /// Use set facts revealed after the stop.
+    #[arg(long)]
+    lookahead: bool,
+    #[arg(long)]
+    format: Option<String>,
+    /// Also print the kcheck board and sets the battle was built from.
+    #[arg(long)]
+    board: bool,
+    /// Open the PS session at the stop and print both requests too.
+    #[arg(long)]
+    check: bool,
+}
+
+fn load_sets(path: &str) -> Result<Vec<vgc_engine_core::TeamMember>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    if text.trim_start().starts_with('[') {
+        serde_json::from_str(&text).map_err(|e| format!("parse {path}: {e}"))
+    } else {
+        vgc_engine_core::parse_showdown_export(&text).map_err(|e| format!("parse {path}: {e}"))
+    }
+}
+
+fn run_recon(a: &ReconArgs) -> Result<ExitCode, String> {
+    use vgc_engine_replay::position::{parse_input, reconstruct, ReconOptions, Stop};
+    let text = std::fs::read_to_string(&a.log).map_err(|e| format!("read {}: {e}", a.log))?;
+    let input = parse_input(&text)?;
+    let turn = a.turn.or(input.turn).ok_or("--turn N is required")?;
+    let mut o = ReconOptions::new(turn);
+    o.stop = match a.stop.as_deref() {
+        None => input.stop.unwrap_or(Stop::Move),
+        Some("move") => Stop::Move,
+        Some("replace") => Stop::Replace,
+        Some(s) => return Err(format!("--stop {s} (move | replace)")),
+    };
+    o.viewer = match a.viewer.as_deref() {
+        None => None,
+        Some("p1") => Some(vgc_engine_core::SideRef::P1),
+        Some("p2") => Some(vgc_engine_core::SideRef::P2),
+        Some(v) => return Err(format!("--viewer {v} (p1 | p2)")),
+    };
+    o.lookahead = a.lookahead;
+    o.format = a.format.clone();
+    if let Some((side, r)) = input.request.clone() {
+        o.requests[side as usize] = Some(r);
+    }
+    for (k, p) in [&a.sets_p1, &a.sets_p2].into_iter().enumerate() {
+        if let Some(p) = p {
+            o.sets[k] = Some(load_sets(p)?);
+        }
+    }
+    let prior = vgc_engine_replay::prior::Prior::load(&a.prior)?;
+    let rec = reconstruct(&input.lines, &o, &prior).map_err(|e| e.to_string())?;
+    let mut out = serde_json::json!({"battle": rec.battle_json(), "prefix": rec.prefix_json(), "report": rec.report});
+    if a.board {
+        out["board"] = rec.board.clone();
+        out["sets"] = rec.sets.clone();
+    }
+    if a.check {
+        let s = rec.session(None)?;
+        out["requests"] = serde_json::json!({"p1": s.request_json(vgc_engine_core::SideRef::P1), "p2": s.request_json(vgc_engine_core::SideRef::P2)});
+    }
+    println!("{}", serde_json::to_string(&out).map_err(|e| e.to_string())?);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `vgc sim` / `vgc-showdown simulate-battle` flags (PS's own, plus `--protocol`).
@@ -384,6 +478,7 @@ fn run() -> Result<ExitCode, String> {
             run_battle(&p1, &p2, seed, &format, &protocol, &view, max_turns)
         }
         Command::Sim(a) => run_sim(&a),
+        Command::Recon(a) => run_recon(&a),
         Command::Calc {
             attacker,
             defender,
