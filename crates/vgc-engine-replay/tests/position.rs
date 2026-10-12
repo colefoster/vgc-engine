@@ -86,6 +86,13 @@ fn the_report_flags_every_field() {
         }
     }
     assert!(r["n_prior_fields"].as_u64().unwrap() > 0);
+    // The default resolves to an explicit, pinnable id with its file hashes.
+    assert_eq!(r["format"], "gen9championsvgc2026regmc");
+    assert_eq!(r["prior"], vgc_engine_replay::prior::DEFAULT_REGMC);
+    let h = r["prior_sha256"].as_str().unwrap();
+    assert!(h.split('+').all(|x| x.len() == 64), "{h}");
+    let pinned = reconstruct(&input.lines, &ReconOptions::new(3), &Prior::load(vgc_engine_replay::prior::DEFAULT_REGMC).unwrap()).unwrap();
+    assert_eq!(pinned.report, rec.report);
 }
 
 #[test]
